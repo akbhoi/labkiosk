@@ -1,0 +1,27 @@
+name: Feature Request
+description: Suggest an enhancement, new educational app preset, or management feature
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Suggest an improvement for Lab Kiosk!
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Classroom Need
+      description: Is your feature request related to a problem or specific teaching workflow?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe how you envision the feature working.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Educational / Technical Context
+      description: Any links to educational tools, CBSE/NCERT curriculum portals, or technical specs.

@@ -1,0 +1,48 @@
+name: Build Debian Kiosk ISO
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-iso:
+    name: Build Live ISO
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build ISO using Docker Container
+        run: |
+          cd distro-builder
+          docker build -t labkiosk-iso-builder .
+          mkdir -p out
+          docker run --privileged --rm -v $(pwd)/out:/build/out labkiosk-iso-builder
+
+      - name: Calculate Checksums
+        run: |
+          cd distro-builder/out
+          sha256sum labkiosk-debian12-amd64.iso > labkiosk-debian12-amd64.iso.sha256
+          cat labkiosk-debian12-amd64.iso.sha256
+
+      - name: Upload ISO Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: labkiosk-debian12-amd64-iso
+          path: distro-builder/out/labkiosk-debian12-amd64.iso
+          retention-days: 14
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            distro-builder/out/labkiosk-debian12-amd64.iso
+            distro-builder/out/labkiosk-debian12-amd64.iso.sha256
+          draft: false
+          prerelease: false

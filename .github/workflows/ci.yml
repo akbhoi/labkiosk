@@ -1,0 +1,35 @@
+name: CI Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Cloudflare Worker Typecheck & Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js v22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Dependencies
+        run: pnpm --prefix cloudflare-control install --frozen-lockfile
+
+      - name: TypeScript Typecheck
+        run: pnpm --prefix cloudflare-control exec tsc --noEmit
+
+      - name: Run Integration Tests
+        run: pnpm --prefix cloudflare-control test

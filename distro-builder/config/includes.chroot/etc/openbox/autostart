@@ -1,0 +1,47 @@
+#!/bin/bash
+# Openbox Autostart Script for Lab Kiosk
+
+# 1. Disable screen blanking, screensaver, and energy power-saving
+xset s off
+xset -dpms
+xset s noblank
+
+# 2. Hide mouse cursor after 5 seconds of inactivity (optional: unclutter)
+which unclutter >/dev/null 2>&1 && unclutter -idle 5 -root &
+
+# 3. Start TigerVNC / x11vnc for remote classroom management (localhost only)
+x11vnc -display :0 -forever -shared -rfbport 5900 -localhost -quiet -bg
+
+# 4. Start noVNC Websockify gateway on port 6080
+if [ -d "/usr/share/novnc" ]; then
+  websockify --web=/usr/share/novnc/ 6080 localhost:5900 >/dev/null 2>&1 &
+fi
+
+# 5. Start Lab Kiosk Telemetry & Sync Agent
+python3 /opt/labkiosk/agent/agent.py >/var/log/lab-agent.log 2>&1 &
+
+# 6. Infinite Watchdog for Chromium Kiosk Window
+while true; do
+  # Clean ephemeral cache before launch to guarantee fresh session
+  rm -rf /tmp/chromium-cache /tmp/chromium-profile
+
+  chromium \
+    --kiosk \
+    --no-first-run \
+    --noerrdialogs \
+    --disable-infobars \
+    --disable-pinch \
+    --disable-session-crashed-bubble \
+    --overscroll-history-navigation=0 \
+    --disable-features=TranslateUI \
+    --disk-cache-dir=/tmp/chromium-cache \
+    --user-data-dir=/tmp/chromium-profile \
+    --enable-gpu-rasterization \
+    --ignore-gpu-blocklist \
+    --disable-web-security \
+    --load-extension=/opt/labkiosk/extension \
+    --autoplay-policy=no-user-gesture-required \
+    "${DEFAULT_HOMEPAGE:-https://www.khanacademy.org}"
+
+  sleep 1
+done &

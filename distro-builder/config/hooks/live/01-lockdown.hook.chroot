@@ -1,0 +1,38 @@
+#!/bin/sh
+set -e
+
+echo "[Hook] Applying Lab Kiosk Lockdown and User Setup..."
+
+# 1. Create kiosk unprivileged user if not existing
+if ! id -u kiosk >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -G audio,video,input,render kiosk
+    passwd -d kiosk || true
+fi
+
+# 2. Make autostart and agent executable
+chmod +x /etc/openbox/autostart || true
+chmod +x /opt/labkiosk/agent/agent.py || true
+chown -R kiosk:kiosk /opt/labkiosk || true
+chown -R kiosk:kiosk /etc/openbox || true
+
+# 3. Mask Virtual Terminals (TTY1..6) to prevent students from accessing shell via Ctrl+Alt+F1..F6
+systemctl mask getty@tty1.service || true
+systemctl mask getty@tty2.service || true
+systemctl mask getty@tty3.service || true
+systemctl mask getty@tty4.service || true
+systemctl mask getty@tty5.service || true
+systemctl mask getty@tty6.service || true
+systemctl mask serial-getty@.service || true
+
+# 4. Enable Kiosk Services
+systemctl enable kiosk-x11.service || true
+systemctl enable cloudflared-kiosk.service || true
+
+# 5. Download standalone cloudflared binary if not present
+if [ ! -f /usr/local/bin/cloudflared ]; then
+    echo "[Hook] Downloading cloudflared binary..."
+    curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared || true
+    chmod +x /usr/local/bin/cloudflared || true
+fi
+
+echo "[Hook] Lockdown configuration applied successfully."

@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare Tunnel for Lab Kiosk Remote Management
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/cloudflared/config.yml
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/cloudflared --config /etc/cloudflared/config.yml tunnel run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

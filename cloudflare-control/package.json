@@ -1,0 +1,26 @@
+{
+  "name": "labkiosk-cloudflare-control",
+  "version": "1.0.0",
+  "description": "Centralized Cloudflare Controller & Real-Time Monitoring Dashboard for School Lab Kiosks",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev --ip 0.0.0.0",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/worker.test.ts"
+  },
+  "keywords": [
+    "kiosk",
+    "cloudflare-workers",
+    "lab-control",
+    "education"
+  ],
+  "author": "School Lab Administrator",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.101.0"
+  }
+}

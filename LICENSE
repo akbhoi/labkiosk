@@ -1,0 +1,58 @@
+Business Source License 1.1
+
+Parameters:
+
+Licensor:                 Lab Kiosk Project Contributors
+Licensed Work:            Lab Kiosk OS & Cloud Control Platform
+Change Date:              2030-01-01
+Change License:           Apache License, Version 2.0
+
+Additional Use Grant:
+You may use the Licensed Work free of charge for any of the following purposes:
+1. Educational Use: Any accredited or recognized public or private K-12 school, college,
+   university, library, or non-profit educational outreach initiative.
+2. Non-Commercial / Personal Use: Non-commercial evaluation, personal experimentation, 
+   and academic research.
+3. Open Source Testing: Contributing improvements, bug fixes, or documentation back to
+   the official upstream repository.
+
+Commercial Use Limitation:
+Any commercial organization, enterprise, for-profit training institution, or Managed 
+Service Provider (MSP) utilizing the Licensed Work in a commercial production environment,
+reselling the platform as a paid commercial service, or packaging it for commercial sale
+must obtain a paid Commercial License from the Licensor prior to deployment.
+
+To request a commercial license or custom agreement, contact the repository maintainers.
+
+---------------------------------------------------------------------------------------
+
+Notice of Co-Development with Artificial Intelligence:
+This software, architecture, and associated documentation were designed and co-developed 
+through collaborative pair-programming between human maintainers and Artificial Intelligence 
+(Google DeepMind's Antigravity Autonomous AI Coding System).
+
+---------------------------------------------------------------------------------------
+
+TERMS AND CONDITIONS
+
+1. Grant of License. Subject to the terms herein, Licensor grants You a worldwide,
+royalty-free, non-exclusive license to use, copy, modify, and distribute the Licensed
+Work in accordance with the Additional Use Grant until the Change Date.
+
+2. Commercial Restrictions. Any use that does not satisfy the Additional Use Grant 
+requires a separate commercial agreement from Licensor.
+
+3. Change to Open Source License. Effective on the Change Date, or the date Licensor 
+publishes an official notice, whichever is earlier, Licensor grants You rights under 
+the terms of the Change License (Apache License 2.0) with respect to the Licensed Work.
+
+4. Notice Requirements. You must retain all copyright notices, this License file, and
+the AI Co-Development notice in all copies or substantial portions of the Licensed Work.
+
+5. DISCLAIMER OF WARRANTIES. THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY 
+OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF 
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL 
+THE AUTHORS, CONTRIBUTORS, OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR 
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
+OUT OF OR IN CONNECTION WITH THE LICENSED WORK OR THE USE OR OTHER DEALINGS IN THE 
+LICENSED WORK.

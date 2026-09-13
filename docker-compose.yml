@@ -1,0 +1,19 @@
+services:
+  # 1. Interactive Kiosk Client Simulator (PC-01)
+  # Access via browser: http://localhost:6080/vnc.html
+  kiosk-simulator:
+    build:
+      context: .
+      dockerfile: docker-test/Dockerfile
+    container_name: labkiosk-client-01
+    ports:
+      - "6080:6080" # in-browser noVNC display
+      - "8888:8888" # local agent API
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - CLIENT_ID=PC-01
+      - CLIENT_NUM=1
+      - WORKER_URL=http://host.containers.internal:8787
+    shm_size: "1gb" # Sufficient shared memory for Chromium rendering
+    restart: unless-stopped

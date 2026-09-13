@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+echo "[Hook] Hardening Kernel & System Parameters..."
+
+# 1. Disable Magic SysRq key combinations
+cat << 'EOF' > /etc/sysctl.d/99-kiosk-lockdown.conf
+kernel.sysrq = 0
+fs.protected_hardlinks = 1
+fs.protected_symlinks = 1
+fs.suid_dumpable = 0
+EOF
+
+# 2. Disable coredumps
+cat << 'EOF' >> /etc/security/limits.conf
+* hard core 0
+* soft core 0
+EOF
+
+# 3. Disable GRUB timeout & splash to boot straight to kiosk
+if [ -f /etc/default/grub ]; then
+    sed -i 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub || true
+    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash vt.global_cursor_default=0 consoleblank=0"/' /etc/default/grub || true
+fi
+
+echo "[Hook] Hardening complete."

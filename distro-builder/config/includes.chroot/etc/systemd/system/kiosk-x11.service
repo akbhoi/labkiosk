@@ -1,0 +1,17 @@
+[Unit]
+Description=Lab Kiosk X11 Display and Openbox Session
+After=systemd-user-sessions.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kiosk
+Group=kiosk
+PAMName=login
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/xinit /usr/bin/openbox-session -- :0 -nolisten tcp
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

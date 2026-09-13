@@ -1,0 +1,8 @@
+# Pure Python 3 Standard Library implementation.
+# System dependencies required (installed via Debian apt packages):
+# - python3
+# - scrot
+# - xdotool
+# - x11vnc
+# - novnc
+# - websockify

@@ -1,0 +1,299 @@
+/**
+ * Super Admin Master Console UI
+ * Platform owner interface for managing schools, approving subdomains, and global analytics.
+ */
+
+export function renderSuperAdminHtml(data: {
+  superAdminEmail: string;
+  tenants: any[];
+  baseDomain?: string;
+}): string {
+  const { superAdminEmail, tenants, baseDomain = "labkiosk.io" } = data;
+
+  const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
+  const activeList = tenants.filter((t) => t.status === "active" && !t.requested_subdomain);
+
+  const totalClients = tenants.reduce((acc, t) => acc + (t.total_clients || 0), 0);
+  const totalOnline = tenants.reduce((acc, t) => acc + (t.online_clients || 0), 0);
+
+  const pendingRows = pendingList.map((t) => `
+    <tr>
+      <td><strong>${t.name}</strong></td>
+      <td>${t.admin_name} (${t.admin_email})</td>
+      <td>
+        <span class="subdomain-tag">
+          ${t.requested_subdomain ? `<b>${t.requested_subdomain}</b> <span class="text-muted">(was ${t.subdomain})</span>` : `<b>${t.subdomain}</b>`}
+        </span>
+      </td>
+      <td>${new Date(t.created_at * 1000).toLocaleDateString()}</td>
+      <td>
+        <div class="action-btn-group">
+          <button class="btn btn-sm btn-approve" onclick="approveTenant('${t.id}', '${t.requested_subdomain || t.subdomain}')">Approve</button>
+          <button class="btn btn-sm btn-edit" onclick="customAssignTenant('${t.id}')">Custom Subdomain</button>
+          <button class="btn btn-sm btn-reject" onclick="rejectTenant('${t.id}')">Reject</button>
+        </div>
+      </td>
+    </tr>
+  `).join("");
+
+  const allRows = tenants.map((t) => `
+    <tr>
+      <td><strong>${t.name}</strong></td>
+      <td>${t.admin_name} (${t.admin_email})</td>
+      <td>
+        <a href="/admin?tenant=${t.subdomain}" target="_blank" class="subdomain-link">
+          ${t.subdomain}.${baseDomain}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+        </a>
+      </td>
+      <td>
+        <span class="status-badge status-${t.status}">${t.status.toUpperCase()}</span>
+      </td>
+      <td>
+        <span class="client-count">
+          <span class="live-dot ${t.online_clients > 0 ? "active" : ""}"></span>
+          ${t.online_clients || 0} / ${t.total_clients || 0}
+        </span>
+      </td>
+      <td>
+        <div class="action-btn-group">
+          <a href="/admin?tenant=${t.subdomain}" target="_blank" class="btn btn-sm btn-secondary">Open Console</a>
+          <button class="btn btn-sm btn-edit" onclick="customAssignTenant('${t.id}')">Edit Subdomain</button>
+        </div>
+      </td>
+    </tr>
+  `).join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Super Admin Master Console - Lab Kiosk SaaS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --panel: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --green: #10b981;
+      --red: #ef4444;
+      --amber: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 36px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-logo {
+      width: 38px; height: 38px; background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
+      border-radius: 10px; display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 18px; color: #fff;
+    }
+    .brand-title { font-size: 18px; font-weight: 800; }
+    .brand-sub { font-size: 12px; color: var(--muted); }
+    .user-meta { display: flex; align-items: center; gap: 16px; }
+    .badge-super {
+      background: rgba(236, 72, 153, 0.15); color: #f472b6; border: 1px solid rgba(236, 72, 153, 0.3);
+      padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 700;
+    }
+    .btn-logout {
+      background: #1e293b; border: 1px solid var(--border); color: var(--text); padding: 6px 14px;
+      border-radius: 6px; font-size: 12px; cursor: pointer; text-decoration: none;
+    }
+    main { padding: 36px; max-width: 1400px; width: 100%; margin: 0 auto; flex: 1; }
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 36px;
+    }
+    .stat-card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px;
+    }
+    .stat-label { font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; margin-bottom: 8px; }
+    .stat-value { font-size: 32px; font-weight: 800; font-family: 'JetBrains Mono', monospace; }
+    .section-title { font-size: 20px; font-weight: 700; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+    .queue-badge {
+      background: var(--amber); color: #000; font-size: 12px; padding: 2px 8px; border-radius: 12px; font-weight: 700;
+    }
+    .table-container {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 40px;
+    }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; }
+    th { background: #162032; padding: 14px 18px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--border); }
+    td { padding: 14px 18px; border-bottom: 1px solid rgba(51, 65, 85, 0.4); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    .subdomain-tag { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #93c5fd; }
+    .subdomain-link {
+      font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #60a5fa; text-decoration: none;
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .subdomain-link:hover { text-decoration: underline; }
+    .status-badge {
+      padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; display: inline-block;
+    }
+    .status-active { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .status-pending { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+    .status-suspended { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+    .client-count { display: flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace; }
+    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; }
+    .live-dot.active { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .action-btn-group { display: flex; gap: 8px; }
+    .btn {
+      border: 1px solid transparent; border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 600;
+      cursor: pointer; text-decoration: none; transition: all 0.15s ease;
+    }
+    .btn-approve { background: #059669; color: #fff; }
+    .btn-approve:hover { background: #10b981; }
+    .btn-reject { background: #b91c1c; color: #fff; }
+    .btn-reject:hover { background: #ef4444; }
+    .btn-edit { background: #1e293b; border-color: var(--border); color: var(--text); }
+    .btn-edit:hover { background: #334155; }
+    .btn-secondary { background: #1e293b; border-color: var(--border); color: var(--text); }
+    .btn-secondary:hover { background: #3b82f6; color: #fff; }
+    .empty-state { padding: 32px; text-align: center; color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="brand-logo">M</div>
+      <div>
+        <div class="brand-title">Lab Kiosk Master Control</div>
+        <div class="brand-sub">Platform Super Administrator Console</div>
+      </div>
+    </div>
+    <div class="user-meta">
+      <span class="badge-super">SUPER ADMIN</span>
+      <span style="font-size: 13px; color: var(--muted);">${superAdminEmail}</span>
+      <a href="/api/auth/logout" class="btn-logout">Sign Out</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Schools</div>
+        <div class="stat-value" style="color: #60a5fa;">${tenants.length}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Active Subdomains</div>
+        <div class="stat-value" style="color: #34d399;">${activeList.length}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Pending Approvals</div>
+        <div class="stat-value" style="color: #fbbf24;">${pendingList.length}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Live Thin Clients</div>
+        <div class="stat-value" style="color: #f472b6;">${totalOnline} <span style="font-size: 16px; color: var(--muted);">/ ${totalClients}</span></div>
+      </div>
+    </div>
+
+    <!-- Subdomain Approval Queue -->
+    <h2 class="section-title">
+      Subdomain Approval Queue
+      ${pendingList.length > 0 ? `<span class="queue-badge">${pendingList.length} ACTION REQUIRED</span>` : ""}
+    </h2>
+    <div class="table-container">
+      ${pendingList.length > 0 ? `
+        <table>
+          <thead>
+            <tr>
+              <th>School / Lab Name</th>
+              <th>Admin Contact</th>
+              <th>Requested Subdomain</th>
+              <th>Registration Date</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${pendingRows}
+          </tbody>
+        </table>
+      ` : `
+        <div class="empty-state">No pending subdomain requests. All schools are currently approved!</div>
+      `}
+    </div>
+
+    <!-- All Registered Schools -->
+    <h2 class="section-title">Registered Schools & Computer Labs</h2>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>School Name</th>
+            <th>Admin Contact</th>
+            <th>Subdomain URL</th>
+            <th>Status</th>
+            <th>Live Workstations</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${allRows}
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    async function approveTenant(id, subdomain) {
+      if (!confirm("Approve subdomain '" + subdomain + "' for this school?")) return;
+      const res = await fetch("/api/super/tenants/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId: id, subdomain })
+      });
+      const data = await res.json();
+      if (data.status === "ok") {
+        window.location.reload();
+      } else {
+        alert("Error approving: " + (data.error || "Unknown error"));
+      }
+    }
+
+    async function rejectTenant(id) {
+      if (!confirm("Reject this school's subdomain request?")) return;
+      const res = await fetch("/api/super/tenants/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId: id })
+      });
+      const data = await res.json();
+      if (data.status === "ok") {
+        window.location.reload();
+      } else {
+        alert("Error: " + (data.error || "Unknown error"));
+      }
+    }
+
+    async function customAssignTenant(id) {
+      const customSub = prompt("Enter the exact subdomain slug to assign (lowercase letters, numbers, hyphens):");
+      if (!customSub) return;
+      const res = await fetch("/api/super/tenants/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId: id, subdomain: customSub.toLowerCase().trim() })
+      });
+      const data = await res.json();
+      if (data.status === "ok") {
+        window.location.reload();
+      } else {
+        alert("Error: " + (data.error || "Unknown error"));
+      }
+    }
+  </script>
+</body>
+</html>`;
+}

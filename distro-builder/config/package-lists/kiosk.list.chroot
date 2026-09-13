@@ -1,0 +1,47 @@
+# Core Linux Kernel & Live Boot System
+linux-image-amd64
+live-boot
+live-config
+live-config-systemd
+overlayroot
+systemd-sysv
+grub-efi-amd64-bin
+grub-pc-bin
+
+# Intel & General Hardware Firmware
+firmware-linux-free
+firmware-misc-nonfree
+firmware-realtek
+firmware-iwlwifi
+
+# Minimal X11 Server & Openbox
+xserver-xorg-core
+xserver-xorg-video-all
+xserver-xorg-input-all
+xinit
+x11-xserver-utils
+openbox
+xdotool
+scrot
+unclutter
+alsa-utils
+
+# Chromium Browser & Educational Fonts
+chromium
+chromium-sandbox
+fonts-dejavu
+fonts-liberation
+fonts-noto-core
+
+# Remote Management & Networking
+x11vnc
+novnc
+websockify
+network-manager
+curl
+wget
+jq
+ethtool
+net-tools
+python3
+ca-certificates
