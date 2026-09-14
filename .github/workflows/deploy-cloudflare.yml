@@ -1,0 +1,49 @@
+name: Deploy Cloudflare Control Plane
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'cloudflare-control/**'
+      - '.github/workflows/deploy-cloudflare.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Test & Deploy to Cloudflare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js v22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Dependencies
+        run: pnpm --prefix cloudflare-control install --frozen-lockfile
+
+      - name: TypeScript Strict Typecheck
+        run: pnpm --prefix cloudflare-control run typecheck
+
+      - name: Run Multi-Tenant Test Suite
+        run: pnpm --prefix cloudflare-control test
+
+      - name: Apply Remote D1 Database Migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --prefix cloudflare-control exec wrangler d1 migrations apply labkiosk-db --remote
+
+      - name: Deploy Worker to Cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --prefix cloudflare-control exec wrangler deploy

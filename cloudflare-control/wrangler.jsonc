@@ -9,6 +9,7 @@
   // apex serves the public landing page and the /super console.
   // Replace `labkiosk.akbhoi.com` with your own zone before deploying, and make sure a
   // wildcard DNS record (CNAME *) points at the worker.
+  "workers_dev": true,
   "routes": [
     { "pattern": "labkiosk.akbhoi.com/*", "zone_name": "akbhoi.com" },
     { "pattern": "*.labkiosk.akbhoi.com/*", "zone_name": "akbhoi.com" }
@@ -22,7 +23,7 @@
     {
       "binding": "DB",
       "database_name": "labkiosk-db",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "database_id": "8caa2850-2b30-4e74-a9a8-46cbfdbfb670",
       "migrations_dir": "migrations"
     }
   ],
