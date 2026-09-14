@@ -32,6 +32,10 @@ export interface Tenant {
   portal_subtitle?: string | null;
   portal_description?: string | null;
   portal_footer?: string | null;
+  /** Active broadcast lesson URL, or null when workstations should sit on their portal. */
+  broadcast_url?: string | null;
+  /** Monotonic marker workstations use to detect a new broadcast; 0 when none is active. */
+  broadcast_epoch?: number;
   created_at: number;
   updated_at: number;
 }
@@ -76,6 +80,10 @@ export interface ClientDevice {
   is_locked: number; // 0 or 1
   active_url?: string | null;
   thumbnail?: string | null;
+  /** x11vnc password the workstation generated at boot; reported over telemetry. */
+  vnc_password?: string | null;
+  /** Hostname the workstation's noVNC gateway is reachable on (Cloudflare Tunnel). */
+  remote_host?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -116,6 +124,8 @@ export interface ClientTelemetry {
   ip?: string;
   lastSeen?: string;
   online?: boolean;
+  vncPassword?: string;
+  remoteHost?: string;
 }
 
 export interface RemoteCommand {

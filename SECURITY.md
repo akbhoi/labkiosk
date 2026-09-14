@@ -50,8 +50,8 @@ Instead, please submit your findings privately via GitHub Security Advisories:
 2. **Network Isolation:** Where possible, place student thin clients on a dedicated student VLAN isolated from administrative school networks.
 3. **Cloudflare Tunnel Secrets:** Store Cloudflare Tunnel tokens securely in environment variables; never commit raw credentials into public configuration files.
 4. **Change the Super Admin Credentials:** Set `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` as
-   Wrangler secrets before your first deploy. Left unset, the worker seeds a documented default
-   account that grants control of every school on the platform.
+   Wrangler secrets before your first deploy; the worker will not serve a bound database without
+   them (see item 9).
 5. **Protect the Enrollment Key:** It is the only thing standing between a stranger and your
    students' screens. Rotate it from **Settings -> Workstation Enrollment Key** if a workstation or
    USB drive goes missing; workstations already enrolled keep working.
@@ -66,8 +66,19 @@ Instead, please submit your findings privately via GitHub Security Advisories:
    random password and `websockify` binds to `127.0.0.1`, so remote control is reachable only through
    the Cloudflare Tunnel. Publishing port 6080 — or the agent's port 8888 — on `0.0.0.0` hands anyone
    on the school Wi-Fi keyboard and mouse control of a student workstation. The Docker simulator
-   publishes 6080 deliberately and is not a deployment target.
-9. **Do Not "Harden" the Extension Policy:** Adding `ExtensionInstallBlocklist: ["*"]` to the Chromium
+   publishes 6080 deliberately and is not a deployment target. The VNC password is reported to the
+   control plane over the workstation's authenticated telemetry and stored per device; it is shown
+   only to that school's teachers, carries the same sensitivity as the live screen thumbnails, and
+   changes on every reboot.
+9. **Set the Super Admin Secrets Before the First Deploy:** with a D1 database bound, the worker
+   refuses to start until `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are both set. There is no
+   default account in production. Change the password from the `/super` console afterwards; doing so
+   signs out every other browser holding the account.
+10. **Browser-side defences are part of the design:** every page ships a nonce-based
+    Content-Security-Policy with no inline event handlers, HSTS and `frame-ancestors 'none'`; a
+    cookie-authenticated mutation is refused when its `Origin` is another site. Keep new templates
+    and routes inside those rules (see `AGENTS.md`).
+11. **Do Not "Harden" the Extension Policy:** Adding `ExtensionInstallBlocklist: ["*"]` to the Chromium
    managed policy looks like a tightening and is in fact a supervision outage: Chromium then refuses
    `--load-extension` and the workstation loses its navigation bar and lock curtain while continuing
    to report healthy telemetry. The policy file carries a comment explaining this; please read it

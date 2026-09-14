@@ -3,14 +3,25 @@
  * Platform owner interface for managing schools, approving subdomains, and global analytics.
  */
 
+import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
+
+/** A tenant row joined with its admin user and live client counts (see listAllTenants). */
+export interface SuperConsoleTenant extends Tenant {
+  admin_email: string;
+  admin_name: string;
+  online_clients: number;
+  total_clients: number;
+}
 
 export function renderSuperAdminHtml(data: {
   superAdminEmail: string;
-  tenants: any[];
+  tenants: SuperConsoleTenant[];
   baseDomain?: string;
+  /** Per-response CSP nonce; every <script> in this template must carry it. */
+  nonce: string;
 }): string {
-  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com" } = data;
+  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com", nonce } = data;
 
   const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
@@ -100,6 +111,13 @@ export function renderSuperAdminHtml(data: {
           <button class="btn btn-sm btn-edit" data-action="assign" data-tenant="${escapeHtml(t.id)}">Edit Subdomain</button>
           <button class="btn btn-sm btn-edit" data-action="assign-custom" data-tenant="${escapeHtml(t.id)}">Assign Custom Domain</button>
           ${t.custom_domain ? `<button class="btn btn-sm btn-reject" data-action="remove-custom" data-tenant="${escapeHtml(t.id)}">Disconnect</button>` : ""}
+          ${
+            t.status === "active"
+              ? `<button class="btn btn-sm btn-reject" data-action="suspend" data-tenant="${escapeHtml(t.id)}">Suspend</button>`
+              : t.status === "suspended"
+                ? `<button class="btn btn-sm btn-approve" data-action="reactivate" data-tenant="${escapeHtml(t.id)}">Reactivate</button>`
+                : ""
+          }
         </div>
       </td>
     </tr>
@@ -217,9 +235,26 @@ export function renderSuperAdminHtml(data: {
       .stat-value { font-size: 24px; }
       table { min-width: 620px; }
     }
-    @media (max-width: 480px) {
-      .stats-grid { grid-template-columns: 1fr; }
+    /* Modal Dialog */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(6px);
+      display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px;
     }
+    .modal-overlay.active { display: flex; }
+    .modal-box {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 24px; max-width: 440px; width: 100%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+    }
+    .modal-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+    .form-group { margin-bottom: 14px; }
+    .form-label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+    .form-input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 10px 12px; color: var(--text); font-size: 14px; outline: none; font-family: inherit;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-error { color: var(--red); font-size: 12px; margin-top: 6px; min-height: 16px; }
+    .form-success { color: var(--green); font-size: 12px; margin-top: 6px; min-height: 16px; }
   </style>
 </head>
 <body>
@@ -234,7 +269,10 @@ export function renderSuperAdminHtml(data: {
     <div class="user-meta">
       <span class="badge-super">SUPER ADMIN</span>
       <span style="font-size: 13px; color: var(--muted);">${escapeHtml(superAdminEmail)}</span>
-      <a href="/api/auth/logout" class="btn-logout">Sign Out</a>
+      <button type="button" class="btn-logout" id="btn-change-password">Change Password</button>
+      <form method="post" action="/api/auth/logout" style="display: inline;">
+        <button type="submit" class="btn-logout">Sign Out</button>
+      </form>
     </div>
   </header>
 
@@ -329,7 +367,36 @@ export function renderSuperAdminHtml(data: {
     </div>
   </main>
 
-  <script>
+  <!-- Password Change Modal -->
+  <div class="modal-overlay" id="password-modal">
+    <div class="modal-box">
+      <div class="modal-title">Change Super Admin Password</div>
+      <p style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">
+        Updating your password will revoke all other active super administrator sessions.
+      </p>
+      <form id="password-form">
+        <div class="form-group">
+          <label class="form-label" for="super-curr-pwd">Current Password</label>
+          <input type="password" id="super-curr-pwd" class="form-input" required autocomplete="current-password">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="super-new-pwd">New Password</label>
+          <input type="password" id="super-new-pwd" class="form-input" required minlength="12" autocomplete="new-password" placeholder="At least 12 characters, letters and numbers">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="super-confirm-pwd">Confirm New Password</label>
+          <input type="password" id="super-confirm-pwd" class="form-input" required minlength="12" autocomplete="new-password">
+        </div>
+        <div id="password-status-msg" class="form-error"></div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-password">Cancel</button>
+          <button type="submit" class="btn btn-approve" id="btn-submit-password">Update Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script nonce="${escapeAttr(nonce)}">
     async function postJson(endpoint, payload) {
       const res = await fetch(endpoint, {
         method: "POST",
@@ -382,6 +449,80 @@ export function renderSuperAdminHtml(data: {
       } else if (action === "remove-custom") {
         if (!confirm("Disconnect custom domain from this school?")) return;
         postJson("/api/super/tenants/custom-domain/remove", { tenantId });
+      } else if (action === "suspend") {
+        if (!confirm("Suspend this school? Its portal and workstations stop working until it is reactivated.")) return;
+        postJson("/api/super/tenants/suspend", { tenantId });
+      } else if (action === "reactivate") {
+        if (!confirm("Reactivate this school?")) return;
+        postJson("/api/super/tenants/reactivate", { tenantId });
+      }
+    });
+
+    const pwdModal = document.getElementById("password-modal");
+    const pwdForm = document.getElementById("password-form");
+    const currPwdInput = document.getElementById("super-curr-pwd");
+    const newPwdInput = document.getElementById("super-new-pwd");
+    const confirmPwdInput = document.getElementById("super-confirm-pwd");
+    const pwdStatus = document.getElementById("password-status-msg");
+
+    function openPasswordModal() {
+      pwdForm.reset();
+      pwdStatus.textContent = "";
+      pwdStatus.className = "form-error";
+      pwdModal.classList.add("active");
+      currPwdInput.focus();
+    }
+    function closePasswordModal() {
+      pwdModal.classList.remove("active");
+    }
+
+    document.getElementById("btn-change-password").addEventListener("click", openPasswordModal);
+    document.getElementById("btn-cancel-password").addEventListener("click", closePasswordModal);
+    pwdModal.addEventListener("click", (e) => {
+      if (e.target === pwdModal) closePasswordModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && pwdModal.classList.contains("active")) closePasswordModal();
+    });
+
+    pwdForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      pwdStatus.textContent = "";
+      pwdStatus.className = "form-error";
+
+      const currentPassword = currPwdInput.value;
+      const newPassword = newPwdInput.value;
+      const confirmPassword = confirmPwdInput.value;
+
+      if (newPassword !== confirmPassword) {
+        pwdStatus.textContent = "New passwords do not match.";
+        return;
+      }
+
+      const submitBtn = document.getElementById("btn-submit-password");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Updating...";
+
+      try {
+        const res = await fetch("/api/auth/change-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ currentPassword, newPassword })
+        });
+        let data = {};
+        try { data = await res.json(); } catch {}
+        if (res.ok && data.status === "ok") {
+          pwdStatus.className = "form-success";
+          pwdStatus.textContent = "Password changed successfully. Other sessions revoked.";
+          setTimeout(closePasswordModal, 1500);
+        } else {
+          pwdStatus.textContent = data.error || "Password change failed (" + res.status + ")";
+        }
+      } catch (err) {
+        pwdStatus.textContent = "Network error. Please try again.";
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Update Password";
       }
     });
   </script>

@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   portal_subtitle TEXT,
   portal_description TEXT,
   portal_footer TEXT,
+  broadcast_url TEXT,
+  broadcast_epoch INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -83,6 +85,8 @@ CREATE TABLE IF NOT EXISTS client_devices (
   is_locked INTEGER NOT NULL DEFAULT 0,
   active_url TEXT,
   thumbnail TEXT,
+  vnc_password TEXT,
+  remote_host TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -202,33 +206,43 @@ export async function initSchema(db: D1Database): Promise<void> {
   }
 }
 
+/** Credentials seeded when no secrets are configured; local development and tests only. */
+export const LOCAL_DEV_SUPER_ADMIN = { email: "admin@akbhoi.com", password: "SuperAdmin2026!" };
+
 /**
- * Ensures a Super Admin account exists in the database
+ * Ensures a Super Admin account exists in the database.
+ *
+ * `credentials` comes from the SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD secrets;
+ * the caller (bootstrap in index.ts) decides whether falling back to
+ * LOCAL_DEV_SUPER_ADMIN is acceptable, so this function never invents a default.
+ * The stored password is only rewritten when a password was explicitly supplied,
+ * so changing SUPER_ADMIN_EMAIL alone can no longer reset the account to a
+ * well-known password.
  */
 export async function ensureSuperAdmin(
   db: D1Database,
-  email: string = "admin@akbhoi.com",
-  password: string = "SuperAdmin2026!"
+  credentials: { email: string; password: string }
 ): Promise<User> {
+  const email = credentials.email.toLowerCase().trim();
   const existing = await db
     .prepare("SELECT * FROM users WHERE role = 'super_admin' LIMIT 1")
     .first<User>();
 
   if (existing) {
-    // If the database was initialized with the legacy placeholder admin@labkiosk.io
-    // or if the target super admin email changed, migrate it to the current credentials.
-    if (existing.email === "admin@labkiosk.io" || (email && existing.email !== email.toLowerCase())) {
-      const { hashHex, saltHex } = await hashPassword(password);
+    // The database was initialised with a legacy placeholder or the configured
+    // email changed: move the account to the configured credentials.
+    if (existing.email === "admin@labkiosk.io" || existing.email !== email) {
+      const { hashHex, saltHex } = await hashPassword(credentials.password);
       await db
         .prepare("UPDATE users SET email = ?, password_hash = ?, salt = ? WHERE id = ?")
-        .bind(email.toLowerCase(), hashHex, saltHex, existing.id)
+        .bind(email, hashHex, saltHex, existing.id)
         .run();
-      return { ...existing, email: email.toLowerCase(), password_hash: hashHex, salt: saltHex };
+      return { ...existing, email, password_hash: hashHex, salt: saltHex };
     }
     return existing;
   }
 
-  const { hashHex, saltHex } = await hashPassword(password);
+  const { hashHex, saltHex } = await hashPassword(credentials.password);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
 
@@ -236,18 +250,35 @@ export async function ensureSuperAdmin(
     .prepare(
       "INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES (?, ?, ?, ?, 'super_admin', 'Platform Super Administrator', ?)"
     )
-    .bind(id, email.toLowerCase(), hashHex, saltHex, now)
+    .bind(id, email, hashHex, saltHex, now)
     .run();
 
   return {
     id,
-    email: email.toLowerCase(),
+    email,
     password_hash: hashHex,
     salt: saltHex,
     role: "super_admin",
     name: "Platform Super Administrator",
     created_at: now
   };
+}
+
+/**
+ * Confirms a bound D1 database carries the current schema. A production worker
+ * must never create tables itself: on an un-migrated database that leaves a
+ * shape later migrations cannot ALTER, so the worker refuses to serve instead.
+ */
+export async function assertSchemaCurrent(db: D1Database): Promise<void> {
+  try {
+    await db.prepare("SELECT broadcast_epoch FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT remote_host FROM client_devices LIMIT 1").run();
+  } catch (err: any) {
+    throw new Error(
+      "The D1 database is missing the current schema. Run `wrangler d1 migrations apply labkiosk-db --remote` (or `--local` for `wrangler dev`) before starting the worker. " +
+        `(${err?.message || err})`
+    );
+  }
 }
 
 /**
@@ -509,7 +540,9 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "portal_title",
   "portal_subtitle",
   "portal_description",
-  "portal_footer"
+  "portal_footer",
+  "broadcast_url",
+  "broadcast_epoch"
 ]);
 
 export async function updateTenant(
@@ -603,7 +636,9 @@ export async function removeCustomDomain(db: D1Database, tenantId: string): Prom
   });
 }
 
-export async function listAllTenants(db: D1Database): Promise<any[]> {
+export async function listAllTenants(
+  db: D1Database
+): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>> {
   const now = Math.floor(Date.now() / 1000);
   const res = await db
     .prepare(
@@ -615,7 +650,7 @@ export async function listAllTenants(db: D1Database): Promise<any[]> {
        ORDER BY t.created_at DESC`
     )
     .bind(now)
-    .all();
+    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>();
 
   return res.results || [];
 }
@@ -627,6 +662,27 @@ export async function createSession(db: D1Database, session: Session): Promise<v
     )
     .bind(session.token, session.user_id, session.tenant_id || null, session.role, session.expires_at)
     .run();
+}
+
+/** Replace a user's password hash; every other session of that user should be dropped by the caller. */
+export async function updateUserPassword(db: D1Database, userId: string, password: string): Promise<void> {
+  const { hashHex, saltHex } = await hashPassword(password);
+  await db
+    .prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?")
+    .bind(hashHex, saltHex, userId)
+    .run();
+}
+
+/** Delete every session a user holds except, optionally, the one they are using right now. */
+export async function deleteSessionsForUser(db: D1Database, userId: string, keepToken?: string): Promise<void> {
+  if (keepToken) {
+    await db
+      .prepare("DELETE FROM sessions WHERE user_id = ? AND token != ?")
+      .bind(userId, keepToken)
+      .run();
+    return;
+  }
+  await db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
 }
 
 export async function getSession(db: D1Database, token: string): Promise<Session | null> {
@@ -736,6 +792,8 @@ export async function upsertClientDevice(
     isLocked?: boolean;
     activeUrl?: string;
     thumbnail?: string;
+    vncPassword?: string;
+    remoteHost?: string;
   }
 ): Promise<void> {
   const compositeId = `${data.tenantId}:${data.clientId}`;
@@ -745,8 +803,8 @@ export async function upsertClientDevice(
 
   await db
     .prepare(
-      `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, thumbnail, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, thumbnail, vnc_password, remote_host, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          client_num = excluded.client_num,
          ip = excluded.ip,
@@ -754,6 +812,8 @@ export async function upsertClientDevice(
          is_locked = excluded.is_locked,
          active_url = excluded.active_url,
          thumbnail = COALESCE(excluded.thumbnail, client_devices.thumbnail),
+         vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
+         remote_host = COALESCE(excluded.remote_host, client_devices.remote_host),
          updated_at = excluded.updated_at`
     )
     .bind(
@@ -766,6 +826,8 @@ export async function upsertClientDevice(
       isLockedVal,
       data.activeUrl || null,
       data.thumbnail || null,
+      data.vncPassword || null,
+      data.remoteHost || null,
       now,
       now
     )
@@ -953,17 +1015,6 @@ export async function findDeviceByToken(db: D1Database, token: string): Promise<
     .first<DeviceToken>();
 }
 
-export async function findDeviceForClient(
-  db: D1Database,
-  tenantId: string,
-  clientId: string
-): Promise<DeviceToken | null> {
-  return await db
-    .prepare("SELECT * FROM device_tokens WHERE tenant_id = ? AND client_id = ? AND revoked = 0 LIMIT 1")
-    .bind(tenantId, clientId)
-    .first<DeviceToken>();
-}
-
 export async function touchDeviceToken(db: D1Database, id: string): Promise<void> {
   await db
     .prepare("UPDATE device_tokens SET last_used_at = ? WHERE id = ?")
@@ -1075,6 +1126,9 @@ export async function buildEffectiveWhitelist(db: D1Database, tenantId: string):
     } catch {
       // Ignored if invalid URL
     }
+  }
+  if (tenant?.custom_domain) {
+    set.add(tenant.custom_domain.toLowerCase());
   }
   return Array.from(set).sort();
 }
@@ -1214,6 +1268,51 @@ export async function recordLoginFailure(db: D1Database, identifier: string): Pr
 
 export async function clearLoginFailures(db: D1Database, identifier: string): Promise<void> {
   await db.prepare("DELETE FROM login_attempts WHERE identifier = ?").bind(identifier).run();
+}
+
+/**
+ * Fixed-window rate limiting on top of `login_attempts`, keyed by the caller
+ * (e.g. `register:<ip>`, `enroll:<ip>`). `rateLimitWait` reports how long a
+ * caller has to wait (0 when allowed) without recording anything;
+ * `recordRateLimitHit` counts one attempt against the key.
+ */
+export async function rateLimitWait(
+  db: D1Database,
+  key: string,
+  limit: number,
+  windowSeconds: number
+): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  const row = await db
+    .prepare("SELECT failed_count, last_failed_at FROM login_attempts WHERE identifier = ?")
+    .bind(key)
+    .first<{ failed_count: number; last_failed_at: number }>();
+  if (!row || now - row.last_failed_at >= windowSeconds) return 0;
+  if (row.failed_count < limit) return 0;
+  return Math.max(1, row.last_failed_at + windowSeconds - now);
+}
+
+export async function recordRateLimitHit(db: D1Database, key: string, windowSeconds: number): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      `INSERT INTO login_attempts (identifier, failed_count, last_failed_at, locked_until)
+       VALUES (?1, 1, ?2, 0)
+       ON CONFLICT(identifier) DO UPDATE SET
+         failed_count = CASE WHEN ?2 - last_failed_at < ?3 THEN failed_count + 1 ELSE 1 END,
+         last_failed_at = CASE WHEN ?2 - last_failed_at < ?3 THEN last_failed_at ELSE ?2 END`
+    )
+    .bind(key, now, windowSeconds)
+    .run();
+}
+
+/** Drop throttle rows that can no longer affect anyone. */
+export async function purgeStaleLoginAttempts(db: D1Database, olderThanSeconds = 24 * 3600): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare("DELETE FROM login_attempts WHERE locked_until <= ? AND last_failed_at <= ?")
+    .bind(now, now - olderThanSeconds)
+    .run();
 }
 
 /** Drop stale sessions so expired tokens do not accumulate indefinitely. */

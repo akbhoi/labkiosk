@@ -42,6 +42,7 @@ import {
   addWhitelistDomain,
   removeWhitelistDomain,
   buildEffectiveWhitelist,
+  normalizeDomain,
   regenerateEnrollmentKey,
   writeAuditLog,
   listAuditLogs,
@@ -56,7 +57,14 @@ import {
   removeCustomDomain,
   listBroadcastPresets,
   createBroadcastPreset,
-  deleteBroadcastPreset
+  deleteBroadcastPreset,
+  updateUserPassword,
+  deleteSessionsForUser,
+  rateLimitWait,
+  recordRateLimitHit,
+  purgeStaleLoginAttempts,
+  assertSchemaCurrent,
+  LOCAL_DEV_SUPER_ADMIN
 } from "./db";
 import {
   verifyPassword,
@@ -65,7 +73,9 @@ import {
   createSessionCookie,
   clearSessionCookie,
   timingSafeEqual,
-  validatePasswordStrength
+  validatePasswordStrength,
+  isPlausibleEmail,
+  generateNonce
 } from "./auth";
 import {
   resolveTenant,
@@ -75,7 +85,10 @@ import {
   jsonError,
   hostname,
   hostSubdomain,
-  isDevHost
+  isDevHost,
+  isHostUnder,
+  isReservedSlug,
+  rejectCrossSiteMutation
 } from "./guard";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { createLocalD1Database } from "./d1_adapter";
@@ -85,6 +98,17 @@ const MAX_THUMBNAIL_BYTES = 256 * 1024;
 
 /** Commands a teacher console is allowed to dispatch. */
 const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "mute"]);
+
+/** Longest x11vnc password a workstation may report (x11vnc itself uses the first 8 characters). */
+const MAX_VNC_PASSWORD_LENGTH = 64;
+
+/** DNS label limit; a longer school slug can never resolve. */
+const MAX_SUBDOMAIN_LENGTH = 63;
+
+/** Public registration: attempts allowed per source address per window. */
+const REGISTER_RATE_LIMIT = { limit: 10, windowSeconds: 3600 };
+/** Failed enrolments allowed per source address per window before the endpoint answers 429. */
+const ENROLL_FAILURE_RATE_LIMIT = { limit: 10, windowSeconds: 900 };
 
 /**
  * Ephemeral in-memory database, used only by the test suite and local dev.
@@ -110,26 +134,52 @@ function getDatabase(env: Env): D1Database {
  * Previously this ran on every request, costing ~10 D1 round-trips before the
  * router even looked at the path.
  */
-let bootstrapPromise: Promise<{ superAdmin: User; defaultTenant: Tenant }> | null = null;
-function bootstrap(db: D1Database, env: Env): Promise<{ superAdmin: User; defaultTenant: Tenant }> {
-  if (!bootstrapPromise) {
-    bootstrapPromise = (async () => {
+type Bootstrapped = { superAdmin: User; defaultTenant: Tenant };
+let bootstrapCache: { db: D1Database; promise: Promise<Bootstrapped> } | null = null;
+function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
+  // Memoized per database instance: a different binding is a different deployment.
+  if (!bootstrapCache || bootstrapCache.db !== db) {
+    const promise = (async () => {
       // Idempotent CREATE TABLE IF NOT EXISTS, so `wrangler dev` works against a
       // fresh local D1 with no migration step. This is memoized per isolate, so
       // it costs one pass at startup rather than ~10 round-trips on every
       // request as it previously did. `migrations/` remains authoritative for
       // schema changes to an already-deployed database.
-      await initSchema(db);
-      const superAdmin = await ensureSuperAdmin(db, env.SUPER_ADMIN_EMAIL, env.SUPER_ADMIN_PASSWORD);
+      const production = Boolean(env.DB) && env.ALLOW_LOCAL_DB !== "1";
+      if (production) {
+        // A deployed worker never creates its own tables; migrations/ is the
+        // only writer of the production schema. Refuse to serve on drift.
+        await assertSchemaCurrent(db);
+      } else {
+        await initSchema(db);
+      }
+
+      // Rule 7 (fail closed): a well-known super admin password is acceptable
+      // only for the in-memory database used by tests and local development.
+      const email = env.SUPER_ADMIN_EMAIL?.trim();
+      const password = env.SUPER_ADMIN_PASSWORD;
+      if (production && (!email || !password)) {
+        throw new Error(
+          "SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set as Wrangler secrets before the worker can serve production traffic (`npx wrangler secret put SUPER_ADMIN_EMAIL`, then SUPER_ADMIN_PASSWORD). Refusing to seed the well-known default account."
+        );
+      }
+      if (!production && (Boolean(email) !== Boolean(password))) {
+        throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must be set together, or both left unset for local development.");
+      }
+      const superAdmin = await ensureSuperAdmin(
+        db,
+        email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN
+      );
       const defaultTenant = await ensureDefaultTenant(db, superAdmin.id);
       return { superAdmin, defaultTenant };
     })().catch((err) => {
       // Never cache a failed bootstrap, or the isolate stays broken forever.
-      bootstrapPromise = null;
+      if (bootstrapCache?.promise === promise) bootstrapCache = null;
       throw err;
     });
+    bootstrapCache = { db, promise };
   }
-  return bootstrapPromise;
+  return bootstrapCache.promise;
 }
 
 const DEFAULT_CONFIG: LabConfig = {
@@ -149,11 +199,6 @@ const DEFAULT_CONFIG: LabConfig = {
 const tenantTelemetryCache: Record<string, Record<string, ClientTelemetry>> = {};
 
 /**
- * In-memory active broadcast lesson URL per tenant.
- */
-export const tenantBroadcastState: Record<string, { url: string; epoch: number } | null> = {};
-
-/**
  * The URL a workstation of this school should open.
  *
  * A workstation may reach the control plane on a host that is not its school's
@@ -164,11 +209,8 @@ export const tenantBroadcastState: Record<string, { url: string; epoch: number }
  * host itself cannot carry it.
  */
 function effectiveOrigin(request: Request, url: URL): string {
-  const fwd = request.headers.get("x-forwarded-host");
-  if (fwd) {
-    const proto = (request.headers.get("x-forwarded-proto") || url.protocol || "http:").replace(/:?$/, ":");
-    return `${proto}//${fwd}`;
-  }
+  // The Host header is the only origin evidence honoured: a caller-supplied
+  // X-Forwarded-Host would let anyone choose where a workstation is sent.
   const host = request.headers.get("host");
   if (host && isDevHost(request)) {
     const proto = (request.headers.get("x-forwarded-proto") || url.protocol || "http:").replace(/:?$/, ":");
@@ -235,7 +277,55 @@ function isPublicTenantRoute(path: string, method: string): boolean {
   return false;
 }
 
+/**
+ * Headers every HTML response carries. The CSP allows scripts only when they
+ * carry this response's nonce, so no template may use an inline event handler
+ * or a `<script>` without `nonce="..."`; the test suite asserts both.
+ */
+function buildHtmlHeaders(nonce: string, options: { hsts: boolean }): Record<string, string> {
+  const csp = [
+    "default-src 'self'",
+    `script-src 'nonce-${nonce}'`,
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: https:",
+    // Remote control embeds a workstation's noVNC page: its tunnel hostname in
+    // production, or the simulator's published port in local development.
+    "frame-src https: http://localhost:6080 http://127.0.0.1:6080",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'"
+  ].join("; ");
+  const headers: Record<string, string> = {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy": csp,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cache-Control": "no-store"
+  };
+  if (options.hsts) headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
+  return headers;
+}
+
 export default {
+  /**
+   * Hourly housekeeping (see `triggers.crons` in wrangler.jsonc). Expired
+   * sessions, delivered commands and stale throttle rows would otherwise only
+   * be purged as a side effect of unrelated requests.
+   */
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+    const db = getDatabase(env);
+    await bootstrap(db, env);
+    await deleteExpiredSessions(db);
+    await purgeExpiredCommands(db);
+    await purgeStaleLoginAttempts(db);
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -252,13 +342,6 @@ export default {
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff"
     };
-    const htmlHeaders: Record<string, string> = {
-      "Content-Type": "text/html; charset=utf-8",
-      "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "same-origin",
-      "X-Frame-Options": "DENY"
-    };
-
     if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: { Allow: "GET, POST, DELETE, OPTIONS" } });
     }
@@ -266,6 +349,7 @@ export default {
     // --- Identity -----------------------------------------------------------
     const cookies = parseCookies(request.headers.get("cookie"));
     const authHeader = request.headers.get("authorization");
+    const usedCookie = Boolean(cookies["labkiosk_session"]);
     const sessionToken =
       cookies["labkiosk_session"] ||
       (authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null);
@@ -279,11 +363,27 @@ export default {
     );
     const secureCookies = Boolean(isHttps && !isDev);
     const cookieDomain =
-      isHttps && !isDev && env.DEFAULT_DOMAIN && hostname(request).endsWith(env.DEFAULT_DOMAIN)
+      isHttps && !isDev && env.DEFAULT_DOMAIN && isHostUnder(hostname(request), env.DEFAULT_DOMAIN)
         ? env.DEFAULT_DOMAIN
         : undefined;
     const sessionCookie = (token: string) =>
       createSessionCookie(token, { domain: cookieDomain, secure: secureCookies });
+    const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
+
+    // Every HTML response carries the same hardened headers and a fresh CSP nonce.
+    const nonce = generateNonce();
+    const htmlHeaders = buildHtmlHeaders(nonce, { hsts: isHttps && !isDev });
+    const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.akbhoi.com";
+
+    // A cookie-authenticated mutation must come from this site.
+    if (path.startsWith("/api/")) {
+      const crossSite = rejectCrossSiteMutation(
+        request,
+        { usedCookie: usedCookie && session !== null, baseDomain: env.DEFAULT_DOMAIN },
+        jsonHeaders
+      );
+      if (crossSite) return crossSite;
+    }
 
     // --- Tenant -------------------------------------------------------------
     const resolution = await resolveTenant({
@@ -335,14 +435,28 @@ export default {
           return jsonError("School name is required", 400, jsonHeaders);
         }
 
+        if (!isPlausibleEmail(body.email)) {
+          return jsonError("Please enter a valid email address", 400, jsonHeaders);
+        }
+
         const cleanSub = cleanSubdomain(body.subdomain);
-        if (cleanSub.length < 3) {
+        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH) {
           return jsonError(
-            "Subdomain must be at least 3 characters (letters, numbers, hyphens)",
+            `Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens)`,
             400,
             jsonHeaders
           );
         }
+        if (isReservedSlug(cleanSub)) {
+          return jsonError("That subdomain is reserved by the platform. Please pick another.", 400, jsonHeaders);
+        }
+
+        const registerKey = `register:${clientIp}`;
+        const wait = await rateLimitWait(db, registerKey, REGISTER_RATE_LIMIT.limit, REGISTER_RATE_LIMIT.windowSeconds);
+        if (wait > 0) {
+          return jsonError(`Too many registrations from this address. Try again in ${Math.ceil(wait / 60)} minute(s).`, 429, jsonHeaders);
+        }
+        await recordRateLimitHit(db, registerKey, REGISTER_RATE_LIMIT.windowSeconds);
 
         if (await findUserByEmail(db, body.email)) {
           return jsonError("Email already registered. Please sign in.", 400, jsonHeaders);
@@ -451,8 +565,15 @@ export default {
       }
     }
 
-    // GET /api/auth/logout: Sign Out
+    // POST /api/auth/logout: Sign Out. GET is refused so a cross-site link or
+    // image cannot sign a teacher out; the consoles submit a same-site form.
     if (path === "/api/auth/logout") {
+      if (method !== "POST") {
+        return new Response(JSON.stringify({ error: "Sign out with a POST request" }), {
+          status: 405,
+          headers: { ...jsonHeaders, Allow: "POST" }
+        });
+      }
       if (sessionToken) {
         await deleteSession(db, sessionToken);
       }
@@ -484,6 +605,42 @@ export default {
       );
     }
 
+    // POST /api/auth/change-password: rotate the signed-in user's own password
+    if (path === "/api/auth/change-password" && method === "POST") {
+      if (!session) return jsonError("Authentication required", 401, jsonHeaders);
+      try {
+        const body = await request.json<{ currentPassword?: string; newPassword?: string }>();
+        const currentPassword = String(body.currentPassword || "");
+        const newPassword = String(body.newPassword || "");
+        if (!currentPassword || !newPassword) {
+          return jsonError("Current and new password are required", 400, jsonHeaders);
+        }
+        const passwordProblem = validatePasswordStrength(newPassword);
+        if (passwordProblem) return jsonError(passwordProblem, 400, jsonHeaders);
+
+        const user = await findUserById(db, session.user_id);
+        if (!user || !(await verifyPassword(currentPassword, user.password_hash, user.salt))) {
+          return jsonError("Current password is not correct", 400, jsonHeaders);
+        }
+        if (currentPassword === newPassword) {
+          return jsonError("New password must differ from the current one", 400, jsonHeaders);
+        }
+
+        await updateUserPassword(db, user.id, newPassword);
+        // Any other browser holding this account is signed out; this one stays.
+        await deleteSessionsForUser(db, user.id, sessionToken || undefined);
+        await writeAuditLog(db, {
+          tenantId: session.tenant_id || null,
+          userId: user.id,
+          action: "auth.change_password"
+        });
+        return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Password change failed:", err);
+        return jsonError("Could not change the password. Please try again.", 400, jsonHeaders);
+      }
+    }
+
     // ==========================================
     // SUPER ADMIN API & MASTER CONSOLE
     // ==========================================
@@ -495,8 +652,9 @@ export default {
             error: "Super administrator access required. Please sign in.",
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
-            baseDomain: env.DEFAULT_DOMAIN || "labkiosk.akbhoi.com",
-            contactEmail: "contact@akbhoi.com"
+            baseDomain,
+            contactEmail: "contact@akbhoi.com",
+            nonce
           }),
           { status: 401, headers: htmlHeaders }
         );
@@ -507,10 +665,43 @@ export default {
         renderSuperAdminHtml({
           superAdminEmail: (await findUserById(db, session.user_id))?.email || "admin@akbhoi.com",
           tenants: allTenants,
-          baseDomain: env.DEFAULT_DOMAIN || "labkiosk.akbhoi.com"
+          baseDomain,
+          nonce
         }),
         { headers: htmlHeaders }
       );
+    }
+
+    // POST /api/super/tenants/suspend | /reactivate: pause or resume a whole school.
+    // A suspended school keeps its data and its console, but its portal, its
+    // workstations' telemetry and new enrolments are refused until reactivated.
+    if ((path === "/api/super/tenants/suspend" || path === "/api/super/tenants/reactivate") && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const suspend = path.endsWith("/suspend");
+      try {
+        const body = await request.json<{ tenantId?: string }>();
+        const target = body.tenantId ? await findTenantById(db, body.tenantId) : null;
+        if (!target) return jsonError("School not found", 404, jsonHeaders);
+        if (suspend && target.status !== "active") {
+          return jsonError("Only an active school can be suspended", 400, jsonHeaders);
+        }
+        if (!suspend && target.status !== "suspended") {
+          return jsonError("Only a suspended school can be reactivated", 400, jsonHeaders);
+        }
+        await updateTenant(db, target.id, { status: suspend ? "suspended" : "active" });
+        await writeAuditLog(db, {
+          tenantId: target.id,
+          userId: session!.user_id,
+          action: suspend ? "tenant.suspend" : "tenant.reactivate"
+        });
+        return new Response(JSON.stringify({ status: "ok", tenantStatus: suspend ? "suspended" : "active" }), {
+          headers: jsonHeaders
+        });
+      } catch (err: any) {
+        console.error("[Worker] Tenant status change failed:", err);
+        return jsonError("Could not change this school's status", 400, jsonHeaders);
+      }
     }
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
@@ -520,8 +711,8 @@ export default {
       try {
         const body = await request.json<{ tenantId: string; subdomain: string }>();
         const cleanSub = cleanSubdomain(body.subdomain);
-        if (cleanSub.length < 3) {
-          return jsonError("Subdomain must be at least 3 characters (letters, numbers, hyphens)", 400, jsonHeaders);
+        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH || isReservedSlug(cleanSub)) {
+          return jsonError(`Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens) and not a reserved name`, 400, jsonHeaders);
         }
 
         const existing = await findTenantBySubdomain(db, cleanSub);
@@ -810,8 +1001,8 @@ export default {
       try {
         const body = await request.json<{ requestedSubdomain: string }>();
         const cleanSub = cleanSubdomain(body.requestedSubdomain);
-        if (cleanSub.length < 3) {
-          return jsonError("Subdomain must be at least 3 characters (letters, numbers, hyphens)", 400, jsonHeaders);
+        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH || isReservedSlug(cleanSub)) {
+          return jsonError(`Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens) and not a reserved name`, 400, jsonHeaders);
         }
 
         const existing = await findTenantBySubdomain(db, cleanSub);
@@ -1126,7 +1317,12 @@ export default {
           tenant = currentTenant;
         }
 
-        const suppliedKey = String(body.enrollmentKey || "");
+        const suppliedKey = String(body.enrollmentKey || "").trim().toUpperCase();
+        const enrollKey = `enroll:${clientIp}`;
+        const enrollWait = await rateLimitWait(db, enrollKey, ENROLL_FAILURE_RATE_LIMIT.limit, ENROLL_FAILURE_RATE_LIMIT.windowSeconds);
+        if (enrollWait > 0) {
+          return jsonError(`Too many failed enrolment attempts. Try again in ${Math.ceil(enrollWait / 60)} minute(s).`, 429, jsonHeaders);
+        }
         if (!tenant && suppliedKey) {
           tenant = await findTenantByEnrollmentKey(db, suppliedKey);
         }
@@ -1146,6 +1342,7 @@ export default {
           !!tenant && tenant.enrollment_key.length > 0 && timingSafeEqual(suppliedKey, tenant.enrollment_key);
 
         if (!tenant || !keyMatches) {
+          await recordRateLimitHit(db, enrollKey, ENROLL_FAILURE_RATE_LIMIT.windowSeconds);
           await writeAuditLog(db, {
             tenantId: tenant?.id || null,
             action: "device.enroll_denied",
@@ -1203,8 +1400,15 @@ export default {
         // The token, never the request body, decides who this workstation is.
         const clientId = device.client_id;
         const tenantId = device.tenant_id;
-        const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
         const now = Math.floor(Date.now() / 1000);
+
+        // Remote-control details the workstation volunteers: the x11vnc password
+        // it generated at boot and the tunnel hostname its noVNC gateway answers on.
+        const vncPassword =
+          typeof body.vncPassword === "string" && body.vncPassword.trim()
+            ? body.vncPassword.trim().slice(0, MAX_VNC_PASSWORD_LENGTH)
+            : undefined;
+        const remoteHost = typeof body.remoteHost === "string" ? cleanCustomDomain(body.remoteHost) || undefined : undefined;
 
         let thumbnail = typeof body.thumbnail === "string" ? body.thumbnail : undefined;
         if (thumbnail) {
@@ -1228,7 +1432,9 @@ export default {
           timestamp: now,
           ip: clientIp,
           lastSeen: new Date().toISOString(),
-          online: true
+          online: true,
+          vncPassword: vncPassword ?? tenantTelemetryCache[tenantId]?.[clientId]?.vncPassword,
+          remoteHost: remoteHost ?? tenantTelemetryCache[tenantId]?.[clientId]?.remoteHost
         };
 
         if (!tenantTelemetryCache[tenantId]) tenantTelemetryCache[tenantId] = {};
@@ -1241,21 +1447,24 @@ export default {
           ip: clientIp,
           isLocked: Boolean(body.isLocked),
           activeUrl,
-          thumbnail
+          thumbnail,
+          vncPassword,
+          remoteHost
         });
 
         const commandsForClient = await popCommandsForClient(db, tenantId, clientId);
         const activeWhitelist = await buildEffectiveWhitelist(db, tenantId);
-        const activeBroadcast = tenantBroadcastState[tenantId] || null;
-        if (activeBroadcast?.url) {
-          try {
-            const bHost = new URL(activeBroadcast.url).hostname;
-            if (bHost && !activeWhitelist.includes(bHost.toLowerCase())) {
-              activeWhitelist.push(bHost.toLowerCase());
-              activeWhitelist.sort();
-            }
-          } catch {
-            // Ignored
+        // The active broadcast lives on the tenant row, so every colo and every
+        // isolate hands this workstation the same answer.
+        const validatedBroadcastUrl = tenant.broadcast_url ? safeHttpUrl(tenant.broadcast_url) : null;
+        const activeBroadcast = validatedBroadcastUrl
+          ? { url: validatedBroadcastUrl, epoch: Number(tenant.broadcast_epoch) || 0 }
+          : null;
+        if (activeBroadcast) {
+          const bHost = new URL(activeBroadcast.url).hostname.toLowerCase();
+          if (bHost && !activeWhitelist.includes(bHost)) {
+            activeWhitelist.push(bHost);
+            activeWhitelist.sort();
           }
         }
         const targetUrl = activeBroadcast?.url || portalUrlFor(tenant, request, url, env);
@@ -1299,7 +1508,9 @@ export default {
           timestamp: row.last_seen,
           ip: row.ip || undefined,
           lastSeen: new Date(row.last_seen * 1000).toISOString(),
-          online: now - row.last_seen < 12
+          online: now - row.last_seen < 12,
+          vncPassword: row.vnc_password || undefined,
+          remoteHost: row.remote_host || undefined
         };
       }
 
@@ -1378,7 +1589,7 @@ export default {
           if (isReset) {
             commandUrl = portalUrl;
             commandEpoch = Date.now();
-            tenantBroadcastState[currentTenant!.id] = null;
+            await updateTenant(db, currentTenant!.id, { broadcast_url: null, broadcast_epoch: 0 });
           } else {
             const validated = safeHttpUrl(body.url);
             if (!validated) {
@@ -1388,9 +1599,9 @@ export default {
             commandEpoch = Date.now();
 
             if (commandUrl === portalUrl) {
-              tenantBroadcastState[currentTenant!.id] = null;
+              await updateTenant(db, currentTenant!.id, { broadcast_url: null, broadcast_epoch: 0 });
             } else if (target === "all") {
-              tenantBroadcastState[currentTenant!.id] = { url: commandUrl, epoch: commandEpoch };
+              await updateTenant(db, currentTenant!.id, { broadcast_url: commandUrl, broadcast_epoch: commandEpoch });
             }
           }
         }
@@ -1457,7 +1668,11 @@ export default {
         const tenantId = currentTenant!.id;
 
         if (body.action === "add") {
-          const added = await addWhitelistDomain(db, tenantId, body.domain);
+          const candidate = normalizeDomain(String(body.domain || ""));
+          if (!candidate || !candidate.includes(".")) {
+            return jsonError("Enter a domain name such as scratch.mit.edu", 400, jsonHeaders);
+          }
+          const added = await addWhitelistDomain(db, tenantId, candidate);
           await writeAuditLog(db, {
             tenantId,
             userId: session!.user_id,
@@ -1481,7 +1696,8 @@ export default {
           { headers: jsonHeaders }
         );
       } catch (err: any) {
-        return jsonError(err.message || "Could not update the allowed sites list", 400, jsonHeaders);
+        console.error("[Worker] Allowlist update failed:", err);
+        return jsonError("Could not update the allowed sites list", 400, jsonHeaders);
       }
     }
 
@@ -1525,7 +1741,10 @@ export default {
           renderLandingHtml({
             error: "You do not have access to that school's console.",
             openModal: "login",
-            isoDownloadUrl: env.ISO_DOWNLOAD_URL
+            isoDownloadUrl: env.ISO_DOWNLOAD_URL,
+            baseDomain,
+            contactEmail: "contact@akbhoi.com",
+            nonce
           }),
           { status: 403, headers: htmlHeaders }
         );
@@ -1549,8 +1768,9 @@ export default {
             error: "You do not have access to that school's console.",
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
-            baseDomain: env.DEFAULT_DOMAIN || "labkiosk.akbhoi.com",
-            contactEmail: "contact@akbhoi.com"
+            baseDomain,
+            contactEmail: "contact@akbhoi.com",
+            nonce
           }),
           { status: denied.status, headers: htmlHeaders }
         );
@@ -1570,23 +1790,27 @@ export default {
       };
 
       return new Response(
-        renderDashboardHtml(
+        renderDashboardHtml({
           config,
           tenant,
-          portalSites,
-          env.DEFAULT_DOMAIN || "labkiosk.akbhoi.com",
-          broadcastPresets
-        ),
+          sites: portalSites,
+          baseDomain,
+          presets: broadcastPresets,
+          nonce
+        }),
         { headers: htmlHeaders }
       );
     }
 
-    // 2. Student Learning Portal (root of a school subdomain)
+    // 2. Student Learning Portal (root of a school subdomain or custom domain)
     const wantsPortal = path === "/" || path === "/portal";
     const namedTenant = url.searchParams.has("tenant") || request.headers.has("x-tenant");
     const onSubdomain = hostSubdomain(request, env.DEFAULT_DOMAIN) !== null;
+    const isCustomDomainHost = Boolean(
+      currentTenant?.custom_domain && hostname(request) === currentTenant.custom_domain.toLowerCase()
+    );
 
-    if (wantsPortal && (namedTenant || onSubdomain)) {
+    if (wantsPortal && (namedTenant || onSubdomain || isCustomDomainHost)) {
       if (!currentTenant) {
         const requested = cleanSubdomain(url.searchParams.get("tenant") ?? hostSubdomain(request, env.DEFAULT_DOMAIN) ?? "");
         return new Response(
@@ -1601,11 +1825,12 @@ export default {
       }
 
       if (currentTenant.status !== "active") {
+        const suspended = currentTenant.status === "suspended";
         return new Response(
-          `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Pending Approval</title></head>
+          `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${suspended ? "School Suspended" : "Pending Approval"}</title></head>
            <body style="background:#090d16;color:#f8fafc;font-family:sans-serif;text-align:center;padding:80px 20px;">
-            <h1 style="font-size:36px;margin-bottom:12px;color:#fbbf24;">Subdomain Pending Approval</h1>
-            <p style="color:#94a3b8;font-size:16px;">School <strong>${escapeHtml(currentTenant.name)}</strong> (<code>${escapeHtml(currentTenant.subdomain)}</code>) is awaiting activation by the platform super administrator.</p>
+            <h1 style="font-size:36px;margin-bottom:12px;color:#fbbf24;">${suspended ? "School Suspended" : "Subdomain Pending Approval"}</h1>
+            <p style="color:#94a3b8;font-size:16px;">School <strong>${escapeHtml(currentTenant.name)}</strong> (<code>${escapeHtml(currentTenant.subdomain)}</code>) ${suspended ? "has been suspended by the platform super administrator." : "is awaiting activation by the platform super administrator."}</p>
             <a href="${escapeHtml(url.origin)}/" style="display:inline-block;margin-top:24px;background:#3b82f6;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;">Back to Homepage</a>
           </body></html>`,
           { status: 403, headers: htmlHeaders }
@@ -1619,7 +1844,7 @@ export default {
       }
 
       const portalSites = await listPortalSites(db, currentTenant.id);
-      return new Response(renderPortalHtml(currentTenant, portalSites), { headers: htmlHeaders });
+      return new Response(renderPortalHtml(currentTenant, portalSites, nonce), { headers: htmlHeaders });
     }
 
     // 3. Public SaaS Landing Page (Root domain)
@@ -1645,8 +1870,9 @@ export default {
         renderLandingHtml({
           openModal,
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
-          baseDomain: env.DEFAULT_DOMAIN || "labkiosk.akbhoi.com",
-          contactEmail: "contact@akbhoi.com"
+          baseDomain,
+          contactEmail: "contact@akbhoi.com",
+          nonce
         }),
         { headers: htmlHeaders }
       );

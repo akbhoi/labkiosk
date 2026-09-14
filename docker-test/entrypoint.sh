@@ -44,6 +44,8 @@ VNC_PASSWD_FILE=/tmp/labkiosk/vnc.pass
 VNC_SECRET="${VNC_PASSWORD:-labkiosk}"
 x11vnc -storepasswd "$VNC_SECRET" "$VNC_PASSWD_FILE" >/dev/null 2>&1
 chmod 600 "$VNC_PASSWD_FILE"
+# The agent reports this to the teacher console so "Remote Control" autoconnects.
+(umask 077 && printf '%s' "$VNC_SECRET" > /tmp/labkiosk/vnc.secret)
 x11vnc -display :0 -forever -shared -rfbport 5900 -localhost \
   -rfbauth "$VNC_PASSWD_FILE" -quiet -bg
 echo "      VNC password for this container: $VNC_SECRET"
@@ -68,6 +70,10 @@ fi
 if [ -n "${LABKIOSK_DOMAIN:-}" ]; then
   echo "      Base domain: $LABKIOSK_DOMAIN"
   export LABKIOSK_DOMAIN
+fi
+if [ -n "${LABKIOSK_REMOTE_HOST:-}" ]; then
+  echo "      Remote-control hostname reported to the console: $LABKIOSK_REMOTE_HOST"
+  export LABKIOSK_REMOTE_HOST
 fi
 
 (

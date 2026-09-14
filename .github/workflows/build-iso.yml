@@ -17,6 +17,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Warn when a release build has no GRUB password pinned
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if ! grep -q '^PASSWORD_PBKDF2=grub\.pbkdf2\.sha512\.' distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin; then
+            echo "::warning file=distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin::No GRUB password is pinned. This release ISO boots with an editable boot menu; see distro-builder/README.md 'Securing the Boot Chain'."
+          fi
+
       - name: Build ISO using Docker Container
         run: |
           docker build -t labkiosk-iso-builder distro-builder

@@ -4,7 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import worker from "../src/index";
-import { SCHEMA_SQL } from "../src/db";
+import * as workerModule from "../src/index";
+import { SCHEMA_SQL, initSchema } from "../src/db";
+import { createLocalD1Database } from "../src/d1_adapter";
+import { safeHttpUrl } from "../src/escape";
+import { isHostUnder } from "../src/guard";
 import { Env } from "../src/types";
 
 /**
@@ -299,7 +303,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/api/settings/subdomain?tenant=greenwood", json({ requestedSubdomain: "hijacked" })],
       ["/api/settings/enrollment-key?tenant=greenwood", {}],
       ["/api/whitelist?tenant=greenwood", {}],
-      ["/api/audit-logs?tenant=greenwood", {}]
+      ["/api/audit-logs?tenant=greenwood", {}],
+      ["/api/auth/change-password", json({ currentPassword: "x", newPassword: "y" })],
+      ["/api/super/tenants/suspend", json({ tenantId: "any" })],
+      ["/api/super/tenants/reactivate", json({ tenantId: "any" })]
     ];
 
     for (const [path, init] of cases) {
@@ -599,8 +606,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     );
     assert.equal(portal.status, 200);
     const html = await portal.text();
+    assert.match(html, /Protected Kiosk Session/);
+    assert.match(html, /<title>Greenwood High School - Student Learning Portal<\/title>/);
     assert.match(html, /Select an Educational Resource/);
     assert.match(html, /Greenwood High School/);
+    assert.ok(!html.includes("Centralized School Computer Lab Management"), "custom domain must not render landing page");
   });
 
   test("Enrols a workstation using customDomain", async () => {
@@ -613,6 +623,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(data.clientId, "PC-CUSTOM");
     assert.equal(data.schoolName, "Greenwood High School");
     assert.ok(data.deviceToken);
+
+    // Verify custom domain is automatically included in client whitelist
+    const telem = await callJson("/api/telemetry", { ...json({}), bearer: data.deviceToken });
+    assert.equal(telem.res.status, 200);
+    assert.ok(telem.data.whitelist.includes("kiosk.greenwood.edu"), "custom domain must be included in client whitelist");
   });
 
   test("Enrols a workstation using custom server URL or IP via enrollment key", async () => {
@@ -800,11 +815,321 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(!listAfter.presets.some((p: any) => p.id === presetId));
   });
 
+  // ------------------------------------------------- security headers & CSP
+
+  test("Every HTML page carries a strict CSP whose nonce matches every script and no inline handlers", async () => {
+    const pages: Array<[string, string | undefined]> = [
+      ["/", undefined],
+      ["/?login=1", undefined],
+      ["/?tenant=greenwood", undefined],
+      ["/admin?tenant=greenwood", schoolSessionCookie],
+      ["/super", superSessionCookie]
+    ];
+    for (const [path, cookie] of pages) {
+      const res = await call(path, cookie ? { cookie } : {});
+      assert.equal(res.status, 200, `${path} should render`);
+      const csp = res.headers.get("Content-Security-Policy") || "";
+      const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
+      assert.ok(nonce, `${path} must send a nonce-based script-src`);
+      assert.match(csp, /frame-ancestors 'none'/);
+      assert.match(csp, /object-src 'none'/);
+      assert.equal(res.headers.get("Strict-Transport-Security"), "max-age=31536000; includeSubDomains");
+      assert.equal(res.headers.get("Cross-Origin-Opener-Policy"), "same-origin");
+      assert.ok(res.headers.get("Permissions-Policy"));
+
+      const html = await res.text();
+      const scripts = html.match(/<script\b[^>]*>/g) || [];
+      assert.ok(scripts.length > 0, `${path} renders at least one script block`);
+      for (const tag of scripts) {
+        assert.ok(tag.includes(`nonce="${nonce}"`), `${path}: script tag without this response's nonce: ${tag}`);
+      }
+      // Only attributes inside a tag count; an escaped "&lt;img onerror=" in text is the XSS test doing its job.
+      const inlineHandler = /<[a-z][^>]*\son[a-z]+=/i.exec(html);
+      assert.equal(inlineHandler, null, `${path} must not contain inline event handler attributes: ${inlineHandler?.[0]}`);
+    }
+  });
+
+  test("Uses a fresh nonce on every response", async () => {
+    const first = (await call("/")).headers.get("Content-Security-Policy");
+    const second = (await call("/")).headers.get("Content-Security-Policy");
+    assert.notEqual(first, second);
+  });
+
+  // ------------------------------------------------------------ CSRF & logout
+
+  test("Refuses a cookie-authenticated mutation from a cross-site origin", async () => {
+    const crossSite = await call("/api/command?tenant=greenwood", {
+      ...json({ target: "all", action: "unlock" }),
+      cookie: schoolSessionCookie,
+      headers: { Origin: "https://evil.example" }
+    });
+    assert.equal(crossSite.status, 403);
+
+    const sameSite = await call("/api/command?tenant=greenwood", {
+      ...json({ target: "all", action: "unlock" }),
+      cookie: schoolSessionCookie,
+      headers: { Origin: "https://greenwood.labkiosk.akbhoi.com" }
+    });
+    assert.equal(sameSite.status, 200);
+
+    // A bearer-authenticated device never relies on a cookie, so Origin is irrelevant.
+    const device = await call("/api/telemetry", {
+      ...json({}),
+      bearer: deviceToken,
+      headers: { Origin: "https://evil.example" }
+    });
+    assert.equal(device.status, 200);
+  });
+
+  test("Signs out only on POST, never on a GET link", async () => {
+    const viaGet = await call("/api/auth/logout", { cookie: schoolSessionCookie });
+    assert.equal(viaGet.status, 405);
+    const still = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+    assert.ok(still.data.user, "a GET must not have ended the session");
+
+    // Sign a throwaway session out properly.
+    const { res: loginRes } = await callJson(
+      "/api/auth/login",
+      json({ email: "teacher@greenwood.edu", password: "SchoolPassword123!" })
+    );
+    const throwaway = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const viaPost = await call("/api/auth/logout", { method: "POST", cookie: throwaway });
+    assert.equal(viaPost.status, 302);
+    assert.match(viaPost.headers.get("Set-Cookie")!, /Max-Age=0/);
+    const gone = await callJson("/api/auth/me", { cookie: throwaway });
+    assert.equal(gone.data.user, null);
+  });
+
+  // ---------------------------------------------------------- password change
+
+  test("Lets a signed-in user change their password and ends their other sessions", async () => {
+    const { res: otherLogin } = await callJson(
+      "/api/auth/login",
+      json({ email: "teacher@riverside.edu", password: "RiversidePass456!" })
+    );
+    const otherCookie = otherLogin.headers.get("Set-Cookie")!.split(";")[0];
+
+    const wrong = await callJson("/api/auth/change-password", {
+      ...json({ currentPassword: "NotThePassword1", newPassword: "RiversideNewPass789!" }),
+      cookie: rivalSessionCookie
+    });
+    assert.equal(wrong.res.status, 400);
+    assert.match(wrong.data.error, /Current password is not correct/);
+
+    const weak = await callJson("/api/auth/change-password", {
+      ...json({ currentPassword: "RiversidePass456!", newPassword: "short" }),
+      cookie: rivalSessionCookie
+    });
+    assert.equal(weak.res.status, 400);
+
+    const ok = await callJson("/api/auth/change-password", {
+      ...json({ currentPassword: "RiversidePass456!", newPassword: "RiversideNewPass789!" }),
+      cookie: rivalSessionCookie
+    });
+    assert.equal(ok.res.status, 200);
+
+    const stillMe = await callJson("/api/auth/me", { cookie: rivalSessionCookie });
+    assert.ok(stillMe.data.user, "the session that changed the password stays signed in");
+    const otherGone = await callJson("/api/auth/me", { cookie: otherCookie });
+    assert.equal(otherGone.data.user, null, "every other session of that user is revoked");
+
+    const oldPassword = await call("/api/auth/login", json({ email: "teacher@riverside.edu", password: "RiversidePass456!" }));
+    assert.equal(oldPassword.status, 401);
+    const newPassword = await call("/api/auth/login", json({ email: "teacher@riverside.edu", password: "RiversideNewPass789!" }));
+    assert.equal(newPassword.status, 200);
+  });
+
+  // ------------------------------------------------------ registration rules
+
+  test("Rejects reserved subdomains and implausible emails at registration", async () => {
+    for (const subdomain of ["admin", "www", "super", "api"]) {
+      const { res, data } = await callJson(
+        "/api/auth/register",
+        json({ name: "Reserved", email: `reserved-${subdomain}@school.edu`, password: "ReservedPass123!", subdomain })
+      );
+      assert.equal(res.status, 400, `${subdomain} must be refused`);
+      assert.match(data.error, /reserved/);
+    }
+    const badEmail = await callJson(
+      "/api/auth/register",
+      json({ name: "Bad Email", email: "not-an-email", password: "BadEmailPass123!", subdomain: "bademail" })
+    );
+    assert.equal(badEmail.res.status, 400);
+    assert.match(badEmail.data.error, /valid email/);
+
+    const tooLong = await callJson(
+      "/api/auth/register",
+      json({ name: "Long", email: "long@school.edu", password: "LongSlugPass123!", subdomain: "a".repeat(64) })
+    );
+    assert.equal(tooLong.res.status, 400);
+  });
+
+  test("Accepts a scheme-less host:port as a valid URL", async () => {
+    const { res, data } = await callJson("/api/broadcast-presets?tenant=greenwood", {
+      ...json({ title: "Local LMS", url: "canvas.institution.edu:8080/courses" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.preset.url, "https://canvas.institution.edu:8080/courses");
+    await call(`/api/broadcast-presets/${data.preset.id}?tenant=greenwood`, { method: "DELETE", cookie: schoolSessionCookie });
+
+    // Host:port followed directly by query parameter or hash fragment without trailing slash
+    assert.equal(
+      safeHttpUrl("canvas.institution.edu:8080?param=1#section"),
+      "https://canvas.institution.edu:8080/?param=1#section"
+    );
+    assert.equal(safeHttpUrl("canvas.institution.edu:8080#section"), "https://canvas.institution.edu:8080/#section");
+  });
+
+  test("Checks domain boundaries case-insensitively with isHostUnder", () => {
+    assert.equal(isHostUnder("School.LabKiosk.com", "labkiosk.com"), true);
+    assert.equal(isHostUnder("SCHOOL.LABKIOSK.COM", ".LabKiosk.COM"), true);
+    assert.equal(isHostUnder("greenwood.labkiosk.akbhoi.com", "labkiosk.akbhoi.com"), true);
+    assert.equal(isHostUnder("not-labkiosk.com", "labkiosk.com"), false);
+    assert.equal(isHostUnder("fakelabkiosk.com", "labkiosk.com"), false);
+    assert.equal(isHostUnder("labkiosk.com", undefined), false);
+  });
+
+  // --------------------------------------------------------- remote control
+
+  test("Stores the remote-control details a workstation reports and shows them to its teacher", async () => {
+    const reported = await callJson("/api/telemetry", {
+      ...json({ vncPassword: "s3cr3t42", remoteHost: "PC-02.lab.greenwood.edu" }),
+      bearer: deviceToken
+    });
+    assert.equal(reported.res.status, 200);
+
+    let { data } = await callJson("/api/clients?tenant=greenwood", { cookie: schoolSessionCookie });
+    assert.equal(data.clients["PC-02"].vncPassword, "s3cr3t42");
+    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.edu");
+
+    // A heartbeat that omits them keeps what is known; a garbage host is ignored.
+    await callJson("/api/telemetry", { ...json({ remoteHost: "not a host!" }), bearer: deviceToken });
+    ({ data } = await callJson("/api/clients?tenant=greenwood", { cookie: schoolSessionCookie }));
+    assert.equal(data.clients["PC-02"].vncPassword, "s3cr3t42");
+    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.edu");
+
+    // Another school's teacher never sees them.
+    const rival = await call("/api/clients?tenant=greenwood", { cookie: rivalSessionCookie });
+    assert.equal(rival.status, 403);
+  });
+
+  test("Keeps broadcast state in the database rather than in worker memory", async () => {
+    assert.equal((workerModule as any).tenantBroadcastState, undefined, "the in-memory broadcast map must be gone");
+    await callJson("/api/command?tenant=greenwood", {
+      ...json({ target: "all", action: "navigate", url: "https://phet.colorado.edu/en/simulations" }),
+      cookie: schoolSessionCookie
+    });
+    const telem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.equal(telem.data.broadcastUrl, "https://phet.colorado.edu/en/simulations");
+    await callJson("/api/command?tenant=greenwood", {
+      ...json({ target: "all", action: "navigate", resetPortal: true }),
+      cookie: schoolSessionCookie
+    });
+    const after = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.equal(after.data.broadcastUrl, "");
+  });
+
+  // --------------------------------------------------------- suspend school
+
+  test("Lets the super admin suspend and reactivate a school", async () => {
+    const meRes = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+    const tenantId = meRes.data.tenant.id;
+
+    const asTeacher = await call("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: schoolSessionCookie });
+    assert.equal(asTeacher.status, 403);
+
+    const suspend = await callJson("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: superSessionCookie });
+    assert.equal(suspend.res.status, 200);
+    assert.equal(suspend.data.tenantStatus, "suspended");
+
+    const portal = await call("/?tenant=greenwood");
+    assert.equal(portal.status, 403);
+    assert.match(await portal.text(), /School Suspended/);
+    const telem = await call("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.equal(telem.status, 403);
+    const enrol = await call("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-SUSPENDED" }));
+    assert.equal(enrol.status, 403);
+
+    const again = await call("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: superSessionCookie });
+    assert.equal(again.status, 400, "a suspended school cannot be suspended twice");
+
+    const reactivate = await callJson("/api/super/tenants/reactivate", { ...json({ tenantId }), cookie: superSessionCookie });
+    assert.equal(reactivate.res.status, 200);
+    assert.equal((await call("/?tenant=greenwood")).status, 200);
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: deviceToken })).status, 200);
+  });
+
+  // ------------------------------------------------------------ housekeeping
+
+  test("Runs the scheduled housekeeping handler", async () => {
+    await worker.scheduled({} as ScheduledEvent, mockEnv);
+    const me = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+    assert.ok(me.data.user, "a live session survives housekeeping");
+  });
+
+  // ---------------------------------------------------- throttles (run last)
+
+  test("Throttles repeated failed enrolments from one address", async () => {
+    let throttled = false;
+    for (let i = 0; i < 15 && !throttled; i++) {
+      const res = await call(
+        "/api/devices/enroll",
+        json({ subdomain: "greenwood", enrollmentKey: "AAAAA-BBBBB-CCCCC-DDDDD", clientId: `PC-BAD-${i}` })
+      );
+      if (res.status === 429) throttled = true;
+      else assert.equal(res.status, 401);
+    }
+    assert.ok(throttled, "repeated wrong keys must eventually answer 429");
+  });
+
+  test("Throttles repeated registrations from one address", async () => {
+    let throttled = false;
+    for (let i = 0; i < 15 && !throttled; i++) {
+      const res = await call(
+        "/api/auth/register",
+        json({ name: `Bulk ${i}`, email: `bulk-${i}@school.edu`, password: "BulkRegisterPass123!", subdomain: `bulk-${i}` })
+      );
+      if (res.status === 429) throttled = true;
+      else assert.equal(res.status, 200);
+    }
+    assert.ok(throttled, "mass registration from one address must eventually answer 429");
+  });
+
   test("Refuses to run without a database binding unless explicitly allowed", async () => {
     await assert.rejects(
       () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com" } as Env),
       /No D1 database bound/
     );
+  });
+
+  test("Refuses to serve a bound database that has not been migrated", async () => {
+    const empty = createLocalD1Database();
+    await assert.rejects(
+      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: empty, SUPER_ADMIN_EMAIL: "a@b.co", SUPER_ADMIN_PASSWORD: "x" } as Env),
+      /migrations apply/
+    );
+  });
+
+  test("Refuses to seed the default super admin against a real database", async () => {
+    const migrated = createLocalD1Database();
+    await initSchema(migrated);
+    await assert.rejects(
+      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: migrated } as Env),
+      /SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set/
+    );
+    await assert.rejects(
+      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: migrated, SUPER_ADMIN_EMAIL: "owner@school.edu" } as Env),
+      /must both be set/
+    );
+    // With both secrets present the same database serves normally.
+    const res = await worker.fetch(request("/"), {
+      DEFAULT_DOMAIN: "labkiosk.akbhoi.com",
+      DB: migrated,
+      SUPER_ADMIN_EMAIL: "owner@school.edu",
+      SUPER_ADMIN_PASSWORD: "OwnerPassword2026!"
+    } as Env);
+    assert.equal(res.status, 200);
   });
 });
 

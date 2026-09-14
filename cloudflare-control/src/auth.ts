@@ -122,6 +122,17 @@ export function validatePasswordStrength(password: string): string | null {
   return null;
 }
 
+/** Loose RFC 5322 shape check; the point is to reject garbage, not to validate deliverability. */
+export function isPlausibleEmail(value: unknown): boolean {
+  const email = String(value ?? "").trim();
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+}
+
+/** Per-response CSP nonce: 128 random bits, base64 so it is safe inside an attribute. */
+export function generateNonce(): string {
+  return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+}
+
 /**
  * Generate cryptographically secure random session token (64 hex characters)
  */

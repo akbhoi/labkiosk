@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "labkiosk-controller",
   "main": "src/index.ts",
-  "compatibility_date": "2024-12-30",
+  "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
 
   // Multi-tenant routing: every school is a subdomain of the zone, and the
@@ -28,22 +28,23 @@
     }
   ],
 
-  "vars": {
-    // The apex domain used for subdomain routing and for scoping the session
-    // cookie so a login on the apex is still valid on a school subdomain.
-    "DEFAULT_DOMAIN": "labkiosk.akbhoi.com"
+  // Environment variables (DEFAULT_DOMAIN, ISO_DOWNLOAD_URL, etc.) are managed
+  // directly in the Cloudflare Dashboard under Worker Settings -> Variables and Secrets,
+  // preventing wrangler deploy from overriding hosted configuration.
+  // For local development with wrangler dev, configure them in .dev.vars.
 
-    // Optional: a public URL for the built ISO. When unset, the landing page
-    // explains how to build one instead of offering a link that goes nowhere.
-    // "ISO_DOWNLOAD_URL": "https://example.org/labkiosk-debian12-amd64.iso"
-  },
-
-  // SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are secrets, never vars. Set them
-  // before the first request creates the super admin account:
+  // SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are secrets. Set them before the
+  // first deploy creates the super admin account:
   //   npx wrangler secret put SUPER_ADMIN_EMAIL
   //   npx wrangler secret put SUPER_ADMIN_PASSWORD
-  // If they are unset the worker seeds a well-known default account, so treat
-  // setting them as part of deployment, not an optional extra.
+  // Rule 7 (fail closed): with a D1 database bound, the worker refuses to serve
+  // unless both secrets are set. There is no default super admin account in production.
+
+  // Hourly housekeeping handled by the `scheduled` export in src/index.ts:
+  // expired sessions, delivered commands and stale sign-in throttle rows.
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
 
   "observability": {
     "enabled": true

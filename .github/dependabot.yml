@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /cloudflare-control
+    schedule:
+      interval: weekly
+    groups:
+      cloudflare:
+        patterns:
+          - "wrangler"
+          - "@cloudflare/*"
+      dev-tooling:
+        patterns:
+          - "typescript"
+          - "tsx"
+          - "@types/*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /distro-builder
+    schedule:
+      interval: monthly
+  - package-ecosystem: docker
+    directory: /docker-test
+    schedule:
+      interval: monthly

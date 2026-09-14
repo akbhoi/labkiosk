@@ -19,12 +19,18 @@ mkdir -p "$VNC_SECRET_DIR"
 chmod 700 "$VNC_SECRET_DIR"
 VNC_PASSWD_FILE="$VNC_SECRET_DIR/vnc.pass"
 
+VNC_SECRET_FILE="$VNC_SECRET_DIR/vnc.secret"
+
 if [ ! -f "$VNC_PASSWD_FILE" ]; then
   # A fresh random password each boot; nothing persists across reboots because
-  # the root filesystem is a RAM overlay anyway.
+  # the root filesystem is a RAM overlay anyway. The plaintext is kept in RAM,
+  # readable only by the kiosk user, so the agent can report it to the teacher
+  # console over the authenticated telemetry channel: without that the
+  # console had no way to open a remote-control session at all.
   VNC_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-8)"
   x11vnc -storepasswd "$VNC_SECRET" "$VNC_PASSWD_FILE" >/dev/null 2>&1
   chmod 600 "$VNC_PASSWD_FILE"
+  (umask 077 && printf '%s' "$VNC_SECRET" > "$VNC_SECRET_FILE")
   unset VNC_SECRET
 fi
 

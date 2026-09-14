@@ -6,9 +6,45 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  worker:
     name: Cloudflare Worker Typecheck & Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js v22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: cloudflare-control/pnpm-lock.yaml
+
+      - name: Install Dependencies
+        run: pnpm --prefix cloudflare-control install --frozen-lockfile
+
+      - name: TypeScript Typecheck (worker and tests)
+        run: pnpm --prefix cloudflare-control run typecheck
+
+      - name: Run Integration Tests
+        run: pnpm --prefix cloudflare-control test
+
+  client:
+    name: Kiosk Client Checks (agent, extension, image scripts)
     runs-on: ubuntu-latest
 
     steps:
@@ -20,16 +56,35 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
 
-      - name: Install Dependencies
-        run: pnpm --prefix cloudflare-control install --frozen-lockfile
+      - name: Python agent compiles
+        run: python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
 
-      - name: TypeScript Typecheck (worker and tests)
-        run: pnpm --prefix cloudflare-control run typecheck
+      - name: Extension scripts parse
+        run: |
+          node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
+          node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 
-      - name: Run Integration Tests
-        run: pnpm --prefix cloudflare-control test
+      - name: Manifest and Chromium policy are valid JSON
+        run: |
+          python3 - <<'EOF'
+          import json
+          for path in (
+              "distro-builder/config/includes.chroot/opt/labkiosk/extension/manifest.json",
+              "distro-builder/config/includes.chroot/etc/chromium/policies/managed/policies.json",
+          ):
+              with open(path, encoding="utf-8") as handle:
+                  json.load(handle)
+              print("ok", path)
+          EOF
+
+      - name: Shell scripts pass shellcheck
+        run: |
+          shellcheck -S warning \
+            distro-builder/config/includes.chroot/etc/openbox/autostart \
+            distro-builder/build-iso.sh \
+            distro-builder/config/hooks/live/01-lockdown.hook.chroot \
+            distro-builder/config/hooks/live/02-security.hook.chroot \
+            docker-test/entrypoint.sh

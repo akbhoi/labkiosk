@@ -35,11 +35,23 @@ pnpm install
 # Typecheck the worker and the tests (two separate TS projects)
 pnpm run typecheck
 
-# Run the test suite
+# Run the test suite (in-memory database, no secrets needed)
 pnpm test
 
-# Start the dev server with hot-reload
+# Local secrets for the dev server (the super admin login). With a D1 binding
+# present the worker refuses to seed a default account, so this step is required.
+cp .dev.vars.example .dev.vars   # edit the values
+
+# Start the dev server with hot-reload (`predev` applies migrations to local D1)
 pnpm dev
+```
+
+The client side has its own quick checks, which CI runs too:
+```bash
+python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
+node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
+node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
+shellcheck -S warning distro-builder/config/includes.chroot/etc/openbox/autostart docker-test/entrypoint.sh
 ```
 
 ### 3. Emulating Thin Clients
@@ -86,6 +98,12 @@ full reference; this is the short version.
    - Client-side, build DOM nodes and set `textContent`. No `innerHTML` concatenation, no values in
      inline `onclick=` attributes — attach listeners and pass ids via `dataset`.
    - Run any URL you will navigate to, redirect to, or render as `href` through `safeHttpUrl()`.
+   - The CSP is nonce-based: every `<script>` in a template carries `nonce="${escapeAttr(nonce)}"`,
+     and no template uses an inline event handler attribute (`onclick=`, `onsubmit=`, ...). Use
+     `data-action` attributes with one delegated listener, as the landing page and super console do.
+     A test renders every page and fails on a script without the nonce or on any `on*=` attribute.
+   - Per-isolate memory is a cache, never the source of truth. State a workstation or a teacher
+     must agree on (the active broadcast, device details) lives in D1.
 
 4. **Fail Closed:**
    - Missing configuration is an error, not a reason to fall back to something weaker.

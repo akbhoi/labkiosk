@@ -1,13 +1,13 @@
 ---
 name: labkiosk-core
-description: Autonomous engineering, debugging, and verification workflows for the Lab Kiosk Linux OS and Cloudflare Multi-Tenant Control Plane. Use when developing features, modifying ISO builds, troubleshooting Chromium kiosk policies, or testing multi-tenant SaaS routing. Co-developed with AI.
+description: Engineering, debugging and verification procedures for Lab Kiosk (Debian 12 kiosk image, Python agent, MV3 extension, Cloudflare Workers + D1 control plane). Use when adding or changing worker routes, templates, schema, the agent, the extension, ISO build hooks, Chromium policy, or when diagnosing multi-tenant routing, CSP, enrolment, telemetry or remote-control problems.
 ---
 
 # Lab Kiosk Core Engineering Skill
 
 This skill guides AI agents through authoring, modifying, testing, and verifying both the **Debian 12 Client Operating System** and the **Cloudflare Workers Multi-Tenant SaaS Platform**.
 
-> **Co-Development Notice:** This skill and the underlying platform were co-developed through human-AI pair programming with Antigravity (Google DeepMind).
+> **Co-Development Notice:** This skill and the underlying platform were co-developed through human-AI pair programming (Antigravity by Google DeepMind, then Claude Code). The invariants it relies on are defined in `AGENTS.md`; read that first.
 
 ---
 
@@ -18,7 +18,13 @@ This skill guides AI agents through authoring, modifying, testing, and verifying
 1b. **Before adding any route**, read `src/guard.ts` and `src/escape.ts`. Every route resolves its
    tenant through `resolveTenant()` and guards access with `requireTenantAdmin()`,
    `requireSuperAdmin()` or `requireDevice()`; every rendered value is escaped. There are no
-   exceptions, and the test suite asserts both.
+   exceptions, and the test suite asserts both. Cookie-authenticated mutations already pass the
+   CSRF origin check in `index.ts`; do not add routes outside `/api/` that mutate state.
+1c. **Before touching a `ui*.ts` template**: every `<script>` carries `nonce="${escapeAttr(nonce)}"`
+   and there are no inline `on*=` handlers, only `data-action` attributes with a delegated
+   listener (or `addEventListener`). The CSP test renders every page and fails otherwise.
+1d. State two requests must agree on goes in D1, never in a module-level variable: the broadcast
+   (`tenants.broadcast_url`) and device remote-control details are the precedent.
 2. If altering the database schema:
    - Add a **new** numbered migration under `cloudflare-control/migrations/` (never edit an applied one).
    - Mirror the table/index definition in `SCHEMA_SQL` inside `cloudflare-control/src/db.ts`, which is
@@ -32,10 +38,26 @@ This skill guides AI agents through authoring, modifying, testing, and verifying
    ```bash
    pnpm --prefix cloudflare-control test
    ```
+5. To try it in a browser, `wrangler dev` needs local secrets (there is no default super admin
+   once a D1 binding exists) and applies migrations first:
+   ```bash
+   cd cloudflare-control && cp .dev.vars.example .dev.vars && pnpm dev
+   ```
+6. **Environment Variables Management**: Never define production secrets or configuration in the `vars` block of `wrangler.jsonc`, as `wrangler deploy` overrides Cloudflare Dashboard settings. Configure production variables (`DEFAULT_DOMAIN`, `ISO_DOWNLOAD_URL`, `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`) directly in the Cloudflare Dashboard / `wrangler secret`, and use `.dev.vars` for local development.
 
 ### B. Modifying Client Kiosk Agent & Extension
 1. The client agent lives at `distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py`.
-   Its local API is loopback-only and its telemetry is authenticated with a device bearer token.
+   Its local API is loopback-only (`/setup`, `/api/status`, `/api/setup`; there is no nav
+   endpoint) and its telemetry is authenticated with a device bearer token. Each heartbeat also
+   reports the per-boot VNC password from `/tmp/labkiosk/vnc.secret` and the tunnel hostname from
+   `/etc/cloudflared/config.yml` or `LABKIOSK_REMOTE_HOST`, when present. If you add a telemetry
+   field, add it to `/api/telemetry` in `index.ts`, `types.ts`, `docs/API.md` and `AGENTS.md`.
+1b. Syntax-check before you copy anything into a container (CI runs the same):
+   ```bash
+   python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
+   node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
+   node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
+   ```
 2. The browser injection extension lives at `distro-builder/config/includes.chroot/opt/labkiosk/extension/`.
    It is a Manifest V3 pair: `content.js` builds the nav bar and lock curtain in a shadow root, and
    `background.js` (the service worker) is the only thing that talks to the agent, because a content
@@ -143,6 +165,39 @@ docker cp labkiosk-client-01:/tmp/verify.png .
 ### 10. Workstation Not Appearing on the Dashboard
 - **Symptom:** The agent logs `401` responses, or the grid stays empty after boot.
 - **Cause:** The workstation is not enrolled, or its device token was revoked when a teacher removed
-  it from the dashboard.
+  it from the dashboard. A `403` means the school itself is suspended or not yet active.
 - **Remedy:** Re-run the setup wizard with the school's current enrollment key
   (**Settings -> Workstation Enrollment Key** on the teacher dashboard). Check `/tmp/lab-agent.log`.
+  Repeated wrong keys from one address answer `429` for a while; wait or use the right key.
+
+### 11. A Console Button Does Nothing, Console Shows a CSP Error
+- **Symptom:** "Refused to execute inline event handler" or "Refused to execute inline script".
+- **Cause:** A template gained an `on*=` attribute, or a `<script>` without the response nonce.
+- **Remedy:** `data-action` + delegated listener, and `nonce="${escapeAttr(nonce)}"` on the script.
+  Run the test suite; it renders every page and reports the exact offending tag.
+
+### 12. Worker Refuses to Start
+- **`SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set`:** there is no default super
+  admin once a D1 binding exists. Locally `cp .dev.vars.example .dev.vars`; deployed, set both
+  Wrangler secrets.
+- **`The D1 database is missing the current schema`:** run
+  `wrangler d1 migrations apply labkiosk-db --remote` (or `--local`). The worker never creates
+  tables on a bound database, because that shape blocks later `ALTER TABLE` migrations.
+
+### 13. "Remote Control" Cannot Connect
+- **Symptom:** The noVNC frame asks for a password, or never connects.
+- **Cause:** The workstation has not sent a heartbeat since boot (no `vncPassword` yet), or it has
+  no Cloudflare Tunnel, so there is no `remoteHost` and nothing answers at `<pc>.<TUNNEL_DOMAIN>`.
+- **Remedy:** Check `/api/clients` for `vncPassword` and `remoteHost` on that device. Provision a
+  per-workstation tunnel (`docs/REMOTE_CONTROL.md`); in the simulator set
+  `LABKIOSK_REMOTE_HOST` to a hostname that reaches port 6080.
+
+### 14. Custom Domain Edge-Routing and Dynamic Whitelisting
+- **Symptom:** Accessing the platform via an approved custom domain (e.g. `kiosk.institution.edu`) loads the SaaS landing page instead of the student portal, or kiosks show "This page is blocked".
+- **Root Cause:** In `index.ts`, custom domain hosts matched `!namedTenant && !onSubdomain` and fell through to the public landing page unless `isCustomDomainHost` is checked. Additionally, Chromium clients will block the portal unless `tenant.custom_domain` is explicitly included in the policy allowlist.
+- **Remedy:** In `index.ts`, check `isCustomDomainHost` matching `hostname(request) === currentTenant.custom_domain.toLowerCase()` when deciding `wantsPortal`. In `db.ts`, `buildEffectiveWhitelist()` automatically includes `tenant.custom_domain`.
+
+### 15. Cloudflare Dashboard Environment Variables Overwritten on Deploy
+- **Symptom:** Environment variables configured in the Cloudflare Dashboard (e.g. `DEFAULT_DOMAIN`, `ISO_DOWNLOAD_URL`) revert or disappear after running `wrangler deploy`.
+- **Root Cause:** Defining a `vars` block in `wrangler.jsonc` overrides the hosted environment variables on Cloudflare.
+- **Remedy:** Omit `vars` from `wrangler.jsonc`. Rely on Cloudflare Dashboard settings for hosted environments and `.dev.vars` for local development.

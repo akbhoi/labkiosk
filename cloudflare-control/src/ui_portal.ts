@@ -6,7 +6,7 @@
 import { Tenant, PortalSite } from "./types";
 import { escapeHtml, safeHttpUrl } from "./escape";
 
-export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
+export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string): string {
   const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
 
   // Card content is teacher-supplied. Cards are anchors rather than divs with an
@@ -19,7 +19,8 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
       const thumb = safeHttpUrl(site.thumbnail_url) || FALLBACK_THUMBNAIL;
       return `
     <a class="app-card" href="${escapeHtml(href)}" rel="noopener noreferrer">
-      <div class="card-thumb" style="background-image: url('${escapeHtml(thumb)}')">
+      <div class="card-thumb">
+        <img class="card-thumb-img" src="${escapeHtml(thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">
         <span class="card-category">${escapeHtml(site.category)}</span>
       </div>
       <div class="card-body">
@@ -188,10 +189,15 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
     }
     .card-thumb {
       height: 150px;
-      background-size: cover;
-      background-position: center;
       position: relative;
       background-color: #1e293b;
+      overflow: hidden;
+    }
+    .card-thumb-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
     }
     .card-thumb::after {
       content: '';
@@ -394,7 +400,7 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
     ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Educational Environment Restricted")}
   </footer>
 
-  <script>
+  <script nonce="${escapeHtml(nonce)}">
     function updateClock() {
       const now = new Date();
       document.getElementById('live-clock').textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });

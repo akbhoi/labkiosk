@@ -11,13 +11,18 @@
 import { LabConfig, Tenant, PortalSite, BroadcastPreset } from "./types";
 import { escapeHtml, escapeAttr, escapeJson, safeHttpUrl } from "./escape";
 
-export function renderDashboardHtml(
-  config: LabConfig,
-  tenant?: Tenant,
-  sites: PortalSite[] = [],
-  baseDomain = "labkiosk.akbhoi.com",
-  presets: BroadcastPreset[] = []
-): string {
+export interface DashboardOptions {
+  config: LabConfig;
+  tenant?: Tenant;
+  sites?: PortalSite[];
+  baseDomain?: string;
+  presets?: BroadcastPreset[];
+  /** Per-response CSP nonce; every <script> in this template must carry it. */
+  nonce: string;
+}
+
+export function renderDashboardHtml(options: DashboardOptions): string {
+  const { config, tenant, sites = [], baseDomain = "labkiosk.akbhoi.com", presets = [], nonce } = options;
   const labName = tenant?.name || "School Computer Lab Control";
   const fullDomain = tenant ? `${tenant.subdomain}.${baseDomain}` : "";
   const subtitle = tenant
@@ -641,9 +646,9 @@ export function renderDashboardHtml(
           Settings
         </button>
 
-        <a href="/api/auth/logout" class="btn btn-secondary" style="color: #ef4444;" title="Sign out of console">
-          Sign Out
-        </a>
+        <form method="post" action="/api/auth/logout" style="display: inline;">
+          <button type="submit" class="btn btn-secondary" style="color: #ef4444;" title="Sign out of console">Sign Out</button>
+        </form>
       </div>
     </div>
   </header>
@@ -677,7 +682,7 @@ export function renderDashboardHtml(
         </div>
       </div>
       <div class="vnc-iframe-wrapper">
-        <iframe id="vnc-frame" class="vnc-iframe" src="about:blank" referrerpolicy="no-referrer"></iframe>
+        <iframe id="vnc-frame" class="vnc-iframe" src="about:blank" referrerpolicy="no-referrer" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
       </div>
     </div>
   </div>
@@ -998,6 +1003,19 @@ export function renderDashboardHtml(
         <div id="subdomain-status-msg" class="field-hint" style="min-height: 16px;"></div>
       </div>
 
+      <div class="section-divider field-group">
+        <h4 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Account Security</h4>
+        <p class="field-hint" style="margin-bottom: 10px;">
+          Change the password for this console login. Every other browser signed in to this account is signed out.
+        </p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <input id="setting-current-password" type="password" class="input-field" placeholder="Current password" autocomplete="current-password">
+          <input id="setting-new-password" type="password" class="input-field" placeholder="New password (12+ chars, letters and numbers)" autocomplete="new-password" minlength="12">
+        </div>
+        <button class="btn btn-secondary" id="btn-change-password">Change Password</button>
+        <div id="password-status-msg" class="field-hint" style="min-height: 16px; margin-top: 6px;"></div>
+      </div>
+
       <div class="section-divider">
         <h4 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Custom Domain (FQDN)</h4>
         <p class="field-hint" style="margin-bottom: 12px;">
@@ -1032,7 +1050,7 @@ export function renderDashboardHtml(
     </div>
   </div>
 
-  <script>
+  <script nonce="${escapeAttr(nonce)}">
     "use strict";
 
     const TUNNEL_DOMAIN = ${escapeJson(config.tunnelDomain || "lab.myschool.edu")};
@@ -1493,12 +1511,21 @@ export function renderDashboardHtml(
 
     function openVncSession(clientId) {
       document.getElementById("vnc-modal-title").textContent = "Live Remote Control: " + clientId;
+      const client = clientsData[clientId] || {};
       const host = window.location.hostname;
-      const vncUrl =
-        host === "localhost" || host === "127.0.0.1"
-          ? "http://" + host + ":6080/vnc.html?autoconnect=true&resize=scale"
-          : "https://" + encodeURIComponent(clientId.toLowerCase()) + "." + TUNNEL_DOMAIN + "/vnc.html?autoconnect=true&resize=scale";
-      document.getElementById("vnc-frame").src = vncUrl;
+      // Prefer the tunnel hostname the workstation itself reported; fall back to
+      // the <pc>.<TUNNEL_DOMAIN> convention, or the simulator's published port.
+      let base;
+      if (client.remoteHost) {
+        base = "https://" + client.remoteHost;
+      } else if (host === "localhost" || host === "127.0.0.1") {
+        base = "http://" + host + ":6080";
+      } else {
+        base = "https://" + encodeURIComponent(clientId.toLowerCase()) + "." + TUNNEL_DOMAIN;
+      }
+      const params = new URLSearchParams({ autoconnect: "true", resize: "scale" });
+      if (client.vncPassword) params.set("password", client.vncPassword);
+      document.getElementById("vnc-frame").src = base + "/vnc.html?" + params.toString();
       openModal("vnc-modal");
     }
 
@@ -1801,6 +1828,25 @@ export function renderDashboardHtml(
       }
     }
 
+    async function changePasswordAction() {
+      const currentInput = document.getElementById("setting-current-password");
+      const newInput = document.getElementById("setting-new-password");
+      const currentPassword = currentInput.value;
+      const newPassword = newInput.value;
+      if (!currentPassword || !newPassword) {
+        setMessage("password-status-msg", "Enter your current password and a new one.");
+        return;
+      }
+      try {
+        await postJson("/api/auth/change-password", { currentPassword, newPassword });
+        currentInput.value = "";
+        newInput.value = "";
+        setMessage("password-status-msg", "Password changed. Other signed-in browsers have been signed out.", "ok");
+      } catch (err) {
+        setMessage("password-status-msg", err.message);
+      }
+    }
+
     async function requestSubdomainChange() {
       const sub = document.getElementById("setting-new-subdomain").value.trim().toLowerCase();
       if (!sub) return;
@@ -1947,6 +1993,7 @@ export function renderDashboardHtml(
       setMessage("lock-msg-status", "");
       setMessage("branding-status-msg", "");
       setMessage("setting-mode-status-msg", "");
+      setMessage("password-status-msg", "");
       const modeSelect = document.getElementById("setting-kiosk-mode");
       if (modeSelect) modeSelect.value = currentTenantData.mode;
       const urlInput = document.getElementById("setting-default-url");
@@ -1983,6 +2030,7 @@ export function renderDashboardHtml(
     const btnSaveBranding = document.getElementById("btn-save-branding");
     if (btnSaveBranding) btnSaveBranding.addEventListener("click", saveBrandingAction);
     document.getElementById("btn-request-subdomain").addEventListener("click", requestSubdomainChange);
+    document.getElementById("btn-change-password").addEventListener("click", changePasswordAction);
     document.getElementById("btn-copy-key").addEventListener("click", copyEnrollmentKey);
     document.getElementById("btn-rotate-key").addEventListener("click", rotateEnrollmentKey);
 

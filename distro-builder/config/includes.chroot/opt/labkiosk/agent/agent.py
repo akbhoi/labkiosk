@@ -42,7 +42,15 @@ BROWSER_PROFILE_DIR = "/tmp/chromium-profile"
 # in step: if the key changes, this id changes and the extension stops loading.
 KIOSK_EXTENSION_ID = "hfjmbeplebjipenkfabncgkpadnjmmoe"
 DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.akbhoi.com")
-DEFAULT_HOMEPAGE = os.environ.get("LABKIOSK_DEFAULT_HOMEPAGE", f"https://{DEFAULT_BASE_DOMAIN}")
+
+# Remote control. The Openbox autostart (and the simulator's entrypoint) writes
+# the plaintext x11vnc password it generated for this boot here, mode 600, so
+# the agent can hand it to the teacher console over the authenticated
+# telemetry channel. The tunnel hostname comes from LABKIOSK_REMOTE_HOST or, on
+# the real image, from the first ingress hostname in cloudflared's config.
+VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
+CLOUDFLARED_CONFIG_FILE = "/etc/cloudflared/config.yml"
+REMOTE_HOST_PATTERN = re.compile(r"^\s*-?\s*hostname:\s*['\"]?([A-Za-z0-9.-]+)['\"]?\s*$", re.MULTILINE)
 
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8888
@@ -56,6 +64,8 @@ LOCAL_WORKER_HOSTS = {
     "host.docker.internal",
     "host.containers.internal",
 }
+
+HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
 
 CLIENT_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,63}$")
 
@@ -125,6 +135,31 @@ def probe_worker_url(candidate_url):
             except OSError:
                 return candidate_url.replace(name, alternate)
     return candidate_url
+
+
+def read_vnc_password():
+    """The per-boot x11vnc password, or an empty string when none was written."""
+    try:
+        with open(VNC_SECRET_FILE, "r", encoding="utf-8") as handle:
+            return handle.read().strip()[:64]
+    except OSError:
+        return ""
+
+
+def detect_remote_host():
+    """Hostname the noVNC gateway is reachable on through the tunnel, if any."""
+    candidate = os.environ.get("LABKIOSK_REMOTE_HOST", "").strip().lower()
+    if not candidate:
+        try:
+            with open(CLOUDFLARED_CONFIG_FILE, "r", encoding="utf-8") as handle:
+                match = REMOTE_HOST_PATTERN.search(handle.read())
+            candidate = match.group(1).lower() if match else ""
+        except OSError:
+            candidate = ""
+    if candidate and not HOSTNAME_PATTERN.match(candidate):
+        log(f"Ignoring remote host {candidate!r}: not a valid hostname")
+        return ""
+    return candidate
 
 
 def derive_default_client_id():
@@ -245,7 +280,6 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
         headers={
             "Content-Type": "application/json",
             "User-Agent": "LabKioskAgent/enroll",
-            "X-Forwarded-Host": parsed_worker.netloc,
         },
     )
 
@@ -320,6 +354,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        if "text/html" in content_type:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; connect-src 'self' http://127.0.0.1:8888;",
+            )
         self.end_headers()
         self.wfile.write(body)
 
@@ -431,17 +471,6 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             except Exception as err:  # noqa: BLE001 - surfaced to the wizard UI
                 log(f"Unexpected enrolment failure: {err}")
                 self._send(500, {"error": "Enrolment failed unexpectedly. Check the agent log."})
-            return
-
-        if self.path == "/api/nav":
-            data = self._read_json()
-            action = (data or {}).get("action")
-            keys = {"back": "Alt+Left", "forward": "Alt+Right", "reload": "F5"}
-            if action not in keys:
-                self._send(400, {"error": "Unsupported navigation action"})
-                return
-            run_x11(["xdotool", "key", keys[action]])
-            self._send(200, {"status": "ok"})
             return
 
         self._send(404, {"error": "Not found"})
@@ -645,7 +674,8 @@ def execute_command(cmd_data):
     elif action == "shutdown":
         run_x11(["systemctl", "poweroff"])
     elif action == "mute":
-        run_x11(["amixer", "-D", "pulse", "set", "Master", "mute"])
+        # Plain ALSA: the image ships alsa-utils and no sound server.
+        run_x11(["amixer", "-q", "set", "Master", "mute"])
     else:
         log(f"Ignoring unknown action: {action}")
 
@@ -666,8 +696,9 @@ def navigate_to(new_url, epoch=0):
         state["broadcastEpoch"] = now_epoch
         state["isLocked"] = False
 
-    # Immediately ensure domain is in the Chromium allowlist
-    sync_chromium_policies([parsed.hostname])
+    # Make sure the lesson's host is allowed right away, without dropping the
+    # rest of the school's allowlist until the next heartbeat replaces it.
+    sync_chromium_policies(sorted(set(cached_whitelist or []) | {parsed.hostname.lower()}))
     log(f"Broadcast navigation set to {new_url} (epoch {now_epoch})")
 
 
@@ -688,7 +719,15 @@ def post_telemetry():
 
     payload["thumbnail"] = capture_thumbnail_base64()
 
-    parsed_worker = urlparse(worker_url)
+    # Remote-control details, sent only when the workstation actually has them
+    # so the control plane keeps whatever it already knows otherwise.
+    vnc_password = read_vnc_password()
+    if vnc_password:
+        payload["vncPassword"] = vnc_password
+    remote_host = detect_remote_host()
+    if remote_host:
+        payload["remoteHost"] = remote_host
+
     request = Request(
         f"{worker_url}/api/telemetry",
         data=json.dumps(payload).encode("utf-8"),
@@ -696,7 +735,6 @@ def post_telemetry():
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
             "User-Agent": "LabKioskAgent/2.0",
-            "X-Forwarded-Host": parsed_worker.netloc,
         },
     )
 

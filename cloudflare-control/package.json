@@ -1,13 +1,14 @@
 {
   "name": "labkiosk-cloudflare-control",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Centralized Cloudflare Controller & Real-Time Monitoring Dashboard for School Lab Kiosks",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev --ip 0.0.0.0",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json",
-    "test": "tsx --test test/worker.test.ts"
+    "test": "tsx --test test/worker.test.ts",
+    "predev": "wrangler d1 migrations apply labkiosk-db --local"
   },
   "keywords": [
     "kiosk",
@@ -18,10 +19,10 @@
   "author": "Lab Kiosk Contributors",
   "license": "BUSL-1.1",
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20241230.0",
+    "@cloudflare/workers-types": "^5.20260914.1",
     "@types/node": "^26.5.1",
     "tsx": "^4.23.13",
-    "typescript": "^5.7.2",
-    "wrangler": "^3.101.0"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.131.1"
   }
 }

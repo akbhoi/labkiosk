@@ -1,10 +1,10 @@
 # Containerized Debian Kiosk Builder
 # Usage (from the repository root):
-#   docker build -t labkiosk-builder distro-builder
-#   docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" labkiosk-builder
+#   docker build -t labkiosk-iso-builder distro-builder
+#   docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" labkiosk-iso-builder
 #
 # The ISO is written to /build/out inside the container, which is the path the
-# README and the release workflow both mount.
+# distro-builder/README.md and the release workflow both mount.
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive

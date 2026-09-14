@@ -22,6 +22,10 @@ services:
       - WORKER_URL=${WORKER_URL:-http://host.docker.internal:8787}
       - LABKIOSK_DOMAIN=${LABKIOSK_DOMAIN:-labkiosk.akbhoi.com}
       - VNC_PASSWORD=${VNC_PASSWORD:-labkiosk}
+      # Optional: a public hostname (e.g. a Cloudflare Tunnel) that reaches this
+      # container's noVNC port. The agent reports it so the console's "Remote
+      # Control" opens it instead of assuming <pc>.<tunnel-domain>.
+      - LABKIOSK_REMOTE_HOST=${LABKIOSK_REMOTE_HOST:-}
     volumes:
       - ./distro-builder/config/includes.chroot/opt/labkiosk:/opt/labkiosk
     shm_size: "1gb" # Sufficient shared memory for Chromium rendering

@@ -30,9 +30,11 @@ export interface LandingOptions {
   baseDomain?: string;
   /** Primary contact email (defaults to contact@akbhoi.com). */
   contactEmail?: string;
+  /** Per-response CSP nonce; the page's single <script> must carry it. */
+  nonce: string;
 }
 
-export function renderLandingHtml(data: LandingOptions = {}): string {
+export function renderLandingHtml(data: LandingOptions): string {
   const baseDomain = (data.baseDomain || "labkiosk.akbhoi.com").toLowerCase().replace(/^\./, "");
   const contactEmail = (data.contactEmail || "contact@akbhoi.com").toLowerCase();
 
@@ -208,6 +210,8 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
       border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 12px;
     }
     .sim-controls { display: flex; align-items: center; gap: 10px; }
+    .sim-app-card { transition: transform 0.2s; }
+    .sim-app-card:hover { transform: scale(1.03); }
     .sim-tab-btn {
       padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer;
       background: transparent; color: var(--muted); border: 1px solid transparent; transition: all 0.15s;
@@ -479,9 +483,9 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         <div class="status-dot"></div>
         <span>Edge Active</span>
       </div>
-      <button class="btn btn-ghost nav-signin-btn" onclick="openModal('login-modal')">Sign In</button>
-      <button class="btn btn-primary nav-register-btn" onclick="openModal('register-modal')">Register School Lab</button>
-      <button class="mobile-menu-btn" id="mobile-toggle" aria-label="Toggle navigation menu" aria-expanded="false" onclick="toggleMobileNav()">
+      <button class="btn btn-ghost nav-signin-btn" data-action="open-modal" data-modal="login">Sign In</button>
+      <button class="btn btn-primary nav-register-btn" data-action="open-modal" data-modal="register">Register School Lab</button>
+      <button class="mobile-menu-btn" id="mobile-toggle" aria-label="Toggle navigation menu" aria-expanded="false" data-action="toggle-drawer">
         <svg class="icon-menu" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         <svg class="icon-close" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="display: none;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
@@ -489,7 +493,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
   </header>
 
   <!-- Mobile Drawer & Backdrop -->
-  <div class="mobile-drawer-backdrop" id="mobile-drawer-backdrop" onclick="toggleMobileNav(false)"></div>
+  <div class="mobile-drawer-backdrop" id="mobile-drawer-backdrop" data-action="close-drawer"></div>
   <div class="mobile-drawer" id="mobile-drawer" aria-label="Mobile Navigation" role="dialog" aria-modal="true">
     <div class="mobile-drawer-header">
       <div class="brand">
@@ -498,41 +502,41 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         </div>
         <div class="brand-title" style="font-size: 18px;">Lab Kiosk</div>
       </div>
-      <button class="drawer-close-btn" onclick="toggleMobileNav(false)" aria-label="Close menu">&times;</button>
+      <button class="drawer-close-btn" data-action="close-drawer" aria-label="Close menu">&times;</button>
     </div>
     <nav class="mobile-drawer-nav">
-      <a href="#features" onclick="toggleMobileNav(false)">
+      <a href="#features" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         Features
       </a>
-      <a href="#audiences" onclick="toggleMobileNav(false)">
+      <a href="#audiences" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         Stakeholder Solutions
       </a>
-      <a href="#simulator" onclick="toggleMobileNav(false)">
+      <a href="#simulator" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 16 21 12 17"/></svg>
         Live Simulator
       </a>
-      <a href="#specs" onclick="toggleMobileNav(false)">
+      <a href="#specs" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
         Hardware Specs
       </a>
-      <a href="#security" onclick="toggleMobileNav(false)">
+      <a href="#security" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
         Architecture &amp; Security
       </a>
-      <a href="#faq" onclick="toggleMobileNav(false)">
+      <a href="#faq" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         FAQ
       </a>
-      <a href="#contact" onclick="toggleMobileNav(false)">
+      <a href="#contact" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Contact
       </a>
     </nav>
     <div class="mobile-drawer-actions">
-      <button class="btn btn-primary btn-block" onclick="toggleMobileNav(false); openModal('register-modal')">Register School Lab</button>
-      <button class="btn btn-ghost btn-block" onclick="toggleMobileNav(false); openModal('login-modal')">Teacher Sign In</button>
+      <button class="btn btn-primary btn-block" data-action="drawer-open-modal" data-modal="register">Register School Lab</button>
+      <button class="btn btn-ghost btn-block" data-action="drawer-open-modal" data-modal="login">Teacher Sign In</button>
     </div>
   </div>
 
@@ -550,10 +554,10 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         Empower teachers, universities, and school management with 100% remote lab management, 1-click Eyes-Front screen lock, zero SSD wear, and instant educational website deployment. Designed to resurrect any PC or thin client into an unhackable terminal.
       </p>
       <div class="hero-ctas">
-        <button class="btn btn-primary" style="padding: 12px 28px; font-size: 16px;" onclick="openModal('register-modal')">
+        <button class="btn btn-primary" style="padding: 12px 28px; font-size: 16px;" data-action="open-modal" data-modal="register">
           Register School Lab
         </button>
-        <button class="btn btn-ghost" style="padding: 12px 28px; font-size: 16px;" onclick="openModal('iso-modal')">
+        <button class="btn btn-ghost" style="padding: 12px 28px; font-size: 16px;" data-action="open-modal" data-modal="iso">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Download Kiosk ISO
         </button>
@@ -591,11 +595,11 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
       </div>
 
       <div class="tabs-nav" role="tablist">
-        <button class="tab-btn active" onclick="switchAudienceTab('tab-teachers')" role="tab">For Teachers</button>
-        <button class="tab-btn" onclick="switchAudienceTab('tab-students')" role="tab">For Students</button>
-        <button class="tab-btn" onclick="switchAudienceTab('tab-universities')" role="tab">For Universities</button>
-        <button class="tab-btn" onclick="switchAudienceTab('tab-smc')" role="tab">For School Boards (SMC)</button>
-        <button class="tab-btn" onclick="switchAudienceTab('tab-corporate')" role="tab">For CSR &amp; Partners</button>
+        <button class="tab-btn active" data-action="audience-tab" data-tab="tab-teachers" role="tab">For Teachers</button>
+        <button class="tab-btn" data-action="audience-tab" data-tab="tab-students" role="tab">For Students</button>
+        <button class="tab-btn" data-action="audience-tab" data-tab="tab-universities" role="tab">For Universities</button>
+        <button class="tab-btn" data-action="audience-tab" data-tab="tab-smc" role="tab">For School Boards (SMC)</button>
+        <button class="tab-btn" data-action="audience-tab" data-tab="tab-corporate" role="tab">For CSR &amp; Partners</button>
       </div>
 
       <!-- Teachers Tab -->
@@ -646,7 +650,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
                 <div style="font-size: 10px; color: #ef4444;">● Intercepted</div>
               </div>
             </div>
-            <button class="btn btn-primary btn-block" style="margin-top: 8px;" onclick="openModal('register-modal')">Open Free Teacher Account</button>
+            <button class="btn btn-primary btn-block" style="margin-top: 8px;" data-action="open-modal" data-modal="register">Open Free Teacher Account</button>
           </div>
         </div>
       </div>
@@ -777,7 +781,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
                 <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--green); font-size: 16px;">$0.00</td>
               </tr>
             </table>
-            <button class="btn btn-primary btn-block" onclick="openModal('register-modal')">Register School Lab Today</button>
+            <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="register">Register School Lab Today</button>
           </div>
         </div>
       </div>
@@ -835,9 +839,9 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
             <span style="font-size: 12px; color: var(--muted); font-family: monospace; margin-left: 8px;">https://demo.${escapeHtml(baseDomain)}</span>
           </div>
           <div class="sim-controls">
-            <button class="sim-tab-btn active" id="sim-btn-portal" onclick="setSimView('portal')">Student Portal</button>
-            <button class="sim-tab-btn" id="sim-btn-teacher" onclick="setSimView('teacher')">Teacher Console</button>
-            <button class="sim-tab-btn" id="sim-btn-curtain" onclick="setSimView('curtain')">Eyes-Front Curtain</button>
+            <button class="sim-tab-btn active" id="sim-btn-portal" data-action="sim-view" data-view="portal">Student Portal</button>
+            <button class="sim-tab-btn" id="sim-btn-teacher" data-action="sim-view" data-view="teacher">Teacher Console</button>
+            <button class="sim-tab-btn" id="sim-btn-curtain" data-action="sim-view" data-view="curtain">Eyes-Front Curtain</button>
           </div>
         </div>
 
@@ -849,22 +853,22 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
               <p style="font-size: 14px; color: var(--muted);">Click any approved application below to open your learning session.</p>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; max-width: 800px; margin: 0 auto;">
-              <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'" onclick="alert('Student Portal Demo: Opening Khan Academy in top-level native viewport!')">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Student Portal Demo: Opening Khan Academy in top-level native viewport!">
                 <div style="font-size: 32px; margin-bottom: 8px;">📚</div>
                 <div style="font-weight: 700; font-size: 14px;">Khan Academy</div>
                 <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Mathematics &amp; Science</div>
               </div>
-              <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'" onclick="alert('Student Portal Demo: Launching Scratch 3.0 visual block coding!')">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Student Portal Demo: Launching Scratch 3.0 visual block coding!">
                 <div style="font-size: 32px; margin-bottom: 8px;">🐱</div>
                 <div style="font-weight: 700; font-size: 14px;">Scratch 3.0</div>
                 <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Creative Coding</div>
               </div>
-              <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'" onclick="alert('Student Portal Demo: Launching GeoGebra interactive math graphing!')">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Student Portal Demo: Launching GeoGebra interactive math graphing!">
                 <div style="font-size: 32px; margin-bottom: 8px;">📐</div>
                 <div style="font-weight: 700; font-size: 14px;">GeoGebra</div>
                 <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Geometry &amp; Algebra</div>
               </div>
-              <div style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'" onclick="alert('Student Portal Demo: Launching Python browser sandbox!')">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Student Portal Demo: Launching Python browser sandbox!">
                 <div style="font-size: 32px; margin-bottom: 8px;">🐍</div>
                 <div style="font-weight: 700; font-size: 14px;">Python Lab</div>
                 <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Programming Practice</div>
@@ -880,8 +884,8 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
                 <p style="font-size: 13px; color: var(--muted);">Click 'Eyes Front Lock' to pause all screens or broadcast a URL.</p>
               </div>
               <div style="display: flex; gap: 10px;">
-                <button class="btn btn-ghost" style="font-size: 13px; padding: 8px 14px;" onclick="simulateBroadcast()">Broadcast URL</button>
-                <button class="btn btn-primary" style="font-size: 13px; padding: 8px 14px; background: #ef4444;" onclick="setSimView('curtain')">Eyes Front Lock 🔒</button>
+                <button class="btn btn-ghost" style="font-size: 13px; padding: 8px 14px;" data-action="sim-broadcast">Broadcast URL</button>
+                <button class="btn btn-primary" style="font-size: 13px; padding: 8px 14px; background: #ef4444;" data-action="sim-view" data-view="curtain">Eyes Front Lock 🔒</button>
               </div>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px;">
@@ -916,7 +920,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
               "Eyes to the front of the classroom. The teacher has paused workstation interactions."
             </p>
             <div style="font-size: 12px; color: var(--muted); margin-bottom: 20px;">All keyboard inputs and clicks are swallowed until teacher unlocks.</div>
-            <button class="btn btn-primary" onclick="setSimView('teacher')">Resume Teaching (Unlock Screens)</button>
+            <button class="btn btn-primary" data-action="sim-view" data-view="teacher">Resume Teaching (Unlock Screens)</button>
           </div>
         </div>
       </div>
@@ -1004,12 +1008,12 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
             </tr>
             <tr>
               <td><strong>System Memory (RAM)</strong></td>
-              <td>2 GB RAM (runs full OS + Chromium in RAM)</td>
+              <td>4 GB RAM (the full OS and Chromium run from RAM)</td>
               <td>4 GB or 8 GB RAM for ultra-smooth multi-app switching</td>
             </tr>
             <tr>
               <td><strong>Storage Drive</strong></td>
-              <td>8 GB USB Flash Drive (USB 2.0 or 3.0) or 16 GB Internal Disk</td>
+              <td>2 GB+ USB flash drive (USB 2.0 or 3.0); internal disk not required</td>
               <td>Fast USB 3.0/3.1 Thumb Drive or Internal M.2 / SATA SSD</td>
             </tr>
             <tr>
@@ -1071,7 +1075,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
 
       <div class="faq-list">
         <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
+          <div class="faq-question" data-action="toggle-faq">
             <span>Does Lab Kiosk work in schools with weak or intermittent internet?</span>
             <span class="faq-chevron">▼</span>
           </div>
@@ -1081,7 +1085,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         </div>
 
         <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
+          <div class="faq-question" data-action="toggle-faq">
             <span>What happens if a student attempts to open other websites or download games?</span>
             <span class="faq-chevron">▼</span>
           </div>
@@ -1091,7 +1095,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         </div>
 
         <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
+          <div class="faq-question" data-action="toggle-faq">
             <span>How does the 100% RAM Overlay protect our thin-client hardware?</span>
             <span class="faq-chevron">▼</span>
           </div>
@@ -1101,17 +1105,17 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         </div>
 
         <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
-            <span>Is Lab Kiosk truly 100% free and open-source?</span>
+          <div class="faq-question" data-action="toggle-faq">
+            <span>Is Lab Kiosk free to use?</span>
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Yes. The entire operating system build pipeline (Debian 12 Live-Build), agent daemon, and Cloudflare Worker control plane are 100% open-source under the MIT license. There are no per-seat licenses, user limits, or hidden subscription tiers.
+            Free for schools, yes. The entire operating system build pipeline (Debian 12 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the Business Source License 1.1: free and unrestricted for schools, universities, non-profits and personal use, with a commercial licence required only for companies reselling it as a paid service. On 1 January 2030 the code converts to the Apache 2.0 open-source licence. There are no per-seat licences, user limits, or hidden subscription tiers.
           </div>
         </div>
 
         <div class="faq-item">
-          <div class="faq-question" onclick="toggleFaq(this)">
+          <div class="faq-question" data-action="toggle-faq">
             <span>How do we deploy this across an entire district or campus?</span>
             <span class="faq-chevron">▼</span>
           </div>
@@ -1159,7 +1163,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
       </div>
 
       <div style="text-align: center; margin-top: 36px;">
-        <button class="btn btn-ghost" onclick="openModal('contact-modal')">
+        <button class="btn btn-ghost" data-action="open-modal" data-modal="contact">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           Send Deployment Inquiry Directly
         </button>
@@ -1170,7 +1174,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
   <!-- Login Modal -->
   <div class="modal-overlay" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
     <div class="modal-box">
-      <button class="modal-close" onclick="closeModal('login-modal')" aria-label="Close dialog">✕</button>
+      <button class="modal-close" data-action="close-modal" data-modal="login" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="login-modal-title">Teacher &amp; Admin Sign In</h2>
       <p class="modal-sub">Log in to manage your school computer lab.</p>
       <div class="alert-box" id="login-alert" role="alert"></div>
@@ -1186,7 +1190,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Lab Console</button>
       </form>
       <div class="modal-switch">
-        New school? <a onclick="switchModal('login-modal', 'register-modal')">Register your lab</a>
+        New school? <a href="/register" data-action="switch-modal" data-close="login" data-modal="register">Register your lab</a>
       </div>
     </div>
   </div>
@@ -1194,7 +1198,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
   <!-- Register Modal -->
   <div class="modal-overlay" id="register-modal" role="dialog" aria-modal="true" aria-labelledby="reg-modal-title">
     <div class="modal-box">
-      <button class="modal-close" onclick="closeModal('register-modal')" aria-label="Close dialog">✕</button>
+      <button class="modal-close" data-action="close-modal" data-modal="register" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="reg-modal-title">Register School Lab</h2>
       <p class="modal-sub">Claim your free custom subdomain and cloud console.</p>
       <div class="alert-box" id="register-alert" role="alert"></div>
@@ -1218,12 +1222,12 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
             <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\-]+" style="font-family: monospace;">
             <span style="font-family: monospace; font-size: 13px; color: var(--muted); white-space: nowrap;">.${escapeHtml(baseDomain)}</span>
           </div>
-          <div class="input-hint">Lowercase letters, numbers, hyphens only. Subject to super admin approval.</div>
+          <div class="input-hint">Lowercase letters, numbers, hyphens only. Your lab is active as soon as you register.</div>
         </div>
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Register Lab &amp; Request Subdomain</button>
+        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Register Lab &amp; Claim Subdomain</button>
       </form>
       <div class="modal-switch">
-        Already registered? <a onclick="switchModal('register-modal', 'login-modal')">Sign in</a>
+        Already registered? <a href="/login" data-action="switch-modal" data-close="register" data-modal="login">Sign in</a>
       </div>
     </div>
   </div>
@@ -1231,13 +1235,13 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
   <!-- ISO Download Modal -->
   <div class="modal-overlay" id="iso-modal" role="dialog" aria-modal="true" aria-labelledby="iso-modal-title">
     <div class="modal-box" style="max-width: 540px;">
-      <button class="modal-close" onclick="closeModal('iso-modal')" aria-label="Close dialog">✕</button>
+      <button class="modal-close" data-action="close-modal" data-modal="iso" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="iso-modal-title">Download Lab Kiosk ISO</h2>
       <p class="modal-sub">Flash to a USB drive and boot any PC or Thin Client.</p>
       <div style="background: #1e293b; border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left;">
         <h4 style="font-size: 14px; margin-bottom: 8px; color: #60a5fa;">Step 1: Write ISO to USB Drive</h4>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 14px;">
-          Download <code>labkiosk-debian12-amd64.iso</code> and flash it to an 8GB+ USB drive using <strong>Rufus</strong> (Windows, choose standard ISO mode) or <strong>balenaEtcher</strong> (Mac/Linux).
+          Download <code>labkiosk-debian12-amd64.iso</code> and flash it to a 2 GB+ USB drive using <strong>Rufus</strong> (Windows, DD image mode) or <strong>balenaEtcher</strong> (Mac/Linux).
         </p>
         <h4 style="font-size: 14px; margin-bottom: 8px; color: #60a5fa;">Step 2: Boot Client &amp; First-Boot Wizard</h4>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5;">
@@ -1251,10 +1255,10 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
   <!-- Contact Modal -->
   <div class="modal-overlay" id="contact-modal" role="dialog" aria-modal="true" aria-labelledby="contact-modal-title">
     <div class="modal-box" style="max-width: 500px;">
-      <button class="modal-close" onclick="closeModal('contact-modal')" aria-label="Close dialog">✕</button>
+      <button class="modal-close" data-action="close-modal" data-modal="contact" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="contact-modal-title">Send Deployment Inquiry</h2>
       <p class="modal-sub">Our global team responds to schools, universities, and partners within 24 hours.</p>
-      <form id="contact-form" onsubmit="handleContactSubmit(event)">
+      <form id="contact-form">
         <div class="form-group">
           <label class="form-label" for="contact-name">Your Full Name</label>
           <input type="text" class="form-input" id="contact-name" required placeholder="Dr. Jane Smith">
@@ -1305,11 +1309,11 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
       <div class="footer-col">
         <h5>Stakeholders</h5>
         <ul>
-          <li><a href="#audiences" onclick="switchAudienceTab('tab-teachers')">For Teachers</a></li>
-          <li><a href="#audiences" onclick="switchAudienceTab('tab-students')">For Students</a></li>
-          <li><a href="#audiences" onclick="switchAudienceTab('tab-universities')">For Universities</a></li>
-          <li><a href="#audiences" onclick="switchAudienceTab('tab-smc')">For School Boards (SMC)</a></li>
-          <li><a href="#audiences" onclick="switchAudienceTab('tab-corporate')">For CSR Donors</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-teachers">For Teachers</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-students">For Students</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-universities">For Universities</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-smc">For School Boards (SMC)</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-corporate">For CSR Donors</a></li>
         </ul>
       </div>
 
@@ -1321,7 +1325,7 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
           <li><a href="#specs">Hardware Specs</a></li>
           <li><a href="#security">Architecture</a></li>
           <li><a href="#faq">FAQ</a></li>
-          <li><a onclick="openModal('iso-modal')" style="cursor: pointer;">Download ISO</a></li>
+          <li><a href="/iso" data-action="open-modal" data-modal="iso">Download ISO</a></li>
         </ul>
       </div>
 
@@ -1331,22 +1335,22 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
           <li><span style="color: #cbd5e1; font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
           <li><span style="color: #cbd5e1; font-size: 13px;">Support:</span> <a href="mailto:support@akbhoi.com">support@akbhoi.com</a></li>
           <li><span style="color: #cbd5e1; font-size: 13px;">Partners:</span> <a href="mailto:partners@akbhoi.com">partners@akbhoi.com</a></li>
-          <li><a onclick="openModal('contact-modal')" style="color: #60a5fa; cursor: pointer; font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
+          <li><a href="/contact" data-action="open-modal" data-modal="contact" style="color: #60a5fa; font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
         </ul>
       </div>
     </div>
 
     <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Akbhoi Innovations • Free &amp; Open Source (MIT)</div>
+      <div>&copy; 2026 Lab Kiosk OS • Akbhoi Innovations • Source-available under BSL 1.1, free for schools</div>
       <div style="display: flex; gap: 16px;">
-        <a onclick="openModal('login-modal')" style="cursor: pointer;">Sign In</a>
-        <a onclick="openModal('register-modal')" style="cursor: pointer;">Register School</a>
+        <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
+        <a href="/register" data-action="open-modal" data-modal="register">Register School</a>
         <a href="#security">Security</a>
       </div>
     </div>
   </footer>
 
-  <script>
+  <script nonce="${escapeHtml(data.nonce)}">
     function openModal(id) {
       const el = document.getElementById(id);
       if (el) el.classList.add('active');
@@ -1378,6 +1382,41 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
       if (iconClose) iconClose.style.display = willOpen ? 'block' : 'none';
       document.body.style.overflow = willOpen ? 'hidden' : '';
     }
+
+    // One delegated listener replaces inline handlers: the Content-Security-Policy
+    // allows only nonce-carrying script blocks, never on*= attributes.
+    document.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-action]');
+      if (!target) return;
+      const action = target.dataset.action;
+      if (action === 'open-modal') {
+        event.preventDefault();
+        openModal(target.dataset.modal + '-modal');
+      } else if (action === 'close-modal') {
+        closeModal(target.dataset.modal + '-modal');
+      } else if (action === 'switch-modal') {
+        event.preventDefault();
+        switchModal(target.dataset.close + '-modal', target.dataset.modal + '-modal');
+      } else if (action === 'drawer-open-modal') {
+        toggleMobileNav(false);
+        openModal(target.dataset.modal + '-modal');
+      } else if (action === 'close-drawer') {
+        toggleMobileNav(false);
+      } else if (action === 'toggle-drawer') {
+        toggleMobileNav();
+      } else if (action === 'audience-tab') {
+        switchAudienceTab(target.dataset.tab);
+      } else if (action === 'sim-view') {
+        setSimView(target.dataset.view);
+      } else if (action === 'sim-broadcast') {
+        simulateBroadcast();
+      } else if (action === 'sim-app') {
+        alert(target.dataset.message);
+      } else if (action === 'toggle-faq') {
+        toggleFaq(target);
+      }
+    });
+    document.getElementById('contact-form').addEventListener('submit', handleContactSubmit);
 
     // Escape key closes modals and mobile drawer
     window.addEventListener('keydown', (e) => {
@@ -1522,7 +1561,6 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         });
         const data = await res.json();
         if (data.status === 'ok') {
-          alert('Registration successful! Subdomain request submitted. Redirecting to your dashboard...');
           if (data.subdomain) {
             window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
           } else {
