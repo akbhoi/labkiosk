@@ -3,36 +3,120 @@ set -e
 
 echo "[Hook] Applying Lab Kiosk Lockdown and User Setup..."
 
-# 1. Create kiosk unprivileged user if not existing
+# The cloudflared release to install is pinned in
+# config/includes.chroot/usr/share/labkiosk/cloudflared.pin. A binary is only
+# installed when both a version and its SHA-256 are pinned there.
+CLOUDFLARED_PIN="/usr/share/labkiosk/cloudflared.pin"
+
+# 1. Create the unprivileged kiosk user.
+#    The account is LOCKED, not password-less: `passwd -d` would leave an empty
+#    password that any getty or SSH service would happily accept.
 if ! id -u kiosk >/dev/null 2>&1; then
     useradd -m -s /bin/bash -G audio,video,input,render kiosk
-    passwd -d kiosk || true
 fi
+passwd -l kiosk || true
+passwd -l root || true
 
-# 2. Make autostart and agent executable
+# 2. Ownership so the agent can do its job as the kiosk user.
 chmod +x /etc/openbox/autostart || true
 chmod +x /opt/labkiosk/agent/agent.py || true
 chown -R kiosk:kiosk /opt/labkiosk || true
 chown -R kiosk:kiosk /etc/openbox || true
 
-# 3. Mask Virtual Terminals (TTY1..6) to prevent students from accessing shell via Ctrl+Alt+F1..F6
-systemctl mask getty@tty1.service || true
-systemctl mask getty@tty2.service || true
-systemctl mask getty@tty3.service || true
-systemctl mask getty@tty4.service || true
-systemctl mask getty@tty5.service || true
-systemctl mask getty@tty6.service || true
-systemctl mask serial-getty@.service || true
+#    The agent rewrites Chromium's managed policy whenever the school's
+#    allowlist changes. Without this the directory stays root-owned and every
+#    policy sync fails silently, freezing the allowlist at its boot-time value.
+mkdir -p /etc/chromium/policies/managed
+chown -R kiosk:kiosk /etc/chromium/policies/managed
 
-# 4. Enable Kiosk Services
+#    The agent's enrolment config holds a device bearer token.
+mkdir -p /etc/labkiosk
+chown kiosk:kiosk /etc/labkiosk
+chmod 700 /etc/labkiosk
+
+# 3. Mask virtual terminals so Ctrl+Alt+F1..F6 cannot reach a login prompt.
+for tty in 1 2 3 4 5 6; do
+    systemctl mask "getty@tty${tty}.service" || true
+done
+systemctl mask serial-getty@.service || true
+systemctl mask debug-shell.service || true
+
+# 4. Stop the X server from switching VTs or being killed with Ctrl+Alt+Backspace.
+#    Masked gettys hide the login prompt; this removes the escape itself.
+mkdir -p /etc/X11/xorg.conf.d
+cat << 'EOF' > /etc/X11/xorg.conf.d/10-kiosk-lockdown.conf
+Section "ServerFlags"
+    Option "DontVTSwitch" "true"
+    Option "DontZap"      "true"
+    Option "BlankTime"    "0"
+    Option "StandbyTime"  "0"
+    Option "SuspendTime"  "0"
+    Option "OffTime"      "0"
+EndSection
+EOF
+
+# 5. Allow the kiosk user to reboot and power off, and nothing else.
+#    These are the only privileged actions the agent performs; without a rule it
+#    runs as an unprivileged user and the teacher's shutdown command silently
+#    does nothing.
+mkdir -p /etc/polkit-1/rules.d
+cat << 'EOF' > /etc/polkit-1/rules.d/50-labkiosk-power.rules
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "kiosk") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id === "org.freedesktop.login1.reboot" ||
+        action.id === "org.freedesktop.login1.reboot-multiple-sessions" ||
+        action.id === "org.freedesktop.login1.power-off" ||
+        action.id === "org.freedesktop.login1.power-off-multiple-sessions") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
+EOF
+
+# 6. Enable kiosk services.
 systemctl enable kiosk-x11.service || true
 systemctl enable cloudflared-kiosk.service || true
 
-# 5. Download standalone cloudflared binary if not present
-if [ ! -f /usr/local/bin/cloudflared ]; then
-    echo "[Hook] Downloading cloudflared binary..."
-    curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared || true
-    chmod +x /usr/local/bin/cloudflared || true
+# 7. Install cloudflared, but only from a pinned, checksum-verified release.
+#    Previously this downloaded the "latest" binary with `|| true`, so the image
+#    shipped whatever the network returned, unverified, and carried on silently
+#    when the download failed entirely.
+CLOUDFLARED_VERSION=""
+CLOUDFLARED_SHA256=""
+if [ -f "$CLOUDFLARED_PIN" ]; then
+    CLOUDFLARED_VERSION="$(sed -n 's/^VERSION=//p' "$CLOUDFLARED_PIN" | tr -d '[:space:]')"
+    CLOUDFLARED_SHA256="$(sed -n 's/^SHA256=//p' "$CLOUDFLARED_PIN" | tr -d '[:space:]')"
+fi
+
+if [ -f /usr/local/bin/cloudflared ]; then
+    echo "[Hook] cloudflared already present; leaving it untouched."
+elif [ -z "$CLOUDFLARED_VERSION" ] || [ -z "$CLOUDFLARED_SHA256" ]; then
+    echo "[Hook] No cloudflared release pinned in $CLOUDFLARED_PIN."
+    echo "[Hook] Building without the Cloudflare Tunnel binary. Remote control over"
+    echo "[Hook] the tunnel will be unavailable until a release is pinned; see that"
+    echo "[Hook] file for instructions."
+else
+    echo "[Hook] Downloading cloudflared ${CLOUDFLARED_VERSION}..."
+    DOWNLOAD_URL="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64"
+    if ! curl -fsSL "$DOWNLOAD_URL" -o /tmp/cloudflared; then
+        echo "[Hook] ERROR: could not download cloudflared from $DOWNLOAD_URL" >&2
+        exit 1
+    fi
+
+    ACTUAL_SHA="$(sha256sum /tmp/cloudflared | cut -d' ' -f1)"
+    if [ "$ACTUAL_SHA" != "$CLOUDFLARED_SHA256" ]; then
+        echo "[Hook] ERROR: cloudflared checksum mismatch." >&2
+        echo "[Hook]   expected: $CLOUDFLARED_SHA256" >&2
+        echo "[Hook]   actual:   $ACTUAL_SHA" >&2
+        echo "[Hook] Refusing to ship an unverified binary." >&2
+        rm -f /tmp/cloudflared
+        exit 1
+    fi
+
+    install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
+    rm -f /tmp/cloudflared
 fi
 
 echo "[Hook] Lockdown configuration applied successfully."

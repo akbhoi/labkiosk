@@ -19,16 +19,12 @@ jobs:
 
       - name: Build ISO using Docker Container
         run: |
-          cd distro-builder
-          docker build -t labkiosk-iso-builder .
-          mkdir -p out
-          docker run --privileged --rm -v $(pwd)/out:/build/out labkiosk-iso-builder
+          docker build -t labkiosk-iso-builder distro-builder
+          mkdir -p distro-builder/out
+          docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" labkiosk-iso-builder
 
-      - name: Calculate Checksums
-        run: |
-          cd distro-builder/out
-          sha256sum labkiosk-debian12-amd64.iso > labkiosk-debian12-amd64.iso.sha256
-          cat labkiosk-debian12-amd64.iso.sha256
+      - name: Show Checksum
+        run: cat distro-builder/out/labkiosk-debian12-amd64.iso.sha256
 
       - name: Upload ISO Artifact
         uses: actions/upload-artifact@v4

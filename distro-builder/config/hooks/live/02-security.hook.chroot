@@ -3,24 +3,76 @@ set -e
 
 echo "[Hook] Hardening Kernel & System Parameters..."
 
-# 1. Disable Magic SysRq key combinations
+GRUB_PIN="/usr/share/labkiosk/grub.pin"
+
+# 1. Kernel hardening.
+#    kernel.sysrq=0 removes the Magic SysRq escape hatches (including
+#    Alt+SysRq+B to reboot and the "unRaw" keyboard grab break).
 cat << 'EOF' > /etc/sysctl.d/99-kiosk-lockdown.conf
 kernel.sysrq = 0
+kernel.dmesg_restrict = 1
+kernel.kptr_restrict = 2
 fs.protected_hardlinks = 1
 fs.protected_symlinks = 1
+fs.protected_fifos = 2
+fs.protected_regular = 2
 fs.suid_dumpable = 0
 EOF
 
-# 2. Disable coredumps
+# 2. Disable coredumps.
 cat << 'EOF' >> /etc/security/limits.conf
 * hard core 0
 * soft core 0
 EOF
 
-# 3. Disable GRUB timeout & splash to boot straight to kiosk
+# 3. Boot straight into the kiosk with no menu delay.
 if [ -f /etc/default/grub ]; then
     sed -i 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub || true
     sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash vt.global_cursor_default=0 consoleblank=0"/' /etc/default/grub || true
+
+    # Recovery mode is a root shell by design; it has no place on a kiosk.
+    if grep -q '^#*GRUB_DISABLE_RECOVERY' /etc/default/grub; then
+        sed -i 's/^#*GRUB_DISABLE_RECOVERY=.*/GRUB_DISABLE_RECOVERY="true"/' /etc/default/grub
+    else
+        echo 'GRUB_DISABLE_RECOVERY="true"' >> /etc/default/grub
+    fi
+fi
+
+# 4. Password-protect editing the boot menu.
+#    Without this, `e` at the boot menu plus `init=/bin/sh` yields a root shell
+#    before any of this image's protections have started, which defeats all of
+#    them. The hash is supplied by the deployer in grub.pin; see that file.
+GRUB_PASSWORD_HASH=""
+if [ -f "$GRUB_PIN" ]; then
+    GRUB_PASSWORD_HASH="$(sed -n 's/^PASSWORD_PBKDF2=//p' "$GRUB_PIN" | tr -d '[:space:]')"
+fi
+
+if [ -z "$GRUB_PASSWORD_HASH" ]; then
+    echo "[Hook] WARNING: no GRUB password set in $GRUB_PIN."
+    echo "[Hook] The boot menu will be editable, so a student at the keyboard can"
+    echo "[Hook] obtain a root shell with 'init=/bin/sh'. Set one before deploying"
+    echo "[Hook] to a classroom; see that file for instructions."
+elif ! printf '%s' "$GRUB_PASSWORD_HASH" | grep -q '^grub\.pbkdf2\.sha512\.'; then
+    echo "[Hook] ERROR: PASSWORD_PBKDF2 in $GRUB_PIN is not a grub-mkpasswd-pbkdf2 hash." >&2
+    echo "[Hook] Expected a value beginning 'grub.pbkdf2.sha512.'." >&2
+    exit 1
+else
+    echo "[Hook] Applying GRUB boot menu password..."
+    cat << EOF > /etc/grub.d/01_labkiosk_password
+#!/bin/sh
+exec tail -n +3 \$0
+set superusers="labkiosk"
+password_pbkdf2 labkiosk $GRUB_PASSWORD_HASH
+EOF
+    chmod 0755 /etc/grub.d/01_labkiosk_password
+
+    # Let the default entry boot unattended while still requiring the password
+    # to edit an entry or reach the GRUB command line.
+    if [ -f /etc/grub.d/10_linux ]; then
+        sed -i 's/^CLASS="\(.*\)"$/CLASS="\1 --unrestricted"/' /etc/grub.d/10_linux || true
+    fi
+
+    update-grub 2>/dev/null || true
 fi
 
 echo "[Hook] Hardening complete."

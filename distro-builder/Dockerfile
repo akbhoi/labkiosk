@@ -1,7 +1,10 @@
 # Containerized Debian Kiosk Builder
-# Usage:
-#   docker build -t labkiosk-builder .
-#   docker run --privileged -v $(pwd):/output labkiosk-builder
+# Usage (from the repository root):
+#   docker build -t labkiosk-builder distro-builder
+#   docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" labkiosk-builder
+#
+# The ISO is written to /build/out inside the container, which is the path the
+# README and the release workflow both mount.
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -22,4 +25,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY . /build/
 
-CMD ["/bin/bash", "-c", "lb clean --purge && lb config && lb build && cp live-image-amd64.hybrid.iso /output/labkiosk-debian12-amd64.iso"]
+CMD ["/bin/bash", "-c", "set -e; mkdir -p /build/out; lb clean --purge; lb config; lb build; cp live-image-amd64.hybrid.iso /build/out/labkiosk-debian12-amd64.iso; sha256sum /build/out/labkiosk-debian12-amd64.iso > /build/out/labkiosk-debian12-amd64.iso.sha256"]

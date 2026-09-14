@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev --ip 0.0.0.0",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json",
     "test": "tsx --test test/worker.test.ts"
   },
   "keywords": [
@@ -15,10 +15,11 @@
     "lab-control",
     "education"
   ],
-  "author": "School Lab Administrator",
-  "license": "MIT",
+  "author": "Lab Kiosk Contributors",
+  "license": "BUSL-1.1",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241230.0",
+    "@types/node": "^26.5.1",
     "tsx": "^4.23.13",
     "typescript": "^5.7.2",
     "wrangler": "^3.101.0"

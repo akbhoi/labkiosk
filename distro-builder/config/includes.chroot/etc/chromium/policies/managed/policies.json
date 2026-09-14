@@ -1,7 +1,10 @@
 {
-  "HomepageLocation": "file:///opt/labkiosk/wrapper/index.html",
+  "_comment": "Boot-time Chromium policy. The agent rewrites this file whenever the school's allowlist changes; keep the two in sync (see sync_chromium_policies in /opt/labkiosk/agent/agent.py). Until a workstation is enrolled the only reachable page is the local setup wizard.",
+
+  "HomepageLocation": "http://127.0.0.1:8888/setup",
   "HomepageIsNewTabPage": true,
-  "NewTabPageLocation": "file:///opt/labkiosk/wrapper/index.html",
+  "NewTabPageLocation": "http://127.0.0.1:8888/setup",
+
   "DeveloperToolsAvailability": 2,
   "PasswordManagerEnabled": false,
   "AutofillAddressEnabled": false,
@@ -10,50 +13,34 @@
   "ShowHomeButton": false,
   "PrintingEnabled": false,
   "PromptForDownloadLocation": false,
+  "DownloadRestrictions": 3,
   "DefaultDownloadDirectory": "/tmp",
   "SafeBrowsingProtectionLevel": 1,
   "HardwareAccelerationModeEnabled": true,
   "DefaultSearchProviderEnabled": false,
   "BackgroundModeEnabled": false,
-  "ExtensionInstallBlocklist": [],
-  "ExtensionInstallAllowlist": ["*"],
+  "IncognitoModeAvailability": 1,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+
+  "_extension_comment_1": "DO NOT add ExtensionInstallBlocklist with a * entry here, and do not block * via ExtensionSettings. Chromium then refuses --load-extension altogether and logs 'Loading of unpacked extensions is disabled by the administrator', which silently removes this kiosk's own navigation bar and lock curtain. An ExtensionInstallAllowlist entry does NOT override it; this was tried and verified.",
+  "_extension_comment_2": "Students cannot install extensions regardless: chrome:// is blocked so the extensions page is unreachable, the browser runs in --kiosk with no UI, the Chrome Web Store is not in URLAllowlist, and the profile directory is deleted on every launch. If a blanket block is ever required, pack the kiosk extension as a .crx first and force-install it by id.",
+
   "URLBlocklist": [
     "chrome://*",
     "edge://*",
     "about:flags",
     "about:version",
+    "javascript://*",
+    "file://*",
     "http://*",
     "https://*"
   ],
+
+  "_allowlist_comment": "Deliberately minimal at boot. The school's real allowlist arrives with the first telemetry response. Broad entries such as workers.dev were removed: anyone can deploy a proxy on a free *.workers.dev subdomain, which turned the filter into a formality.",
   "URLAllowlist": [
-    "http://127.0.0.1:*",
-    "http://localhost:*",
-    "file:///opt/labkiosk/*",
-    "khanacademy.org",
-    ".khanacademy.org",
-    "kastatic.org",
-    ".kastatic.org",
-    "kasandbox.org",
-    ".kasandbox.org",
-    "youtube.com",
-    ".youtube.com",
-    "googlevideo.com",
-    ".googlevideo.com",
-    "ytimg.com",
-    ".ytimg.com",
-    "cbse.gov.in",
-    ".cbse.gov.in",
-    "ncert.nic.in",
-    ".ncert.nic.in",
-    "scratch.mit.edu",
-    ".scratch.mit.edu",
-    "googleapis.com",
-    ".googleapis.com",
-    "gstatic.com",
-    ".gstatic.com",
-    "cloudflare.com",
-    ".cloudflare.com",
-    "workers.dev",
-    ".workers.dev"
+    "127.0.0.1",
+    "localhost",
+    "file:///opt/labkiosk/*"
   ]
 }

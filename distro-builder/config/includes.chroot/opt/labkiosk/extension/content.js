@@ -8,11 +8,79 @@
   // Only inject in top window (never in sub-iframes)
   if (window.self !== window.top) return;
 
-  const LOCAL_AGENT_API = "http://127.0.0.1:8888/api/status";
+  /**
+   * Agent state is read through the extension's service worker, not fetched
+   * directly. A content script runs in the page's origin, so a direct fetch to
+   * the agent would be cross-origin and would require the agent to answer every
+   * site with `Access-Control-Allow-Origin: *`.
+   */
+  function askAgent(message) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      try {
+        chrome.runtime.sendMessage(message, (reply) => {
+          if (settled) return;
+          settled = true;
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (!reply || !reply.ok) {
+            reject(new Error((reply && reply.error) || "Agent unavailable"));
+          } else {
+            resolve(reply);
+          }
+        });
+      } catch (err) {
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      }
+    });
+  }
   let lastTargetUrl = null;
   let isLocked = false;
 
-  // 1. Block right click and inspection shortcuts
+  // While the teacher's curtain is up, stop the page underneath from seeing any
+  // input. This is a DOM-level block, not an X11 input grab: it prevents the
+  // student interacting with the page, while Chromium's kiosk switches and the
+  // stripped Openbox keybindings cover browser- and window-level shortcuts.
+  const SWALLOWED_WHILE_LOCKED = [
+    "click", "dblclick", "mousedown", "mouseup", "wheel",
+    "keydown", "keypress", "keyup", "touchstart", "touchmove", "touchend"
+  ];
+  for (const type of SWALLOWED_WHILE_LOCKED) {
+    window.addEventListener(
+      type,
+      (e) => {
+        if (!isLocked) return;
+        // Let the curtain itself keep working; everything else is discarded.
+        if (e.composedPath && e.composedPath().some((n) => n && n.id === "labkiosk-root")) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      },
+      true
+    );
+  }
+
+  function normalizeUrl(raw) {
+    if (!raw) return "";
+    try {
+      const u = new URL(raw, window.location.href);
+      return (u.origin + u.pathname).replace(/\/+$/, "").toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  function isAtBroadcastRoot() {
+    const broadcastUrl = sessionStorage.getItem("labkiosk_broadcast_url");
+    if (!broadcastUrl) return false;
+    const cur = normalizeUrl(window.location.href);
+    const root = normalizeUrl(broadcastUrl);
+    return Boolean(cur && root && cur === root);
+  }
+
+  // 1. Block right click and inspection shortcuts + back navigation at broadcast root
   window.addEventListener("contextmenu", (e) => e.preventDefault(), true);
   window.addEventListener(
     "keydown",
@@ -25,6 +93,14 @@
       ) {
         e.preventDefault();
         e.stopPropagation();
+      } else if (
+        (e.altKey && e.key === "ArrowLeft") ||
+        (e.key === "Backspace" && !["INPUT", "TEXTAREA"].includes((document.activeElement && document.activeElement.tagName) || ""))
+      ) {
+        if (isAtBroadcastRoot()) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
       }
     },
     true
@@ -32,7 +108,13 @@
 
   // 2. Create Isolated Shadow DOM Container for Top Bar & Curtain
   function initKioskUi() {
-    if (document.getElementById("labkiosk-root")) return;
+    // Always return a usable shadow root. Returning undefined when the UI already
+    // exists let a second call (DOMContentLoaded firing after the first sync tick
+    // had already built it) overwrite `shadowRoot` with undefined, after which the
+    // status loop skipped its whole update block: the bar still rendered and its
+    // dot kept its default green, but the lock curtain never appeared again.
+    const existing = document.getElementById("labkiosk-root");
+    if (existing) return existing.shadowRoot;
 
     const host = document.createElement("div");
     host.id = "labkiosk-root";
@@ -224,7 +306,7 @@
 
         <div class="domain-pill">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-          <span id="kiosk-domain">${window.location.hostname || "Educational Resource"}</span>
+          <span id="kiosk-domain"></span>
         </div>
 
         <div class="client-meta">
@@ -240,12 +322,17 @@
             <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
           </svg>
           <h1 class="lock-title">Attention Please</h1>
-          <p class="lock-msg" id="lock-text">Screens are locked by the teacher. Please look to the front.</p>
+          <p class="lock-msg" id="lock-text">Screens locked by the instructor. Please look to the front.</p>
         </div>
       </div>
     `;
 
     document.documentElement.appendChild(host);
+
+    const domainLabel = shadow.getElementById("kiosk-domain");
+    if (domainLabel) {
+      domainLabel.textContent = window.location.hostname || "Educational Resource";
+    }
 
     // Ensure zero body margin so the page gets 100% full viewport height without overflow
     if (document.body && document.body.style.marginTop) {
@@ -317,18 +404,47 @@
     // Button event listeners
     shadow.getElementById("btn-home").onclick = async () => {
       try {
-        const res = await fetch(LOCAL_AGENT_API);
-        const data = await res.json();
-        window.location.href = data.targetUrl || "https://www.khanacademy.org";
+        const { status } = await askAgent({ type: "labkiosk:status" });
+        const target = status.targetUrl || sessionStorage.getItem("labkiosk_broadcast_url");
+        if (target) {
+          const parsed = new URL(target, window.location.href);
+          if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+            window.location.href = parsed.href;
+          }
+        }
       } catch (e) {
-        window.location.href = "https://www.khanacademy.org";
+        console.warn("[LabKiosk] Home target unavailable:", e);
       }
     };
-    shadow.getElementById("btn-back").onclick = () => window.history.back();
+    shadow.getElementById("btn-back").onclick = () => {
+      if (isAtBroadcastRoot()) {
+        console.log("[LabKiosk] Back navigation blocked at broadcast root");
+        return;
+      }
+      window.history.back();
+    };
     shadow.getElementById("btn-forward").onclick = () => window.history.forward();
     shadow.getElementById("btn-reload").onclick = () => window.location.reload();
 
+    updateNavButtonStates(shadow);
     return shadow;
+  }
+
+  function updateNavButtonStates(shadow) {
+    if (!shadow) return;
+    const btnBack = shadow.getElementById("btn-back");
+    if (!btnBack) return;
+    if (isAtBroadcastRoot()) {
+      btnBack.classList.add("disabled");
+      btnBack.style.opacity = "0.35";
+      btnBack.style.cursor = "not-allowed";
+      btnBack.title = "Back is disabled at the start of the broadcast lesson";
+    } else {
+      btnBack.classList.remove("disabled");
+      btnBack.style.opacity = "1";
+      btnBack.style.cursor = "pointer";
+      btnBack.title = "Go Back";
+    }
   }
 
   let shadowRoot = null;
@@ -336,13 +452,16 @@
   // 3. Periodic Synchronization with local agent
   async function syncLoop() {
     try {
-      if (!shadowRoot && document.body) {
-        shadowRoot = initKioskUi();
+      // A hostile or merely over-eager page can remove our host node; rebuild it
+      // rather than silently losing the lock curtain for the rest of the session.
+      if (!document.getElementById("labkiosk-root")) {
+        shadowRoot = null;
+      }
+      if (!shadowRoot && document.documentElement) {
+        shadowRoot = initKioskUi() || null;
       }
 
-      const res = await fetch(LOCAL_AGENT_API, { cache: "no-store" });
-      if (!res.ok) throw new Error("Agent not responding");
-      const data = await res.json();
+      const { status: data } = await askAgent({ type: "labkiosk:status" });
 
       if (shadowRoot) {
         // Dot status
@@ -369,10 +488,56 @@
           }
         }
 
-        // Navigate on broadcast URL
-        if (data.targetUrl && lastTargetUrl && data.targetUrl !== lastTargetUrl) {
-          if (window.location.href !== data.targetUrl && !window.location.href.startsWith(data.targetUrl)) {
-            window.location.href = data.targetUrl;
+        updateNavButtonStates(shadowRoot);
+
+        // High-priority broadcast detection by epoch or target change
+        const srvEpoch = String(data.broadcastEpoch || 0);
+        const storedEpoch = sessionStorage.getItem("labkiosk_broadcast_epoch") || "0";
+        const isNewEpoch = srvEpoch !== "0" && srvEpoch !== storedEpoch;
+        const targetChanged = data.targetUrl && lastTargetUrl && data.targetUrl !== lastTargetUrl;
+
+        if (isNewEpoch || (targetChanged && data.broadcastUrl)) {
+          let safeTarget = null;
+          try {
+            const rawTarget = data.broadcastUrl || data.targetUrl;
+            const parsed = new URL(rawTarget, window.location.href);
+            if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+              safeTarget = parsed.href;
+            }
+          } catch (err) {
+            safeTarget = null;
+          }
+
+          if (safeTarget) {
+            sessionStorage.setItem("labkiosk_broadcast_epoch", srvEpoch);
+            sessionStorage.setItem("labkiosk_broadcast_url", safeTarget);
+            lastTargetUrl = data.targetUrl;
+            if (normalizeUrl(window.location.href) !== normalizeUrl(safeTarget)) {
+              window.location.replace(safeTarget);
+              return;
+            }
+          }
+        } else if (srvEpoch === "0" && storedEpoch !== "0") {
+          // Broadcast session ended / reset by teacher
+          sessionStorage.removeItem("labkiosk_broadcast_epoch");
+          sessionStorage.removeItem("labkiosk_broadcast_url");
+          if (data.targetUrl && normalizeUrl(window.location.href) !== normalizeUrl(data.targetUrl)) {
+            window.location.replace(data.targetUrl);
+            return;
+          }
+        } else if (data.targetUrl && lastTargetUrl && data.targetUrl !== lastTargetUrl) {
+          let safeTarget = null;
+          try {
+            const parsed = new URL(data.targetUrl, window.location.href);
+            if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+              safeTarget = parsed.href;
+            }
+          } catch (err) {
+            safeTarget = null;
+          }
+          if (safeTarget && normalizeUrl(window.location.href) !== normalizeUrl(safeTarget)) {
+            window.location.replace(safeTarget);
+            return;
           }
         }
         lastTargetUrl = data.targetUrl;
@@ -386,13 +551,19 @@
   }
 
   // Initialize
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-      shadowRoot = initKioskUi();
-    });
-  } else {
-    shadowRoot = initKioskUi();
+  function ensureKioskUi() {
+    const root = initKioskUi();
+    if (root) shadowRoot = root;
   }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ensureKioskUi);
+  } else {
+    ensureKioskUi();
+  }
+  // Run one sync immediately so a locked screen stays locked across navigation
+  // rather than flashing the page for a second first.
+  syncLoop();
 
   setInterval(syncLoop, 1000);
 })();

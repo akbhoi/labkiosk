@@ -4,33 +4,53 @@
  */
 
 import { Tenant, PortalSite } from "./types";
+import { escapeHtml, safeHttpUrl } from "./escape";
 
 export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
-  const cardsHtml = sites.map((site) => `
-    <div class="app-card" onclick="window.location.href='${site.url}'">
-      <div class="card-thumb" style="background-image: url('${site.thumbnail_url || "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80"}')">
-        <span class="card-category">${site.category}</span>
+  const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
+
+  // Card content is teacher-supplied. Cards are anchors rather than divs with an
+  // inline navigation handler, so a hostile URL cannot become executable markup,
+  // and a non-http(s) URL is dropped entirely rather than rendered.
+  const cardsHtml = sites
+    .map((site) => {
+      const href = safeHttpUrl(site.url);
+      if (!href) return "";
+      const thumb = safeHttpUrl(site.thumbnail_url) || FALLBACK_THUMBNAIL;
+      return `
+    <a class="app-card" href="${escapeHtml(href)}" rel="noopener noreferrer">
+      <div class="card-thumb" style="background-image: url('${escapeHtml(thumb)}')">
+        <span class="card-category">${escapeHtml(site.category)}</span>
       </div>
       <div class="card-body">
         <div class="card-header">
-          <span class="card-icon">${site.icon || "🌐"}</span>
-          <h3 class="card-title">${site.title}</h3>
+          <span class="card-icon">${escapeHtml(site.icon || "🌐")}</span>
+          <h3 class="card-title">${escapeHtml(site.title)}</h3>
         </div>
-        <p class="card-domain">${site.domain}</p>
-        <button class="launch-btn">
+        <p class="card-domain">${escapeHtml(site.domain)}</p>
+        <span class="launch-btn">
           <span>Launch App</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-        </button>
+        </span>
       </div>
-    </div>
-  `).join("");
+    </a>
+  `;
+    })
+    .join("");
+
+  const emptyState = `
+    <div class="portal-empty">
+      <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      <div>No learning applications have been added yet.</div>
+      <div class="portal-empty-hint">Your teacher can add them from the lab console.</div>
+    </div>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${tenant.name} - Student Learning Portal</title>
+  <title>${escapeHtml(tenant.name)} - ${escapeHtml(tenant.portal_title || "Student Learning Portal")}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -149,6 +169,8 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
       gap: 24px;
     }
     .app-card {
+      text-decoration: none;
+      color: inherit;
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 16px;
@@ -241,6 +263,20 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
       border-color: var(--accent);
       color: #ffffff;
     }
+    .portal-empty {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 60px 24px;
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      color: var(--text-muted);
+      font-size: 15px;
+      text-align: center;
+    }
+    .portal-empty-hint { font-size: 13px; opacity: 0.8; }
     footer {
       text-align: center;
       padding: 24px;
@@ -257,8 +293,8 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
       <div>
-        <div class="brand-name">${tenant.name}</div>
-        <div class="brand-sub">Computer Lab Learning Portal</div>
+        <div class="brand-name">${escapeHtml(tenant.name)}</div>
+        <div class="brand-sub">${escapeHtml(tenant.portal_subtitle || "Computer Lab Learning Portal")}</div>
       </div>
     </div>
     <div class="header-meta">
@@ -272,17 +308,17 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
 
   <main>
     <div class="portal-hero">
-      <h1 class="portal-title">Select an Educational Resource</h1>
-      <p class="portal-desc">Click any approved application below to begin your lesson. All external access is filtered and managed by your teacher.</p>
+      <h1 class="portal-title">${escapeHtml(tenant.portal_title || "Select an Educational Resource")}</h1>
+      <p class="portal-desc">${escapeHtml(tenant.portal_description || "Click any approved application below to begin your lesson. All external access is filtered and managed by your teacher.")}</p>
     </div>
 
     <div class="grid">
-      ${cardsHtml}
+      ${cardsHtml || emptyState}
     </div>
   </main>
 
   <footer>
-    Protected by Lab Kiosk OS • Educational Environment Restricted
+    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Educational Environment Restricted")}
   </footer>
 
   <script>

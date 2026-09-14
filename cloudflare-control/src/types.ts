@@ -23,8 +23,25 @@ export interface Tenant {
   mode: KioskMode;
   default_url: string;
   admin_pin: string;
+  enrollment_key: string;
+  custom_domain?: string | null;
+  requested_custom_domain?: string | null;
+  custom_domain_status?: "none" | "pending" | "approved" | "rejected";
+  default_lock_message?: string;
+  portal_title?: string | null;
+  portal_subtitle?: string | null;
+  portal_description?: string | null;
+  portal_footer?: string | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface BroadcastPreset {
+  id: string;
+  tenant_id: string;
+  title: string;
+  url: string;
+  created_at: number;
 }
 
 export interface Session {
@@ -63,6 +80,32 @@ export interface ClientDevice {
   updated_at: number;
 }
 
+export interface DeviceToken {
+  id: string;
+  token_hash: string;
+  tenant_id: string;
+  client_id: string;
+  created_at: number;
+  last_used_at: number;
+  revoked: number; // 0 or 1
+}
+
+export interface WhitelistEntry {
+  id: string;
+  tenant_id: string;
+  domain: string;
+  created_at: number;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  tenant_id?: string | null;
+  user_id?: string | null;
+  action: string;
+  details?: string | null;
+  created_at: number;
+}
+
 export interface ClientTelemetry {
   clientId: string; // e.g. "PC-01"
   clientNum: number; // e.g. 1..40
@@ -81,25 +124,35 @@ export interface RemoteCommand {
   action: CommandAction;
   url?: string;
   message?: string;
+  epoch?: number;
   timestamp: number;
 }
 
 export interface LabConfig {
   version: number;
   updatedAt: string;
-  adminPin: string;
-  totalClients: number;
   defaultHomepage: string;
   tunnelDomain: string;
+  /** Effective allowlist for this school: its own domains plus portal app hosts. */
   whitelist: string[];
   scheduledShutdown: string;
 }
 
 export interface Env {
   DB?: D1Database;
-  LAB_KIOSK_KV?: KVNamespace;
   SUPER_ADMIN_EMAIL?: string;
   SUPER_ADMIN_PASSWORD?: string;
-  DEFAULT_DOMAIN?: string; // e.g. "labkiosk.io"
+  DEFAULT_DOMAIN?: string; // e.g. "labkiosk.akbhoi.com"
+  /**
+   * Opt-in to the ephemeral in-memory database (tests & local dev only).
+   * Without it a missing DB binding is a hard failure rather than silent data loss.
+   */
+  ALLOW_LOCAL_DB?: string;
+  /** Public download URL for the built kiosk ISO, shown on the landing page. */
+  ISO_DOWNLOAD_URL?: string;
+  /** Cloudflare Tunnel domain for remote management (VNC). Defaults to lab.myschool.edu. */
+  TUNNEL_DOMAIN?: string;
+  /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.akbhoi.com. */
+  DEFAULT_HOMEPAGE?: string;
 }
 

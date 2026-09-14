@@ -32,6 +32,7 @@ chromium-sandbox
 fonts-dejavu
 fonts-liberation
 fonts-noto-core
+fonts-noto-color-emoji
 
 # Remote Management & Networking
 x11vnc

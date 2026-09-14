@@ -1,0 +1,18 @@
+# Pinned cloudflared release for the kiosk image.
+#
+# The build refuses to ship an unverified binary, so both values below must be
+# filled in before an ISO can be produced. To pin a release:
+#
+#   VERSION=2024.12.2
+#   curl -fsSLO "https://github.com/cloudflare/cloudflared/releases/download/${VERSION}/cloudflared-linux-amd64"
+#   sha256sum cloudflared-linux-amd64
+#
+# Paste the version and the resulting hash here, commit them, and
+# config/hooks/live/01-lockdown.hook.chroot will verify every build against them.
+#
+# Leave SHA256 empty to build an image without the Cloudflare Tunnel binary:
+# the tunnel service is already gated on /etc/cloudflared/config.yml existing,
+# so the image still boots, it simply has no remote-access tunnel.
+
+VERSION=
+SHA256=

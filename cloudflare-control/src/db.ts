@@ -3,8 +3,19 @@
  * Handles schema initialization, Super Admin seeding, multi-tenant queries, and device state.
  */
 
-import { User, Tenant, Session, PortalSite, ClientDevice, RemoteCommand, CommandAction } from "./types";
-import { hashPassword } from "./auth";
+import {
+  User,
+  Tenant,
+  Session,
+  PortalSite,
+  ClientDevice,
+  RemoteCommand,
+  CommandAction,
+  DeviceToken,
+  AuditLogEntry,
+  BroadcastPreset
+} from "./types";
+import { hashPassword, sha256Hex, generateDeviceToken, generateEnrollmentKey } from "./auth";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -27,6 +38,15 @@ CREATE TABLE IF NOT EXISTS tenants (
   mode TEXT NOT NULL DEFAULT 'portal' CHECK (mode IN ('portal', 'single_url')),
   default_url TEXT NOT NULL DEFAULT 'https://www.khanacademy.org',
   admin_pin TEXT NOT NULL DEFAULT '1234',
+  enrollment_key TEXT NOT NULL DEFAULT '',
+  custom_domain TEXT UNIQUE,
+  requested_custom_domain TEXT,
+  custom_domain_status TEXT NOT NULL DEFAULT 'none',
+  default_lock_message TEXT NOT NULL DEFAULT 'Screens locked by the instructor. Please look to the front.',
+  portal_title TEXT,
+  portal_subtitle TEXT,
+  portal_description TEXT,
+  portal_footer TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -86,14 +106,79 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS device_tokens (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT UNIQUE NOT NULL,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS tenant_whitelist (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  domain TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (tenant_id, domain)
+);
+
+CREATE TABLE IF NOT EXISTS command_deliveries (
+  command_id TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  delivered_at INTEGER NOT NULL,
+  PRIMARY KEY (command_id, client_id)
+);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+  identifier TEXT PRIMARY KEY,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  last_failed_at INTEGER NOT NULL,
+  locked_until INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS broadcast_presets (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
+CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
+CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain_status ON tenants(custom_domain_status);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_portal_sites_tenant ON portal_sites(tenant_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_client_devices_tenant ON client_devices(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_commands_tenant_target ON commands(tenant_id, target, expires_at);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_tenant ON device_tokens(tenant_id, client_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_command_deliveries_client ON command_deliveries(client_id, delivered_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 `;
+
+/**
+ * Domains every new school starts with. Schools edit their own copy from the
+ * dashboard; nothing here is shared mutable state between tenants.
+ */
+export const DEFAULT_WHITELIST_DOMAINS = [
+  "khanacademy.org",
+  "kastatic.org",
+  "kasandbox.org",
+  "scratch.mit.edu",
+  "ck12.org",
+  "geogebra.org",
+  "phet.colorado.edu",
+  "wikipedia.org",
+  "wikimedia.org",
+  "cbse.gov.in",
+  "ncert.nic.in"
+];
 
 /**
  * Initializes database schema if not already present
@@ -122,14 +207,26 @@ export async function initSchema(db: D1Database): Promise<void> {
  */
 export async function ensureSuperAdmin(
   db: D1Database,
-  email: string = "admin@labkiosk.io",
+  email: string = "admin@akbhoi.com",
   password: string = "SuperAdmin2026!"
 ): Promise<User> {
   const existing = await db
     .prepare("SELECT * FROM users WHERE role = 'super_admin' LIMIT 1")
     .first<User>();
 
-  if (existing) return existing;
+  if (existing) {
+    // If the database was initialized with the legacy placeholder admin@labkiosk.io
+    // or if the target super admin email changed, migrate it to the current credentials.
+    if (existing.email === "admin@labkiosk.io" || (email && existing.email !== email.toLowerCase())) {
+      const { hashHex, saltHex } = await hashPassword(password);
+      await db
+        .prepare("UPDATE users SET email = ?, password_hash = ?, salt = ? WHERE id = ?")
+        .bind(email.toLowerCase(), hashHex, saltHex, existing.id)
+        .run();
+      return { ...existing, email: email.toLowerCase(), password_hash: hashHex, salt: saltHex };
+    }
+    return existing;
+  }
 
   const { hashHex, saltHex } = await hashPassword(password);
   const id = crypto.randomUUID();
@@ -224,6 +321,17 @@ export async function findTenantBySubdomain(
     .first<Tenant>();
 }
 
+export async function findTenantByCustomDomain(
+  db: D1Database,
+  domain: string
+): Promise<Tenant | null> {
+  if (!domain) return null;
+  return await db
+    .prepare("SELECT * FROM tenants WHERE custom_domain = ?")
+    .bind(domain.toLowerCase())
+    .first<Tenant>();
+}
+
 export async function findTenantById(db: D1Database, id: string): Promise<Tenant | null> {
   return await db.prepare("SELECT * FROM tenants WHERE id = ?").bind(id).first<Tenant>();
 }
@@ -241,6 +349,11 @@ export async function createTenant(
     status?: "active" | "pending";
     mode?: "portal" | "single_url";
     defaultUrl?: string;
+    defaultLockMessage?: string;
+    portalTitle?: string | null;
+    portalSubtitle?: string | null;
+    portalDescription?: string | null;
+    portalFooter?: string | null;
   }
 ): Promise<Tenant> {
   const id = crypto.randomUUID();
@@ -248,17 +361,37 @@ export async function createTenant(
   const status = data.status || "pending";
   const mode = data.mode || "portal";
   const defaultUrl = data.defaultUrl || "https://www.khanacademy.org";
+  const defaultLockMessage =
+    data.defaultLockMessage || "Screens locked by the instructor. Please look to the front.";
+  const enrollmentKey = generateEnrollmentKey();
 
   await db
     .prepare(
-      `INSERT INTO tenants (id, user_id, name, subdomain, status, mode, default_url, admin_pin, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, '1234', ?, ?)`
+      `INSERT INTO tenants (id, user_id, name, subdomain, status, mode, default_url, admin_pin, enrollment_key, default_lock_message, portal_title, portal_subtitle, portal_description, portal_footer, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '1234', ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, data.userId, data.name, data.subdomain.toLowerCase(), status, mode, defaultUrl, now, now)
+    .bind(
+      id,
+      data.userId,
+      data.name,
+      data.subdomain.toLowerCase(),
+      status,
+      mode,
+      defaultUrl,
+      enrollmentKey,
+      defaultLockMessage,
+      data.portalTitle || null,
+      data.portalSubtitle || null,
+      data.portalDescription || null,
+      data.portalFooter || null,
+      now,
+      now
+    )
     .run();
 
-  // Populate default educational portal cards
+  // Populate default educational portal cards and the school's own allowlist
   await seedDefaultPortalSites(db, id);
+  await seedDefaultWhitelist(db, id);
 
   return {
     id,
@@ -269,6 +402,12 @@ export async function createTenant(
     mode,
     default_url: defaultUrl,
     admin_pin: "1234",
+    enrollment_key: enrollmentKey,
+    default_lock_message: defaultLockMessage,
+    portal_title: data.portalTitle || null,
+    portal_subtitle: data.portalSubtitle || null,
+    portal_description: data.portalDescription || null,
+    portal_footer: data.portalFooter || null,
     created_at: now,
     updated_at: now
   };
@@ -350,6 +489,29 @@ export async function seedDefaultPortalSites(db: D1Database, tenantId: string): 
   }
 }
 
+/**
+ * Columns a caller may change. Anything outside this set is rejected rather
+ * than interpolated into the statement, so no caller can shape the SQL.
+ */
+const MUTABLE_TENANT_COLUMNS = new Set([
+  "name",
+  "subdomain",
+  "requested_subdomain",
+  "status",
+  "mode",
+  "default_url",
+  "admin_pin",
+  "enrollment_key",
+  "custom_domain",
+  "requested_custom_domain",
+  "custom_domain_status",
+  "default_lock_message",
+  "portal_title",
+  "portal_subtitle",
+  "portal_description",
+  "portal_footer"
+]);
+
 export async function updateTenant(
   db: D1Database,
   id: string,
@@ -359,9 +521,15 @@ export async function updateTenant(
   const values: any[] = [];
 
   for (const [key, val] of Object.entries(updates)) {
+    if (!MUTABLE_TENANT_COLUMNS.has(key)) {
+      throw new Error(`Refusing to update unknown or protected tenant column: ${key}`);
+    }
     fields.push(`${key} = ?`);
     values.push(val);
   }
+
+  if (fields.length === 0) return;
+
   fields.push("updated_at = ?");
   values.push(Math.floor(Date.now() / 1000));
   values.push(id);
@@ -370,6 +538,69 @@ export async function updateTenant(
     .prepare(`UPDATE tenants SET ${fields.join(", ")} WHERE id = ?`)
     .bind(...values)
     .run();
+}
+
+/** Issue a fresh enrollment key, invalidating the previous one. */
+export async function regenerateEnrollmentKey(db: D1Database, tenantId: string): Promise<string> {
+  const key = generateEnrollmentKey();
+  await updateTenant(db, tenantId, { enrollment_key: key });
+  return key;
+}
+
+/** Find an active tenant by its enrollment key. */
+export async function findTenantByEnrollmentKey(db: D1Database, key: string): Promise<Tenant | null> {
+  const cleanKey = String(key || "").trim().toUpperCase();
+  if (!cleanKey) return null;
+  const row = await db.prepare("SELECT * FROM tenants WHERE enrollment_key = ? AND status = 'active' LIMIT 1")
+    .bind(cleanKey)
+    .first<Tenant>();
+  return row || null;
+}
+
+/** Submit a custom domain request for superadmin review. */
+export async function requestCustomDomain(
+  db: D1Database,
+  tenantId: string,
+  domain: string
+): Promise<void> {
+  await updateTenant(db, tenantId, {
+    requested_custom_domain: domain.toLowerCase().trim(),
+    custom_domain_status: "pending"
+  });
+}
+
+/** Approve and assign a custom domain to a school. */
+export async function approveCustomDomain(
+  db: D1Database,
+  tenantId: string,
+  domain?: string
+): Promise<void> {
+  const targetDomain = domain
+    ? domain.toLowerCase().trim()
+    : (await findTenantById(db, tenantId))?.requested_custom_domain;
+  if (!targetDomain) throw new Error("No custom domain specified or requested");
+  await updateTenant(db, tenantId, {
+    custom_domain: targetDomain,
+    requested_custom_domain: null,
+    custom_domain_status: "approved"
+  });
+}
+
+/** Reject a pending custom domain request. */
+export async function rejectCustomDomain(db: D1Database, tenantId: string): Promise<void> {
+  await updateTenant(db, tenantId, {
+    requested_custom_domain: null,
+    custom_domain_status: "rejected"
+  });
+}
+
+/** Remove an active custom domain from a school. */
+export async function removeCustomDomain(db: D1Database, tenantId: string): Promise<void> {
+  await updateTenant(db, tenantId, {
+    custom_domain: null,
+    requested_custom_domain: null,
+    custom_domain_status: "none"
+  });
 }
 
 export async function listAllTenants(db: D1Database): Promise<any[]> {
@@ -435,10 +666,12 @@ export async function createPortalSite(
   }
 ): Promise<PortalSite> {
   const id = crypto.randomUUID();
-  let domain = "educational.org";
+  let domain: string;
   try {
     domain = new URL(data.url).hostname.replace(/^www\./, "");
-  } catch (e) {}
+  } catch (err) {
+    throw new Error(`Invalid application URL: ${data.url}`);
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const maxOrder = await db
@@ -570,12 +803,13 @@ export async function enqueueCommand(
     action: CommandAction;
     url?: string;
     message?: string;
+    epoch?: number;
   }
 ): Promise<string> {
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + 60; // 60s command TTL
-  const payloadJson = JSON.stringify({ url: data.url, message: data.message });
+  const payloadJson = JSON.stringify({ url: data.url, message: data.message, epoch: data.epoch });
 
   await db
     .prepare(
@@ -588,6 +822,15 @@ export async function enqueueCommand(
   return id;
 }
 
+/**
+ * Drain the commands a workstation has not yet seen.
+ *
+ * Broadcast commands (`target: "all"`) stay queued until they expire so a client
+ * that was offline at dispatch time still receives them, but a delivery receipt
+ * per (command, client) guarantees each workstation executes one exactly once.
+ * Previously every client re-ran a broadcast on all ~20 heartbeats within the
+ * 60s TTL, so a single "Broadcast URL" spawned ~20 browser launches per PC.
+ */
 export async function popCommandsForClient(
   db: D1Database,
   tenantId: string,
@@ -596,21 +839,30 @@ export async function popCommandsForClient(
   const now = Math.floor(Date.now() / 1000);
   const rows = await db
     .prepare(
-      `SELECT * FROM commands 
-       WHERE tenant_id = ? AND (target = 'all' OR target = ?) AND expires_at > ?
-       ORDER BY created_at ASC`
+      `SELECT c.* FROM commands c
+       WHERE c.tenant_id = ?
+         AND (c.target = 'all' OR c.target = ?)
+         AND c.expires_at > ?
+         AND NOT EXISTS (
+           SELECT 1 FROM command_deliveries d
+           WHERE d.command_id = c.id AND d.client_id = ?
+         )
+       ORDER BY c.created_at ASC`
     )
-    .bind(tenantId, clientId, now)
+    .bind(tenantId, clientId, now, clientId)
     .all<any>();
 
   const commands: RemoteCommand[] = [];
-  const idsToDelete: string[] = [];
 
   for (const row of rows.results || []) {
-    let payload: any = {};
-    try {
-      if (row.payload_json) payload = JSON.parse(row.payload_json);
-    } catch (e) {}
+    let payload: { url?: string; message?: string } = {};
+    if (row.payload_json) {
+      try {
+        payload = JSON.parse(row.payload_json);
+      } catch (err) {
+        console.warn(`[DB] Discarding malformed payload for command ${row.id}:`, err);
+      }
+    }
 
     commands.push({
       id: row.id,
@@ -618,18 +870,361 @@ export async function popCommandsForClient(
       action: row.action as CommandAction,
       url: payload.url,
       message: payload.message,
+      epoch: (payload as any).epoch,
       timestamp: row.created_at
     });
 
+    await db
+      .prepare(
+        "INSERT OR IGNORE INTO command_deliveries (command_id, client_id, delivered_at) VALUES (?, ?, ?)"
+      )
+      .bind(row.id, clientId, now)
+      .run();
+
+    // A unicast command has exactly one recipient, so it can retire immediately.
     if (row.target === clientId) {
-      idsToDelete.push(row.id);
+      await db.prepare("DELETE FROM commands WHERE id = ?").bind(row.id).run();
     }
   }
 
-  // Delete consumed unicast commands
-  for (const cid of idsToDelete) {
-    await db.prepare("DELETE FROM commands WHERE id = ?").bind(cid).run();
-  }
-
   return commands;
+}
+
+/** Remove expired commands and the delivery receipts that referenced them. */
+export async function purgeExpiredCommands(db: D1Database): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      "DELETE FROM command_deliveries WHERE command_id IN (SELECT id FROM commands WHERE expires_at <= ?)"
+    )
+    .bind(now)
+    .run();
+  await db.prepare("DELETE FROM commands WHERE expires_at <= ?").bind(now).run();
+}
+
+// ============================================================
+// DEVICE ENROLMENT & TOKENS
+// ============================================================
+
+/**
+ * Enrol a workstation and mint its bearer token.
+ * Only the SHA-256 of the token is stored, so a database read cannot be replayed
+ * against the telemetry API. Re-enrolling a client id revokes the tokens
+ * previously issued to that same workstation.
+ */
+export async function createDeviceToken(
+  db: D1Database,
+  data: { tenantId: string; clientId: string }
+): Promise<{ token: string; device: DeviceToken }> {
+  const token = generateDeviceToken();
+  const tokenHash = await sha256Hex(token);
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+
+  await revokeDeviceTokensForClient(db, data.tenantId, data.clientId);
+
+  await db
+    .prepare(
+      `INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at, revoked)
+       VALUES (?, ?, ?, ?, ?, ?, 0)`
+    )
+    .bind(id, tokenHash, data.tenantId, data.clientId, now, now)
+    .run();
+
+  return {
+    token,
+    device: {
+      id,
+      token_hash: tokenHash,
+      tenant_id: data.tenantId,
+      client_id: data.clientId,
+      created_at: now,
+      last_used_at: now,
+      revoked: 0
+    }
+  };
+}
+
+export async function findDeviceByToken(db: D1Database, token: string): Promise<DeviceToken | null> {
+  const tokenHash = await sha256Hex(token);
+  return await db
+    .prepare("SELECT * FROM device_tokens WHERE token_hash = ? AND revoked = 0")
+    .bind(tokenHash)
+    .first<DeviceToken>();
+}
+
+export async function findDeviceForClient(
+  db: D1Database,
+  tenantId: string,
+  clientId: string
+): Promise<DeviceToken | null> {
+  return await db
+    .prepare("SELECT * FROM device_tokens WHERE tenant_id = ? AND client_id = ? AND revoked = 0 LIMIT 1")
+    .bind(tenantId, clientId)
+    .first<DeviceToken>();
+}
+
+export async function touchDeviceToken(db: D1Database, id: string): Promise<void> {
+  await db
+    .prepare("UPDATE device_tokens SET last_used_at = ? WHERE id = ?")
+    .bind(Math.floor(Date.now() / 1000), id)
+    .run();
+}
+
+export async function revokeDeviceTokensForClient(
+  db: D1Database,
+  tenantId: string,
+  clientId: string
+): Promise<void> {
+  await db
+    .prepare("UPDATE device_tokens SET revoked = 1 WHERE tenant_id = ? AND client_id = ?")
+    .bind(tenantId, clientId)
+    .run();
+}
+
+// ============================================================
+// PER-TENANT DOMAIN ALLOWLIST
+// ============================================================
+
+/** Strip scheme, credentials, path and port down to a bare hostname. */
+export function normalizeDomain(raw: string): string {
+  return String(raw || "")
+    .toLowerCase()
+    .trim()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
+    .replace(/^[^@/]*@/, "")
+    .split("/")[0]
+    .split(":")[0]
+    .replace(/[^a-z0-9.-]/g, "");
+}
+
+export async function seedDefaultWhitelist(db: D1Database, tenantId: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  for (const domain of DEFAULT_WHITELIST_DOMAINS) {
+    await db
+      .prepare(
+        "INSERT OR IGNORE INTO tenant_whitelist (id, tenant_id, domain, created_at) VALUES (?, ?, ?, ?)"
+      )
+      .bind(crypto.randomUUID(), tenantId, domain, now)
+      .run();
+  }
+}
+
+export async function listWhitelistDomains(db: D1Database, tenantId: string): Promise<string[]> {
+  const res = await db
+    .prepare("SELECT domain FROM tenant_whitelist WHERE tenant_id = ? ORDER BY domain ASC")
+    .bind(tenantId)
+    .all<{ domain: string }>();
+  return (res.results || []).map((r) => r.domain);
+}
+
+export async function addWhitelistDomain(
+  db: D1Database,
+  tenantId: string,
+  rawDomain: string
+): Promise<string> {
+  const domain = normalizeDomain(rawDomain);
+  if (!domain || !domain.includes(".")) {
+    throw new Error(`Not a valid domain: ${rawDomain}`);
+  }
+  await db
+    .prepare(
+      "INSERT OR IGNORE INTO tenant_whitelist (id, tenant_id, domain, created_at) VALUES (?, ?, ?, ?)"
+    )
+    .bind(crypto.randomUUID(), tenantId, domain, Math.floor(Date.now() / 1000))
+    .run();
+  return domain;
+}
+
+export async function removeWhitelistDomain(
+  db: D1Database,
+  tenantId: string,
+  rawDomain: string
+): Promise<void> {
+  await db
+    .prepare("DELETE FROM tenant_whitelist WHERE tenant_id = ? AND domain = ?")
+    .bind(tenantId, normalizeDomain(rawDomain))
+    .run();
+}
+
+/**
+ * The complete set of domains a workstation may reach: the school's own
+ * allowlist plus the hostnames of every app card on its student portal, plus
+ * any configured single-site lockdown domain, plus custom broadcast shortcuts.
+ */
+export async function buildEffectiveWhitelist(db: D1Database, tenantId: string): Promise<string[]> {
+  const [domains, sites, presets, tenant] = await Promise.all([
+    listWhitelistDomains(db, tenantId),
+    listPortalSites(db, tenantId),
+    listBroadcastPresets(db, tenantId),
+    findTenantById(db, tenantId)
+  ]);
+  const set = new Set([...domains, ...sites.map((s) => s.domain)]);
+  for (const preset of presets) {
+    try {
+      const parsed = new URL(preset.url);
+      if (parsed.hostname) set.add(parsed.hostname.toLowerCase());
+    } catch {
+      // Ignored if invalid URL
+    }
+  }
+  if (tenant?.default_url) {
+    try {
+      const parsed = new URL(tenant.default_url);
+      if (parsed.hostname) set.add(parsed.hostname.toLowerCase());
+    } catch {
+      // Ignored if invalid URL
+    }
+  }
+  return Array.from(set).sort();
+}
+
+// ============================================================
+// BROADCAST SHORTCUT PRESETS
+// ============================================================
+
+export async function listBroadcastPresets(
+  db: D1Database,
+  tenantId: string
+): Promise<BroadcastPreset[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM broadcast_presets WHERE tenant_id = ? ORDER BY created_at ASC")
+    .bind(tenantId)
+    .all<BroadcastPreset>();
+  return results || [];
+}
+
+export async function createBroadcastPreset(
+  db: D1Database,
+  data: { tenantId: string; title: string; url: string }
+): Promise<BroadcastPreset> {
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      "INSERT INTO broadcast_presets (id, tenant_id, title, url, created_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .bind(id, data.tenantId, data.title, data.url, now)
+    .run();
+  return {
+    id,
+    tenant_id: data.tenantId,
+    title: data.title,
+    url: data.url,
+    created_at: now
+  };
+}
+
+export async function deleteBroadcastPreset(
+  db: D1Database,
+  id: string,
+  tenantId: string
+): Promise<boolean> {
+  const res = await db
+    .prepare("DELETE FROM broadcast_presets WHERE id = ? AND tenant_id = ?")
+    .bind(id, tenantId)
+    .run();
+  return (res.meta?.changes ?? 0) > 0;
+}
+
+// ============================================================
+// AUDIT LOG
+// ============================================================
+
+export async function writeAuditLog(
+  db: D1Database,
+  entry: { tenantId?: string | null; userId?: string | null; action: string; details?: string }
+): Promise<void> {
+  try {
+    await db
+      .prepare(
+        "INSERT INTO audit_logs (id, tenant_id, user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+      .bind(
+        crypto.randomUUID(),
+        entry.tenantId || null,
+        entry.userId || null,
+        entry.action,
+        entry.details || null,
+        Math.floor(Date.now() / 1000)
+      )
+      .run();
+  } catch (err) {
+    // Auditing must never break the operation it records, but a failure to
+    // record is itself worth surfacing in the worker logs.
+    console.error("[DB] Failed writing audit log:", err);
+  }
+}
+
+export async function listAuditLogs(
+  db: D1Database,
+  tenantId: string,
+  limit = 100
+): Promise<AuditLogEntry[]> {
+  const res = await db
+    .prepare("SELECT * FROM audit_logs WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?")
+    .bind(tenantId, Math.min(Math.max(limit, 1), 500))
+    .all<AuditLogEntry>();
+  return res.results || [];
+}
+
+// ============================================================
+// LOGIN THROTTLING & SESSION HYGIENE
+// ============================================================
+
+const LOCKOUT_THRESHOLD = 5;
+const LOCKOUT_BASE_SECONDS = 30;
+const LOCKOUT_MAX_SECONDS = 15 * 60;
+
+/** Seconds remaining before this identifier may attempt a login again. */
+export async function getLockoutRemaining(db: D1Database, identifier: string): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  const row = await db
+    .prepare("SELECT locked_until FROM login_attempts WHERE identifier = ?")
+    .bind(identifier)
+    .first<{ locked_until: number }>();
+  if (!row || row.locked_until <= now) return 0;
+  return row.locked_until - now;
+}
+
+export async function recordLoginFailure(db: D1Database, identifier: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const existing = await db
+    .prepare("SELECT failed_count FROM login_attempts WHERE identifier = ?")
+    .bind(identifier)
+    .first<{ failed_count: number }>();
+
+  const failed = (existing?.failed_count || 0) + 1;
+  const over = Math.max(0, failed - LOCKOUT_THRESHOLD);
+  const lockedUntil =
+    over > 0 ? now + Math.min(LOCKOUT_BASE_SECONDS * 2 ** (over - 1), LOCKOUT_MAX_SECONDS) : 0;
+
+  await db
+    .prepare(
+      `INSERT INTO login_attempts (identifier, failed_count, last_failed_at, locked_until)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(identifier) DO UPDATE SET
+         failed_count = excluded.failed_count,
+         last_failed_at = excluded.last_failed_at,
+         locked_until = excluded.locked_until`
+    )
+    .bind(identifier, failed, now, lockedUntil)
+    .run();
+}
+
+export async function clearLoginFailures(db: D1Database, identifier: string): Promise<void> {
+  await db.prepare("DELETE FROM login_attempts WHERE identifier = ?").bind(identifier).run();
+}
+
+/** Drop stale sessions so expired tokens do not accumulate indefinitely. */
+export async function deleteExpiredSessions(db: D1Database, userId?: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  if (userId) {
+    await db
+      .prepare("DELETE FROM sessions WHERE user_id = ? AND expires_at <= ?")
+      .bind(userId, now)
+      .run();
+    return;
+  }
+  await db.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now).run();
 }

@@ -89,19 +89,44 @@
     <div class="status-box" id="status-box"></div>
 
     <form id="setup-form">
-      <div class="form-group">
-        <label class="form-label">School Subdomain or Code</label>
+      <div class="form-group" id="subdomain-group">
+        <label class="form-label">Institution / Organization Subdomain</label>
         <div class="subdomain-wrap">
-          <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. greenwood" style="font-family: monospace;">
-          <span class="subdomain-suffix">.labkiosk.io</span>
+          <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: monospace;">
+          <span class="subdomain-suffix" id="subdomain-suffix">.labkiosk.akbhoi.com</span>
         </div>
-        <div class="hint-text">The subdomain you chosen when registering your school.</div>
+        <div class="hint-text">The subdomain chosen when registering your institution or lab.</div>
+      </div>
+
+      <div class="form-group" id="custom-domain-group" style="display: none;">
+        <label class="form-label">Custom Domain or Server Address</label>
+        <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: monospace;">
+        <div class="hint-text">Enter your institution's custom domain (e.g. kiosk.institution.edu) or dedicated server address.</div>
+      </div>
+
+      <div class="form-group custom-toggle-card" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 12px 14px; margin-top: -6px; margin-bottom: 20px;">
+        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: #93c5fd; user-select: none;">
+          <input type="checkbox" id="toggle-custom-domain" style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--accent);">
+          <span>Use completely custom domain / hostname</span>
+        </label>
+        <div style="font-size: 11px; color: var(--muted); margin-top: 4px; padding-left: 28px;">
+          Enable if your institution uses a custom domain (e.g. <code>kiosk.institution.edu</code>) or a dedicated server address instead of a standard <code>.labkiosk.akbhoi.com</code> subdomain.
+        </div>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Computer Identifier (PC Name)</label>
-        <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" style="font-family: monospace;">
-        <div class="hint-text">A unique identifier in your lab (e.g. PC-01, PC-02, DESK-14).</div>
+        <label class="form-label">Workstation Identifier (PC Name)</label>
+        <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: monospace;">
+        <div class="hint-text">A unique identifier in your lab or facility (e.g. PC-01, PC-02, DESK-14). Letters, numbers, hyphens and underscores.</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Workstation Enrollment Key</label>
+        <input type="text" id="enrollment-key" class="input-field" required placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" style="font-family: monospace; text-transform: uppercase;">
+        <div class="hint-text">
+          Find this in your administrator dashboard under <strong>Settings &rarr; Workstation Enrollment Key</strong>.
+          It proves this computer belongs to your organization, so keep it private.
+        </div>
       </div>
 
       <button type="submit" class="btn-submit" id="submit-btn">
@@ -115,46 +140,99 @@
     const form = document.getElementById('setup-form');
     const submitBtn = document.getElementById('submit-btn');
     const statusBox = document.getElementById('status-box');
+    const toggleCustomDomain = document.getElementById('toggle-custom-domain');
+    const subdomainGroup = document.getElementById('subdomain-group');
+    const customDomainGroup = document.getElementById('custom-domain-group');
+    const schoolSubdomainInput = document.getElementById('school-subdomain');
+    const customDomainInput = document.getElementById('custom-domain');
+    const clientIdInput = document.getElementById('client-id');
+    const subdomainSuffix = document.getElementById('subdomain-suffix');
+
+    let baseDomain = 'labkiosk.akbhoi.com';
+
+    // Fetch local agent status to dynamically load baseDomain and suggested clientId
+    async function loadAgentStatus() {
+      try {
+        const res = await fetch('http://127.0.0.1:8888/api/status');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.baseDomain) {
+            baseDomain = data.baseDomain;
+            subdomainSuffix.textContent = '.' + baseDomain;
+          }
+          if (data.clientId && !clientIdInput.value) {
+            clientIdInput.value = data.clientId;
+          }
+        }
+      } catch {
+        // Agent not reachable yet; fallback to default
+      }
+    }
+    loadAgentStatus();
+
+    toggleCustomDomain.addEventListener('change', () => {
+      if (toggleCustomDomain.checked) {
+        subdomainGroup.style.display = 'none';
+        schoolSubdomainInput.required = false;
+        customDomainGroup.style.display = 'block';
+        customDomainInput.required = true;
+        customDomainInput.focus();
+      } else {
+        customDomainGroup.style.display = 'none';
+        customDomainInput.required = false;
+        subdomainGroup.style.display = 'block';
+        schoolSubdomainInput.required = true;
+        schoolSubdomainInput.focus();
+      }
+    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const subdomain = document.getElementById('school-subdomain').value.trim().toLowerCase();
-      const clientId = document.getElementById('client-id').value.trim().toUpperCase();
+      const isCustom = toggleCustomDomain.checked;
+      const subdomain = isCustom ? '' : schoolSubdomainInput.value.trim().toLowerCase();
+      const customDomain = isCustom ? customDomainInput.value.trim() : '';
+      const clientId = clientIdInput.value.trim().toUpperCase();
+      const enrollmentKey = document.getElementById('enrollment-key').value.trim().toUpperCase();
 
       submitBtn.disabled = true;
       submitBtn.querySelector('span').textContent = 'Connecting & Verifying...';
       statusBox.style.display = 'none';
 
-      try {
-        // Send configuration to local agent daemon
-        const res = await fetch('http://127.0.0.1:8888/api/setup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subdomain, clientId })
-        });
-        const data = await res.json();
-
-        if (data.status === 'ok') {
-          statusBox.className = 'status-box status-success';
-          statusBox.innerHTML = '<strong>Successfully Connected!</strong><br>Linked to ' + (data.schoolName || subdomain) + '. Entering locked student kiosk mode...';
-          statusBox.style.display = 'block';
-
-          setTimeout(() => {
-            window.location.href = data.targetUrl || 'http://127.0.0.1:8888/api/status';
-          }, 1500);
-        } else {
-          statusBox.className = 'status-box status-error';
-          statusBox.innerHTML = '<strong>Verification Error:</strong> ' + (data.error || 'Could not connect to school subdomain.');
-          statusBox.style.display = 'block';
-          submitBtn.disabled = false;
-          submitBtn.querySelector('span').textContent = 'Verify & Connect Workstation';
-        }
-      } catch (err) {
+      const fail = (message) => {
         statusBox.className = 'status-box status-error';
-        statusBox.innerHTML = '<strong>Connection Failed:</strong> Could not communicate with local agent service.';
+        statusBox.textContent = message;
         statusBox.style.display = 'block';
         submitBtn.disabled = false;
         submitBtn.querySelector('span').textContent = 'Verify & Connect Workstation';
+      };
+
+      try {
+        const payload = { clientId, enrollmentKey };
+        if (isCustom) {
+          payload.customDomain = customDomain;
+        } else {
+          payload.subdomain = subdomain;
+        }
+
+        const res = await fetch('http://127.0.0.1:8888/api/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        if (res.ok && data.status === 'ok') {
+          statusBox.className = 'status-box status-success';
+          statusBox.textContent =
+            'Successfully connected to ' + (data.schoolName || subdomain || customDomain) +
+            ' as ' + (data.clientId || clientId) + '. Entering locked student kiosk mode...';
+          statusBox.style.display = 'block';
+          setTimeout(() => { window.location.href = data.targetUrl; }, 1500);
+        } else {
+          fail(data.error || 'Could not connect to the school.');
+        }
+      } catch (err) {
+        fail('Could not communicate with the local agent service.');
       }
     });
   </script>

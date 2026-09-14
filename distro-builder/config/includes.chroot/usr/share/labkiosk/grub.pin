@@ -1,0 +1,24 @@
+# GRUB boot-menu password for the kiosk image.
+#
+# WHY THIS MATTERS
+# Everything else in this image -- masked TTYs, disabled VT switching, locked
+# accounts, Chromium policy -- is enforced by software that GRUB starts. A
+# student who can edit the boot entry can append `init=/bin/sh` and get a root
+# shell before any of it runs. A GRUB password is what closes that door.
+#
+# HOW TO SET ONE
+#   grub-mkpasswd-pbkdf2
+# Enter a password twice; it prints a line like:
+#   PBKDF2 hash of your password is grub.pbkdf2.sha512.10000.ABC...123
+# Copy the value starting at `grub.pbkdf2.sha512.` into PASSWORD_PBKDF2 below.
+#
+# The hash is safe to commit: it is a salted PBKDF2 digest, not the password.
+# Keep the password itself with your other lab administration credentials.
+#
+# When this is set, the kiosk still boots its default entry with no prompt --
+# only editing an entry or opening the GRUB command line asks for the password.
+#
+# Leaving it empty builds an image with an unprotected boot menu. That is fine
+# for a VM or a bench test, but do not deploy it to a classroom that way.
+
+PASSWORD_PBKDF2=

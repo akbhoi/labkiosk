@@ -1,0 +1,10 @@
+{
+  // Tests run on Node, so they need Node's types. They live in a separate
+  // project so that `src/` keeps typechecking against the Workers runtime alone
+  // and cannot accidentally start depending on Node globals.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["src/**/*", "test/**/*"]
+}

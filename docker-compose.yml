@@ -7,13 +7,22 @@ services:
       dockerfile: docker-test/Dockerfile
     container_name: labkiosk-client-01
     ports:
-      - "6080:6080" # in-browser noVNC display
-      - "8888:8888" # local agent API
+      # Only the noVNC display is published. The agent's API is loopback-only
+      # inside the container, as it is on a real workstation, so drive the setup
+      # wizard from the noVNC screen rather than from the host.
+      - "6080:6080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "host.containers.internal:host-gateway"
     environment:
-      - CLIENT_ID=PC-01
-      - CLIENT_NUM=1
-      - WORKER_URL=http://host.containers.internal:8787
+      # Where the simulated workstation enrols. Override WORKER_URL in your shell
+      # to point the simulator at a different control plane -- a deployed worker,
+      # or `pnpm dev` on a non-default port. The agent accepts an http origin only
+      # for loopback and container-gateway hosts; everything else must be https.
+      - WORKER_URL=${WORKER_URL:-http://host.docker.internal:8787}
+      - LABKIOSK_DOMAIN=${LABKIOSK_DOMAIN:-labkiosk.akbhoi.com}
+      - VNC_PASSWORD=${VNC_PASSWORD:-labkiosk}
+    volumes:
+      - ./distro-builder/config/includes.chroot/opt/labkiosk:/opt/labkiosk
     shm_size: "1gb" # Sufficient shared memory for Chromium rendering
     restart: unless-stopped

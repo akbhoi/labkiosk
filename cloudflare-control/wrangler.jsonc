@@ -3,17 +3,47 @@
   "name": "labkiosk-controller",
   "main": "src/index.ts",
   "compatibility_date": "2024-12-30",
-  "compatibility_flags": [
-    "nodejs_compat"
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Multi-tenant routing: every school is a subdomain of the zone, and the
+  // apex serves the public landing page and the /super console.
+  // Replace `labkiosk.akbhoi.com` with your own zone before deploying, and make sure a
+  // wildcard DNS record (CNAME *) points at the worker.
+  "routes": [
+    { "pattern": "labkiosk.akbhoi.com/*", "zone_name": "akbhoi.com" },
+    { "pattern": "*.labkiosk.akbhoi.com/*", "zone_name": "akbhoi.com" }
   ],
+
+  // Create the database once with:
+  //   npx wrangler d1 create labkiosk-db
+  // then paste the returned uuid into `database_id` below, and apply the schema:
+  //   npx wrangler d1 migrations apply labkiosk-db --remote
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "labkiosk-db",
-      "database_id": "labkiosk_db_id",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
       "migrations_dir": "migrations"
     }
   ],
+
+  "vars": {
+    // The apex domain used for subdomain routing and for scoping the session
+    // cookie so a login on the apex is still valid on a school subdomain.
+    "DEFAULT_DOMAIN": "labkiosk.akbhoi.com"
+
+    // Optional: a public URL for the built ISO. When unset, the landing page
+    // explains how to build one instead of offering a link that goes nowhere.
+    // "ISO_DOWNLOAD_URL": "https://example.org/labkiosk-debian12-amd64.iso"
+  },
+
+  // SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are secrets, never vars. Set them
+  // before the first request creates the super admin account:
+  //   npx wrangler secret put SUPER_ADMIN_EMAIL
+  //   npx wrangler secret put SUPER_ADMIN_PASSWORD
+  // If they are unset the worker seeds a well-known default account, so treat
+  // setting them as part of deployment, not an optional extra.
+
   "observability": {
     "enabled": true
   }

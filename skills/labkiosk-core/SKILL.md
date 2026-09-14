@@ -14,24 +14,36 @@ This skill guides AI agents through authoring, modifying, testing, and verifying
 ## 1. Operating Procedures
 
 ### A. Modifying Cloudflare Worker Code
-1. Inspect [`cloudflare-control/src/types.ts`](file:///d:/Projects/AntigravityProjects/labkiosk/cloudflare-control/src/types.ts) before editing API contracts.
+1. Inspect `cloudflare-control/src/types.ts` before editing API contracts.
+1b. **Before adding any route**, read `src/guard.ts` and `src/escape.ts`. Every route resolves its
+   tenant through `resolveTenant()` and guards access with `requireTenantAdmin()`,
+   `requireSuperAdmin()` or `requireDevice()`; every rendered value is escaped. There are no
+   exceptions, and the test suite asserts both.
 2. If altering the database schema:
-   - Add statement to [`cloudflare-control/migrations/0001_initial_schema.sql`](file:///d:/Projects/AntigravityProjects/labkiosk/cloudflare-control/migrations/0001_initial_schema.sql).
-   - Mirror the table/index definition in `SCHEMA_SQL` inside [`cloudflare-control/src/db.ts`](file:///d:/Projects/AntigravityProjects/labkiosk/cloudflare-control/src/db.ts).
+   - Add a **new** numbered migration under `cloudflare-control/migrations/` (never edit an applied one).
+   - Mirror the table/index definition in `SCHEMA_SQL` inside `cloudflare-control/src/db.ts`, which is
+     what the in-memory adapter builds from. The two must stay in agreement.
    - Ensure all queries filter by `tenant_id`.
-3. Verify type-safety:
+3. Verify type-safety (checks worker and test projects separately):
    ```bash
-   pnpm --prefix cloudflare-control exec tsc --noEmit
+   pnpm --prefix cloudflare-control run typecheck
    ```
-4. Run integration tests:
+4. Run integration tests, and add a negative test for any route you add:
    ```bash
    pnpm --prefix cloudflare-control test
    ```
 
 ### B. Modifying Client Kiosk Agent & Extension
-1. The client agent lives at [`distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py`](file:///d:/Projects/AntigravityProjects/labkiosk/distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py).
-2. The browser injection extension lives at [`distro-builder/config/includes.chroot/opt/labkiosk/extension/`](file:///d:/Projects/AntigravityProjects/labkiosk/distro-builder/config/includes.chroot/opt/labkiosk/extension/).
-3. The first-boot setup wizard lives at [`distro-builder/config/includes.chroot/opt/labkiosk/setup/wizard.html`](file:///d:/Projects/AntigravityProjects/labkiosk/distro-builder/config/includes.chroot/opt/labkiosk/setup/wizard.html).
+1. The client agent lives at `distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py`.
+   Its local API is loopback-only and its telemetry is authenticated with a device bearer token.
+2. The browser injection extension lives at `distro-builder/config/includes.chroot/opt/labkiosk/extension/`.
+   It is a Manifest V3 pair: `content.js` builds the nav bar and lock curtain in a shadow root, and
+   `background.js` (the service worker) is the only thing that talks to the agent, because a content
+   script's `fetch` is subject to the host page's CORS while the service worker runs under
+   `host_permissions`.
+3. The first-boot setup wizard lives at `distro-builder/config/includes.chroot/opt/labkiosk/setup/wizard.html`.
+   It collects the subdomain, workstation name and **enrollment key**; the agent verifies all three
+   against the control plane before persisting anything.
 4. To test changes immediately without rebuilding the ISO:
    ```bash
    # Copy into running Docker container
@@ -41,12 +53,17 @@ This skill guides AI agents through authoring, modifying, testing, and verifying
    # Restart Python agent
    docker exec labkiosk-client-01 pkill -f agent.py
 
+   # Extension changes need a browser restart -- an MV3 extension is read once at
+   # launch. The watchdog relaunches Chromium within a second.
+   docker exec labkiosk-client-01 pkill -f -- --user-data-dir=/tmp/chromium-profile
+
    # Verify log output
    docker exec labkiosk-client-01 tail -n 20 /tmp/lab-agent.log
    ```
 
 ### C. Capturing Visual Screen Verification
-Never claim a UI change is complete without inspecting a visual capture:
+Never claim a UI change is complete without inspecting a visual capture. The agent logging a command
+as executed proves only that the agent ran; it does not prove the student saw anything:
 ```bash
 # Capture display 0 inside the container
 docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/verify.png
@@ -75,4 +92,57 @@ docker cp labkiosk-client-01:/tmp/verify.png .
 
 ### 4. Chromium Root Execution in Docker
 - **Symptom:** `Running as root without --no-sandbox is not supported`.
-- **Remedy:** Always ensure `--no-sandbox` is passed when running or executing Chromium inside containerized test environments.
+- **Remedy:** Pass `--no-sandbox` **only** in `docker-test/entrypoint.sh`, where Chromium runs as root
+  inside the container. The real image keeps the sandbox enabled, and must never be launched with
+  `--disable-web-security`.
+
+### 5. Schema Drift Between the Adapter and Migrations
+- **Symptom:** `Columns of "x" differ between SCHEMA_SQL and migrations/`.
+- **Cause:** A schema change landed in only one of the two places that declare it.
+- **Remedy:** Add a new numbered file under `migrations/` **and** make the matching edit to
+  `SCHEMA_SQL` in `src/db.ts`. Never edit an already-applied migration.
+
+### 6. Build Pins Are Not Optional Defaults
+- `cloudflared.pin` and `grub.pin` under `config/includes.chroot/usr/share/labkiosk/` hold values that
+  cannot be verified from the repository: a release checksum and a boot-password hash.
+- An unset checksum builds without the tunnel binary; a bad one **fails the build**. An unset GRUB
+  password builds with a loud warning. Never invent a value to make a build go green.
+
+### 7. Chromium Refuses the Kiosk's Own Extension
+- **Symptom:** No navigation bar, no lock curtain. Chromium logs *"Loading of unpacked extensions is
+  disabled by the administrator"*.
+- **Cause:** A blanket extension block in the managed policy — `ExtensionInstallBlocklist: ["*"]`, or
+  `ExtensionSettings` with a `"*"` deny. It makes Chromium refuse `--load-extension` outright, and an
+  `ExtensionInstallAllowlist` entry for the kiosk's own id does **not** override it. This was tried
+  and verified.
+- **Remedy:** Do not add a blanket block. Students cannot install extensions anyway: `chrome://` is in
+  `URLBlocklist`, the browser runs in `--kiosk` with no UI, the Web Store is not allowlisted, and
+  `/tmp/chromium-profile` is deleted on every launch. If a blanket block is ever genuinely required,
+  pack the extension as a `.crx` and force-install it by id first.
+
+### 8. Freshly Enrolled Workstation Shows "This page is blocked"
+- **Symptom:** Enrolment succeeds, the dashboard shows the workstation, but its screen is a Chromium
+  block page instead of the school portal.
+- **Cause:** Chromium reads its managed policy at startup. A workstation that enrolled after launch is
+  still running under the minimal boot allowlist.
+- **Remedy:** The agent sets `pendingBrowserRestart` at enrolment and restarts the browser after the
+  next policy sync. `BROWSER_PROFILE_DIR` in `agent.py` must match `--user-data-dir` in both
+  launchers, because the restart works by `pkill -f -- --user-data-dir=<dir>` — matching on
+  `"chromium --kiosk"` silently matches nothing, since the Debian wrapper reorders the argv.
+
+### 9. A Command Executes but Nothing Changes on Screen
+- **Symptom:** `/tmp/lab-agent.log` records the lock, the curtain never appears, and the nav bar's
+  status dot still looks green.
+- **Cause:** The dot is green by default in CSS. It once stayed green for a whole session in which no
+  poll had ever succeeded, because `initKioskUi()` returned `undefined` when the UI already existed
+  and the caller assigned that over a working `shadowRoot`.
+- **Remedy:** Treat a screenshot, not a log line and not a status colour, as the evidence a UI change
+  works. Check the agent's `/api/status` from inside the container if the extension looks alive but
+  inert.
+
+### 10. Workstation Not Appearing on the Dashboard
+- **Symptom:** The agent logs `401` responses, or the grid stays empty after boot.
+- **Cause:** The workstation is not enrolled, or its device token was revoked when a teacher removed
+  it from the dashboard.
+- **Remedy:** Re-run the setup wizard with the school's current enrollment key
+  (**Settings -> Workstation Enrollment Key** on the teacher dashboard). Check `/tmp/lab-agent.log`.

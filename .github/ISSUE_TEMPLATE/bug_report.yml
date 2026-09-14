@@ -6,6 +6,10 @@ body:
     attributes:
       value: |
         Thank you for reporting a bug! Please ensure you have tested against the latest version.
+
+        > **Found a security vulnerability?** Do not file it here. This project runs in classrooms
+        > and handles live images of students' screens, so please report it privately through the
+        > process in [SECURITY.md](../blob/main/SECURITY.md) instead.
   - type: dropdown
     id: component
     attributes:
@@ -47,5 +51,7 @@ body:
     id: logs
     attributes:
       label: Relevant Logs or Error Output
-      description: Copy logs from `/tmp/lab-agent.log`, browser console, or `wrangler dev`.
+      description: |
+        Copy logs from `/tmp/lab-agent.log` on the workstation, the browser console, or `wrangler dev`.
+        Redact your school's enrollment key and any device tokens before pasting.
       render: shell

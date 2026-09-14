@@ -3,66 +3,108 @@
  * Platform owner interface for managing schools, approving subdomains, and global analytics.
  */
 
+import { escapeHtml, escapeAttr } from "./escape";
+
 export function renderSuperAdminHtml(data: {
   superAdminEmail: string;
   tenants: any[];
   baseDomain?: string;
 }): string {
-  const { superAdminEmail, tenants, baseDomain = "labkiosk.io" } = data;
+  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com" } = data;
 
   const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
+  const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
   const activeList = tenants.filter((t) => t.status === "active" && !t.requested_subdomain);
 
   const totalClients = tenants.reduce((acc, t) => acc + (t.total_clients || 0), 0);
   const totalOnline = tenants.reduce((acc, t) => acc + (t.online_clients || 0), 0);
 
+  // Every field below is school-supplied via public registration, so all of it
+  // is escaped; actions carry their ids in data-* attributes rather than in
+  // inline handler strings.
   const pendingRows = pendingList.map((t) => `
     <tr>
-      <td><strong>${t.name}</strong></td>
-      <td>${t.admin_name} (${t.admin_email})</td>
+      <td><strong>${escapeHtml(t.name)}</strong></td>
+      <td>${escapeHtml(t.admin_name)} (${escapeHtml(t.admin_email)})</td>
       <td>
         <span class="subdomain-tag">
-          ${t.requested_subdomain ? `<b>${t.requested_subdomain}</b> <span class="text-muted">(was ${t.subdomain})</span>` : `<b>${t.subdomain}</b>`}
+          ${
+            t.requested_subdomain
+              ? `<b>${escapeHtml(t.requested_subdomain)}</b> <span class="text-muted">(was ${escapeHtml(t.subdomain)})</span>`
+              : `<b>${escapeHtml(t.subdomain)}</b>`
+          }
         </span>
       </td>
-      <td>${new Date(t.created_at * 1000).toLocaleDateString()}</td>
+      <td>${escapeHtml(new Date(t.created_at * 1000).toISOString().slice(0, 10))}</td>
       <td>
         <div class="action-btn-group">
-          <button class="btn btn-sm btn-approve" onclick="approveTenant('${t.id}', '${t.requested_subdomain || t.subdomain}')">Approve</button>
-          <button class="btn btn-sm btn-edit" onclick="customAssignTenant('${t.id}')">Custom Subdomain</button>
-          <button class="btn btn-sm btn-reject" onclick="rejectTenant('${t.id}')">Reject</button>
+          <button class="btn btn-sm btn-approve" data-action="approve" data-tenant="${escapeHtml(t.id)}" data-subdomain="${escapeHtml(t.requested_subdomain || t.subdomain)}">Approve</button>
+          <button class="btn btn-sm btn-edit" data-action="assign" data-tenant="${escapeHtml(t.id)}">Custom Subdomain</button>
+          <button class="btn btn-sm btn-reject" data-action="reject" data-tenant="${escapeHtml(t.id)}">Reject</button>
         </div>
       </td>
     </tr>
   `).join("");
 
-  const allRows = tenants.map((t) => `
+  const pendingCustomRows = pendingCustomList.map((t) => `
     <tr>
-      <td><strong>${t.name}</strong></td>
-      <td>${t.admin_name} (${t.admin_email})</td>
+      <td><strong>${escapeHtml(t.name)}</strong></td>
+      <td>${escapeHtml(t.admin_name)} (${escapeHtml(t.admin_email)})</td>
       <td>
-        <a href="/admin?tenant=${t.subdomain}" target="_blank" class="subdomain-link">
-          ${t.subdomain}.${baseDomain}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
-        </a>
-      </td>
-      <td>
-        <span class="status-badge status-${t.status}">${t.status.toUpperCase()}</span>
-      </td>
-      <td>
-        <span class="client-count">
-          <span class="live-dot ${t.online_clients > 0 ? "active" : ""}"></span>
-          ${t.online_clients || 0} / ${t.total_clients || 0}
+        <span class="subdomain-tag" style="color: #fbbf24;">
+          <b>${escapeHtml(t.requested_custom_domain)}</b>
         </span>
       </td>
       <td>
         <div class="action-btn-group">
-          <a href="/admin?tenant=${t.subdomain}" target="_blank" class="btn btn-sm btn-secondary">Open Console</a>
-          <button class="btn btn-sm btn-edit" onclick="customAssignTenant('${t.id}')">Edit Subdomain</button>
+          <button class="btn btn-sm btn-approve" data-action="approve-custom" data-tenant="${escapeHtml(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain)}">Approve Domain</button>
+          <button class="btn btn-sm btn-reject" data-action="reject-custom" data-tenant="${escapeHtml(t.id)}">Reject</button>
         </div>
       </td>
     </tr>
   `).join("");
+
+  const allRows = tenants.map((t) => {
+    const href = `/admin?tenant=${encodeURIComponent(t.subdomain)}`;
+    return `
+    <tr>
+      <td><strong>${escapeHtml(t.name)}</strong></td>
+      <td>${escapeHtml(t.admin_name)} (${escapeHtml(t.admin_email)})</td>
+      <td>
+        <a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" class="subdomain-link">
+          ${escapeHtml(t.subdomain)}.${escapeHtml(baseDomain)}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+        </a>
+      </td>
+      <td>
+        ${
+          t.custom_domain
+            ? `<span class="status-badge status-active">ACTIVE</span> <a href="https://${escapeAttr(t.custom_domain)}" target="_blank" rel="noopener noreferrer" style="color: #6ee7b7; font-family: 'JetBrains Mono', monospace; font-size: 13px; margin-left: 6px;">${escapeHtml(t.custom_domain)}</a>`
+            : t.custom_domain_status === "pending"
+            ? `<span class="status-badge status-pending">PENDING</span> <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; margin-left: 6px; color: #fbbf24;">${escapeHtml(t.requested_custom_domain)}</span>`
+            : `<span style="color: var(--muted);">&mdash;</span>`
+        }
+      </td>
+      <td>
+        <span class="status-badge status-${escapeHtml(t.status)}">${escapeHtml(String(t.status).toUpperCase())}</span>
+      </td>
+      <td>
+        <span class="client-count">
+          <span class="live-dot ${t.online_clients > 0 ? "active" : ""}"></span>
+          ${Number(t.online_clients) || 0} / ${Number(t.total_clients) || 0}
+        </span>
+      </td>
+      <td>
+        <div class="action-btn-group">
+          <a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-secondary">Open Console</a>
+          <button class="btn btn-sm btn-edit" data-action="assign" data-tenant="${escapeHtml(t.id)}">Edit Subdomain</button>
+          <button class="btn btn-sm btn-edit" data-action="assign-custom" data-tenant="${escapeHtml(t.id)}">Assign Custom Domain</button>
+          ${t.custom_domain ? `<button class="btn btn-sm btn-reject" data-action="remove-custom" data-tenant="${escapeHtml(t.id)}">Disconnect</button>` : ""}
+        </div>
+      </td>
+    </tr>
+  `;
+  }).join("");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -145,6 +187,8 @@ export function renderSuperAdminHtml(data: {
     .status-active { background: rgba(16, 185, 129, 0.15); color: #34d399; }
     .status-pending { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
     .status-suspended { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+    .status-rejected { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; }
+    .text-muted { color: var(--muted); }
     .client-count { display: flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace; }
     .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; }
     .live-dot.active { background: var(--green); box-shadow: 0 0 8px var(--green); }
@@ -175,7 +219,7 @@ export function renderSuperAdminHtml(data: {
     </div>
     <div class="user-meta">
       <span class="badge-super">SUPER ADMIN</span>
-      <span style="font-size: 13px; color: var(--muted);">${superAdminEmail}</span>
+      <span style="font-size: 13px; color: var(--muted);">${escapeHtml(superAdminEmail)}</span>
       <a href="/api/auth/logout" class="btn-logout">Sign Out</a>
     </div>
   </header>
@@ -226,6 +270,29 @@ export function renderSuperAdminHtml(data: {
       `}
     </div>
 
+    <!-- Custom Domain Approval Queue -->
+    ${pendingCustomList.length > 0 ? `
+      <h2 class="section-title" style="color: #fbbf24;">
+        Custom Domain Approval Queue
+        <span class="queue-badge" style="background: #fbbf24; color: #000;">${pendingCustomList.length} ACTION REQUIRED</span>
+      </h2>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>School / Lab Name</th>
+              <th>Admin Contact</th>
+              <th>Requested Custom Domain</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${pendingCustomRows}
+          </tbody>
+        </table>
+      </div>
+    ` : ""}
+
     <!-- All Registered Schools -->
     <h2 class="section-title">Registered Schools & Computer Labs</h2>
     <div class="table-container">
@@ -235,6 +302,7 @@ export function renderSuperAdminHtml(data: {
             <th>School Name</th>
             <th>Admin Contact</th>
             <th>Subdomain URL</th>
+            <th>Custom Domain</th>
             <th>Status</th>
             <th>Live Workstations</th>
             <th>Actions</th>
@@ -248,51 +316,60 @@ export function renderSuperAdminHtml(data: {
   </main>
 
   <script>
-    async function approveTenant(id, subdomain) {
-      if (!confirm("Approve subdomain '" + subdomain + "' for this school?")) return;
-      const res = await fetch("/api/super/tenants/approve", {
+    async function postJson(endpoint, payload) {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tenantId: id, subdomain })
+        body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      if (data.status === "ok") {
-        window.location.reload();
-      } else {
-        alert("Error approving: " + (data.error || "Unknown error"));
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (err) {
+        console.error("Unreadable response from " + endpoint, err);
       }
+      if (res.ok && data.status === "ok") {
+        window.location.reload();
+        return;
+      }
+      alert(data.error || "Request failed (" + res.status + ")");
     }
 
-    async function rejectTenant(id) {
-      if (!confirm("Reject this school's subdomain request?")) return;
-      const res = await fetch("/api/super/tenants/reject", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tenantId: id })
-      });
-      const data = await res.json();
-      if (data.status === "ok") {
-        window.location.reload();
-      } else {
-        alert("Error: " + (data.error || "Unknown error"));
-      }
-    }
+    // Delegated so no tenant-supplied value is ever placed in an inline handler.
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-action]");
+      if (!button) return;
 
-    async function customAssignTenant(id) {
-      const customSub = prompt("Enter the exact subdomain slug to assign (lowercase letters, numbers, hyphens):");
-      if (!customSub) return;
-      const res = await fetch("/api/super/tenants/approve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tenantId: id, subdomain: customSub.toLowerCase().trim() })
-      });
-      const data = await res.json();
-      if (data.status === "ok") {
-        window.location.reload();
-      } else {
-        alert("Error: " + (data.error || "Unknown error"));
+      const tenantId = button.dataset.tenant;
+      const action = button.dataset.action;
+
+      if (action === "approve") {
+        const subdomain = button.dataset.subdomain || "";
+        if (!confirm("Approve subdomain '" + subdomain + "' for this school?")) return;
+        postJson("/api/super/tenants/approve", { tenantId, subdomain });
+      } else if (action === "reject") {
+        if (!confirm("Reject this school's subdomain request?")) return;
+        postJson("/api/super/tenants/reject", { tenantId });
+      } else if (action === "assign") {
+        const custom = prompt("Enter the exact subdomain slug to assign (lowercase letters, numbers, hyphens):");
+        if (!custom) return;
+        postJson("/api/super/tenants/approve", { tenantId, subdomain: custom.toLowerCase().trim() });
+      } else if (action === "approve-custom") {
+        const customDomain = button.dataset.domain || "";
+        if (!confirm("Approve custom domain '" + customDomain + "' for this school?")) return;
+        postJson("/api/super/tenants/custom-domain/approve", { tenantId, customDomain });
+      } else if (action === "reject-custom") {
+        if (!confirm("Reject this custom domain request?")) return;
+        postJson("/api/super/tenants/custom-domain/reject", { tenantId });
+      } else if (action === "assign-custom") {
+        const custom = prompt("Enter the fully qualified custom domain (e.g. kiosk.myschool.edu):");
+        if (!custom) return;
+        postJson("/api/super/tenants/custom-domain/approve", { tenantId, customDomain: custom.toLowerCase().trim() });
+      } else if (action === "remove-custom") {
+        if (!confirm("Disconnect custom domain from this school?")) return;
+        postJson("/api/super/tenants/custom-domain/remove", { tenantId });
       }
-    }
+    });
   </script>
 </body>
 </html>`;
