@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'V*'
 
 jobs:
   build-iso:
@@ -18,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Warn when a release build has no GRUB password pinned
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
         run: |
           if ! grep -q '^PASSWORD_PBKDF2=grub\.pbkdf2\.sha512\.' distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin; then
             echo "::warning file=distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin::No GRUB password is pinned. This release ISO boots with an editable boot menu; see distro-builder/README.md 'Securing the Boot Chain'."
@@ -41,9 +42,11 @@ jobs:
           retention-days: 14
 
       - name: Create GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
         uses: softprops/action-gh-release@v2
         with:
+          name: "Lab Kiosk ${{ github.ref_name }}"
+          generate_release_notes: true
           files: |
             distro-builder/out/labkiosk-debian12-amd64.iso
             distro-builder/out/labkiosk-debian12-amd64.iso.sha256
