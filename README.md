@@ -37,12 +37,13 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 | Guide | Description | Path |
 | :--- | :--- | :--- |
 | **Cloudflare Control Plane** | Edge SaaS worker architecture, native Web Crypto PBKDF2 authentication, D1 schema migrations, and local dev server. | [`cloudflare-control/README.md`](cloudflare-control/README.md) |
-| **Kiosk Distro Builder** | Debian 12 live-build image, 100% RAM overlay (`toram` + `overlayroot="tmpfs"`), lockdown hooks, GRUB boot security, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
+| **Kiosk Distro Builder** | Debian 12 live-build image, automated disk installer, 100% RAM overlay (`overlayroot="tmpfs"`), hybrid BIOS/UEFI bootloaders, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
 | **Local Workstation Simulator** | Docker-based workstation simulator with embedded HTML5 noVNC display for rapid testing without physical thin clients. | [`docker-test/README.md`](docker-test/README.md) |
 | **Production Deployment** | Step-by-step production manual: Cloudflare D1 provisioning, remote migrations, secrets, wildcard DNS, and automated CI/CD. | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | **Remote Control & Tunnels** | Zero-exposure remote desktop architecture via loopback `websockify`, per-boot ephemeral passwords, and Cloudflare Tunnels. | [`docs/REMOTE_CONTROL.md`](docs/REMOTE_CONTROL.md) |
 | **REST API Specification** | Complete REST endpoint catalog, authentication schemes, tenant scoping rules, request/response schemas, and rate limits. | [`docs/API.md`](docs/API.md) |
-| **AI Agent Codex** | Comprehensive architectural playbook, code invariants, and verification protocols for AI coding assistants. | [`AGENTS.md`](AGENTS.md) |
+| **AI Architecture Codices** | Modular architectural specifications and code invariants for AI coding assistants: [Master (`AGENTS.md`)](AGENTS.md) • [Distro Builder (`distro-builder/AGENTS.md`)](distro-builder/AGENTS.md) • [Control Plane (`cloudflare-control/AGENTS.md`)](cloudflare-control/AGENTS.md). | [`AGENTS.md`](AGENTS.md) |
+| **AI Skills & Automation** | Standardized AI engineering skills for full-stack, distro, and edge control plane workflows. | [`skills/`](skills/) |
 | **Security Policy** | Vulnerability reporting procedures, cryptographic standards, and threat model. | [`SECURITY.md`](SECURITY.md) |
 | **Contribution Guidelines** | Community guidelines, coding standards, and pull request checklist. | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 

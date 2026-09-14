@@ -49,6 +49,7 @@ pnpm dev
 The client side has its own quick checks, which CI runs too:
 ```bash
 python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
+python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 shellcheck -S warning distro-builder/config/includes.chroot/etc/openbox/autostart docker-test/entrypoint.sh
@@ -73,8 +74,13 @@ publish port 8888 to make testing easier, that is the bug this binding exists to
 
 ## 📐 Architecture Invariants & Standards
 
-When writing code for Lab Kiosk, you MUST preserve these architectural decisions. `AGENTS.md` is the
-full reference; this is the short version.
+When writing code for Lab Kiosk, you MUST preserve these architectural decisions. For detailed subsystem specifications, consult:
+- **Master Architecture Codex:** [`AGENTS.md`](AGENTS.md)
+- **Client OS & Distro Builder:** [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md)
+- **Cloudflare Control Plane:** [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md)
+- **Core Engineering Skills:** [`skills/`](skills/)
+
+Here is the quick summary of non-negotiable standards:
 
 1. **Zero External NPM Bloat in Cloudflare Worker:**
    - Use native `crypto.subtle` for all cryptographic hashing (PBKDF2-HMAC-SHA256).

@@ -41,6 +41,17 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **Telemetry Loop (Every 3s):** Authenticates to the Cloudflare control plane using a stored bearer device token, transmits screen thumbnails (scrot compressed via PIL JPEG, max 256 KB), receives pending teacher commands, and checks broadcast status.
 - **Dynamic Policy Synchronization:** Writes the tenant's approved domain allowlist into `/etc/chromium/policies/managed/policies.json`.
 - **Loopback API:** Binds strictly to `127.0.0.1:8888` to serve the first-boot onboarding wizard and health probes.
+- **Session State Awareness:** Distinguishes between live evaluation sessions (`boot=live` on USB/ISO) and permanent disk installations.
+
+### 5. Automated Hard Disk Installer (`labkiosk-install`)
+- Resides at `/usr/local/bin/labkiosk-install` and can be invoked directly from the terminal or via the Setup Wizard GUI.
+- **Universal Hybrid GPT Partitioning:**
+  1. `bios_grub` (1 MiB – 2 MiB): Enables legacy BIOS GRUB embedding on GPT partitioned disks.
+  2. `ESP` (2 MiB – 514 MiB, FAT32): Holds the UEFI bootloader and configuration.
+  3. `ROOT` (514 MiB – 100%, ext4): Stores the immutable Debian 12 operating system.
+- **Dual Bootloader Deployment:** Automatically installs both **UEFI** (`x86_64-efi` with removable fallback `BOOTX64.EFI`) and **Legacy BIOS** (`i386-pc`) bootloaders, ensuring the hard drive boots on any virtual machine (Hyper-V Gen 1/2, VirtualBox) or physical PC.
+- **100% RAM Overlay on Disk:** Configures `/etc/overlayroot.conf` with `overlayroot="tmpfs"` on the installed drive, guaranteeing zero flash storage wear and clean resets on reboot even after permanent installation.
+- **Decoupled Transfer:** Transfers rootfs files via `rsync` without premature submounts, preventing filesystem deadlock errors (`EBUSY 16`).
 
 ---
 
@@ -48,28 +59,33 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 
 ```text
 distro-builder/
-├── auto/                               # live-build scripts (config, build, clean)
+├── AGENTS.md                           # AI Agent architecture codex for Distro Builder
+├── Dockerfile                          # Containerized cross-platform ISO builder
+├── build-iso.sh                        # Native Debian/Ubuntu/WSL2 build script
+├── auto/                               # live-build automation scripts (config, build, clean)
 ├── config/
+│   ├── bootloaders/                    # ISOLINUX (BIOS) and GRUB EFI (UEFI) configs & graphics
 │   ├── package-lists/
-│   │   └── kiosk.list.chroot           # Minimal Debian package manifest (Xorg, Openbox, Chromium, scrot)
+│   │   └── kiosk.list.chroot           # Minimal Debian package manifest (Xorg, Openbox, Chromium, rsync, parted, efibootmgr)
 │   ├── hooks/live/
-│   │   ├── 01-lockdown.hook.chroot     # User locking, TTY masking, polkit policies
+│   │   ├── 01-lockdown.hook.chroot     # User locking, TTY masking, polkit policies, autologin
 │   │   └── 02-security.hook.chroot     # Kernel sysctl hardening, GRUB password enforcement
-│   └── includes.chroot/                # Filesystem overlay injected into live image
+│   └── includes.chroot/                # Filesystem overlay injected into live and installed image
 │       ├── etc/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Locked rc.xml and autostart script
 │       │   ├── overlayroot.conf        # tmpfs RAM overlay configuration
 │       │   └── systemd/system/         # Service definitions (labkiosk-agent, websockify, cloudflared)
 │       ├── opt/labkiosk/
-│       │   ├── setup/                  # First-boot onboarding HTML wizard
+│       │   ├── setup/                  # First-boot onboarding & disk installation HTML wizard
 │       │   ├── extension/              # Manifest V3 extension (content.js, background.js, manifest.json)
 │       │   └── agent/                  # Python 3 telemetry daemon (agent.py)
+│       ├── usr/local/bin/
+│       │   └── labkiosk-install        # Automated Python hard disk installer
 │       └── usr/share/labkiosk/
 │           ├── cloudflared.pin         # Pinned release version & SHA-256 for cloudflared binary
 │           └── grub.pin                # Pinned PBKDF2 hash for GRUB boot password
-├── Dockerfile                          # Containerized cross-platform ISO builder
-└── build-iso.sh                        # Native Debian/Ubuntu/WSL2 build script
+└── out/                                # Generated ISO and SHA-256 artifacts
 ```
 
 ---
