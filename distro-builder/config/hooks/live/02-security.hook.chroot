@@ -27,8 +27,8 @@ EOF
 
 # 3. Boot straight into the kiosk with no menu delay.
 if [ -f /etc/default/grub ]; then
-    sed -i 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub || true
-    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash vt.global_cursor_default=0 consoleblank=0"/' /etc/default/grub || true
+    sed -i 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=3/' /etc/default/grub || true
+    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="consoleblank=0"/' /etc/default/grub || true
 
     # Recovery mode is a root shell by design; it has no place on a kiosk.
     if grep -q '^#*GRUB_DISABLE_RECOVERY' /etc/default/grub; then

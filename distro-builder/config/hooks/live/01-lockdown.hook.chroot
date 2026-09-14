@@ -1,25 +1,81 @@
 #!/bin/sh
 set -e
 
-echo "[Hook] Applying Lab Kiosk Lockdown and User Setup..."
+echo "[Hook] Applying Lab Kiosk Lockdown, Display & User Setup..."
 
 # The cloudflared release to install is pinned in
 # config/includes.chroot/usr/share/labkiosk/cloudflared.pin. A binary is only
 # installed when both a version and its SHA-256 are pinned there.
 CLOUDFLARED_PIN="/usr/share/labkiosk/cloudflared.pin"
 
-# 1. Create the unprivileged kiosk user.
-#    The account is LOCKED, not password-less: `passwd -d` would leave an empty
-#    password that any getty or SSH service would happily accept.
-if ! id -u kiosk >/dev/null 2>&1; then
-    useradd -m -s /bin/bash -G audio,video,input,render kiosk
-fi
-passwd -l kiosk || true
+# 1. Create the unprivileged kiosk user and fallback live user.
+#    All virtual terminals (getty) are masked and SSH is absent, so passwordless
+#    login is securely restricted to the local nodm auto-display session.
+for u in kiosk user; do
+    if ! id -u "$u" >/dev/null 2>&1; then
+        useradd -m -s /bin/bash -G audio,video,input,render,tty "$u"
+    else
+        usermod -a -G audio,video,input,render,tty "$u" || true
+    fi
+    passwd -d "$u" || true
+
+    mkdir -p "/home/$u/.config/openbox"
+    cat << 'EOF' > "/home/$u/.xsession"
+#!/bin/sh
+exec /usr/bin/openbox-session
+EOF
+    chmod 755 "/home/$u/.xsession"
+    cp /etc/openbox/autostart "/home/$u/.config/openbox/autostart"
+    chmod 755 "/home/$u/.config/openbox/autostart"
+    chown -R "$u:$u" "/home/$u"
+done
 passwd -l root || true
 
-# 2. Ownership so the agent can do its job as the kiosk user.
+# Pre-seed live-config so it does not overwrite nodm or create duplicate users
+mkdir -p /var/lib/live/config
+touch /var/lib/live/config/nodm
+touch /var/lib/live/config/user-setup
+
+mkdir -p /etc/live
+cat << 'EOF' > /etc/live/config.conf
+LIVE_USERNAME="kiosk"
+LIVE_USER_DEFAULT_GROUPS="audio,video,input,render,tty"
+EOF
+
+# 2. Configure X11 permissions and nodm autologin display manager.
+#    rootless Xorg requires xserver-xorg-legacy with needs_root_rights=yes to run
+#    smoothly across varied display hardware (including Hyper-V and VirtualBox).
+mkdir -p /etc/X11
+cat << 'EOF' > /etc/X11/Xwrapper.config
+allowed_users=anybody
+needs_root_rights=yes
+EOF
+chmod u+s /usr/lib/xorg/Xorg.wrap 2>/dev/null || true
+echo "/usr/sbin/nodm" > /etc/X11/default-display-manager
+
+# Configure PAM for nodm to guarantee autologin succeeds without account lock checks
+mkdir -p /etc/pam.d
+cat << 'EOF' > /etc/pam.d/nodm
+#%PAM-1.0
+auth    required    pam_permit.so
+account required    pam_permit.so
+password required   pam_permit.so
+session required    pam_permit.so
+EOF
+
+mkdir -p /etc/default
+cat << 'EOF' > /etc/default/nodm
+NODM_ENABLED=true
+NODM_USER=kiosk
+NODM_XSESSION=/home/kiosk/.xsession
+NODM_MIN_SESSION_TIME=2
+NODM_X_OPTIONS=":0 -nolisten tcp"
+EOF
+
+# 3. Ownership so the agent can do its job as the kiosk user.
 chmod +x /etc/openbox/autostart || true
 chmod +x /opt/labkiosk/agent/agent.py || true
+chmod +x /usr/local/bin/labkiosk-install || true
 chown -R kiosk:kiosk /opt/labkiosk || true
 chown -R kiosk:kiosk /etc/openbox || true
 
@@ -34,14 +90,17 @@ mkdir -p /etc/labkiosk
 chown kiosk:kiosk /etc/labkiosk
 chmod 700 /etc/labkiosk
 
-# 3. Mask virtual terminals so Ctrl+Alt+F1..F6 cannot reach a login prompt.
+# 4. Mask virtual terminals so Ctrl+Alt+F1..F6 cannot reach a login prompt.
 for tty in 1 2 3 4 5 6; do
     systemctl mask "getty@tty${tty}.service" || true
 done
 systemctl mask serial-getty@.service || true
 systemctl mask debug-shell.service || true
 
-# 4. Stop the X server from switching VTs or being killed with Ctrl+Alt+Backspace.
+# Mask NetworkManager-wait-online to prevent 120s boot stalls when network is offline/slow.
+systemctl mask NetworkManager-wait-online.service || true
+
+# 5. Stop the X server from switching VTs or being killed with Ctrl+Alt+Backspace.
 #    Masked gettys hide the login prompt; this removes the escape itself.
 mkdir -p /etc/X11/xorg.conf.d
 cat << 'EOF' > /etc/X11/xorg.conf.d/10-kiosk-lockdown.conf
@@ -55,7 +114,7 @@ Section "ServerFlags"
 EndSection
 EOF
 
-# 5. Allow the kiosk user to reboot and power off, and nothing else.
+# 6. Allow the kiosk user to reboot and power off, and nothing else.
 #    These are the only privileged actions the agent performs; without a rule it
 #    runs as an unprivileged user and the teacher's shutdown command silently
 #    does nothing.
@@ -75,14 +134,30 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
-# 6. Enable kiosk services.
-systemctl enable kiosk-x11.service || true
+# Sudoers permissions for the guided disk installer.
+mkdir -p /etc/sudoers.d
+cat << 'EOF' > /etc/sudoers.d/50-labkiosk-install
+kiosk ALL=(ALL) NOPASSWD: /usr/local/bin/labkiosk-install
+EOF
+chmod 0440 /etc/sudoers.d/50-labkiosk-install
+
+# 7. Enable kiosk services.
+systemctl enable nodm.service || true
 systemctl enable cloudflared-kiosk.service || true
 
-# 7. Install cloudflared, but only from a pinned, checksum-verified release.
-#    Previously this downloaded the "latest" binary with `|| true`, so the image
-#    shipped whatever the network returned, unverified, and carried on silently
-#    when the download failed entirely.
+# Configure Hyper-V & generic VM display/storage drivers in initramfs
+mkdir -p /etc/initramfs-tools
+cat << 'EOF' >> /etc/initramfs-tools/modules
+hv_vmbus
+hv_storvsc
+hv_netvsc
+hyperv_fb
+hyperv_keyboard
+EOF
+update-initramfs -u || true
+
+
+# 8. Install cloudflared, but only from a pinned, checksum-verified release.
 CLOUDFLARED_VERSION=""
 CLOUDFLARED_SHA256=""
 if [ -f "$CLOUDFLARED_PIN" ]; then

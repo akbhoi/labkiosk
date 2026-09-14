@@ -22,11 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     syslinux-common \
     ca-certificates \
     curl \
+    librsvg2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 COPY . /build/
 
-RUN chmod +x /build/auto/* /build/build-iso.sh /build/config/hooks/live/*.hook.chroot 2>/dev/null || true
+RUN chmod +x /build/auto/* /build/build-iso.sh /build/config/hooks/live/*.hook.chroot /build/config/includes.chroot/usr/local/bin/* 2>/dev/null || true
 
-CMD ["/bin/bash", "-c", "set -e; mkdir -p /build/out; chmod +x auto/* build-iso.sh config/hooks/live/*.hook.chroot 2>/dev/null || true; lb clean --purge; lb config; lb build; cp live-image-amd64.hybrid.iso /build/out/labkiosk-debian12-amd64.iso; sha256sum /build/out/labkiosk-debian12-amd64.iso > /build/out/labkiosk-debian12-amd64.iso.sha256"]
+CMD ["/bin/bash", "-c", "set -e; mkdir -p /build/out; chmod +x auto/* build-iso.sh config/hooks/live/*.hook.chroot config/includes.chroot/usr/local/bin/* 2>/dev/null || true; lb clean --purge; lb config; lb build; cp live-image-amd64.hybrid.iso /build/out/labkiosk-debian12-amd64.iso; sha256sum /build/out/labkiosk-debian12-amd64.iso > /build/out/labkiosk-debian12-amd64.iso.sha256"]
