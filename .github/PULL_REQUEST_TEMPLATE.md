@@ -30,6 +30,8 @@ Closes #(issue_number)
 ### If you changed anything rendered to a browser
 - [ ] Server-side values go through `escapeHtml()` / `escapeJson()`; URLs through `safeHttpUrl()`
 - [ ] Client-side rendering uses `textContent` and event listeners, not `innerHTML` or inline `onclick=`
+- [ ] Every `<script>` carries the response nonce and no `on*=` attribute was added (the CSP test
+      renders every page and fails otherwise)
 
 ### If you changed the database schema
 - [ ] Added a **new** numbered file in `migrations/` (no edits to an already-applied one)
@@ -42,5 +44,7 @@ Closes #(issue_number)
 - [ ] No blanket extension block added to the Chromium policy (it disables `--load-extension` and
       silently removes the nav bar and lock curtain)
 - [ ] Extension changes keep the agent `fetch` in the service worker, not the content script
+- [ ] Telemetry contract changes (new fields the agent sends) are reflected in `/api/telemetry`, the
+      README API table and `AGENTS.md`
 - [ ] Verified in the Docker simulator with a **screenshot** — a log line saying the command ran is
       not evidence that anything appeared on screen — and described how in the Description above
