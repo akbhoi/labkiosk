@@ -606,8 +606,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     );
     assert.equal(portal.status, 200);
     const html = await portal.text();
+    assert.match(html, /Protected Kiosk Session/);
+    assert.match(html, /<title>Greenwood High School - Student Learning Portal<\/title>/);
     assert.match(html, /Select an Educational Resource/);
     assert.match(html, /Greenwood High School/);
+    assert.ok(!html.includes("Centralized School Computer Lab Management"), "custom domain must not render landing page");
   });
 
   test("Enrols a workstation using customDomain", async () => {
@@ -620,6 +623,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(data.clientId, "PC-CUSTOM");
     assert.equal(data.schoolName, "Greenwood High School");
     assert.ok(data.deviceToken);
+
+    // Verify custom domain is automatically included in client whitelist
+    const telem = await callJson("/api/telemetry", { ...json({}), bearer: data.deviceToken });
+    assert.equal(telem.res.status, 200);
+    assert.ok(telem.data.whitelist.includes("kiosk.greenwood.edu"), "custom domain must be included in client whitelist");
   });
 
   test("Enrols a workstation using custom server URL or IP via enrollment key", async () => {

@@ -44,7 +44,7 @@ Closes #(issue_number)
 - [ ] No blanket extension block added to the Chromium policy (it disables `--load-extension` and
       silently removes the nav bar and lock curtain)
 - [ ] Extension changes keep the agent `fetch` in the service worker, not the content script
-- [ ] Telemetry contract changes (new fields the agent sends) are reflected in `/api/telemetry`, the
-      README API table and `AGENTS.md`
+- [ ] Telemetry contract changes (new fields the agent sends) are reflected in `/api/telemetry`,
+      `docs/API.md`, and `AGENTS.md`
 - [ ] Verified in the Docker simulator with a **screenshot** — a log line saying the command ran is
       not evidence that anything appeared on screen — and described how in the Description above

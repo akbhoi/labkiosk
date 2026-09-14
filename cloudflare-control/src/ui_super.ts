@@ -235,9 +235,26 @@ export function renderSuperAdminHtml(data: {
       .stat-value { font-size: 24px; }
       table { min-width: 620px; }
     }
-    @media (max-width: 480px) {
-      .stats-grid { grid-template-columns: 1fr; }
+    /* Modal Dialog */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(6px);
+      display: none; align-items: center; justify-content: center; z-index: 2000; padding: 20px;
     }
+    .modal-overlay.active { display: flex; }
+    .modal-box {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      padding: 24px; max-width: 440px; width: 100%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+    }
+    .modal-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+    .form-group { margin-bottom: 14px; }
+    .form-label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+    .form-input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 10px 12px; color: var(--text); font-size: 14px; outline: none; font-family: inherit;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-error { color: var(--red); font-size: 12px; margin-top: 6px; min-height: 16px; }
+    .form-success { color: var(--green); font-size: 12px; margin-top: 6px; min-height: 16px; }
   </style>
 </head>
 <body>
@@ -350,6 +367,35 @@ export function renderSuperAdminHtml(data: {
     </div>
   </main>
 
+  <!-- Password Change Modal -->
+  <div class="modal-overlay" id="password-modal">
+    <div class="modal-box">
+      <div class="modal-title">Change Super Admin Password</div>
+      <p style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">
+        Updating your password will revoke all other active super administrator sessions.
+      </p>
+      <form id="password-form">
+        <div class="form-group">
+          <label class="form-label" for="super-curr-pwd">Current Password</label>
+          <input type="password" id="super-curr-pwd" class="form-input" required autocomplete="current-password">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="super-new-pwd">New Password</label>
+          <input type="password" id="super-new-pwd" class="form-input" required minlength="12" autocomplete="new-password" placeholder="At least 12 characters, letters and numbers">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="super-confirm-pwd">Confirm New Password</label>
+          <input type="password" id="super-confirm-pwd" class="form-input" required minlength="12" autocomplete="new-password">
+        </div>
+        <div id="password-status-msg" class="form-error"></div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-password">Cancel</button>
+          <button type="submit" class="btn btn-approve" id="btn-submit-password">Update Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script nonce="${escapeAttr(nonce)}">
     async function postJson(endpoint, payload) {
       const res = await fetch(endpoint, {
@@ -412,23 +458,72 @@ export function renderSuperAdminHtml(data: {
       }
     });
 
-    document.getElementById("btn-change-password").addEventListener("click", async () => {
-      const currentPassword = prompt("Current password:");
-      if (!currentPassword) return;
-      const newPassword = prompt("New password (at least 12 characters, letters and numbers):");
-      if (!newPassword) return;
-      const res = await fetch("/api/auth/change-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentPassword, newPassword })
-      });
-      let data = {};
-      try {
-        data = await res.json();
-      } catch (err) {
-        console.error("Unreadable response from /api/auth/change-password", err);
+    const pwdModal = document.getElementById("password-modal");
+    const pwdForm = document.getElementById("password-form");
+    const currPwdInput = document.getElementById("super-curr-pwd");
+    const newPwdInput = document.getElementById("super-new-pwd");
+    const confirmPwdInput = document.getElementById("super-confirm-pwd");
+    const pwdStatus = document.getElementById("password-status-msg");
+
+    function openPasswordModal() {
+      pwdForm.reset();
+      pwdStatus.textContent = "";
+      pwdStatus.className = "form-error";
+      pwdModal.classList.add("active");
+      currPwdInput.focus();
+    }
+    function closePasswordModal() {
+      pwdModal.classList.remove("active");
+    }
+
+    document.getElementById("btn-change-password").addEventListener("click", openPasswordModal);
+    document.getElementById("btn-cancel-password").addEventListener("click", closePasswordModal);
+    pwdModal.addEventListener("click", (e) => {
+      if (e.target === pwdModal) closePasswordModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && pwdModal.classList.contains("active")) closePasswordModal();
+    });
+
+    pwdForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      pwdStatus.textContent = "";
+      pwdStatus.className = "form-error";
+
+      const currentPassword = currPwdInput.value;
+      const newPassword = newPwdInput.value;
+      const confirmPassword = confirmPwdInput.value;
+
+      if (newPassword !== confirmPassword) {
+        pwdStatus.textContent = "New passwords do not match.";
+        return;
       }
-      alert(res.ok && data.status === "ok" ? "Password changed. Other signed-in browsers have been signed out." : data.error || "Request failed (" + res.status + ")");
+
+      const submitBtn = document.getElementById("btn-submit-password");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Updating...";
+
+      try {
+        const res = await fetch("/api/auth/change-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ currentPassword, newPassword })
+        });
+        let data = {};
+        try { data = await res.json(); } catch {}
+        if (res.ok && data.status === "ok") {
+          pwdStatus.className = "form-success";
+          pwdStatus.textContent = "Password changed successfully. Other sessions revoked.";
+          setTimeout(closePasswordModal, 1500);
+        } else {
+          pwdStatus.textContent = data.error || "Password change failed (" + res.status + ")";
+        }
+      } catch (err) {
+        pwdStatus.textContent = "Network error. Please try again.";
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Update Password";
+      }
     });
   </script>
 </body>

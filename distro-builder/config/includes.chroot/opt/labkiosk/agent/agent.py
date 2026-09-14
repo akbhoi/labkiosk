@@ -354,6 +354,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        if "text/html" in content_type:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; connect-src 'self' http://127.0.0.1:8888;",
+            )
         self.end_headers()
         self.wfile.write(body)
 

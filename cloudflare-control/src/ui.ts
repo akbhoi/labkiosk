@@ -682,7 +682,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
         </div>
       </div>
       <div class="vnc-iframe-wrapper">
-        <iframe id="vnc-frame" class="vnc-iframe" src="about:blank" referrerpolicy="no-referrer"></iframe>
+        <iframe id="vnc-frame" class="vnc-iframe" src="about:blank" referrerpolicy="no-referrer" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
       </div>
     </div>
   </div>

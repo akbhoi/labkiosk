@@ -43,6 +43,7 @@ This skill guides AI agents through authoring, modifying, testing, and verifying
    ```bash
    cd cloudflare-control && cp .dev.vars.example .dev.vars && pnpm dev
    ```
+6. **Environment Variables Management**: Never define production secrets or configuration in the `vars` block of `wrangler.jsonc`, as `wrangler deploy` overrides Cloudflare Dashboard settings. Configure production variables (`DEFAULT_DOMAIN`, `ISO_DOWNLOAD_URL`, `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`) directly in the Cloudflare Dashboard / `wrangler secret`, and use `.dev.vars` for local development.
 
 ### B. Modifying Client Kiosk Agent & Extension
 1. The client agent lives at `distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py`.
@@ -50,7 +51,7 @@ This skill guides AI agents through authoring, modifying, testing, and verifying
    endpoint) and its telemetry is authenticated with a device bearer token. Each heartbeat also
    reports the per-boot VNC password from `/tmp/labkiosk/vnc.secret` and the tunnel hostname from
    `/etc/cloudflared/config.yml` or `LABKIOSK_REMOTE_HOST`, when present. If you add a telemetry
-   field, add it to `/api/telemetry` in `index.ts`, `types.ts`, the README API table and `AGENTS.md`.
+   field, add it to `/api/telemetry` in `index.ts`, `types.ts`, `docs/API.md` and `AGENTS.md`.
 1b. Syntax-check before you copy anything into a container (CI runs the same):
    ```bash
    python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
@@ -188,5 +189,15 @@ docker cp labkiosk-client-01:/tmp/verify.png .
 - **Cause:** The workstation has not sent a heartbeat since boot (no `vncPassword` yet), or it has
   no Cloudflare Tunnel, so there is no `remoteHost` and nothing answers at `<pc>.<TUNNEL_DOMAIN>`.
 - **Remedy:** Check `/api/clients` for `vncPassword` and `remoteHost` on that device. Provision a
-  per-workstation tunnel (README "Remote Control Prerequisites"); in the simulator set
+  per-workstation tunnel (`docs/REMOTE_CONTROL.md`); in the simulator set
   `LABKIOSK_REMOTE_HOST` to a hostname that reaches port 6080.
+
+### 14. Custom Domain Edge-Routing and Dynamic Whitelisting
+- **Symptom:** Accessing the platform via an approved custom domain (e.g. `kiosk.institution.edu`) loads the SaaS landing page instead of the student portal, or kiosks show "This page is blocked".
+- **Root Cause:** In `index.ts`, custom domain hosts matched `!namedTenant && !onSubdomain` and fell through to the public landing page unless `isCustomDomainHost` is checked. Additionally, Chromium clients will block the portal unless `tenant.custom_domain` is explicitly included in the policy allowlist.
+- **Remedy:** In `index.ts`, check `isCustomDomainHost` matching `hostname(request) === currentTenant.custom_domain.toLowerCase()` when deciding `wantsPortal`. In `db.ts`, `buildEffectiveWhitelist()` automatically includes `tenant.custom_domain`.
+
+### 15. Cloudflare Dashboard Environment Variables Overwritten on Deploy
+- **Symptom:** Environment variables configured in the Cloudflare Dashboard (e.g. `DEFAULT_DOMAIN`, `ISO_DOWNLOAD_URL`) revert or disappear after running `wrangler deploy`.
+- **Root Cause:** Defining a `vars` block in `wrangler.jsonc` overrides the hosted environment variables on Cloudflare.
+- **Remedy:** Omit `vars` from `wrangler.jsonc`. Rely on Cloudflare Dashboard settings for hosted environments and `.dev.vars` for local development.

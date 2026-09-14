@@ -1127,6 +1127,9 @@ export async function buildEffectiveWhitelist(db: D1Database, tenantId: string):
       // Ignored if invalid URL
     }
   }
+  if (tenant?.custom_domain) {
+    set.add(tenant.custom_domain.toLowerCase());
+  }
   return Array.from(set).sort();
 }
 

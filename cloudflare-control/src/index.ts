@@ -1802,12 +1802,15 @@ export default {
       );
     }
 
-    // 2. Student Learning Portal (root of a school subdomain)
+    // 2. Student Learning Portal (root of a school subdomain or custom domain)
     const wantsPortal = path === "/" || path === "/portal";
     const namedTenant = url.searchParams.has("tenant") || request.headers.has("x-tenant");
     const onSubdomain = hostSubdomain(request, env.DEFAULT_DOMAIN) !== null;
+    const isCustomDomainHost = Boolean(
+      currentTenant?.custom_domain && hostname(request) === currentTenant.custom_domain.toLowerCase()
+    );
 
-    if (wantsPortal && (namedTenant || onSubdomain)) {
+    if (wantsPortal && (namedTenant || onSubdomain || isCustomDomainHost)) {
       if (!currentTenant) {
         const requested = cleanSubdomain(url.searchParams.get("tenant") ?? hostSubdomain(request, env.DEFAULT_DOMAIN) ?? "");
         return new Response(

@@ -78,7 +78,7 @@ Instead, please submit your findings privately via GitHub Security Advisories:
     Content-Security-Policy with no inline event handlers, HSTS and `frame-ancestors 'none'`; a
     cookie-authenticated mutation is refused when its `Origin` is another site. Keep new templates
     and routes inside those rules (see `AGENTS.md`).
-9. **Do Not "Harden" the Extension Policy:** Adding `ExtensionInstallBlocklist: ["*"]` to the Chromium
+11. **Do Not "Harden" the Extension Policy:** Adding `ExtensionInstallBlocklist: ["*"]` to the Chromium
    managed policy looks like a tightening and is in fact a supervision outage: Chromium then refuses
    `--load-extension` and the workstation loses its navigation bar and lock curtain while continuing
    to report healthy telemetry. The policy file carries a comment explaining this; please read it
