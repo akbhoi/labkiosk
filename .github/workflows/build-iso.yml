@@ -34,7 +34,7 @@ jobs:
         run: cat distro-builder/out/labkiosk-debian12-amd64.iso.sha256
 
       - name: Upload ISO Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: labkiosk-debian12-amd64-iso
           path: distro-builder/out/labkiosk-debian12-amd64.iso
