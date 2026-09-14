@@ -47,15 +47,16 @@ Every school receives its own isolated subdomain (e.g. `greenwood.labkiosk.akbho
 - **Native Web Crypto Authentication:** Zero-dependency PBKDF2-HMAC-SHA256 password hashing (32-byte salt, 100,000 iterations), `HttpOnly; Secure; SameSite=Lax` session cookies scoped to the parent domain, server-side password policy, and exponential back-off after repeated failed sign-ins.
 - **Per-Device Enrolment:** Workstations authenticate to the telemetry API with a bearer token issued once, by exchanging the school's rotatable enrollment key. Only a SHA-256 of each token is stored, and decommissioning a workstation revokes it.
 - **Enforced Tenant Isolation:** Every workstation-control and configuration endpoint requires a session that administers the school in question. The school is taken from the `Host` header; a `?tenant=` override is honoured only for local development or for a caller who already administers that school.
+- **Browser Hardening:** Every HTML response carries a nonce-based `Content-Security-Policy` (no inline event handlers anywhere in the templates), HSTS, `frame-ancestors 'none'`, a `Permissions-Policy` and a `Cross-Origin-Opener-Policy`. Cookie-authenticated mutations are refused when the browser's `Origin` is not this site, on top of `SameSite=Lax`; sign-out is POST-only. Teachers and the platform owner can change their own password, which signs out every other browser holding that account.
 - **Audit Trail:** Sign-ins, command dispatch, enrolment, portal and allowlist edits, and subdomain approvals are recorded per school and readable at `/api/audit-logs`.
 - **Student Learning Portal & Custom Branding:** Fully customizable application launchpad featuring responsive cards with high-res thumbnails, category badges, and single-click launch. Teachers can customize the portal hero title, subtitle, instruction description, and footer note to match their institution or department.
 - **Direct Single-Site Lockdown vs. App Launcher Grid:** Configurable homepage mode per lab, accessible from both the Student Learning Portal modal and Lab Settings & Customization. Schools, universities, colleges, and testing centers can lock thin clients directly to an LMS (Canvas, Blackboard, Moodle), CBT exam platform, or catalog (`single_url` mode) with 100% full-screen lockdown, or use the visual App Launcher Grid (`portal` mode). Target lockdown domains are automatically whitelisted with smart protocol resolution.
-- **Dynamic Broadcast URL Shortcuts & Auto-Whitelisting:** Quick-launch broadcast shortcuts customizable per tenant via D1 (`broadcast_presets`). Shortcuts can be added, deleted, or auto-populated from approved portal apps. Shortcut domains and active broadcasts are automatically injected into the effective Chromium allowlist so lessons and exams are never blocked.
+- **Dynamic Broadcast URL Shortcuts & Auto-Whitelisting:** Quick-launch broadcast shortcuts customizable per tenant via D1 (`broadcast_presets`). Shortcuts can be added, deleted, or auto-populated from approved portal apps. Shortcut domains and active broadcasts are automatically injected into the effective Chromium allowlist so lessons and exams are never blocked. The active broadcast itself is stored on the school's row in D1, so every workstation gets the same answer from every Cloudflare colo and a recycled worker isolate does not forget the lesson.
 - **Customizable Screen Freeze Announcements:** Freeze screens with custom announcements ("Midterm Exam Active", "Class demonstration in progress", "Lab time ended") with configurable quick-announcement chips and customizable tenant-level default lock messages.
 - **Dynamic Workstation Collection:** Real-time grid that displays only active thin clients (no fixed 40-slot limit). Features 1-click workstation decommissioning (`✕`).
 - **Sub-Second Fleet Monitoring:** Ingests live screen thumbnails every 3 seconds from enrolled workstations, capped at 256 KB each and persisted in D1 so the grid survives worker isolate recycling.
-- **In-Browser Remote Desktop (noVNC):** Clicking any workstation card opens an on-demand remote control session. On the real image `x11vnc` is password-protected and `websockify` is bound to loopback, so the session is reachable only through a Cloudflare Tunnel and never directly over the school LAN.
-- **Super Admin Platform Console (`/super`):** Master dashboard for the platform owner to approve or reject requested school subdomains, manage tenant slugs, and monitor global fleet metrics.
+- **In-Browser Remote Desktop (noVNC):** Clicking any workstation card opens an on-demand remote control session. On the real image `x11vnc` runs behind a per-boot random password and `websockify` is bound to loopback, so the session is reachable only through a Cloudflare Tunnel and never directly over the school LAN. The workstation reports that password and its tunnel hostname to the control plane over its authenticated telemetry channel, so the console can connect without either being typed in. See [Remote Control Prerequisites](#-remote-control-prerequisites): the tunnel itself is per-workstation infrastructure you provision.
+- **Super Admin Platform Console (`/super`):** Master dashboard for the platform owner to approve or reject requested school subdomains and custom domains, manage tenant slugs, suspend or reactivate a school, and monitor global fleet metrics.
 
 ---
 
@@ -76,9 +77,11 @@ Every school receives its own isolated subdomain (e.g. `greenwood.labkiosk.akbho
 |                                        ▼                                              |
 |                     [ Cloudflare Worker Router: index.ts ]                            |
 |                        ├── Web Crypto PBKDF2 Authentication                           |
-|                        ├── guard.ts: Tenant Resolution & Authorization                |
+|                        ├── guard.ts: Tenant Resolution, Authorization, CSRF origin    |
 |                        ├── escape.ts: Output Escaping for every template              |
+|                        ├── Nonce CSP + hardened headers on every HTML response        |
 |                        ├── Device Token Enrolment & Verification                      |
+|                        ├── scheduled(): hourly housekeeping (cron trigger)            |
 |                        └── Cloudflare D1 Database (+ memory telemetry cache)          |
 +---------------------------------------------------------------------------------------+
                                          ▲
@@ -137,7 +140,7 @@ labkiosk/
 │   │   ├── guard.ts                     # Tenant resolution & authorization guards
 │   │   ├── escape.ts                    # HTML / attribute / JSON output escaping
 │   │   ├── db.ts                       # D1 data layer & default tenant seeding
-│   │   ├── auth.ts                     # Native Web Crypto PBKDF2 authentication
+│   │   ├── auth.ts                     # Native Web Crypto PBKDF2 authentication, nonces
 │   │   ├── d1_adapter.ts               # Local in-memory D1 test adapter (Node 22+)
 │   │   ├── ui.ts                       # Teacher Dashboard console UI
 │   │   ├── ui_landing.ts               # Public SaaS landing page
@@ -145,16 +148,19 @@ labkiosk/
 │   │   ├── ui_super.ts                 # Super Admin master console
 │   │   └── types.ts                    # TypeScript interface models
 │   ├── test/                           # Automated integration test suite
-│   ├── wrangler.jsonc                  # Wrangler configuration
+│   ├── .dev.vars.example               # Local secrets template for `wrangler dev`
+│   ├── wrangler.jsonc                  # Wrangler configuration (routes, D1, cron trigger)
 │   └── tsconfig.json                   # Strict TypeScript compiler configuration
 │
 ├── .github/
-│   ├── workflows/                      # GitHub Actions CI & ISO Build workflows
+│   ├── workflows/                      # CI (worker + client checks), deploy, ISO build
+│   ├── dependabot.yml                  # Weekly dependency and action updates
 │   ├── ISSUE_TEMPLATE/                 # Structured bug report & feature forms
 │   └── PULL_REQUEST_TEMPLATE.md        # Pull request template
 │
 ├── AGENTS.md                           # AI agent architecture & maintenance guidelines
-├── skills/labkiosk-core/SKILL.md       # Antigravity / AI Agent operational skill
+├── CLAUDE.md                           # Claude Code entry point (imports AGENTS.md)
+├── skills/labkiosk-core/SKILL.md       # AI agent operational skill (Agent Skills format)
 ├── CONTRIBUTING.md                     # Community contribution guidelines
 ├── SECURITY.md                         # Vulnerability disclosure policy
 ├── CODE_OF_CONDUCT.md                  # Contributor Covenant v2.1
@@ -177,10 +183,14 @@ labkiosk/
 cd cloudflare-control
 pnpm install
 
-# Run automated multi-tenant unit tests
+# Run automated multi-tenant unit tests (in-memory database, no secrets needed)
 pnpm test
 
-# Launch local development server with hot-reload
+# Local secrets for the dev server: the super admin login you will use
+cp .dev.vars.example .dev.vars   # then edit the two values
+
+# Launch local development server with hot-reload.
+# `predev` applies migrations/ to the local D1 first.
 pnpm dev
 ```
 The local control plane will be live on `http://localhost:8787`:
@@ -189,13 +199,16 @@ The local control plane will be live on `http://localhost:8787`:
 - **Teacher Lab Dashboard:** `http://localhost:8787/admin?tenant=demo`
 - **Super Admin Console:** `http://localhost:8787/super`
 
-> **Super admin credentials.** When `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are unset, the
-> worker seeds a well-known default account (`admin@akbhoi.com` / `SuperAdmin2026!`) so local
-> development works out of the box. **Set both as Wrangler secrets before deploying** — the default
-> is public knowledge and grants control of every school on the platform:
+> **Super admin credentials are required.** Whenever a D1 database is bound (`wrangler dev` and
+> every deployment) the worker refuses to start until both `SUPER_ADMIN_EMAIL` and
+> `SUPER_ADMIN_PASSWORD` are set, rather than seeding a well-known default that would grant control
+> of every school on the platform. Only the test suite's in-memory database (`ALLOW_LOCAL_DB=1`)
+> uses a built-in account. For a deployment:
 > ```bash
 > npx wrangler secret put SUPER_ADMIN_EMAIL && npx wrangler secret put SUPER_ADMIN_PASSWORD
 > ```
+> Changing `SUPER_ADMIN_EMAIL` moves the existing account to the new address; the password is only
+> rewritten from `SUPER_ADMIN_PASSWORD`. Once signed in, the owner can change it from the console.
 
 ### 3. Deploy the Control Plane
 ```bash
@@ -211,6 +224,12 @@ the `routes` and `DEFAULT_DOMAIN` entries in `wrangler.jsonc` to match your own 
 
 The worker refuses to start without a D1 binding rather than silently falling back to an in-memory
 database, so a misconfigured deployment fails loudly instead of quietly losing every school's data.
+It also refuses to serve a bound database whose migrations have not been applied: a deployed worker
+never creates tables itself, because a self-created schema is one later migrations cannot `ALTER`.
+The `deploy-cloudflare.yml` workflow applies migrations before every deploy for exactly this reason.
+
+An hourly cron trigger (`triggers.crons` in `wrangler.jsonc`) runs the worker's `scheduled` handler
+to purge expired sessions, delivered commands and stale sign-in throttle rows.
 
 ### 4. Launch Docker Client Simulator
 You can simulate a live thin client without needing physical hardware:
@@ -238,6 +257,33 @@ By default the simulator enrols against `http://host.docker.internal:8787`. Set 
 it somewhere else — a deployed worker, or `pnpm dev` on another port. The agent accepts a plain
 `http://` origin only for loopback and container-gateway hosts; every other worker URL must be
 `https://`.
+
+---
+
+## 🖥️ Remote Control Prerequisites
+
+"Remote Control" on a workstation card embeds that workstation's noVNC page. Two things have to be
+true for that to work, and the platform handles one of them for you:
+
+1. **The console must know the VNC password and where to connect.** On every boot the image
+   generates a random `x11vnc` password (RAM only, mode 600, owned by `kiosk`). The agent reports it,
+   together with the workstation's tunnel hostname, in its authenticated telemetry, and the control
+   plane stores both per device. The console uses the reported hostname when there is one, otherwise
+   `https://<pc-id>.<TUNNEL_DOMAIN>` (`TUNNEL_DOMAIN` in `wrangler.jsonc` `vars`), and passes the
+   password to noVNC so the session autoconnects. Both values are visible only to that school's
+   teachers, exactly like the screen thumbnails.
+2. **Each workstation needs its own tunnel.** `websockify` listens on `127.0.0.1:6080` only, so
+   nothing reaches it except a Cloudflare Tunnel running on that machine. `cloudflared-kiosk.service`
+   starts `cloudflared` when `/etc/cloudflared/config.yml` exists; the agent reads the first
+   `hostname:` under `ingress:` in that file as the workstation's remote-control address (or the
+   `LABKIOSK_REMOTE_HOST` environment variable, used by the Docker simulator). Because the image is
+   an immutable live system, per-workstation tunnel credentials have to come from outside the base
+   build: either build a per-site image that includes them, or add a persistence partition for
+   `/etc/cloudflared`. This is deployment work, not something the platform can do for you, so treat
+   remote control as an optional add-on rather than part of the first-boot experience.
+
+Without a tunnel, teachers still get live thumbnails, lock, broadcast, reload and power commands;
+only the interactive session is unavailable.
 
 ---
 
@@ -305,7 +351,9 @@ is applied by `src/guard.ts`; no route resolves a tenant or checks a role by han
 | Endpoint | Method | Who may call it |
 | :--- | :--- | :--- |
 | `/api/status` | GET | Anyone (health and mode probe) |
-| `/api/auth/register`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me` | POST / GET | Public; login is rate-limited with exponential back-off |
+| `/api/auth/register`, `/api/auth/login`, `/api/auth/me` | POST / POST / GET | Public; login is rate-limited with exponential back-off, registration per source address, reserved slugs refused |
+| `/api/auth/logout` | POST | Any signed-in session (GET is refused so a cross-site link cannot sign a teacher out) |
+| `/api/auth/change-password` | POST | Any signed-in session; verifies the current password and revokes the account's other sessions |
 | `/api/portal-sites` | GET | Public — students load the portal |
 | `/api/portal-sites`, `/api/portal-sites/:id` | POST / DELETE | Teacher administering this school |
 | `/api/settings/mode` | POST | Teacher administering this school (switch `portal` or `single_url` and configure target URL) |
@@ -313,13 +361,16 @@ is applied by `src/guard.ts`; no route resolves a tenant or checks a role by han
 | `/api/broadcast-presets`, `/api/broadcast-presets/:id` | GET / POST / DELETE | Teacher administering this school (manage quick launch broadcast shortcuts) |
 | `/api/settings/subdomain` | POST | Teacher administering this school |
 | `/api/settings/enrollment-key` | GET / POST | Teacher administering this school (POST rotates it) |
+| `/api/settings/custom-domain` | POST / DELETE | Teacher administering this school (request or disconnect a custom FQDN) |
 | `/api/whitelist` | GET / POST | Teacher administering this school |
 | `/api/clients`, `/api/clients/remove` | GET / POST | Teacher administering this school |
 | `/api/command` | POST | Teacher administering this school |
 | `/api/audit-logs` | GET | Teacher administering this school |
-| `/api/devices/enroll` | POST | Anyone holding the school's current enrollment key |
-| `/api/telemetry` | POST | An enrolled workstation, via `Authorization: Bearer <device token>` |
+| `/api/devices/enroll` | POST | Anyone holding the school's current enrollment key; failures are throttled per source address |
+| `/api/telemetry` | POST | An enrolled workstation, via `Authorization: Bearer <device token>`; may report `vncPassword` and `remoteHost` |
 | `/api/super/tenants/approve`, `/api/super/tenants/reject` | POST | Super admin only |
+| `/api/super/tenants/suspend`, `/api/super/tenants/reactivate` | POST | Super admin only (a suspended school keeps its data; its portal, telemetry and enrolment are refused) |
+| `/api/super/tenants/custom-domain/approve`, `.../reject`, `.../remove` | POST | Super admin only |
 
 Two properties are worth stating explicitly because they are easy to regress:
 
@@ -327,6 +378,8 @@ Two properties are worth stating explicitly because they are easy to regress:
   request body claims and uses the values bound to the presented device token.
 - **Removing a workstation revokes it.** `/api/clients/remove` deletes the device and its tokens, so a
   decommissioned machine cannot keep reporting.
+- **Only the `Host` header says where a request arrived.** A caller-supplied `X-Forwarded-Host` is
+  ignored when the worker computes the portal URL it hands back to a workstation.
 
 ---
 
@@ -358,6 +411,16 @@ Among the behaviours pinned by tests:
 | Broadcast presets | Presets are validated, scoped per tenant, listed in dashboard, and removable |
 | Markup integrity | The rendered dashboard has balanced tags and no modal nested inside another |
 | Schema integrity | `SCHEMA_SQL` in `db.ts` declares the same tables and columns as `migrations/` |
+| Browser hardening | Every HTML page sends a nonce CSP that matches every `<script>`, HSTS and COOP, and contains no inline event handler |
+| CSRF | A cookie-authenticated mutation from a foreign `Origin` is refused; sign-out is POST-only |
+| Accounts | Password change requires the current password and revokes the account's other sessions |
+| Fail closed | A bound database without migrations, or without both super-admin secrets, is refused |
+| School lifecycle | Suspending a school blocks its portal, telemetry and enrolment until reactivated |
+| Remote control | Reported VNC password and tunnel host are stored per device and shown only to that school |
+
+Client-side files are not exercised by that suite, but CI syntax-checks them on every push: the
+Python agent compiles, both extension scripts parse, the manifest and Chromium policy are valid JSON,
+and the shell scripts pass `shellcheck`.
 
 ---
 
@@ -365,7 +428,7 @@ Among the behaviours pinned by tests:
 
 This project is proudly and transparently **co-developed with Artificial Intelligence**.
 
-The entire software architecture, custom Debian live-build hooks, high-performance Cloudflare Worker router, serverless D1 schema, native Web Crypto implementation, and enterprise client extensions were iteratively designed, coded, and tested through pair-programming between the human maintainer and **Antigravity** (Google DeepMind's Advanced Autonomous AI Coding Assistant).
+The entire software architecture, custom Debian live-build hooks, high-performance Cloudflare Worker router, serverless D1 schema, native Web Crypto implementation, and enterprise client extensions were iteratively designed, coded, and tested through pair-programming between the human maintainer and AI coding assistants, initially **Antigravity** (Google DeepMind) and subsequently Claude Code. The rules those agents follow live in `AGENTS.md` (the cross-tool standard), `CLAUDE.md` and `skills/labkiosk-core/SKILL.md`.
 
 We believe in open collaboration, transparent AI authorship, and leveraging artificial intelligence to build robust, secure, and accessible technology for classrooms around the world.
 
