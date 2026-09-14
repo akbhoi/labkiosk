@@ -12,7 +12,7 @@ lb config noauto \
     --binary-images iso-hybrid \
     --bootloaders "grub-efi,syslinux" \
     --bootappend-live "boot=live components quiet splash toram overlayroot=tmpfs vt.global_cursor_default=0 consoleblank=0" \
-    --compression zstd \
+    --compression gzip \
     --memtest none \
     --iso-application "Lab Kiosk OS" \
     --iso-publisher "School Computer Lab" \

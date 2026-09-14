@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     grub-efi-amd64-bin \
     mtools \
     dosfstools \
+    isolinux \
+    syslinux-common \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*
