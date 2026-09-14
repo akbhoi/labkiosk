@@ -447,8 +447,8 @@ export function renderDashboardHtml(
 
     /* Prompt-style modal (broadcast URL, allowed sites) */
     .prompt-box {
-      width: 520px;
-      max-width: 100%;
+      width: 100%;
+      max-width: 520px;
       background: var(--bg-surface);
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -533,6 +533,28 @@ export function renderDashboardHtml(
       padding: 12px 14px;
       word-break: break-all;
       user-select: all;
+    }
+
+    /* Mobile & Tablet Responsiveness */
+    @media (max-width: 900px) {
+      .nav-container { padding: 12px 16px; }
+      .action-toolbar { width: 100%; justify-content: flex-start; }
+      .stats-bar { order: 3; width: 100%; justify-content: space-between; margin-top: 4px; }
+    }
+    @media (max-width: 640px) {
+      .nav-container { padding: 10px 12px; gap: 10px; }
+      .brand { gap: 10px; }
+      .brand-icon { width: 34px; height: 34px; }
+      .brand-title { font-size: 16px; }
+      .brand-subtitle { font-size: 11px; }
+      .action-toolbar { gap: 6px; }
+      .btn { padding: 7px 12px; font-size: 12px; }
+      main { padding: 16px 12px; }
+      .kiosk-grid { grid-template-columns: 1fr; gap: 14px; }
+      .modal-container { padding: 16px; border-radius: 10px; max-height: 94vh; }
+      .modal-header { margin: -16px -16px 14px; padding: 10px 14px; }
+      .prompt-box { padding: 18px 14px; border-radius: 10px; }
+      .vnc-modal-container { width: 98vw; height: 94vh; border-radius: 8px; }
     }
   </style>
 </head>

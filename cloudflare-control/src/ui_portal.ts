@@ -284,6 +284,79 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[]): string {
       font-size: 12px;
       color: var(--text-muted);
     }
+
+    /* Responsive Mobile & Tablet */
+    @media (max-width: 768px) {
+      header {
+        padding: 14px 20px;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .header-meta {
+        width: 100%;
+        justify-content: space-between;
+      }
+      main {
+        padding: 28px 20px 48px;
+      }
+      .portal-hero {
+        margin-bottom: 28px;
+      }
+      .portal-title {
+        font-size: 26px;
+      }
+      .portal-desc {
+        font-size: 14px;
+      }
+      .grid {
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 16px;
+      }
+    }
+    @media (max-width: 480px) {
+      header {
+        padding: 12px 16px;
+      }
+      .brand {
+        gap: 10px;
+      }
+      .brand-icon {
+        width: 36px;
+        height: 36px;
+      }
+      .brand-name {
+        font-size: 17px;
+      }
+      .brand-sub {
+        font-size: 11px;
+      }
+      .status-pill {
+        font-size: 11px;
+        padding: 4px 10px;
+      }
+      .clock {
+        font-size: 12px;
+      }
+      main {
+        padding: 20px 14px 36px;
+      }
+      .portal-title {
+        font-size: 22px;
+      }
+      .grid {
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+      .card-thumb {
+        height: 130px;
+      }
+      .card-body {
+        padding: 16px;
+      }
+      .launch-btn {
+        min-height: 44px;
+      }
+    }
   </style>
 </head>
 <body>

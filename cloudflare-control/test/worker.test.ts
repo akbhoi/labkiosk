@@ -61,6 +61,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /Centralized School Computer Lab/);
     assert.match(html, /Download Kiosk ISO/);
     assert.match(html, /Register School Lab/);
+    assert.match(html, /id="mobile-toggle"/);
+    assert.match(html, /id="mobile-drawer"/);
+    assert.match(html, /class="specs-table-container"/);
   });
 
   test("Opens the sign-in dialog when redirected with ?login=1", async () => {

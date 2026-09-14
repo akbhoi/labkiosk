@@ -337,11 +337,118 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
       display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; font-size: 13px;
     }
 
-    /* Mobile Nav Toggle */
-    .mobile-menu-btn { display: none; background: transparent; border: none; color: #fff; cursor: pointer; padding: 6px; }
+    /* Mobile Drawer */
+    .mobile-drawer-backdrop {
+      position: fixed; inset: 0; background: rgba(9, 13, 22, 0.7); backdrop-filter: blur(4px);
+      z-index: 998; opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
+    }
+    .mobile-drawer-backdrop.active { opacity: 1; pointer-events: auto; }
+    .mobile-drawer {
+      position: fixed; top: 0; right: 0; bottom: 0; width: 300px; max-width: 85vw;
+      background: #0f172a; border-left: 1px solid var(--border); z-index: 999;
+      transform: translateX(100%); transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex; flex-direction: column; box-shadow: -10px 0 30px rgba(0, 0, 0, 0.5);
+    }
+    .mobile-drawer.active { transform: translateX(0); }
+    .mobile-drawer-header {
+      padding: 16px 20px; display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+    .drawer-close-btn {
+      background: transparent; border: none; color: var(--muted); font-size: 26px;
+      line-height: 1; cursor: pointer; padding: 4px; display: flex; align-items: center;
+    }
+    .drawer-close-btn:hover { color: #fff; }
+    .mobile-drawer-nav {
+      flex: 1; padding: 16px 12px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto;
+    }
+    .mobile-drawer-nav a {
+      display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 8px;
+      font-size: 15px; font-weight: 600; color: #cbd5e1; transition: all 0.15s;
+    }
+    .mobile-drawer-nav a:hover, .mobile-drawer-nav a:focus {
+      background: rgba(59, 130, 246, 0.12); color: #93c5fd;
+    }
+    .mobile-drawer-actions {
+      padding: 16px 20px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px;
+    }
+
+    /* Mobile Nav Toggle Button */
+    .mobile-menu-btn {
+      display: none; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
+      color: #fff; cursor: pointer; padding: 8px; border-radius: 8px;
+      align-items: center; justify-content: center; min-width: 40px; min-height: 40px;
+    }
+    .mobile-menu-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: #475569; }
+
+    /* Responsive Breakpoints */
     @media (max-width: 900px) {
       .nav-links { display: none; }
-      .mobile-menu-btn { display: block; }
+      .mobile-menu-btn { display: inline-flex; }
+    }
+    @media (max-width: 768px) {
+      header { padding: 12px 20px; }
+      .edge-status { display: none; }
+      .nav-register-btn { display: none; }
+      .section-wrap { padding: 50px 16px; }
+      .tabs-nav {
+        overflow-x: auto; flex-wrap: nowrap; justify-content: flex-start;
+        gap: 8px; padding-bottom: 8px; margin-bottom: 24px;
+        -webkit-overflow-scrolling: touch; scrollbar-width: none;
+      }
+      .tabs-nav::-webkit-scrollbar { display: none; }
+      .tab-btn { flex-shrink: 0; white-space: nowrap; padding: 8px 16px; font-size: 13px; }
+    }
+    @media (max-width: 640px) {
+      header { padding: 10px 14px; }
+      .brand { gap: 10px; }
+      .brand-logo { width: 34px; height: 34px; }
+      .brand-title { font-size: 17px; }
+      .brand-title span { display: none; }
+      .nav-signin-btn { padding: 6px 12px; font-size: 13px; min-height: 36px; }
+
+      .hero { padding: 44px 14px 32px; }
+      .hero-title { font-size: clamp(26px, 7.5vw, 38px); letter-spacing: -0.5px; margin-bottom: 16px; }
+      .hero-desc { font-size: 15px; margin-bottom: 24px; }
+      .hero-ctas { flex-direction: column; width: 100%; gap: 10px; }
+      .hero-ctas .btn { width: 100%; min-height: 48px; }
+
+      .metrics-bar { grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; }
+      .metric-value { font-size: 20px; }
+      .metric-label { font-size: 11px; }
+
+      .audience-card { padding: 18px 14px; border-radius: 16px; gap: 20px; }
+      .audience-info h3 { font-size: 20px; margin-bottom: 12px; }
+      .audience-info p { font-size: 14px; margin-bottom: 18px; }
+      .audience-bullets li { font-size: 13.5px; }
+
+      .simulator-bar { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px; }
+      .sim-controls { width: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+      .sim-tab-btn { flex: 1; text-align: center; padding: 7px 6px; font-size: 12px; }
+      .simulator-body { min-height: auto; padding: 18px 14px; }
+
+      .features-grid { grid-template-columns: 1fr; gap: 16px; }
+      .feature-card { padding: 20px 16px; }
+
+      .specs-table-container {
+        width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
+        border-radius: var(--radius); border: 1px solid var(--border); margin-top: 20px;
+      }
+      .specs-table { margin-top: 0; border: none; min-width: 540px; }
+
+      .faq-question { padding: 14px 16px; font-size: 15px; }
+      .faq-answer { padding: 0 16px 16px; font-size: 13.5px; }
+
+      .contact-grid { grid-template-columns: 1fr; gap: 16px; }
+      .contact-card { padding: 20px 16px; }
+
+      .modal-box {
+        padding: 22px 16px; border-radius: 16px; margin: 10px;
+        max-width: calc(100vw - 20px); max-height: 92vh;
+      }
+      .modal-title { font-size: 20px; }
+      .modal-sub { font-size: 13px; margin-bottom: 16px; }
+      .form-input { font-size: 16px; padding: 10px 12px; }
     }
   </style>
 </head>
@@ -372,10 +479,62 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         <div class="status-dot"></div>
         <span>Edge Active</span>
       </div>
-      <button class="btn btn-ghost" onclick="openModal('login-modal')">Sign In</button>
-      <button class="btn btn-primary" onclick="openModal('register-modal')">Register School Lab</button>
+      <button class="btn btn-ghost nav-signin-btn" onclick="openModal('login-modal')">Sign In</button>
+      <button class="btn btn-primary nav-register-btn" onclick="openModal('register-modal')">Register School Lab</button>
+      <button class="mobile-menu-btn" id="mobile-toggle" aria-label="Toggle navigation menu" aria-expanded="false" onclick="toggleMobileNav()">
+        <svg class="icon-menu" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        <svg class="icon-close" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="display: none;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
     </div>
   </header>
+
+  <!-- Mobile Drawer & Backdrop -->
+  <div class="mobile-drawer-backdrop" id="mobile-drawer-backdrop" onclick="toggleMobileNav(false)"></div>
+  <div class="mobile-drawer" id="mobile-drawer" aria-label="Mobile Navigation" role="dialog" aria-modal="true">
+    <div class="mobile-drawer-header">
+      <div class="brand">
+        <div class="brand-logo" style="width: 34px; height: 34px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <div class="brand-title" style="font-size: 18px;">Lab Kiosk</div>
+      </div>
+      <button class="drawer-close-btn" onclick="toggleMobileNav(false)" aria-label="Close menu">&times;</button>
+    </div>
+    <nav class="mobile-drawer-nav">
+      <a href="#features" onclick="toggleMobileNav(false)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Features
+      </a>
+      <a href="#audiences" onclick="toggleMobileNav(false)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Stakeholder Solutions
+      </a>
+      <a href="#simulator" onclick="toggleMobileNav(false)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 16 21 12 17"/></svg>
+        Live Simulator
+      </a>
+      <a href="#specs" onclick="toggleMobileNav(false)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+        Hardware Specs
+      </a>
+      <a href="#security" onclick="toggleMobileNav(false)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
+        Architecture &amp; Security
+      </a>
+      <a href="#faq" onclick="toggleMobileNav(false)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        FAQ
+      </a>
+      <a href="#contact" onclick="toggleMobileNav(false)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Contact
+      </a>
+    </nav>
+    <div class="mobile-drawer-actions">
+      <button class="btn btn-primary btn-block" onclick="toggleMobileNav(false); openModal('register-modal')">Register School Lab</button>
+      <button class="btn btn-ghost btn-block" onclick="toggleMobileNav(false); openModal('login-modal')">Teacher Sign In</button>
+    </div>
+  </div>
 
   <main>
     ${banner}
@@ -828,46 +987,48 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
         <p class="section-sub">Resurrect your legacy lab machines or run on modern thin clients without hardware upgrades.</p>
       </div>
 
-      <table class="specs-table">
-        <thead>
-          <tr>
-            <th>Component</th>
-            <th>Minimum Requirement</th>
-            <th>Recommended Specification</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><strong>Processor (CPU)</strong></td>
-            <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer)</td>
-            <td>Intel Core i3/i5/i7 (2nd gen+), Celeron J4105, or modern AMD Ryzen</td>
-          </tr>
-          <tr>
-            <td><strong>System Memory (RAM)</strong></td>
-            <td>2 GB RAM (runs full OS + Chromium in RAM)</td>
-            <td>4 GB or 8 GB RAM for ultra-smooth multi-app switching</td>
-          </tr>
-          <tr>
-            <td><strong>Storage Drive</strong></td>
-            <td>8 GB USB Flash Drive (USB 2.0 or 3.0) or 16 GB Internal Disk</td>
-            <td>Fast USB 3.0/3.1 Thumb Drive or Internal M.2 / SATA SSD</td>
-          </tr>
-          <tr>
-            <td><strong>Network</strong></td>
-            <td>10/100 Mbps Fast Ethernet or 802.11n Wi-Fi</td>
-            <td>Gigabit Ethernet (1000 Mbps) or 802.11ac Wi-Fi</td>
-          </tr>
-          <tr>
-            <td><strong>Display Output</strong></td>
-            <td>VGA / DVI / HDMI supporting 1024x768 resolution</td>
-            <td>1080p Full HD (1920x1080) or higher via HDMI/DisplayPort</td>
-          </tr>
-          <tr>
-            <td><strong>Verified Hardware</strong></td>
-            <td colspan="2">Tested on HP Thin Clients (t520/t620/t630), Dell OptiPlex (780/790/3020/7040), Lenovo ThinkCentre (M72e/M93p), Intel NUCs, Acer Veriton, and standard assembled desktop towers.</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="specs-table-container">
+        <table class="specs-table">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Minimum Requirement</th>
+              <th>Recommended Specification</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Processor (CPU)</strong></td>
+              <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer)</td>
+              <td>Intel Core i3/i5/i7 (2nd gen+), Celeron J4105, or modern AMD Ryzen</td>
+            </tr>
+            <tr>
+              <td><strong>System Memory (RAM)</strong></td>
+              <td>2 GB RAM (runs full OS + Chromium in RAM)</td>
+              <td>4 GB or 8 GB RAM for ultra-smooth multi-app switching</td>
+            </tr>
+            <tr>
+              <td><strong>Storage Drive</strong></td>
+              <td>8 GB USB Flash Drive (USB 2.0 or 3.0) or 16 GB Internal Disk</td>
+              <td>Fast USB 3.0/3.1 Thumb Drive or Internal M.2 / SATA SSD</td>
+            </tr>
+            <tr>
+              <td><strong>Network</strong></td>
+              <td>10/100 Mbps Fast Ethernet or 802.11n Wi-Fi</td>
+              <td>Gigabit Ethernet (1000 Mbps) or 802.11ac Wi-Fi</td>
+            </tr>
+            <tr>
+              <td><strong>Display Output</strong></td>
+              <td>VGA / DVI / HDMI supporting 1024x768 resolution</td>
+              <td>1080p Full HD (1920x1080) or higher via HDMI/DisplayPort</td>
+            </tr>
+            <tr>
+              <td><strong>Verified Hardware</strong></td>
+              <td colspan="2">Tested on HP Thin Clients (t520/t620/t630), Dell OptiPlex (780/790/3020/7040), Lenovo ThinkCentre (M72e/M93p), Intel NUCs, Acer Veriton, and standard assembled desktop towers.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <!-- Security & Architecture Section -->
@@ -1199,10 +1360,30 @@ export function renderLandingHtml(data: LandingOptions = {}): string {
       openModal(openId);
     }
 
-    // Escape key closes modals
+    // Mobile Navigation Drawer Toggle
+    function toggleMobileNav(force) {
+      const drawer = document.getElementById('mobile-drawer');
+      const backdrop = document.getElementById('mobile-drawer-backdrop');
+      const toggleBtn = document.getElementById('mobile-toggle');
+      const iconMenu = toggleBtn ? toggleBtn.querySelector('.icon-menu') : null;
+      const iconClose = toggleBtn ? toggleBtn.querySelector('.icon-close') : null;
+
+      const isOpen = drawer ? drawer.classList.contains('active') : false;
+      const willOpen = typeof force === 'boolean' ? force : !isOpen;
+
+      if (drawer) drawer.classList.toggle('active', willOpen);
+      if (backdrop) backdrop.classList.toggle('active', willOpen);
+      if (toggleBtn) toggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      if (iconMenu) iconMenu.style.display = willOpen ? 'none' : 'block';
+      if (iconClose) iconClose.style.display = willOpen ? 'block' : 'none';
+      document.body.style.overflow = willOpen ? 'hidden' : '';
+    }
+
+    // Escape key closes modals and mobile drawer
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
+        toggleMobileNav(false);
       }
     });
 
