@@ -337,7 +337,84 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
 
 # --------------------------------------------------------------------------
 # Local HTTP API (loopback only)
-# --------------------------------------------------------------------------
+def is_live_session():
+    """
+    Check if currently running from live installer media (USB/ISO).
+    Returns False when booted from an installed internal drive.
+    """
+    if os.path.exists("/etc/labkiosk-installed"):
+        return False
+    if os.path.exists("/run/live") or os.path.exists("/lib/live/mount"):
+        return True
+    try:
+        with open("/proc/cmdline", "r") as f:
+            if "boot=live" in f.read():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def get_available_disks():
+    if not is_live_session():
+        log("Running on installed disk; disk installer is disabled.")
+        return []
+    try:
+        proc = subprocess.run(
+            ["/usr/local/bin/labkiosk-install", "--list-disks"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            stdout = proc.stdout.strip()
+            idx = stdout.find("[")
+            if idx != -1:
+                return json.loads(stdout[idx:])
+            return json.loads(stdout)
+        else:
+            log(f"labkiosk-install --list-disks exited with {proc.returncode}: {proc.stderr.strip()}")
+    except Exception as e:
+        log(f"Error listing disks: {e}")
+    return []
+
+
+def get_install_status():
+    try:
+        proc = subprocess.run(
+            ["/usr/local/bin/labkiosk-install", "--status"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            stdout = proc.stdout.strip()
+            idx = stdout.find("{")
+            if idx != -1:
+                return json.loads(stdout[idx:])
+            return json.loads(stdout)
+    except Exception as e:
+        log(f"Error reading install status: {e}")
+    return {"state": "idle", "step": "Ready", "progress": 0, "error": None}
+
+
+def start_disk_install(target_disk):
+    def _run():
+        try:
+            log(f"Starting local disk installation to {target_disk}...")
+            subprocess.run(
+                ["sudo", "/usr/local/bin/labkiosk-install", "--target", target_disk],
+                check=True,
+            )
+            log("Local disk installation finished successfully.")
+        except Exception as e:
+            log(f"Disk installation failed: {e}")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
 
 class LocalApiHandler(BaseHTTPRequestHandler):
     server_version = "LabKioskAgent/2.0"
@@ -414,6 +491,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/status":
             with state_lock:
+                live = is_live_session()
                 self._send(
                     200,
                     {
@@ -426,8 +504,18 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "broadcastEpoch": state.get("broadcastEpoch", 0),
                         "isConfigured": state["isConfigured"],
                         "baseDomain": DEFAULT_BASE_DOMAIN,
+                        "isLive": live,
+                        "isInstalled": not live,
                     },
                 )
+            return
+
+        if self.path == "/api/install/disks":
+            self._send(200, get_available_disks())
+            return
+
+        if self.path == "/api/install/status":
+            self._send(200, get_install_status())
             return
 
         self._send(404, {"error": "Not found"})
@@ -435,6 +523,27 @@ class LocalApiHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._is_local_caller():
             self._send(403, {"error": "Cross-origin requests are not accepted"})
+            return
+
+        if self.path == "/api/install":
+            if not is_live_session():
+                self._send(400, {"error": "System is already installed on an internal drive"})
+                return
+            data = self._read_json()
+            if not data:
+                self._send(400, {"error": "A JSON body is required"})
+                return
+            target_disk = str(data.get("targetDisk", "")).strip()
+            if not re.match(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$", target_disk):
+                self._send(400, {"error": "Invalid target disk specification"})
+                return
+            start_disk_install(target_disk)
+            self._send(200, {"status": "started", "targetDisk": target_disk})
+            return
+
+        if self.path == "/api/reboot":
+            subprocess.Popen(["systemctl", "reboot"])
+            self._send(200, {"status": "rebooting"})
             return
 
         if self.path == "/api/setup":

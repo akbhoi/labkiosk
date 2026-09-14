@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""
+Lab Kiosk OS - Automated Local Disk Installer
+Installs the running Lab Kiosk OS to an internal hard drive, SSD, or NVMe disk.
+"""
+
+import sys
+import os
+import json
+import subprocess
+import time
+import shutil
+import re
+
+STATUS_FILE = "/tmp/labkiosk-install-status.json"
+
+def write_status(state, step, progress, error=None):
+    data = {
+        "state": state,       # "idle", "running", "completed", "error"
+        "step": step,
+        "progress": progress, # 0 to 100
+        "error": error
+    }
+    try:
+        with open(STATUS_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"Error writing status: {e}", file=sys.stderr)
+
+def get_status():
+    if not os.path.exists(STATUS_FILE):
+        return {"state": "idle", "step": "Waiting for installation command", "progress": 0, "error": None}
+    try:
+        with open(STATUS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"state": "idle", "step": "Unknown", "progress": 0, "error": None}
+
+def run_cmd(cmd, check=True):
+    print(f"[INSTALL] Executing: {' '.join(cmd)}", file=sys.stderr)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"Command failed ({proc.returncode}): {' '.join(cmd)}\nStderr: {proc.stderr}")
+    return proc.stdout.strip()
+
+def is_live_session():
+    """
+    Check if currently running from live installer media (USB/ISO).
+    Returns False when booted from an installed internal drive.
+    """
+    if os.path.exists("/etc/labkiosk-installed"):
+        return False
+    if os.path.exists("/run/live") or os.path.exists("/lib/live/mount"):
+        return True
+    try:
+        with open("/proc/cmdline", "r") as f:
+            if "boot=live" in f.read():
+                return True
+    except Exception:
+        pass
+    return False
+
+def list_disks():
+    """Detect candidate non-removable internal drives."""
+    if not is_live_session():
+        print("[INSTALL] System is running from an installed disk. Internal installation is disabled.", file=sys.stderr)
+        return []
+
+    disks = []
+    seen = set()
+
+    # Method 1: lsblk JSON inspection
+    try:
+        out = run_cmd(["lsblk", "-J", "-b", "-d", "-o", "NAME,PATH,SIZE,MODEL,ROTA,TYPE,RM,RO"], check=False)
+        data = json.loads(out)
+        blockdevices = data.get("blockdevices", [])
+        for dev in blockdevices:
+            if dev.get("type") != "disk":
+                continue
+            name = dev.get("name", "")
+            if not name or name.startswith("loop") or name.startswith("sr") or name.startswith("zram") or name.startswith("ram"):
+                continue
+
+            size_val = dev.get("size", 0)
+            try:
+                size_bytes = int(size_val) if size_val is not None else 0
+            except (ValueError, TypeError):
+                size_bytes = 0
+
+            # Allow drives >= 3 GB (handles compact 4GB virtual disks & thin clients)
+            if size_bytes < 3 * 1024 * 1024 * 1024:
+                continue
+
+            size_gb = round(size_bytes / (1024 * 1024 * 1024), 1)
+            raw_model = dev.get("model") or "Internal Storage"
+            model = str(raw_model).strip()
+            path = dev.get("path") or f"/dev/{name}"
+
+            disks.append({
+                "name": name,
+                "path": path,
+                "size": f"{size_gb} GB",
+                "model": model,
+                "removable": bool(dev.get("rm", False))
+            })
+            seen.add(name)
+    except Exception as e:
+        print(f"Error enumerating disks via lsblk: {e}", file=sys.stderr)
+
+    # Method 2: Kernel /sys/block fallback
+    if not disks and os.path.exists("/sys/block"):
+        try:
+            for b in os.listdir("/sys/block"):
+                if b in seen or b.startswith("loop") or b.startswith("sr") or b.startswith("zram") or b.startswith("ram"):
+                    continue
+                dev_dir = os.path.join("/sys/block", b)
+                size_file = os.path.join(dev_dir, "size")
+                if not os.path.isfile(size_file):
+                    continue
+                try:
+                    sectors = int(open(size_file).read().strip())
+                    size_bytes = sectors * 512
+                    if size_bytes < 3 * 1024 * 1024 * 1024:
+                        continue
+                    size_gb = round(size_bytes / (1024 * 1024 * 1024), 1)
+                    model_file = os.path.join(dev_dir, "device", "model")
+                    model = open(model_file).read().strip() if os.path.isfile(model_file) else "Internal Virtual/Physical Drive"
+                    disks.append({
+                        "name": b,
+                        "path": f"/dev/{b}",
+                        "size": f"{size_gb} GB",
+                        "model": model,
+                        "removable": False
+                    })
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Error scanning /sys/block: {e}", file=sys.stderr)
+
+    return disks
+
+def install_to_disk(target_disk):
+    if os.geteuid() != 0:
+        raise PermissionError("Installer must run as root")
+
+    if not is_live_session():
+        raise RuntimeError("Lab Kiosk OS is already installed on this computer. Re-installation is disabled.")
+
+    if not os.path.exists(target_disk):
+        raise ValueError(f"Target disk does not exist: {target_disk}")
+
+    print(f"[INSTALL] Target disk selected: {target_disk}", file=sys.stderr)
+    write_status("running", f"Preparing target disk {target_disk}...", 10)
+
+    write_status("running", "Unmounting target partitions...", 15)
+    run_cmd(["swapoff", "-a"], check=False)
+    run_cmd(["umount", "-R", "/mnt/target_kiosk"], check=False)
+    for part in range(1, 16):
+        p_name = f"{target_disk}p{part}" if ("nvme" in target_disk or "mmcblk" in target_disk) else f"{target_disk}{part}"
+        if os.path.exists(p_name):
+            run_cmd(["umount", "-f", p_name], check=False)
+
+    write_status("running", "Creating GPT partition table (BIOS & UEFI compatible)...", 25)
+    run_cmd(["wipefs", "-a", "-f", target_disk], check=False)
+    run_cmd(["parted", "-s", target_disk, "mklabel", "gpt"])
+    # Partition 1: BIOS boot partition for legacy GRUB embedding (1MiB - 2MiB)
+    run_cmd(["parted", "-s", target_disk, "mkpart", "bios_grub", "1MiB", "2MiB"])
+    run_cmd(["parted", "-s", target_disk, "set", "1", "bios_grub", "on"])
+    # Partition 2: EFI System Partition (2MiB - 514MiB)
+    run_cmd(["parted", "-s", target_disk, "mkpart", "ESP", "fat32", "2MiB", "514MiB"])
+    run_cmd(["parted", "-s", target_disk, "set", "2", "esp", "on"])
+    # Partition 3: Linux Root Filesystem (514MiB - 100%)
+    run_cmd(["parted", "-s", target_disk, "mkpart", "ROOT", "ext4", "514MiB", "100%"])
+    time.sleep(2)
+    run_cmd(["partprobe", target_disk], check=False)
+    time.sleep(1)
+
+    is_p_style = "nvme" in target_disk or "mmcblk" in target_disk or target_disk[-1].isdigit()
+    part_bios = f"{target_disk}p1" if is_p_style else f"{target_disk}1"
+    part_esp  = f"{target_disk}p2" if is_p_style else f"{target_disk}2"
+    part_root = f"{target_disk}p3" if is_p_style else f"{target_disk}3"
+
+    for _ in range(10):
+        if os.path.exists(part_root) and os.path.exists(part_esp):
+            break
+        time.sleep(0.5)
+
+    write_status("running", "Formatting file systems (FAT32 & ext4)...", 40)
+    run_cmd(["mkfs.vfat", "-F", "32", "-n", "ESP", part_esp])
+    run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_ROOT", part_root])
+
+    # Mount ROOT filesystem only (DO NOT mount EFI yet to prevent rsync mountpoint conflict)
+    mount_dir = "/mnt/target_kiosk"
+    os.makedirs(mount_dir, exist_ok=True)
+    run_cmd(["umount", "-R", mount_dir], check=False)
+    run_cmd(["mount", part_root, mount_dir])
+
+    write_status("running", "Copying Lab Kiosk OS files to internal drive...", 55)
+    exclude_args = [
+        "--exclude=/proc/**",
+        "--exclude=/sys/**",
+        "--exclude=/dev/**",
+        "--exclude=/run/**",
+        "--exclude=/tmp/**",
+        "--exclude=/mnt/**",
+        "--exclude=/media/**",
+        "--exclude=/lost+found",
+        "--exclude=/boot/efi/**",
+        "--exclude=/live/**",
+    ]
+    # Copy rootfs cleanly into fresh ext4 partition without --delete
+    rsync_cmd = ["rsync", "-aHAX"] + exclude_args + ["/", mount_dir + "/"]
+    run_cmd(rsync_cmd)
+
+    # Mount EFI partition into target AFTER rootfs copy completes
+    efi_dir = os.path.join(mount_dir, "boot", "efi")
+    os.makedirs(efi_dir, exist_ok=True)
+    run_cmd(["mount", part_esp, efi_dir])
+
+    write_status("running", "Configuring boot configuration and partitions...", 75)
+    root_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_root])
+    efi_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_esp])
+
+    fstab_content = f"""# Lab Kiosk OS Persistent Disk fstab
+UUID={root_uuid}  /          ext4  errors=remount-ro  0  1
+UUID={efi_uuid}   /boot/efi  vfat  umask=0077         0  2
+tmpfs            /tmp       tmpfs defaults,noatime,mode=1777 0 0
+"""
+    fstab_path = os.path.join(mount_dir, "etc", "fstab")
+    with open(fstab_path, "w") as f:
+        f.write(fstab_content)
+
+    overlayroot_conf = os.path.join(mount_dir, "etc", "overlayroot.conf")
+    with open(overlayroot_conf, "w") as f:
+        f.write('overlayroot="tmpfs"\noverlayroot_options="recurse=0"\n')
+
+    # Ensure clean machine-id on fresh internal installation
+    try:
+        with open(os.path.join(mount_dir, "etc", "machine-id"), "w") as f:
+            f.write("\n")
+    except Exception:
+        pass
+
+    # Mark as permanently installed system
+    try:
+        with open(os.path.join(mount_dir, "etc", "labkiosk-installed"), "w") as f:
+            f.write("installed\n")
+    except Exception:
+        pass
+
+    write_status("running", "Installing GRUB bootloader to internal storage...", 85)
+    for pseudo in ["dev", "proc", "sys", "run"]:
+        target_p = os.path.join(mount_dir, pseudo)
+        os.makedirs(target_p, exist_ok=True)
+        run_cmd(["mount", "--rbind", f"/{pseudo}", target_p])
+        run_cmd(["mount", "--make-rslave", target_p], check=False)
+
+    # Install UEFI bootloader (both primary entry and removable fallback)
+    run_cmd(["chroot", mount_dir, "grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--bootloader-id=LabKiosk", "--recheck"], check=False)
+    run_cmd(["chroot", mount_dir, "grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable", "--recheck"], check=False)
+
+    # Install Legacy BIOS bootloader into MBR / bios_grub
+    if not ("nvme" in target_disk or "mmcblk" in target_disk):
+        run_cmd(["chroot", mount_dir, "grub-install", "--target=i386-pc", target_disk, "--recheck"], check=False)
+
+    # Generate GRUB configuration
+    run_cmd(["chroot", mount_dir, "update-grub"])
+
+    write_status("running", "Finalizing and synchronizing storage...", 95)
+    run_cmd(["sync"])
+    for pseudo in ["run", "sys", "proc", "dev"]:
+        target_p = os.path.join(mount_dir, pseudo)
+        run_cmd(["umount", "-R", target_p], check=False)
+        run_cmd(["umount", "-l", target_p], check=False)
+    run_cmd(["umount", "-R", efi_dir], check=False)
+    run_cmd(["umount", "-l", efi_dir], check=False)
+    run_cmd(["umount", "-R", mount_dir], check=False)
+    run_cmd(["umount", "-l", mount_dir], check=False)
+    run_cmd(["sync"])
+
+    write_status("completed", "Lab Kiosk OS successfully installed to internal drive!", 100)
+    print("[INSTALL] SUCCESS! Installation complete.", file=sys.stderr)
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--list-disks":
+        disks = list_disks()
+        print(json.dumps(disks))
+        sys.exit(0)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--status":
+        print(json.dumps(get_status()))
+        sys.exit(0)
+    elif len(sys.argv) > 2 and sys.argv[1] == "--target":
+        target = sys.argv[2]
+        try:
+            install_to_disk(target)
+            sys.exit(0)
+        except Exception as err:
+            print(f"[INSTALL] ERROR: {err}", file=sys.stderr)
+            write_status("error", "Installation failed", 0, str(err))
+            sys.exit(1)
+    else:
+        print("Usage: labkiosk-install [--list-disks | --status | --target /dev/sdX]", file=sys.stderr)
+        sys.exit(1)

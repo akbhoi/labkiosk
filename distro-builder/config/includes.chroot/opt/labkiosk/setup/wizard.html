@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lab Kiosk - First Boot Setup Wizard</title>
+  <title>Lab Kiosk - Setup & Installation Wizard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -15,6 +15,7 @@
       --accent: #3b82f6;
       --accent-hover: #2563eb;
       --green: #10b981;
+      --green-hover: #059669;
       --text: #f8fafc;
       --muted: #94a3b8;
     }
@@ -33,40 +34,59 @@
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 20px;
-      padding: 44px;
-      max-width: 520px;
+      padding: 40px;
+      max-width: 560px;
       width: 100%;
       box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.9);
       position: relative;
     }
+    .header-wrap { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
     .icon-wrap {
-      width: 56px;
-      height: 56px;
+      width: 52px; height: 52px; min-width: 52px;
       background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-      border-radius: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 20px;
+      border-radius: 14px; display: flex; align-items: center; justify-content: center;
       box-shadow: 0 8px 20px rgba(59, 130, 246, 0.35);
     }
-    .wizard-title { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 8px; }
-    .wizard-desc { font-size: 14px; color: var(--muted); line-height: 1.6; margin-bottom: 28px; }
+    .wizard-title { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
+    .wizard-badge {
+      display: inline-block; font-size: 11px; font-weight: 700; color: #60a5fa;
+      background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3);
+      padding: 2px 8px; border-radius: 6px; margin-top: 4px;
+    }
+
+    /* Tab switcher */
+    .tabs-nav {
+      display: flex; background: #1f2937; border-radius: 12px; padding: 4px;
+      margin-bottom: 24px; border: 1px solid var(--border);
+    }
+    .tab-btn {
+      flex: 1; padding: 10px 14px; border: none; background: transparent;
+      color: var(--muted); font-size: 13px; font-weight: 700; border-radius: 8px;
+      cursor: pointer; transition: all 0.2s ease; display: flex; align-items: center;
+      justify-content: center; gap: 8px;
+    }
+    .tab-btn.active {
+      background: var(--accent); color: #fff; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
+    }
+
+    .wizard-desc { font-size: 14px; color: var(--muted); line-height: 1.6; margin-bottom: 24px; }
     .form-group { margin-bottom: 20px; }
     .form-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-    .input-field {
+    .input-field, .select-field {
       width: 100%; background: #1f2937; border: 1px solid var(--border); border-radius: 8px;
       padding: 12px 14px; color: #fff; font-size: 14px; outline: none; transition: border 0.15s ease;
     }
-    .input-field:focus { border-color: var(--accent); }
+    .input-field:focus, .select-field:focus { border-color: var(--accent); }
     .subdomain-wrap { display: flex; align-items: center; gap: 8px; }
     .subdomain-suffix { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--muted); white-space: nowrap; }
     .hint-text { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
     .status-box {
       border-radius: 8px; padding: 12px 14px; font-size: 13px; margin-bottom: 20px; display: none; line-height: 1.5;
     }
     .status-success { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #34d399; }
     .status-error { background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; }
+
     .btn-submit {
       width: 100%; background: var(--accent); border: none; color: #fff; padding: 14px; border-radius: 10px;
       font-size: 15px; font-weight: 700; cursor: pointer; transition: all 0.2s ease; display: flex;
@@ -74,69 +94,148 @@
     }
     .btn-submit:hover { background: var(--accent-hover); transform: translateY(-1px); }
     .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-green { background: var(--green); }
+    .btn-green:hover { background: var(--green-hover); }
+
+    /* Install tab styles */
+    .info-card {
+      background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25);
+      border-radius: 10px; padding: 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.5;
+    }
+    .progress-bar-container {
+      width: 100%; height: 10px; background: #1f2937; border-radius: 5px; overflow: hidden;
+      margin: 16px 0 8px 0; display: none;
+    }
+    .progress-bar-fill {
+      width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981);
+      transition: width 0.3s ease;
+    }
+    .progress-status-text { font-size: 13px; color: var(--muted); margin-bottom: 16px; display: none; }
   </style>
 </head>
 <body>
   <div class="wizard-card">
-    <div class="icon-wrap">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+    <div class="header-wrap">
+      <div class="icon-wrap">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      </div>
+      <div>
+        <h1 class="wizard-title">Lab Kiosk OS</h1>
+        <div class="wizard-badge" id="wizard-badge">CLASSROOM WORKSTATION SETUP</div>
+      </div>
     </div>
-    <h1 class="wizard-title">Workstation Setup Wizard</h1>
-    <p class="wizard-desc">
-      Connect this computer to your school lab account. Once configured, this workstation will permanently link to your dashboard and lock down.
-    </p>
+
+    <!-- Tab navigation -->
+    <div class="tabs-nav" id="tabs-nav" style="display: none;">
+      <button type="button" class="tab-btn active" id="tab-btn-enroll">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        <span>1. Connect & Enroll</span>
+      </button>
+      <button type="button" class="tab-btn" id="tab-btn-install">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span>2. Install to Hard Disk</span>
+      </button>
+    </div>
 
     <div class="status-box" id="status-box" role="status" aria-live="polite"></div>
 
-    <form id="setup-form">
-      <div class="form-group" id="subdomain-group">
-        <label class="form-label">Institution / Organization Subdomain</label>
-        <div class="subdomain-wrap">
-          <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: monospace;">
-          <span class="subdomain-suffix" id="subdomain-suffix">.labkiosk.akbhoi.com</span>
-        </div>
-        <div class="hint-text">The subdomain chosen when registering your institution or lab.</div>
-      </div>
+    <!-- ENROLLMENT VIEW -->
+    <div id="view-enroll">
+      <p class="wizard-desc">
+        Connect this computer to your school lab account. Once configured, this workstation will permanently link to your dashboard and lock down.
+      </p>
 
-      <div class="form-group" id="custom-domain-group" style="display: none;">
-        <label class="form-label">Custom Domain or Server Address</label>
-        <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: monospace;">
-        <div class="hint-text">Enter your institution's custom domain (e.g. kiosk.institution.edu) or dedicated server address.</div>
-      </div>
-
-      <div class="form-group custom-toggle-card" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 12px 14px; margin-top: -6px; margin-bottom: 20px;">
-        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: #93c5fd; user-select: none;">
-          <input type="checkbox" id="toggle-custom-domain" style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--accent);">
-          <span>Use completely custom domain / hostname</span>
-        </label>
-        <div style="font-size: 11px; color: var(--muted); margin-top: 4px; padding-left: 28px;">
-          Enable if your institution uses a custom domain (e.g. <code>kiosk.institution.edu</code>) or a dedicated server address instead of a standard <code>.labkiosk.akbhoi.com</code> subdomain.
+      <form id="setup-form">
+        <div class="form-group" id="subdomain-group">
+          <label class="form-label">Institution / Organization Subdomain</label>
+          <div class="subdomain-wrap">
+            <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: monospace;">
+            <span class="subdomain-suffix" id="subdomain-suffix">.labkiosk.akbhoi.com</span>
+          </div>
+          <div class="hint-text">The subdomain chosen when registering your institution or lab.</div>
         </div>
+
+        <div class="form-group" id="custom-domain-group" style="display: none;">
+          <label class="form-label">Custom Domain or Server Address</label>
+          <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: monospace;">
+          <div class="hint-text">Enter your institution's custom domain (e.g. kiosk.institution.edu) or dedicated server address.</div>
+        </div>
+
+        <div class="form-group custom-toggle-card" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 12px 14px; margin-top: -6px; margin-bottom: 20px;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: #93c5fd; user-select: none;">
+            <input type="checkbox" id="toggle-custom-domain" style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--accent);">
+            <span>Use completely custom domain / hostname</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Workstation Identifier (PC Name)</label>
+          <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: monospace;">
+          <div class="hint-text">A unique identifier in your lab or facility (e.g. PC-01, PC-02, DESK-14).</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Workstation Enrollment Key</label>
+          <input type="text" id="enrollment-key" class="input-field" required placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" style="font-family: monospace; text-transform: uppercase;">
+          <div class="hint-text">
+            Find this in your administrator dashboard under <strong>Settings &rarr; Workstation Enrollment Key</strong>.
+          </div>
+        </div>
+
+        <button type="submit" class="btn-submit" id="submit-btn">
+          <span>Verify & Connect Workstation</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </form>
+    </div>
+
+    <!-- DISK INSTALL VIEW -->
+    <div id="view-install" style="display: none;">
+      <p class="wizard-desc">
+        Permanently install Lab Kiosk OS to this computer's internal storage (SSD/HDD). Once installed, the computer boots standalone into Lab Kiosk without needing a USB drive.
+      </p>
+
+      <div class="info-card">
+        <strong style="color: #34d399;">🛡️ 100% RAM Overlay Protection:</strong>
+        <p style="margin-top: 4px; color: var(--muted); font-size: 12px;">
+          Even when installed permanently to internal storage, all student sessions, browser downloads, and caches write strictly to RAM (<code style="color: #60a5fa;">tmpfs</code>), guaranteeing zero flash wear and instant reset on reboot.
+        </p>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Workstation Identifier (PC Name)</label>
-        <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: monospace;">
-        <div class="hint-text">A unique identifier in your lab or facility (e.g. PC-01, PC-02, DESK-14). Letters, numbers, hyphens and underscores.</div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Workstation Enrollment Key</label>
-        <input type="text" id="enrollment-key" class="input-field" required placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" style="font-family: monospace; text-transform: uppercase;">
-        <div class="hint-text">
-          Find this in your administrator dashboard under <strong>Settings &rarr; Workstation Enrollment Key</strong>.
-          It proves this computer belongs to your organization, so keep it private.
+        <label class="form-label">Select Target Internal Storage Drive</label>
+        <select id="target-disk-select" class="select-field">
+          <option value="">Scanning for internal drives...</option>
+        </select>
+        <div class="hint-text" id="disk-warning-text" style="color: #f87171;">
+          ⚠️ WARNING: Installing will completely erase and re-partition the selected drive.
         </div>
       </div>
 
-      <button type="submit" class="btn-submit" id="submit-btn">
-        <span>Verify & Connect Workstation</span>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      <div class="progress-bar-container" id="install-progress-bar-container">
+        <div class="progress-bar-fill" id="install-progress-bar"></div>
+      </div>
+      <div class="progress-status-text" id="install-status-text">Ready to install</div>
+
+      <button type="button" class="btn-submit btn-green" id="start-install-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Install Lab Kiosk to Selected Drive</span>
       </button>
-    </form>
+
+      <button type="button" class="btn-submit" id="reboot-btn" style="display: none; margin-top: 14px; background: #3b82f6;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        <span>Reboot Computer Now</span>
+      </button>
+    </div>
+
   </div>
 
   <script>
+    const tabBtnEnroll = document.getElementById('tab-btn-enroll');
+    const tabBtnInstall = document.getElementById('tab-btn-install');
+    const viewEnroll = document.getElementById('view-enroll');
+    const viewInstall = document.getElementById('view-install');
+
     const form = document.getElementById('setup-form');
     const submitBtn = document.getElementById('submit-btn');
     const statusBox = document.getElementById('status-box');
@@ -148,9 +247,32 @@
     const clientIdInput = document.getElementById('client-id');
     const subdomainSuffix = document.getElementById('subdomain-suffix');
 
+    const targetDiskSelect = document.getElementById('target-disk-select');
+    const startInstallBtn = document.getElementById('start-install-btn');
+    const rebootBtn = document.getElementById('reboot-btn');
+    const progressBarContainer = document.getElementById('install-progress-bar-container');
+    const progressBar = document.getElementById('install-progress-bar');
+    const progressStatusText = document.getElementById('install-status-text');
+
     let baseDomain = 'labkiosk.akbhoi.com';
 
-    // Fetch local agent status to dynamically load baseDomain and suggested clientId
+    tabBtnEnroll.addEventListener('click', () => {
+      tabBtnEnroll.classList.add('active');
+      tabBtnInstall.classList.remove('active');
+      viewEnroll.style.display = 'block';
+      viewInstall.style.display = 'none';
+      statusBox.style.display = 'none';
+    });
+
+    tabBtnInstall.addEventListener('click', () => {
+      tabBtnInstall.classList.add('active');
+      tabBtnEnroll.classList.remove('active');
+      viewInstall.style.display = 'block';
+      viewEnroll.style.display = 'none';
+      statusBox.style.display = 'none';
+      loadAvailableDisks();
+    });
+
     async function loadAgentStatus() {
       try {
         const res = await fetch('http://127.0.0.1:8888/api/status');
@@ -163,12 +285,120 @@
           if (data.clientId && !clientIdInput.value) {
             clientIdInput.value = data.clientId;
           }
+          const tabsNav = document.getElementById('tabs-nav');
+          const wizardBadge = document.getElementById('wizard-badge');
+          if (data.isLive) {
+            if (tabsNav) tabsNav.style.display = 'flex';
+            if (wizardBadge) wizardBadge.textContent = 'LIVE INSTALLER & SETUP';
+          } else {
+            if (tabsNav) tabsNav.style.display = 'none';
+            viewInstall.style.display = 'none';
+            viewEnroll.style.display = 'block';
+            if (wizardBadge) wizardBadge.textContent = 'INSTALLED WORKSTATION ENROLLMENT';
+          }
         }
-      } catch {
-        // Agent not reachable yet; fallback to default
-      }
+      } catch {}
     }
     loadAgentStatus();
+
+    async function loadAvailableDisks() {
+      targetDiskSelect.innerHTML = '<option value="">Scanning drives...</option>';
+      try {
+        const res = await fetch('http://127.0.0.1:8888/api/install/disks');
+        if (res.ok) {
+          const disks = await res.json();
+          targetDiskSelect.innerHTML = '';
+          if (!disks || disks.length === 0) {
+            targetDiskSelect.innerHTML = '<option value="">No candidate internal drives detected</option>';
+            startInstallBtn.disabled = true;
+            return;
+          }
+          disks.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.path;
+            opt.textContent = `${d.path} — ${d.size} (${d.model})`;
+            targetDiskSelect.appendChild(opt);
+          });
+          startInstallBtn.disabled = false;
+        }
+      } catch (e) {
+        targetDiskSelect.innerHTML = '<option value="">Failed to scan drives</option>';
+        startInstallBtn.disabled = true;
+      }
+    }
+
+    let pollTimer = null;
+    startInstallBtn.addEventListener('click', async () => {
+      const disk = targetDiskSelect.value;
+      if (!disk) {
+        alert('Please select a target storage drive.');
+        return;
+      }
+      if (!confirm(`Are you absolutely sure you want to install Lab Kiosk OS to ${disk}?\n\nAll existing data on this drive will be permanently deleted!`)) {
+        return;
+      }
+
+      startInstallBtn.disabled = true;
+      targetDiskSelect.disabled = true;
+      progressBarContainer.style.display = 'block';
+      progressStatusText.style.display = 'block';
+      progressBar.style.width = '5%';
+      progressStatusText.textContent = 'Initiating disk installation...';
+
+      try {
+        const res = await fetch('http://127.0.0.1:8888/api/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetDisk: disk })
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'Failed to start installation');
+        }
+
+        pollTimer = setInterval(async () => {
+          try {
+            const sRes = await fetch('http://127.0.0.1:8888/api/install/status');
+            if (sRes.ok) {
+              const status = await sRes.json();
+              progressBar.style.width = status.progress + '%';
+              progressStatusText.textContent = status.step || 'Processing...';
+
+              if (status.state === 'completed') {
+                clearInterval(pollTimer);
+                progressBar.style.width = '100%';
+                statusBox.className = 'status-box status-success';
+                statusBox.textContent = 'SUCCESS! Lab Kiosk OS installed to internal drive. Please remove the USB installation drive and reboot.';
+                statusBox.style.display = 'block';
+                startInstallBtn.style.display = 'none';
+                rebootBtn.style.display = 'flex';
+              } else if (status.state === 'error') {
+                clearInterval(pollTimer);
+                statusBox.className = 'status-box status-error';
+                statusBox.textContent = 'Installation failed: ' + (status.error || 'Unknown error');
+                statusBox.style.display = 'block';
+                startInstallBtn.disabled = false;
+                targetDiskSelect.disabled = false;
+              }
+            }
+          } catch {}
+        }, 1000);
+      } catch (e) {
+        statusBox.className = 'status-box status-error';
+        statusBox.textContent = e.message;
+        statusBox.style.display = 'block';
+        startInstallBtn.disabled = false;
+        targetDiskSelect.disabled = false;
+      }
+    });
+
+    rebootBtn.addEventListener('click', async () => {
+      try {
+        await fetch('http://127.0.0.1:8888/api/reboot', { method: 'POST' });
+        rebootBtn.disabled = true;
+        rebootBtn.querySelector('span').textContent = 'Rebooting...';
+      } catch {}
+    });
 
     toggleCustomDomain.addEventListener('change', () => {
       if (toggleCustomDomain.checked) {

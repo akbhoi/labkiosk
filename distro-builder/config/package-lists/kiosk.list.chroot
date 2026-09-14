@@ -7,19 +7,35 @@ overlayroot
 systemd-sysv
 grub-efi-amd64-bin
 grub-pc-bin
+grub-common
+grub2-common
+efibootmgr
+parted
+dosfstools
+e2fsprogs
+rsync
+sudo
 
-# Intel & General Hardware Firmware
+
+# Hyper-V & Virtualization Integration
+hyperv-daemons
+
+# Hardware Firmware
 firmware-linux-free
 firmware-misc-nonfree
 firmware-realtek
 firmware-iwlwifi
 
-# Minimal X11 Server & Openbox
+# Minimal X11 Server, Drivers & Openbox
 xserver-xorg-core
+xserver-xorg-legacy
 xserver-xorg-video-all
+xserver-xorg-video-fbdev
+xserver-xorg-video-vesa
 xserver-xorg-input-all
 xinit
 x11-xserver-utils
+nodm
 openbox
 xdotool
 scrot
