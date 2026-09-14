@@ -69,8 +69,9 @@ export function isReservedSlug(slug: string): boolean {
 /** True when `host` is `base` itself or a subdomain of it (dot-anchored, unlike endsWith). */
 export function isHostUnder(host: string, base: string | undefined): boolean {
   if (!base) return false;
-  const clean = base.replace(/^\./, "").toLowerCase();
-  return host === clean || host.endsWith("." + clean);
+  const cleanHost = host.toLowerCase();
+  const cleanBase = base.replace(/^\./, "").toLowerCase();
+  return cleanHost === cleanBase || cleanHost.endsWith("." + cleanBase);
 }
 
 /**

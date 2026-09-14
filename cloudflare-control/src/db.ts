@@ -1291,22 +1291,15 @@ export async function rateLimitWait(
 
 export async function recordRateLimitHit(db: D1Database, key: string, windowSeconds: number): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
-  const row = await db
-    .prepare("SELECT failed_count, last_failed_at FROM login_attempts WHERE identifier = ?")
-    .bind(key)
-    .first<{ failed_count: number; last_failed_at: number }>();
-  const inWindow = !!row && now - row.last_failed_at < windowSeconds;
-  const count = inWindow ? row!.failed_count + 1 : 1;
-  const windowStart = inWindow ? row!.last_failed_at : now;
   await db
     .prepare(
       `INSERT INTO login_attempts (identifier, failed_count, last_failed_at, locked_until)
-       VALUES (?, ?, ?, 0)
+       VALUES (?1, 1, ?2, 0)
        ON CONFLICT(identifier) DO UPDATE SET
-         failed_count = excluded.failed_count,
-         last_failed_at = excluded.last_failed_at`
+         failed_count = CASE WHEN ?2 - last_failed_at < ?3 THEN failed_count + 1 ELSE 1 END,
+         last_failed_at = CASE WHEN ?2 - last_failed_at < ?3 THEN last_failed_at ELSE ?2 END`
     )
-    .bind(key, count, windowStart)
+    .bind(key, now, windowSeconds)
     .run();
 }
 

@@ -1456,10 +1456,10 @@ export default {
         const activeWhitelist = await buildEffectiveWhitelist(db, tenantId);
         // The active broadcast lives on the tenant row, so every colo and every
         // isolate hands this workstation the same answer.
-        const activeBroadcast =
-          tenant.broadcast_url && safeHttpUrl(tenant.broadcast_url)
-            ? { url: safeHttpUrl(tenant.broadcast_url)!, epoch: Number(tenant.broadcast_epoch) || 0 }
-            : null;
+        const validatedBroadcastUrl = tenant.broadcast_url ? safeHttpUrl(tenant.broadcast_url) : null;
+        const activeBroadcast = validatedBroadcastUrl
+          ? { url: validatedBroadcastUrl, epoch: Number(tenant.broadcast_epoch) || 0 }
+          : null;
         if (activeBroadcast) {
           const bHost = new URL(activeBroadcast.url).hostname.toLowerCase();
           if (bHost && !activeWhitelist.includes(bHost)) {

@@ -7,6 +7,8 @@ import worker from "../src/index";
 import * as workerModule from "../src/index";
 import { SCHEMA_SQL, initSchema } from "../src/db";
 import { createLocalD1Database } from "../src/d1_adapter";
+import { safeHttpUrl } from "../src/escape";
+import { isHostUnder } from "../src/guard";
 import { Env } from "../src/types";
 
 /**
@@ -962,6 +964,22 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     assert.equal(data.preset.url, "https://canvas.institution.edu:8080/courses");
     await call(`/api/broadcast-presets/${data.preset.id}?tenant=greenwood`, { method: "DELETE", cookie: schoolSessionCookie });
+
+    // Host:port followed directly by query parameter or hash fragment without trailing slash
+    assert.equal(
+      safeHttpUrl("canvas.institution.edu:8080?param=1#section"),
+      "https://canvas.institution.edu:8080/?param=1#section"
+    );
+    assert.equal(safeHttpUrl("canvas.institution.edu:8080#section"), "https://canvas.institution.edu:8080/#section");
+  });
+
+  test("Checks domain boundaries case-insensitively with isHostUnder", () => {
+    assert.equal(isHostUnder("School.LabKiosk.com", "labkiosk.com"), true);
+    assert.equal(isHostUnder("SCHOOL.LABKIOSK.COM", ".LabKiosk.COM"), true);
+    assert.equal(isHostUnder("greenwood.labkiosk.akbhoi.com", "labkiosk.akbhoi.com"), true);
+    assert.equal(isHostUnder("not-labkiosk.com", "labkiosk.com"), false);
+    assert.equal(isHostUnder("fakelabkiosk.com", "labkiosk.com"), false);
+    assert.equal(isHostUnder("labkiosk.com", undefined), false);
   });
 
   // --------------------------------------------------------- remote control
