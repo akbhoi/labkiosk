@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "labkiosk-controller",
   "main": "src/index.ts",
-  "compatibility_date": "2024-12-30",
+  "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
 
   // Multi-tenant routing: every school is a subdomain of the zone, and the
@@ -44,6 +44,12 @@
   //   npx wrangler secret put SUPER_ADMIN_PASSWORD
   // If they are unset the worker seeds a well-known default account, so treat
   // setting them as part of deployment, not an optional extra.
+
+  // Hourly housekeeping handled by the `scheduled` export in src/index.ts:
+  // expired sessions, delivered commands and stale sign-in throttle rows.
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
 
   "observability": {
     "enabled": true

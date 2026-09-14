@@ -59,7 +59,9 @@ export function cleanSubdomain(raw: unknown): string {
 export function safeHttpUrl(raw: unknown): string | null {
   const candidate = String(raw ?? "").trim();
   if (!candidate) return null;
-  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate);
+  // `canvas.edu:8080` is a host and a port, not the scheme "canvas.edu:".
+  const looksLikeHostPort = /^[a-zA-Z0-9.-]+:\d{1,5}(\/|$)/.test(candidate);
+  const hasScheme = !looksLikeHostPort && /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(candidate);
   const toParse = hasScheme ? candidate : `https://${candidate}`;
   try {
     const parsed = new URL(toParse);

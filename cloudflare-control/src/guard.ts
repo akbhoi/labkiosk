@@ -46,15 +46,6 @@ function isIpLiteral(host: string): boolean {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":") || host.startsWith("[");
 }
 
-/**
- * The school slug carried by the Host header, or null when the host carries none.
- *
- * When `baseDomain` is configured the host must be exactly `<slug>.<baseDomain>`.
- * Without that anchor any multi-label host gets its first label read as a school:
- * `host.docker.internal` becomes the school "host", and a worker deployed to
- * `my-worker.someone.workers.dev` serves its own root as the school "my-worker".
- * An IP literal has dot-separated parts but no subdomain either.
- */
 /** Reserved subdomains that cannot be claimed or resolved as a school tenant. */
 const RESERVED_SLUGS = new Set([
   "www",
@@ -70,6 +61,27 @@ const RESERVED_SLUGS = new Set([
   "root"
 ]);
 
+/** True for slugs the platform keeps for itself; they can be neither registered nor resolved. */
+export function isReservedSlug(slug: string): boolean {
+  return RESERVED_SLUGS.has(slug);
+}
+
+/** True when `host` is `base` itself or a subdomain of it (dot-anchored, unlike endsWith). */
+export function isHostUnder(host: string, base: string | undefined): boolean {
+  if (!base) return false;
+  const clean = base.replace(/^\./, "").toLowerCase();
+  return host === clean || host.endsWith("." + clean);
+}
+
+/**
+ * The school slug carried by the Host header, or null when the host carries none.
+ *
+ * When `baseDomain` is configured the host must be exactly `<slug>.<baseDomain>`.
+ * Without that anchor any multi-label host gets its first label read as a school:
+ * `host.docker.internal` becomes the school "host", and a worker deployed to
+ * `my-worker.someone.workers.dev` serves its own root as the school "my-worker".
+ * An IP literal has dot-separated parts but no subdomain either.
+ */
 export function hostSubdomain(request: Request, baseDomain?: string): string | null {
   const host = hostname(request);
   if (isIpLiteral(host)) return null;
@@ -92,18 +104,6 @@ export function hostSubdomain(request: Request, baseDomain?: string): string | n
   return slug;
 }
 
-/**
- * Resolve the tenant a request is acting on.
- *
- * The Host header is authoritative. `?tenant=` / `X-Tenant` are honoured only
- * when the caller demonstrably may target that tenant:
- *   - the request arrives on a local development host, or
- *   - the caller is the platform super admin, or
- *   - the caller's own session already belongs to that tenant, or
- *   - the route is a public, unauthenticated one (`allowAnonymousOverride`),
- *     such as the student portal and the setup-wizard status probe, which are
- *     read-only and must work before any session exists.
- */
 /**
  * Resolve the tenant a request is acting on.
  *
@@ -171,6 +171,41 @@ export async function resolveTenant(options: {
   }
 
   return { tenant: null, denied: false };
+}
+
+/**
+ * Defence in depth against cross-site request forgery.
+ *
+ * Session cookies are `SameSite=Lax`, which already keeps them off cross-site
+ * POSTs in every current browser. This check backs that up: a browser always
+ * sends `Origin` on a POST/DELETE, so a cookie-authenticated mutation whose
+ * Origin is not this host, the platform domain or a dev host is refused.
+ * Requests without an Origin header (curl, the Python agent, tests) are not
+ * browser requests and pass; device routes authenticate with a bearer token
+ * and never rely on a cookie in the first place.
+ */
+export function rejectCrossSiteMutation(
+  request: Request,
+  options: { usedCookie: boolean; baseDomain?: string },
+  headers: Record<string, string>
+): Response | null {
+  if (!options.usedCookie) return null;
+  if (request.method !== "POST" && request.method !== "DELETE") return null;
+  const origin = request.headers.get("origin");
+  if (!origin || origin === "null") {
+    return origin === "null" ? jsonError("Cross-site requests are not accepted", 403, headers) : null;
+  }
+  let originHost: string;
+  try {
+    originHost = new URL(origin).hostname.toLowerCase();
+  } catch {
+    return jsonError("Cross-site requests are not accepted", 403, headers);
+  }
+  const sameSite =
+    originHost === hostname(request) ||
+    DEV_HOSTS.has(originHost) ||
+    isHostUnder(originHost, options.baseDomain);
+  return sameSite ? null : jsonError("Cross-site requests are not accepted", 403, headers);
 }
 
 /** 403 unless the session is the platform super admin. */

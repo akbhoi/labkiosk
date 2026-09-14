@@ -3,14 +3,25 @@
  * Platform owner interface for managing schools, approving subdomains, and global analytics.
  */
 
+import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
+
+/** A tenant row joined with its admin user and live client counts (see listAllTenants). */
+export interface SuperConsoleTenant extends Tenant {
+  admin_email: string;
+  admin_name: string;
+  online_clients: number;
+  total_clients: number;
+}
 
 export function renderSuperAdminHtml(data: {
   superAdminEmail: string;
-  tenants: any[];
+  tenants: SuperConsoleTenant[];
   baseDomain?: string;
+  /** Per-response CSP nonce; every <script> in this template must carry it. */
+  nonce: string;
 }): string {
-  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com" } = data;
+  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com", nonce } = data;
 
   const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
@@ -100,6 +111,13 @@ export function renderSuperAdminHtml(data: {
           <button class="btn btn-sm btn-edit" data-action="assign" data-tenant="${escapeHtml(t.id)}">Edit Subdomain</button>
           <button class="btn btn-sm btn-edit" data-action="assign-custom" data-tenant="${escapeHtml(t.id)}">Assign Custom Domain</button>
           ${t.custom_domain ? `<button class="btn btn-sm btn-reject" data-action="remove-custom" data-tenant="${escapeHtml(t.id)}">Disconnect</button>` : ""}
+          ${
+            t.status === "active"
+              ? `<button class="btn btn-sm btn-reject" data-action="suspend" data-tenant="${escapeHtml(t.id)}">Suspend</button>`
+              : t.status === "suspended"
+                ? `<button class="btn btn-sm btn-approve" data-action="reactivate" data-tenant="${escapeHtml(t.id)}">Reactivate</button>`
+                : ""
+          }
         </div>
       </td>
     </tr>
@@ -234,7 +252,10 @@ export function renderSuperAdminHtml(data: {
     <div class="user-meta">
       <span class="badge-super">SUPER ADMIN</span>
       <span style="font-size: 13px; color: var(--muted);">${escapeHtml(superAdminEmail)}</span>
-      <a href="/api/auth/logout" class="btn-logout">Sign Out</a>
+      <button type="button" class="btn-logout" id="btn-change-password">Change Password</button>
+      <form method="post" action="/api/auth/logout" style="display: inline;">
+        <button type="submit" class="btn-logout">Sign Out</button>
+      </form>
     </div>
   </header>
 
@@ -329,7 +350,7 @@ export function renderSuperAdminHtml(data: {
     </div>
   </main>
 
-  <script>
+  <script nonce="${escapeAttr(nonce)}">
     async function postJson(endpoint, payload) {
       const res = await fetch(endpoint, {
         method: "POST",
@@ -382,7 +403,32 @@ export function renderSuperAdminHtml(data: {
       } else if (action === "remove-custom") {
         if (!confirm("Disconnect custom domain from this school?")) return;
         postJson("/api/super/tenants/custom-domain/remove", { tenantId });
+      } else if (action === "suspend") {
+        if (!confirm("Suspend this school? Its portal and workstations stop working until it is reactivated.")) return;
+        postJson("/api/super/tenants/suspend", { tenantId });
+      } else if (action === "reactivate") {
+        if (!confirm("Reactivate this school?")) return;
+        postJson("/api/super/tenants/reactivate", { tenantId });
       }
+    });
+
+    document.getElementById("btn-change-password").addEventListener("click", async () => {
+      const currentPassword = prompt("Current password:");
+      if (!currentPassword) return;
+      const newPassword = prompt("New password (at least 12 characters, letters and numbers):");
+      if (!newPassword) return;
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (err) {
+        console.error("Unreadable response from /api/auth/change-password", err);
+      }
+      alert(res.ok && data.status === "ok" ? "Password changed. Other signed-in browsers have been signed out." : data.error || "Request failed (" + res.status + ")");
     });
   </script>
 </body>
