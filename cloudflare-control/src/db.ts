@@ -15,7 +15,13 @@ import {
   AuditLogEntry,
   BroadcastPreset
 } from "./types";
-import { hashPassword, sha256Hex, generateDeviceToken, generateEnrollmentKey } from "./auth";
+import {
+  hashPassword,
+  verifyPassword,
+  sha256Hex,
+  generateDeviceToken,
+  generateEnrollmentKey
+} from "./auth";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -229,14 +235,24 @@ export async function ensureSuperAdmin(
     .first<User>();
 
   if (existing) {
-    // The database was initialised with a legacy placeholder or the configured
-    // email changed: move the account to the configured credentials.
-    if (existing.email === "admin@labkiosk.io" || existing.email !== email) {
+    const passwordMatches = await verifyPassword(
+      credentials.password,
+      existing.password_hash,
+      existing.salt
+    );
+    // The database was initialised with a legacy placeholder, the configured email
+    // changed, or the configured password does not match the stored hash: move
+    // the account to the configured credentials and clear any lockout.
+    if (existing.email === "admin@labkiosk.io" || existing.email !== email || !passwordMatches) {
       const { hashHex, saltHex } = await hashPassword(credentials.password);
       await db
         .prepare("UPDATE users SET email = ?, password_hash = ?, salt = ? WHERE id = ?")
         .bind(email, hashHex, saltHex, existing.id)
         .run();
+      await clearLoginFailures(db, email);
+      if (existing.email !== email) {
+        await clearLoginFailures(db, existing.email);
+      }
       return { ...existing, email, password_hash: hashHex, salt: saltHex };
     }
     return existing;

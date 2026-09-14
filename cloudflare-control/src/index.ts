@@ -135,10 +135,23 @@ function getDatabase(env: Env): D1Database {
  * router even looked at the path.
  */
 type Bootstrapped = { superAdmin: User; defaultTenant: Tenant };
-let bootstrapCache: { db: D1Database; promise: Promise<Bootstrapped> } | null = null;
+let bootstrapCache: {
+  db: D1Database;
+  email?: string;
+  password?: string;
+  promise: Promise<Bootstrapped>;
+} | null = null;
 function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
-  // Memoized per database instance: a different binding is a different deployment.
-  if (!bootstrapCache || bootstrapCache.db !== db) {
+  const email = env.SUPER_ADMIN_EMAIL?.trim();
+  const password = env.SUPER_ADMIN_PASSWORD;
+
+  // Memoized per database instance and credentials.
+  if (
+    !bootstrapCache ||
+    bootstrapCache.db !== db ||
+    bootstrapCache.email !== email ||
+    bootstrapCache.password !== password
+  ) {
     const promise = (async () => {
       // Idempotent CREATE TABLE IF NOT EXISTS, so `wrangler dev` works against a
       // fresh local D1 with no migration step. This is memoized per isolate, so
@@ -156,8 +169,6 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
 
       // Rule 7 (fail closed): a well-known super admin password is acceptable
       // only for the in-memory database used by tests and local development.
-      const email = env.SUPER_ADMIN_EMAIL?.trim();
-      const password = env.SUPER_ADMIN_PASSWORD;
       if (production && (!email || !password)) {
         throw new Error(
           "SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set as Wrangler secrets before the worker can serve production traffic (`npx wrangler secret put SUPER_ADMIN_EMAIL`, then SUPER_ADMIN_PASSWORD). Refusing to seed the well-known default account."
@@ -177,7 +188,7 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
       if (bootstrapCache?.promise === promise) bootstrapCache = null;
       throw err;
     });
-    bootstrapCache = { db, promise };
+    bootstrapCache = { db, email, password, promise };
   }
   return bootstrapCache.promise;
 }

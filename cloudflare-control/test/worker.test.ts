@@ -151,6 +151,43 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(asTeacher.status, 401);
   });
 
+  test("Updates super admin password when SUPER_ADMIN_PASSWORD changes in environment", async () => {
+    // Attempt sign-in with rotated password before rotation - must fail
+    const { res: preRes } = await callJson(
+      "/api/auth/login",
+      json({ email: "admin@akbhoi.com", password: "NewRotatedPassword2026!" })
+    );
+    assert.equal(preRes.status, 401);
+
+    // Call worker with updated SUPER_ADMIN_PASSWORD environment secret
+    const rotatedEnv: Env = {
+      ...mockEnv,
+      SUPER_ADMIN_PASSWORD: "NewRotatedPassword2026!"
+    };
+    const pingRes = await worker.fetch(request("/api/status"), rotatedEnv);
+    assert.equal(pingRes.status, 200);
+
+    // Sign in with new rotated password - must succeed
+    const newLoginRes = await worker.fetch(
+      request("/api/auth/login", json({ email: "admin@akbhoi.com", password: "NewRotatedPassword2026!" })),
+      rotatedEnv
+    );
+    assert.equal(newLoginRes.status, 200);
+    const newLoginData = (await newLoginRes.json()) as any;
+    assert.equal(newLoginData.status, "ok");
+    assert.equal(newLoginData.role, "super_admin");
+
+    // Old password must now fail
+    const oldLoginRes = await worker.fetch(
+      request("/api/auth/login", json({ email: "admin@akbhoi.com", password: "SuperAdminPassword2026!" })),
+      rotatedEnv
+    );
+    assert.equal(oldLoginRes.status, 401);
+
+    // Revert password back for subsequent tests
+    await worker.fetch(request("/api/status"), mockEnv);
+  });
+
   test("Throttles repeated failed sign-in attempts", async () => {
     for (let i = 0; i < 6; i++) {
       await callJson("/api/auth/login", json({ email: "throttle@school.edu", password: "WrongPassword1" }));
