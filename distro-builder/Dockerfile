@@ -25,4 +25,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY . /build/
 
-CMD ["/bin/bash", "-c", "set -e; mkdir -p /build/out; lb clean --purge; lb config; lb build; cp live-image-amd64.hybrid.iso /build/out/labkiosk-debian12-amd64.iso; sha256sum /build/out/labkiosk-debian12-amd64.iso > /build/out/labkiosk-debian12-amd64.iso.sha256"]
+RUN chmod +x /build/auto/* /build/build-iso.sh /build/config/hooks/live/*.hook.chroot 2>/dev/null || true
+
+CMD ["/bin/bash", "-c", "set -e; mkdir -p /build/out; chmod +x auto/* build-iso.sh config/hooks/live/*.hook.chroot 2>/dev/null || true; lb clean --purge; lb config; lb build; cp live-image-amd64.hybrid.iso /build/out/labkiosk-debian12-amd64.iso; sha256sum /build/out/labkiosk-debian12-amd64.iso > /build/out/labkiosk-debian12-amd64.iso.sha256"]

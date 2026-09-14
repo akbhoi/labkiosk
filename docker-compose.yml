@@ -2,9 +2,10 @@ services:
   # 1. Interactive Kiosk Client Simulator (PC-01)
   # Access via browser: http://localhost:6080/vnc.html
   kiosk-simulator:
+    image: labkiosk:latest
     build:
       context: .
-      dockerfile: docker-test/Dockerfile
+      dockerfile: Dockerfile
     container_name: labkiosk-client-01
     ports:
       # Only the noVNC display is published. The agent's API is loopback-only

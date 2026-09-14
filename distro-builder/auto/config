@@ -5,6 +5,8 @@ lb config noauto \
     --mode debian \
     --system live \
     --distribution bookworm \
+    --parent-distribution bookworm \
+    --parent-debian-installer-distribution bookworm \
     --archive-areas "main contrib non-free non-free-firmware" \
     --architectures amd64 \
     --binary-images iso-hybrid \
