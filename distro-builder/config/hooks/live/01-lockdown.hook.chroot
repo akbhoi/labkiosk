@@ -8,27 +8,42 @@ echo "[Hook] Applying Lab Kiosk Lockdown, Display & User Setup..."
 # installed when both a version and its SHA-256 are pinned there.
 CLOUDFLARED_PIN="/usr/share/labkiosk/cloudflared.pin"
 
-# 1. Create the unprivileged kiosk user and fallback live user.
+# 1. Create the unprivileged kiosk user.
 #    All virtual terminals (getty) are masked and SSH is absent, so passwordless
 #    login is securely restricted to the local nodm auto-display session.
-for u in kiosk user; do
-    if ! id -u "$u" >/dev/null 2>&1; then
-        useradd -m -s /bin/bash -G audio,video,input,render,tty "$u"
-    else
-        usermod -a -G audio,video,input,render,tty "$u" || true
-    fi
-    passwd -d "$u" || true
+#
+#    There used to be a second account here, `user`, described as a fallback.
+#    Nothing could ever log into it: nodm is pinned to NODM_USER=kiosk, there is
+#    no getty and no SSH, and live-config's user-setup is pre-seeded away below
+#    so it never creates one either. It was an unreachable account carrying an
+#    empty password and membership of input/video/tty, so it is gone.
+#
+#    `passwd -d` (empty) rather than `passwd -l` (locked) is deliberate and must
+#    stay: a locked kiosk account previously deadlocked nodm's PAM stack and
+#    produced a black screen on boot. See the pitfall table in AGENTS.md. What
+#    makes that acceptable is that no PAM service can be reached to use the empty
+#    password -- every getty is masked, serial-getty and debug-shell are masked,
+#    and there is no SSH server in the image.
+KIOSK_USER="kiosk"
+KIOSK_HOME="/home/$KIOSK_USER"
 
-    mkdir -p "/home/$u/.config/openbox"
-    cat << 'EOF' > "/home/$u/.xsession"
+if ! id -u "$KIOSK_USER" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -G audio,video,input,render,tty "$KIOSK_USER"
+else
+    usermod -a -G audio,video,input,render,tty "$KIOSK_USER" || true
+fi
+passwd -d "$KIOSK_USER" || true
+
+mkdir -p "$KIOSK_HOME/.config/openbox"
+cat << 'EOF' > "$KIOSK_HOME/.xsession"
 #!/bin/sh
 exec /usr/bin/openbox-session
 EOF
-    chmod 755 "/home/$u/.xsession"
-    cp /etc/openbox/autostart "/home/$u/.config/openbox/autostart"
-    chmod 755 "/home/$u/.config/openbox/autostart"
-    chown -R "$u:$u" "/home/$u"
-done
+chmod 755 "$KIOSK_HOME/.xsession"
+cp /etc/openbox/autostart "$KIOSK_HOME/.config/openbox/autostart"
+chmod 755 "$KIOSK_HOME/.config/openbox/autostart"
+chown -R "$KIOSK_USER:$KIOSK_USER" "$KIOSK_HOME"
+
 passwd -l root || true
 
 # Pre-seed live-config so it does not overwrite nodm or create duplicate users
@@ -53,14 +68,23 @@ EOF
 chmod u+s /usr/lib/xorg/Xorg.wrap 2>/dev/null || true
 echo "/usr/sbin/nodm" > /etc/X11/default-display-manager
 
-# Configure PAM for nodm to guarantee autologin succeeds without account lock checks
+# Configure PAM for nodm to guarantee autologin succeeds without account lock
+# checks. `auth` and `account` are permitted outright because nodm starts a
+# session for a user fixed in /etc/default/nodm: there is no password to check
+# and no prompt for anyone to answer.
+#
+# `password` is pam_deny rather than pam_permit. Nothing should ever change a
+# credential through the autologin stack, and pam_permit there reports success
+# without doing anything -- a silent no-op that looks like it worked. `session`
+# is left as pam_permit: a locked-down session stack here is what previously
+# deadlocked the display manager into a black screen on boot.
 mkdir -p /etc/pam.d
 cat << 'EOF' > /etc/pam.d/nodm
 #%PAM-1.0
-auth    required    pam_permit.so
-account required    pam_permit.so
-password required   pam_permit.so
-session required    pam_permit.so
+auth     required   pam_permit.so
+account  required   pam_permit.so
+password required   pam_deny.so
+session  required   pam_permit.so
 EOF
 
 mkdir -p /etc/default
@@ -73,17 +97,60 @@ NODM_X_OPTIONS=":0 -nolisten tcp"
 EOF
 
 # 3. Ownership so the agent can do its job as the kiosk user.
+#
+#    /opt/labkiosk and /etc/openbox stay root-owned and world-readable. They
+#    used to be chowned to kiosk, which handed the browser's own uid write
+#    access to the agent, the setup wizard, and the extension directory that
+#    Chromium loads with --load-extension: anything achieving code execution as
+#    kiosk could then rewrite the kiosk's own enforcement. The agent only reads
+#    from these paths. The two it genuinely writes to are granted below.
 chmod +x /etc/openbox/autostart || true
 chmod +x /opt/labkiosk/agent/agent.py || true
 chmod +x /usr/local/bin/labkiosk-install || true
-chown -R kiosk:kiosk /opt/labkiosk || true
-chown -R kiosk:kiosk /etc/openbox || true
+chown -R root:root /opt/labkiosk || true
+chmod -R go-w /opt/labkiosk || true
+chown -R root:root /etc/openbox || true
+chmod -R go-w /etc/openbox || true
 
 #    The agent rewrites Chromium's managed policy whenever the school's
 #    allowlist changes. Without this the directory stays root-owned and every
 #    policy sync fails silently, freezing the allowlist at its boot-time value.
 mkdir -p /etc/chromium/policies/managed
 chown -R kiosk:kiosk /etc/chromium/policies/managed
+
+#    Generate the boot-time managed policy from the single base declaration in
+#    /usr/share/labkiosk/chromium-policy-base.json. The agent reloads that same
+#    base on every allowlist change, so the boot-time policy and the enrolled
+#    policy cannot drift apart. Only the three per-workstation keys are added
+#    here; until a workstation enrols, the only reachable page is the local
+#    setup wizard.
+POLICY_BASE="/usr/share/labkiosk/chromium-policy-base.json"
+if [ ! -f "$POLICY_BASE" ]; then
+    echo "[Hook] ERROR: $POLICY_BASE is missing; refusing to ship an unpoliced browser." >&2
+    exit 1
+fi
+python3 - "$POLICY_BASE" /etc/chromium/policies/managed/policies.json <<'PYEOF'
+import json
+import sys
+
+base_path, out_path = sys.argv[1], sys.argv[2]
+with open(base_path, "r", encoding="utf-8") as handle:
+    policy = json.load(handle)
+
+setup_url = "http://127.0.0.1:8888/setup"
+policy["HomepageLocation"] = setup_url
+policy["NewTabPageLocation"] = setup_url
+policy["URLAllowlist"] = ["127.0.0.1", "localhost", "file:///opt/labkiosk/*"]
+
+with open(out_path, "w", encoding="utf-8") as handle:
+    # print() supplies the trailing newline. Deliberately not handle.write()
+    # with an escape: this block travels through a shell heredoc, where a
+    # backslash escape is easy to mangle into a real newline and produce an
+    # unterminated string literal that only shows up mid-ISO-build.
+    print(json.dumps(policy, indent=2), file=handle)
+PYEOF
+chown kiosk:kiosk /etc/chromium/policies/managed/policies.json
+echo "[Hook] Generated boot-time Chromium policy from $POLICY_BASE."
 
 #    The agent's enrolment config holds a device bearer token.
 mkdir -p /etc/labkiosk

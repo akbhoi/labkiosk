@@ -1,7 +1,10 @@
 {
   "_comment_1": "THE SINGLE HOME FOR THE STATIC CHROMIUM POLICY. Two things read this file and neither may carry its own copy of these keys: config/hooks/live/01-lockdown.hook.chroot generates /etc/chromium/policies/managed/policies.json from it at build time, and sync_chromium_policies() in /opt/labkiosk/agent/agent.py reloads it on every allowlist change. Previously the same keys were declared twice, so anything added to one and not the other silently vanished the moment a workstation enrolled.",
+
   "_comment_2": "Only three keys are NOT here, because they are per-workstation and are overlaid by the two consumers above: HomepageLocation, NewTabPageLocation and URLAllowlist.",
+
   "HomepageIsNewTabPage": true,
+
   "DeveloperToolsAvailability": 2,
   "PasswordManagerEnabled": false,
   "AutofillAddressEnabled": false,
@@ -19,13 +22,17 @@
   "IncognitoModeAvailability": 1,
   "BrowserSignin": 0,
   "SyncDisabled": true,
+
   "_comment_file_dialog": "file://* is blocklisted, but without this an upload control still opens a filesystem browser over the kiosk, which is a file manager a student otherwise has no route to. Downloads are already blocked by DownloadRestrictions: 3, so nothing in the kiosk needs a file picker.",
   "AllowFileSelectionDialogs": false,
+
   "_comment_prompts": "2 = deny without prompting. A kiosk has no one to answer a permission prompt, and a modal over a locked screen would sit above the lock curtain. Audio and video capture are deliberately NOT blocked here: language labs and video lessons legitimately need the microphone and camera, and taking them away breaks real classroom use.",
   "DefaultGeolocationSetting": 2,
   "DefaultNotificationsSetting": 2,
+
   "_extension_comment_1": "DO NOT add ExtensionInstallBlocklist with a * entry here, and do not block * via ExtensionSettings. Chromium then refuses --load-extension altogether and logs 'Loading of unpacked extensions is disabled by the administrator', which silently removes this kiosk's own navigation bar and lock curtain. An ExtensionInstallAllowlist entry does NOT override it; this was tried and verified.",
   "_extension_comment_2": "Students cannot install extensions regardless: chrome:// is blocked so the extensions page is unreachable, the browser runs in --kiosk with no UI, the Chrome Web Store is not in URLAllowlist, and the profile directory is deleted on every launch. If a blanket block is ever required, pack the kiosk extension as a .crx first and force-install it by id.",
+
   "_blocklist_comment": "Everything is denied and URLAllowlist re-permits the school's domains. view-source: is listed explicitly because DeveloperToolsAvailability does not cover it and the http/https entries do not match it.",
   "URLBlocklist": [
     "chrome://*",
@@ -37,13 +44,5 @@
     "file://*",
     "http://*",
     "https://*"
-  ],
-  "_generated_comment": "GENERATED FILE -- do not edit. Produced by tools/generate-chromium-policy.py from usr/share/labkiosk/chromium-policy-base.json. Edit the base instead, then re-run that script.",
-  "HomepageLocation": "http://127.0.0.1:8888/setup",
-  "NewTabPageLocation": "http://127.0.0.1:8888/setup",
-  "URLAllowlist": [
-    "127.0.0.1",
-    "localhost",
-    "file:///opt/labkiosk/*"
   ]
 }
