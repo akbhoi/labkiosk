@@ -337,204 +337,265 @@ def install_to_disk(target_disk, grub_password_hash=None):
 
     # Mount ROOT filesystem only (DO NOT mount EFI yet to prevent rsync mountpoint conflict)
     mount_dir = "/mnt/target_kiosk"
+    efi_dir = os.path.join(mount_dir, "boot", "efi")
+    data_dir = os.path.join(mount_dir, "etc", "labkiosk")
     os.makedirs(mount_dir, exist_ok=True)
     run_cmd(["umount", "-R", mount_dir], check=False)
-    run_cmd(["mount", part_root, mount_dir])
 
-    write_status("running", "Copying Lab Kiosk OS files to internal drive...", 55)
-    exclude_args = [
-        "--exclude=/proc/**",
-        "--exclude=/sys/**",
-        "--exclude=/dev/**",
-        "--exclude=/run/**",
-        "--exclude=/tmp/**",
-        "--exclude=/mnt/**",
-        "--exclude=/media/**",
-        "--exclude=/lost+found",
-        "--exclude=/boot/efi/**",
-        "--exclude=/live/**",
-    ]
-    # Copy rootfs cleanly into fresh ext4 partition without --delete
-    rsync_cmd = ["rsync", "-aHAX"] + exclude_args + ["/", mount_dir + "/"]
-    run_cmd(rsync_cmd)
+    def cleanup_mounts():
+        run_cmd(["sync"], check=False)
+        for pseudo in ["run", "sys", "proc", "dev"]:
+            target_p = os.path.join(mount_dir, pseudo)
+            run_cmd(["umount", "-R", target_p], check=False)
+            run_cmd(["umount", "-l", target_p], check=False)
+        run_cmd(["umount", "-R", data_dir], check=False)
+        run_cmd(["umount", "-l", data_dir], check=False)
+        run_cmd(["umount", "-R", efi_dir], check=False)
+        run_cmd(["umount", "-l", efi_dir], check=False)
+        run_cmd(["umount", "-R", mount_dir], check=False)
+        run_cmd(["umount", "-l", mount_dir], check=False)
+        run_cmd(["sync"], check=False)
 
-    # Mount EFI partition into target AFTER rootfs copy completes
-    efi_dir = os.path.join(mount_dir, "boot", "efi")
-    os.makedirs(efi_dir, exist_ok=True)
-    run_cmd(["mount", part_esp, efi_dir])
+    try:
+        run_cmd(["mount", part_root, mount_dir])
 
-    # Same ordering rule for the persistent data partition: mount it only after
-    # rsync, never before, or the copy trips over its own mount point.
-    #
-    # Seeding matters as much as mounting. rsync has just placed any existing
-    # enrolment at <target>/etc/labkiosk/config.json, and this partition is
-    # about to be mounted over exactly that path -- so without copying the
-    # config across, installing a workstation that was enrolled from the live
-    # session would produce a machine that boots up unenrolled.
-    data_dir = os.path.join(mount_dir, "etc", "labkiosk")
-    os.makedirs(data_dir, exist_ok=True)
-    run_cmd(["mount", part_data, data_dir])
+        write_status("running", "Copying Lab Kiosk OS files to internal drive...", 55)
+        exclude_args = [
+            "--exclude=/proc/**",
+            "--exclude=/sys/**",
+            "--exclude=/dev/**",
+            "--exclude=/run/**",
+            "--exclude=/tmp/**",
+            "--exclude=/mnt/**",
+            "--exclude=/media/**",
+            "--exclude=/lost+found",
+            "--exclude=/boot/efi/**",
+            "--exclude=/live/**",
+        ]
+        # Copy rootfs cleanly into fresh ext4 partition without --delete
+        rsync_cmd = ["rsync", "-aHAX"] + exclude_args + ["/", mount_dir + "/"]
+        run_cmd(rsync_cmd)
 
-    source_config_dir = "/etc/labkiosk"
-    if os.path.isdir(source_config_dir):
-        stat_info = os.stat(source_config_dir)
-        for entry in os.listdir(source_config_dir):
-            src = os.path.join(source_config_dir, entry)
-            if not os.path.isfile(src):
-                continue
-            dest = os.path.join(data_dir, entry)
-            shutil.copy2(src, dest)
-            # copy2 carries the mode (0600) but not the owner, and this runs as
-            # root -- so without this chown the agent, which runs as the kiosk
-            # user, could not read back the very config it just enrolled with.
-            os.chown(dest, stat_info.st_uid, stat_info.st_gid)
-            print(f"[INSTALL] Carried enrolment file {entry} onto the data partition.",
-                  file=sys.stderr)
-        os.chown(data_dir, stat_info.st_uid, stat_info.st_gid)
-    os.chmod(data_dir, 0o700)
+        # Mount EFI partition into target AFTER rootfs copy completes
+        os.makedirs(efi_dir, exist_ok=True)
+        run_cmd(["mount", part_esp, efi_dir])
 
-    write_status("running", "Configuring boot configuration and partitions...", 75)
-    root_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_root])
-    efi_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_esp])
-    data_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_data])
+        # Same ordering rule for the persistent data partition: mount it only after
+        # rsync, never before, or the copy trips over its own mount point.
+        #
+        # Seeding matters as much as mounting. rsync has just placed any existing
+        # enrolment at <target>/etc/labkiosk/config.json, and this partition is
+        # about to be mounted over exactly that path -- so without copying the
+        # config across, installing a workstation that was enrolled from the live
+        # session would produce a machine that boots up unenrolled.
+        os.makedirs(data_dir, exist_ok=True)
+        run_cmd(["mount", part_data, data_dir])
 
-    # nofail on /etc/labkiosk is deliberate: if that partition is ever missing or
-    # unreadable the workstation must still boot into the kiosk and fall back to
-    # the setup wizard, rather than drop the class into an emergency shell.
-    fstab_content = f"""# Lab Kiosk OS Persistent Disk fstab
+        source_config_dir = "/etc/labkiosk"
+        if os.path.isdir(source_config_dir):
+            stat_info = os.stat(source_config_dir)
+            for entry in os.listdir(source_config_dir):
+                src = os.path.join(source_config_dir, entry)
+                if not os.path.isfile(src):
+                    continue
+                dest = os.path.join(data_dir, entry)
+                shutil.copy2(src, dest)
+                # copy2 carries the mode (0600) but not the owner, and this runs as
+                # root -- so without this chown the agent, which runs as the kiosk
+                # user, could not read back the very config it just enrolled with.
+                os.chown(dest, stat_info.st_uid, stat_info.st_gid)
+                print(f"[INSTALL] Carried enrolment file {entry} onto the data partition.",
+                      file=sys.stderr)
+            os.chown(data_dir, stat_info.st_uid, stat_info.st_gid)
+        os.chmod(data_dir, 0o700)
+
+        write_status("running", "Configuring boot configuration and partitions...", 75)
+        root_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_root])
+        efi_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_esp])
+        data_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_data])
+
+        # nofail on /etc/labkiosk is deliberate: if that partition is ever missing or
+        # unreadable the workstation must still boot into the kiosk and fall back to
+        # the setup wizard, rather than drop the class into an emergency shell.
+        fstab_content = f"""# Lab Kiosk OS Persistent Disk fstab
 UUID={root_uuid}  /              ext4  errors=remount-ro                0  1
 UUID={efi_uuid}   /boot/efi      vfat  umask=0077                       0  2
 UUID={data_uuid}  /etc/labkiosk  ext4  defaults,nofail                  0  2
 tmpfs             /tmp           tmpfs defaults,noatime,mode=1777       0  0
 """
-    fstab_path = os.path.join(mount_dir, "etc", "fstab")
-    with open(fstab_path, "w") as f:
-        f.write(fstab_content)
+        fstab_path = os.path.join(mount_dir, "etc", "fstab")
+        with open(fstab_path, "w") as f:
+            f.write(fstab_content)
 
-    overlayroot_conf = os.path.join(mount_dir, "etc", "overlayroot.conf")
-    with open(overlayroot_conf, "w") as f:
-        f.write('overlayroot="tmpfs"\noverlayroot_options="recurse=0"\n')
+        overlayroot_conf = os.path.join(mount_dir, "etc", "overlayroot.conf")
+        with open(overlayroot_conf, "w") as f:
+            f.write('overlayroot="tmpfs"\noverlayroot_options="recurse=0"\n')
 
-    # Ensure a clean machine-id on a fresh internal installation. systemd
-    # treats an *empty* /etc/machine-id as "uninitialised" and generates a new
-    # one on first boot; a file holding anything else, a bare newline included,
-    # is not that marker.
-    try:
-        with open(os.path.join(mount_dir, "etc", "machine-id"), "w") as f:
-            f.truncate(0)
-    except OSError as err:
-        print(f"[INSTALL] WARNING: could not reset machine-id: {err}", file=sys.stderr)
+        # Ensure a clean machine-id on a fresh internal installation. systemd
+        # treats an *empty* /etc/machine-id as "uninitialised" and generates a new
+        # one on first boot; a file holding anything else, a bare newline included,
+        # is not that marker.
+        try:
+            with open(os.path.join(mount_dir, "etc", "machine-id"), "w") as f:
+                f.truncate(0)
+        except OSError as err:
+            print(f"[INSTALL] WARNING: could not reset machine-id: {err}", file=sys.stderr)
 
-    # Mark as permanently installed system
-    try:
-        with open(os.path.join(mount_dir, "etc", "labkiosk-installed"), "w") as f:
-            f.write("installed\n")
-    except Exception:
-        pass
+        # Mark as permanently installed system
+        try:
+            with open(os.path.join(mount_dir, "etc", "labkiosk-installed"), "w") as f:
+                f.write("installed\n")
+        except Exception:
+            pass
 
-    # Boot-menu password for THIS installation.
-    #
-    # Deliberately applied here rather than baked into the ISO. A hash compiled
-    # into the image would be one password shared by every customer who ever
-    # received that ISO: a leak anywhere would compromise all of them, and it
-    # could not be rotated on machines already deployed. Applying it per
-    # installation keeps the image free of secrets and gives each site its own.
-    #
-    # Booting stays unattended either way: 02-security.hook.chroot marks every
-    # generated menu entry --unrestricted unconditionally, so `set superusers`
-    # here gates only the edit (`e`) and command-line (`c`) keys.
-    grub_password_file = os.path.join(mount_dir, "etc", "grub.d", "01_labkiosk_password")
-    if grub_password_hash:
-        os.makedirs(os.path.dirname(grub_password_file), exist_ok=True)
-        with open(grub_password_file, "w") as handle:
-            handle.write("#!/bin/sh\n")
-            handle.write("exec tail -n +3 $0\n")
-            handle.write('set superusers="labkiosk"\n')
-            handle.write(f"password_pbkdf2 labkiosk {grub_password_hash}\n")
-        os.chmod(grub_password_file, 0o755)
-        print("[INSTALL] Boot-menu password applied to the installed system.", file=sys.stderr)
-    else:
-        # Remove any password inherited from the live medium, so an unlocked
-        # install is visibly unlocked rather than silently carrying whatever
-        # hash the ISO happened to be built with.
-        if os.path.exists(grub_password_file):
-            os.unlink(grub_password_file)
-        print(
-            "[INSTALL] WARNING: no boot-menu password supplied. A student at the keyboard "
-            "can edit the GRUB entry and boot with init=/bin/sh.",
-            file=sys.stderr,
-        )
+        # Boot-menu password for THIS installation.
+        #
+        # Deliberately applied here rather than baked into the ISO. A hash compiled
+        # into the image would be one password shared by every customer who ever
+        # received that ISO: a leak anywhere would compromise all of them, and it
+        # could not be rotated on machines already deployed. Applying it per
+        # installation keeps the image free of secrets and gives each site its own.
+        #
+        # Booting stays unattended either way: 02-security.hook.chroot marks every
+        # generated menu entry --unrestricted unconditionally, so `set superusers`
+        # here gates only the edit (`e`) and command-line (`c`) keys.
+        grub_password_file = os.path.join(mount_dir, "etc", "grub.d", "01_labkiosk_password")
+        if grub_password_hash:
+            os.makedirs(os.path.dirname(grub_password_file), exist_ok=True)
+            with open(grub_password_file, "w") as handle:
+                handle.write("#!/bin/sh\n")
+                handle.write("exec tail -n +3 $0\n")
+                handle.write('set superusers="labkiosk"\n')
+                handle.write(f"password_pbkdf2 labkiosk {grub_password_hash}\n")
+            os.chmod(grub_password_file, 0o755)
+            print("[INSTALL] Boot-menu password applied to the installed system.", file=sys.stderr)
+        else:
+            # Remove any password inherited from the live medium, so an unlocked
+            # install is visibly unlocked rather than silently carrying whatever
+            # hash the ISO happened to be built with.
+            if os.path.exists(grub_password_file):
+                os.unlink(grub_password_file)
+            print(
+                "[INSTALL] WARNING: no boot-menu password supplied. A student at the keyboard "
+                "can edit the GRUB entry and boot with init=/bin/sh.",
+                file=sys.stderr,
+            )
 
-    write_status("running", "Installing GRUB bootloader to internal storage...", 85)
-    for pseudo in ["dev", "proc", "sys", "run"]:
-        target_p = os.path.join(mount_dir, pseudo)
-        os.makedirs(target_p, exist_ok=True)
-        run_cmd(["mount", "--rbind", f"/{pseudo}", target_p])
-        run_cmd(["mount", "--make-rslave", target_p], check=False)
+        write_status("running", "Installing GRUB bootloader to internal storage...", 85)
+        for pseudo in ["dev", "proc", "sys", "run"]:
+            target_p = os.path.join(mount_dir, pseudo)
+            os.makedirs(target_p, exist_ok=True)
+            run_cmd(["mount", "--rbind", f"/{pseudo}", target_p])
+            run_cmd(["mount", "--make-rslave", target_p], check=False)
 
-    # Install UEFI bootloader (both primary entry and removable fallback)
-    run_cmd(["chroot", mount_dir, "grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--bootloader-id=LabKiosk", "--recheck"], check=False)
-    run_cmd(["chroot", mount_dir, "grub-install", "--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable", "--recheck"], check=False)
+        uefi_installed = False
+        bios_installed = False
+        bootloader_errors = []
 
-    # Install Legacy BIOS bootloader into MBR / bios_grub
-    if not ("nvme" in target_disk or "mmcblk" in target_disk):
-        run_cmd(["chroot", mount_dir, "grub-install", "--target=i386-pc", target_disk, "--recheck"], check=False)
+        # Install UEFI bootloader (both primary entry with --no-nvram and removable fallback)
+        try:
+            run_cmd([
+                "chroot", mount_dir, "grub-install",
+                "--target=x86_64-efi",
+                "--efi-directory=/boot/efi",
+                "--bootloader-id=LabKiosk",
+                "--no-nvram",
+                "--recheck",
+            ], check=True)
+            run_cmd([
+                "chroot", mount_dir, "grub-install",
+                "--target=x86_64-efi",
+                "--efi-directory=/boot/efi",
+                "--removable",
+                "--recheck",
+            ], check=True)
+            uefi_installed = True
+        except Exception as err:
+            print(f"[INSTALL] WARNING: UEFI bootloader installation failed: {err}", file=sys.stderr)
+            bootloader_errors.append(f"UEFI: {err}")
 
-    # Generate GRUB configuration
-    run_cmd(["chroot", mount_dir, "update-grub"])
+        # Install Legacy BIOS bootloader into MBR / bios_grub
+        if not ("nvme" in target_disk or "mmcblk" in target_disk):
+            try:
+                run_cmd([
+                    "chroot", mount_dir, "grub-install",
+                    "--target=i386-pc",
+                    target_disk,
+                    "--recheck",
+                ], check=True)
+                bios_installed = True
+            except Exception as err:
+                print(f"[INSTALL] WARNING: BIOS bootloader installation failed: {err}", file=sys.stderr)
+                bootloader_errors.append(f"BIOS: {err}")
 
-    write_status("running", "Finalizing and synchronizing storage...", 95)
-    run_cmd(["sync"])
-    for pseudo in ["run", "sys", "proc", "dev"]:
-        target_p = os.path.join(mount_dir, pseudo)
-        run_cmd(["umount", "-R", target_p], check=False)
-        run_cmd(["umount", "-l", target_p], check=False)
-    run_cmd(["umount", "-R", data_dir], check=False)
-    run_cmd(["umount", "-l", data_dir], check=False)
-    run_cmd(["umount", "-R", efi_dir], check=False)
-    run_cmd(["umount", "-l", efi_dir], check=False)
-    run_cmd(["umount", "-R", mount_dir], check=False)
-    run_cmd(["umount", "-l", mount_dir], check=False)
-    run_cmd(["sync"])
+        # Verify at least one bootloader succeeded, or verify boot files exist on ESP
+        has_efi_files = False
+        efi_check_dir = os.path.join(efi_dir, "EFI")
+        if os.path.isdir(efi_check_dir):
+            for root, dirs, files in os.walk(efi_check_dir):
+                for f in files:
+                    if f.lower().endswith(".efi"):
+                        has_efi_files = True
+                        break
+                if has_efi_files:
+                    break
+
+        if not (uefi_installed or bios_installed or has_efi_files):
+            raise RuntimeError(
+                "Bootloader installation failed (both UEFI and BIOS failed, and no EFI binaries found on ESP). "
+                f"Details: {'; '.join(bootloader_errors)}"
+            )
+
+        # Generate GRUB configuration
+        run_cmd(["chroot", mount_dir, "update-grub"])
+
+        write_status("running", "Finalizing and synchronizing storage...", 95)
+    finally:
+        cleanup_mounts()
 
     write_status("completed", "Lab Kiosk OS successfully installed to internal drive!", 100)
     print("[INSTALL] SUCCESS! Installation complete.", file=sys.stderr)
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--list-disks":
-        disks = list_disks()
-        print(json.dumps(disks))
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Lab Kiosk OS - Automated Local Disk Installer",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--list-disks", action="store_true", help="List candidate storage drives")
+    group.add_argument("--status", action="store_true", help="Get current installation status")
+    group.add_argument("--target", help="Target disk to install to (e.g., /dev/sda)")
+    parser.add_argument(
+        "--grub-password-hash",
+        help="GRUB PBKDF2 password hash (grub.pbkdf2.sha512...)",
+    )
+
+    args = parser.parse_args()
+
+    if args.grub_password_hash and not args.target:
+        parser.error("--grub-password-hash requires --target")
+
+    if args.list_disks:
+        print(json.dumps(list_disks()))
         sys.exit(0)
-    elif len(sys.argv) > 1 and sys.argv[1] == "--status":
+    elif args.status:
         print(json.dumps(get_status()))
         sys.exit(0)
-    elif len(sys.argv) > 2 and sys.argv[1] == "--target":
-        target = sys.argv[2]
-        grub_hash = None
-        if "--grub-password-hash" in sys.argv:
-            idx = sys.argv.index("--grub-password-hash")
-            if idx + 1 >= len(sys.argv):
-                print("[INSTALL] ERROR: --grub-password-hash needs a value.", file=sys.stderr)
-                sys.exit(1)
-            grub_hash = sys.argv[idx + 1]
-            if not GRUB_PBKDF2_PATTERN.match(grub_hash):
-                print(
-                    "[INSTALL] ERROR: --grub-password-hash is not a grub-mkpasswd-pbkdf2 "
-                    "digest (expected 'grub.pbkdf2.sha512.<rounds>.<salt>.<hash>').",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+    elif args.target:
+        grub_hash = args.grub_password_hash
+        if grub_hash and not GRUB_PBKDF2_PATTERN.match(grub_hash):
+            print(
+                "[INSTALL] ERROR: --grub-password-hash is not a grub-mkpasswd-pbkdf2 "
+                "digest (expected 'grub.pbkdf2.sha512.<rounds>.<salt>.<hash>').",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         try:
-            install_to_disk(target, grub_hash)
+            install_to_disk(args.target, grub_hash)
             sys.exit(0)
         except Exception as err:
             print(f"[INSTALL] ERROR: {err}", file=sys.stderr)
             write_status("error", "Installation failed", 0, str(err))
             sys.exit(1)
-    else:
-        print(
-            "Usage: labkiosk-install [--list-disks | --status | "
-            "--target /dev/sdX [--grub-password-hash grub.pbkdf2.sha512....]]",
-            file=sys.stderr,
-        )
-        sys.exit(1)

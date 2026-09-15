@@ -574,7 +574,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
         the attacker's hostname in Host, so that is what is checked here.
         """
         host_header = self.headers.get("Host", "")
-        hostname = host_header.rsplit(":", 1)[0].strip("[]") if host_header else ""
+        hostname = host_header.rsplit(":", 1)[0].strip("[]").lower() if host_header else ""
         return hostname in ("127.0.0.1", "localhost", "::1")
 
     def _read_json(self):

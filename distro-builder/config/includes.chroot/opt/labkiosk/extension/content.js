@@ -176,8 +176,7 @@
     // dot kept its default green, but the lock curtain never appeared again.
     const existing = document.getElementById("labkiosk-root");
     if (existing && existing === uiHost && uiShadow) return uiShadow;
-    if (existing && existing !== uiHost) {
-      // Something replaced our host node; ours is gone, so start over.
+    if (existing) {
       existing.remove();
     }
 
