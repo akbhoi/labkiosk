@@ -6,19 +6,47 @@
 # student who can edit the boot entry can append `init=/bin/sh` and get a root
 # shell before any of it runs. A GRUB password is what closes that door.
 #
-# HOW TO SET ONE
-#   grub-mkpasswd-pbkdf2
-# Enter a password twice; it prints a line like:
-#   PBKDF2 hash of your password is grub.pbkdf2.sha512.10000.ABC...123
-# Copy the value starting at `grub.pbkdf2.sha512.` into PASSWORD_PBKDF2 below.
+# READ THIS BEFORE PUTTING A HASH HERE
+# ------------------------------------
+# A hash in this file is compiled into the ISO. If you ship that ISO to more
+# than one customer, every one of them gets the SAME boot-menu password:
 #
-# The hash is safe to commit: it is a salted PBKDF2 digest, not the password.
-# Keep the password itself with your other lab administration credentials.
+#   * a leak at any single site compromises every deployment you have shipped;
+#   * it cannot be rotated on machines already installed in the field; and
+#   * this file is tracked in git, so the hash is permanent in history and
+#     open to offline cracking by anyone who can read the repository.
 #
-# When this is set, the kiosk still boots its default entry with no prompt --
-# only editing an entry or opening the GRUB command line asks for the password.
+# So for a product, leave this EMPTY and use one of the two routes below.
+# This file is only the right place for a single organisation building its own
+# image for its own lab.
 #
-# Leaving it empty builds an image with an unprotected boot menu. That is fine
-# for a VM or a bench test, but do not deploy it to a classroom that way.
+# ROUTE 1 -- PER INSTALLATION (default, nothing to configure)
+# The setup wizard's "Install to Hard Disk" step asks for a boot-menu password
+# and derives the hash in the browser with WebCrypto, so the password itself
+# never reaches the agent, a process argument, or any disk. Each site -- or each
+# workstation -- ends up with its own. Nothing is baked into the ISO.
+#
+# ROUTE 2 -- PER CUSTOMER ISO (locks the live USB menu too)
+# Pass the hash in the build environment instead of committing it:
+#
+#   grub-mkpasswd-pbkdf2 -c 200000
+#   docker run --privileged --rm \
+#     -e LABKIOSK_GRUB_PBKDF2="grub.pbkdf2.sha512.200000..." \
+#     -v "$PWD/distro-builder/out:/build/out" \
+#     ghcr.io/akbhoi/labkiosk-iso-builder
+#
+# HOW TO GENERATE A HASH (either route)
+#   docker run --rm -it ghcr.io/akbhoi/labkiosk-iso-builder grub-mkpasswd-pbkdf2 -c 200000
+# Enter the password twice; copy the value starting at `grub.pbkdf2.sha512.`.
+# Keep the password itself with your other lab administration credentials --
+# it cannot be recovered from the hash.
+#
+# WHATEVER YOU SET, THE MACHINE STILL BOOTS UNATTENDED. Every menu entry is
+# marked --unrestricted, so the password is asked for only when someone presses
+# `e` to edit an entry or `c` for the GRUB command line.
+#
+# Leaving this empty builds an image whose LIVE boot menu is editable. That is
+# fine for a VM or a bench test, and it is the right default for a shipped
+# product, because installed workstations get their password from Route 1.
 
 PASSWORD_PBKDF2=
