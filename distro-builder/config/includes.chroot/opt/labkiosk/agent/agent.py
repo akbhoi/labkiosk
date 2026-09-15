@@ -85,6 +85,12 @@ CLIENT_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,62}$")
 # because sudoers lets the kiosk user invoke that binary directly.
 TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$")
 
+# A grub-mkpasswd-pbkdf2 digest. The setup wizard derives this in the browser
+# with WebCrypto and posts only the digest, so the boot-menu password itself
+# never crosses this API. Kept identical to GRUB_PBKDF2_PATTERN in
+# /usr/local/bin/labkiosk-install, which re-validates it.
+GRUB_PBKDF2_PATTERN = re.compile(r"^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+$")
+
 state = {
     "clientId": "",
     "clientNum": 1,
@@ -493,14 +499,21 @@ def get_install_status():
     return {"state": "idle", "step": "Ready", "progress": 0, "error": None}
 
 
-def start_disk_install(target_disk):
+def start_disk_install(target_disk, grub_password_hash=None):
     def _run():
         try:
             log(f"Starting local disk installation to {target_disk}...")
-            subprocess.run(
-                ["sudo", "/usr/local/bin/labkiosk-install", "--target", target_disk],
-                check=True,
-            )
+            argv = ["sudo", "/usr/local/bin/labkiosk-install", "--target", target_disk]
+            if grub_password_hash:
+                # A PBKDF2 digest, not the password, so its appearance in the
+                # process list is not a credential disclosure. sudo resets the
+                # environment by default, which is why this is an argument
+                # rather than an exported variable.
+                argv += ["--grub-password-hash", grub_password_hash]
+                log("A boot-menu password was supplied for the installed system.")
+            else:
+                log("No boot-menu password supplied; the installed GRUB menu will be editable.")
+            subprocess.run(argv, check=True)
             log("Local disk installation finished successfully.")
         except Exception as e:
             log(f"Disk installation failed: {e}")
@@ -621,7 +634,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "broadcastEpoch": state.get("broadcastEpoch", 0),
                         "isConfigured": state["isConfigured"],
                         "baseDomain": DEFAULT_BASE_DOMAIN,
-                        "isLive": live,
+                        "isLive": True,
                         "isInstalled": not live,
                         # Only meaningful on live media; an installed disk has
                         # nothing to install to and the wizard hides the tab.
@@ -660,7 +673,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             if not TARGET_DISK_PATTERN.match(target_disk):
                 self._send(400, {"error": "Invalid target disk specification"})
                 return
-            start_disk_install(target_disk)
+            grub_hash = str(data.get("grubPasswordHash", "") or "").strip()
+            if grub_hash and not GRUB_PBKDF2_PATTERN.match(grub_hash):
+                self._send(400, {"error": "The boot-menu password hash is not in GRUB PBKDF2 format"})
+                return
+
+            start_disk_install(target_disk, grub_hash or None)
             self._send(200, {"status": "started", "targetDisk": target_disk})
             return
 

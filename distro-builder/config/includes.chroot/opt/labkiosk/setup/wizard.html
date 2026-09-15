@@ -216,6 +216,28 @@
         </div>
       </div>
 
+      <div class="form-group">
+        <label class="form-label">Boot Menu Password <span style="color: var(--muted); font-weight: 500;">(strongly recommended)</span></label>
+        <div style="display: flex; gap: 8px;">
+          <input type="password" id="grub-password" class="input-field" autocomplete="new-password"
+                 spellcheck="false" placeholder="Set a password for this lab"
+                 style="font-family: var(--font-mono);">
+          <button type="button" class="kiosk-generate-btn" id="generate-grub-password"
+                  style="white-space: nowrap; background: #1f2937; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 0 14px; font-size: 13px; font-weight: 600; cursor: pointer;">
+            Generate
+          </button>
+        </div>
+        <div class="hint-text">
+          Stops a student editing the boot entry to bypass the kiosk. The computer still
+          starts up on its own with no prompt &mdash; this is asked for only when someone
+          presses <strong>e</strong> or <strong>c</strong> at the boot menu.
+          <strong style="color: #f87171;">Record it before installing: it cannot be recovered.</strong>
+          The password never leaves this page; only its hash is stored.
+        </div>
+        <div class="status-box" id="grub-password-reveal"
+             style="background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); color: #34d399; font-family: var(--font-mono); word-break: break-all; margin-top: 10px;"></div>
+      </div>
+
       <div class="progress-bar-container" id="install-progress-bar-container">
         <div class="progress-bar-fill" id="install-progress-bar"></div>
       </div>
@@ -250,6 +272,10 @@
     const customDomainInput = document.getElementById('custom-domain');
     const clientIdInput = document.getElementById('client-id');
     const subdomainSuffix = document.getElementById('subdomain-suffix');
+
+    const grubPasswordInput = document.getElementById('grub-password');
+    const generateGrubBtn = document.getElementById('generate-grub-password');
+    const grubPasswordReveal = document.getElementById('grub-password-reveal');
 
     const targetDiskSelect = document.getElementById('target-disk-select');
     const startInstallBtn = document.getElementById('start-install-btn');
@@ -342,6 +368,51 @@
       }
     }
 
+    // GRUB's own format, reproduced exactly:
+    //   grub.pbkdf2.sha512.<rounds>.<salt hex>.<hash hex>
+    // with a 64-byte random salt and a 64-byte PBKDF2-HMAC-SHA512 digest, both
+    // uppercase hex. Verified against grub-mkpasswd-pbkdf2 output.
+    //
+    // Doing this here rather than on the agent is the point: the plaintext
+    // password never crosses the loopback API, never lands in a process
+    // argument, and is never written to disk. 200000 rounds rather than GRUB's
+    // default 10000, because the cost is paid once by a person pressing `e`,
+    // while the digest may sit in a repository or an image for years.
+    const GRUB_PBKDF2_ROUNDS = 200000;
+
+    function toUpperHex(buffer) {
+      return Array.from(new Uint8Array(buffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('')
+        .toUpperCase();
+    }
+
+    async function grubPbkdf2(password) {
+      const salt = crypto.getRandomValues(new Uint8Array(64));
+      const key = await crypto.subtle.importKey(
+        'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
+      );
+      const bits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', salt, iterations: GRUB_PBKDF2_ROUNDS, hash: 'SHA-512' },
+        key,
+        64 * 8
+      );
+      return `grub.pbkdf2.sha512.${GRUB_PBKDF2_ROUNDS}.${toUpperHex(salt)}.${toUpperHex(bits)}`;
+    }
+
+    generateGrubBtn.addEventListener('click', () => {
+      // 20 chars from a 32-character alphabet is ~100 bits; unbiased because
+      // the alphabet length divides 256 exactly.
+      const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789';
+      const bytes = crypto.getRandomValues(new Uint8Array(20));
+      const generated = Array.from(bytes).map((b) => alphabet[b % alphabet.length]).join('');
+      grubPasswordInput.value = generated;
+      grubPasswordInput.type = 'text';
+      grubPasswordReveal.textContent =
+        'Write this down now — it cannot be recovered after installation: ' + generated;
+      grubPasswordReveal.style.display = 'block';
+    });
+
     let pollTimer = null;
     startInstallBtn.addEventListener('click', async () => {
       const disk = targetDiskSelect.value;
@@ -353,18 +424,38 @@
         return;
       }
 
+      const grubPassword = grubPasswordInput.value;
+      if (!grubPassword) {
+        if (!confirm(
+          'No boot menu password was set.\n\n' +
+          'Without one, a student can edit the boot entry and start the computer with a ' +
+          'root shell, bypassing every kiosk restriction.\n\nInstall anyway?'
+        )) {
+          return;
+        }
+      }
+
       startInstallBtn.disabled = true;
       targetDiskSelect.disabled = true;
+      grubPasswordInput.disabled = true;
+      generateGrubBtn.disabled = true;
       progressBarContainer.style.display = 'block';
       progressStatusText.style.display = 'block';
       progressBar.style.width = '5%';
       progressStatusText.textContent = 'Initiating disk installation...';
 
       try {
+        let grubPasswordHash = '';
+        if (grubPassword) {
+          progressStatusText.textContent = 'Deriving the boot menu password hash...';
+          grubPasswordHash = await grubPbkdf2(grubPassword);
+        }
+
         const res = await fetch('http://127.0.0.1:8888/api/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ targetDisk: disk })
+          // Only the hash is sent. The password itself stays in this page.
+          body: JSON.stringify({ targetDisk: disk, grubPasswordHash })
         });
         if (!res.ok) {
           const err = await res.json();
@@ -394,6 +485,8 @@
                 statusBox.style.display = 'block';
                 startInstallBtn.disabled = false;
                 targetDiskSelect.disabled = false;
+                grubPasswordInput.disabled = false;
+                generateGrubBtn.disabled = false;
               }
             }
           } catch {}
@@ -404,6 +497,8 @@
         statusBox.style.display = 'block';
         startInstallBtn.disabled = false;
         targetDiskSelect.disabled = false;
+        grubPasswordInput.disabled = false;
+        generateGrubBtn.disabled = false;
       }
     });
 
