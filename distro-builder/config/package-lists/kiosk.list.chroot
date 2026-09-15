@@ -56,9 +56,5 @@ novnc
 websockify
 network-manager
 curl
-wget
-jq
-ethtool
-net-tools
 python3
 ca-certificates
