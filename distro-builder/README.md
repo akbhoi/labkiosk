@@ -191,35 +191,59 @@ sudo bash build-iso.sh
 
 Hardened kiosk configurations (masked TTYs, disabled VT switching, locked desktop) depend upon an untampered kernel invocation. If GRUB is left unsecured, an attacker with physical access could edit kernel parameters (e.g., append `init=/bin/sh`) to obtain an unrestricted root shell.
 
-### 1. Pinning the GRUB PBKDF2 Password
-Before building the ISO, generate a GRUB PBKDF2 password hash:
+### 1. The GRUB Boot-Menu Password
+
+**The workstation always boots completely unattended.** Every menu entry is marked
+`--unrestricted` (applied unconditionally by `02-security.hook.chroot`), so powering on goes
+straight to the kiosk with no prompt. The password is asked for only when someone presses `e` to
+edit an entry or `c` for the GRUB shell.
+
+> [!IMPORTANT]
+> **Do not commit a hash for an image you ship to more than one customer.** A hash compiled into
+> the ISO is one boot-menu password shared by every deployment that image produced: a leak at any
+> single site compromises all of them, it cannot be rotated on machines already in the field, and
+> `grub.pin` is tracked in git, so the hash is permanent in history and open to offline cracking
+> by anyone who can read the repository. Use Route 1 below instead.
+
+#### Route 1 — per installation (the default; nothing to configure)
+
+The setup wizard's **Install to Hard Disk** step collects a boot-menu password and derives the
+PBKDF2 hash **in the browser** with WebCrypto, posting only the digest. The plaintext therefore
+never reaches the agent's API, never appears in a process argument, and is never written to disk.
+`labkiosk-install` writes `/etc/grub.d/01_labkiosk_password` on the target before `update-grub`.
+
+Each site — or each workstation, if you prefer — gets its own password, and the shipped ISO
+carries no secret at all. Use the wizard's **Generate** button for a random 20-character password,
+and record it before installing: it cannot be recovered afterwards.
+
+#### Route 2 — per-customer ISO (also locks the live USB menu)
+
+Supply the hash in the build environment rather than committing it:
+
 ```bash
-grub-mkpasswd-pbkdf2
-```
-Copy the resulting output (format: `grub.pbkdf2.sha512.10000...`) into:
-`distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin`:
-```ini
-PASSWORD_PBKDF2=grub.pbkdf2.sha512.10000.YOUR_GENERATED_HASH_HERE
+docker run --rm -it ghcr.io/akbhoi/labkiosk-iso-builder grub-mkpasswd-pbkdf2 -c 200000
 ```
 
-**The workstation still boots completely unattended.** Every menu entry is marked
-`--unrestricted`, so powering on goes straight to the kiosk with no prompt; the password is asked
-for only when someone presses `e` to edit an entry or `c` for the GRUB shell.
+```bash
+docker run --privileged --rm -e LABKIOSK_GRUB_PBKDF2="grub.pbkdf2.sha512.200000.YOUR.HASH" -v "$PWD/distro-builder/out:/build/out" ghcr.io/akbhoi/labkiosk-iso-builder
+```
 
-The hash is consumed in two independent places, because the live ISO and an installed disk use
-different bootloaders:
+`LABKIOSK_GRUB_PBKDF2` takes precedence over `grub.pin`. The `grub.pin` file remains as a
+fallback for a single organisation building an image for its own lab.
 
-| Target | Mechanism | Written by |
+#### Where each mechanism applies
+
+| Target | Mechanism | Set by |
 | :--- | :--- | :--- |
-| **Live ISO, UEFI** | `config/bootloaders/grub-pc/labkiosk-password.cfg`, sourced by `config.cfg` | `auto/config`, at `lb config` time |
-| **Live ISO, legacy BIOS** | `ALLOWOPTIONS 0` + `NOESCAPE 1` in `config/bootloaders/*/stdmenu.cfg` — **no password needed**: syslinux discards any kernel argument the user types | static config |
-| **Installed disk** | `/etc/grub.d/01_labkiosk_password`, applied by `update-grub` | `02-security.hook.chroot` |
+| **Installed disk** | `/etc/grub.d/01_labkiosk_password`, consumed by `update-grub` | The wizard, per installation (Route 1) |
+| **Live ISO, UEFI** | `config/bootloaders/grub-pc/labkiosk-password.cfg`, sourced by `config.cfg` | `auto/config` from `LABKIOSK_GRUB_PBKDF2` or `grub.pin` (Route 2) |
+| **Live ISO, legacy BIOS** | `ALLOWOPTIONS 0` + `NOESCAPE 1` in `config/bootloaders/*/stdmenu.cfg` — **no password needed**: syslinux discards any kernel argument the user types | static config, always |
 
-- If `grub.pin` is left empty, the build prints a warning and proceeds with an editable UEFI menu
-  (fine for a VM bench test, unacceptable in a classroom). The BIOS protections apply either way,
-  since they need no secret.
-- If `PASSWORD_PBKDF2` is set but is not a `grub.pbkdf2.sha512.` value, the build **fails**
-  rather than shipping an image whose menu is unprotected in a way nobody noticed.
+- With no hash supplied the build prints a note and produces an editable **live** menu. That is
+  the correct default for a shipped product, because installed workstations get their password
+  from Route 1.
+- If a hash is supplied but is not a `grub.pbkdf2.sha512.` value, the build **fails** rather than
+  shipping an image whose menu is unprotected in a way nobody noticed.
 
 ### 2. BIOS / UEFI Hardening
 After flashing the OS to the target workstation:

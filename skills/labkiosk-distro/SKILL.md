@@ -41,7 +41,16 @@ This skill guides AI coding assistants through modifying, building, debugging, a
    - UEFI: `grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=LabKiosk --recheck`
    - UEFI Removable Fallback: `grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --recheck`
    - BIOS: `grub-install --target=i386-pc <disk> --recheck`
-6. **Syntax Verification:**
+6. **Boot-Menu Password (`--grub-password-hash`):**
+   - Applied per installation, never baked into the ISO — a compiled-in hash is one password
+     shared by every customer, unrotatable in the field and permanent in git history.
+   - The wizard derives the PBKDF2 digest in the browser (WebCrypto, SHA-512, 200000 rounds,
+     64-byte salt) and posts only the digest, so the plaintext never reaches the agent.
+   - Both `agent.py` and `labkiosk-install` validate it against an identical
+     `GRUB_PBKDF2_PATTERN`.
+   - `--unrestricted` in `02-security.hook.chroot` is unconditional, which is what keeps boot
+     unattended once `set superusers` is written at install time.
+7. **Syntax Verification:**
    ```bash
    PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
    ```

@@ -62,6 +62,19 @@ distro-builder/
 - All dynamic filesystem writes (browser cache, agent logs, temporary downloads, student sessions) divert strictly to `tmpfs` in RAM.
 - On reboot or power loss, 100% of runtime changes and student artifacts vanish instantly.
 
+### Rule 1b: The Boot-Menu Password Is Per-Installation, and Booting Never Prompts
+- A hash compiled into the ISO would be one password shared by every customer that image was
+  shipped to: unrotatable in the field, and permanent in git history. So `grub.pin` stays empty
+  in this repository and the password is applied at **installation** time
+  (`labkiosk-install --grub-password-hash`), or per customer at build time via
+  `LABKIOSK_GRUB_PBKDF2`.
+- **`--unrestricted` must stay unconditional.** `02-security.hook.chroot` marks every generated
+  menu entry `--unrestricted` whether or not a password is pinned. It is a no-op without
+  `superusers`, but because the password now usually arrives at install time, making it
+  conditional again would give an installed disk `set superusers` with no unrestricted entry —
+  and every workstation would stop at a password prompt on every boot instead of coming up into
+  the kiosk.
+
 ### Rule 2: Universal Dual Bootloader Compatibility (BIOS + UEFI)
 - Workstations in school environments range from legacy BIOS machines to modern UEFI-only hardware (e.g. Hyper-V Gen 2, modern laptops/NUCs).
 - **ISO Boot:**
@@ -112,6 +125,13 @@ distro-builder/
 Located at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`.
 
 ### Execution Flags:
+- `--grub-password-hash <grub.pbkdf2.sha512...>`: optional, used with `--target`. Writes
+  `/etc/grub.d/01_labkiosk_password` on the installed system before `update-grub`, giving that
+  installation its own boot-menu password. Only a **digest** is accepted — the setup wizard
+  derives it in the browser with WebCrypto, so the plaintext never crosses the agent's API. When
+  omitted, any password inherited from the live medium is removed, so an unlocked install is
+  visibly unlocked. The value is re-validated here against `GRUB_PBKDF2_PATTERN`, not trusted
+  from the caller.
 - `--list-disks`: Scans candidate physical/virtual block devices (>= 3 GB) and returns pure JSON on
   `sys.stdout`. **The disk backing the live medium is excluded** (matched via `/proc/mounts`
   against `/run/live/medium` and friends, then resolved to its parent disk through `/sys`), because
