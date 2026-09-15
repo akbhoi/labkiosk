@@ -4,9 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lab Kiosk - Setup & Installation Wizard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- No webfonts. This page is served before the workstation is enrolled, when
+       Chromium's managed URLAllowlist holds only 127.0.0.1 and localhost, so an
+       external font request is blocked outright and only delays first paint. The
+       stacks below resolve against fonts-noto-core / fonts-dejavu / fonts-liberation,
+       which are in config/package-lists/kiosk.list.chroot. -->
   <style>
     :root {
       --bg: #090d16;
@@ -18,8 +20,10 @@
       --green-hover: #059669;
       --text: #f8fafc;
       --muted: #94a3b8;
+      --font-sans: "Noto Sans", "DejaVu Sans", "Liberation Sans", sans-serif;
+      --font-mono: "DejaVu Sans Mono", "Liberation Mono", monospace;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font-sans); }
     body {
       background: radial-gradient(circle at center, #1e293b 0%, #090d16 100%);
       color: var(--text);
@@ -78,7 +82,7 @@
     }
     .input-field:focus, .select-field:focus { border-color: var(--accent); }
     .subdomain-wrap { display: flex; align-items: center; gap: 8px; }
-    .subdomain-suffix { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--muted); white-space: nowrap; }
+    .subdomain-suffix { font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; }
     .hint-text { font-size: 11px; color: var(--muted); margin-top: 6px; }
 
     .status-box {
@@ -149,7 +153,7 @@
         <div class="form-group" id="subdomain-group">
           <label class="form-label">Institution / Organization Subdomain</label>
           <div class="subdomain-wrap">
-            <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: monospace;">
+            <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: var(--font-mono);">
             <span class="subdomain-suffix" id="subdomain-suffix">.labkiosk.akbhoi.com</span>
           </div>
           <div class="hint-text">The subdomain chosen when registering your institution or lab.</div>
@@ -157,7 +161,7 @@
 
         <div class="form-group" id="custom-domain-group" style="display: none;">
           <label class="form-label">Custom Domain or Server Address</label>
-          <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: monospace;">
+          <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: var(--font-mono);">
           <div class="hint-text">Enter your institution's custom domain (e.g. kiosk.institution.edu) or dedicated server address.</div>
         </div>
 
@@ -170,13 +174,13 @@
 
         <div class="form-group">
           <label class="form-label">Workstation Identifier (PC Name)</label>
-          <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: monospace;">
+          <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: var(--font-mono);">
           <div class="hint-text">A unique identifier in your lab or facility (e.g. PC-01, PC-02, DESK-14).</div>
         </div>
 
         <div class="form-group">
           <label class="form-label">Workstation Enrollment Key</label>
-          <input type="text" id="enrollment-key" class="input-field" required placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" style="font-family: monospace; text-transform: uppercase;">
+          <input type="text" id="enrollment-key" class="input-field" required placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" style="font-family: var(--font-mono); text-transform: uppercase;">
           <div class="hint-text">
             Find this in your administrator dashboard under <strong>Settings &rarr; Workstation Enrollment Key</strong>.
           </div>
@@ -290,6 +294,11 @@
           if (data.isLive) {
             if (tabsNav) tabsNav.style.display = 'flex';
             if (wizardBadge) wizardBadge.textContent = 'LIVE INSTALLER & SETUP';
+            // Booted from the "Install Lab Kiosk to Hard Disk / SSD" menu entry:
+            // open that tab rather than making the operator find it.
+            if (data.installRequested) {
+              tabBtnInstall.click();
+            }
           } else {
             if (tabsNav) tabsNav.style.display = 'none';
             viewInstall.style.display = 'none';
@@ -313,10 +322,16 @@
             startInstallBtn.disabled = true;
             return;
           }
+          // The agent already excludes the live boot medium and sorts internal
+          // drives first, so the default selection is always an internal disk.
+          // Removable drives are still listed -- some thin clients expose
+          // internal eMMC as removable -- but they are labelled, because
+          // choosing one erases it.
           disks.forEach(d => {
             const opt = document.createElement('option');
             opt.value = d.path;
-            opt.textContent = `${d.path} — ${d.size} (${d.model})`;
+            const suffix = d.removable ? ' — REMOVABLE DRIVE' : '';
+            opt.textContent = `${d.path} — ${d.size} (${d.model})${suffix}`;
             targetDiskSelect.appendChild(opt);
           });
           startInstallBtn.disabled = false;
@@ -457,7 +472,20 @@
             'Successfully connected to ' + (data.schoolName || subdomain || customDomain) +
             ' as ' + (data.clientId || clientId) + '. Entering locked student kiosk mode...';
           statusBox.style.display = 'block';
-          setTimeout(() => { window.location.href = data.targetUrl; }, 1500);
+          // targetUrl comes back from the control plane, so it is checked before
+          // it becomes a navigation the same way content.js checks its copy.
+          let safeTarget = null;
+          try {
+            const parsed = new URL(data.targetUrl, window.location.href);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+              safeTarget = parsed.href;
+            }
+          } catch { safeTarget = null; }
+          if (safeTarget) {
+            setTimeout(() => { window.location.href = safeTarget; }, 1500);
+          } else {
+            fail('The school returned an address this workstation cannot open.');
+          }
         } else {
           fail(data.error || 'Could not connect to the school.');
         }
