@@ -11,12 +11,22 @@
  * of the page's CORS, so the agent can refuse cross-origin callers entirely
  * while the kiosk UI still reads its state.
  *
- * The only message is `labkiosk:status`. Navigation (back, forward, reload,
- * home) is done by the content script with the History API and never needs
- * the agent, so there is no nav channel to the agent's loopback API.
+ * It also owns the active broadcast marker (`labkiosk:broadcast-get` /
+ * `labkiosk:broadcast-set`). That used to live in the visited page's own
+ * sessionStorage, which meant the page could rewrite it to sit out a teacher's
+ * broadcast or re-enable Back at the broadcast root. chrome.storage.session
+ * keeps it in the extension's partition -- unreachable from page script, still
+ * wiped at every boot -- and surviving both page navigation and this service
+ * worker being torn down when idle.
+ *
+ * Navigation (back, forward, reload, home) is done by the content script with
+ * the History API and never needs the agent, so there is no nav channel to the
+ * agent's loopback API.
  */
 
 const AGENT_STATUS_URL = "http://127.0.0.1:8888/api/status";
+const BROADCAST_KEY = "labkiosk_broadcast";
+const EMPTY_BROADCAST = { epoch: "0", url: "" };
 
 async function readStatus() {
   const res = await fetch(AGENT_STATUS_URL, { cache: "no-store" });
@@ -24,14 +34,60 @@ async function readStatus() {
   return await res.json();
 }
 
+async function readBroadcast() {
+  const stored = await chrome.storage.session.get(BROADCAST_KEY);
+  const value = stored && stored[BROADCAST_KEY];
+  if (!value || typeof value.epoch !== "string") return { ...EMPTY_BROADCAST };
+  return { epoch: value.epoch, url: typeof value.url === "string" ? value.url : "" };
+}
+
+async function writeBroadcast(epoch, url) {
+  // Only ever store an http(s) URL: this value is handed back to the content
+  // script and becomes a location.replace() target.
+  let safeUrl = "";
+  try {
+    if (url) {
+      const parsed = new URL(url);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        safeUrl = parsed.href;
+      }
+    }
+  } catch {
+    safeUrl = "";
+  }
+  const value = { epoch: String(epoch || "0"), url: safeUrl };
+  await chrome.storage.session.set({ [BROADCAST_KEY]: value });
+  return value;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
 
-  if (message.type === "labkiosk:status") {
-    readStatus()
-      .then((status) => sendResponse({ ok: true, status }))
+  const reply = (promise) => {
+    promise
+      .then((value) => sendResponse({ ok: true, ...value }))
       .catch((err) => sendResponse({ ok: false, error: String(err && err.message ? err.message : err) }));
     return true; // keep the message channel open for the async reply
+  };
+
+  if (message.type === "labkiosk:status") {
+    return reply(readStatus().then((status) => ({ status })));
+  }
+
+  if (message.type === "labkiosk:broadcast-get") {
+    return reply(readBroadcast().then((broadcast) => ({ broadcast })));
+  }
+
+  if (message.type === "labkiosk:broadcast-set") {
+    return reply(
+      writeBroadcast(message.epoch, message.url).then((broadcast) => ({ broadcast }))
+    );
+  }
+
+  if (message.type === "labkiosk:broadcast-clear") {
+    return reply(
+      chrome.storage.session.remove(BROADCAST_KEY).then(() => ({ broadcast: { ...EMPTY_BROADCAST } }))
+    );
   }
 
   return false;

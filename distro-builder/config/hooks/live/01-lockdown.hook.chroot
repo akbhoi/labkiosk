@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "[Hook] Applying Lab Kiosk Lockdown and User Setup..."
+echo "[Hook] Applying Lab Kiosk Lockdown, Display & User Setup..."
 
 # The cloudflared release to install is pinned in
 # config/includes.chroot/usr/share/labkiosk/cloudflared.pin. A binary is only
@@ -9,19 +9,108 @@ echo "[Hook] Applying Lab Kiosk Lockdown and User Setup..."
 CLOUDFLARED_PIN="/usr/share/labkiosk/cloudflared.pin"
 
 # 1. Create the unprivileged kiosk user.
-#    The account is LOCKED, not password-less: `passwd -d` would leave an empty
-#    password that any getty or SSH service would happily accept.
-if ! id -u kiosk >/dev/null 2>&1; then
-    useradd -m -s /bin/bash -G audio,video,input,render kiosk
+#    All virtual terminals (getty) are masked and SSH is absent, so passwordless
+#    login is securely restricted to the local nodm auto-display session.
+#
+#    There used to be a second account here, `user`, described as a fallback.
+#    Nothing could ever log into it: nodm is pinned to NODM_USER=kiosk, there is
+#    no getty and no SSH, and live-config's user-setup is pre-seeded away below
+#    so it never creates one either. It was an unreachable account carrying an
+#    empty password and membership of input/video/tty, so it is gone.
+#
+#    `passwd -d` (empty) rather than `passwd -l` (locked) is deliberate and must
+#    stay: a locked kiosk account previously deadlocked nodm's PAM stack and
+#    produced a black screen on boot. See the pitfall table in AGENTS.md. What
+#    makes that acceptable is that no PAM service can be reached to use the empty
+#    password -- every getty is masked, serial-getty and debug-shell are masked,
+#    and there is no SSH server in the image.
+KIOSK_USER="kiosk"
+KIOSK_HOME="/home/$KIOSK_USER"
+
+if ! id -u "$KIOSK_USER" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -G audio,video,input,render,tty "$KIOSK_USER"
+else
+    usermod -a -G audio,video,input,render,tty "$KIOSK_USER" || true
 fi
-passwd -l kiosk || true
+passwd -d "$KIOSK_USER" || true
+
+mkdir -p "$KIOSK_HOME/.config/openbox"
+cat << 'EOF' > "$KIOSK_HOME/.xsession"
+#!/bin/sh
+exec /usr/bin/openbox-session
+EOF
+chmod 755 "$KIOSK_HOME/.xsession"
+cp /etc/openbox/autostart "$KIOSK_HOME/.config/openbox/autostart"
+chmod 755 "$KIOSK_HOME/.config/openbox/autostart"
+chown -R "$KIOSK_USER:$KIOSK_USER" "$KIOSK_HOME"
+
 passwd -l root || true
 
-# 2. Ownership so the agent can do its job as the kiosk user.
+# Pre-seed live-config so it does not overwrite nodm or create duplicate users
+mkdir -p /var/lib/live/config
+touch /var/lib/live/config/nodm
+touch /var/lib/live/config/user-setup
+
+mkdir -p /etc/live
+cat << 'EOF' > /etc/live/config.conf
+LIVE_USERNAME="kiosk"
+LIVE_USER_DEFAULT_GROUPS="audio,video,input,render,tty"
+EOF
+
+# 2. Configure X11 permissions and nodm autologin display manager.
+#    rootless Xorg requires xserver-xorg-legacy with needs_root_rights=yes to run
+#    smoothly across varied display hardware (including Hyper-V and VirtualBox).
+mkdir -p /etc/X11
+cat << 'EOF' > /etc/X11/Xwrapper.config
+allowed_users=anybody
+needs_root_rights=yes
+EOF
+chmod u+s /usr/lib/xorg/Xorg.wrap 2>/dev/null || true
+echo "/usr/sbin/nodm" > /etc/X11/default-display-manager
+
+# Configure PAM for nodm to guarantee autologin succeeds without account lock
+# checks. `auth` and `account` are permitted outright because nodm starts a
+# session for a user fixed in /etc/default/nodm: there is no password to check
+# and no prompt for anyone to answer.
+#
+# `password` is pam_deny rather than pam_permit. Nothing should ever change a
+# credential through the autologin stack, and pam_permit there reports success
+# without doing anything -- a silent no-op that looks like it worked. `session`
+# is left as pam_permit: a locked-down session stack here is what previously
+# deadlocked the display manager into a black screen on boot.
+mkdir -p /etc/pam.d
+cat << 'EOF' > /etc/pam.d/nodm
+#%PAM-1.0
+auth     required   pam_permit.so
+account  required   pam_permit.so
+password required   pam_deny.so
+session  required   pam_permit.so
+EOF
+
+mkdir -p /etc/default
+cat << 'EOF' > /etc/default/nodm
+NODM_ENABLED=true
+NODM_USER=kiosk
+NODM_XSESSION=/home/kiosk/.xsession
+NODM_MIN_SESSION_TIME=2
+NODM_X_OPTIONS=":0 -nolisten tcp"
+EOF
+
+# 3. Ownership so the agent can do its job as the kiosk user.
+#
+#    /opt/labkiosk and /etc/openbox stay root-owned and world-readable. They
+#    used to be chowned to kiosk, which handed the browser's own uid write
+#    access to the agent, the setup wizard, and the extension directory that
+#    Chromium loads with --load-extension: anything achieving code execution as
+#    kiosk could then rewrite the kiosk's own enforcement. The agent only reads
+#    from these paths. The two it genuinely writes to are granted below.
 chmod +x /etc/openbox/autostart || true
 chmod +x /opt/labkiosk/agent/agent.py || true
-chown -R kiosk:kiosk /opt/labkiosk || true
-chown -R kiosk:kiosk /etc/openbox || true
+chmod +x /usr/local/bin/labkiosk-install || true
+chown -R root:root /opt/labkiosk || true
+chmod -R go-w /opt/labkiosk || true
+chown -R root:root /etc/openbox || true
+chmod -R go-w /etc/openbox || true
 
 #    The agent rewrites Chromium's managed policy whenever the school's
 #    allowlist changes. Without this the directory stays root-owned and every
@@ -29,19 +118,56 @@ chown -R kiosk:kiosk /etc/openbox || true
 mkdir -p /etc/chromium/policies/managed
 chown -R kiosk:kiosk /etc/chromium/policies/managed
 
+#    Generate the boot-time managed policy from the single base declaration in
+#    /usr/share/labkiosk/chromium-policy-base.json. The agent reloads that same
+#    base on every allowlist change, so the boot-time policy and the enrolled
+#    policy cannot drift apart. Only the three per-workstation keys are added
+#    here; until a workstation enrols, the only reachable page is the local
+#    setup wizard.
+POLICY_BASE="/usr/share/labkiosk/chromium-policy-base.json"
+if [ ! -f "$POLICY_BASE" ]; then
+    echo "[Hook] ERROR: $POLICY_BASE is missing; refusing to ship an unpoliced browser." >&2
+    exit 1
+fi
+python3 - "$POLICY_BASE" /etc/chromium/policies/managed/policies.json <<'PYEOF'
+import json
+import sys
+
+base_path, out_path = sys.argv[1], sys.argv[2]
+with open(base_path, "r", encoding="utf-8") as handle:
+    policy = json.load(handle)
+
+setup_url = "http://127.0.0.1:8888/setup"
+policy["HomepageLocation"] = setup_url
+policy["NewTabPageLocation"] = setup_url
+policy["URLAllowlist"] = ["127.0.0.1", "localhost", "file:///opt/labkiosk/*"]
+
+with open(out_path, "w", encoding="utf-8") as handle:
+    # print() supplies the trailing newline. Deliberately not handle.write()
+    # with an escape: this block travels through a shell heredoc, where a
+    # backslash escape is easy to mangle into a real newline and produce an
+    # unterminated string literal that only shows up mid-ISO-build.
+    print(json.dumps(policy, indent=2), file=handle)
+PYEOF
+chown kiosk:kiosk /etc/chromium/policies/managed/policies.json
+echo "[Hook] Generated boot-time Chromium policy from $POLICY_BASE."
+
 #    The agent's enrolment config holds a device bearer token.
 mkdir -p /etc/labkiosk
 chown kiosk:kiosk /etc/labkiosk
 chmod 700 /etc/labkiosk
 
-# 3. Mask virtual terminals so Ctrl+Alt+F1..F6 cannot reach a login prompt.
+# 4. Mask virtual terminals so Ctrl+Alt+F1..F6 cannot reach a login prompt.
 for tty in 1 2 3 4 5 6; do
     systemctl mask "getty@tty${tty}.service" || true
 done
 systemctl mask serial-getty@.service || true
 systemctl mask debug-shell.service || true
 
-# 4. Stop the X server from switching VTs or being killed with Ctrl+Alt+Backspace.
+# Mask NetworkManager-wait-online to prevent 120s boot stalls when network is offline/slow.
+systemctl mask NetworkManager-wait-online.service || true
+
+# 5. Stop the X server from switching VTs or being killed with Ctrl+Alt+Backspace.
 #    Masked gettys hide the login prompt; this removes the escape itself.
 mkdir -p /etc/X11/xorg.conf.d
 cat << 'EOF' > /etc/X11/xorg.conf.d/10-kiosk-lockdown.conf
@@ -55,7 +181,7 @@ Section "ServerFlags"
 EndSection
 EOF
 
-# 5. Allow the kiosk user to reboot and power off, and nothing else.
+# 6. Allow the kiosk user to reboot and power off, and nothing else.
 #    These are the only privileged actions the agent performs; without a rule it
 #    runs as an unprivileged user and the teacher's shutdown command silently
 #    does nothing.
@@ -75,14 +201,30 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
-# 6. Enable kiosk services.
-systemctl enable kiosk-x11.service || true
+# Sudoers permissions for the guided disk installer.
+mkdir -p /etc/sudoers.d
+cat << 'EOF' > /etc/sudoers.d/50-labkiosk-install
+kiosk ALL=(ALL) NOPASSWD: /usr/local/bin/labkiosk-install
+EOF
+chmod 0440 /etc/sudoers.d/50-labkiosk-install
+
+# 7. Enable kiosk services.
+systemctl enable nodm.service || true
 systemctl enable cloudflared-kiosk.service || true
 
-# 7. Install cloudflared, but only from a pinned, checksum-verified release.
-#    Previously this downloaded the "latest" binary with `|| true`, so the image
-#    shipped whatever the network returned, unverified, and carried on silently
-#    when the download failed entirely.
+# Configure Hyper-V & generic VM display/storage drivers in initramfs
+mkdir -p /etc/initramfs-tools
+cat << 'EOF' >> /etc/initramfs-tools/modules
+hv_vmbus
+hv_storvsc
+hv_netvsc
+hyperv_fb
+hyperv_keyboard
+EOF
+update-initramfs -u || true
+
+
+# 8. Install cloudflared, but only from a pinned, checksum-verified release.
 CLOUDFLARED_VERSION=""
 CLOUDFLARED_SHA256=""
 if [ -f "$CLOUDFLARED_PIN" ]; then

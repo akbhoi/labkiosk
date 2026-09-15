@@ -1,20 +1,33 @@
 services:
-  # 1. Interactive Kiosk Client Simulator (PC-01)
+  # Interactive Kiosk Client Simulator (PC-01)
   # Access via browser: http://localhost:6080/vnc.html
   kiosk-simulator:
-    image: labkiosk:latest
+    # Same name the publish workflow pushes, so `docker compose pull` fetches the
+    # published image and `docker compose up -d --build` replaces it with your
+    # working tree. The image bakes the client source in (see Dockerfile), so a
+    # pulled one runs main's agent and extension, not your local edits.
+    image: ghcr.io/akbhoi/labkiosk:latest
     build:
       context: .
       dockerfile: Dockerfile
     container_name: labkiosk-client-01
+
+    # The entrypoint spawns Xvfb, Openbox, x11vnc, websockify and two watchdog
+    # loops, none of which reap their own children. Without an init, PID 1 is a
+    # bash script that never calls wait() on them and the container slowly fills
+    # with zombie chromium and scrot processes over a long session.
+    init: true
+
     ports:
       # Only the noVNC display is published. The agent's API is loopback-only
       # inside the container, as it is on a real workstation, so drive the setup
       # wizard from the noVNC screen rather than from the host.
       - "6080:6080"
+
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "host.containers.internal:host-gateway"
+
     environment:
       # Where the simulated workstation enrols. Override WORKER_URL in your shell
       # to point the simulator at a different control plane -- a deployed worker,
@@ -27,7 +40,28 @@ services:
       # container's noVNC port. The agent reports it so the console's "Remote
       # Control" opens it instead of assuming <pc>.<tunnel-domain>.
       - LABKIOSK_REMOTE_HOST=${LABKIOSK_REMOTE_HOST:-}
+
     volumes:
+      # Live-edit the client without rebuilding: these shadow the image's copies,
+      # so `docker compose restart` picks up agent or extension changes.
       - ./distro-builder/config/includes.chroot/opt/labkiosk:/opt/labkiosk
+      # Mounted for the same reason, and because the agent fails closed without
+      # it -- editing the policy base otherwise appears to do nothing until the
+      # image is rebuilt.
+      - ./distro-builder/config/includes.chroot/usr/share/labkiosk:/usr/share/labkiosk:ro
+
+    # Inherited from the image, but restated so `docker compose ps` reports
+    # health even when running a pulled image built before it was added.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8888/api/status"]
+      interval: 15s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+    # Chromium, Xvfb and the watchdogs need a moment to come down cleanly;
+    # the default 10s SIGKILLs them mid-write.
+    stop_grace_period: 20s
+
     shm_size: "1gb" # Sufficient shared memory for Chromium rendering
     restart: unless-stopped

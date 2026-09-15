@@ -40,6 +40,51 @@
   let lastTargetUrl = null;
   let isLocked = false;
 
+  /**
+   * Mirror of the active broadcast marker owned by the service worker.
+   *
+   * This lives in the isolated world, so page script cannot reach it, and it is
+   * read synchronously by isAtBroadcastRoot() from a keydown handler where an
+   * await is not an option. The authoritative copy is in chrome.storage.session
+   * via background.js, which is what survives navigation between pages.
+   */
+  let broadcastState = { epoch: "0", url: "" };
+
+  function applyBroadcastState(next) {
+    if (next && typeof next.epoch === "string") {
+      broadcastState = { epoch: next.epoch, url: typeof next.url === "string" ? next.url : "" };
+    }
+    return broadcastState;
+  }
+
+  async function loadBroadcastState() {
+    try {
+      const reply = await askAgent({ type: "labkiosk:broadcast-get" });
+      applyBroadcastState(reply.broadcast);
+    } catch {
+      // Keep the default; the next sync tick retries.
+    }
+  }
+
+  async function storeBroadcastState(epoch, url) {
+    applyBroadcastState({ epoch: String(epoch), url: url || "" });
+    try {
+      const reply = await askAgent({ type: "labkiosk:broadcast-set", epoch: String(epoch), url });
+      applyBroadcastState(reply.broadcast);
+    } catch {
+      // The mirror is already updated; persistence retries on the next change.
+    }
+  }
+
+  async function clearBroadcastState() {
+    applyBroadcastState({ epoch: "0", url: "" });
+    try {
+      await askAgent({ type: "labkiosk:broadcast-clear" });
+    } catch {
+      // As above.
+    }
+  }
+
   // While the teacher's curtain is up, stop the page underneath from seeing any
   // input. This is a DOM-level block, not an X11 input grab: it prevents the
   // student interacting with the page, while Chromium's kiosk switches and the
@@ -62,6 +107,22 @@
     );
   }
 
+  // A closed shadow root is not reachable from the host element, so the only
+  // handles to the kiosk UI are these two.
+  let uiHost = null;
+  let uiShadow = null;
+
+  /** An http(s) URL safe to navigate to, or null. */
+  function httpUrlOrNull(raw) {
+    if (!raw) return null;
+    try {
+      const parsed = new URL(raw, window.location.href);
+      return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+    } catch {
+      return null;
+    }
+  }
+
   function normalizeUrl(raw) {
     if (!raw) return "";
     try {
@@ -73,7 +134,7 @@
   }
 
   function isAtBroadcastRoot() {
-    const broadcastUrl = sessionStorage.getItem("labkiosk_broadcast_url");
+    const broadcastUrl = broadcastState.url;
     if (!broadcastUrl) return false;
     const cur = normalizeUrl(window.location.href);
     const root = normalizeUrl(broadcastUrl);
@@ -114,13 +175,20 @@
     // status loop skipped its whole update block: the bar still rendered and its
     // dot kept its default green, but the lock curtain never appeared again.
     const existing = document.getElementById("labkiosk-root");
-    if (existing) return existing.shadowRoot;
+    if (existing && existing === uiHost && uiShadow) return uiShadow;
+    if (existing) {
+      existing.remove();
+    }
 
     const host = document.createElement("div");
     host.id = "labkiosk-root";
     host.style.cssText = "all: initial; position: absolute; z-index: 2147483647;";
 
-    const shadow = host.attachShadow({ mode: "open" });
+    // "closed" so the host page cannot reach this subtree through
+    // document.getElementById("labkiosk-root").shadowRoot and delete the lock
+    // curtain out from under the teacher. The content script keeps its own
+    // reference below, which is unaffected.
+    const shadow = host.attachShadow({ mode: "closed" });
     shadow.innerHTML = `
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -328,6 +396,8 @@
     `;
 
     document.documentElement.appendChild(host);
+    uiHost = host;
+    uiShadow = shadow;
 
     const domainLabel = shadow.getElementById("kiosk-domain");
     if (domainLabel) {
@@ -405,12 +475,10 @@
     shadow.getElementById("btn-home").onclick = async () => {
       try {
         const { status } = await askAgent({ type: "labkiosk:status" });
-        const target = status.targetUrl || sessionStorage.getItem("labkiosk_broadcast_url");
-        if (target) {
-          const parsed = new URL(target, window.location.href);
-          if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-            window.location.href = parsed.href;
-          }
+        const target = status.targetUrl || broadcastState.url;
+        const safeTarget = httpUrlOrNull(target);
+        if (safeTarget) {
+          window.location.href = safeTarget;
         }
       } catch (e) {
         console.warn("[LabKiosk] Home target unavailable:", e);
@@ -492,25 +560,15 @@
 
         // High-priority broadcast detection by epoch or target change
         const srvEpoch = String(data.broadcastEpoch || 0);
-        const storedEpoch = sessionStorage.getItem("labkiosk_broadcast_epoch") || "0";
+        const storedEpoch = broadcastState.epoch || "0";
         const isNewEpoch = srvEpoch !== "0" && srvEpoch !== storedEpoch;
         const targetChanged = data.targetUrl && lastTargetUrl && data.targetUrl !== lastTargetUrl;
 
         if (isNewEpoch || (targetChanged && data.broadcastUrl)) {
-          let safeTarget = null;
-          try {
-            const rawTarget = data.broadcastUrl || data.targetUrl;
-            const parsed = new URL(rawTarget, window.location.href);
-            if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-              safeTarget = parsed.href;
-            }
-          } catch (err) {
-            safeTarget = null;
-          }
+          const safeTarget = httpUrlOrNull(data.broadcastUrl || data.targetUrl);
 
           if (safeTarget) {
-            sessionStorage.setItem("labkiosk_broadcast_epoch", srvEpoch);
-            sessionStorage.setItem("labkiosk_broadcast_url", safeTarget);
+            await storeBroadcastState(srvEpoch, safeTarget);
             lastTargetUrl = data.targetUrl;
             if (normalizeUrl(window.location.href) !== normalizeUrl(safeTarget)) {
               window.location.replace(safeTarget);
@@ -518,23 +576,18 @@
             }
           }
         } else if (srvEpoch === "0" && storedEpoch !== "0") {
-          // Broadcast session ended / reset by teacher
-          sessionStorage.removeItem("labkiosk_broadcast_epoch");
-          sessionStorage.removeItem("labkiosk_broadcast_url");
-          if (data.targetUrl && normalizeUrl(window.location.href) !== normalizeUrl(data.targetUrl)) {
-            window.location.replace(data.targetUrl);
+          // Broadcast session ended / reset by teacher.
+          await clearBroadcastState();
+          // The same protocol check as the branches above: targetUrl comes from
+          // the control plane and ends up in location.replace(), so a
+          // javascript: value here would run in whatever page the student is on.
+          const safeTarget = httpUrlOrNull(data.targetUrl);
+          if (safeTarget && normalizeUrl(window.location.href) !== normalizeUrl(safeTarget)) {
+            window.location.replace(safeTarget);
             return;
           }
         } else if (data.targetUrl && lastTargetUrl && data.targetUrl !== lastTargetUrl) {
-          let safeTarget = null;
-          try {
-            const parsed = new URL(data.targetUrl, window.location.href);
-            if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-              safeTarget = parsed.href;
-            }
-          } catch (err) {
-            safeTarget = null;
-          }
+          const safeTarget = httpUrlOrNull(data.targetUrl);
           if (safeTarget && normalizeUrl(window.location.href) !== normalizeUrl(safeTarget)) {
             window.location.replace(safeTarget);
             return;
@@ -562,8 +615,10 @@
     ensureKioskUi();
   }
   // Run one sync immediately so a locked screen stays locked across navigation
-  // rather than flashing the page for a second first.
-  syncLoop();
+  // rather than flashing the page for a second first. The broadcast marker is
+  // hydrated from the service worker first, so this tick does not mistake an
+  // in-flight broadcast for a brand new one and redirect a second time.
+  loadBroadcastState().then(syncLoop, syncLoop);
 
   setInterval(syncLoop, 1000);
 })();

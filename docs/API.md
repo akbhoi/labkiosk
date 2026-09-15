@@ -31,7 +31,11 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 - **CSRF Origin Guard:** All cookie-authenticated mutations (`POST`, `DELETE`) pass `rejectCrossSiteMutation()`. Foreign cross-site `Origin` headers are rejected with `403 Forbidden`. Sign-out (`/api/auth/logout`) is POST-only.
 - **Sign-In Rate Limiting:** Repeated failed sign-in attempts result in exponential back-off (`429 Too Many Requests`).
 - **Enrolment Rate Limiting:** Failed device enrolment attempts from a given IP address are throttled after repeated invalid keys.
-- **Payload Constraints:** Screen thumbnails are capped at 256 KB. Workstation identifiers and URLs are strictly sanitized.
+- **Payload Constraints:** Screen thumbnails are capped at 256 KB — the agent drops the
+  `thumbnail` field entirely rather than send an oversized frame, so the heartbeat still lands.
+  Workstation identifiers are matched against `CLIENT_ID_PATTERN`, and any URL the control plane
+  returns is validated as `http(s)` by `safe_navigable_url()` before the agent stores it or the
+  browser extension navigates to it.
 
 ---
 

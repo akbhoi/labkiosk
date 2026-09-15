@@ -7,16 +7,38 @@ on:
       - 'v*'
       - 'V*'
 
+permissions:
+  contents: read
+
+# An ISO build is ~15 minutes of runner time and writes a release on tags.
+# Never let two of them run against the same ref.
+concurrency:
+  group: build-iso-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-iso:
     name: Build Live ISO
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: write
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # debootstrap, the squashfs and the finished hybrid ISO together need
+      # well over the free space a stock runner has once its preinstalled
+      # toolchains are counted. Reclaiming them first is cheaper than
+      # diagnosing an ENOSPC two thirds of the way through a build.
+      - name: Free disk space on the runner
+        run: |
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          echo "After:"; df -h / | tail -1
 
       - name: Warn when a release build has no GRUB password pinned
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
@@ -25,21 +47,50 @@ jobs:
             echo "::warning file=distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin::No GRUB password is pinned. This release ISO boots with an editable boot menu; see distro-builder/README.md 'Securing the Boot Chain'."
           fi
 
-      - name: Build ISO using Docker Container
-        run: |
-          docker build -t labkiosk-iso-builder distro-builder
-          mkdir -p distro-builder/out
-          docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" labkiosk-iso-builder
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Show Checksum
-        run: cat distro-builder/out/labkiosk-debian12-amd64.iso.sha256
+      # Built through buildx so the apt layer is cached. The scope is shared
+      # with docker-publish.yml, so a publish run and a release build reuse the
+      # same layers instead of each installing live-build from scratch.
+      - name: Build the ISO builder image
+        uses: docker/build-push-action@v6
+        with:
+          context: distro-builder
+          file: distro-builder/Dockerfile
+          push: false
+          load: true
+          tags: ghcr.io/akbhoi/labkiosk-iso-builder:ci
+          cache-from: type=gha,scope=labkiosk-iso-builder
+          cache-to: type=gha,mode=max,scope=labkiosk-iso-builder
+
+      # GitHub runners give a rootful Docker daemon, so --privileged really is
+      # privileged and debootstrap's mknod succeeds. See distro-builder/README.md.
+      - name: Compile the ISO
+        run: |
+          mkdir -p distro-builder/out
+          docker run --privileged --rm \
+            -v "$PWD/distro-builder/out:/build/out" \
+            ghcr.io/akbhoi/labkiosk-iso-builder:ci
+
+      - name: Verify the checksum
+        working-directory: distro-builder/out
+        run: |
+          cat labkiosk-debian12-amd64.iso.sha256
+          sha256sum -c labkiosk-debian12-amd64.iso.sha256
+          ls -lh labkiosk-debian12-amd64.iso
 
       - name: Upload ISO Artifact
         uses: actions/upload-artifact@v4
         with:
           name: labkiosk-debian12-amd64-iso
-          path: distro-builder/out/labkiosk-debian12-amd64.iso
+          # The checksum travels with the image; an artifact nobody can verify
+          # is a downgrade from one they can.
+          path: |
+            distro-builder/out/labkiosk-debian12-amd64.iso
+            distro-builder/out/labkiosk-debian12-amd64.iso.sha256
           retention-days: 14
+          compression-level: 0 # The ISO is already gzip-compressed internally.
 
       - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')

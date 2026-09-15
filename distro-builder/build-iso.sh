@@ -22,7 +22,7 @@ echo "================================================="
 # 1. Install prerequisites if missing
 echo "[1/4] Checking build dependencies..."
 apt-get update -qq
-apt-get install -y -qq live-build debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools isolinux syslinux-common
+apt-get install -y -qq live-build debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools isolinux syslinux-common librsvg2-bin
 
 # 2. Clean previous build artifacts
 echo "[2/4] Cleaning previous builds..."
