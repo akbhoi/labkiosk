@@ -31,8 +31,14 @@ The simulator closely mirrors the production live Debian 12 kiosk environment (`
 
 ## 🚀 Quickstart: Launching the Simulator
 
+> [!NOTE]
+> The simulator image is defined by the **repository-root `Dockerfile`**, not by anything in this
+> directory. There used to be a near-identical `docker-test/Dockerfile`; it drifted out of step
+> (it lost `alsa-utils`, so the teacher's "mute" command failed in that variant alone) and was
+> removed. This directory holds the entrypoint and these docs.
+
 ### 1. Prerequisites
-- Docker Engine & Docker Compose (v2 recommended: `docker compose`)
+- A rootful Docker-compatible engine with Docker Compose v2 (`docker compose`).
 - The Cloudflare Control Plane running locally (`pnpm dev` in `cloudflare-control/`) or deployed to Cloudflare Workers.
 
 ### 2. Start the Simulator
@@ -40,7 +46,22 @@ From the repository root:
 ```bash
 docker compose up -d
 ```
-*(On systems with Compose v1, use `docker-compose up -d`.)*
+
+Compose builds the image locally from your working tree and tags it
+`ghcr.io/akbhoi/labkiosk:latest`. The published image is available under the same name, so you can
+skip the build entirely:
+
+```bash
+docker compose pull      # fetch the published image instead of building
+docker compose up -d
+```
+
+> [!IMPORTANT]
+> The image **bakes the client source in** (`Dockerfile` copies `agent.py`, the extension and the
+> wizard into it), so a *pulled* image runs `main`'s client code, not your local edits. While
+> working on the client, use `docker compose up -d --build`, or push individual files into the
+> running container with the `docker cp` recipes in
+> [Interactive Development Workflows](#%EF%B8%8F-interactive-development-workflows) below.
 
 ### 3. Open the In-Browser Workstation Display
 Navigate to:

@@ -48,11 +48,10 @@ pnpm dev
 
 The client side has its own quick checks, which CI runs too:
 ```bash
-python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
-python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \n  distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \n  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
-shellcheck -S warning distro-builder/config/includes.chroot/etc/openbox/autostart docker-test/entrypoint.sh
+shellcheck -S warning distro-builder/config/includes.chroot/etc/openbox/autostart distro-builder/docker-build.sh docker-test/entrypoint.sh
 ```
 
 ### 3. Emulating Thin Clients
@@ -161,7 +160,7 @@ screens, so we would rather hear about a suspected problem early than late.
 2. **Commit Conventions:** Follow Conventional Commits:
    - `feat: add CK-12 educational preset to portal`
    - `fix: resolve policy allowlist port formatting in agent`
-   - `docs: update ISO build instructions for WSL2`
+   - `docs: update ISO build instructions for Docker`
 3. **Testing:** Before submitting, ensure both of these pass:
    ```bash
    pnpm --prefix cloudflare-control run typecheck

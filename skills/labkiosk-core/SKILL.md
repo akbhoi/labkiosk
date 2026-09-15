@@ -64,16 +64,20 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
    `content.js` builds the nav bar and lock curtain inside an isolated Shadow DOM; `background.js` (service worker with `host_permissions`) is the exclusive bridge to the agent.
 5. **Syntax-check** before packaging or testing:
    ```bash
-   python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
-   python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+   PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
+   PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
    node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
    node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
    ```
-6. **Build ISO Image (Podman / Docker)**:
+6. **Build ISO Image (Docker)** — from the repository root:
    ```bash
-   wsl -d podman-machine-default -u root podman build -t labkiosk-iso-builder /mnt/d/Projects/AntigravityProjects/labkiosk/distro-builder
-   wsl -d podman-machine-default -u root podman run --privileged --rm -v /mnt/d/Projects/AntigravityProjects/labkiosk/distro-builder/out:/build/out:z labkiosk-iso-builder
+   docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder
+   docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akbhoi/labkiosk-iso-builder
    ```
+   The engine must be **rootful**. `debootstrap` creates device nodes with `mknod`, which a
+   rootless user namespace refuses even under `--privileged`, so the build dies in the chroot
+   stage. If `docker` is served by a podman machine, switch it once with
+   `podman machine stop && podman machine set --rootful && podman machine start`.
 
 ### C. Capturing Visual Screen Verification
 Never claim a UI change is complete without inspecting a visual capture. The agent logging a command

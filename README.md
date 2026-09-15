@@ -124,8 +124,11 @@ The local control plane will be live on `http://localhost:8787`:
 ### 2. Launch the Workstation Simulator
 Without requiring physical hardware, simulate an enrolled student workstation using Docker:
 ```bash
-# From repository root
+# From repository root -- builds from your working tree
 docker compose up -d
+
+# ...or pull the published image instead of building
+docker compose pull && docker compose up -d
 ```
 - Open [http://localhost:6080/vnc.html](http://localhost:6080/vnc.html) (VNC password: `labkiosk`).
 - Complete the onboarding wizard using subdomain `demo` and the enrollment key from **Teacher Dashboard → Settings → Workstation Enrollment Key**.

@@ -18,5 +18,5 @@ These instructions guide GitHub Copilot when assisting contributors on the Lab K
 ## Verification Commands
 - `pnpm --prefix cloudflare-control run typecheck`
 - `pnpm --prefix cloudflare-control test`
-- `python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`
+- `PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`
 - `node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js`

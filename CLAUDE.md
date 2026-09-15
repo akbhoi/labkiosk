@@ -18,8 +18,15 @@ The operating procedures live in the specialized skills under `skills/`. Both ar
 
 - Worker: `pnpm --prefix cloudflare-control run typecheck && pnpm --prefix cloudflare-control test`
 - Client syntax:
-  `python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`
+  `PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`
+  (the cache prefix keeps `__pycache__` out of the image overlay)
   and `node --check` on both files in `distro-builder/config/includes.chroot/opt/labkiosk/extension/`
+- Chromium policy: `python3 distro-builder/tools/generate-chromium-policy.py --check` — the static
+  policy is declared once in `usr/share/labkiosk/chromium-policy-base.json`; never hand-edit the
+  generated `etc/chromium/policies/managed/policies.json`.
+- Line endings: this repo builds a Linux image, so `.gitattributes` pins every script, hook and
+  config to `eol=lf`. Never write these files with a tool that translates newlines (Python's
+  `Path.write_text` does, on Windows) — a CRLF hook dies with `$'\r': command not found`.
 - Dev server: `cd cloudflare-control && cp .dev.vars.example .dev.vars && pnpm dev`
 - Every new route: a guard from `src/guard.ts` **and** a negative test.
 - Every new template or script block: the response nonce, no inline event handlers.

@@ -10,6 +10,7 @@
 ```text
 distro-builder/
 ├── Dockerfile                          # Containerized cross-platform live-build environment
+├── docker-build.sh                     # The Dockerfile's CMD: clean, config, build, checksum
 ├── build-iso.sh                        # Native Debian/WSL2 build script
 ├── auto/                               # live-build automation scripts
 │   ├── config                          # Kernel cmdline, bootappend, distributions, package lists
@@ -29,7 +30,9 @@ distro-builder/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Empty keybindings (rc.xml) & autostart script
 │       │   ├── overlayroot.conf        # RAM overlay (overlayroot="tmpfs", recurse=0)
-│       │   └── systemd/system/         # Systemd units (NODM, kiosk autostart)
+│       │   └── systemd/system/         # cloudflared-kiosk.service only; nodm is configured
+│       │                               #   through /etc/default/nodm in 01-lockdown.hook.chroot,
+│       │                               #   and the agent is started by the Openbox autostart
 │       ├── opt/labkiosk/
 │       │   ├── setup/wizard.html       # Setup & Enrollment Wizard GUI (HTML/JS)
 │       │   ├── extension/              # Manifest V3: content.js (top bar & curtain) +
@@ -37,7 +40,8 @@ distro-builder/
 │       │   └── agent/agent.py          # Python 3 telemetry daemon & local loopback API
 │       ├── usr/local/bin/
 │       │   └── labkiosk-install        # Automated Python disk installer (GPT, ESP, ext4, dual GRUB)
-│       └── usr/share/labkiosk/         # Cryptographic pins: cloudflared.pin & grub.pin
+│       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
+│                                       #   plus the cloudflared.pin & grub.pin build pins
 └── out/                                # Generated ISO & SHA-256 artifacts
 ```
 
@@ -46,7 +50,13 @@ distro-builder/
 ## 2. Invariant Rules for Client Distro & Installer
 
 ### Rule 1: 100% RAM Overlay Protection (`overlayroot="tmpfs"`)
-- The client OS runs as an **immutable system copied into RAM** (`toram` on live media, `overlayroot="tmpfs"` on internal drives).
+- The client OS runs as an **immutable system with all writes diverted to RAM**
+  (`overlayroot="tmpfs"`, on live media and internal drives alike). `toram` — copying the entire
+  image into RAM up front — is an **additional, opt-in boot menu entry**, not what the default
+  entry does; `auto/config`'s `--bootappend-live` contains no `toram`.
+- **The single exception on an installed disk is `/etc/labkiosk`**, which the installer mounts from
+  the `LABKIOSK_DATA` partition so that a post-install enrolment survives a reboot. Everything
+  else, including `/etc/machine-id`, is regenerated every boot.
 - Thin-client SSDs and flash storage (as small as 12 GB, with limited write cycles) are protected from flash degradation.
 - The underlying root filesystem **must remain mounted read-only (`ro`)**.
 - All dynamic filesystem writes (browser cache, agent logs, temporary downloads, student sessions) divert strictly to `tmpfs` in RAM.
@@ -102,14 +112,27 @@ distro-builder/
 Located at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`.
 
 ### Execution Flags:
-- `--list-disks`: Scans candidate non-removable physical/virtual block devices (>= 3 GB). Returns pure JSON to `sys.stdout`.
+- `--list-disks`: Scans candidate physical/virtual block devices (>= 3 GB) and returns pure JSON on
+  `sys.stdout`. **The disk backing the live medium is excluded** (matched via `/proc/mounts`
+  against `/run/live/medium` and friends, then resolved to its parent disk through `/sys`), because
+  offering it meant a click could repartition the USB the installer was running from. Removable
+  drives are *not* hidden — internal eMMC on some thin clients reports as removable — but they sort
+  last and the wizard labels them, so the default selection is always an internal disk.
 - `--status`: Reads `/tmp/labkiosk-install-status.json` and returns current installation state and progress percentage.
 - `--target /dev/sdX`: Runs full partition, format, rootfs rsync, and GRUB deployment as root.
 
 ### Critical Implementation Standards:
 1. **Zero Stdout Pollution**: All logging, traces, and debugging strings MUST write to `file=sys.stderr`. `sys.stdout` must strictly contain valid JSON so agent parsing cannot fail with `JSONDecodeError`.
 2. **Kernel Fallback**: If `lsblk -J` is unavailable or returns an empty list, the installer falls back to `/sys/block` sysfs enumeration.
-3. **Machine ID Reset**: The installer truncates `/etc/machine-id` on the target rootfs so systemd generates a fresh, unique machine-id on first boot of the installed system.
+3. **Machine ID Reset**: The installer truncates `/etc/machine-id` on the target rootfs to a
+   genuinely **empty** file, which is the marker systemd reads as "uninitialised" and replaces on
+   first boot. A file containing anything else — a bare newline included — is not that marker.
+4. **Negative parted offsets need `--`**: the ROOT and DATA partitions are sized from the end of the
+   disk (`-513MiB`, `-512MiB`), and without a `--` separator parted parses those as bundled
+   single-letter options and aborts the install.
+5. **Target re-validation**: `--target` is checked against `TARGET_DISK_PATTERN` inside the
+   installer, not only by the agent that normally calls it. `/etc/sudoers.d/50-labkiosk-install`
+   lets the `kiosk` user run this binary directly, so the caller is not a trust boundary.
 
 ---
 
@@ -118,22 +141,55 @@ Located at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 ### 1. Client Syntax Validation
 Always run before packaging or testing:
 ```bash
-python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
-python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+# PYTHONPYCACHEPREFIX is not optional: without it py_compile writes __pycache__
+# directories *inside* config/includes.chroot, and live-build copies whatever is
+# on disk straight into the ISO -- shipping bytecode built for the wrong
+# interpreter into the image.
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
+  distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
+
+# The boot-time Chromium policy is generated from the single policy base; this
+# fails if the committed copy has drifted from it.
+python3 distro-builder/tools/generate-chromium-policy.py --check
 ```
 
-### 2. Containerized ISO Build (Podman / Docker)
-Run via native Podman (in WSL2 or Linux):
+### 2. Containerized ISO Build (Docker)
+Run from the repository root, on any host with a rootful Docker-compatible engine:
 ```bash
-# Step 1: Build the builder container image (copies source into native Linux ext4)
-wsl -d podman-machine-default -u root podman build -t labkiosk-iso-builder /mnt/d/Projects/AntigravityProjects/labkiosk/distro-builder
+# Step 1: Build the builder image. The Dockerfile COPYs the source into the image's own
+#         Linux filesystem -- see the bind-mount warning below for why.
+docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder
 
-# Step 2: Run live-build in privileged container and mount output directory
-wsl -d podman-machine-default -u root podman run --privileged --rm -v /mnt/d/Projects/AntigravityProjects/labkiosk/distro-builder/out:/build/out:z labkiosk-iso-builder
+# Step 2: Run live-build in a privileged container, mounting only the output directory.
+docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akbhoi/labkiosk-iso-builder
 ```
-*Note: Never bind-mount the source tree directly over `/build` in the container on Windows, because Windows 9P/drvfs mounts enforce `nodev`/`noexec` and break `mknod`.*
+
+> [!IMPORTANT]
+> The container engine must be **rootful**. `live-build` runs `debootstrap`, which creates device
+> nodes with `mknod`, and a rootless user namespace forbids that even under `--privileged` — the
+> build dies in the chroot stage. Docker Desktop is rootful by default. If `docker` is served by a
+> podman machine, make it rootful once with:
+> ```bash
+> podman machine stop && podman machine set --rootful && podman machine start
+> ```
+> Check with: `docker run --rm --privileged debian:bookworm-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'`
+
+*Note: Never bind-mount the source tree directly over `/build` in the container on Windows, because
+Windows 9P/drvfs mounts enforce `nodev`/`noexec` and break `mknod`. Only `out/` is bind-mounted,
+which is why the `Dockerfile` copies the source in instead.*
+
+*Because the source is copied in, **step 1 is not optional when you have changed anything under
+`distro-builder/`**. Running a stale or pulled `ghcr.io/akbhoi/labkiosk-iso-builder` image silently builds an ISO
+from the source baked into it, not from the working tree, and the result looks like your change
+had no effect.*
+
+*The `.dockerignore` matters: without it the build context carries `chroot/`, `cache/` and every
+previously built ISO — over a gigabyte — and, worse, a stale `lb config`-generated `config/binary`
+whose `LB_BOOTAPPEND_LIVE` still contained the `quiet loglevel=3` that caused the black-screen boot
+deadlock.*
 
 ### 3. Rapid Live Debugging via Docker Test Simulator
 ```bash
@@ -164,4 +220,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 | **UEFI boot entry missing after reboot** | UEFI firmware lost NVRAM or does not store dynamic boot variables. | Always invoke `grub-install --target=x86_64-efi --removable` to create `/boot/efi/EFI/BOOT/BOOTX64.EFI`. |
 | **Kiosk nav bar and lock curtain vanish** | Blanket extension block `ExtensionInstallBlocklist: ["*"]` prevents loading unpacked extensions. | Do not add blanket extension blocks. Chromium is already locked down via `--kiosk`, blocked `chrome://`, and wiped user profile. |
 | **Freshly enrolled kiosk shows "This page is blocked"** | Chromium reads its managed policy once at startup. | Agent sets `pendingBrowserRestart` and restarts the browser after the next policy sync. |
+| **A shell hook dies with `$'\r': command not found`** | The file was checked out or written with CRLF line endings. Windows git defaults to `core.autocrlf=true`, and Python's `Path.write_text` translates newlines on Windows. | `.gitattributes` pins every build and image file to `eol=lf`. Never write these files with a tool that rewrites newlines. |
+| **Enrolment on an installed workstation is forgotten after a reboot** | `overlayroot="tmpfs"` sends every write to a RAM overlay, `/etc/labkiosk/config.json` included. | The installer creates the `LABKIOSK_DATA` partition and mounts it at `/etc/labkiosk`. On an image built before that change, enrol from the live session *before* installing. |
+| **Installer offers the USB it booted from** | `--list-disks` recorded the `removable` flag but never filtered on it. | `live_medium_disks()` excludes the backing disk of `/run/live/medium`, both when listing and again immediately before `wipefs`. |
 | **Black screen on boot (Plymouth/NODM deadlock)** | `quiet loglevel=3` suppressed boot logs and PAM autologin was locked. | Pass `consoleblank=0` (remove `quiet loglevel=3`), unlock kiosk password (`passwd -d kiosk`), and pre-seed live-config markers. |

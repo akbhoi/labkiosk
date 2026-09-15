@@ -23,7 +23,7 @@ This skill guides AI coding assistants through modifying, building, debugging, a
    - `/api/install` and `/api/install/disks` are locked out when `not is_live_session()`.
 4. **Syntax Verification:**
    ```bash
-   python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
+   PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
    ```
 
 ### B. Modifying the Automated Disk Installer (`labkiosk-install`)
@@ -43,7 +43,7 @@ This skill guides AI coding assistants through modifying, building, debugging, a
    - BIOS: `grub-install --target=i386-pc <disk> --recheck`
 6. **Syntax Verification:**
    ```bash
-   python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+   PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
    ```
 
 ### C. Modifying the Browser Extension (MV3)
@@ -69,14 +69,26 @@ This skill guides AI coding assistants through modifying, building, debugging, a
 
 ## 2. Compiling & Verifying the ISO Image
 
-### Containerized Build via Podman (WSL2 / Linux)
+### Containerized Build via Docker
+Run from the repository root:
 ```bash
-# 1. Rebuild the builder container image (copies working directory into Linux ext4)
-wsl -d podman-machine-default -u root podman build -t labkiosk-iso-builder /mnt/d/Projects/AntigravityProjects/labkiosk/distro-builder
+# 1. Rebuild the builder image (the Dockerfile copies the working tree into the image)
+docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder
 
-# 2. Compile live ISO image into output directory
-wsl -d podman-machine-default -u root podman run --privileged --rm -v /mnt/d/Projects/AntigravityProjects/labkiosk/distro-builder/out:/build/out:z labkiosk-iso-builder
+# 2. Compile the live ISO into distro-builder/out/
+docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akbhoi/labkiosk-iso-builder
 ```
+
+> [!IMPORTANT]
+> The container engine must be **rootful**. `live-build` runs `debootstrap`, which creates device
+> nodes with `mknod`, and a rootless user namespace forbids that even under `--privileged` — the
+> build dies in the chroot stage. Docker Desktop is rootful by default. If `docker` is served by a
+> podman machine, make it rootful once with:
+> ```bash
+> podman machine stop && podman machine set --rootful && podman machine start
+> ```
+> Check with: `docker run --rm --privileged debian:bookworm-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'`
+
 
 ### Output Artifacts
 - Path: `distro-builder/out/labkiosk-debian12-amd64.iso`

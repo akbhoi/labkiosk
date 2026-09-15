@@ -10,18 +10,31 @@ A minimal, security-hardened Debian 12 (Bookworm) live kiosk operating system de
 
 The Lab Kiosk operating system is built specifically for resource-constrained thin clients (e.g., Intel Celeron/Pentium, 4 GB RAM, 12 GB SATA SSD) with an immutable, zero-wear storage model.
 
-### 1. 100% RAM Overlay (`toram` + `overlayroot="tmpfs"`)
-- At boot time, the entire operating system image is copied from the bootable medium into RAM (`toram` kernel boot parameter).
-- The root filesystem is mounted strictly read-only (`ro`).
+### 1. 100% RAM Overlay (`overlayroot="tmpfs"`)
+- The root filesystem is mounted strictly read-only (`ro`), with a `tmpfs` overlay on top.
+- **`toram` is an opt-in boot entry, not the default.** The default entry
+  (`auto/config`, `--bootappend-live`) boots with `overlayroot=tmpfs` and reads the squashfs from
+  the medium as it goes. The boot menu additionally offers **Lab Kiosk OS (Load into RAM - toram)**,
+  which copies the whole image into RAM first: pick it when the USB stick should be removable after
+  boot, and expect it to need RAM greater than the image size.
 - Dynamic runtime file system writes (browser cache, agent logs, temporary downloads, student session state) are diverted to a `tmpfs` RAM disk via `overlayroot`.
 - **Zero SSD Wear Guarantee:** Thin-client flash storage is never written to during operation, eliminating drive exhaustion and wear cycles.
 - On reboot or power-off, all student session state, cached files, and temporary artifacts vanish instantly.
 
 ### 2. Hardened Operating System Lockdown
-- **TTY & Console Masking:** Virtual consoles `tty1` through `tty6` are masked in systemd. VT switching is disabled at the X server level via `DontVTSwitch` and `DontZap` options in `/etc/X11/xorg.conf.d/10-lockdown.conf`.
+- **TTY & Console Masking:** Virtual consoles `tty1` through `tty6` are masked in systemd. VT switching is disabled at the X server level via `DontVTSwitch` and `DontZap` options in `/etc/X11/xorg.conf.d/10-kiosk-lockdown.conf`.
 - **Stripped Window Manager:** Openbox runs with an empty keybinding table in `/etc/openbox/rc.xml`. Shortcuts such as `Alt+Tab`, `Alt+F4`, `Ctrl+Alt+Del`, and custom key sequences are completely inert.
-- **Account Restrictions:** The default `kiosk` user has no sudo rights and a locked password; the `root` account is disabled.
-- **Polkit Power Policy:** Shutdown and reboot via systemd/D-Bus are restricted to authorized administrators or remote commands dispatched by the teacher.
+- **Account Restrictions:** `root` is locked (`passwd -l`). The `kiosk` account has an *empty*
+  password rather than a locked one, because a locked account previously deadlocked nodm's PAM
+  stack into a black screen on boot; what makes that safe is that no login path exists to use it —
+  `getty@tty1..6`, `serial-getty` and `debug-shell` are all masked and no SSH server is installed.
+  `kiosk` holds exactly one sudo grant, `NOPASSWD` on `/usr/local/bin/labkiosk-install`
+  (`/etc/sudoers.d/50-labkiosk-install`), which is what lets the setup wizard run the guided disk
+  installer. There is no general sudo access.
+- **Polkit Power Policy:** `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants the `kiosk` user
+  reboot and power-off through logind, and nothing else. That grant is what makes the teacher's
+  remote shutdown command work — the agent runs as `kiosk`, so without it the command would be
+  accepted and then silently do nothing.
 
 ### 3. Chromium Enterprise Kiosk & Manifest V3 Extension
 - **Top-Level Native Browsing:** External educational platforms (Khan Academy, YouTube, Scratch) enforce strict `X-Frame-Options` and `frame-ancestors` headers. Lab Kiosk loads all web destinations as native top-level pages, avoiding iframe embedding limitations.
@@ -37,8 +50,18 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **No Blanket Extension Block:** The enterprise policy deliberately avoids `ExtensionInstallBlocklist: ["*"]`, which would prevent loading unpacked extensions via `--load-extension`. Student extensions remain blocked because `chrome://` is blocked, Chrome Web Store is not allowlisted, and browser profiles are wiped on launch.
 
 ### 4. Local Python 3 Daemon (`agent.py`)
-- Resides at `/opt/labkiosk/agent/agent.py` and runs as a background systemd service (`labkiosk-agent.service`).
-- **Telemetry Loop (Every 3s):** Authenticates to the Cloudflare control plane using a stored bearer device token, transmits screen thumbnails (scrot compressed via PIL JPEG, max 256 KB), receives pending teacher commands, and checks broadcast status.
+- Resides at `/opt/labkiosk/agent/agent.py`. It is **not** a systemd service: it needs the kiosk
+  user's live X session for `scrot` and `xdotool`, so it is started from `/etc/openbox/autostart`
+  inside a `while true` supervisor loop that restarts it within ~2 s if it ever exits. Restart
+  lines are written to `/tmp/lab-agent.log`.
+- **Telemetry Loop (Every 3s):** Authenticates to the Cloudflare control plane with a stored bearer
+  device token, transmits a screen thumbnail, receives pending teacher commands, and checks
+  broadcast status. The thumbnail is produced by `scrot -t 20 -q 35` — pure Python standard
+  library plus `scrot`, with **no PIL/Pillow dependency** — and a frame whose base64 payload
+  exceeds 256 KB (`MAX_THUMBNAIL_BYTES`) is dropped rather than sent, so an oversized capture
+  never costs the school's uplink or delays the heartbeat.
+- **Local API:** threaded (`ThreadingHTTPServer`), so a slow call such as the disk scan cannot
+  stall the once-a-second status poll that drives the lock curtain.
 - **Dynamic Policy Synchronization:** Writes the tenant's approved domain allowlist into `/etc/chromium/policies/managed/policies.json`.
 - **Loopback API:** Binds strictly to `127.0.0.1:8888` to serve the first-boot onboarding wizard and health probes.
 - **Session State Awareness:** Distinguishes between live evaluation sessions (`boot=live` on USB/ISO) and permanent disk installations.
@@ -48,9 +71,18 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **Universal Hybrid GPT Partitioning:**
   1. `bios_grub` (1 MiB – 2 MiB): Enables legacy BIOS GRUB embedding on GPT partitioned disks.
   2. `ESP` (2 MiB – 514 MiB, FAT32): Holds the UEFI bootloader and configuration.
-  3. `ROOT` (514 MiB – 100%, ext4): Stores the immutable Debian 12 operating system.
+  3. `ROOT` (514 MiB – 513 MiB from the end, ext4, label `LABKIOSK_ROOT`): the immutable Debian 12
+     operating system.
+  4. `DATA` (last 512 MiB, ext4, label `LABKIOSK_DATA`): mounted at `/etc/labkiosk` with `nofail`.
+     This is the **only** part of an installed machine that survives a reboot, and it exists so
+     that a workstation enrolled *after* installation stays enrolled — every other write goes to
+     the RAM overlay and is discarded at power-off.
+- **Refuses to erase the medium it is running from:** candidate disks are matched against the
+  device backing `/run/live/medium`, and that disk is excluded from the list *and* rejected again
+  immediately before `wipefs`. Removable drives are still offered (some thin clients expose
+  internal eMMC as removable) but are sorted last and labelled `REMOVABLE DRIVE` in the wizard.
 - **Dual Bootloader Deployment:** Automatically installs both **UEFI** (`x86_64-efi` with removable fallback `BOOTX64.EFI`) and **Legacy BIOS** (`i386-pc`) bootloaders, ensuring the hard drive boots on any virtual machine (Hyper-V Gen 1/2, VirtualBox) or physical PC.
-- **100% RAM Overlay on Disk:** Configures `/etc/overlayroot.conf` with `overlayroot="tmpfs"` on the installed drive, guaranteeing zero flash storage wear and clean resets on reboot even after permanent installation.
+- **100% RAM Overlay on Disk:** Configures `/etc/overlayroot.conf` with `overlayroot="tmpfs"` on the installed drive, guaranteeing zero flash storage wear and clean resets on reboot even after permanent installation. The `LABKIOSK_DATA` partition above is the deliberate exception.
 - **Decoupled Transfer:** Transfers rootfs files via `rsync` without premature submounts, preventing filesystem deadlock errors (`EBUSY 16`).
 
 ---
@@ -61,6 +93,7 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 distro-builder/
 ├── AGENTS.md                           # AI Agent architecture codex for Distro Builder
 ├── Dockerfile                          # Containerized cross-platform ISO builder
+├── docker-build.sh                     # In-container build steps (the Dockerfile's CMD)
 ├── build-iso.sh                        # Native Debian/Ubuntu/WSL2 build script
 ├── auto/                               # live-build automation scripts (config, build, clean)
 ├── config/
@@ -75,7 +108,7 @@ distro-builder/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Locked rc.xml and autostart script
 │       │   ├── overlayroot.conf        # tmpfs RAM overlay configuration
-│       │   └── systemd/system/         # Service definitions (labkiosk-agent, websockify, cloudflared)
+│       │   └── systemd/system/         # cloudflared-kiosk.service (the only unit shipped here)
 │       ├── opt/labkiosk/
 │       │   ├── setup/                  # First-boot onboarding & disk installation HTML wizard
 │       │   ├── extension/              # Manifest V3 extension (content.js, background.js, manifest.json)
@@ -83,8 +116,11 @@ distro-builder/
 │       ├── usr/local/bin/
 │       │   └── labkiosk-install        # Automated Python hard disk installer
 │       └── usr/share/labkiosk/
+│           ├── chromium-policy-base.json # THE single declaration of the static Chromium policy
 │           ├── cloudflared.pin         # Pinned release version & SHA-256 for cloudflared binary
 │           └── grub.pin                # Pinned PBKDF2 hash for GRUB boot password
+├── tools/
+│   └── generate-chromium-policy.py     # Regenerates the boot-time policy from the base (--check in CI)
 └── out/                                # Generated ISO and SHA-256 artifacts
 ```
 
@@ -93,15 +129,50 @@ distro-builder/
 ## 🔨 Building the Kiosk ISO
 
 ### Method 1: Using Docker (Cross-Platform: Windows, macOS, Linux)
-No local Linux installation or package dependencies required:
+No local Linux installation or package dependencies required. Run both commands from the
+**repository root**:
 ```bash
 # Build the builder container image
-docker build -t labkiosk-iso-builder distro-builder
+docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder
 
 # Run live-build in privileged container and mount output directory
-docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" labkiosk-iso-builder
+docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akbhoi/labkiosk-iso-builder
 ```
 The output image `labkiosk-debian12-amd64.iso` and its SHA-256 checksum file are generated in `distro-builder/out/`.
+
+#### Building your own changes vs. pulling the published builder
+
+The builder image **contains the source**: its `Dockerfile` does `COPY . /build/`, rather than
+bind-mounting the tree, because Windows 9P/drvfs mounts break `mknod`. That makes the distinction
+below important.
+
+| Goal | Command |
+| :--- | :--- |
+| **Build the ISO from your working tree** (what you want while developing) | `docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder` first, as above |
+| **Reproduce the published ISO** exactly as CI builds it from `main` | `docker pull ghcr.io/akbhoi/labkiosk-iso-builder:latest`, then run it |
+
+A *pulled* builder produces an ISO from the source baked into that image at publish time — **not**
+from your local edits. Rebuild the image after every change to `distro-builder/`.
+
+> [!IMPORTANT]
+> **The container engine must be rootful.** `live-build` runs `debootstrap`, which creates device
+> nodes with `mknod` — and a *rootless* user namespace forbids that even under `--privileged`, so
+> the build fails partway through the chroot stage. Docker Desktop is rootful by default. If your
+> `docker` command is served by a podman machine, switch it once:
+> ```bash
+> podman machine stop && podman machine set --rootful && podman machine start
+> ```
+> Verify before starting a long build:
+> ```bash
+> docker run --rm --privileged debian:bookworm-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'
+> ```
+> Note that rootful and rootless keep **separate image stores**, so images you pulled before the
+> switch will not be listed afterwards. Reverse it any time with `podman machine set --rootful=false`.
+
+> [!NOTE]
+> Only `distro-builder/out/` is bind-mounted. The source is copied into the image by the
+> `Dockerfile` rather than mounted, because Windows 9P/drvfs bind mounts enforce `nodev`/`noexec`
+> and would break `mknod` inside the build.
 
 ### Method 2: Native Linux / WSL2
 On a Debian 12 (Bookworm) or Ubuntu 22.04+ host:
@@ -130,10 +201,25 @@ Copy the resulting output (format: `grub.pbkdf2.sha512.10000...`) into:
 ```ini
 PASSWORD_PBKDF2=grub.pbkdf2.sha512.10000.YOUR_GENERATED_HASH_HERE
 ```
-- The live build hook reads `grub.pin` and automatically configures `/etc/grub.d/40_custom` with password protection.
-- Default boot entries load automatically without prompting for a password.
-- Editing boot entries or entering the GRUB command shell requires administrative authentication.
-- If `grub.pin` is left empty, the build prints a warning and proceeds with an unlocked menu (suitable for testing in VMs, but unacceptable for production classrooms).
+
+**The workstation still boots completely unattended.** Every menu entry is marked
+`--unrestricted`, so powering on goes straight to the kiosk with no prompt; the password is asked
+for only when someone presses `e` to edit an entry or `c` for the GRUB shell.
+
+The hash is consumed in two independent places, because the live ISO and an installed disk use
+different bootloaders:
+
+| Target | Mechanism | Written by |
+| :--- | :--- | :--- |
+| **Live ISO, UEFI** | `config/bootloaders/grub-pc/labkiosk-password.cfg`, sourced by `config.cfg` | `auto/config`, at `lb config` time |
+| **Live ISO, legacy BIOS** | `ALLOWOPTIONS 0` + `NOESCAPE 1` in `config/bootloaders/*/stdmenu.cfg` — **no password needed**: syslinux discards any kernel argument the user types | static config |
+| **Installed disk** | `/etc/grub.d/01_labkiosk_password`, applied by `update-grub` | `02-security.hook.chroot` |
+
+- If `grub.pin` is left empty, the build prints a warning and proceeds with an editable UEFI menu
+  (fine for a VM bench test, unacceptable in a classroom). The BIOS protections apply either way,
+  since they need no secret.
+- If `PASSWORD_PBKDF2` is set but is not a `grub.pbkdf2.sha512.` value, the build **fails**
+  rather than shipping an image whose menu is unprotected in a way nobody noticed.
 
 ### 2. BIOS / UEFI Hardening
 After flashing the OS to the target workstation:

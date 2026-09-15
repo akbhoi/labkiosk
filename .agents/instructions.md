@@ -53,8 +53,7 @@ pnpm --prefix cloudflare-control run typecheck
 pnpm --prefix cloudflare-control test
 
 # 2. Client Distro & Installer Syntax
-python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
-python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \n  distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \n  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 ```
