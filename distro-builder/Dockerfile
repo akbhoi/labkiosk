@@ -1,14 +1,29 @@
-# Containerized Debian Kiosk Builder
-# Usage (from the repository root):
-#   docker build -t labkiosk-iso-builder distro-builder
-#   docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" labkiosk-iso-builder
+# ==============================================================================
+# Lab Kiosk ISO builder (ghcr.io/akbhoi/labkiosk-iso-builder)
 #
-# The ISO is written to /build/out inside the container, which is the path the
-# distro-builder/README.md and the release workflow both mount.
+# Usage (from the repository root):
+#   docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder
+#   docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" \
+#       ghcr.io/akbhoi/labkiosk-iso-builder
+#
+# The engine must be ROOTFUL: debootstrap creates device nodes with mknod, which
+# a rootless user namespace refuses even under --privileged.
+#
+# The source is COPYed in rather than bind-mounted, because Windows 9P/drvfs
+# mounts enforce nodev/noexec and break mknod. The consequence is that this
+# image must be REBUILT after any change under distro-builder/ -- running a
+# stale image silently builds an ISO from the source baked into it.
+# ==============================================================================
 FROM debian:bookworm-slim
+
+LABEL org.opencontainers.image.source="https://github.com/akbhoi/labkiosk" \
+      org.opencontainers.image.description="Debian 12 live-build environment that compiles the Lab Kiosk ISO." \
+      org.opencontainers.image.licenses="BUSL-1.1"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Installed before the source is copied, so editing the kiosk config does not
+# re-run apt on every rebuild.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     live-build \
     debootstrap \
@@ -26,8 +41,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
+
+# Name of the artifact written into /build/out; override with
+# `docker run -e ISO_NAME=...` if a build needs a different filename.
+ENV ISO_NAME=labkiosk-debian12-amd64.iso \
+    OUT_DIR=/build/out
+
+COPY --chmod=0755 docker-build.sh /usr/local/bin/docker-build.sh
 COPY . /build/
 
-RUN chmod +x /build/auto/* /build/build-iso.sh /build/config/hooks/live/*.hook.chroot /build/config/includes.chroot/usr/local/bin/* 2>/dev/null || true
-
-CMD ["/bin/bash", "-c", "set -e; mkdir -p /build/out; chmod +x auto/* build-iso.sh config/hooks/live/*.hook.chroot config/includes.chroot/usr/local/bin/* 2>/dev/null || true; lb clean --purge; lb config; lb build; cp live-image-amd64.hybrid.iso /build/out/labkiosk-debian12-amd64.iso; sha256sum /build/out/labkiosk-debian12-amd64.iso > /build/out/labkiosk-debian12-amd64.iso.sha256"]
+CMD ["/usr/local/bin/docker-build.sh"]
