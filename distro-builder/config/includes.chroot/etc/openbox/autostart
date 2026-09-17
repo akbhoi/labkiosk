@@ -34,17 +34,37 @@ if [ ! -f "$VNC_PASSWD_FILE" ]; then
   unset VNC_SECRET
 fi
 
+# -noclipboard: the VNC clipboard is bidirectional, so without it anything a
+#   student copies on the workstation is readable by whoever holds a session,
+#   and anything in the viewer's clipboard can be pasted into the kiosk.
+# -nocmd: disables x11vnc's own remote control channel, which is not used here.
+# The VNC protocol truncates passwords to 8 characters, so the secret below is
+# a low-entropy credential by construction -- the tunnel in front of it has to
+# carry the real authentication. See docs/REMOTE_CONTROL.md.
 x11vnc -display :0 -forever -shared -rfbport 5900 -localhost \
-  -rfbauth "$VNC_PASSWD_FILE" -quiet -bg
+  -rfbauth "$VNC_PASSWD_FILE" -noclipboard -nocmd -quiet -bg
 
 # 4. noVNC websockify gateway, bound to loopback for the tunnel to pick up.
 if [ -d "/usr/share/novnc" ]; then
   websockify --web=/usr/share/novnc/ 127.0.0.1:6080 localhost:5900 >/dev/null 2>&1 &
 fi
 
-# 5. Lab Kiosk telemetry & sync agent.
+# 5. Lab Kiosk telemetry & sync agent, under a supervisor.
 #    Logs go to /tmp (RAM) so nothing is written to the read-only rootfs.
-python3 /opt/labkiosk/agent/agent.py >/tmp/lab-agent.log 2>&1 &
+#
+#    The loop is the point. The agent is the only thing that reports telemetry,
+#    applies the teacher's lock curtain, syncs the Chromium allowlist and
+#    carries out remote commands. Started bare with `&`, a single crash left the
+#    workstation looking fine to the student and invisible to the teacher until
+#    someone physically power-cycled it. Restarting costs nothing: the agent is
+#    stateless apart from /etc/labkiosk/config.json, which it re-reads at start.
+(
+  while true; do
+    python3 /opt/labkiosk/agent/agent.py >>/tmp/lab-agent.log 2>&1
+    echo "[autostart] agent exited; restarting in 2s" >>/tmp/lab-agent.log
+    sleep 2
+  done
+) &
 
 # 6. Wait for the agent's local API, then open whatever it says the target is:
 #    the first-boot setup wizard when unconfigured, the school portal once

@@ -11,5 +11,38 @@ ExecStart=/usr/local/bin/cloudflared --config /etc/cloudflared/config.yml tunnel
 Restart=always
 RestartSec=5
 
+# Sandboxing. This process only makes an outbound connection to Cloudflare and
+# proxies it to a loopback HTTP port, so it needs none of the authority that
+# running as root would otherwise hand it. Everything below is a bound on the
+# blast radius if the tunnel binary is ever compromised, not a change to how it
+# works.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# The credentials file and ingress config are the only paths it reads, and it
+# writes nothing: ProtectSystem=strict already makes the rest of the tree
+# read-only, so no ReadWritePaths entry is needed.
+ReadOnlyPaths=/etc/cloudflared
+
 [Install]
 WantedBy=multi-user.target

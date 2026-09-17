@@ -27,8 +27,8 @@ EOF
 
 # 3. Boot straight into the kiosk with no menu delay.
 if [ -f /etc/default/grub ]; then
-    sed -i 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' /etc/default/grub || true
-    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash vt.global_cursor_default=0 consoleblank=0"/' /etc/default/grub || true
+    sed -i 's/GRUB_TIMEOUT=.*/GRUB_TIMEOUT=3/' /etc/default/grub || true
+    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="consoleblank=0"/' /etc/default/grub || true
 
     # Recovery mode is a root shell by design; it has no place on a kiosk.
     if grep -q '^#*GRUB_DISABLE_RECOVERY' /etc/default/grub; then
@@ -65,14 +65,21 @@ set superusers="labkiosk"
 password_pbkdf2 labkiosk $GRUB_PASSWORD_HASH
 EOF
     chmod 0755 /etc/grub.d/01_labkiosk_password
-
-    # Let the default entry boot unattended while still requiring the password
-    # to edit an entry or reach the GRUB command line.
-    if [ -f /etc/grub.d/10_linux ]; then
-        sed -i 's/^CLASS="\(.*\)"$/CLASS="\1 --unrestricted"/' /etc/grub.d/10_linux || true
-    fi
-
     update-grub 2>/dev/null || true
+fi
+
+# 5. Let every generated entry boot unattended.
+#
+#    This runs UNCONDITIONALLY, and must keep doing so. `--unrestricted` is a
+#    no-op while no superuser is configured, but the boot-menu password is now
+#    usually applied at *installation* time rather than at build time
+#    (labkiosk-install --grub-password-hash), so the image is normally built
+#    with no password at all. If this were still inside the branch above, such
+#    an image would gain `set superusers` on the installed disk without any
+#    entry being unrestricted -- and every workstation would then stop at a
+#    password prompt on every boot instead of coming up into the kiosk.
+if [ -f /etc/grub.d/10_linux ]; then
+    sed -i 's/^CLASS="\(.*\)"$/CLASS="\1 --unrestricted"/' /etc/grub.d/10_linux || true
 fi
 
 echo "[Hook] Hardening complete."

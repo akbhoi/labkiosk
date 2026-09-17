@@ -10,6 +10,9 @@
   "_permissions_comment": "The agent's API is a different origin from whatever page the student is on, so the fetch lives in the service worker (which host_permissions covers) rather than in the content script (whose fetches are subject to the page's CORS). That is what lets the agent refuse wildcard CORS.",
   "host_permissions": ["http://127.0.0.1:8888/*"],
 
+  "_storage_comment": "chrome.storage.session holds the active broadcast epoch and URL. These used to live in the visited page's own sessionStorage, where that page's scripts could rewrite them to sit out a teacher's broadcast or re-enable Back at the broadcast root. Extension storage is in the extension's partition, so page script cannot reach it, and 'session' keeps the per-boot lifetime the kiosk wants.",
+  "permissions": ["storage"],
+
   "background": {
     "service_worker": "background.js"
   },

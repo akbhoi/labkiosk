@@ -34,12 +34,21 @@ Lab Kiosk enables teachers to take interactive control of student thin clients d
    - Both `x11vnc` (`localhost:5900`) and `websockify` (`127.0.0.1:6080`) are bound strictly to the loopback interface on production kiosk images.
    - Workstations **never** expose VNC or web sockets on the local area network (`0.0.0.0`), preventing student-to-student snooping or unauthorized LAN traversal.
 2. **Ephemeral Per-Boot Passwords:**
-   - At every system startup, `/etc/openbox/autostart` generates a cryptographically random, temporary VNC password:
+   - At every system startup, `/etc/openbox/autostart` generates a random, temporary VNC password:
      ```bash
-     head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 12
+     head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-8
      ```
    - Saved in RAM to `/tmp/labkiosk/vnc.secret` (permissions `0600`, owned by unprivileged `kiosk` user).
    - Passwords are never written to permanent disk and vanish upon power-off or reboot.
+   - The session runs with `-noclipboard -nocmd`: without the first, the VNC clipboard is
+     bidirectional and everything a student copies is readable by whoever holds a session.
+
+   > [!IMPORTANT]
+   > **Eight characters is the ceiling, not a choice.** The RFB protocol truncates passwords to
+   > 8 characters, so this secret is ~32 bits however it is generated — lengthening it changes
+   > nothing, because the extra characters are discarded before they reach the wire. It is a
+   > guard against an accidental connection, **not** against someone who wants in. The
+   > authentication that matters has to sit at the tunnel edge; see the next section.
 3. **Authenticated Out-of-Band Key Exchange:**
    - The workstation's Python agent reads `/tmp/labkiosk/vnc.secret` and transmits it alongside the tunnel hostname over the HTTPS telemetry channel (`POST /api/telemetry`).
    - The request is authenticated with the workstation's private device bearer token.
@@ -52,14 +61,32 @@ Lab Kiosk enables teachers to take interactive control of student thin clients d
 
 ## 🔧 Workstation Tunnel Provisioning
 
-Because Lab Kiosk runs as an immutable live system copied into RAM (`toram`), individual workstation tunnel credentials cannot be baked into a generic base ISO.
+Because Lab Kiosk runs as an immutable system whose writes all land in a RAM overlay (`overlayroot="tmpfs"`), individual workstation tunnel credentials cannot be baked into a generic base ISO.
 
 ### 1. Tunnel Prerequisites
 - A Cloudflare Zero Trust account with Cloudflare Tunnels enabled.
 - A public domain or subdomain (e.g. `*.labkiosk.institution.edu`).
 - The `cloudflared` binary pinned in the build (see `distro-builder/config/includes.chroot/usr/share/labkiosk/cloudflared.pin`).
 
-### 2. Workstation Configuration File
+### 2. Cloudflare Access Is Mandatory, Not Optional
+
+`websockify` serves the complete noVNC web UI on the tunnel hostname, so `https://pc-01.<domain>`
+is a public, internet-reachable remote-control endpoint for a classroom machine. The only thing
+between the open internet and a student's live desktop is the 8-character RFB secret above.
+
+**Put a Cloudflare Access policy in front of every workstation hostname before the first tunnel
+goes live.** In Cloudflare Zero Trust, add a self-hosted application covering
+`*.labkiosk.<your-domain>` and scope the policy to your teaching staff's identity provider group
+or e-mail domain. Cloudflare then authenticates the teacher at the edge and the tunnel never
+carries an unauthenticated request. Without it, the RFB secret is the entire access control
+story, and it is not strong enough to be one.
+
+The `cloudflared-kiosk.service` unit is sandboxed (`NoNewPrivileges`, `ProtectSystem=strict`,
+an empty `CapabilityBoundingSet`, and a `@system-service` syscall filter) to bound what a
+compromise of the tunnel binary could reach. That is containment, not authentication — it is not
+a substitute for the Access policy.
+
+### 3. Workstation Configuration File
 On the client, the `cloudflared-kiosk.service` automatically starts when `/etc/cloudflared/config.yml` is present:
 
 ```yaml
@@ -74,7 +101,7 @@ ingress:
 
 The Python agent inspects `/etc/cloudflared/config.yml`, parses the first `hostname:` under `ingress:`, and reports `pc-01.labkiosk.institution.edu` as its `remoteHost` in telemetry heartbeats.
 
-### 3. Provisioning Strategies for Production Labs
+### 4. Provisioning Strategies for Production Labs
 Since the live image boots from a read-only USB or network boot target:
 - **Strategy A: Per-Lab Site Overlay:** Build a site-specific ISO or USB drive with `/etc/cloudflared/` pre-populated for that lab's machines.
 - **Strategy B: Persistence Partition:** Create a second, small ext4 partition on the bootable USB drive labeled `labkiosk-data` to persist `/etc/cloudflared/`.

@@ -1,0 +1,24 @@
+label live-@FLAVOUR@
+	menu label ^Start Lab Kiosk OS (Live Session)
+	menu default
+	linux @LINUX@
+	initrd @INITRD@
+	append @APPEND_LIVE@
+
+label live-install
+	menu label Install Lab Kiosk to Hard Disk / SSD
+	linux @LINUX@
+	initrd @INITRD@
+	append @APPEND_LIVE@ labkiosk.mode=install
+
+label live-@FLAVOUR@-failsafe
+	menu label Lab Kiosk OS (Safe Graphics Fallback)
+	linux @LINUX@
+	initrd @INITRD@
+	append boot=live components nomodeset xforcevesa vga=791 overlayroot=tmpfs username=kiosk
+
+label live-toram
+	menu label Lab Kiosk OS (Load into RAM - toram)
+	linux @LINUX@
+	initrd @INITRD@
+	append @APPEND_LIVE@ toram

@@ -14,9 +14,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+  images:
+    name: Container Images Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Both images are published from main by docker-publish.yml. Building them
+    # here as well means a broken Dockerfile fails on the pull request rather
+    # than after merge, and the gha cache scopes are shared with that workflow
+    # so the expensive apt layers are downloaded once across both.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: labkiosk
+            context: .
+            file: Dockerfile
+          - name: labkiosk-iso-builder
+            context: distro-builder
+            file: distro-builder/Dockerfile
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.name }} (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
   worker:
     name: Cloudflare Worker Typecheck & Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Repository
@@ -46,6 +83,7 @@ jobs:
   client:
     name: Kiosk Client Checks (agent, extension, image scripts)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Repository
@@ -59,8 +97,19 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
 
-      - name: Python agent compiles
-        run: python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
+      # PYTHONPYCACHEPREFIX keeps __pycache__ out of config/includes.chroot.
+      # live-build copies that tree verbatim into the ISO, so bytecode left here
+      # by a syntax check would be shipped inside the image -- built for the
+      # runner's interpreter, not the Debian 12 one that would load it.
+      - name: Python agent and installer compile
+        run: |
+          PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m py_compile \
+            distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
+            distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+          if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
+            echo "::error::__pycache__ was written into the image overlay"
+            exit 1
+          fi
 
       - name: Extension scripts parse
         run: |
@@ -74,11 +123,83 @@ jobs:
           for path in (
               "distro-builder/config/includes.chroot/opt/labkiosk/extension/manifest.json",
               "distro-builder/config/includes.chroot/etc/chromium/policies/managed/policies.json",
+              "distro-builder/config/includes.chroot/usr/share/labkiosk/chromium-policy-base.json",
           ):
               with open(path, encoding="utf-8") as handle:
                   json.load(handle)
               print("ok", path)
           EOF
+
+      # The static Chromium policy is declared once, in chromium-policy-base.json.
+      # policies.json is generated from it and committed because the Docker
+      # simulator copies that directory directly. This fails if they drift.
+      - name: Chromium policy is in step with its base
+        run: python3 distro-builder/tools/generate-chromium-policy.py --check
+
+      # Every file below is copied into a Debian rootfs and executed there. A
+      # CRLF line ending makes a shell hook die with "$'\r': command not found"
+      # and a Python shebang fail to resolve, and Windows checkouts default to
+      # core.autocrlf=true -- so this is checked rather than assumed.
+      - name: Image scripts use LF line endings
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys
+          roots = [pathlib.Path("distro-builder/config"), pathlib.Path("distro-builder/auto"),
+                   pathlib.Path("docker-test")]
+          skip = {"chroot", "cache", ".build", "out", "local"}
+          bad = []
+          for root in roots:
+              for p in root.rglob("*"):
+                  if not p.is_file() or any(part in skip for part in p.parts):
+                      continue
+                  if p.suffix.lower() in {".png", ".jpg", ".pf2"}:
+                      continue
+                  data = p.read_bytes()
+                  if b"\x00" not in data[:8192] and b"\r\n" in data:
+                      bad.append(str(p))
+          if bad:
+              print("::error::CRLF line endings in files that run inside the image:")
+              for b in bad:
+                  print("  " + b)
+              sys.exit(1)
+          print("ok: all image scripts are LF")
+          EOF
+
+      # shellcheck validates the shell, but a hook that pipes a heredoc into
+      # python3 hides a whole second language from it. A mangled escape in one
+      # of those blocks is a SyntaxError that surfaces ten minutes into an ISO
+      # build, in the chroot stage, and nowhere earlier.
+      - name: Embedded python blocks in hooks parse
+        run: |
+          python3 - <<'EOF'
+          import ast, pathlib, re, sys
+
+          pattern = re.compile(r"<<'(\w+)'\n(.*?)\n\1$", re.DOTALL | re.MULTILINE)
+          checked = failed = 0
+          for hook in sorted(pathlib.Path("distro-builder/config/hooks/live").glob("*.hook.chroot")):
+              if not hook.is_file():
+                  continue
+              text = hook.read_text(encoding="utf-8")
+              for marker, body in pattern.findall(text):
+                  # Only the blocks that are actually fed to python3.
+                  if f"python3 - " not in text.split(f"<<'{marker}'")[0].rsplit("\n", 1)[-1]:
+                      continue
+                  checked += 1
+                  try:
+                      ast.parse(body)
+                      print(f"ok: {hook} <<{marker}>>")
+                  except SyntaxError as err:
+                      failed += 1
+                      print(f"::error file={hook}::embedded python <<{marker}>> is invalid: {err}")
+          if failed:
+              sys.exit(1)
+          print(f"{checked} embedded python block(s) parsed")
+          EOF
+
+      - name: docker-compose.yml is valid
+        run: |
+          docker compose config --quiet
+          echo "ok - docker-compose.yml parses"
 
       - name: Shell scripts pass shellcheck
         run: |
@@ -87,4 +208,8 @@ jobs:
             distro-builder/build-iso.sh \
             distro-builder/config/hooks/live/01-lockdown.hook.chroot \
             distro-builder/config/hooks/live/02-security.hook.chroot \
+            distro-builder/auto/config \
+            distro-builder/auto/build \
+            distro-builder/auto/clean \
+            distro-builder/docker-build.sh \
             docker-test/entrypoint.sh

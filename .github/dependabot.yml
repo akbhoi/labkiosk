@@ -14,15 +14,26 @@ updates:
           - "typescript"
           - "tsx"
           - "@types/*"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # These move together and are always reviewed together.
+      docker-actions:
+        patterns:
+          - "docker/*"
+
+  # The two Dockerfiles that are actually built and published. The root one was
+  # previously unwatched -- the only Docker entry pointed at /docker-test, whose
+  # Dockerfile was an unused duplicate and has been removed.
   - package-ecosystem: docker
-    directory: /distro-builder
+    directory: /
     schedule:
       interval: monthly
+
   - package-ecosystem: docker
-    directory: /docker-test
+    directory: /distro-builder
     schedule:
       interval: monthly
