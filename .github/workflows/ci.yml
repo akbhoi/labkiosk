@@ -165,6 +165,43 @@ jobs:
           print("ok: all image scripts are LF")
           EOF
 
+      # overlayroot reads exactly two variables from /etc/overlayroot.conf --
+      # "overlayroot" and "overlayroot_cfgdisk". An overlayroot_options= line is
+      # read by nothing, and the recurse default of 1 then overlays EVERY fstab
+      # entry with a RAM upper layer, LABKIOSK_DATA included: the workstation
+      # enrols, looks fine, and forgets everything at the next power-off.
+      - name: overlayroot keeps recurse=0 inside its value
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys
+
+          targets = [
+              "distro-builder/config/includes.chroot/etc/overlayroot.conf",
+              "distro-builder/auto/config",
+              "distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install",
+          ] + [str(p) for p in pathlib.Path("distro-builder/config/bootloaders").rglob("*")
+               if p.is_file() and p.suffix not in {".png", ".jpg", ".pf2"}]
+
+          bad = []
+          for name in targets:
+              path = pathlib.Path(name)
+              if not path.is_file():
+                  continue
+              for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                  if line.lstrip().startswith("#"):
+                      continue
+                  if "overlayroot_options" in line:
+                      bad.append(f"{name}:{number}: overlayroot_options is read by nothing")
+                  if "overlayroot=" in line and "recurse=0" not in line:
+                      bad.append(f"{name}:{number}: overlayroot= without recurse=0")
+          if bad:
+              print("::error::overlayroot would overlay the data partition with RAM:")
+              for item in bad:
+                  print("  " + item)
+              sys.exit(1)
+          print("ok: every overlayroot setting carries recurse=0")
+          EOF
+
       # shellcheck validates the shell, but a hook that pipes a heredoc into
       # python3 hides a whole second language from it. A mangled escape in one
       # of those blocks is a SyntaxError that surfaces ten minutes into an ISO
