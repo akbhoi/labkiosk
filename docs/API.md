@@ -481,6 +481,26 @@ on live media, which keeps nothing by design.
   }
   ```
 
+#### `GET /api/localization/options`
+Everything the Language & Region step offers, read from the workstation's own tables: continents
+and zones from tzdata's `zone1970.tab`, countries from `iso3166.tab`, locales from
+`/usr/share/i18n/SUPPORTED`, keyboard layouts from the X11 rules list. Also returns `uiLanguages`
+(the interface catalogs present), `current` (what is in force) and `saved`
+(`/etc/labkiosk/localization.json`).
+
+#### `POST /api/localization/configure`
+Applies language, region, timezone, keyboard and clock. Body:
+`{ uiLanguage, timezone, locale, keymap, keymapVariant, syncTime, time }`. `time` is
+`YYYY-MM-DD HH:MM:SS` and is used only when `syncTime` is false — which is the point of the step,
+since NTP is unreachable until the network exists. Gated by the administrator token once the
+workstation is installed, exactly like `/api/network/configure`. Every value is re-validated by
+`/usr/local/sbin/labkiosk-localization`, which is the only program the agent runs through sudo.
+
+#### `GET /i18n/<tag>.json`
+An interface catalog. `en-US` ships in the image; other languages are files placed in
+`/etc/labkiosk/i18n` on the data partition. The tag is matched against a pattern before it becomes
+a path, and an unknown one returns `404`.
+
 #### `GET /api/network/status`
 Returns complete network addressing, active route, DNS, and proxy status.
 - **Response `200 OK`:**

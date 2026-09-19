@@ -76,6 +76,24 @@ This skill guides AI coding assistants through modifying, building, debugging, a
    PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
    ```
 
+### B1. Language & Region (`labkiosk-localization`)
+1. File: `distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization`, the only
+   program the agent may run through `sudo` (`/etc/sudoers.d/51-labkiosk-localization`).
+2. **Re-validate everything**: timezone against `/usr/share/zoneinfo` *and* tzdata's zone table,
+   locale against `/usr/share/i18n/SUPPORTED`, keyboard layout against the X11 rules list, clock
+   against a plausible year range. The agent is not a trust boundary.
+3. `--list-options` is read-only and needs no privileges; the agent calls it directly to build the
+   wizard's menus. `--root <dir>` applies to an installer target instead of the running system.
+4. Three spellings of a locale exist — `en_IN`, `en_IN.UTF-8` and `en_IN.utf8` — and
+   `canonical_locale()`/`locale_key()` normalise them. Compare with those, never with `==`.
+5. `timedatectl`, `localectl`, `hwclock` and `setxkbmap` are all optional in practice (absent in
+   the simulator, absent in a target root, or present with no X session). A missing one must read
+   as "declined", never as a crash: that is what `run(..., check=False)` is for.
+6. Syntax check:
+   ```bash
+   PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+   ```
+
 ### B2. Timezone
 `Asia/Kolkata` (IST), and it has to be set in **two** places or the live session and the installed
 disk will disagree: `/etc/localtime` + `/etc/timezone` in `01-lockdown.hook.chroot` (what an

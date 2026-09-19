@@ -97,7 +97,10 @@ distro-builder/
   there, so a regression shows up as `persistentStorage: false` instead of silent data loss.
 
 ### Rule 1d: The Timezone Is Set Twice, On Purpose
-- Everything runs on **`Asia/Kolkata` (IST)**: the live session, an installed workstation, the
+- **`Asia/Kolkata` (IST) is the build default, not the only answer.** The wizard's Language &
+  Region step is what a school actually uses, and it writes the chosen zone at installation time;
+  the build default is only what an unconfigured image comes up with.
+- Everything runs on that default until then: the live session, an installed workstation, the
   workstation simulator and the ISO builder image.
 - An installed disk takes it from `/etc/localtime` and `/etc/timezone` as built, written by
   `01-lockdown.hook.chroot` — live-config never runs there, because the installed system boots
@@ -135,6 +138,38 @@ distro-builder/
   case `live-tools` skips: a USB stick, which it refuses to eject because that needs a cold reboot.
   Both scripts exit immediately unless `boot=live` is on the command line, so a teacher's remote
   reboot of an installed workstation never waits for a keypress.
+
+### Rule 1e: Language & Region Comes Before the Network, and Owns One Privileged Program
+- The wizard's **first** step is Language & Region, ahead of the network on purpose: NTP is only
+  reachable once the network exists, so a workstation installed in a school with no DHCP would
+  otherwise spend its first session at the wrong date — and TLS, enrolment and every lesson site
+  care about that. The step therefore also offers the clock by hand.
+- **Nothing in that step is a list this project maintains.** Continents, countries and zones come
+  from tzdata's own `zone1970.tab` and `iso3166.tab`, locales from `/usr/share/i18n/SUPPORTED`
+  (the `locales` package, ~21 MB), keyboard layouts from the X11 rules list. A hardcoded country
+  list would be wrong by the next tzdata update.
+- Setting a timezone, generating a locale and writing `/etc/default/keyboard` need root, and the
+  agent does not run as root. `/usr/local/sbin/labkiosk-localization` is the only program it may
+  run through sudo, and **it re-validates every argument against those same tables** — the caller
+  is not a trust boundary, exactly as with `labkiosk-install`.
+- The same program applies settings to a *target* root with `--root`, which is how the installer
+  carries the choice onto the disk: `/etc/localtime`, `/etc/default/locale` and
+  `/etc/default/keyboard` live on the root filesystem, not on `LABKIOSK_DATA`. Generating the
+  locale there too keeps it off the RAM overlay, where it would be rebuilt at every boot.
+- The choice itself is persisted in `/etc/labkiosk/localization.json`, and `apply_saved_localization()`
+  re-applies it at every agent start.
+
+### Rule 1f: Interface Text Is Translatable, and English Is in the Markup
+- Every user-visible string in `wizard.html` and in the kiosk top bar carries `data-i18n="<key>"`
+  **and its English text**. The runtime replaces the text only where a catalog has that key, so a
+  missing, partial or broken catalog degrades to English rather than to blank buttons.
+- `en-US` ships in the image at `/opt/labkiosk/i18n/en-US.json` and is the source. Other languages
+  are `<tag>.json` files dropped into `/etc/labkiosk/i18n` on the data partition — no new ISO
+  needed. The agent serves them from `GET /i18n/<tag>.json`, matching the tag against a pattern
+  before it ever becomes a path.
+- The catalog is applied with `textContent`, never `innerHTML`: a translation is data, and a school
+  that pastes one in must not be able to inject markup into the wizard.
+- `_meta.direction: "rtl"` flips the wizard and the bar for right-to-left languages.
 
 ### Rule 2: Universal Dual Bootloader Compatibility (BIOS + UEFI)
 - Workstations in school environments range from legacy BIOS machines to modern UEFI-only hardware (e.g. Hyper-V Gen 2, modern laptops/NUCs).
@@ -328,6 +363,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 | **Kiosk nav bar and lock curtain vanish** | Blanket extension block `ExtensionInstallBlocklist: ["*"]` prevents loading unpacked extensions. | Do not add blanket extension blocks. Chromium is already locked down via `--kiosk`, blocked `chrome://`, and wiped user profile. |
 | **Freshly enrolled kiosk shows "This page is blocked"** | Chromium reads its managed policy once at startup. | Agent sets `pendingBrowserRestart` and restarts the browser after the next policy sync. |
 | **A shell hook dies with `$'\r': command not found`** | The file was checked out or written with CRLF line endings. Windows git defaults to `core.autocrlf=true`, and Python's `Path.write_text` translates newlines on Windows. | `.gitattributes` pins every build and image file to `eol=lf`. Never write these files with a tool that rewrites newlines. |
+| **The Language & Region step is missing, or its lists are empty** | The `locales` package or tzdata's tables are absent, so `labkiosk-localization --list-options` has nothing to report. The wizard hides the step rather than showing empty menus. | Keep `locales`, `tzdata` and `xkb-data` in `kiosk.list.chroot` (and in the simulator's Dockerfile, which is where the step gets exercised). |
 | **An enrolment is accepted and then forgotten at the next reboot, with no error anywhere** | `/etc/overlayroot.conf` set `overlayroot_options="recurse=0"`, a variable overlayroot never reads. At its default `recurse=1` it overlays every fstab entry, so `/etc/labkiosk` was an overlay on RAM rather than the data partition — mounted, writable, and empty again after a reboot. | `overlayroot="tmpfs:recurse=0"` (see Rule 1a), in the image, in what the installer writes, and on every boot command line. |
 | **Enrolment on an installed workstation is forgotten after a reboot** | `overlayroot="tmpfs"` sends every write to a RAM overlay, `/etc/labkiosk/config.json` included, unless the `LABKIOSK_DATA` partition is mounted there. The `nofail` fstab entry is not ordered before `local-fs.target`, so a boot-time helper that simply `mkdir -p`s the path turns a loud failure into silent data loss. | The installer creates and mounts the partition; `labkiosk-data-permissions` mounts it if the boot has not yet, and refuses to fabricate a directory when it cannot. The agent reports `persistentStorage: false` and the wizard warns before and after enrolling. On an image built before the partition existed, enrol from the live session *before* installing. |
 | **Installer offers the USB it booted from** | `--list-disks` recorded the `removable` flag but never filtered on it. | `live_medium_disks()` excludes the backing disk of `/run/live/medium`, both when listing and again immediately before `wipefs`. |

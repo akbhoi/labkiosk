@@ -419,6 +419,9 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | :--- | :--- | :--- |
 | `/setup` | `GET` | Serves `wizard.html`. Returns `403` once the workstation is enrolled unless accessed via `#network` with admin authentication. |
 | `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
+| `/api/localization/options` | `GET` | Continents, countries, timezones, locales, keyboard layouts and interface catalogs, all read from the workstation's own tzdata, locale and X11 tables. |
+| `/api/localization/configure` | `POST` | Applies language, region, timezone, keyboard and (when `syncTime` is false) the clock by hand. Administrator token required once installed. |
+| `/i18n/<tag>.json` | `GET` | An interface catalog. `en-US` is bundled; others come from `/etc/labkiosk/i18n`. |
 | `/api/network/status` | `GET` | Comprehensive network status: active device, IPv4/IPv6 addresses, gateway, DNS, proxy, interfaces, and connectivity check. |
 | `/api/network/interfaces` | `GET` | List of hardware interfaces with device name, type (`ethernet` / `wifi`), state, and physical carrier link status. |
 | `/api/network/wifi/scan` | `GET` | Live Wi-Fi scan results: SSID, BSSID, signal strength (0-100), channel, security mode, and encrypted flag. |

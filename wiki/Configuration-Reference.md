@@ -141,6 +141,40 @@ every boot by live-config's `0070-tzdata`, which falls back to `Etc/UTC` unless 
 line carries `timezone=Asia/Kolkata` — so both boot menus and both `--bootappend-*` lines set it.
 `systemd-timesyncd` keeps the clock itself in step.
 
+### `/etc/labkiosk/localization.json`
+
+```json
+{
+  "timezone": "Asia/Kolkata",
+  "locale": "en_IN.UTF-8",
+  "uiLanguage": "en-US",
+  "keymap": "in",
+  "keymapVariant": "",
+  "syncTime": true
+}
+```
+
+Written by the wizard's **Language & Region** step, which runs before the network because NTP is
+not reachable yet. It lives on `LABKIOSK_DATA`, the installer carries it onto the target disk, and
+the agent re-applies it at every start.
+
+### `/etc/labkiosk/i18n/<tag>.json` — interface catalogs
+
+`en-US` ships in the image at `/opt/labkiosk/i18n/en-US.json` and is the source language. To add
+another, copy it, translate the values and place it here:
+
+```json
+{
+  "_meta": { "name": "हिन्दी", "direction": "ltr" },
+  "ui.workstation-enrollment-key": "…",
+  "bar.home": "…"
+}
+```
+
+Keys that are missing or empty fall back to the English already in the page, so a partial
+translation is safe to ship. `_meta.direction: "rtl"` flips the layout. Values are inserted as
+text, never as markup.
+
 ### `/etc/polkit-1/rules.d/50-labkiosk-network.rules`
 
 ```javascript
