@@ -30,11 +30,14 @@ The installer writes a **hybrid GPT** layout so one disk image boots on legacy B
 
 ### Why partition 4 exists
 
-`overlayroot="tmpfs"` is configured on the installed drive too, so every write on a running workstation lands in RAM and is discarded at power-off. That is the point — but it also means a workstation enrolled *after* installation would forget its device token on the next reboot.
+`overlayroot="tmpfs"` is configured on the installed drive too, so every write on a running workstation lands in RAM and is discarded at power-off. That is the point — but it also means a workstation enrolled *after* installation would forget its device token on the next reboot, and any configured Wi-Fi credentials or static IP settings would be lost.
 
-`LABKIOSK_DATA` is the single deliberate exception. It holds `/etc/labkiosk/config.json` and nothing else. Everything else on an installed machine, `/etc/machine-id` included, is regenerated every boot.
+`LABKIOSK_DATA` is the single deliberate exception. It holds:
+1. `/etc/labkiosk/config.json` — device bearer token, client ID, and worker URL.
+2. `/etc/labkiosk/proxy.json` — institutional proxy settings.
+3. `/etc/labkiosk/system-connections/` — NetworkManager connection profiles, bind-mounted to `/etc/NetworkManager/system-connections` on boot.
 
-> On an image built before this partition existed, enrol from the **live session before installing**, so the token is copied across with the rootfs.
+Everything else on an installed machine, `/etc/machine-id` and browser cache included, is regenerated or reset on every boot.
 
 ### Negative parted offsets need `--`
 
@@ -62,11 +65,13 @@ Removable drives are **not** hidden, because internal eMMC on some thin clients 
  5. mount ONLY part_root at /mnt/target_kiosk
  6. rsync the live rootfs across        <-- no --delete, no submounts
  7. mount part_esp at /mnt/target_kiosk/boot/efi   <-- only now
- 8. truncate /etc/machine-id to a genuinely empty file
- 9. write /etc/fstab, /etc/overlayroot.conf, /etc/labkiosk-installed
-10. write /etc/grub.d/01_labkiosk_password if a hash was supplied
-11. grub-install x86_64-efi, then x86_64-efi --removable, then i386-pc
-12. update-grub
+ 8. copy /etc/NetworkManager/system-connections to /mnt/target_kiosk/etc/labkiosk/system-connections/
+ 9. (proxy.json travels with /etc/labkiosk; /etc/environment is left untouched)
+10. truncate /etc/machine-id to a genuinely empty file
+11. write /etc/fstab (including bind mount for system-connections), /etc/overlayroot.conf, /etc/labkiosk-installed
+12. write /etc/grub.d/01_labkiosk_password if a hash was supplied
+13. grub-install x86_64-efi, then x86_64-efi --removable, then i386-pc
+14. update-grub
 ```
 
 ### Step 5–7: the mount sequencing rule

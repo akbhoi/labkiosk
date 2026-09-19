@@ -107,6 +107,52 @@ Rotating the enrollment key does **not** affect enrolled workstations — they h
 
 Written at enrolment. On live media it lives in the RAM overlay and is lost at power-off; on an installed disk, `/etc/labkiosk` is a mount point for the `LABKIOSK_DATA` partition, which is what makes enrolment persist.
 
+### `/etc/labkiosk/proxy.json` — mode `0644`
+
+```json
+{
+  "enabled": true,
+  "host": "proxy.school.internal",
+  "port": 8080,
+  "bypass": "localhost, 127.0.0.1, *.school.internal"
+}
+```
+
+Configured in Step 1 of the setup wizard or via `POST /api/network/configure`. Applied to the agent's own environment (`http_proxy`, `https_proxy`, `no_proxy`) and merged into Chromium managed policies as `ProxySettings` (`ProxyMode: "fixed_servers"`). Nothing is written to `/etc/environment`.
+
+### `/etc/labkiosk/system-connections/` — mode `0700`
+
+Contains NetworkManager connection keyfiles (`mode 0600`, owned by `root:root`).
+On installed disks, this directory is hosted on the persistent `LABKIOSK_DATA` partition and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab`:
+```text
+/etc/labkiosk/system-connections /etc/NetworkManager/system-connections none bind,nofail 0 0
+```
+This guarantees Wi-Fi credentials and static IP configurations persist across `overlayroot="tmpfs"` reboots.
+
+### `/etc/localtime` and `/etc/timezone`
+
+```text
+Asia/Kolkata
+```
+
+IST on the live session, on installed workstations, in the simulator container and in the ISO
+builder image. An installed disk keeps what the build wrote; a **live** session is re-configured on
+every boot by live-config's `0070-tzdata`, which falls back to `Etc/UTC` unless the kernel command
+line carries `timezone=Asia/Kolkata` — so both boot menus and both `--bootappend-*` lines set it.
+`systemd-timesyncd` keeps the clock itself in step.
+
+### `/etc/polkit-1/rules.d/50-labkiosk-network.rules`
+
+```javascript
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 && subject.user === "kiosk") {
+        return polkit.Result.YES;
+    }
+});
+```
+
+Permits the unprivileged `kiosk` user to control NetworkManager and create/modify network connections via `nmcli` without sudo or password prompts.
+
 ### Agent environment overrides
 
 | Variable | Purpose |
@@ -129,9 +175,14 @@ Written at enrolment. On live media it lives in the RAM overlay and is lost at p
 ### `/etc/overlayroot.conf`
 
 ```ini
-overlayroot="tmpfs"
-overlayroot_options="recurse=0"
+overlayroot="tmpfs:recurse=0"
 ```
+
+`recurse=0` has to be part of the value. overlayroot reads only the `overlayroot` and
+`overlayroot_cfgdisk` variables from this file, so a separate `overlayroot_options=` line
+does nothing and leaves `recurse` at its default of `1` — which overlays **every** fstab
+entry with a RAM upper layer, `LABKIOSK_DATA` included, and quietly loses every enrolment
+at reboot.
 
 Changing this defeats the project's core guarantee. Do not.
 
@@ -196,7 +247,7 @@ Sets the kernel command line, `--bootappend-live`, distribution, and package lis
 | :--- | :--- |
 | `WORKER_URL` | `http://host.docker.internal:8787` |
 | `LABKIOSK_DOMAIN` | `labkiosk.akbhoi.com` |
-| `VNC_PASSWORD` | `labkiosk` |
+| `VNC_PASSWORD` | random per container |
 | `LABKIOSK_REMOTE_HOST` | *(empty)* |
 
 ---

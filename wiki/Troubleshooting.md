@@ -77,6 +77,11 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 | Symptom | Root cause | Fix |
 | :--- | :--- | :--- |
 | noVNC asks for a password | No heartbeat since boot, or `/tmp/labkiosk/vnc.secret` missing | Confirm enrolment; wait one telemetry cycle |
+| "Enrolment failed unexpectedly" in the wizard | The agent hit an error that is not a network or input problem — most often it could not write `/etc/labkiosk/config.json` | The message now names the exception, and the wizard opens **Agent Log & Diagnostics** by itself. Read it before rebooting: the log is in RAM |
+| Need the agent log on a real workstation | It has no terminal, and `file://` is blocked | Setup wizard → **Agent Log & Diagnostics** (administrator password once installed) |
+| The school address and enrollment key are gone after a reboot, and the wizard shows no warning | `/etc/labkiosk` was an **overlay** on RAM rather than the data partition: `overlayroot` was configured with an `overlayroot_options=` line it never reads, so it defaulted to `recurse=1` and overlaid every fstab entry. It is mounted and writable, which is why nothing complained | Reinstall from an ISO built with `overlayroot="tmpfs:recurse=0"`. The agent now reports the filesystem type, so this state shows up as `persistentStorage: false` and an amber warning |
+| The school address and enrollment key are gone after a reboot | `/etc/labkiosk` is a directory in the RAM overlay rather than the `LABKIOSK_DATA` partition, so the enrolment was never on disk. The wizard now says so in amber before you type anything, and `persistentStorage` in `GET /api/status` reports it | Reinstall from a current ISO. The boot-time repair mounts the partition when the boot has not, and refuses to fabricate a directory that would lose the next enrolment too |
+| `PermissionError: [Errno 13] ... /etc/labkiosk/config.json.tmp` when enrolling | The data partition at `/etc/labkiosk` is owned by root, so the unprivileged agent cannot write there. Disks written by an older installer show this | Reinstall from a current ISO: the installer verifies the kiosk user can write to the partition, and `labkiosk-data-permissions.service` corrects the ownership at every boot. The error text names the owner, mode and the agent's uid |
 | "Failed to connect to server" | Tunnel not running, or DNS not pointing at Cloudflare | `systemctl status cloudflared-kiosk`; confirm `/etc/cloudflared/config.yml` |
 | **Remote Control** disabled | No `remote_host` reported and no `TUNNEL_DOMAIN` set | Set `TUNNEL_DOMAIN` in the dashboard, or provision a tunnel |
 | Black or sluggish remote screen | Bandwidth or thin-client CPU | Check hardware acceleration in firmware; noVNC adapts to latency |
@@ -101,7 +106,9 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 
 | Symptom | Root cause | Fix |
 | :--- | :--- | :--- |
-| `Running as root without --no-sandbox is not supported` | Container processes run as root | `--no-sandbox` belongs **only** in `docker-test/entrypoint.sh`, never in the real image |
+| `Running as root without --no-sandbox is not supported` | The container was started as root instead of as its `kiosk` user | Run it the documented way (`docker compose up`); the entrypoint falls back to `--no-sandbox` only for uid 0, and never in the real image |
+| `Check failed: sys_chroot("/proc/self/fdinfo/")`, black screen in the simulator | The container lacks `SYS_CHROOT`, which Chromium's sandbox needs | Keep `cap_add: [SYS_CHROOT]` from `docker-compose.yml` |
+| `chrome_crashpad_handler: --database is required`, black screen | `$HOME` is not writable (read-only root filesystem) | The entrypoint moves the browser's home to `/tmp`; check that `/tmp` is a writable tmpfs |
 | Your agent or extension edits do nothing | A pulled image runs `main`'s baked-in client source | `docker compose up -d --build`, or `docker cp` the files in |
 | Extension changes do not appear after a restart | MV3 extensions are parsed at browser launch | Restart Chromium, not the agent |
 | Cannot reach the wizard from the host browser | The agent's API is loopback-only, by design | Drive it from the noVNC screen |

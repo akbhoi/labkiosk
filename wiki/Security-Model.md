@@ -126,7 +126,7 @@ Missing configuration is an error, never a reason to fall back to something weak
 
 ### The loopback boundary
 
-The agent binds **only** to `127.0.0.1:8888` and every request must satisfy both a loopback `Host` check and a loopback `Origin` check.
+The agent binds **only** to `127.0.0.1:8888` and every request must satisfy both a loopback `Host` check and a loopback `Origin` check. The single exception is the kiosk extension's own origin (`chrome-extension://hfjmbeplebjipenkfabncgkpadnjmmoe`, pinned by the `key` in `manifest.json`): Chromium attaches it to the service worker's `POST` to `/api/admin/verify`. A web page cannot set `Origin`, and no other extension can hold that id.
 
 The extension's service worker owns the `host_permissions` grant for that origin, so `content.js` never fetches the agent directly. This is why the agent can refuse cross-origin callers outright — it used to answer `Access-Control-Allow-Origin: *`, which meant **any site a student visited could talk to it**.
 

@@ -76,15 +76,26 @@ sudo bash build-iso.sh
 
 | Group | Packages |
 | :--- | :--- |
-| Kernel & live boot | `linux-image-amd64`, `live-boot`, `live-config`, `live-config-systemd`, `overlayroot`, `systemd-sysv` |
-| Boot & partitioning | `grub-efi-amd64-bin`, `grub-pc-bin`, `grub-common`, `grub2-common`, `efibootmgr`, `parted`, `dosfstools`, `e2fsprogs`, `rsync`, `sudo` |
+| Kernel & live boot | `linux-image-amd64`, `live-boot`, `live-config`, `live-config-systemd`, `live-tools`, `eject`, `overlayroot`, `systemd-sysv` |
+| Boot & partitioning | `grub-efi-amd64-bin`, `grub-pc-bin`, `grub-common`, `grub2-common`, `shim-signed`, `grub-efi-amd64-signed`, `efibootmgr`, `parted`, `dosfstools`, `e2fsprogs`, `rsync`, `sudo`, `xz-utils` |
 | Virtualisation | `hyperv-daemons` |
-| Firmware | `firmware-linux-free`, `firmware-misc-nonfree`, `firmware-realtek`, `firmware-iwlwifi` |
-| X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa}`, `xserver-xorg-input-all`, `xinit`, `x11-xserver-utils`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
+| Firmware | `intel-microcode`, `amd64-microcode`, `firmware-linux-free`, `firmware-misc-nonfree`, `firmware-realtek`, `firmware-iwlwifi` |
+| X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `xinit`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
 | Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji` |
-| Remote & network | `x11vnc`, `novnc`, `websockify`, `network-manager`, `curl`, `python3`, `ca-certificates` |
+| Remote & network | `x11vnc`, `websockify`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `ca-certificates` |
 
-`scrot` supplies thumbnails, `xdotool` drives the browser, `alsa-utils` implements the `mute` command, and `chromium-sandbox` is present because the real image keeps Chromium's sandbox enabled — only the simulator passes `--no-sandbox`.
+### Keeping the image small
+
+`auto/config` builds with `--apt-recommends false` and `--firmware-chroot false`, so **only what the list names is installed**. Before this, live-build's defaults added every package in `non-free-firmware` (~875 MB installed: server NICs, GPU-compute, Raspberry Pi) and every Recommends (printer tools, Samba, Avahi, ModemManager, Perl web modules), which took the ISO past 1.1 GB. Consequences:
+
+- A package the kiosk needs that some other package only *recommends* must be listed by name (that is why `systemd-timesyncd`, the signed shim/GRUB and the extra Xorg drivers are there).
+- `live-tools` is in that list for a concrete reason: it prints *"Please remove the live-medium ... press ENTER"* when a live session reboots. Without it, a workstation that has just been installed reboots straight back into the installer.
+- New Wi-Fi or GPU hardware needs its `firmware-*` package added explicitly (e.g. `firmware-amd-graphics`, `firmware-atheros`, `firmware-brcm80211`).
+- The noVNC client is **not** Debian's `novnc` package (which depends on Node.js): `01-lockdown.hook.chroot` installs the release pinned in `usr/share/labkiosk/novnc.pin`, verifying its SHA-256, and the simulator Dockerfile does the same.
+- The initramfs is xz-compressed via `etc/initramfs-tools/conf.d/labkiosk-compress`; live-build 20230502's `--initramfs-compression` does not accept xz.
+- `scrot` stays: Openbox already needs `imlib2`, which is what pulls in its large image loaders, so replacing `scrot` would add packages rather than remove them.
+
+`scrot` supplies thumbnails, `xdotool` drives the browser, `alsa-utils` implements the `mute` command, and `chromium-sandbox` is present because the image keeps Chromium's sandbox enabled. The simulator does too; it passes `--no-sandbox` only when started as root.
 
 ### Build hooks
 
@@ -117,12 +128,14 @@ The menu offers a default entry, a **Load into RAM (toram)** entry, an **Install
 ```text
 config/includes.chroot/usr/share/labkiosk/cloudflared.pin   release tag + SHA-256
 config/includes.chroot/usr/share/labkiosk/grub.pin          PBKDF2 boot-menu hash
+config/includes.chroot/usr/share/labkiosk/novnc.pin         noVNC version + SHA-256
 ```
 
 | Pin | Unset | Wrong |
 | :--- | :--- | :--- |
 | `cloudflared.pin` | Builds without the tunnel binary | **Build fails** |
 | `grub.pin` | Builds with a loud warning; live menu stays editable | **Build fails** |
+| `novnc.pin` | **Build fails** — remote control needs the client | **Build fails** |
 
 Never invent a value to make a build go green. → [Kiosk Hardening](Kiosk-Hardening#build-pins-fail-closed)
 

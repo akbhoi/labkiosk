@@ -9,9 +9,14 @@ Everything that stands between a curious student and a shell. Each layer assumes
 `/etc/overlayroot.conf`:
 
 ```ini
-overlayroot="tmpfs"
-overlayroot_options="recurse=0"
+overlayroot="tmpfs:recurse=0"
 ```
+
+`recurse=0` has to be part of the value. overlayroot reads only the `overlayroot` and
+`overlayroot_cfgdisk` variables from this file, so a separate `overlayroot_options=` line
+does nothing and leaves `recurse` at its default of `1` — which overlays **every** fstab
+entry with a RAM upper layer, `LABKIOSK_DATA` included, and quietly loses every enrolment
+at reboot.
 
 The real root filesystem is mounted **read-only**, with a `tmpfs` overlay on top. Every write — browser cache, agent logs, downloads, student files, session state — lands in RAM and is gone at power-off.
 

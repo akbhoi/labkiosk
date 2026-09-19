@@ -66,7 +66,7 @@ Debian's ISO construction toolchain. Driven by `auto/config`, `auto/build`, and 
 A full-screen overlay the extension raises on every tab when a teacher sends `lock`. Swallows mouse, keyboard, and touch events in the capture phase. A DOM-level block, not an X11 input grab. → [Browser Extension](Browser-Extension#the-lock-curtain)
 
 ### Loopback API
-The agent's HTTP server on `127.0.0.1:8888`. Requires a loopback `Host` **and** a loopback `Origin`; either failing returns `403`.
+The agent's HTTP server on `127.0.0.1:8888`. Requires a loopback `Host` **and** a loopback `Origin` — or the kiosk extension's own pinned `chrome-extension://` origin, which Chromium puts on the service worker's `POST` to `/api/admin/verify`; either check failing returns `403`.
 
 ### Manifest V3 / MV3
 Chromium's current extension platform. Lab Kiosk's extension uses a service worker (`background.js`) rather than a persistent background page.

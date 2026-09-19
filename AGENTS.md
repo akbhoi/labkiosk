@@ -145,6 +145,22 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - The agent binds its local API exclusively to `127.0.0.1`.
 - Production database requires schema migrations to be applied before serving requests.
 
+### Rule 7b: The Simulator Container Is Untrusted Too
+- The workstation simulator (root `Dockerfile`, `docker-compose.yml`) runs as the unprivileged `kiosk`
+  user with Chromium's sandbox enabled, a read-only root filesystem, `cap_drop: ALL` apart from the
+  `SYS_CHROOT` that sandbox needs, `no-new-privileges`, and its noVNC port published on `127.0.0.1`
+  only. It browses the open web, so it is hardened like something that will be attacked.
+- `--no-sandbox` survives only as the entrypoint's fallback for a container started as root, and it
+  warns when it takes it. Never make it unconditional again.
+
+### Rule 7: Network Subsystem & State Persistence Guarantee
+- Network profiles (Ethernet and Wi-Fi) configured via the setup wizard or agent API are managed through NetworkManager.
+- To survive `overlayroot="tmpfs"` reboots on installed hardware, connection keyfiles are stored on the persistent `LABKIOSK_DATA` partition in `/etc/labkiosk/system-connections/` (mode `0700`, files mode `0600`, root:root) and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab`.
+- The unprivileged `kiosk` user is granted Polkit privileges for NetworkManager via `/etc/polkit-1/rules.d/50-labkiosk-network.rules` to allow the agent to manage network connections without running the agent as root.
+- Post-installation network changes are gated behind administrator authentication (PBKDF2 verification against `/etc/grub.d/01_labkiosk_password`). The gate is enforced by the agent, not only the UI: `/api/admin/verify` issues a 10-minute token (throttled after 5 failures) and `/api/network/configure` refuses an installed workstation's request without it (`X-LabKiosk-Admin`).
+- The browser extension (`content.js`) monitors network connectivity via `/api/status`, displays live online/offline state in the kiosk top bar, and redirects to `/setup#offline` if the workstation is offline for more than 6 seconds on an external, unlocked page. That page returns to the lesson by itself once the connection is back.
+- Wi-Fi scan results (SSIDs) are attacker-chosen and are rendered with `textContent` only: the wizard's origin can drive the disk installer.
+
 ---
 
 ## 4. Subsystem Quick Reference

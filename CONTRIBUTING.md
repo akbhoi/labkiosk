@@ -114,8 +114,9 @@ Here is the quick summary of non-negotiable standards:
    - Missing configuration is an error, not a reason to fall back to something weaker.
    - The client agent's local API binds to `127.0.0.1`; `websockify` binds to loopback on the real
      image. Neither may be published on `0.0.0.0`.
-   - Chromium is never launched with `--disable-web-security`. `--no-sandbox` is permitted only in the
-     Docker simulator, where the browser runs as root.
+   - Chromium is never launched with `--disable-web-security`, and keeps its sandbox in both images.
+     `--no-sandbox` is permitted only as the simulator entrypoint's fallback for a container that was
+     started as root, which it warns about.
 
 5. **RAM Overlay on Thin Clients (`toram` + `overlayroot="tmpfs"`):**
    - The client runs as a live image copied into RAM; the root filesystem stays read-only so thin-client

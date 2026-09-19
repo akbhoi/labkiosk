@@ -431,3 +431,218 @@ Approves and activates a custom domain mapping for an institution.
     "customDomain": "kiosk.oakridge.edu"
   }
   ```
+
+---
+
+### 8. Client Agent Loopback API (`http://127.0.0.1:8888`)
+
+Served locally on the workstation by `agent.py`. Binds strictly to `127.0.0.1` and enforces loopback Host/Origin validation (`_is_expected_host()` and `_is_local_caller()`). The only non-loopback `Origin` accepted is the kiosk extension's own origin (`chrome-extension://hfjmbeplebjipenkfabncgkpadnjmmoe`, pinned by the `key` in `manifest.json`), which Chromium puts on the extension service worker's `POST` to `/api/admin/verify`.
+
+#### `GET /setup`
+Serves `wizard.html` for network configuration and disk installation/enrolment. The page is served
+on an enrolled workstation too, because it is where post-install network changes are made; the
+fragment selects the mode:
+
+| Fragment | Meaning |
+| :--- | :--- |
+| *(none)* | Normal setup flow. On an enrolled, installed workstation this is treated as `#network`. |
+| `#network` | Network settings only. On an installed workstation the administrator modal opens first. |
+| `#network&admin=<token>` | Same, already unlocked by the top-bar modal. The wizard keeps the token in memory and removes it from the address bar. |
+| `#offline` | The extension redirected here after the workstation was offline for more than 6 s. The page returns to the lesson by itself once `/api/status` reports `isOnline` again. |
+
+Enrolment is still refused once configured: `POST /api/setup` answers `409`.
+
+#### `GET /api/status`
+Returns the workstation's local runtime state. `isOnline` is true when any of these hold: a
+heartbeat reached the control plane in the last 20 s, DNS resolves, a public resolver answers on
+TCP 53, or the configured proxy accepts connections.
+
+`persistentStorage` is false on an installed workstation whose `LABKIOSK_DATA` partition is not
+mounted at `/etc/labkiosk`. Such a machine can still be enrolled, and loses the enrolment at the
+next power-off, so the setup wizard shows a warning rather than a plain success. It is always true
+on live media, which keeps nothing by design.
+- **Response `200 OK`:**
+  ```json
+  {
+    "clientId": "PC-01",
+    "clientNum": 1,
+    "isLocked": false,
+    "lockMessage": "Screens locked by instructor",
+    "targetUrl": "https://oakridge.labkiosk.institution.edu",
+    "broadcastUrl": "",
+    "broadcastEpoch": 0,
+    "isConfigured": true,
+    "baseDomain": "labkiosk.akbhoi.com",
+    "isLive": false,
+    "isInstalled": true,
+    "isOnline": true,
+    "persistentStorage": true,
+    "installRequested": false
+  }
+  ```
+
+#### `GET /api/network/status`
+Returns complete network addressing, active route, DNS, and proxy status.
+- **Response `200 OK`:**
+  ```json
+  {
+    "online": true,
+    "activeType": "wifi",
+    "activeDevice": "wlan0",
+    "activeConnection": "Kiosk-Wifi",
+    "ipv4": {
+      "address": "192.168.1.105/24",
+      "gateway": "192.168.1.1",
+      "dns": ["1.1.1.1", "1.0.0.1"]
+    },
+    "ipv6": {
+      "address": "2001:db8::1/64",
+      "gateway": "fe80::1",
+      "dns": ["2606:4700:4700::1111"]
+    },
+    "proxy": {
+      "enabled": false,
+      "host": "",
+      "port": 8080,
+      "bypass": ""
+    },
+    "connectivity": {
+      "ok": true,
+      "dns": true,
+      "internet": true,
+      "proxy": null,
+      "controlPlane": true,
+      "details": "DNS resolution OK; Internet route reachable (1.1.1.1); Control plane reachable"
+    },
+    "interfaces": [],
+    "adminRequired": true,
+    "profile": {
+      "name": "Kiosk-Ethernet",
+      "type": "ethernet",
+      "device": "ens3",
+      "ssid": "",
+      "hidden": false,
+      "ipv4": { "mode": "manual", "address": "192.168.1.50/24", "gateway": "192.168.1.1", "dns": ["1.1.1.1"] },
+      "ipv6": { "mode": "disabled", "address": "", "gateway": "", "dns": [] }
+    }
+  }
+  ```
+  `profile` is the saved NetworkManager profile, read back so the wizard can render the settings
+  actually in force instead of its own defaults. `mode` is derived from the stored method:
+  `manual`, `custom_dns` (automatic with `ignore-auto-dns`), `auto`, or `disabled`. It is `null`
+  when the workstation has no kiosk profile yet.
+
+#### `GET /api/network/interfaces`
+Lists detected Ethernet and Wi-Fi adapters and link carrier status.
+- **Response `200 OK`:**
+  ```json
+  [
+    { "device": "eth0", "type": "ethernet", "state": "connected", "connection": "Kiosk-Ethernet", "carrier": true },
+    { "device": "wlan0", "type": "wifi", "state": "disconnected", "connection": "", "carrier": false }
+  ]
+  ```
+
+#### `GET /api/network/wifi/scan`
+Returns nearby Wi-Fi SSIDs (strongest entry per SSID) sorted by signal strength. SSIDs are chosen by
+whoever runs the access point, so clients must render every field as text.
+- **Response `200 OK`:**
+  ```json
+  [
+    { "ssid": "School-Students", "signal": 85, "bars": "▂▄▆█", "security": "WPA2", "inUse": false },
+    { "ssid": "School-Guest", "signal": 60, "bars": "▂▄▆_", "security": "Open", "inUse": true }
+  ]
+  ```
+
+#### `GET /api/log`
+The tail of `/tmp/lab-agent.log` (at most 64 KB), as `text/plain`. A workstation has no terminal, no
+getty, no SSH, and `file://` is blocked in its browser, so this is the only way to read the agent log
+on real hardware. The setup wizard shows it under **Agent Log & Diagnostics**, and opens it by itself
+when enrolment fails unexpectedly.
+
+- **Authentication:** on an installed workstation the `X-LabKiosk-Admin` token from
+  `POST /api/admin/verify` is required, exactly as for `/api/network/configure`. Live media needs
+  none, because nothing is configured yet.
+- **Response `200 OK`:** the log text, or an explanation when the file does not exist.
+- **Note:** the log is in the RAM overlay and is gone at power-off. Read it before rebooting.
+
+#### `POST /api/network/configure`
+Validates the whole request, then replaces the `Kiosk-Ethernet` / `Kiosk-Wifi` NetworkManager
+profile in one `nmcli connection add`, activates it and checks connectivity. Nothing is changed when
+validation fails.
+- **Authentication:** on an installed workstation, the `X-LabKiosk-Admin` header must carry a token
+  from `POST /api/admin/verify`; otherwise `401`. Live media is setup mode and needs none.
+- **Request Body:**
+  ```json
+  {
+    "interfaceType": "wifi",
+    "device": "",
+    "ssid": "School-Students",
+    "password": "SecretPassword123",
+    "security": "WPA2",
+    "hidden": false,
+    "ipv4": { "mode": "custom_dns", "dns": ["1.1.1.1", "1.0.0.1"] },
+    "ipv6": { "mode": "auto" },
+    "proxy": {
+      "enabled": true,
+      "host": "proxy.school.internal",
+      "port": 8080,
+      "bypass": "*.school.internal, 10.0.0.0/8"
+    }
+  }
+  ```
+  - `ipv4.mode`: `auto`, `custom_dns` (needs `dns`), `manual` (needs `address` with a prefix, e.g.
+    `192.168.1.50/24`; optional `gateway`, `dns`). `ipv6.mode` additionally accepts `disabled`.
+  - `password` may be left empty for an SSID that already has a saved profile: the agent reuses the
+    stored passphrase, so changing DNS or addressing does not require retyping the Wi-Fi key. The
+    passphrase is never returned by the API.
+  - `security` comes from the scan. `WPA3` without `WPA2` selects SAE; `802.1X` (WPA-Enterprise) is
+    rejected. The passphrase is used exactly as typed (8–63 characters, or 64 hex digits).
+  - `device` is optional and must name a detected adapter of that type.
+  - The proxy is applied to the agent's own requests and to Chromium's `ProxySettings` policy;
+    loopback is always exempt. A proxy change restarts the kiosk browser after the next heartbeat.
+- **Response `200 OK`:**
+  ```json
+  {
+    "status": "ok",
+    "connection": "Kiosk-Wifi",
+    "connectivity": { "ok": true, "dns": true, "internet": true, "proxy": true, "controlPlane": false, "details": "..." }
+  }
+  ```
+- **Errors:** `400` invalid input, `401` missing/expired admin token, `500` NetworkManager refused
+  the profile or it did not come up.
+
+#### `POST /api/network/test`
+Forces a fresh connectivity check. Same shape as `connectivity` above.
+
+#### `POST /api/admin/verify`
+Verifies the administrator (boot-menu) password against the PBKDF2 digest in
+`/etc/grub.d/01_labkiosk_password` and issues a 10-minute token for `/api/network/configure`.
+Attempts are serialised; after 5 failures the gate refuses all attempts for 60 s. When the
+installation has no password file (installed without one, after a warning), any password is
+accepted. A file that exists but cannot be parsed fails closed.
+- **Request Body:**
+  ```json
+  { "password": "AdminPassword123" }
+  ```
+- **Response `200 OK`:**
+  ```json
+  { "verified": true, "token": "…", "expiresIn": 600 }
+  ```
+- **Response `401` / `429` / `500`:**
+  ```json
+  { "verified": false, "error": "Invalid administrator password" }
+  ```
+
+#### `POST /api/install`
+Triggers automated disk installation to the specified target drive.
+- **Request Body:**
+  ```json
+  {
+    "targetDisk": "/dev/sda",
+    "grubPasswordHash": "grub.pbkdf2.sha512.200000.abcd...1234..."
+  }
+  ```
+- **Response `200 OK`:**
+  ```json
+  { "status": "started", "targetDisk": "/dev/sda" }
+  ```
