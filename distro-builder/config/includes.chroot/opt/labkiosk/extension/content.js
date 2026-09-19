@@ -39,7 +39,7 @@
   function isTypedCharacter(event) {
     // A single printable character: "a", "7", "@". Dead keys and IME give
     // longer names, which fall through to the rules below.
-    return event.key.length === 1;
+    return typeof event.key === "string" && event.key.length === 1;
   }
 
   function permitted(event) {
