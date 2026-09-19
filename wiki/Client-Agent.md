@@ -19,6 +19,8 @@ done
 
 If it ever exits, it is back within about two seconds, and the restart is written to `/tmp/lab-agent.log`. That log lives in the RAM overlay and is gone at power-off.
 
+**Reading it on real hardware:** open the setup wizard (the network icon in the kiosk top bar, or `http://127.0.0.1:8888/setup`) and expand **Agent Log & Diagnostics**. On an installed workstation it asks for the administrator password first. There is no other route — the machine has no terminal, no getty and no SSH, and `file://` is blocked by the Chromium policy. `docker exec` works only for the simulator.
+
 ```bash
 # In the simulator
 docker exec labkiosk-client-01 tail -n 50 /tmp/lab-agent.log
@@ -101,6 +103,45 @@ Every three seconds, `post_telemetry()` sends the workstation's state and receiv
 
 ---
 
+## Network subsystem
+
+The agent incorporates a full network management subsystem communicating with NetworkManager via `nmcli` and system sockets.
+
+### 1. Interface & Carrier Detection (`/api/network/interfaces`)
+`get_interfaces()` scans network hardware (`nmcli -t -f DEVICE,TYPE,STATE dev status`), categorising adapters as `ethernet` or `wifi`. For ethernet devices, it reads `/sys/class/net/<dev>/carrier` to provide real-time feedback on physical cable plug state (`Connected` vs. `Unplugged`).
+
+### 2. Wi-Fi Scanning (`/api/network/wifi/scan`)
+`scan_wifi()` triggers `nmcli -t -f SSID,BSSID,SIGNAL,SECURITY,CHAN dev wifi list`, deduplicating BSSIDs by SSID name and sorting candidates by signal percentage. Networks report encryption types (e.g. WPA2/WPA3-PSK vs. Open). Hidden networks are supported via manual SSID input.
+
+### 3. Connection Configuration (`/api/network/configure`)
+`configure_network()` orchestrates NetworkManager profiles:
+- **Ethernet:** Deletes stale profiles on the interface and creates `Wired Connection (<dev>)`.
+- **Wi-Fi:** Configures `Wi-Fi (<ssid>)` with `802-11-wireless-security.key-mgmt wpa-psk` and PSK passphrase.
+- **IPv4:**
+  - `auto`: Standard DHCP client (`ipv4.method auto`, `ipv4.ignore-auto-dns no`).
+  - `custom_dns`: DHCP addressing with custom nameserver override (`ipv4.method auto`, `ipv4.ignore-auto-dns yes`, `ipv4.dns "<dns>"`).
+  - `manual`: Static addressing (`ipv4.method manual`, `ipv4.addresses "<ip>/<prefix>"`, `ipv4.gateway "<gw>"`, `ipv4.dns "<dns>"`).
+- **IPv6:** Configurable as `auto` (SLAAC/DHCPv6), `custom_dns`, `manual`, or `disabled`.
+- **Proxy:** Saves settings to `/etc/labkiosk/proxy.json`, applies proxy exports (`http_proxy`, `https_proxy`, `no_proxy`, loopback always exempt) to the agent's own environment, and regenerates `/etc/chromium/policies/managed/policies.json` with a `ProxySettings` dictionary (`ProxyMode: "fixed_servers"`, `ProxyServer: "<host>:<port>"`, `ProxyBypassList` as a comma-separated string). On installed systems the request needs the `X-LabKiosk-Admin` token from `/api/admin/verify`.
+
+### 4. Connectivity Probing & Caching (`/api/network/test`)
+`test_connectivity()` validates the connection:
+- DNS resolution via `socket.getaddrinfo("cloudflare.com", 443)`.
+- Direct routing reachability via socket connection to `1.1.1.1:53` and `8.8.8.8:53` (2.5s timeout).
+- **5-Second TTL Cache:** Because `/api/status` is polled once a second by the browser extension, `test_connectivity(force=False)` returns cached results to avoid socket exhaustion.
+
+### 5. Administrator Verification (`/api/admin/verify`)
+Post-installation network management is locked behind `verify_admin_password()`. When `/etc/grub.d/01_labkiosk_password` exists, the agent parses the GRUB PBKDF2 line:
+```text
+password_pbkdf2 <user> grub.pbkdf2.sha512.<rounds>.<salt_hex>.<hash_hex>
+```
+It computes `hashlib.pbkdf2_hmac("sha512", password, salt, rounds)` and checks equality in constant time.
+
+### 6. Polkit Permissions
+The agent runs as unprivileged user `kiosk`. NetworkManager commands succeed because `/etc/polkit-1/rules.d/50-labkiosk-network.rules` explicitly authorizes `org.freedesktop.NetworkManager.*` for user `kiosk`.
+
+---
+
 ## Chromium policy synchronisation
 
 `sync_chromium_policies(new_whitelist)` merges the school's effective allowlist into `/etc/chromium/policies/managed/policies.json`.
@@ -132,7 +173,10 @@ A `ThreadingHTTPServer` bound strictly to **`127.0.0.1:8888`**. Threaded deliber
 Every request must pass two checks, and either failing returns `403`:
 
 - `_is_expected_host()` — the `Host` header is a loopback name.
-- `_is_local_caller()` — the `Origin` header, when present, is `127.0.0.1` or `localhost`.
+- `_is_local_caller()` — the `Origin` header, when present, is `127.0.0.1` or `localhost`, or the
+  kiosk extension's own `chrome-extension://` origin. Chromium sets that one on the service
+  worker's `POST` to `/api/admin/verify`, which is how the top bar's administrator modal asks
+  for a token. The id is pinned by the `key` in `manifest.json`.
 
 That is what keeps a visited web page from reaching the installer.
 
@@ -173,7 +217,9 @@ This drives two behaviours:
 1. **Backend lockout.** `/api/install/disks` returns `[]` and `POST /api/install` returns `400 System is already installed on an internal drive`, so a misdirected click cannot repartition the running system.
 2. **Wizard shape.** On live media the wizard shows both tabs — *Connect & Enroll* and *Install to Hard Disk* — with the badge `LIVE INSTALLER & SETUP`. On an installed disk it should hide the tabs and present the enrolment form alone with the badge `INSTALLED WORKSTATION ENROLLMENT`.
 
-> **Known issue.** `/api/status` currently returns `"isLive": True` as a literal rather than the computed `live` value (`agent.py`, in the `/api/status` handler), while `isInstalled` is computed correctly. Because `wizard.html` branches on `data.isLive`, an **installed** workstation still shows the installer tab. The backend lockout above still holds, so the install itself is refused with `400` — the defect is cosmetic, not destructive, but it contradicts the documented Rule 4 behaviour.
+`/api/status` reports the computed value in `isLive` and `isInstalled`, and the wizard branches on it: an installed workstation shows neither the installer tab nor the network step.
+
+It also reports **`persistentStorage`**. That is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition — the machine can still be enrolled, and the enrolment lives in the RAM overlay and is gone at the next power-off. The wizard shows an amber warning before the form and again instead of the usual success, the enrolment reply carries `persistent` and `warning`, and the agent writes the same warning to its log at every start, because a workstation with no terminal has no other way to answer "why did it forget?".
 
 ---
 

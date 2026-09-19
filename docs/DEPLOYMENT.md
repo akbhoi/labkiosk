@@ -163,3 +163,20 @@ On every push to `main` modifying `cloudflare-control/**`:
 3. Executes automated multi-tenant and negative security test suite.
 4. Applies any pending remote D1 migrations (`wrangler d1 migrations apply labkiosk-db --remote`).
 5. Executes `wrangler deploy` to publish the updated worker across Cloudflare global edge data centers.
+
+---
+
+## 8. School Lab Network & Firewall Deployment Requirements
+
+For workstations running Lab Kiosk OS to communicate reliably with the Cloudflare control plane:
+
+### Outbound Firewall Rules (Egress)
+School firewalls should permit outbound connections for the following ports and hosts:
+- **HTTPS (`TCP 443`):** To `<school>.labkiosk.yourdomain.com` (telemetry, enrollment, and web lessons).
+- **DNS (`UDP/TCP 53`):** To school DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
+- **Cloudflare Tunnel (`TCP 7844` / `UDP 7844` QUIC):** Optional, required only if remote desktop assistance via `cloudflared` is deployed.
+
+### Network Addressing & Proxy Architecture
+- **Ethernet & Wi-Fi:** Workstations support standard DHCP (IPv4 & IPv6), Custom DNS overrides (`ignore-auto-dns yes`), or fixed Static IPs configured via the setup wizard.
+- **HTTP / HTTPS Proxy:** School districts operating transparent or explicit proxy servers (e.g. Squid, Lightspeed, Smoothwall, Fortinet) can specify the proxy host and port during setup. Settings are stored in `/etc/labkiosk/proxy.json` (persisted on the data partition), applied to the agent's own requests, and enforced in Chromium managed policy (`ProxySettings` with `ProxyMode: "fixed_servers"`). Loopback is always exempt.
+- **Persistence:** All network configurations and Wi-Fi credentials are saved to the persistent `LABKIOSK_DATA` partition and bind-mounted on boot, surviving `overlayroot="tmpfs"` reboots.

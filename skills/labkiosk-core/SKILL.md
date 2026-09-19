@@ -50,18 +50,20 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
 
 ### B. Modifying Client Kiosk Agent, Installer & Extension
 1. **Client Agent** lives at `distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py`.
-   Its local API is loopback-only (`/setup`, `/api/status`, `/api/setup`, `/api/install/disks`, `/api/install`, `/api/reboot`). Telemetry is authenticated with a device bearer token. Each heartbeat reports the per-boot VNC password and Cloudflare Tunnel hostname.
+   Its local API is loopback-only (`/setup`, `/api/status`, `/api/setup`, `/api/install/disks`, `/api/install`, `/api/install/status`, `/api/reboot`, `/api/network/status`, `/api/network/interfaces`, `/api/network/wifi/scan`, `/api/network/configure`, `/api/network/test`, `/api/admin/verify`, `/api/log`). Telemetry is authenticated with a device bearer token. Each heartbeat reports the per-boot VNC password and Cloudflare Tunnel hostname.
 2. **Automated Disk Installer** lives at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`.
-   - Formats disk with Hybrid GPT (Partition 1: `bios_grub`, Partition 2: `ESP`, Partition 3: `ROOT`).
+   - Formats disk with Hybrid GPT (Partition 1: `bios_grub`, Partition 2: `ESP`, Partition 3: `ROOT`, Partition 4: `DATA` mounted at `/etc/labkiosk`).
    - Copies rootfs cleanly via `rsync` without `--delete`.
    - Mounts `part_esp` to `/boot/efi` **only after** `rsync` finishes (eliminates `EBUSY (16)` deadlocks).
+   - Copies existing NetworkManager connection profiles to `/mnt/target_kiosk/etc/labkiosk/system-connections/` (mode 0600) and adds an `/etc/fstab` bind mount (`/etc/labkiosk/system-connections /etc/NetworkManager/system-connections none bind,nofail 0 0`) so network configuration survives `overlayroot="tmpfs"` reboots.
    - Installs dual bootloaders (UEFI `x86_64-efi --removable` and BIOS `i386-pc`).
    - All logging writes to `file=sys.stderr`; `sys.stdout` is reserved exclusively for JSON.
-3. **Session Awareness (`is_live_session()`):**
+3. **Session Awareness & Wizard Workflow (`wizard.html`):**
    - Both `agent.py` and `labkiosk-install` detect whether the system is booted from live media (`boot=live` in `/proc/cmdline`, `/run/live`) or installed disk (`/etc/labkiosk-installed`).
-   - The setup wizard (`wizard.html`) automatically hides `#tabs-nav` and the installer view when running on an installed disk, showing only the clean workstation enrollment form.
+   - Live wizard features a sequential 2-step stepper: `Step 1: Network Setup` (Ethernet/Wi-Fi, DHCP/Custom DNS/Static IP, Proxy) followed by `Step 2: Destination Mode` (Install to Disk vs. Live Preview & Enroll).
+   - On an installed workstation the wizard opens **on the enrolment form**: the network step is not shown again after installation. Network settings are reached at `/setup#network` from the top-bar network icon or the offline auto-fallback, protected by the administrator boot password, which the agent enforces with a short-lived token. The form is pre-filled from the saved profile (`profile` in `/api/network/status`).
 4. **Browser Extension (MV3)** lives at `distro-builder/config/includes.chroot/opt/labkiosk/extension/`.
-   `content.js` builds the nav bar and lock curtain inside an isolated Shadow DOM; `background.js` (service worker with `host_permissions`) is the exclusive bridge to the agent.
+   `content.js` builds the nav bar, `#btn-network` status indicator, admin verification modal, and lock curtain inside an isolated Shadow DOM; `background.js` (service worker with `host_permissions`) is the exclusive bridge to the agent and owns the once-per-session flag that reveals the auto-hiding bar briefly at the start of each boot. Redirects to `/setup#offline` if offline for more than 6 s on an external, unlocked page.
 5. **Syntax-check** before packaging or testing:
    ```bash
    PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
@@ -111,10 +113,14 @@ docker cp labkiosk-client-01:/tmp/verify.png .
 - **Remedy:** Always split statements by `;`, normalize newlines with `.replace(/\r\n/g, "\n")`, and execute statements sequentially using `db.prepare(stmt).run()`.
 
 ### 5. Chromium Root Execution in Docker
-- **Symptom:** `Running as root without --no-sandbox is not supported`.
-- **Remedy:** Pass `--no-sandbox` **only** in `docker-test/entrypoint.sh`, where Chromium runs as root
-  inside the container. The real image keeps the sandbox enabled, and must never be launched with
-  `--disable-web-security`.
+- **Symptom:** `Running as root without --no-sandbox is not supported`, or
+  `Check failed: sys_chroot("/proc/self/fdinfo/")` with a black screen.
+- **Cause:** the container was started as root, or without the `SYS_CHROOT` capability that
+  Chromium's sandbox needs to chroot its zygote.
+- **Remedy:** run the simulator as its unprivileged `kiosk` user with the `cap_add: SYS_CHROOT`
+  from `docker-compose.yml`, so the sandbox stays on exactly as it is on the real image. The
+  entrypoint falls back to `--no-sandbox` only when it is running as uid 0, and warns. Neither
+  image may ever be launched with `--disable-web-security`.
 
 ### 6. Schema Drift Between the Adapter and Migrations
 - **Symptom:** `Columns of "x" differ between SCHEMA_SQL and migrations/`.
@@ -127,6 +133,9 @@ docker cp labkiosk-client-01:/tmp/verify.png .
   cannot be verified from the repository: a release checksum and a boot-password hash.
 - An unset checksum builds without the tunnel binary; a bad one **fails the build**. An unset GRUB
   password builds with a loud warning. Never invent a value to make a build go green.
+- `novnc.pin` pins the noVNC web client for both the ISO and the simulator. It is mandatory: an
+  empty or wrong checksum fails both builds. Compute a new one from the release tarball, never
+  copy it from elsewhere.
 
 ### 8. Chromium Refuses the Kiosk's Own Extension
 - **Symptom:** No navigation bar, no lock curtain. Chromium logs *"Loading of unpacked extensions is

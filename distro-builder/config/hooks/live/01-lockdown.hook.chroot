@@ -42,6 +42,23 @@ EOF
 chmod 755 "$KIOSK_HOME/.xsession"
 cp /etc/openbox/autostart "$KIOSK_HOME/.config/openbox/autostart"
 chmod 755 "$KIOSK_HOME/.config/openbox/autostart"
+
+# THE KEYBINDINGS ONLY APPLY FROM A PATH OPENBOX ACTUALLY READS.
+#
+# openbox-session looks for rc.xml in ~/.config/openbox and then in
+# /etc/xdg/openbox. It does NOT read /etc/openbox/rc.xml, which is where this
+# project kept its stripped configuration -- so every installed workstation was
+# running Debian's default bindings instead: Alt+Tab, Alt+F4, Super+E,
+# Ctrl+Alt+arrow desktop switching and a root menu on right click. The simulator
+# hid it, because its entrypoint passes --config-file explicitly.
+#
+# Installed in both places on purpose. The home copy is what Openbox uses; the
+# one under /etc/xdg is what it falls back on if the home directory is ever
+# rebuilt, so a kiosk cannot come up with the distribution defaults again.
+mkdir -p /etc/xdg/openbox
+cp /etc/openbox/rc.xml /etc/xdg/openbox/rc.xml
+cp /etc/openbox/rc.xml "$KIOSK_HOME/.config/openbox/rc.xml"
+chmod 644 /etc/xdg/openbox/rc.xml "$KIOSK_HOME/.config/openbox/rc.xml"
 chown -R "$KIOSK_USER:$KIOSK_USER" "$KIOSK_HOME"
 
 passwd -l root || true
@@ -107,6 +124,8 @@ EOF
 chmod +x /etc/openbox/autostart || true
 chmod +x /opt/labkiosk/agent/agent.py || true
 chmod +x /usr/local/bin/labkiosk-install || true
+chmod +x /usr/local/sbin/labkiosk-localization || true
+chmod +x /usr/local/bin/labkiosk-lock-keys || true
 chown -R root:root /opt/labkiosk || true
 chmod -R go-w /opt/labkiosk || true
 chown -R root:root /etc/openbox || true
@@ -156,6 +175,21 @@ echo "[Hook] Generated boot-time Chromium policy from $POLICY_BASE."
 mkdir -p /etc/labkiosk
 chown kiosk:kiosk /etc/labkiosk
 chmod 700 /etc/labkiosk
+mkdir -p /etc/labkiosk/system-connections
+chmod 700 /etc/labkiosk/system-connections
+
+# 3a. System clock in Asia/Kolkata (IST).
+#
+#     This is what an INSTALLED workstation uses: live-config does not run there
+#     (no boot=live on the command line), so /etc/localtime as built is what the
+#     machine keeps. A live session is a different story -- live-config's
+#     0070-tzdata component rewrites /etc/timezone on every live boot and falls
+#     back to Etc/UTC when nothing asks otherwise, so the boot menus pass
+#     timezone=Asia/Kolkata as well. Change one and change the other, or an
+#     installed machine and the USB it came from will disagree about the time.
+#     systemd-timesyncd (in the package list) keeps the clock itself correct.
+ln -snf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime
+echo "Asia/Kolkata" > /etc/timezone
 
 # 4. Mask virtual terminals so Ctrl+Alt+F1..F6 cannot reach a login prompt.
 for tty in 1 2 3 4 5 6; do
@@ -169,6 +203,8 @@ systemctl mask NetworkManager-wait-online.service || true
 
 # 5. Stop the X server from switching VTs or being killed with Ctrl+Alt+Backspace.
 #    Masked gettys hide the login prompt; this removes the escape itself.
+#    The four *Time options are also the kiosk's only "never blank the screen"
+#    setting: the Openbox autostart no longer runs xset.
 mkdir -p /etc/X11/xorg.conf.d
 cat << 'EOF' > /etc/X11/xorg.conf.d/10-kiosk-lockdown.conf
 Section "ServerFlags"
@@ -201,12 +237,37 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
+# NetworkManager rights for the agent, which runs as kiosk and applies the setup
+# wizard's network settings through nmcli. The post-install gate on who may
+# *ask* the agent to change the network is the boot-menu password, which the
+# agent enforces on /api/network/configure.
+cat << 'EOF' > /etc/polkit-1/rules.d/50-labkiosk-network.rules
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "kiosk") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
+EOF
+
 # Sudoers permissions for the guided disk installer.
 mkdir -p /etc/sudoers.d
 cat << 'EOF' > /etc/sudoers.d/50-labkiosk-install
 kiosk ALL=(ALL) NOPASSWD: /usr/local/bin/labkiosk-install
 EOF
 chmod 0440 /etc/sudoers.d/50-labkiosk-install
+
+# Setting a timezone, generating a locale and writing /etc/default/keyboard all
+# need root, and the agent deliberately does not run as root. One named program,
+# which re-validates every argument against the system's own tables rather than
+# trusting the caller -- the same rule the installer follows.
+cat << 'EOF' > /etc/sudoers.d/51-labkiosk-localization
+kiosk ALL=(ALL) NOPASSWD: /usr/local/sbin/labkiosk-localization
+EOF
+chmod 0440 /etc/sudoers.d/51-labkiosk-localization
 
 # 7. Enable kiosk services.
 systemctl enable nodm.service || true
@@ -260,5 +321,139 @@ else
     install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
     rm -f /tmp/cloudflared
 fi
+
+# 8a. Keep /etc/labkiosk writable by the agent, at every boot.
+#
+#     On an installed disk this path is the LABKIOSK_DATA partition. If it ever
+#     ends up owned by root -- an older installer, a partition restored or
+#     recreated by hand, a disk moved between machines -- the agent (which runs
+#     as the unprivileged kiosk user) cannot save its enrolment, and the wizard
+#     fails with "Permission denied" on a workstation that has no shell to fix it
+#     from. Correcting it at boot costs nothing and makes that unrecoverable.
+#
+#     system-connections is deliberately left alone: NetworkManager keyfiles hold
+#     Wi-Fi passphrases and must stay root-only.
+cat << 'EOF' > /usr/local/sbin/labkiosk-data-permissions
+#!/bin/sh
+set -eu
+
+DIR=/etc/labkiosk
+KIOSK_UID="$(id -u kiosk)"
+KIOSK_GID="$(id -g kiosk)"
+
+# On an installed workstation this path IS the LABKIOSK_DATA partition, and
+# everything else is an overlay in RAM. fstab mounts it "nofail", which means
+# systemd does not order the boot behind it -- so it can still be unmounted when
+# this runs. Creating a directory here in that moment is the worst outcome
+# available: it looks writable, the agent enrols into it, and the enrolment is
+# gone at the next power-off. Mount it instead of papering over it.
+if [ -e /etc/labkiosk-installed ] && ! mountpoint -q "$DIR"; then
+    mkdir -p "$DIR"
+    if mount "$DIR" 2>/dev/null; then
+        echo "labkiosk: mounted the persistent data partition at $DIR."
+    else
+        echo "labkiosk: WARNING $DIR is not the LABKIOSK_DATA partition and could not be mounted."
+        echo "labkiosk: an enrolment made now would be forgotten at the next reboot."
+        # Deliberately left as it is. An unwritable directory makes the agent
+        # report something recoverable; a writable one in RAM silently loses
+        # the school's enrolment.
+        exit 0
+    fi
+fi
+
+mkdir -p "$DIR"
+
+CURRENT="$(stat -c '%u:%g' "$DIR")"
+if [ "$CURRENT" != "${KIOSK_UID}:${KIOSK_GID}" ]; then
+    echo "labkiosk: $DIR was owned by $CURRENT; giving it to kiosk so the agent can enrol."
+    chown "${KIOSK_UID}:${KIOSK_GID}" "$DIR"
+fi
+chmod 0700 "$DIR"
+
+# The agent's own files; anything else (system-connections) keeps its ownership.
+for _file in "$DIR"/config.json "$DIR"/proxy.json; do
+    if [ -f "$_file" ]; then
+        chown "${KIOSK_UID}:${KIOSK_GID}" "$_file"
+        chmod 0600 "$_file"
+    fi
+done
+exit 0
+EOF
+chmod 0755 /usr/local/sbin/labkiosk-data-permissions
+
+cat << 'EOF' > /etc/systemd/system/labkiosk-data-permissions.service
+[Unit]
+Description=Ensure /etc/labkiosk is writable by the Lab Kiosk agent
+# local-fs.target is where the LABKIOSK_DATA mount lands; nodm is what starts the
+# session the agent runs in, so this has to be settled before either matters.
+# etc-labkiosk.mount is named explicitly because the fstab entry is "nofail":
+# systemd then leaves that mount unordered against local-fs.target, so waiting
+# for the target alone would not wait for the partition. The unit does not exist
+# on live media, where an ordering dependency on a missing unit is a no-op.
+After=local-fs.target etc-labkiosk.mount
+Before=nodm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/labkiosk-data-permissions
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable labkiosk-data-permissions.service || true
+
+# 8b. Ask for the installation USB stick to be removed before rebooting.
+#
+#     live-tools prints this for optical media, but bails out for USB mass
+#     storage before it ever prompts (ejecting one needs a cold reboot). A USB
+#     stick is exactly what schools install from, so without this a freshly
+#     installed workstation reboots straight back into the installer.
+#
+#     The guards match live-tools': nothing happens on an installed disk (no
+#     boot=live), after toram, or when noeject was passed -- so a teacher's
+#     remote reboot of an enrolled workstation never waits for a keypress.
+#     systemd runs these with a timeout, so an unattended machine continues on
+#     its own rather than hanging forever.
+mkdir -p /lib/systemd/system-shutdown
+cat << 'EOF' > /lib/systemd/system-shutdown/labkiosk-medium.shutdown
+#!/bin/sh
+# Prompt to remove the live USB stick, the case live-tools skips.
+if ! grep -qs "boot=live" /proc/cmdline; then
+    exit 0
+fi
+if grep -qs "toram" /proc/cmdline || grep -qs "noeject" /proc/cmdline; then
+    exit 0
+fi
+
+DEVICE="$(findmnt -Un -o source /run/live/medium 2>/dev/null | sed -e 's|^/dev/||')"
+if [ -z "$DEVICE" ]; then
+    exit 0
+fi
+
+# Only USB mass storage: live-tools has already prompted for anything else.
+case "$DEVICE" in
+    sd*) ;;
+    *) exit 0 ;;
+esac
+PARENT="$(echo "$DEVICE" | sed -e 's/[0-9]*$//')"
+if ! readlink "/sys/block/${PARENT}" | grep -q usb; then
+    exit 0
+fi
+
+stty sane < /dev/console 2>/dev/null || true
+printf "\n\nLab Kiosk: remove the installation USB stick, then press ENTER to continue:" > /dev/console
+read _ignored < /dev/console || true
+exit 0
+EOF
+chmod 0755 /lib/systemd/system-shutdown/labkiosk-medium.shutdown
+
+# 9. noVNC web client, from the pinned and checksum-verified upstream release
+#    (usr/share/labkiosk/novnc.pin) rather than Debian's package, which drags in
+#    Node.js. Unlike cloudflared this is not optional: the teacher console's
+#    remote control loads /vnc.html from here, so a failure stops the build.
+NOVNC_INSTALLER=/usr/share/labkiosk/install-novnc.sh
+sh "$NOVNC_INSTALLER" /usr/share/labkiosk/novnc.pin /usr/share/novnc
+rm -f "$NOVNC_INSTALLER"
 
 echo "[Hook] Lockdown configuration applied successfully."

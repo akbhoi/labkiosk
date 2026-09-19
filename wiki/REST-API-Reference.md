@@ -413,10 +413,24 @@ Custom domain approval binds an FQDN to a tenant. Once bound, Cloudflare routes 
 
 Every request must satisfy both `_is_expected_host()` (the `Host` header is loopback) and `_is_local_caller()` (the `Origin`, when present, is `127.0.0.1` or `localhost`). Either check failing returns `403`.
 
+One further origin is accepted: the kiosk extension's own origin (`chrome-extension://hfjmbeplebjipenkfabncgkpadnjmmoe`, pinned by the `key` in `manifest.json`). Chromium stamps every non-`GET` fetch from the extension's service worker with it, and that worker is what the top bar's administrator modal uses to reach `POST /api/admin/verify`.
+
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/setup` | `GET` | Serves `wizard.html`. Returns `403` once the workstation is enrolled — sending a student back to the wizard would only invite tampering. |
-| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `installRequested`. |
+| `/setup` | `GET` | Serves `wizard.html`. Returns `403` once the workstation is enrolled unless accessed via `#network` with admin authentication. |
+| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
+| `/api/localization/options` | `GET` | Continents, countries, timezones, locales, keyboard layouts and interface catalogs, all read from the workstation's own tzdata, locale and X11 tables. |
+| `/api/localization/languages` | `GET` | Interface languages the school's control plane offers, with the installed ones marked. |
+| `/api/localization/language/download` | `POST` | Downloads one catalog from the control plane into `/etc/labkiosk/i18n`. Administrator token required once installed. |
+| `/api/localization/configure` | `POST` | Applies language, region, timezone, keyboard and (when `syncTime` is false) the clock by hand. Administrator token required once installed. |
+| `/i18n/<tag>.json` | `GET` | An interface catalog. `en-US` is bundled; others come from `/etc/labkiosk/i18n`. |
+| `/api/network/status` | `GET` | Comprehensive network status: active device, IPv4/IPv6 addresses, gateway, DNS, proxy, interfaces, and connectivity check. |
+| `/api/network/interfaces` | `GET` | List of hardware interfaces with device name, type (`ethernet` / `wifi`), state, and physical carrier link status. |
+| `/api/network/wifi/scan` | `GET` | Live Wi-Fi scan results: SSID, BSSID, signal strength (0-100), channel, security mode, and encrypted flag. |
+| `/api/network/configure` | `POST` | Configures and connects interface (Ethernet/Wi-Fi) with IPv4/IPv6 mode (`auto`, `custom_dns`, `manual`), DNS, and optional HTTP proxy. |
+| `/api/network/test` | `POST` | Probes DNS resolution and internet route reachability (`1.1.1.1:53` / `8.8.8.8:53`). |
+| `/api/log` | `GET` | Tail of `/tmp/lab-agent.log` (max 64 KB, `text/plain`). Needs the `X-LabKiosk-Admin` token on an installed workstation. Shown by the wizard's **Agent Log & Diagnostics** panel. |
+| `/api/admin/verify` | `POST` | Verifies administrator password against the GRUB PBKDF2 hash (`/etc/grub.d/01_labkiosk_password`) and returns a 10-minute token for `/api/network/configure` (header `X-LabKiosk-Admin`, required on installed systems). Throttled: 5 failures lock it for 60 s. |
 | `/api/install/disks` | `GET` | Candidate target disks. Returns `[]` when not a live session. |
 | `/api/install/status` | `GET` | Installation state and progress percentage. |
 | `/api/install` | `POST` | Starts the disk install. `400` when the system is already installed. |
@@ -424,6 +438,8 @@ Every request must satisfy both `_is_expected_host()` (the `Host` header is loop
 | `/api/setup` | `POST` | Performs enrolment against the control plane. `409` once already enrolled. |
 
 `POST /api/install` takes `targetDisk` (re-validated against `TARGET_DISK_PATTERN`) and an optional `grubPasswordHash` (re-validated against `GRUB_PBKDF2_PATTERN`). Only a *digest* is accepted: the wizard derives PBKDF2 in the browser with WebCrypto, so the plaintext boot-menu password never crosses the agent's API, never appears in a process argument, and is never written to disk.
+
+`POST /api/network/configure` manages NetworkManager connections. On installed machines, connection keyfiles are persisted in `LABKIOSK_DATA` (`/etc/labkiosk/system-connections/`) and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab` so configurations persist across `overlayroot="tmpfs"` reboots.
 
 → [Client Agent](Client-Agent) · [Disk Installer](Disk-Installer)
 

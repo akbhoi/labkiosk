@@ -99,6 +99,14 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 +---------------------------------------------------------------------------------------+
 ```
 
+<a id="key-platform-capabilities"></a><a id="-key-platform-capabilities"></a>
+### 🛡️ Key Platform Invariants & Capabilities
+
+- **Native Top-Level Navigation & Coordinated Reloads**: Chromium runs in native kiosk mode without `<iframe>` embedding. Remote teacher commands such as `reload` are dispatched through an event-driven `reloadEpoch` handshake between the workstation agent (`agent.py`) and the browser extension (`content.js`), verified via `sessionStorage` to prevent infinite reload loops without relying on synthetic key injection (`xdotool`).
+- **International Keyboard & Multilingual Support**: Workstation lockdown removes OS-level shortcut keys while `content.js` intercepts unauthorized keystrokes. Crucially, `content.js` respects `AltGr` (`event.getModifierState("AltGraph")`) and dead keys (`Dead`), allowing international students to type accented characters, `@`, `€`, and language-specific glyphs seamlessly. Dynamic RTL/LTR layout direction is supported across the wizard and kiosk bar.
+- **Query-Aware Navigation**: Kiosk URL normalization strictly preserves search queries (`u.search`), ensuring web apps with room IDs or student session parameters (e.g. `?room=101&user=demo`) work properly and are not incorrectly detected as root broadcast URLs.
+- **Centralized Interface Catalogs (i18n)**: The Super Admin Console (`/super`) provides full management for global workstation interface catalogs (`/api/super/i18n`), allowing administrators to upload, inspect, and delete language packs served to unenrolled and enrolled kiosks alike.
+
 ---
 
 <a id="5-minute-quickstart"></a><a id="-5-minute-quickstart"></a>

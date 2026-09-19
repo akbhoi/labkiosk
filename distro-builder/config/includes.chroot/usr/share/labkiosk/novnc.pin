@@ -1,0 +1,19 @@
+# Pinned noVNC web client for the kiosk image and the Docker simulator.
+#
+# Debian's `novnc` package depends on Node.js and a stack of OpenStack Python
+# libraries (~130 MB installed) that the browser client never uses: noVNC is
+# static HTML and JavaScript served by websockify. So the release is fetched
+# directly and verified against this checksum; install-novnc.sh refuses to
+# install anything that does not match.
+#
+# To move to a new release:
+#
+#   VERSION=1.7.0
+#   curl -fsSLo novnc.tar.gz "https://github.com/novnc/noVNC/archive/refs/tags/v${VERSION}.tar.gz"
+#   sha256sum novnc.tar.gz
+#
+# The teacher console opens /vnc.html?autoconnect=true&resize=scale&password=...
+# on the workstation, so check those query parameters still work after a bump.
+
+VERSION=1.7.0
+SHA256=b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6

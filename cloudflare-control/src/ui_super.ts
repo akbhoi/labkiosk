@@ -14,9 +14,18 @@ export interface SuperConsoleTenant extends Tenant {
   total_clients: number;
 }
 
+export interface SuperConsoleCatalog {
+  tag: string;
+  name: string;
+  direction: string;
+  entry_count: number;
+  updated_at: number;
+}
+
 export function renderSuperAdminHtml(data: {
   superAdminEmail: string;
   tenants: SuperConsoleTenant[];
+  catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
   /** Per-response CSP nonce; every <script> in this template must carry it. */
   nonce: string;
@@ -29,6 +38,22 @@ export function renderSuperAdminHtml(data: {
 
   const totalClients = tenants.reduce((acc, t) => acc + (t.total_clients || 0), 0);
   const totalOnline = tenants.reduce((acc, t) => acc + (t.online_clients || 0), 0);
+
+  const catalogList = data.catalogs || [];
+  const catalogRows = catalogList.map((c) => `
+    <tr>
+      <td><strong>${escapeHtml(c.tag)}</strong></td>
+      <td>${escapeHtml(c.name)}</td>
+      <td><span class="subdomain-tag">${escapeHtml(c.direction.toUpperCase())}</span></td>
+      <td>${Number(c.entry_count) || 0}</td>
+      <td>${c.updated_at && Number.isFinite(c.updated_at) ? escapeHtml(new Date(c.updated_at * 1000).toISOString().slice(0, 16).replace("T", " ")) : "-"}</td>
+      <td>
+        <div class="action-btn-group">
+          <button class="btn btn-sm btn-reject" data-action="delete-catalog" data-tag="${escapeAttr(c.tag)}">Delete</button>
+        </div>
+      </td>
+    </tr>
+  `).join("");
 
   // Every field below is school-supplied via public registration, so all of it
   // is escaped; actions carry their ids in data-* attributes rather than in
@@ -365,6 +390,33 @@ export function renderSuperAdminHtml(data: {
         </tbody>
       </table>
     </div>
+
+    <!-- Workstation Interface Catalogs (i18n) -->
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+      <h2 class="section-title" style="margin-bottom: 0;">Workstation Interface Catalogs (i18n)</h2>
+      <button type="button" class="btn btn-approve" id="btn-open-upload-catalog">+ Upload Catalog</button>
+    </div>
+    <div class="table-container">
+      ${catalogList.length > 0 ? `
+        <table>
+          <thead>
+            <tr>
+              <th>Language Tag</th>
+              <th>Display Name</th>
+              <th>Direction</th>
+              <th>Entries</th>
+              <th>Last Updated</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${catalogRows}
+          </tbody>
+        </table>
+      ` : `
+        <div class="empty-state">No interface catalogs uploaded yet. Workstations will use default en-US.</div>
+      `}
+    </div>
   </main>
 
   <!-- Password Change Modal -->
@@ -391,6 +443,42 @@ export function renderSuperAdminHtml(data: {
         <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
           <button type="button" class="btn btn-secondary" id="btn-cancel-password">Cancel</button>
           <button type="submit" class="btn btn-approve" id="btn-submit-password">Update Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Upload Catalog Modal -->
+  <div class="modal-overlay" id="catalog-modal">
+    <div class="modal-box">
+      <div class="modal-title">Upload Interface Catalog</div>
+      <p style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">
+        Upload a JSON catalog for workstation setup wizards and kiosk top bars.
+      </p>
+      <form id="catalog-form">
+        <div class="form-group">
+          <label class="form-label" for="catalog-tag">Language Tag (e.g. hi-IN, fr-FR, es-ES)</label>
+          <input type="text" id="catalog-tag" class="form-input" required placeholder="hi-IN" pattern="^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="catalog-name">Display Name (optional)</label>
+          <input type="text" id="catalog-name" class="form-input" placeholder="Hindi (India)">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="catalog-direction">Direction</label>
+          <select id="catalog-direction" class="form-input">
+            <option value="ltr">LTR (Left to Right)</option>
+            <option value="rtl">RTL (Right to Left)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="catalog-file">Catalog JSON File</label>
+          <input type="file" id="catalog-file" class="form-input" accept=".json,application/json" required>
+        </div>
+        <div id="catalog-status-msg" class="form-error"></div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-catalog">Cancel</button>
+          <button type="submit" class="btn btn-approve" id="btn-submit-catalog">Upload</button>
         </div>
       </form>
     </div>
@@ -455,6 +543,19 @@ export function renderSuperAdminHtml(data: {
       } else if (action === "reactivate") {
         if (!confirm("Reactivate this school?")) return;
         postJson("/api/super/tenants/reactivate", { tenantId });
+      } else if (action === "delete-catalog") {
+        const tag = button.dataset.tag || "";
+        if (!confirm("Delete interface catalog '" + tag + "'? Workstations that haven't downloaded it will no longer be able to.")) return;
+        fetch("/api/super/i18n/" + encodeURIComponent(tag), {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" }
+        }).then(res => res.json()).then(data => {
+          if (data.status === "ok") {
+            window.location.reload();
+          } else {
+            alert(data.error || "Failed to delete catalog");
+          }
+        }).catch(err => alert("Network error: " + err.message));
       }
     });
 
@@ -523,6 +624,110 @@ export function renderSuperAdminHtml(data: {
       } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = "Update Password";
+      }
+    });
+
+    const catalogModal = document.getElementById("catalog-modal");
+    const catalogForm = document.getElementById("catalog-form");
+    const catalogTagInput = document.getElementById("catalog-tag");
+    const catalogNameInput = document.getElementById("catalog-name");
+    const catalogDirSelect = document.getElementById("catalog-direction");
+    const catalogFileInput = document.getElementById("catalog-file");
+    const catalogStatusMsg = document.getElementById("catalog-status-msg");
+
+    function openCatalogModal() {
+      catalogForm.reset();
+      catalogStatusMsg.textContent = "";
+      catalogStatusMsg.className = "form-error";
+      catalogModal.classList.add("active");
+      catalogTagInput.focus();
+    }
+    function closeCatalogModal() {
+      catalogModal.classList.remove("active");
+    }
+
+    document.getElementById("btn-open-upload-catalog").addEventListener("click", openCatalogModal);
+    document.getElementById("btn-cancel-catalog").addEventListener("click", closeCatalogModal);
+    catalogModal.addEventListener("click", (e) => {
+      if (e.target === catalogModal) closeCatalogModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && catalogModal.classList.contains("active")) closeCatalogModal();
+    });
+
+    catalogFileInput.addEventListener("change", async () => {
+      const file = catalogFileInput.files && catalogFileInput.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if (parsed._meta) {
+          if (parsed._meta.name && !catalogNameInput.value) catalogNameInput.value = parsed._meta.name;
+          if (parsed._meta.direction && (parsed._meta.direction === "rtl" || parsed._meta.direction === "ltr")) {
+            catalogDirSelect.value = parsed._meta.direction;
+          }
+        }
+        if (!catalogTagInput.value && file.name.endsWith(".json")) {
+          const stem = file.name.slice(0, -5);
+          if (/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/.test(stem)) {
+            catalogTagInput.value = stem;
+          }
+        }
+      } catch {}
+    });
+
+    catalogForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      catalogStatusMsg.textContent = "";
+      catalogStatusMsg.className = "form-error";
+
+      const file = catalogFileInput.files && catalogFileInput.files[0];
+      if (!file) {
+        catalogStatusMsg.textContent = "Please select a JSON catalog file.";
+        return;
+      }
+
+      let parsedCatalog = null;
+      try {
+        const text = await file.text();
+        parsedCatalog = JSON.parse(text);
+      } catch (err) {
+        catalogStatusMsg.textContent = "Invalid JSON file: " + (err && err.message ? err.message : "Parse error");
+        return;
+      }
+
+      const submitBtn = document.getElementById("btn-submit-catalog");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Uploading...";
+
+      try {
+        const payload = {
+          tag: catalogTagInput.value.trim(),
+          name: catalogNameInput.value.trim() || undefined,
+          direction: catalogDirSelect.value,
+          catalog: parsedCatalog,
+        };
+        const res = await fetch("/api/super/i18n", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.status === "ok") {
+          catalogStatusMsg.className = "form-success";
+          catalogStatusMsg.textContent = "Catalog uploaded successfully!";
+          setTimeout(() => {
+            closeCatalogModal();
+            window.location.reload();
+          }, 800);
+        } else {
+          catalogStatusMsg.textContent = data.error || ("Upload failed (" + res.status + ")");
+        }
+      } catch (err) {
+        catalogStatusMsg.textContent = "Network error. Please try again.";
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Upload";
       }
     });
   </script>

@@ -4,6 +4,84 @@
  * real-time telemetry indicators, and fullscreen lock curtain.
  */
 
+/**
+ * The last layer of the keyboard and mouse lockdown.
+ *
+ * Openbox binds nothing and the X keymap has had the F keys, the Super keys,
+ * the menu key and the XF86 block removed (labkiosk-lock-keys), so most of what
+ * follows should never arrive. This catches what does: a page's own shortcuts,
+ * Chromium accelerators that are still reachable with Control or Alt, and the
+ * context menu.
+ *
+ * Deliberately permissive about one thing: typing. Letters, digits,
+ * punctuation, Backspace, Delete, Enter, Shift, Caps Lock, Tab, Escape and the
+ * cursor keys all pass through, because a workstation that cannot fill in a
+ * form is not locked down, it is broken.
+ *
+ * And deliberately permissive about one more: the clipboard, *only* on the
+ * setup wizard. The enrolment key is a 20-character string an administrator
+ * pastes from the dashboard, and taking Ctrl+V away there would make the one
+ * screen that needs it unusable. Students never see that origin.
+ */
+(function lockInput() {
+  const AGENT_ORIGIN = "http://127.0.0.1:8888";
+  const CLIPBOARD_KEYS = new Set(["a", "c", "v", "x", "z", "y"]);
+
+  // Keys that pass on their own, with no modifier.
+  const ALLOWED_KEYS = new Set([
+    "Backspace", "Delete", "Enter", "NumpadEnter", "Shift", "CapsLock", "Tab", "Escape",
+    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown",
+    "Control", "Alt", "AltGraph", "NumLock", "Dead", "Process"
+  ]);
+
+  const isSetupPage = window.location.origin === AGENT_ORIGIN;
+
+  function isTypedCharacter(event) {
+    // A single printable character: "a", "7", "@". Dead keys and IME give
+    // longer names, which fall through to the rules below.
+    return event.key.length === 1;
+  }
+
+  function permitted(event) {
+    if (typeof event.getModifierState === "function" && event.getModifierState("AltGraph")) {
+      if (isTypedCharacter(event) || event.key === "Dead" || ALLOWED_KEYS.has(event.key)) {
+        return true;
+      }
+    }
+    const combination = event.ctrlKey || event.altKey || event.metaKey;
+    if (combination) {
+      // Shift is not a combination -- it is how capitals are typed.
+      if (isSetupPage && event.ctrlKey && !event.altKey && !event.metaKey &&
+          CLIPBOARD_KEYS.has(event.key.toLowerCase())) {
+        return true;
+      }
+      return false;
+    }
+    if (ALLOWED_KEYS.has(event.key)) return true;
+    if (isTypedCharacter(event)) return true;
+    // Everything else: F keys, Meta, ContextMenu, PrintScreen, Insert, Pause,
+    // and anything a keyboard invents that this list has never heard of.
+    return false;
+  }
+
+  function guard(event) {
+    if (permitted(event)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  // Capture phase, so a page's own handler never runs either.
+  for (const type of ["keydown", "keypress", "keyup"]) {
+    window.addEventListener(type, guard, true);
+  }
+
+  // Right click, and the menu key that does the same thing.
+  window.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+})();
+
 (function () {
   // Only inject in top window (never in sub-iframes)
   if (window.self !== window.top) return;
@@ -39,6 +117,40 @@
   }
   let lastTargetUrl = null;
   let isLocked = false;
+  let lastReloadEpoch = null;
+  try {
+    const saved = sessionStorage.getItem("labkiosk_reload_epoch");
+    if (saved) lastReloadEpoch = Number(saved);
+  } catch {}
+  // When the agent first reported the workstation offline; null while online.
+  let offlineSince = null;
+  const OFFLINE_REDIRECT_MS = 6000;
+  // Long enough to notice the bar and read the workstation name, short enough
+  // that it is out of the way before anyone starts a lesson.
+  let barCatalog = {};
+
+  /**
+   * The bar's own strings, in whatever language the wizard chose.
+   *
+   * At this scope on purpose: the nav-button titles and the network tooltip are
+   * set from functions that sit beside the one that builds the bar, not inside
+   * it, so a t() declared in there would not exist by the time they run.
+   */
+  function t(key, fallback) {
+    const value = barCatalog[key];
+    return typeof value === "string" && value ? value : fallback;
+  }
+const BAR_INTRO_MS = 2500;
+  const AGENT_SETUP_URL = "http://127.0.0.1:8888/setup";
+
+  function isAgentPage(href) {
+    try {
+      const url = new URL(href);
+      return (url.hostname === "127.0.0.1" || url.hostname === "localhost") && url.port === "8888";
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Mirror of the active broadcast marker owned by the service worker.
@@ -127,7 +239,8 @@
     if (!raw) return "";
     try {
       const u = new URL(raw, window.location.href);
-      return (u.origin + u.pathname).replace(/\/+$/, "").toLowerCase();
+      const path = u.pathname.length > 1 ? u.pathname.replace(/\/+$/, "") : u.pathname;
+      return (u.origin + path).toLowerCase() + u.search;
     } catch {
       return "";
     }
@@ -201,7 +314,7 @@
           height: 10px;
           background: transparent;
           z-index: 2147483646;
-          pointer-events: auto;
+          pointer-events: none;
         }
 
         #kiosk-bar {
@@ -276,6 +389,15 @@
           font-family: monospace;
           font-size: 13px;
           color: #93c5fd;
+          max-width: 35vw;
+          min-width: 0;
+          overflow: hidden;
+        }
+
+        #kiosk-domain {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .client-meta {
@@ -284,6 +406,28 @@
           gap: 10px;
           font-size: 13px;
           font-weight: 600;
+        }
+
+        .kiosk-icon-btn {
+          background: transparent;
+          border: none;
+          color: #94a3b8;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 4px;
+          border-radius: 6px;
+          transition: all 0.15s ease;
+        }
+
+        .kiosk-icon-btn:hover {
+          color: #38bdf8;
+          background: #1e293b;
+        }
+
+        .kiosk-icon-btn:active {
+          transform: scale(0.95);
         }
 
         .status-dot {
@@ -296,6 +440,136 @@
         .status-dot.offline {
           background: #ef4444;
           box-shadow: 0 0 8px #ef4444;
+        }
+
+        .kiosk-clock {
+          display: flex; align-items: center; gap: 6px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: #e2e8f0; border-radius: 8px;
+          padding: 5px 10px; font-size: 12px; font-weight: 700;
+          font-variant-numeric: tabular-nums; cursor: pointer;
+          white-space: nowrap;
+        }
+        .kiosk-clock:hover { background: rgba(255, 255, 255, 0.12); }
+
+        /* Administrator Verification Modal */
+        .modal-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100vw;
+          height: 100vh;
+          background: rgba(0, 0, 0, 0.75);
+          backdrop-filter: blur(4px);
+          -webkit-backdrop-filter: blur(4px);
+          z-index: 2147483647;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .modal-overlay.hidden {
+          display: none;
+        }
+
+        .modal-card {
+          background: #0f172a;
+          border: 1px solid #334155;
+          border-radius: 12px;
+          padding: 24px;
+          width: 380px;
+          max-width: 90vw;
+          box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7);
+          color: #f8fafc;
+        }
+
+        .modal-header {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 8px;
+        }
+
+        .modal-title {
+          font-size: 16px;
+          font-weight: 700;
+          color: #f8fafc;
+        }
+
+        .modal-desc {
+          font-size: 13px;
+          color: #94a3b8;
+          margin-bottom: 16px;
+          line-height: 1.4;
+        }
+
+        .modal-input {
+          width: 100%;
+          background: #1e293b;
+          border: 1px solid #475569;
+          border-radius: 6px;
+          padding: 9px 12px;
+          color: #f8fafc;
+          font-size: 14px;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+
+        .modal-input:focus {
+          border-color: #38bdf8;
+        }
+
+        .modal-err {
+          color: #f87171;
+          font-size: 12px;
+          margin-top: 6px;
+          font-weight: 500;
+        }
+
+        .modal-err.hidden {
+          display: none;
+        }
+
+        .modal-actions {
+          display: flex;
+          gap: 10px;
+          margin-top: 20px;
+          justify-content: flex-end;
+        }
+
+        .modal-btn {
+          border: none;
+          padding: 8px 16px;
+          border-radius: 6px;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .modal-btn-cancel {
+          background: #334155;
+          color: #cbd5e1;
+        }
+
+        .modal-btn-cancel:hover {
+          background: #475569;
+          color: #ffffff;
+        }
+
+        .modal-btn-confirm {
+          background: #2563eb;
+          color: #ffffff;
+        }
+
+        .modal-btn-confirm:hover {
+          background: #1d4ed8;
+        }
+
+        .modal-btn-confirm:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
 
         /* Fullscreen Lockdown Curtain */
@@ -354,21 +628,21 @@
 
       <div id="kiosk-bar">
         <div class="nav-cluster">
-          <button class="kiosk-btn" id="btn-home" title="Lesson Home">
+          <button class="kiosk-btn" id="btn-home" title="Lesson Home" data-i18n-title="bar.homeTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
-            Home
+            <span data-i18n="bar.home">Home</span>
           </button>
-          <button class="kiosk-btn" id="btn-back" title="Go Back">
+          <button class="kiosk-btn" id="btn-back" title="Go Back" data-i18n-title="bar.backTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-            Back
+            <span data-i18n="bar.back">Back</span>
           </button>
-          <button class="kiosk-btn" id="btn-forward" title="Go Forward">
+          <button class="kiosk-btn" id="btn-forward" title="Go Forward" data-i18n-title="bar.forwardTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
-            Forward
+            <span data-i18n="bar.forward">Forward</span>
           </button>
-          <button class="kiosk-btn" id="btn-reload" title="Reload Page">
+          <button class="kiosk-btn" id="btn-reload" title="Reload Page" data-i18n-title="bar.reloadTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-            Reload
+            <span data-i18n="bar.reload">Reload</span>
           </button>
         </div>
 
@@ -378,6 +652,27 @@
         </div>
 
         <div class="client-meta">
+          <button class="kiosk-icon-btn" id="btn-network" title="Network Configuration" data-i18n-title="bar.networkTitle">
+            <svg id="kiosk-net-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12.55a11 11 0 0 1 14.08 0"></path>
+              <path d="M1.42 9a16 16 0 0 1 21.16 0"></path>
+              <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
+              <line x1="12" y1="20" x2="12.01" y2="20"></line>
+            </svg>
+          </button>
+          <!--
+            The clock sits right after the network icon and opens the same wizard
+            page the network icon does, on its Language & Region step: it is the
+            one place a teacher can see the time is wrong, so it is also where
+            they should be able to put it right. Behind the same password.
+          -->
+          <button class="kiosk-clock" id="btn-clock" title="Date, time and language"
+                  data-i18n-title="bar.clockTitle">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+              <circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline>
+            </svg>
+            <span id="kiosk-clock-text"></span>
+          </button>
           <div class="status-dot" id="kiosk-dot"></div>
           <span id="kiosk-client-id">PC-01</span>
         </div>
@@ -391,6 +686,25 @@
           </svg>
           <h1 class="lock-title">Attention Please</h1>
           <p class="lock-msg" id="lock-text">Screens locked by the instructor. Please look to the front.</p>
+        </div>
+      </div>
+
+      <div id="admin-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+          <div class="modal-header">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+            <h3 class="modal-title" data-i18n="admin.title">Administrator Verification</h3>
+          </div>
+          <p class="modal-desc" id="admin-modal-desc" data-i18n="admin.prompt">Enter the administrator or boot password to configure network settings.</p>
+          <input type="password" id="admin-modal-input" class="modal-input" placeholder="Enter password" autocomplete="off" />
+          <div id="admin-modal-err" class="modal-err hidden" data-i18n="admin.invalid">Invalid administrator password.</div>
+          <div class="modal-actions">
+            <button type="button" class="modal-btn modal-btn-cancel" id="btn-admin-modal-cancel" data-i18n="admin.cancel">Cancel</button>
+            <button type="button" class="modal-btn modal-btn-confirm" id="btn-admin-modal-submit" data-i18n="admin.unlock">Unlock</button>
+          </div>
         </div>
       </div>
     `;
@@ -458,6 +772,21 @@
 
     window.addEventListener("mouseleave", () => hideBar(200));
 
+    // Show the bar once at the start of each session, then let it hide itself.
+    // It is invisible until the pointer reaches the top edge, which nobody
+    // discovers by accident; this is how a student learns it is there at all.
+    // The service worker hands out the "first page of this session" flag, so
+    // this happens once per boot rather than on every navigation.
+    askAgent({ type: "labkiosk:intro-peek" })
+      .then((reply) => {
+        if (!reply || !reply.first) return;
+        showBar();
+        hideBar(BAR_INTRO_MS);
+      })
+      .catch(() => {
+        // The service worker may still be starting; the bar simply stays hidden.
+      });
+
     // Touch support for touchscreens
     window.addEventListener(
       "touchstart",
@@ -472,6 +801,31 @@
     );
 
     // Button event listeners
+    // Strings the bar sets from script rather than from its own markup: the
+    // English is the argument, so a catalog only ever overrides it.
+    const adminDesc = shadow.getElementById("admin-modal-desc");
+    // Interface language. The bar is built in English and then translated in
+    // place, so a missing, partial or broken catalog leaves it readable.
+    askAgent({ type: "labkiosk:i18n" }).then((reply) => {
+      const catalog = (reply && reply.catalog) || {};
+      barCatalog = catalog;
+      shadow.querySelectorAll("[data-i18n]").forEach((el) => {
+        const value = catalog[el.dataset.i18n];
+        if (typeof value === "string" && value) el.textContent = value;
+      });
+      shadow.querySelectorAll("[data-i18n-title]").forEach((el) => {
+        const value = catalog[el.dataset.i18nTitle];
+        if (typeof value === "string" && value) el.title = value;
+      });
+      const dir = (catalog._meta || {}).direction === "rtl" ? "rtl" : "ltr";
+      host.setAttribute("dir", dir);
+      if (bar) bar.setAttribute("dir", dir);
+      const curtain = shadow.getElementById("lock-curtain");
+      if (curtain) curtain.setAttribute("dir", dir);
+      const adminModal = shadow.getElementById("admin-modal");
+      if (adminModal) adminModal.setAttribute("dir", dir);
+    }).catch(() => { /* English stands */ });
+
     shadow.getElementById("btn-home").onclick = async () => {
       try {
         const { status } = await askAgent({ type: "labkiosk:status" });
@@ -494,6 +848,106 @@
     shadow.getElementById("btn-forward").onclick = () => window.history.forward();
     shadow.getElementById("btn-reload").onclick = () => window.location.reload();
 
+    const adminModal = shadow.getElementById("admin-modal");
+    const adminInput = shadow.getElementById("admin-modal-input");
+    const adminErr = shadow.getElementById("admin-modal-err");
+    const btnAdminSubmit = shadow.getElementById("btn-admin-modal-submit");
+    const btnAdminCancel = shadow.getElementById("btn-admin-modal-cancel");
+    const btnNetwork = shadow.getElementById("btn-network");
+
+    // Which page the password is being asked for. The modal is shared, so the
+    // destination has to travel with it rather than be assumed.
+    let adminModalTarget = "network";
+
+    function openAdminModal(target) {
+      adminModalTarget = target === "locale" ? "locale" : "network";
+      if (adminDesc) {
+        adminDesc.textContent = adminModalTarget === "locale"
+          ? t("admin.promptLocale", "Enter the administrator or boot password to change the date, time and language.")
+          : t("admin.prompt", "Enter the administrator or boot password to configure network settings.");
+      }
+      if (!adminModal) return;
+      if (adminErr) adminErr.classList.add("hidden");
+      if (adminInput) {
+        adminInput.value = "";
+        setTimeout(() => adminInput.focus(), 60);
+      }
+      adminModal.classList.remove("hidden");
+    }
+
+    function closeAdminModal() {
+      if (!adminModal) return;
+      adminModal.classList.add("hidden");
+      if (adminInput) adminInput.value = "";
+      if (adminErr) adminErr.classList.add("hidden");
+    }
+
+    async function submitAdminPassword() {
+      if (!adminInput || !btnAdminSubmit) return;
+      const val = adminInput.value;
+      btnAdminSubmit.disabled = true;
+      if (adminErr) adminErr.classList.add("hidden");
+
+      try {
+        const reply = await askAgent({ type: "labkiosk:verify-admin", password: val });
+        if (reply && reply.verified && reply.token) {
+          closeAdminModal();
+          // The wizard reads the short-lived unlock token from the fragment,
+          // which never leaves the browser, and removes it from the address.
+          window.location.href =
+            `${AGENT_SETUP_URL}#${adminModalTarget}&admin=${encodeURIComponent(reply.token)}`;
+        } else {
+          if (adminErr) {
+            adminErr.textContent = (reply && reply.error) || "Invalid administrator password.";
+            adminErr.classList.remove("hidden");
+          }
+        }
+      } catch (err) {
+        if (adminErr) {
+          adminErr.textContent = (err && err.message) || "Verification failed.";
+          adminErr.classList.remove("hidden");
+        }
+      } finally {
+        btnAdminSubmit.disabled = false;
+      }
+    }
+
+    // The clock, in the workstation's own timezone -- which is the point: the
+    // Language & Region step is what set it, and this is where it shows.
+    const clockText = shadow.getElementById("kiosk-clock-text");
+    const btnClock = shadow.getElementById("btn-clock");
+
+    function renderClock() {
+      if (!clockText) return;
+      try {
+        clockText.textContent = new Intl.DateTimeFormat(undefined, {
+          weekday: "short", day: "2-digit", month: "short",
+          hour: "2-digit", minute: "2-digit",
+        }).format(new Date());
+      } catch {
+        clockText.textContent = new Date().toLocaleString();
+      }
+    }
+    renderClock();
+    setInterval(renderClock, 15000);
+
+    if (btnClock) btnClock.onclick = () => openAdminModal("locale");
+
+    if (btnNetwork) btnNetwork.onclick = () => openAdminModal("network");
+    if (btnAdminCancel) btnAdminCancel.onclick = closeAdminModal;
+    if (btnAdminSubmit) btnAdminSubmit.onclick = submitAdminPassword;
+    if (adminInput) {
+      adminInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitAdminPassword();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          closeAdminModal();
+        }
+      });
+    }
+
     updateNavButtonStates(shadow);
     return shadow;
   }
@@ -506,12 +960,12 @@
       btnBack.classList.add("disabled");
       btnBack.style.opacity = "0.35";
       btnBack.style.cursor = "not-allowed";
-      btnBack.title = "Back is disabled at the start of the broadcast lesson";
+      btnBack.title = t("bar.back-is-disabled-at-the-start", "Back is disabled at the start of the broadcast lesson");
     } else {
       btnBack.classList.remove("disabled");
       btnBack.style.opacity = "1";
       btnBack.style.cursor = "pointer";
-      btnBack.title = "Go Back";
+      btnBack.title = t("bar.backTitle", "Go Back");
     }
   }
 
@@ -532,9 +986,31 @@
       const { status: data } = await askAgent({ type: "labkiosk:status" });
 
       if (shadowRoot) {
-        // Dot status
         const dot = shadowRoot.getElementById("kiosk-dot");
-        if (dot) dot.classList.remove("offline");
+        const netIcon = shadowRoot.getElementById("kiosk-net-icon");
+        const btnNet = shadowRoot.getElementById("btn-network");
+
+        if (data && data.isOnline) {
+          offlineSince = null;
+          if (dot) dot.classList.remove("offline");
+          if (netIcon) netIcon.setAttribute("stroke", "#10b981");
+          if (btnNet) btnNet.title = t("bar.network-connected-click-to-configure", "Network Connected (Click to configure)");
+        } else {
+          if (offlineSince === null) offlineSince = Date.now();
+          if (dot) dot.classList.add("offline");
+          if (netIcon) netIcon.setAttribute("stroke", "#ef4444");
+          if (btnNet) btnNet.title = t("bar.network-offline-click-to-configure", "Network Offline (Click to configure)");
+
+          // Measured in time, not ticks: offline, a status call can take several
+          // seconds, so ticks would stretch the grace period unpredictably. A
+          // locked screen stays locked rather than jumping to the wizard.
+          const offlineFor = Date.now() - offlineSince;
+          if (offlineFor > OFFLINE_REDIRECT_MS && !isAgentPage(window.location.href) && !(data && data.isLocked)) {
+            console.warn("[LabKiosk] Workstation offline for >6s, redirecting to network configuration");
+            window.location.replace(`${AGENT_SETUP_URL}#offline`);
+            return;
+          }
+        }
 
         // Client ID
         const cid = shadowRoot.getElementById("kiosk-client-id");
@@ -557,6 +1033,19 @@
         }
 
         updateNavButtonStates(shadowRoot);
+
+        // Remote reload command detection by epoch change
+        const srvReloadEpoch = Number(data.reloadEpoch || 0);
+        if (lastReloadEpoch === null) {
+          lastReloadEpoch = srvReloadEpoch;
+        } else if (srvReloadEpoch > 0 && srvReloadEpoch !== lastReloadEpoch) {
+          lastReloadEpoch = srvReloadEpoch;
+          try {
+            sessionStorage.setItem("labkiosk_reload_epoch", String(srvReloadEpoch));
+          } catch {}
+          window.location.reload();
+          return;
+        }
 
         // High-priority broadcast detection by epoch or target change
         const srvEpoch = String(data.broadcastEpoch || 0);
@@ -599,6 +1088,8 @@
       if (shadowRoot) {
         const dot = shadowRoot.getElementById("kiosk-dot");
         if (dot) dot.classList.add("offline");
+        const netIcon = shadowRoot.getElementById("kiosk-net-icon");
+        if (netIcon) netIcon.setAttribute("stroke", "#ef4444");
       }
     }
   }

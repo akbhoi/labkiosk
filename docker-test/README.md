@@ -23,9 +23,49 @@ The simulator closely mirrors the production live Debian 12 kiosk environment (`
 ```
 
 ### Deliberate Differences vs. Physical Hardware
-1. **Sandboxing:** Chromium runs with `--no-sandbox` because the containerized processes execute as root. The physical ISO runs as unprivileged user `kiosk` with full Chromium sandboxing enabled.
-2. **Gateway Binding:** `websockify` binds to `0.0.0.0:6080` in the container so you can view the simulated display from your host browser. In the physical ISO, `websockify` binds strictly to `127.0.0.1:6080` and is accessible only through a per-workstation Cloudflare Tunnel.
+1. **Gateway Binding:** `websockify` binds to `0.0.0.0:6080` *inside* the container so you can view the simulated display, but the port is published only on the host's `127.0.0.1`. In the physical ISO, `websockify` binds strictly to `127.0.0.1:6080` and is reachable only through a per-workstation Cloudflare Tunnel.
+2. **Sandboxing:** the same as the real image — Chromium runs sandboxed as the unprivileged `kiosk` user. `--no-sandbox` is used only if someone starts the container as root, and the entrypoint warns when that happens.
 3. **Loopback Preservation:** The agent's local API (`127.0.0.1:8888`) remains bound to loopback inside the container, exactly as on physical hardware. You drive the setup wizard from the simulated noVNC screen rather than your host browser.
+
+---
+
+## 🔒 How the container is locked down
+
+The simulator browses the open web, so `docker-compose.yml` treats it as untrusted:
+
+| Setting | Why |
+| :--- | :--- |
+| Runs as the unprivileged `kiosk` user (uid 1000) | A browser exploit lands on a normal account, not root. It also lets Chromium keep its own sandbox: renderers run in their own user and PID namespaces with no capabilities. |
+| `cap_drop: ALL` plus `cap_add: SYS_CHROOT` | `SYS_CHROOT` is the single capability Chromium's sandbox needs — its zygote chroots itself before spawning renderers. Without it every tab dies with `Check failed: sys_chroot("/proc/self/fdinfo/")` and the screen stays black. |
+| `security_opt: no-new-privileges` | Nothing setuid can raise privileges. Safe because the sandbox uses user namespaces rather than the setuid helper. |
+| `read_only: true` with tmpfs for `/tmp`, `/run`, `/etc/labkiosk` and the Chromium policy directory | Nothing survives a restart, matching the real image's RAM overlay. `/tmp` is mounted `exec` because Chromium maps files there, and the entrypoint moves the browser's home to `/tmp` because `/home/kiosk` is read-only. Because `/etc/labkiosk` is a tmpfs, the wizard shows its amber "cannot remember an enrolment" warning here — correctly: an enrolment made in the simulator does not survive a restart, and you re-enrol each session. |
+| `mem_limit`, `pids_limit`, `shm_size` | A runaway page cannot take the host down with it. |
+| Port published on `127.0.0.1:6080` only | noVNC is protected by an 8-character RFB secret, which the protocol caps; on `0.0.0.0` anyone on the same network reaches a live desktop. To share it, put an authenticating proxy in front, or use a Cloudflare Tunnel with Access. |
+| Random VNC password per container | Printed in the startup log. A fixed default would be a published password for keyboard and mouse control. |
+
+If your host forbids unprivileged user namespaces, Chromium cannot start its sandbox. Prefer fixing
+the host; only as a last resort run the container as root, where the entrypoint falls back to
+`--no-sandbox` and says so in the log.
+
+### Verifying what you pulled
+
+Published images are built for `linux/amd64` and `linux/arm64`, carry an SBOM and build provenance,
+and are signed with cosign against the publishing workflow's identity:
+
+```bash
+cosign verify ghcr.io/akbhoi/labkiosk \
+  --certificate-identity-regexp '^https://github.com/akbhoi/labkiosk/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Release tags also publish `X.Y.Z`, `X.Y` and `X`, so a deployment can pin a line that still receives
+fixes instead of following `latest`.
+
+### A smaller build
+
+`--build-arg WITH_INTL_FONTS=0` drops the Noto fonts and saves about 55 MB. Latin text still renders
+through `fonts-liberation`, but non-Latin scripts and emoji do not, so use it only where that is
+acceptable.
 
 ---
 
@@ -68,7 +108,7 @@ Navigate to:
 ```text
 http://localhost:6080/vnc.html
 ```
-- **VNC Password:** `labkiosk` (configured via `VNC_PASSWORD` in `docker-compose.yml`).
+- **VNC Password:** random per container, printed in the startup log (`docker compose logs | grep "VNC password"`). Set `VNC_PASSWORD` to pin one.
 - You will see the simulated thin-client desktop rendering the **First-Boot Setup Wizard**.
 
 ---
@@ -135,9 +175,10 @@ Configure these in `docker-compose.yml` or via shell exports:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
+| `TZ` | `Asia/Kolkata` | Container timezone (IST). Baked into the image; override here to run the simulator on another clock. |
 | `WORKER_URL` | `http://host.docker.internal:8787` | Target Cloudflare Worker control plane. Set to your production URL (e.g. `https://labkiosk.akbhoi.com`) to test remote staging. |
 | `LABKIOSK_DOMAIN` | `labkiosk.akbhoi.com` | Base platform domain. |
-| `VNC_PASSWORD` | `labkiosk` | Password for the local noVNC session. |
+| `VNC_PASSWORD` | random per container | Password for the local noVNC session; printed in the startup log when generated. |
 | `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional public hostname (e.g. Cloudflare Tunnel) that routes to port 6080. If set, reported to the teacher console for remote assistance. |
 
 ---
