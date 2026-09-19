@@ -332,7 +332,8 @@ function sanitizeCatalog(input: unknown): { body: string; entryCount: number } {
     entryCount += 1;
   }
   const body = JSON.stringify(output);
-  if (body.length > CATALOG_MAX_BYTES) {
+  const byteLength = new TextEncoder().encode(body).length;
+  if (byteLength > CATALOG_MAX_BYTES) {
     throw new Error(`The catalog is larger than ${Math.floor(CATALOG_MAX_BYTES / 1024)} KB`);
   }
   return { body, entryCount };
