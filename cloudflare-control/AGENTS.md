@@ -49,6 +49,17 @@ cloudflare-control/
 - A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims.
 - Only the `Host` header says where a request arrived. Never read `X-Forwarded-Host` (or any other caller-supplied header) to build a URL that is handed back to a workstation.
 
+### Rule 2b: Interface Catalogs Are Platform Assets, Not Tenant Data
+- `ui_catalogs` holds the translated interface text for the wizard and the kiosk top bar. It has no
+  `tenant_id` and must not grow one: the product says the same thing to every school, and a
+  workstation asks for its language **before** it is enrolled, so there is no tenant to scope by
+  and no credential to present.
+- Writes are super-admin only (`POST /api/super/i18n`, `DELETE /api/super/i18n/<tag>`), pass the
+  CSRF origin check, and are sanitised into a flat map of string to string with size and count caps
+  before they are stored. Reads (`GET /api/i18n`, `GET /i18n/<tag>.json`) are listed in
+  `isPublicTenantRoute()` for exactly that reason.
+- Nothing tenant-specific may be put in a catalog, precisely because it is served to everyone.
+
 ### Rule 3: The Schema Has Two Homes
 - `migrations/` is what a deployed D1 database has; `SCHEMA_SQL` in `db.ts` builds the in-memory database that tests and local development use. Both must be changed together.
 - Add a **new** numbered migration file (e.g. `0006_feature.sql`); **never** edit an applied migration.

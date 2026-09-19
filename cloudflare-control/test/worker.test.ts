@@ -1168,6 +1168,98 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     } as Env);
     assert.equal(res.status, 200);
   });
+
+  test("Interface catalogs: only a super admin may upload one", async () => {
+    const anonymous = await callJson("/api/super/i18n", json({ tag: "hi-IN", catalog: {} }));
+    assert.ok(anonymous.res.status === 401 || anonymous.res.status === 403, "anonymous upload must be refused");
+
+    const schoolAdmin = await callJson("/api/super/i18n", {
+      ...json({ tag: "hi-IN", catalog: {} }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(schoolAdmin.res.status, 403, "a school admin is not a platform admin");
+  });
+
+  test("Interface catalogs: a cross-site upload is refused", async () => {
+    const res = await worker.fetch(
+      new Request(`${BASE}/api/super/i18n`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: superSessionCookie,
+          Origin: "https://evil.example"
+        },
+        body: JSON.stringify({ tag: "hi-IN", catalog: {} })
+      }),
+      mockEnv
+    );
+    assert.equal(res.status, 403);
+  });
+
+  test("Interface catalogs: a malformed one is rejected rather than stored", async () => {
+    const badTag = await callJson("/api/super/i18n", {
+      ...json({ tag: "not a tag", catalog: {} }),
+      cookie: superSessionCookie
+    });
+    assert.equal(badTag.res.status, 400);
+
+    const badValue = await callJson("/api/super/i18n", {
+      ...json({ tag: "hi-IN", catalog: { "bar.home": 42 } }),
+      cookie: superSessionCookie
+    });
+    assert.equal(badValue.res.status, 400);
+    assert.match(badValue.data.error, /not a string/);
+
+    const notAnObject = await callJson("/api/super/i18n", {
+      ...json({ tag: "hi-IN", catalog: ["bar.home"] }),
+      cookie: superSessionCookie
+    });
+    assert.equal(notAnObject.res.status, 400);
+  });
+
+  test("Interface catalogs: uploaded once, any workstation can fetch it without a session", async () => {
+    const upload = await callJson("/api/super/i18n", {
+      ...json({
+        tag: "hi-IN",
+        name: "\\u0939\\u093f\\u0928\\u094d\\u0926\\u0940",
+        catalog: {
+          _meta: { name: "\\u0939\\u093f\\u0928\\u094d\\u0926\\u0940", direction: "ltr" },
+          "bar.home": "\\u092e\\u0941\\u0916\\u094d\\u092f \\u092a\\u0943\\u0937\\u094d\\u0920"
+        }
+      }),
+      cookie: superSessionCookie
+    });
+    assert.equal(upload.res.status, 200);
+    assert.equal(upload.data.entries, 1, "_meta is not counted as a string");
+
+    // No cookie, no device token: this is what a workstation does before it is
+    // enrolled, which is exactly when it needs its interface language.
+    const listed = await callJson("/api/i18n");
+    assert.equal(listed.res.status, 200);
+    assert.ok(listed.data.languages.some((l: any) => l.tag === "hi-IN"));
+
+    const fetched = await callJson("/i18n/hi-IN.json");
+    assert.equal(fetched.res.status, 200);
+    assert.equal(fetched.data["bar.home"], "\\u092e\\u0941\\u0916\\u094d\\u092f \\u092a\\u0943\\u0937\\u094d\\u0920");
+    assert.equal(fetched.data._meta.direction, "ltr");
+
+    const missing = await call("/i18n/zz-ZZ.json");
+    assert.equal(missing.status, 404);
+
+    const traversal = await call("/i18n/..%2F..%2Fapi%2Fclients.json");
+    assert.equal(traversal.status, 404);
+  });
+
+  test("Interface catalogs: only a super admin may withdraw one", async () => {
+    const anonymous = await call("/api/super/i18n/hi-IN", { method: "DELETE" });
+    assert.ok(anonymous.status === 401 || anonymous.status === 403);
+
+    const removed = await callJson("/api/super/i18n/hi-IN", { method: "DELETE", cookie: superSessionCookie });
+    assert.equal(removed.res.status, 200);
+
+    const gone = await call("/i18n/hi-IN.json");
+    assert.equal(gone.status, 404);
+  });
 });
 
 /**

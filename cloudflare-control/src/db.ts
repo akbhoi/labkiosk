@@ -156,6 +156,16 @@ CREATE TABLE IF NOT EXISTS broadcast_presets (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ui_catalogs (
+  tag TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT 'ltr',
+  body TEXT NOT NULL,
+  entry_count INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
@@ -170,6 +180,7 @@ CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenan
 CREATE INDEX IF NOT EXISTS idx_command_deliveries_client ON command_deliveries(client_id, delivered_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 `;
 
 /**
@@ -1152,6 +1163,62 @@ export async function buildEffectiveWhitelist(db: D1Database, tenantId: string):
 // ============================================================
 // BROADCAST SHORTCUT PRESETS
 // ============================================================
+
+/**
+ * Interface catalogs.
+ *
+ * Platform assets rather than tenant data: the wizard and the kiosk bar say the
+ * same thing to every school, so there is no tenant_id to scope by and nothing
+ * tenant-specific may be stored here. Only a super admin writes them; every
+ * workstation reads them, including before it is enrolled.
+ */
+export interface UiCatalogRow {
+  tag: string;
+  name: string;
+  direction: string;
+  body: string;
+  entry_count: number;
+  updated_at: number;
+  updated_by: string | null;
+}
+
+export async function listUiCatalogs(db: D1Database): Promise<UiCatalogRow[]> {
+  const { results } = await db
+    .prepare("SELECT tag, name, direction, '' AS body, entry_count, updated_at, updated_by FROM ui_catalogs ORDER BY tag ASC")
+    .all<UiCatalogRow>();
+  return results || [];
+}
+
+export async function getUiCatalog(db: D1Database, tag: string): Promise<UiCatalogRow | null> {
+  return await db
+    .prepare("SELECT * FROM ui_catalogs WHERE tag = ?")
+    .bind(tag)
+    .first<UiCatalogRow>();
+}
+
+export async function putUiCatalog(
+  db: D1Database,
+  entry: { tag: string; name: string; direction: string; body: string; entryCount: number; updatedBy: string | null }
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO ui_catalogs (tag, name, direction, body, entry_count, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tag) DO UPDATE SET
+         name = excluded.name,
+         direction = excluded.direction,
+         body = excluded.body,
+         entry_count = excluded.entry_count,
+         updated_at = excluded.updated_at,
+         updated_by = excluded.updated_by`
+    )
+    .bind(entry.tag, entry.name, entry.direction, entry.body, entry.entryCount, Math.floor(Date.now() / 1000), entry.updatedBy)
+    .run();
+}
+
+export async function deleteUiCatalog(db: D1Database, tag: string): Promise<void> {
+  await db.prepare("DELETE FROM ui_catalogs WHERE tag = ?").bind(tag).run();
+}
 
 export async function listBroadcastPresets(
   db: D1Database,
