@@ -33,6 +33,7 @@
       justify-content: center;
       padding: 24px;
       user-select: none;
+      overflow-y: auto;
     }
     .wizard-card {
       background: var(--card);
@@ -43,6 +44,7 @@
       width: 100%;
       box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.9);
       position: relative;
+      margin: auto;
     }
     .header-wrap { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
     .icon-wrap {
@@ -219,7 +221,7 @@
           /etc/labkiosk/i18n.
         </div>
         <button type="button" class="btn-secondary" id="btn-locale-languages"
-                style="margin-top: 10px; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 12px;">
+                style="display: none; margin-top: 10px; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 12px;">
           <span data-i18n="locale.checkLanguages">Check the school server for more languages</span>
         </button>
         <div id="locale-remote-languages" style="margin-top: 10px;"></div>
@@ -343,7 +345,7 @@
           <div class="section-title">
             <span data-i18n="ui.available-wi-fi-networks">Available Wi-Fi Networks</span>
             <button type="button" id="btn-rescan-wifi" style="background: transparent; border: none; color: #60a5fa; cursor: pointer; font-size: 12px; font-weight: 600;">
-              &#8635; Refresh Scan
+              &#8635; <span data-i18n="ui.refresh-scan">Refresh Scan</span>
             </button>
           </div>
 
@@ -355,13 +357,13 @@
             <label class="form-label">Wi-Fi Password for <span id="selected-wifi-ssid" style="color: #60a5fa;" data-i18n="ui.network">Network</span></label>
             <div style="display: flex; gap: 8px;">
               <input type="password" id="wifi-password" class="input-field" placeholder="Enter network security key" autocomplete="off" data-i18n-placeholder="ui.placeholder-enter-network-security-key">
-              <button type="button" id="toggle-wifi-pass" class="btn-secondary" style="border-radius: 8px; padding: 0 12px; cursor: pointer;">Show</button>
+              <button type="button" id="toggle-wifi-pass" class="btn-secondary" style="border-radius: 8px; padding: 0 12px; cursor: pointer;"><span data-i18n="ui.show">Show</span></button>
             </div>
           </div>
 
           <div style="display: flex; justify-content: flex-end;">
             <button type="button" id="btn-hidden-wifi" style="background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 11px; text-decoration: underline;">
-              Connect to hidden network...
+              <span data-i18n="ui.connect-to-hidden-network">Connect to hidden network...</span>
             </button>
           </div>
 
@@ -497,7 +499,7 @@
           <span data-i18n="ui.apply-test-network">Apply & Test Network</span>
         </button>
         <button type="button" class="btn-submit" id="btn-proceed-step2" style="flex: 1;">
-          <span data-i18n="ui.proceed-to-step-2-rarr">Proceed to Step 2 &rarr;</span>
+          <span data-i18n="ui.proceed-to-step-3-rarr">Proceed to Step 3 &rarr;</span>
         </button>
       </div>
 
@@ -565,7 +567,7 @@
                    style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-set-administrator-password">
             <button type="button" class="btn-secondary" id="generate-grub-password"
                     style="white-space: nowrap; border-radius: 8px; padding: 0 14px; font-size: 13px; font-weight: 600; cursor: pointer;">
-              Generate
+              <span data-i18n="ui.generate">Generate</span>
             </button>
           </div>
           <div class="hint-text" data-i18n="ui.protects-the-boot-menu-and-is">
@@ -687,7 +689,7 @@
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" style="margin: 0 auto 12px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         <h2 style="font-size: 20px; font-weight: 800;" data-i18n="ui.administrator-authentication">Administrator Authentication</h2>
         <p id="admin-auth-offline" style="display: none; font-size: 13px; color: #f87171; margin-top: 10px; line-height: 1.5;" data-i18n="ui.this-workstation-lost-its-network-connection">This workstation lost its network connection. It returns to the lesson automatically once the connection is back.</p>
-        <p style="font-size: 13px; color: var(--muted); margin-top: 6px;" data-i18n="ui.enter-the-administrator-boot-menu-password">Enter the administrator / boot menu password to unlock network settings.</p>
+        <p id="admin-auth-prompt" style="font-size: 13px; color: var(--muted); margin-top: 6px;" data-i18n="admin.prompt">Enter the administrator or boot password to configure network settings.</p>
       </div>
       <div class="form-group">
         <label class="form-label" data-i18n="ui.administrator-password">Administrator Password</label>
@@ -695,8 +697,8 @@
       </div>
       <div class="status-box" id="admin-auth-error" style="display: none;"></div>
       <div style="display: flex; gap: 12px;">
-        <button type="button" class="btn-submit btn-secondary" id="btn-admin-cancel" style="flex: 1;">Cancel</button>
-        <button type="button" class="btn-submit" id="btn-admin-unlock" style="flex: 1;">Unlock</button>
+        <button type="button" class="btn-submit btn-secondary" id="btn-admin-cancel" style="flex: 1;"><span data-i18n="admin.cancel">Cancel</span></button>
+        <button type="button" class="btn-submit" id="btn-admin-unlock" style="flex: 1;"><span data-i18n="admin.unlock">Unlock</span></button>
       </div>
     </div>
 
@@ -933,7 +935,7 @@
     toggleWifiPass.addEventListener('click', () => {
       const isPass = wifiPasswordInput.type === 'password';
       wifiPasswordInput.type = isPass ? 'text' : 'password';
-      toggleWifiPass.textContent = isPass ? 'Hide' : 'Show';
+      toggleWifiPass.textContent = isPass ? t('ui.hide', 'Hide') : t('ui.show', 'Show');
     });
 
     btnHiddenWifi.addEventListener('click', () => {
@@ -1286,6 +1288,9 @@
           const data = await res.json();
           isLive = !!data.isLive;
           isConfigured = !!data.isConfigured;
+          if (btnLocaleLanguages) {
+            btnLocaleLanguages.style.display = isConfigured ? '' : 'none';
+          }
           currentTargetUrl = data.targetUrl || currentTargetUrl;
           if (data.baseDomain) {
             baseDomain = data.baseDomain;
@@ -1725,6 +1730,13 @@
     function openAdminModal() {
       adminAuthPass.value = '';
       adminAuthError.style.display = 'none';
+      const promptEl = document.getElementById('admin-auth-prompt');
+      if (promptEl) {
+        promptEl.dataset.i18n = isStandaloneLocale ? 'admin.promptLocale' : 'admin.prompt';
+        promptEl.textContent = isStandaloneLocale
+          ? t('admin.promptLocale', 'Enter the administrator or boot password to change the date, time and language.')
+          : t('admin.prompt', 'Enter the administrator or boot password to configure network settings.');
+      }
       modalAdminAuth.style.display = 'flex';
       adminAuthPass.focus();
     }
@@ -1769,7 +1781,9 @@
 
     btnAdminCancel.addEventListener('click', () => {
       adminAuthPass.value = '';
-      if (isStandaloneNetwork && !targetIsThisWizard()) {
+      if (isOfflineRedirect) {
+        modalAdminAuth.style.display = 'none';
+      } else if (isStandaloneNetwork && !targetIsThisWizard()) {
         returnToKiosk();
       } else {
         modalAdminAuth.style.display = 'none';

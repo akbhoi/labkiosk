@@ -43,6 +43,11 @@
   }
 
   function permitted(event) {
+    if (typeof event.getModifierState === "function" && event.getModifierState("AltGraph")) {
+      if (isTypedCharacter(event) || event.key === "Dead" || ALLOWED_KEYS.has(event.key)) {
+        return true;
+      }
+    }
     const combination = event.ctrlKey || event.altKey || event.metaKey;
     if (combination) {
       // Shift is not a combination -- it is how capitals are typed.
@@ -112,6 +117,11 @@
   }
   let lastTargetUrl = null;
   let isLocked = false;
+  let lastReloadEpoch = null;
+  try {
+    const saved = sessionStorage.getItem("labkiosk_reload_epoch");
+    if (saved) lastReloadEpoch = Number(saved);
+  } catch {}
   // When the agent first reported the workstation offline; null while online.
   let offlineSince = null;
   const OFFLINE_REDIRECT_MS = 6000;
@@ -229,7 +239,8 @@ const BAR_INTRO_MS = 2500;
     if (!raw) return "";
     try {
       const u = new URL(raw, window.location.href);
-      return (u.origin + u.pathname).replace(/\/+$/, "").toLowerCase();
+      const path = u.pathname.length > 1 ? u.pathname.replace(/\/+$/, "") : u.pathname;
+      return (u.origin + path).toLowerCase() + u.search;
     } catch {
       return "";
     }
@@ -303,7 +314,7 @@ const BAR_INTRO_MS = 2500;
           height: 10px;
           background: transparent;
           z-index: 2147483646;
-          pointer-events: auto;
+          pointer-events: none;
         }
 
         #kiosk-bar {
@@ -378,6 +389,15 @@ const BAR_INTRO_MS = 2500;
           font-family: monospace;
           font-size: 13px;
           color: #93c5fd;
+          max-width: 35vw;
+          min-width: 0;
+          overflow: hidden;
+        }
+
+        #kiosk-domain {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .client-meta {
@@ -797,7 +817,13 @@ const BAR_INTRO_MS = 2500;
         const value = catalog[el.dataset.i18nTitle];
         if (typeof value === "string" && value) el.title = value;
       });
-      if ((catalog._meta || {}).direction === "rtl") bar.setAttribute("dir", "rtl");
+      const dir = (catalog._meta || {}).direction === "rtl" ? "rtl" : "ltr";
+      host.setAttribute("dir", dir);
+      if (bar) bar.setAttribute("dir", dir);
+      const curtain = shadow.getElementById("lock-curtain");
+      if (curtain) curtain.setAttribute("dir", dir);
+      const adminModal = shadow.getElementById("admin-modal");
+      if (adminModal) adminModal.setAttribute("dir", dir);
     }).catch(() => { /* English stands */ });
 
     shadow.getElementById("btn-home").onclick = async () => {
@@ -939,7 +965,7 @@ const BAR_INTRO_MS = 2500;
       btnBack.classList.remove("disabled");
       btnBack.style.opacity = "1";
       btnBack.style.cursor = "pointer";
-      btnBack.title = "Go Back";
+      btnBack.title = t("bar.backTitle", "Go Back");
     }
   }
 
@@ -1007,6 +1033,19 @@ const BAR_INTRO_MS = 2500;
         }
 
         updateNavButtonStates(shadowRoot);
+
+        // Remote reload command detection by epoch change
+        const srvReloadEpoch = Number(data.reloadEpoch || 0);
+        if (lastReloadEpoch === null) {
+          lastReloadEpoch = srvReloadEpoch;
+        } else if (srvReloadEpoch > 0 && srvReloadEpoch !== lastReloadEpoch) {
+          lastReloadEpoch = srvReloadEpoch;
+          try {
+            sessionStorage.setItem("labkiosk_reload_epoch", String(srvReloadEpoch));
+          } catch {}
+          window.location.reload();
+          return;
+        }
 
         // High-priority broadcast detection by epoch or target change
         const srvEpoch = String(data.broadcastEpoch || 0);

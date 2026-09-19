@@ -735,10 +735,12 @@ export default {
       }
 
       const allTenants = await listAllTenants(db);
+      const catalogs = await listUiCatalogs(db);
       return new Response(
         renderSuperAdminHtml({
           superAdminEmail: (await findUserById(db, session.user_id))?.email || "admin@akbhoi.com",
           tenants: allTenants,
+          catalogs,
           baseDomain,
           nonce
         }),
@@ -814,6 +816,25 @@ export default {
           "Cache-Control": "public, max-age=3600",
         },
       });
+    }
+
+    // GET /api/super/i18n: list stored interface catalogs for the super admin.
+    if (path === "/api/super/i18n" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const catalogs = await listUiCatalogs(db);
+      return new Response(
+        JSON.stringify({
+          languages: catalogs.map((row) => ({
+            tag: row.tag,
+            name: row.name,
+            direction: row.direction,
+            entries: row.entry_count,
+            updatedAt: row.updated_at,
+          })),
+        }),
+        { headers: jsonHeaders }
+      );
     }
 
     // POST /api/super/i18n: upload or replace a catalog. Platform-wide, so it

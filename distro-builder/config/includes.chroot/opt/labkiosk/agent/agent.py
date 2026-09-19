@@ -20,7 +20,10 @@ Security notes:
 
 import json
 import os
-import pwd
+try:
+    import pwd
+except ImportError:
+    pwd = None
 import re
 import socket
 import subprocess
@@ -29,7 +32,10 @@ import threading
 import time
 from datetime import datetime
 import base64
-import grp
+try:
+    import grp
+except ImportError:
+    grp = None
 import hashlib
 import hmac
 import ipaddress
@@ -177,6 +183,7 @@ state = {
     "targetUrl": SETUP_URL,
     "broadcastUrl": "",
     "broadcastEpoch": 0,
+    "reloadEpoch": 0,
     "vncPort": 6080,
     # Set at enrolment. Chromium reads its managed policy at startup, so a
     # workstation that just enrolled is still running under the boot-time
@@ -446,6 +453,9 @@ def mounted_fstype(path, mounts_file="/proc/mounts"):
     """
     try:
         target = os.path.realpath(path)
+        if os.name != "posix":
+            drive, rest = os.path.splitdrive(target)
+            target = rest.replace("\\", "/")
     except OSError:
         return ""
 
@@ -502,15 +512,21 @@ def describe_config_dir():
         return f"{directory} cannot be inspected ({err})."
 
     def owner_name(uid, resolver):
+        if uid is None or resolver is None:
+            return str(uid)
         try:
             return resolver(uid)[0]
         except (KeyError, OSError):
             return str(uid)
 
-    owner = owner_name(info.st_uid, pwd.getpwuid)
-    group = owner_name(info.st_gid, grp.getgrgid)
+    st_uid = getattr(info, "st_uid", None)
+    st_gid = getattr(info, "st_gid", None)
+    get_uid = getattr(os, "getuid", lambda: None)
+    my_uid = get_uid()
+    owner = owner_name(st_uid, getattr(pwd, "getpwuid", None) if pwd else None)
+    group = owner_name(st_gid, getattr(grp, "getgrgid", None) if grp else None)
     mounted = os.path.ismount(directory)
-    me = owner_name(os.getuid(), pwd.getpwuid)
+    me = owner_name(my_uid, getattr(pwd, "getpwuid", None) if pwd else None)
     where = (
         f"{directory} (a separate mount point) is owned by" if mounted
         else f"{directory} is owned by"
@@ -526,9 +542,9 @@ def describe_config_dir():
                "not mounted here -- reinstall this workstation from a current ISO, "
                "because a directory in the RAM overlay cannot keep an enrolment.")
     return (
-        f"{where} {owner}:{group} ({info.st_uid}:{info.st_gid}) "
+        f"{where} {owner}:{group} ({st_uid}:{st_gid}) "
         f"with mode {info.st_mode & 0o777:04o}, and this agent runs as "
-        f"{me} ({os.getuid()}). {fix}"
+        f"{me} ({my_uid}). {fix}"
     )
 
 
@@ -1918,6 +1934,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "targetUrl": state["targetUrl"],
                         "broadcastUrl": state.get("broadcastUrl", ""),
                         "broadcastEpoch": state.get("broadcastEpoch", 0),
+                        "reloadEpoch": state.get("reloadEpoch", 0),
                         "isConfigured": state["isConfigured"],
                         "baseDomain": DEFAULT_BASE_DOMAIN,
                         "isLive": live,
@@ -2035,6 +2052,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/reboot":
+            if admin_auth_required() and not has_admin_session(self.headers.get(ADMIN_TOKEN_HEADER, "")):
+                self._send(401, {"error": "Administrator authentication is required"})
+                return
             subprocess.Popen(["systemctl", "reboot"])
             self._send(200, {"status": "rebooting"})
             return
@@ -2407,7 +2427,8 @@ def execute_command(cmd_data):
     elif action == "navigate":
         navigate_to(cmd_data.get("url"), cmd_data.get("epoch", 0))
     elif action == "reload":
-        run_x11(["xdotool", "key", "F5"])
+        with state_lock:
+            state["reloadEpoch"] = int(time.time() * 1000)
     elif action == "reboot":
         run_x11(["systemctl", "reboot"])
     elif action == "shutdown":

@@ -224,6 +224,11 @@ distro-builder/
   Backspace/Delete/Enter/Shift/Caps Lock/Tab/Escape/cursor/page keys, and the context menu. It runs
   in **all frames** (`all_frames: true`) because a key pressed inside an iframe never reaches a
   listener in the parent document; the bar and the curtain still build only in the top frame.
+  Crucially, international keyboard layouts require `AltGr` (evaluated via
+  `event.getModifierState("AltGraph")`) to produce special characters (e.g. `@`, `€`, `~`, `\`,
+  accented letters) and dead keys (`event.key === "Dead"`). Key filtering MUST allow
+  `event.getModifierState("AltGraph")` when typing characters (`key.length === 1`) or entering dead
+  keys, ensuring multilingual input works without loosening the lockdown on Ctrl/Alt/Meta shortcuts.
 - **One deliberate exception, and only one:** Ctrl+A/C/V/X/Z/Y on the setup wizard's own origin
   (`http://127.0.0.1:8888`). The enrolment key is a 20-character string an administrator pastes
   from the dashboard, and a kiosk that cannot paste it is a kiosk nobody can enrol. Students never
@@ -267,6 +272,11 @@ distro-builder/
 - **UI Behavior in `wizard.html`**:
   - Live session: Shows sequential 2-step stepper (`Step 1: Network Setup` -> `Step 2: Choose Destination Mode [Install to Disk vs. Live Preview & Enroll]`) with badge `LIVE INSTALLER & SETUP`.
   - Installed drive: Displays badge `INSTALLED WORKSTATION`, hides the disk installer view **and the network step**, and opens directly on the enrolment form. The network was configured before the installation and came back with it, so showing it again on every boot only got in the way; it is reached from the network icon in the kiosk top bar (`/setup#network`), gated behind the administrator password modal.
+  - **Wizard Responsiveness & Offline Resiliency**:
+    - The setup wizard (`wizard.html`) enforces `.wizard-card { margin: auto; }` and `body { overflow-y: auto; }` within its flex container so that cards are centered on large screens while remaining fully scrollable without top-clipping on small viewports (e.g. 1024x768 or 800x600).
+    - `#btn-locale-languages` is hidden by default and displayed only on configured workstations.
+    - When the user cancels the administrator modal during an offline redirect (`#offline`), the wizard closes the modal without re-triggering `returnToKiosk()`, breaking the redirect loop.
+    - Dynamic prompt text distinguishes between network and locale changes (`admin.promptLocale` vs `admin.prompt`).
 - **Backend Lockout**:
   - `/api/install/disks` returns `[]` if not live.
   - `POST /api/install` rejects requests with HTTP 400 (`"System is already installed on an internal drive"`), preventing accidental data loss of the running drive.
@@ -278,10 +288,24 @@ distro-builder/
 - **The content script never calls the agent directly.** It posts messages to `background.js` (the MV3 service worker), which owns the `host_permissions` grant for `http://127.0.0.1:8888/*`.
 - The top navigation bar **must auto-hide** (`transform: translateY(-100%)`) and appear only when `mouseY <= 12px`.
 - Never modify `document.body.style.marginTop`; the webpage must occupy 100% of the viewport with zero vertical scroll overflow.
+- **Event-Driven Workstation Reload (`reloadEpoch`)**: Synthetic key injection (`xdotool key F5`) is
+  forbidden in `agent.py` — in production, `xdotool` is uninstalled, fails silently, and cannot
+  target unmapped or background windows. Instead, teacher `reload` commands advance `reloadEpoch`
+  in the agent's state (served via `GET /api/status`). The browser extension (`content.js`) monitors
+  `reloadEpoch` during its 1-second `syncLoop()` and triggers native `window.location.reload()`.
+  To prevent infinite reload loops across page reloads, `content.js` caches `lastReloadEpoch` in
+  `sessionStorage`.
+- **Query Parameter Preservation**: URL normalization in `content.js` (`normalizeUrl()`) strictly
+  preserves query parameters (`u.search`), ensuring learning apps relying on stateful query
+  strings (e.g. `?room=101&user=demo`) are not stripped or falsely identified as root broadcast URLs.
+- **RTL/LTR Layout Adaptation**: The extension dynamically applies `dir="rtl"` or `dir="ltr"`
+  to the host element, kiosk top bar, lock curtain, and admin modal based on `_meta.direction`
+  in the active interface catalog.
 
 ### Rule 6: Loopback API Isolation
 - The client agent's local API binds to `127.0.0.1:8888` only.
 - All mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`, `/api/network/configure`, `/api/admin/verify`) reject requests whose `Origin` header is not loopback (`127.0.0.1` or `localhost`).
+- On installed workstations, `POST /api/reboot` and `POST /api/network/configure` require administrator authentication via `X-LabKiosk-Admin` session token (issued by `/api/admin/verify` after verifying against the GRUB PBKDF2 hash). Unauthenticated reboots on installed hardware fail closed with `401 Unauthorized`.
 - **One origin besides loopback is accepted: the extension's own.** Chromium stamps every
   non-`GET` fetch from the MV3 service worker with `chrome-extension://<id>`, so the admin
   modal in the kiosk top bar posts to `/api/admin/verify` under that origin and nothing else

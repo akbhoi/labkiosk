@@ -304,5 +304,98 @@ class WorkstationNames(unittest.TestCase):
                 self.assertIsNotNone(agent.TARGET_DISK_PATTERN.match(good))
 
 
+class RemoteReloadCommand(unittest.TestCase):
+    def test_reload_action_advances_reload_epoch(self):
+        initial = agent.state.get("reloadEpoch", 0)
+        agent.execute_command({"action": "reload"})
+        updated = agent.state.get("reloadEpoch", 0)
+        self.assertGreater(updated, 0)
+        self.assertGreaterEqual(updated, initial)
+
+
+class AdminAuthenticationAndSession(unittest.TestCase):
+    def setUp(self):
+        agent._admin_sessions.clear()
+        agent._admin_failures["count"] = 0
+        agent._admin_failures["lockedUntil"] = 0.0
+
+    def test_unlocked_setup_mode_issues_valid_session(self):
+        orig_read = agent.read_admin_password_hash
+        try:
+            agent.read_admin_password_hash = lambda: None
+            status, payload = agent.issue_admin_session("any-pass")
+            self.assertEqual(status, 200)
+            self.assertTrue(payload.get("verified"))
+            token = payload.get("token")
+            self.assertTrue(token)
+            self.assertTrue(agent.has_admin_session(token))
+            self.assertFalse(agent.has_admin_session("wrong-token"))
+            self.assertFalse(agent.has_admin_session(""))
+        finally:
+            agent.read_admin_password_hash = orig_read
+
+
+class RebootEndpointGating(unittest.TestCase):
+    def setUp(self):
+        agent._admin_sessions.clear()
+        agent._admin_failures["count"] = 0
+        agent._admin_failures["lockedUntil"] = 0.0
+
+    def _handler(self, headers=None):
+        base_headers = {"Host": "127.0.0.1:8888"}
+        if headers:
+            base_headers.update(headers)
+        handler = object.__new__(agent.LocalApiHandler)
+        handler.path = "/api/reboot"
+        handler.headers = FakeHeaders(base_headers)
+        handler.sent_status = None
+        handler.sent_payload = None
+        handler._send = lambda status, payload, content_type="application/json": (
+            setattr(handler, "sent_status", status),
+            setattr(handler, "sent_payload", payload),
+        )
+        return handler
+
+    def test_installed_workstation_refuses_unauthenticated_reboot(self):
+        orig_live = agent.is_live_session
+        try:
+            agent.is_live_session = lambda: False
+            handler = self._handler()
+            handler.do_POST()
+            self.assertEqual(handler.sent_status, 401)
+            self.assertIn("Administrator authentication", handler.sent_payload.get("error", ""))
+        finally:
+            agent.is_live_session = orig_live
+
+    def test_installed_workstation_accepts_authenticated_reboot(self):
+        orig_live = agent.is_live_session
+        orig_popen = agent.subprocess.Popen
+        try:
+            agent.is_live_session = lambda: False
+            agent.subprocess.Popen = lambda *args, **kwargs: None
+            agent._admin_sessions["test-valid-token"] = 9999999999.0
+            handler = self._handler({agent.ADMIN_TOKEN_HEADER: "test-valid-token"})
+            handler.do_POST()
+            self.assertEqual(handler.sent_status, 200)
+            self.assertEqual(handler.sent_payload.get("status"), "rebooting")
+        finally:
+            agent.is_live_session = orig_live
+            agent.subprocess.Popen = orig_popen
+
+    def test_live_workstation_allows_reboot_without_admin_token(self):
+        orig_live = agent.is_live_session
+        orig_popen = agent.subprocess.Popen
+        try:
+            agent.is_live_session = lambda: True
+            agent.subprocess.Popen = lambda *args, **kwargs: None
+            handler = self._handler()
+            handler.do_POST()
+            self.assertEqual(handler.sent_status, 200)
+            self.assertEqual(handler.sent_payload.get("status"), "rebooting")
+        finally:
+            agent.is_live_session = orig_live
+            agent.subprocess.Popen = orig_popen
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

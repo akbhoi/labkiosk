@@ -1260,6 +1260,38 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const gone = await call("/i18n/hi-IN.json");
     assert.equal(gone.status, 404);
   });
+
+  test("Interface catalogs: super admin may list catalogs via /api/super/i18n", async () => {
+    const anonymous = await call("/api/super/i18n");
+    assert.ok(anonymous.status === 401 || anonymous.status === 403);
+
+    const listed = await callJson("/api/super/i18n", { cookie: superSessionCookie });
+    assert.equal(listed.res.status, 200);
+    assert.ok(Array.isArray(listed.data.languages));
+  });
+
+  test("Interface catalogs: super admin console renders catalogs table", async () => {
+    await callJson("/api/super/i18n", {
+      ...json({
+        tag: "fr-FR",
+        name: "Français",
+        catalog: {
+          _meta: { name: "Français", direction: "ltr" },
+          "bar.home": "Accueil"
+        }
+      }),
+      cookie: superSessionCookie
+    });
+
+    const page = await call("/super", { cookie: superSessionCookie });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.ok(html.includes("Workstation Interface Catalogs (i18n)"));
+    assert.ok(html.includes("fr-FR"));
+    assert.ok(html.includes("Français"));
+
+    await callJson("/api/super/i18n/fr-FR", { method: "DELETE", cookie: superSessionCookie });
+  });
 });
 
 /**

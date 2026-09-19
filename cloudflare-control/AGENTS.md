@@ -58,6 +58,10 @@ cloudflare-control/
   CSRF origin check, and are sanitised into a flat map of string to string with size and count caps
   before they are stored. Reads (`GET /api/i18n`, `GET /i18n/<tag>.json`) are listed in
   `isPublicTenantRoute()` for exactly that reason.
+- The Super Admin console (`ui_super.ts`, rendered at `/super`) provides a dedicated management
+  section for viewing, uploading, and deleting these catalogs. In strict accordance with Rule 5, all
+  modal interactions, uploads, and deletions attach event listeners via `data-action` and
+  `addEventListener`, completely avoiding inline event handlers.
 - Nothing tenant-specific may be put in a catalog, precisely because it is served to everyone.
 
 ### Rule 3: The Schema Has Two Homes

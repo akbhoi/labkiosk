@@ -85,6 +85,10 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   - `commands`: Array of pending teacher commands. The agent implements `lock`, `unlock`,
     `navigate`, `reload`, `reboot`, `shutdown` and `mute`; anything else is logged and ignored.
     (There is no `broadcast` action — a broadcast is `navigate` plus `broadcastEpoch`.)
+    Teacher `reload` commands advance the agent's internal `reloadEpoch` (returned in `GET /api/status`),
+    which `content.js` detects in `syncLoop()` to trigger a native `window.location.reload()`, caching
+    `lastReloadEpoch` in `sessionStorage` to prevent infinite reload loops. Synthetic X11 key injection
+    (`xdotool key F5`) is strictly forbidden.
   - `broadcastUrl` / `broadcastEpoch`: Authoritative synchronized active lesson URL.
 
 ### 2. First-Boot Workstation Enrollment (`POST /api/setup`)
@@ -128,6 +132,9 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - The Chrome extension (`content.js`) injects the navigation header into the top frame inside an isolated **Shadow DOM**.
 - The content script **never** communicates with the agent directly (which would require unsafe wildcard CORS). It communicates through `background.js` (MV3 service worker), which owns `host_permissions` for `http://127.0.0.1:8888/*`.
 - The navigation bar **auto-hides** (`transform: translateY(-100%)`) and appears only when `mouseY <= 12px`. Viewport occupies 100% height with 0px scroll offset.
+- **International Keyboard Input**: `content.js` intercepts unauthorized keystrokes in all frames but MUST explicitly allow `event.getModifierState("AltGraph")` for printable characters and allow `event.key === "Dead"` for dead keys. International keyboards rely on `AltGr` for symbols (e.g. `@`, `€`, `\`) and diacritics; blocking them breaks non-US layouts.
+- **Query Parameter Preservation**: URL normalization in `content.js` must preserve `u.search` query parameters so educational applications with query parameters (e.g. `?room=101&user=demo`) are retained and not falsely identified as root broadcast URLs.
+- **Dynamic Directionality (RTL/LTR)**: The extension applies `dir="rtl"` or `dir="ltr"` to the host container, top bar, curtain, and modal based on the active catalog's `_meta.direction`.
 
 ### Rule 4: Multi-Tenant Scoping & Security Guards
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
@@ -157,7 +164,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - Network profiles (Ethernet and Wi-Fi) configured via the setup wizard or agent API are managed through NetworkManager.
 - To survive `overlayroot="tmpfs"` reboots on installed hardware, connection keyfiles are stored on the persistent `LABKIOSK_DATA` partition in `/etc/labkiosk/system-connections/` (mode `0700`, files mode `0600`, root:root) and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab`.
 - The unprivileged `kiosk` user is granted Polkit privileges for NetworkManager via `/etc/polkit-1/rules.d/50-labkiosk-network.rules` to allow the agent to manage network connections without running the agent as root.
-- Post-installation network changes are gated behind administrator authentication (PBKDF2 verification against `/etc/grub.d/01_labkiosk_password`). The gate is enforced by the agent, not only the UI: `/api/admin/verify` issues a 10-minute token (throttled after 5 failures) and `/api/network/configure` refuses an installed workstation's request without it (`X-LabKiosk-Admin`).
+- Post-installation network changes and workstation reboots are gated behind administrator authentication (PBKDF2 verification against `/etc/grub.d/01_labkiosk_password`). The gate is enforced by the agent, not only the UI: `/api/admin/verify` issues a 10-minute token (throttled after 5 failures) and `/api/network/configure` as well as `POST /api/reboot` refuse an installed workstation's request without it (`X-LabKiosk-Admin`).
 - The browser extension (`content.js`) monitors network connectivity via `/api/status`, displays live online/offline state in the kiosk top bar, and redirects to `/setup#offline` if the workstation is offline for more than 6 seconds on an external, unlocked page. That page returns to the lesson by itself once the connection is back.
 - Wi-Fi scan results (SSIDs) are attacker-chosen and are rendered with `textContent` only: the wizard's origin can drive the disk installer.
 
