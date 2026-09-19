@@ -311,7 +311,7 @@ function sanitizeCatalog(input: unknown): { body: string; entryCount: number } {
   if (keys.length > CATALOG_MAX_KEYS) {
     throw new Error(`A catalog may hold at most ${CATALOG_MAX_KEYS} entries`);
   }
-  const output: Record<string, unknown> = {};
+const output: Record<string, unknown> = Object.create(null);
   let entryCount = 0;
   for (const key of keys) {
     const value = source[key];
