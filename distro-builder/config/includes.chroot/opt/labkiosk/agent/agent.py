@@ -856,6 +856,8 @@ def configure_localization(data):
     # Accept-Language is what actually changes which version of a lesson site a
     # school gets, so the browser is told as well as the system.
     sync_chromium_policies(cached_whitelist or [], force=True)
+    os.environ.pop("TZ", None)
+    time.tzset()
     return {"status": "ok", "applied": result.get("applied", {}), "saved": cfg}
 
 
