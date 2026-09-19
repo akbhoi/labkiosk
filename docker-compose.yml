@@ -19,10 +19,15 @@ services:
     init: true
 
     ports:
-      # Only the noVNC display is published. The agent's API is loopback-only
-      # inside the container, as it is on a real workstation, so drive the setup
-      # wizard from the noVNC screen rather than from the host.
-      - "6080:6080"
+      # Only the noVNC display is published, and only to this machine. Bound to
+      # 127.0.0.1 because noVNC here is an unauthenticated-by-design endpoint
+      # behind an 8-character RFB secret: on 0.0.0.0 anyone on the same network
+      # (a cafe, a school Wi-Fi) reaches a live desktop. To share it, put a proxy
+      # that authenticates in front, or use a Cloudflare Tunnel with Access.
+      #
+      # The agent's API stays loopback-only inside the container, as on a real
+      # workstation, so drive the setup wizard from the noVNC screen.
+      - "127.0.0.1:6080:6080"
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -35,7 +40,10 @@ services:
       # for loopback and container-gateway hosts; everything else must be https.
       - WORKER_URL=${WORKER_URL:-http://host.docker.internal:8787}
       - LABKIOSK_DOMAIN=${LABKIOSK_DOMAIN:-labkiosk.akbhoi.com}
-      - VNC_PASSWORD=${VNC_PASSWORD:-labkiosk}
+      # Left empty on purpose: the entrypoint then generates a random password
+      # per container and prints it in the log. A fixed default would be a
+      # published password on a port that grants keyboard and mouse control.
+      - VNC_PASSWORD=${VNC_PASSWORD:-}
       # Optional: a public hostname (e.g. a Cloudflare Tunnel) that reaches this
       # container's noVNC port. The agent reports it so the console's "Remote
       # Control" opens it instead of assuming <pc>.<tunnel-domain>.
@@ -65,3 +73,41 @@ services:
 
     shm_size: "1gb" # Sufficient shared memory for Chromium rendering
     restart: unless-stopped
+
+    # The container browses the open web, so it is treated as untrusted:
+    #   * it runs as the unprivileged kiosk user (USER in the Dockerfile) with
+    #     Chromium's sandbox enabled;
+    #   * no capabilities beyond the one its sandbox needs (see cap_add), and
+    #     no-new-privileges so nothing setuid can escalate;
+    #   * a read-only root filesystem, with tmpfs for the four paths that are
+    #     written at runtime. /tmp needs exec because Chromium maps files there.
+    #   * limits, so a runaway page cannot take the host down with it.
+    # Everything written to these tmpfs mounts, enrolment included, is discarded
+    # when the container stops -- which is what the real image does with its RAM
+    # overlay anyway.
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777
+      - /run:mode=0755
+      # Sticky-but-writable (1777) rather than owned by the kiosk user: neither
+      # Docker nor Podman accepts uid= on a tmpfs mount, and the container has a
+      # single unprivileged user. The agent still writes its device token with
+      # mode 0600.
+      - /etc/labkiosk:mode=1777
+      - /etc/chromium/policies/managed:mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      # The one capability Chromium's sandbox needs: its zygote chroots itself
+      # into an empty directory before spawning renderers, and the runtime's
+      # seccomp policy only permits chroot() with this capability. Without it
+      # every tab dies with `Check failed: sys_chroot("/proc/self/fdinfo/")`
+      # and the screen stays black. The renderers themselves end up with no
+      # capabilities at all, in their own user and PID namespaces.
+      - SYS_CHROOT
+    security_opt:
+      # Safe here because the sandbox uses user namespaces, not the setuid
+      # helper, which could not raise privileges under this setting anyway.
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 512

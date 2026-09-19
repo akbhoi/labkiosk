@@ -17,6 +17,9 @@ on:
 permissions:
   contents: read
   packages: write
+  # Keyless cosign signing exchanges this token for a short-lived certificate,
+  # so the signature is tied to this workflow rather than to a stored key.
+  id-token: write
 
 concurrency:
   group: docker-publish-${{ github.ref }}
@@ -39,17 +42,31 @@ jobs:
             image: ghcr.io/${{ github.repository }}
             context: .
             file: Dockerfile
+            # Chromium exists for both, and the simulator is the image people run
+            # on whatever hardware they have (Apple Silicon, a Raspberry Pi).
+            platforms: linux/amd64,linux/arm64
           - name: labkiosk-iso-builder
             image: ghcr.io/${{ github.repository }}-iso-builder
             context: distro-builder
             file: distro-builder/Dockerfile
+            # amd64 only, deliberately: it builds an amd64 Debian image with
+            # debootstrap, so an arm64 variant would have nothing to do.
+            platforms: linux/amd64
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # arm64 is built through emulation on the amd64 runner.
+      - name: Set up QEMU
+        if: contains(matrix.platforms, 'arm64')
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -66,18 +83,49 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=tag
+            # A release tag also publishes 1.4.2, 1.4 and 1, so a school can pin
+            # a line that receives fixes instead of following :latest.
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build and push ${{ matrix.name }}
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
+          platforms: ${{ matrix.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Attestations: what built this image, and what is inside it. GHCR
+          # shows both, and `cosign verify-attestation` can check them.
+          provenance: mode=max
+          sbom: true
           # Layer cache keyed per image. The apt layer in each of these is
           # hundreds of megabytes and changes rarely; without a cache every run
           # re-downloaded and re-installed all of it.
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      # Signed keylessly against this workflow's OIDC identity. Verify with:
+      #   cosign verify ghcr.io/<owner>/labkiosk       #     --certificate-identity-regexp '^https://github.com/<owner>/labkiosk/'       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Sign the published image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${{ matrix.image }}@${DIGEST}"
+
+      # Advisory by design, except for critical fixed vulnerabilities. Chromium
+      # always carries open high-severity CVEs, so failing on those would mean
+      # never publishing; failing on fixed criticals catches the case that
+      # matters -- a base image that is simply out of date.
+      - name: Scan the published image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
