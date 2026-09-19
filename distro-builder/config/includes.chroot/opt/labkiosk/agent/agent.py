@@ -45,6 +45,18 @@ CONFIG_FILE = "/etc/labkiosk/config.json"
 # GET /api/log is the only way anyone can read it on a real workstation.
 AGENT_LOG_FILE = "/tmp/lab-agent.log"
 MAX_LOG_BYTES = 64 * 1024
+# The log lives on /tmp, which is a tmpfs -- so it is RAM, on machines with as
+# little as 2 GB of it. The agent is at its most talkative exactly when a
+# workstation is left running with something wrong (a pulled cable logs on every
+# probe), so an append-only file is a slow leak that ends in a classroom.
+# Trimmed in place rather than rotated: the autostart owns the file through a
+# ">>" redirect, and renaming it would leave the shell writing to an inode
+# nobody can read any more.
+LOG_TRIM_AT_BYTES = 1024 * 1024
+LOG_KEEP_BYTES = 128 * 1024
+LOG_CHECK_EVERY_LINES = 200
+_log_lock = threading.Lock()
+_log_lines_written = 0
 PROXY_CONFIG_FILE = "/etc/labkiosk/proxy.json"
 # Language, region, timezone and keyboard, chosen in the wizard before the
 # network is configured -- a workstation with no route to an NTP server still
@@ -57,7 +69,7 @@ LOCALIZATION_TIMEOUT_SECONDS = 60
 # partition, which is how a school adds its language without a new ISO.
 UI_LANGUAGE_DIR = "/opt/labkiosk/i18n"
 UI_LANGUAGE_EXTRA_DIR = "/etc/labkiosk/i18n"
-UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
+UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}\Z")
 # A catalog is UI text. These caps are what stops a compromised or simply
 # wrong control plane from filling the data partition, or handing the wizard
 # a document it will spend a second walking on every page load.
@@ -111,21 +123,21 @@ LOCAL_WORKER_HOSTS = {
     "host.containers.internal",
 }
 
-HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\Z")
 
 # Kept in step with the maxlength="64" on the wizard's identifier input.
-CLIENT_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,62}$")
+CLIENT_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,62}\Z")
 
 # Whole-disk device nodes the guided installer may target. Kept identical to
 # TARGET_DISK_PATTERN in /usr/local/bin/labkiosk-install, which re-checks it
 # because sudoers lets the kiosk user invoke that binary directly.
-TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$")
+TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)\Z")
 
 # A grub-mkpasswd-pbkdf2 digest. The setup wizard derives this in the browser
 # with WebCrypto and posts only the digest, so the boot-menu password itself
 # never crosses this API. Kept identical to GRUB_PBKDF2_PATTERN in
 # /usr/local/bin/labkiosk-install, which re-validates it.
-GRUB_PBKDF2_PATTERN = re.compile(r"^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+$")
+GRUB_PBKDF2_PATTERN = re.compile(r"^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+\Z")
 GRUB_PASSWORD_LINE = re.compile(
     r"^\s*password_pbkdf2\s+\S+\s+(grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+)\s*$",
     re.MULTILINE,
@@ -142,9 +154,9 @@ ADMIN_LOCKOUT_SECONDS = 60
 # Network input accepted by /api/network/configure. Everything reaches nmcli as
 # an argument vector, never through a shell, but a value that starts with "-"
 # or carries a newline would still be read as something other than data.
-NET_DEVICE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$")
-PROXY_HOST_PATTERN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
-PROXY_BYPASS_PATTERN = re.compile(r"^[A-Za-z0-9*.\-:\[\]/<>]{1,253}$")
+NET_DEVICE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}\Z")
+PROXY_HOST_PATTERN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+PROXY_BYPASS_PATTERN = re.compile(r"^[A-Za-z0-9*.\-:\[\]/<>]{1,253}\Z")
 LOOPBACK_NO_PROXY = ("localhost", "127.0.0.1", "::1")
 NMCLI_TIMEOUT_SECONDS = 15
 # A heartbeat that reached the control plane this recently proves the
@@ -178,6 +190,34 @@ state = {
 state_lock = threading.Lock()
 
 
+def trim_agent_log():
+    """
+    Keep the tail of the log and drop the rest.
+
+    Truncating a file another process holds open in append mode is safe: O_APPEND
+    always writes at the current end, so the next line from the autostart lands
+    after what was kept rather than at the old offset.
+    """
+    try:
+        if os.path.getsize(AGENT_LOG_FILE) <= LOG_TRIM_AT_BYTES:
+            return
+        with open(AGENT_LOG_FILE, "r+b") as handle:
+            handle.seek(-LOG_KEEP_BYTES, os.SEEK_END)
+            tail = handle.read()
+            # The seek landed mid-line; drop that fragment so the file starts
+            # with a whole entry.
+            newline = tail.find(b"\n")
+            if newline != -1:
+                tail = tail[newline + 1:]
+            handle.seek(0)
+            handle.write(b"[Agent] ---- earlier entries were dropped to keep this log out of RAM ----\n")
+            handle.write(tail)
+            handle.truncate()
+    except OSError:
+        # A log that cannot be trimmed must never stop the agent logging.
+        pass
+
+
 def log(message):
     """
     One line, stamped with the workstation's own local time.
@@ -186,7 +226,18 @@ def log(message):
     terminal, usually to answer "when did this happen?" -- so the zone matters
     as much as the clock, and both now follow the Language & Region step.
     """
+    global _log_lines_written
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {time.strftime('%Z')} [Agent] {message}", flush=True)
+
+    # Checked every few hundred lines rather than on each one: a stat() per line
+    # is wasted work on a workstation that logs nothing for weeks.
+    with _log_lock:
+        _log_lines_written += 1
+        due = _log_lines_written >= LOG_CHECK_EVERY_LINES
+        if due:
+            _log_lines_written = 0
+    if due:
+        trim_agent_log()
 
 
 # --------------------------------------------------------------------------
@@ -386,8 +437,13 @@ def load_config():
 EPHEMERAL_FSTYPES = {"overlay", "overlayfs", "tmpfs", "ramfs"}
 
 
-def mounted_fstype(path):
-    """The filesystem type mounted exactly at path, or "" if nothing is."""
+def mounted_fstype(path, mounts_file="/proc/mounts"):
+    """
+    The filesystem type mounted exactly at path, or "" if nothing is.
+
+    mounts_file is a parameter so this can be tested against a fixture; nothing
+    in the agent passes anything but the default.
+    """
     try:
         target = os.path.realpath(path)
     except OSError:
@@ -401,7 +457,7 @@ def mounted_fstype(path):
 
     found = ""
     try:
-        with open("/proc/mounts", "r", encoding="utf-8", errors="replace") as handle:
+        with open(mounts_file, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 fields = line.split()
                 if len(fields) >= 3 and unescape(fields[1]) == target:

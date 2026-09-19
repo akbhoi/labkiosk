@@ -24,13 +24,13 @@ STATUS_FILE = "/tmp/labkiosk-install-status.json"
 # layout, used here with --root so the choice made in the wizard lands on the
 # disk being installed rather than on the live session.
 LOCALIZATION_HELPER = "/usr/local/sbin/labkiosk-localization"
-TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$")
+TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)\Z")
 
 # A grub-mkpasswd-pbkdf2 digest: grub.pbkdf2.sha512.<rounds>.<salt hex>.<hash hex>.
 # Only the digest ever reaches this program -- the setup wizard derives it in the
 # browser with WebCrypto, so the plaintext boot-menu password is never sent over
 # the agent's API, never reaches a process argument, and is never written to disk.
-GRUB_PBKDF2_PATTERN = re.compile(r"^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+$")
+GRUB_PBKDF2_PATTERN = re.compile(r"^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+\Z")
 
 def write_status(state, step, progress, error=None):
     data = {

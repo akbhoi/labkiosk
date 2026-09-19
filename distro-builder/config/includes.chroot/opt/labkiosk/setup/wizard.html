@@ -943,7 +943,7 @@
       selectedWifiSsid = '';
       selectedWifiSecurity = '';
       document.querySelectorAll('.wifi-item').forEach(el => el.classList.remove('selected'));
-      selectedWifiSsidSpan.textContent = 'hidden network';
+      selectedWifiSsidSpan.textContent = t('ui.js.hidden-network', 'hidden network');
       wifiPasswordGroup.style.display = 'block';
       hiddenWifiSsidInput.focus();
     });
@@ -1305,16 +1305,16 @@
 
           const badge = document.getElementById('wizard-badge');
           if (isLive) {
-            if (badge) badge.textContent = 'LIVE INSTALLER & SETUP';
+            if (badge) badge.textContent = t('ui.js.live-installer-setup', 'LIVE INSTALLER & SETUP');
             if (data.installRequested) {
               tabBtnInstall.click();
             }
           } else {
-            if (badge) badge.textContent = 'INSTALLED WORKSTATION';
+            if (badge) badge.textContent = t('ui.js.installed-workstation', 'INSTALLED WORKSTATION');
             document.getElementById('tabs-nav').style.display = 'none';
             viewInstall.style.display = 'none';
             viewEnroll.style.display = 'block';
-            enrollDesc.textContent = 'Link this installed workstation to your school lab account.';
+            enrollDesc.textContent = t('ui.js.link-this-installed-workstation-to-your', 'Link this installed workstation to your school lab account.');
             // An enrolled installed workstation has nothing left to set up here
             // except its network, and that is behind the administrator password.
             if (isConfigured) isStandaloneNetwork = true;
@@ -1350,12 +1350,12 @@
           }
           if (isOfflineRedirect) {
             document.getElementById('admin-auth-offline').style.display = 'block';
-            showStatus('This workstation lost its network connection. It returns to the lesson automatically once the connection is back.', 'error');
+            showStatus(t('ui.js.this-workstation-lost-its-network-connection', 'This workstation lost its network connection. It returns to the lesson automatically once the connection is back.'), 'error');
             setInterval(checkBackOnline, 3000);
           }
         }
       } catch {
-        showStatus('Could not reach the local agent service. Retrying may help once it has started.', 'error');
+        showStatus(t('ui.js.could-not-reach-the-local-agent', 'Could not reach the local agent service. Retrying may help once it has started.'), 'error');
       }
 
       try {
@@ -1388,13 +1388,13 @@
     function renderEthernetLink() {
       const eth = ethernetInterfaces.find(i => i.device === netEthernetDevice.value);
       if (!eth) {
-        ethernetLinkText.textContent = 'Hardware absent';
+        ethernetLinkText.textContent = t('ui.js.hardware-absent', 'Hardware absent');
         ethernetLinkText.style.color = 'var(--muted)';
       } else if (eth.carrier) {
-        ethernetLinkText.textContent = 'Connected (Cable plugged in)';
+        ethernetLinkText.textContent = t('ui.js.connected-cable-plugged-in', 'Connected (Cable plugged in)');
         ethernetLinkText.style.color = '#34d399';
       } else {
-        ethernetLinkText.textContent = 'Unplugged (No carrier)';
+        ethernetLinkText.textContent = t('ui.js.unplugged-no-carrier', 'Unplugged (No carrier)');
         ethernetLinkText.style.color = 'var(--muted)';
       }
     }
@@ -1421,7 +1421,7 @@
           const wifis = ifaces.filter(i => i.type === 'wifi');
           if (wifis.length === 0) {
             tabNetWifi.style.opacity = '0.5';
-            tabNetWifi.title = 'No Wi-Fi hardware detected';
+            tabNetWifi.title = t('ui.js.no-wi-fi-hardware-detected', 'No Wi-Fi hardware detected');
           }
         }
       } catch {
@@ -1504,7 +1504,7 @@
       }
 
       if (isWifi && !ssid) {
-        showStatus('Please select or specify a Wi-Fi network.', 'error');
+        showStatus(t('ui.js.please-select-or-specify-a-wi', 'Please select or specify a Wi-Fi network.'), 'error');
         return;
       }
 
@@ -1542,8 +1542,8 @@
       };
 
       btnTestNetwork.disabled = true;
-      btnTestNetwork.querySelector('span').textContent = 'Applying & Connecting...';
-      showStatus('Connecting to network and verifying route...', 'info');
+      btnTestNetwork.querySelector('span').textContent = t('ui.js.applying-connecting', 'Applying & Connecting...');
+      showStatus(t('ui.js.connecting-to-network-and-verifying-route', 'Connecting to network and verifying route...'), 'info');
 
       try {
         const payload = {
@@ -1570,22 +1570,22 @@
           // The unlock expired; ask again rather than fail silently.
           adminToken = '';
           openAdminModal();
-          throw new Error('Administrator authentication expired. Unlock and apply again.');
+          throw new Error(t('ui.js.administrator-authentication-expired-unlock-and-', 'Administrator authentication expired. Unlock and apply again.'));
         }
         if (!res.ok) throw new Error(data.error || 'Network configuration failed');
 
         if (data.connectivity && data.connectivity.ok) {
-          showStatus('SUCCESS! Connected to network. Internet & DNS routes verified.', 'success');
+          showStatus(t('ui.js.success-connected-to-network-internet-dns', 'SUCCESS! Connected to network. Internet & DNS routes verified.'), 'success');
           btnProceedStep2.style.background = 'var(--green)';
         } else {
-          showStatus('Connected to interface, but public internet route could not be confirmed: ' + ((data.connectivity && data.connectivity.details) || ''), 'info');
+          showStatus(t('ui.js.connected-to-interface-but-public-internet', 'Connected to interface, but public internet route could not be confirmed: ') + ((data.connectivity && data.connectivity.details) || ''), 'info');
         }
         await loadNetworkStatus();
       } catch (err) {
-        showStatus('Connection failed: ' + err.message, 'error');
+        showStatus(t('ui.js.connection-failed', 'Connection failed: ') + err.message, 'error');
       } finally {
         btnTestNetwork.disabled = false;
-        btnTestNetwork.querySelector('span').textContent = 'Apply & Test Network';
+        btnTestNetwork.querySelector('span').textContent = t('ui.js.apply-test-network', 'Apply & Test Network');
       }
     });
 
@@ -1642,7 +1642,7 @@
     async function loadNetworkStatus() {
       try {
         const res = await fetch('http://127.0.0.1:8888/api/network/status');
-        if (!res.ok) throw new Error('status unavailable');
+        if (!res.ok) throw new Error(t('ui.js.status-unavailable', 'status unavailable'));
         const st = await res.json();
         const where = st.ipv4 && st.ipv4.address
           ? ` (${String(st.activeType).toUpperCase()}: ${st.ipv4.address})` : '';
@@ -1659,7 +1659,7 @@
           document.getElementById('proxy-bypass').value = p.bypass || '';
         }
       } catch {
-        networkSummary.textContent = '⚪ Network status unknown';
+        networkSummary.textContent = t('ui.js.network-status-unknown', '⚪ Network status unknown');
         networkSummary.style.color = 'var(--muted)';
       }
     }
@@ -1675,7 +1675,7 @@
         const headers = adminToken ? { 'X-LabKiosk-Admin': adminToken } : {};
         const res = await fetch('http://127.0.0.1:8888/api/log', { headers, cache: 'no-store' });
         if (res.status === 401) {
-          agentLogPre.textContent = 'The administrator password is required to read the log on an installed workstation.';
+          agentLogPre.textContent = t('ui.js.the-administrator-password-is-required-to', 'The administrator password is required to read the log on an installed workstation.');
           openAdminModal();
           return;
         }
@@ -1683,7 +1683,7 @@
         agentLogPre.textContent = text.trim() || '(the log is empty)';
         agentLogPre.scrollTop = agentLogPre.scrollHeight;
       } catch {
-        agentLogPre.textContent = 'Could not reach the local agent service.';
+        agentLogPre.textContent = t('ui.js.could-not-reach-the-local-agent.2', 'Could not reach the local agent service.');
       }
     }
 
@@ -1716,7 +1716,7 @@
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
-        btn.textContent = 'Selected — press Ctrl+C';
+        btn.textContent = t('ui.js.selected-press-ctrl-c', 'Selected — press Ctrl+C');
       }
       setTimeout(() => { btn.textContent = 'Copy'; }, 2500);
     });
@@ -1753,7 +1753,7 @@
         }
       } catch {
         adminAuthError.className = 'status-box status-error';
-        adminAuthError.textContent = 'Failed to verify password with local agent.';
+        adminAuthError.textContent = t('ui.js.failed-to-verify-password-with-local', 'Failed to verify password with local agent.');
         adminAuthError.style.display = 'block';
       } finally {
         btnAdminUnlock.disabled = false;
@@ -1821,7 +1821,7 @@
       const generated = Array.from(bytes).map(b => alphabet[b % alphabet.length]).join('');
       grubPasswordInput.value = generated;
       grubPasswordInput.type = 'text';
-      grubPasswordReveal.textContent = 'Write this down now — required for future admin access: ' + generated;
+      grubPasswordReveal.textContent = t('ui.js.write-this-down-now-required-for', 'Write this down now — required for future admin access: ') + generated;
       grubPasswordReveal.style.display = 'block';
     });
 
@@ -1850,12 +1850,12 @@
       progressBarContainer.style.display = 'block';
       progressStatusText.style.display = 'block';
       progressBar.style.width = '5%';
-      progressStatusText.textContent = 'Initiating disk installation...';
+      progressStatusText.textContent = t('ui.js.initiating-disk-installation', 'Initiating disk installation...');
 
       try {
         let grubPasswordHash = '';
         if (grubPassword) {
-          progressStatusText.textContent = 'Deriving the administrator password hash...';
+          progressStatusText.textContent = t('ui.js.deriving-the-administrator-password-hash', 'Deriving the administrator password hash...');
           grubPasswordHash = await grubPbkdf2(grubPassword);
         }
 
@@ -1880,12 +1880,12 @@
               if (status.state === 'completed') {
                 clearInterval(pollTimer);
                 progressBar.style.width = '100%';
-                showStatus('SUCCESS! Lab Kiosk OS installed to internal drive. Please remove the USB installation drive and reboot.', 'success');
+                showStatus(t('ui.js.success-lab-kiosk-os-installed-to', 'SUCCESS! Lab Kiosk OS installed to internal drive. Please remove the USB installation drive and reboot.'), 'success');
                 startInstallBtn.style.display = 'none';
                 rebootBtn.style.display = 'flex';
               } else if (status.state === 'error') {
                 clearInterval(pollTimer);
-                showStatus('Installation failed: ' + (status.error || 'Unknown error'), 'error');
+                showStatus(t('ui.js.installation-failed', 'Installation failed: ') + (status.error || 'Unknown error'), 'error');
                 startInstallBtn.disabled = false;
                 targetDiskSelect.disabled = false;
                 grubPasswordInput.disabled = false;
@@ -1907,7 +1907,7 @@
       try {
         await fetch('http://127.0.0.1:8888/api/reboot', { method: 'POST' });
         rebootBtn.disabled = true;
-        rebootBtn.querySelector('span').textContent = 'Rebooting...';
+        rebootBtn.querySelector('span').textContent = t('ui.js.rebooting', 'Rebooting...');
       } catch {}
     });
 
@@ -1964,7 +1964,7 @@
       if (count === 0) {
         enrollmentKeyHint.innerHTML = ENROLLMENT_KEY_HINT_HTML;
       } else if (complete) {
-        enrollmentKeyHint.textContent = 'Complete key entered.';
+        enrollmentKeyHint.textContent = t('ui.js.complete-key-entered', 'Complete key entered.');
       } else {
         enrollmentKeyHint.textContent = `${count} of ${ENROLLMENT_KEY_CHARS} characters entered.`;
       }
@@ -2003,13 +2003,13 @@
       const enrollmentKey = normaliseEnrollmentKey(enrollmentKeyInput.value);
 
       submitBtn.disabled = true;
-      submitBtn.querySelector('span').textContent = 'Connecting & Verifying...';
+      submitBtn.querySelector('span').textContent = t('ui.js.connecting-verifying', 'Connecting & Verifying...');
       hideStatus();
 
       const fail = (message, withLog = false) => {
         showStatus(message, 'error');
         submitBtn.disabled = false;
-        submitBtn.querySelector('span').textContent = 'Verify & Connect Workstation';
+        submitBtn.querySelector('span').textContent = t('ui.js.verify-connect-workstation', 'Verify & Connect Workstation');
         // An unexpected failure is exactly when the log matters, and this is the
         // only place a workstation can show it.
         if (withLog) showDiagnostics();

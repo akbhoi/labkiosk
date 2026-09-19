@@ -197,6 +197,11 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 
+# The client's own validators: the loopback boundary, URL and catalog checks,
+# the persistence test, the locale spellings and the keyboard lockdown.
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover \
+  -s distro-builder/tests -t distro-builder/tests
+
 # The boot-time Chromium policy is generated from the single policy base; this
 # fails if the committed copy has drifted from it.
 python3 distro-builder/tools/generate-chromium-policy.py --check

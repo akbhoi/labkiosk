@@ -29,10 +29,14 @@ This skill guides AI coding assistants through modifying, building, debugging, a
    - Verifies route reachability (`/api/network/test`, cached 5s in `test_connectivity()`).
    - Serves the tail of `/tmp/lab-agent.log` over `/api/log` (admin token required once installed): the workstation has no terminal, so the setup wizard's diagnostics panel is the only way to read it.
    - Verifies admin passwords against GRUB PBKDF2 hash (`/api/admin/verify`) and issues a 10-minute token; `/api/network/configure` requires it (`X-LabKiosk-Admin`) on installed systems. Five failures lock the gate for 60 s.
-5. **Syntax Verification:**
+5. **Syntax Verification and tests:**
    ```bash
    PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py
+   PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests
    ```
+   The suite covers the loopback boundary, worker URLs, catalog validation, the persistence check,
+   locale spellings, time servers, the clock, the keyboard lockdown and the `\Z` anchoring. Add to
+   it when you add a validator; it is the only automated check the client has.
 
 ### B. Modifying the Automated Disk Installer (`labkiosk-install`)
 1. File: `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`.

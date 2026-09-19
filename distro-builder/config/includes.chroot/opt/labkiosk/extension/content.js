@@ -118,6 +118,18 @@
   // Long enough to notice the bar and read the workstation name, short enough
   // that it is out of the way before anyone starts a lesson.
   let barCatalog = {};
+
+  /**
+   * The bar's own strings, in whatever language the wizard chose.
+   *
+   * At this scope on purpose: the nav-button titles and the network tooltip are
+   * set from functions that sit beside the one that builds the bar, not inside
+   * it, so a t() declared in there would not exist by the time they run.
+   */
+  function t(key, fallback) {
+    const value = barCatalog[key];
+    return typeof value === "string" && value ? value : fallback;
+  }
 const BAR_INTRO_MS = 2500;
   const AGENT_SETUP_URL = "http://127.0.0.1:8888/setup";
 
@@ -772,11 +784,6 @@ const BAR_INTRO_MS = 2500;
     // Strings the bar sets from script rather than from its own markup: the
     // English is the argument, so a catalog only ever overrides it.
     const adminDesc = shadow.getElementById("admin-modal-desc");
-    function t(key, fallback) {
-      const value = barCatalog[key];
-      return typeof value === "string" && value ? value : fallback;
-    }
-
     // Interface language. The bar is built in English and then translated in
     // place, so a missing, partial or broken catalog leaves it readable.
     askAgent({ type: "labkiosk:i18n" }).then((reply) => {
@@ -927,7 +934,7 @@ const BAR_INTRO_MS = 2500;
       btnBack.classList.add("disabled");
       btnBack.style.opacity = "0.35";
       btnBack.style.cursor = "not-allowed";
-      btnBack.title = "Back is disabled at the start of the broadcast lesson";
+      btnBack.title = t("bar.back-is-disabled-at-the-start", "Back is disabled at the start of the broadcast lesson");
     } else {
       btnBack.classList.remove("disabled");
       btnBack.style.opacity = "1";
@@ -961,12 +968,12 @@ const BAR_INTRO_MS = 2500;
           offlineSince = null;
           if (dot) dot.classList.remove("offline");
           if (netIcon) netIcon.setAttribute("stroke", "#10b981");
-          if (btnNet) btnNet.title = "Network Connected (Click to configure)";
+          if (btnNet) btnNet.title = t("bar.network-connected-click-to-configure", "Network Connected (Click to configure)");
         } else {
           if (offlineSince === null) offlineSince = Date.now();
           if (dot) dot.classList.add("offline");
           if (netIcon) netIcon.setAttribute("stroke", "#ef4444");
-          if (btnNet) btnNet.title = "Network Offline (Click to configure)";
+          if (btnNet) btnNet.title = t("bar.network-offline-click-to-configure", "Network Offline (Click to configure)");
 
           // Measured in time, not ticks: offline, a status call can take several
           // seconds, so ticks would stretch the grace period unpredictably. A

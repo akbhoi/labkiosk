@@ -40,18 +40,18 @@ TIMESYNCD_DROPIN = "/etc/systemd/timesyncd.conf.d/labkiosk.conf"
 
 # Deliberately strict. These reach the filesystem and a command line, and a
 # value with "..", a slash too many or a newline in it must never get that far.
-TIMEZONE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_.-]+){1,2}$")
+TIMEZONE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_.-]+){1,2}\Z")
 # lang[_TERRITORY][.CODESET][@modifier]. The codeset is optional because
 # /usr/share/i18n/SUPPORTED writes some entries without one ("en_IN UTF-8"),
 # while locale -a reports the generated result as "en_IN.utf8". Three
 # spellings of one locale, so everything is normalised before comparison.
-LOCALE_PATTERN = re.compile(r"^[a-z]{2,3}(?:_[A-Z]{2})?(?:\.[A-Za-z0-9-]{1,16})?(?:@[A-Za-z0-9]{1,16})?$")
-KEYMAP_PATTERN = re.compile(r"^[a-z0-9]{1,16}$")
-KEYMAP_VARIANT_PATTERN = re.compile(r"^[a-z0-9_-]{0,32}$")
+LOCALE_PATTERN = re.compile(r"^[a-z]{2,3}(?:_[A-Z]{2})?(?:\.[A-Za-z0-9-]{1,16})?(?:@[A-Za-z0-9]{1,16})?\Z")
+KEYMAP_PATTERN = re.compile(r"^[a-z0-9]{1,16}\Z")
+KEYMAP_VARIANT_PATTERN = re.compile(r"^[a-z0-9_-]{0,32}\Z")
 # A hostname or an address, which is all systemd-timesyncd accepts here. Kept
 # strict because this value is written into a configuration file: no spaces, no
 # newlines, nothing that could introduce a second directive.
-NTP_SERVER_PATTERN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._:-]{0,252}[A-Za-z0-9])?$")
+NTP_SERVER_PATTERN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._:-]{0,252}[A-Za-z0-9])?\Z")
 MAX_NTP_SERVERS = 4
 
 # A clock this far out is a typo or a dead RTC, not a choice anyone made.

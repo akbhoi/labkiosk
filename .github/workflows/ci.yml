@@ -112,6 +112,17 @@ jobs:
             exit 1
           fi
 
+      # The workstation's validators are what stands between a caller and a
+      # subprocess, a filesystem path or the browser policy. The control plane
+      # has had a suite since the beginning; this is the client's.
+      - name: Client validators
+        run: |
+          PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m unittest discover             -s distro-builder/tests -t distro-builder/tests -v
+          if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
+            echo "::error::__pycache__ was written into the image overlay"
+            exit 1
+          fi
+
       - name: Extension scripts parse
         run: |
           node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js

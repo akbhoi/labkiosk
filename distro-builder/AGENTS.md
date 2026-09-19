@@ -169,6 +169,14 @@ distro-builder/
   before it ever becomes a path.
 - The catalog is applied with `textContent`, never `innerHTML`: a translation is data, and a school
   that pastes one in must not be able to inject markup into the wizard.
+- **Strings set from script go through `t(key, english)`**, not a bare literal — status messages,
+  errors and tooltips included. They are exactly the strings a person reads when something has
+  gone wrong, and leaving them out produces a wizard that is translated until the moment it
+  matters. The English stays in the call as the fallback, so the page reads correctly with no
+  catalog at all.
+- In the extension, `t()` lives at the top of the content script's IIFE rather than inside the
+  function that builds the bar: the nav-button titles and the network tooltip are set from
+  functions beside it, which would not see a `t` declared in there.
 - `_meta.direction: "rtl"` flips the wizard and the bar for right-to-left languages.
 - **Catalogs can also come from the control plane.** `GET /api/i18n` lists what the platform has
   and `GET /i18n/<tag>.json` serves one; both are public, because a workstation fetches its
@@ -221,6 +229,17 @@ distro-builder/
   from the dashboard, and a kiosk that cannot paste it is a kiosk nobody can enrol. Students never
   see that origin.
 
+### Rule 1i: Anchor Validation Patterns With `\Z`, Never `$`
+- In Python, `$` matches at the end of the string **and immediately before a trailing newline**.
+  Every validation pattern in this project used `$`, so a workstation name, a disk path, a locale,
+  a timezone and — worst of the set — the **GRUB password digest** all accepted a value ending in
+  `\n`. That digest is written into `/etc/grub.d/01_labkiosk_password` as
+  `password_pbkdf2 labkiosk <digest>`, so a trailing newline would have carried whatever followed
+  it into that file as a second GRUB directive.
+- All fifteen are now anchored with `\Z`. `REMOTE_HOST_PATTERN` keeps `$` on purpose: it is a
+  `MULTILINE` search over a configuration file, where matching at a line end is the point.
+- `distro-builder/tests/test_client.py` pins this behaviour.
+
 ### Rule 2: Universal Dual Bootloader Compatibility (BIOS + UEFI)
 - Workstations in school environments range from legacy BIOS machines to modern UEFI-only hardware (e.g. Hyper-V Gen 2, modern laptops/NUCs).
 - **ISO Boot:**
@@ -270,6 +289,12 @@ distro-builder/
   fixed by the `key` in `manifest.json`; a page cannot forge `Origin`, and another extension
   cannot claim that id. Matching on the literal id rather than on the `chrome-extension:`
   scheme is the point — widen it and any extension would be admitted.
+- **The log is trimmed in place, not rotated.** `/tmp` is a tmpfs, so the log is RAM on a machine
+  that may only have 2 GB of it, and the agent is at its most talkative exactly when something is
+  wrong and a workstation is left running. `log()` keeps the last 128 KB once the file passes 1 MB.
+  It cannot rename the file: the Openbox autostart owns it through a `>>` redirect, and a rename
+  would leave the shell appending to an inode nobody can read. Truncating under an `O_APPEND`
+  writer is safe — the next line lands after what was kept.
 - `GET /api/log` returns the tail of `/tmp/lab-agent.log`, gated by the administrator token once the
   workstation is installed. It exists because a kiosk has no terminal, no getty, no SSH and blocks
   `file://`, so without it a failure in the field is unreadable. Keep it: "check the agent log" is
@@ -342,6 +367,11 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
+
+# The client's own validators: the loopback boundary, URL and catalog checks,
+# the persistence test, the locale spellings and the keyboard lockdown.
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover \
+  -s distro-builder/tests -t distro-builder/tests
 
 # The boot-time Chromium policy is generated from the single policy base; this
 # fails if the committed copy has drifted from it.
