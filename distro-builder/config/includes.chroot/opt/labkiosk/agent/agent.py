@@ -1869,7 +1869,11 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             # "key" in manifest.json, and Origin is a forbidden header a page
             # cannot set, so nothing else can present this value.
             return True
-        host = urlparse(origin).hostname
+        try:
+            host = urlparse(origin).hostname
+        except ValueError:
+            _log_rejected_origin(origin)
+            return False
         if host in ("127.0.0.1", "localhost"):
             return True
         _log_rejected_origin(origin)
