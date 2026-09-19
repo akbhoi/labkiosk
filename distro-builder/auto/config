@@ -65,7 +65,24 @@ password_pbkdf2 labkiosk $GRUB_PASSWORD_HASH
 EOF
 fi
 
+# IMAGE SIZE
+# ----------
+# --apt-recommends false: Recommends added printer tools, Samba, Avahi,
+#   ModemManager and ~30 Perl web modules. The few recommended packages the kiosk
+#   does rely on are listed by name in config/package-lists/kiosk.list.chroot.
+# --firmware-chroot/--firmware-binary false: the default installs every package
+#   from non-free-firmware (~875 MB installed). The firmware this image supports
+#   is listed explicitly in the package list instead.
+# The initrd is xz-compressed through initramfs-tools itself
+# (includes.chroot/etc/initramfs-tools/conf.d/labkiosk-compress): live-build
+# 20230502 only knows gzip/bzip2/lzma for --initramfs-compression and would
+# silently keep gzip for anything else.
+# /live/vmlinuz and /live/initrd.img are hard links to the versioned files and
+# xorriso stores them once, so they cost nothing on the ISO.
 lb config noauto \
+    --apt-recommends false \
+    --firmware-chroot false \
+    --firmware-binary false \
     --mode debian \
     --system live \
     --distribution bookworm \
