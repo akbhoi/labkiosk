@@ -4,6 +4,79 @@
  * real-time telemetry indicators, and fullscreen lock curtain.
  */
 
+/**
+ * The last layer of the keyboard and mouse lockdown.
+ *
+ * Openbox binds nothing and the X keymap has had the F keys, the Super keys,
+ * the menu key and the XF86 block removed (labkiosk-lock-keys), so most of what
+ * follows should never arrive. This catches what does: a page's own shortcuts,
+ * Chromium accelerators that are still reachable with Control or Alt, and the
+ * context menu.
+ *
+ * Deliberately permissive about one thing: typing. Letters, digits,
+ * punctuation, Backspace, Delete, Enter, Shift, Caps Lock, Tab, Escape and the
+ * cursor keys all pass through, because a workstation that cannot fill in a
+ * form is not locked down, it is broken.
+ *
+ * And deliberately permissive about one more: the clipboard, *only* on the
+ * setup wizard. The enrolment key is a 20-character string an administrator
+ * pastes from the dashboard, and taking Ctrl+V away there would make the one
+ * screen that needs it unusable. Students never see that origin.
+ */
+(function lockInput() {
+  const AGENT_ORIGIN = "http://127.0.0.1:8888";
+  const CLIPBOARD_KEYS = new Set(["a", "c", "v", "x", "z", "y"]);
+
+  // Keys that pass on their own, with no modifier.
+  const ALLOWED_KEYS = new Set([
+    "Backspace", "Delete", "Enter", "NumpadEnter", "Shift", "CapsLock", "Tab", "Escape",
+    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown",
+    "Control", "Alt", "AltGraph", "NumLock",
+  ]);
+
+  const isSetupPage = window.location.origin === AGENT_ORIGIN;
+
+  function isTypedCharacter(event) {
+    // A single printable character: "a", "7", "@". Dead keys and IME give
+    // longer names, which fall through to the rules below.
+    return event.key.length === 1;
+  }
+
+  function permitted(event) {
+    const combination = event.ctrlKey || event.altKey || event.metaKey;
+    if (combination) {
+      // Shift is not a combination -- it is how capitals are typed.
+      if (isSetupPage && event.ctrlKey && !event.altKey && !event.metaKey &&
+          CLIPBOARD_KEYS.has(event.key.toLowerCase())) {
+        return true;
+      }
+      return false;
+    }
+    if (ALLOWED_KEYS.has(event.key)) return true;
+    if (isTypedCharacter(event)) return true;
+    // Everything else: F keys, Meta, ContextMenu, PrintScreen, Insert, Pause,
+    // and anything a keyboard invents that this list has never heard of.
+    return false;
+  }
+
+  function guard(event) {
+    if (permitted(event)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  // Capture phase, so a page's own handler never runs either.
+  for (const type of ["keydown", "keypress", "keyup"]) {
+    window.addEventListener(type, guard, true);
+  }
+
+  // Right click, and the menu key that does the same thing.
+  window.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+})();
+
 (function () {
   // Only inject in top window (never in sub-iframes)
   if (window.self !== window.top) return;

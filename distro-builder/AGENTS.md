@@ -192,6 +192,35 @@ distro-builder/
   empty value restores Debian's pool, and the drop-in is rewritten at every boot because it lives
   on the RAM overlay.
 
+### Rule 1h: The Keyboard and Mouse Are Locked in Three Layers
+- **Openbox only obeys a configuration it can find.** `openbox-session` reads
+  `~/.config/openbox/rc.xml` and then `/etc/xdg/openbox/rc.xml`. It does **not** read
+  `/etc/openbox/rc.xml`, which is where this project kept its stripped file — so installed
+  workstations ran Debian's defaults and Alt+Tab, Alt+F4, Super+E, Ctrl+Alt+arrow desktop
+  switching and the right-click root menu all worked. `01-lockdown.hook.chroot` now installs it to
+  both paths it does read. The simulator never showed this because its entrypoint passes
+  `--config-file` explicitly; when changing either, change both.
+- **The X keymap is stripped before anything can read it.** `labkiosk-lock-keys` runs from the
+  Openbox autostart and rewrites the keymap so every F key, both Super keys, the menu key, Print
+  Screen, Pause, Scroll Lock, Insert and the whole `XF86` media and launch block carry `NoSymbol`.
+  A key with no symbol is invisible to every application, Chromium's built-in accelerators
+  included, and drops out of the modifier map as well. It judges a key by its *first* symbol and
+  strips blocked symbols from higher levels individually — the keypad's `*` carries
+  `XF86ClearGrab` on its Ctrl+Alt level, and taking the whole key would stop it typing.
+  It uses `xkbcomp`, already on the image; `xmodmap` would mean 42 MB of `x11-xserver-utils`.
+- **`setxkbmap` undoes it.** Any keyboard-layout change rebuilds the map from scratch and restores
+  every blocked key, so the agent re-runs `labkiosk-lock-keys` after applying a layout. Anything
+  else that calls `setxkbmap` must do the same.
+- **The extension refuses what still arrives.** `content.js` blocks, in the capture phase, every
+  Ctrl/Alt/Meta combination, every key that is not a printable character or one of
+  Backspace/Delete/Enter/Shift/Caps Lock/Tab/Escape/cursor/page keys, and the context menu. It runs
+  in **all frames** (`all_frames: true`) because a key pressed inside an iframe never reaches a
+  listener in the parent document; the bar and the curtain still build only in the top frame.
+- **One deliberate exception, and only one:** Ctrl+A/C/V/X/Z/Y on the setup wizard's own origin
+  (`http://127.0.0.1:8888`). The enrolment key is a 20-character string an administrator pastes
+  from the dashboard, and a kiosk that cannot paste it is a kiosk nobody can enrol. Students never
+  see that origin.
+
 ### Rule 2: Universal Dual Bootloader Compatibility (BIOS + UEFI)
 - Workstations in school environments range from legacy BIOS machines to modern UEFI-only hardware (e.g. Hyper-V Gen 2, modern laptops/NUCs).
 - **ISO Boot:**
@@ -381,6 +410,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 | **No candidate internal drives detected** | Installer printed `[INSTALL] Executing: ...` to `sys.stdout`, corrupting JSON output parsed by `agent.py`. | Redirect all logging to `file=sys.stderr`. Reserve `sys.stdout` exclusively for `json.dumps()`. |
 | **Legacy BIOS fails to boot installed GPT disk** | Legacy GRUB requires a BIOS Boot Partition to embed `core.img` on GPT disks. | Create Partition 1: `bios_grub` (1MiB-2MiB) with `set 1 bios_grub on`. |
 | **UEFI boot entry missing after reboot** | UEFI firmware lost NVRAM or does not store dynamic boot variables. | Always invoke `grub-install --target=x86_64-efi --removable` to create `/boot/efi/EFI/BOOT/BOOTX64.EFI`. |
+| **Alt+Tab, Alt+F4 or a right-click desktop menu works on an installed workstation** | The stripped `rc.xml` was shipped to `/etc/openbox/rc.xml`, which `openbox-session` never reads; it looks in `~/.config/openbox` and `/etc/xdg/openbox`, and fell back to Debian's defaults. The simulator hid it by passing `--config-file`. | Install `rc.xml` to both paths Openbox reads (see Rule 1h), and strip the keymap with `labkiosk-lock-keys` so the keys do not exist in the first place. |
 | **Kiosk nav bar and lock curtain vanish** | Blanket extension block `ExtensionInstallBlocklist: ["*"]` prevents loading unpacked extensions. | Do not add blanket extension blocks. Chromium is already locked down via `--kiosk`, blocked `chrome://`, and wiped user profile. |
 | **Freshly enrolled kiosk shows "This page is blocked"** | Chromium reads its managed policy once at startup. | Agent sets `pendingBrowserRestart` and restarts the browser after the next policy sync. |
 | **A shell hook dies with `$'\r': command not found`** | The file was checked out or written with CRLF line endings. Windows git defaults to `core.autocrlf=true`, and Python's `Path.write_text` translates newlines on Windows. | `.gitattributes` pins every build and image file to `eol=lf`. Never write these files with a tool that rewrites newlines. |

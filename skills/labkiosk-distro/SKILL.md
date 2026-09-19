@@ -104,6 +104,17 @@ and falls back to `Etc/UTC` without that parameter. The simulator and ISO-builde
 and `/etc/localtime` in their Dockerfiles; `docker-compose.yml` lets `TZ` be overridden per
 deployment.
 
+### B3. Keyboard and Mouse Lockdown
+1. `rc.xml` must be installed to `~/.config/openbox/rc.xml` **and** `/etc/xdg/openbox/rc.xml`.
+   `/etc/openbox/rc.xml` is the source in this repository and is not a path Openbox reads.
+2. `labkiosk-lock-keys` (`usr/local/bin/`) strips the X keymap with `xkbcomp`: F keys, Super, menu,
+   Print Screen, Pause, Scroll Lock, Insert and `XF86*` become `NoSymbol`. Judge a key by its first
+   symbol; strip blocked symbols from higher levels individually or you take `KP_Multiply` with
+   `XF86ClearGrab`.
+3. Re-run it after **any** `setxkbmap`, which rebuilds the map and restores everything.
+4. `content.js` blocks the rest in the capture phase and runs in all frames. The only permitted
+   combinations are the clipboard keys, and only on the wizard's own origin.
+
 ### C. Modifying the Browser Extension (MV3)
 1. Directory: `distro-builder/config/includes.chroot/opt/labkiosk/extension/`.
 2. Architecture:

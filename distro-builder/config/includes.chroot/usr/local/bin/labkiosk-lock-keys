@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""
+Take the keys a kiosk has no use for off the keyboard entirely.
+
+Openbox binds nothing and the browser runs under a managed policy, but both of
+those refuse a key *after* it has been delivered. This works one layer lower: it
+rewrites the X keymap so the key carries no symbol at all, and then no
+application -- Chromium included, with its own built-in accelerators -- ever
+sees it. A key with no keysym also drops out of the modifier map, which is what
+makes the Super keys stop being a modifier rather than merely stop opening a
+menu.
+
+What survives is what a person needs in order to type and to fill in a form:
+letters, digits, punctuation, Backspace, Delete, Enter, Shift, Caps Lock, Tab
+and Escape, plus the cursor and page keys so a lesson can be read and a field
+edited. Everything else -- every F key, both Super keys, the menu key, Print
+Screen, Pause, Scroll Lock, Insert and the whole XF86 block of media and launch
+keys -- is removed.
+
+xkbcomp rather than xmodmap: xmodmap lives in x11-xserver-utils, which is 42 MB
+of tools this image has no other use for, while xkbcomp is already here.
+
+Run it from the Openbox autostart, and again whenever the keyboard layout
+changes: setxkbmap reloads the map from scratch and puts every one of them back.
+"""
+
+import os
+import re
+import subprocess
+import sys
+
+# Matched against the keysym names in the keymap. A key is cleared when *any* of
+# its symbols matches, because a shifted or AltGr level is a way in too.
+BLOCKED_KEYSYMS = (
+    re.compile(r"^F[0-9]{1,2}$"),          # F1-F35
+    re.compile(r"^Super_[LR]$"),           # the Windows keys
+    re.compile(r"^Hyper_[LR]$"),
+    re.compile(r"^Meta_[LR]$"),
+    re.compile(r"^Menu$"),                 # the context-menu key: right click by another name
+    re.compile(r"^Print$"),
+    re.compile(r"^Sys_Req$"),
+    re.compile(r"^Scroll_Lock$"),
+    re.compile(r"^Pause$"),
+    re.compile(r"^Break$"),
+    re.compile(r"^Insert$"),
+    re.compile(r"^XF86.*$"),               # volume, brightness, browser, launch, sleep...
+    re.compile(r"^Help$"),
+    re.compile(r"^Execute$"),
+    re.compile(r"^Find$"),
+    re.compile(r"^Cancel$"),
+)
+
+# Never cleared, whatever else the key carries. A keyboard that cannot type is
+# not a locked-down kiosk, it is a broken one.
+KEPT_KEYSYMS = {
+    "BackSpace", "Delete", "Return", "KP_Enter", "Escape", "Tab", "ISO_Left_Tab",
+    "Shift_L", "Shift_R", "Caps_Lock", "Control_L", "Control_R",
+    "Alt_L", "Alt_R", "ISO_Level3_Shift", "Num_Lock",
+    "Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next",
+}
+
+KEY_BLOCK = re.compile(r"(\s*key\s+<[A-Z0-9_+-]+>\s*\{)(.*?)(\};)", re.DOTALL)
+KEYSYM = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def display():
+    return os.environ.get("DISPLAY", ":0")
+
+
+def dump_keymap():
+    try:
+        proc = subprocess.run(
+            ["xkbcomp", "-xkb", display(), "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+        )
+    except FileNotFoundError:
+        print("labkiosk-lock-keys: xkbcomp is not installed", file=sys.stderr)
+        return None
+    except subprocess.TimeoutExpired:
+        print("labkiosk-lock-keys: xkbcomp did not finish", file=sys.stderr)
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        print(f"labkiosk-lock-keys: could not read the keymap: {proc.stderr.strip()}", file=sys.stderr)
+        return None
+    return proc.stdout
+
+
+# A key is judged by what it *is* -- its first, unshifted symbol -- and not by
+# every level it carries. The keypad's multiply key has XF86ClearGrab on its
+# Ctrl+Alt level in the stock keymap, and reading that as the key's identity
+# cleared the key that types "*". Those higher levels are still worth removing,
+# so they are stripped one by one instead of taking the key with them.
+SYMBOL_LIST = re.compile(r"(symbols\s*\[[^\]]*\]\s*=\s*\[|\[)([^\]]*)(\])")
+NOT_A_SYMBOL = {"NoSymbol", "VoidSymbol"}
+
+
+def symbol_names(text):
+    return [name for name in (part.strip() for part in text.split(","))
+            if name and KEYSYM.fullmatch(name)]
+
+
+def is_blocked_name(name):
+    if not name or name in KEPT_KEYSYMS or name in NOT_A_SYMBOL:
+        return False
+    return any(pattern.match(name) for pattern in BLOCKED_KEYSYMS)
+
+
+def key_identity(body):
+    """The first symbol of the first list: what the key does on its own."""
+    match = SYMBOL_LIST.search(body)
+    if not match:
+        return ""
+    names = symbol_names(match.group(2))
+    return names[0] if names else ""
+
+
+def strip_levels(body):
+    """Remove blocked symbols from the levels of a key that otherwise stays."""
+    changed = False
+
+    def rewrite(match):
+        nonlocal changed
+        head, inner, tail = match.group(1), match.group(2), match.group(3)
+        out = []
+        for part in (piece.strip() for piece in inner.split(",")):
+            if part and KEYSYM.fullmatch(part) and is_blocked_name(part):
+                out.append("NoSymbol")
+                changed = True
+            else:
+                out.append(part)
+        return head + ", ".join(out) + tail
+
+    return SYMBOL_LIST.sub(rewrite, body), changed
+
+
+def strip_keys(keymap):
+    cleared = []
+    trimmed = []
+
+    def replace(match):
+        head, body, tail = match.group(1), match.group(2), match.group(3)
+        name = re.search(r"<([A-Z0-9_+-]+)>", head)
+        label = name.group(1) if name else "?"
+        if is_blocked_name(key_identity(body)):
+            cleared.append(label)
+            return f"{head} [ NoSymbol ] {tail}"
+        rewritten, changed = strip_levels(body)
+        if changed:
+            trimmed.append(label)
+            return f"{head}{rewritten}{tail}"
+        return match.group(0)
+
+    return KEY_BLOCK.sub(replace, keymap), cleared, trimmed
+
+
+def load_keymap(keymap):
+    try:
+        proc = subprocess.run(
+            ["xkbcomp", "-w", "0", "-", display()],
+            input=keymap, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as err:
+        print(f"labkiosk-lock-keys: could not load the keymap: {err}", file=sys.stderr)
+        return False
+    if proc.returncode != 0:
+        print(f"labkiosk-lock-keys: xkbcomp refused the keymap: {proc.stderr.strip()}", file=sys.stderr)
+        return False
+    return True
+
+
+def main():
+    keymap = dump_keymap()
+    if keymap is None:
+        return 1
+
+    stripped, cleared, trimmed = strip_keys(keymap)
+    if not cleared and not trimmed:
+        print("labkiosk-lock-keys: nothing left to clear", file=sys.stderr)
+        return 0
+    if not load_keymap(stripped):
+        return 1
+
+    print(f"labkiosk-lock-keys: cleared {len(cleared)} keys "
+          f"({', '.join(cleared[:10])}{'...' if len(cleared) > 10 else ''}) "
+          f"and took blocked symbols off {len(trimmed)} more", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

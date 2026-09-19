@@ -7,10 +7,20 @@
 #    01-lockdown.hook.chroot). That replaces `xset`, whose package pulls in the
 #    C preprocessor for xrdb and nothing the kiosk uses.
 
-# 2. Hide mouse cursor after 5 seconds of inactivity
+# 2. Take the keys a kiosk has no use for off the keyboard.
+#
+#    Openbox binds nothing and Chromium runs under a managed policy, but both
+#    refuse a key only after it has been delivered -- and Chromium's built-in
+#    accelerators are not policy at all. This clears the keysyms instead, so
+#    every F key, both Super keys, the menu key, Print Screen and the XF86
+#    media block produce nothing anywhere. Re-run whenever the layout changes:
+#    setxkbmap rebuilds the map and puts them all back.
+labkiosk-lock-keys >>/tmp/lab-agent.log 2>&1 || true
+
+# 3. Hide mouse cursor after 5 seconds of inactivity
 which unclutter >/dev/null 2>&1 && unclutter -idle 5 -root &
 
-# 3. Remote classroom management: x11vnc behind a per-boot password.
+# 4. Remote classroom management: x11vnc behind a per-boot password.
 #    The VNC gateway is deliberately NOT published on the LAN. It listens on
 #    loopback only and is reached through the Cloudflare Tunnel, because an
 #    open noVNC port gives anyone on the school Wi-Fi full keyboard and mouse
@@ -45,12 +55,12 @@ fi
 x11vnc -display :0 -forever -shared -rfbport 5900 -localhost \
   -rfbauth "$VNC_PASSWD_FILE" -noclipboard -nocmd -quiet -bg
 
-# 4. noVNC websockify gateway, bound to loopback for the tunnel to pick up.
+# 5. noVNC websockify gateway, bound to loopback for the tunnel to pick up.
 if [ -d "/usr/share/novnc" ]; then
   websockify --web=/usr/share/novnc/ 127.0.0.1:6080 localhost:5900 >/dev/null 2>&1 &
 fi
 
-# 5. Lab Kiosk telemetry & sync agent, under a supervisor.
+# 6. Lab Kiosk telemetry & sync agent, under a supervisor.
 #    Logs go to /tmp (RAM) so nothing is written to the read-only rootfs.
 #
 #    The loop is the point. The agent is the only thing that reports telemetry,
@@ -67,7 +77,7 @@ fi
   done
 ) &
 
-# 6. Wait for the agent's local API, then open whatever it says the target is:
+# 7. Wait for the agent's local API, then open whatever it says the target is:
 #    the first-boot setup wizard when unconfigured, the school portal once
 #    enrolled. Without this the browser would race ahead to a default homepage
 #    and the setup wizard would never be seen.
@@ -87,7 +97,7 @@ read_kiosk_url() {
   printf '%s' "http://127.0.0.1:8888/setup"
 }
 
-# 7. Infinite watchdog for the Chromium kiosk window.
+# 8. Infinite watchdog for the Chromium kiosk window.
 while true; do
   # Clean ephemeral cache before launch to guarantee a fresh session
   rm -rf /tmp/chromium-cache /tmp/chromium-profile

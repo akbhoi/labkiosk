@@ -773,10 +773,36 @@ def configure_localization(data):
     })
     save_localization_config(cfg)
 
+    if keymap:
+        # setxkbmap rebuilds the keymap from scratch, which puts back every F
+        # key, Super key and media key labkiosk-lock-keys removed. The agent
+        # runs inside the X session, so it is the one that can put them back
+        # out again -- the helper is root and may not even reach the display.
+        relock_keyboard(keymap, keymap_variant)
+
     # Accept-Language is what actually changes which version of a lesson site a
     # school gets, so the browser is told as well as the system.
     sync_chromium_policies(cached_whitelist or [], force=True)
     return {"status": "ok", "applied": result.get("applied", {}), "saved": cfg}
+
+
+def relock_keyboard(keymap, variant):
+    """Apply a layout in the running session, then strip it again."""
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":0")
+    layout_cmd = ["setxkbmap", "-layout", keymap]
+    if variant:
+        layout_cmd += ["-variant", variant]
+    for command in (layout_cmd, ["labkiosk-lock-keys"]):
+        try:
+            result = subprocess.run(
+                command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=20,
+            )
+            if result.returncode != 0:
+                log(f"{command[0]} reported: {result.stderr.strip() or result.returncode}")
+        except (OSError, subprocess.TimeoutExpired) as err:
+            log(f"Could not run {command[0]}: {err}")
 
 
 def apply_saved_localization():

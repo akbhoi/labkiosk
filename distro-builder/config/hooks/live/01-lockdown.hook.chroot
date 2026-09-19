@@ -42,6 +42,23 @@ EOF
 chmod 755 "$KIOSK_HOME/.xsession"
 cp /etc/openbox/autostart "$KIOSK_HOME/.config/openbox/autostart"
 chmod 755 "$KIOSK_HOME/.config/openbox/autostart"
+
+# THE KEYBINDINGS ONLY APPLY FROM A PATH OPENBOX ACTUALLY READS.
+#
+# openbox-session looks for rc.xml in ~/.config/openbox and then in
+# /etc/xdg/openbox. It does NOT read /etc/openbox/rc.xml, which is where this
+# project kept its stripped configuration -- so every installed workstation was
+# running Debian's default bindings instead: Alt+Tab, Alt+F4, Super+E,
+# Ctrl+Alt+arrow desktop switching and a root menu on right click. The simulator
+# hid it, because its entrypoint passes --config-file explicitly.
+#
+# Installed in both places on purpose. The home copy is what Openbox uses; the
+# one under /etc/xdg is what it falls back on if the home directory is ever
+# rebuilt, so a kiosk cannot come up with the distribution defaults again.
+mkdir -p /etc/xdg/openbox
+cp /etc/openbox/rc.xml /etc/xdg/openbox/rc.xml
+cp /etc/openbox/rc.xml "$KIOSK_HOME/.config/openbox/rc.xml"
+chmod 644 /etc/xdg/openbox/rc.xml "$KIOSK_HOME/.config/openbox/rc.xml"
 chown -R "$KIOSK_USER:$KIOSK_USER" "$KIOSK_HOME"
 
 passwd -l root || true
@@ -108,6 +125,7 @@ chmod +x /etc/openbox/autostart || true
 chmod +x /opt/labkiosk/agent/agent.py || true
 chmod +x /usr/local/bin/labkiosk-install || true
 chmod +x /usr/local/sbin/labkiosk-localization || true
+chmod +x /usr/local/bin/labkiosk-lock-keys || true
 chown -R root:root /opt/labkiosk || true
 chmod -R go-w /opt/labkiosk || true
 chown -R root:root /etc/openbox || true
