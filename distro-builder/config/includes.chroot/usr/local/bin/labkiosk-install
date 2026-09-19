@@ -392,6 +392,28 @@ def install_to_disk(target_disk, grub_password_hash=None):
         run_cmd(["mount", part_data, data_dir])
 
         source_config_dir = "/etc/labkiosk"
+        data_conn_dir = os.path.join(data_dir, "system-connections")
+        os.makedirs(data_conn_dir, exist_ok=True)
+        os.chmod(data_conn_dir, 0o700)
+        os.chown(data_conn_dir, 0, 0)
+
+        # Carry the NetworkManager profiles configured in the live session (Wi-Fi
+        # keys included) onto the data partition, which fstab bind-mounts over
+        # /etc/NetworkManager/system-connections: under overlayroot that is the
+        # only place a profile survives a reboot.
+        nm_dirs = ["/etc/NetworkManager/system-connections", os.path.join(source_config_dir, "system-connections")]
+        for nm_dir in nm_dirs:
+            if os.path.isdir(nm_dir):
+                for entry in os.listdir(nm_dir):
+                    src_conn = os.path.join(nm_dir, entry)
+                    if os.path.isfile(src_conn) and not os.path.islink(src_conn):
+                        dst_conn = os.path.join(data_conn_dir, entry)
+                        shutil.copy2(src_conn, dst_conn)
+                        os.chmod(dst_conn, 0o600)
+                        os.chown(dst_conn, 0, 0)
+                        print(f"[INSTALL] Carried NetworkManager connection {entry} onto data partition.",
+                              file=sys.stderr)
+
         if os.path.isdir(source_config_dir):
             stat_info = os.stat(source_config_dir)
             for entry in os.listdir(source_config_dir):
@@ -409,19 +431,61 @@ def install_to_disk(target_disk, grub_password_hash=None):
             os.chown(data_dir, stat_info.st_uid, stat_info.st_gid)
         os.chmod(data_dir, 0o700)
 
+        # Prove the kiosk user can actually write here, rather than letting the
+        # workstation discover it at enrolment with a bare "Permission denied"
+        # on a machine that has no shell to investigate it from.
+        probe = os.path.join(data_dir, ".labkiosk-write-probe")
+        probe_result = subprocess.run(
+            ["runuser", "-u", "kiosk", "--", "touch", probe],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        if probe_result.returncode != 0:
+            owner = os.stat(data_dir)
+            raise RuntimeError(
+                f"the data partition mounted at /etc/labkiosk is not writable by the kiosk user "
+                f"(owned by {owner.st_uid}:{owner.st_gid}, mode {owner.st_mode & 0o777:04o}): "
+                f"{probe_result.stderr.strip()}"
+            )
+        os.unlink(probe)
+        print("[INSTALL] Verified the kiosk user can write to the data partition.", file=sys.stderr)
+
+        # Mount point for the system-connections bind mount declared in fstab.
+        #
+        # The proxy is deliberately not written into /etc/environment: proxy.json
+        # was carried onto this partition by the loop above, and the agent applies
+        # it to itself and to Chromium's policy at every start. A copy baked into
+        # the read-only root could never be switched off again from the wizard.
+        os.makedirs(os.path.join(mount_dir, "etc", "NetworkManager", "system-connections"), exist_ok=True)
+
         write_status("running", "Configuring boot configuration and partitions...", 75)
         root_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_root])
         efi_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_esp])
         data_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_data])
 
+        # An empty answer from blkid would be written as a bare "UUID=" line.
+        # With nofail on the data entry that failure is completely silent at
+        # boot: the workstation comes up, enrols into the RAM overlay and
+        # forgets it again at the next power-off. Refuse to produce that disk.
+        for name, value, device in (
+            ("root", root_uuid, part_root),
+            ("ESP", efi_uuid, part_esp),
+            ("data", data_uuid, part_data),
+        ):
+            if not value:
+                raise RuntimeError(
+                    f"blkid returned no UUID for the {name} partition ({device}); "
+                    "the installed system would not be able to mount it."
+                )
+
         # nofail on /etc/labkiosk is deliberate: if that partition is ever missing or
         # unreadable the workstation must still boot into the kiosk and fall back to
         # the setup wizard, rather than drop the class into an emergency shell.
         fstab_content = f"""# Lab Kiosk OS Persistent Disk fstab
-UUID={root_uuid}  /              ext4  errors=remount-ro                0  1
-UUID={efi_uuid}   /boot/efi      vfat  umask=0077                       0  2
-UUID={data_uuid}  /etc/labkiosk  ext4  defaults,nofail                  0  2
-tmpfs             /tmp           tmpfs defaults,noatime,mode=1777       0  0
+UUID={root_uuid}  /                                  ext4  errors=remount-ro                0  1
+UUID={efi_uuid}   /boot/efi                          vfat  umask=0077                       0  2
+UUID={data_uuid}  /etc/labkiosk                      ext4  defaults,nofail                  0  2
+/etc/labkiosk/system-connections  /etc/NetworkManager/system-connections  none  bind,nofail  0  0
+tmpfs             /tmp                               tmpfs defaults,noatime,mode=1777       0  0
 """
         fstab_path = os.path.join(mount_dir, "etc", "fstab")
         with open(fstab_path, "w") as f:
@@ -429,7 +493,13 @@ tmpfs             /tmp           tmpfs defaults,noatime,mode=1777       0  0
 
         overlayroot_conf = os.path.join(mount_dir, "etc", "overlayroot.conf")
         with open(overlayroot_conf, "w") as f:
-            f.write('overlayroot="tmpfs"\noverlayroot_options="recurse=0"\n')
+            # recurse=0 has to travel inside the value. overlayroot reads only
+            # the "overlayroot" and "overlayroot_cfgdisk" variables from this
+            # file, and its default (recurse=1) rewrites every fstab entry into
+            # an overlay with a tmpfs upper layer -- LABKIOSK_DATA included, so
+            # the workstation would enrol into RAM and forget it at the next
+            # power-off while /etc/labkiosk still looked like a real mount.
+            f.write('overlayroot="tmpfs:recurse=0"\n')
 
         # Ensure a clean machine-id on a fresh internal installation. systemd
         # treats an *empty* /etc/machine-id as "uninitialised" and generates a new

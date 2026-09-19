@@ -60,6 +60,52 @@ async function writeBroadcast(epoch, url) {
   return value;
 }
 
+const BAR_INTRO_KEY = "labkiosk_bar_intro";
+
+/**
+ * True exactly once per browser session, for the first page that asks.
+ *
+ * The navigation bar auto-hides, so a student who has never seen it has no way
+ * to discover it. It is shown briefly at the start of a session; the flag lives
+ * here rather than in the content script because that runs afresh on every
+ * page, and in chrome.storage.session so it resets when the kiosk reboots.
+ */
+async function claimBarIntro() {
+  const stored = await chrome.storage.session.get(BAR_INTRO_KEY);
+  if (stored && stored[BAR_INTRO_KEY]) return { first: false };
+  await chrome.storage.session.set({ [BAR_INTRO_KEY]: true });
+  return { first: true };
+}
+
+const AGENT_ADMIN_VERIFY_URL = "http://127.0.0.1:8888/api/admin/verify";
+const AGENT_NETWORK_STATUS_URL = "http://127.0.0.1:8888/api/network/status";
+
+async function verifyAdmin(password) {
+  const res = await fetch(AGENT_ADMIN_VERIFY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: String(password || "") }),
+  });
+  let body = {};
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`Admin verification failed (${res.status})`);
+  }
+  // 401 (wrong password), 429 (throttled) and 500 (unreadable password file)
+  // all carry a message the modal should show as-is.
+  if (!res.ok) {
+    return { verified: false, error: body.error || `Admin verification failed (${res.status})` };
+  }
+  return body;
+}
+
+async function readNetworkStatus() {
+  const res = await fetch(AGENT_NETWORK_STATUS_URL, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Network status error (${res.status})`);
+  return await res.json();
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
 
@@ -72,6 +118,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "labkiosk:status") {
     return reply(readStatus().then((status) => ({ status })));
+  }
+
+  if (message.type === "labkiosk:verify-admin") {
+    return reply(verifyAdmin(message.password));
+  }
+
+  if (message.type === "labkiosk:network-status") {
+    return reply(readNetworkStatus().then((network) => ({ network })));
+  }
+
+  if (message.type === "labkiosk:intro-peek") {
+    return reply(claimBarIntro());
   }
 
   if (message.type === "labkiosk:broadcast-get") {

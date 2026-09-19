@@ -4,20 +4,20 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lab Kiosk - Setup & Installation Wizard</title>
-  <!-- No webfonts. This page is served before the workstation is enrolled, when
-       Chromium's managed URLAllowlist holds only 127.0.0.1 and localhost, so an
-       external font request is blocked outright and only delays first paint. The
-       stacks below resolve against fonts-noto-core / fonts-dejavu / fonts-liberation,
-       which are in config/package-lists/kiosk.list.chroot. -->
+  <!-- No webfonts. Rendered locally before network or allowlist is populated. -->
   <style>
     :root {
       --bg: #090d16;
       --card: #111827;
+      --card-alt: #1f2937;
       --border: #374151;
+      --border-accent: #4b5563;
       --accent: #3b82f6;
       --accent-hover: #2563eb;
       --green: #10b981;
       --green-hover: #059669;
+      --amber: #f59e0b;
+      --red: #ef4444;
       --text: #f8fafc;
       --muted: #94a3b8;
       --font-sans: "Noto Sans", "DejaVu Sans", "Liberation Sans", sans-serif;
@@ -38,13 +38,13 @@
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 20px;
-      padding: 40px;
-      max-width: 560px;
+      padding: 36px;
+      max-width: 620px;
       width: 100%;
       box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.9);
       position: relative;
     }
-    .header-wrap { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+    .header-wrap { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
     .icon-wrap {
       width: 52px; height: 52px; min-width: 52px;
       background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
@@ -58,10 +58,27 @@
       padding: 2px 8px; border-radius: 6px; margin-top: 4px;
     }
 
-    /* Tab switcher */
+    /* Stepper Header */
+    .stepper {
+      display: flex; align-items: center; justify-content: space-between;
+      background: rgba(17, 24, 39, 0.6); border: 1px solid var(--border);
+      border-radius: 12px; padding: 10px 16px; margin-bottom: 24px;
+    }
+    .step-item { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--muted); }
+    .step-item.active { color: #fff; }
+    .step-item.completed { color: #34d399; }
+    .step-circle {
+      width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-size: 12px; background: var(--card-alt); border: 1px solid var(--border); color: var(--muted);
+    }
+    .step-item.active .step-circle { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .step-item.completed .step-circle { background: var(--green); border-color: var(--green); color: #fff; }
+    .step-divider { flex: 1; height: 2px; background: var(--border); margin: 0 12px; }
+
+    /* Tabs */
     .tabs-nav {
-      display: flex; background: #1f2937; border-radius: 12px; padding: 4px;
-      margin-bottom: 24px; border: 1px solid var(--border);
+      display: flex; background: var(--card-alt); border-radius: 12px; padding: 4px;
+      margin-bottom: 20px; border: 1px solid var(--border);
     }
     .tab-btn {
       flex: 1; padding: 10px 14px; border: none; background: transparent;
@@ -73,41 +90,69 @@
       background: var(--accent); color: #fff; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
     }
 
-    .wizard-desc { font-size: 14px; color: var(--muted); line-height: 1.6; margin-bottom: 24px; }
-    .form-group { margin-bottom: 20px; }
+    .wizard-desc { font-size: 14px; color: var(--muted); line-height: 1.6; margin-bottom: 20px; }
+    .form-group { margin-bottom: 18px; }
     .form-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
     .input-field, .select-field {
-      width: 100%; background: #1f2937; border: 1px solid var(--border); border-radius: 8px;
-      padding: 12px 14px; color: #fff; font-size: 14px; outline: none; transition: border 0.15s ease;
+      width: 100%; background: var(--card-alt); border: 1px solid var(--border); border-radius: 8px;
+      padding: 11px 13px; color: #fff; font-size: 14px; outline: none; transition: border 0.15s ease;
     }
     .input-field:focus, .select-field:focus { border-color: var(--accent); }
     .subdomain-wrap { display: flex; align-items: center; gap: 8px; }
     .subdomain-suffix { font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; }
     .hint-text { font-size: 11px; color: var(--muted); margin-top: 6px; }
 
+    /* Cards & Collapsibles */
+    .section-box {
+      background: rgba(31, 41, 55, 0.5); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px; margin-bottom: 18px;
+    }
+    .section-title { font-size: 13px; font-weight: 700; margin-bottom: 12px; color: #e2e8f0; display: flex; align-items: center; justify-content: space-between; }
+    .accordion-toggle { cursor: pointer; user-select: none; }
+    .accordion-toggle:hover { color: #93c5fd; }
+
+    /* Wi-Fi Scan List */
+    .wifi-list {
+      max-height: 190px; overflow-y: auto; border: 1px solid var(--border);
+      border-radius: 8px; background: var(--card-alt); margin-bottom: 14px;
+    }
+    .wifi-item {
+      padding: 10px 14px; border-bottom: 1px solid rgba(55, 65, 81, 0.6);
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer; transition: background 0.15s; font-size: 13px;
+    }
+    .wifi-item:last-child { border-bottom: none; }
+    .wifi-item:hover { background: rgba(59, 130, 246, 0.15); }
+    .wifi-item.selected { background: rgba(59, 130, 246, 0.25); border-left: 3px solid var(--accent); }
+    .wifi-meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+
     .status-box {
       border-radius: 8px; padding: 12px 14px; font-size: 13px; margin-bottom: 20px; display: none; line-height: 1.5;
     }
     .status-success { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #34d399; }
     .status-error { background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; }
+    .status-info { background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd; }
+    .status-warn { background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35); color: #fbbf24; }
 
     .btn-submit {
-      width: 100%; background: var(--accent); border: none; color: #fff; padding: 14px; border-radius: 10px;
-      font-size: 15px; font-weight: 700; cursor: pointer; transition: all 0.2s ease; display: flex;
+      width: 100%; background: var(--accent); border: none; color: #fff; padding: 13px; border-radius: 10px;
+      font-size: 14px; font-weight: 700; cursor: pointer; transition: all 0.2s ease; display: flex;
       align-items: center; justify-content: center; gap: 10px;
     }
     .btn-submit:hover { background: var(--accent-hover); transform: translateY(-1px); }
     .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
     .btn-green { background: var(--green); }
     .btn-green:hover { background: var(--green-hover); }
+    .btn-secondary { background: var(--card-alt); border: 1px solid var(--border); color: var(--text); }
+    .btn-secondary:hover { background: #374151; }
 
-    /* Install tab styles */
+    /* Install progress */
     .info-card {
       background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25);
       border-radius: 10px; padding: 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.5;
     }
     .progress-bar-container {
-      width: 100%; height: 10px; background: #1f2937; border-radius: 5px; overflow: hidden;
+      width: 100%; height: 10px; background: var(--card-alt); border-radius: 5px; overflow: hidden;
       margin: 16px 0 8px 0; display: none;
     }
     .progress-bar-fill {
@@ -115,6 +160,7 @@
       transition: width 0.3s ease;
     }
     .progress-status-text { font-size: 13px; color: var(--muted); margin-bottom: 16px; display: none; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   </style>
 </head>
 <body>
@@ -129,142 +175,497 @@
       </div>
     </div>
 
-    <!-- Tab navigation -->
-    <div class="tabs-nav" id="tabs-nav" style="display: none;">
-      <button type="button" class="tab-btn active" id="tab-btn-enroll">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-        <span>1. Connect & Enroll</span>
-      </button>
-      <button type="button" class="tab-btn" id="tab-btn-install">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        <span>2. Install to Hard Disk</span>
-      </button>
+    <!-- Multi-Step Flow Stepper -->
+    <div class="stepper" id="wizard-stepper">
+      <div class="step-item active" id="step-nav-1">
+        <div class="step-circle">1</div>
+        <span>Network Setup</span>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step-item" id="step-nav-2">
+        <div class="step-circle">2</div>
+        <span>Install or Preview</span>
+      </div>
     </div>
 
     <div class="status-box" id="status-box" role="status" aria-live="polite"></div>
 
-    <!-- ENROLLMENT VIEW -->
-    <div id="view-enroll">
+    <!-- STEP 1: NETWORK CONFIGURATION -->
+    <div id="step-1-network">
       <p class="wizard-desc">
-        Connect this computer to your school lab account. Once configured, this workstation will permanently link to your dashboard and lock down.
+        Configure internet connectivity for this workstation. Connect via wired Ethernet or wireless Wi-Fi before proceeding.
       </p>
 
-      <form id="setup-form">
-        <div class="form-group" id="subdomain-group">
-          <label class="form-label">Institution / Organization Subdomain</label>
-          <div class="subdomain-wrap">
-            <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: var(--font-mono);">
-            <span class="subdomain-suffix" id="subdomain-suffix">.labkiosk.akbhoi.com</span>
-          </div>
-          <div class="hint-text">The subdomain chosen when registering your institution or lab.</div>
-        </div>
-
-        <div class="form-group" id="custom-domain-group" style="display: none;">
-          <label class="form-label">Custom Domain or Server Address</label>
-          <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: var(--font-mono);">
-          <div class="hint-text">Enter your institution's custom domain (e.g. kiosk.institution.edu) or dedicated server address.</div>
-        </div>
-
-        <div class="form-group custom-toggle-card" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 12px 14px; margin-top: -6px; margin-bottom: 20px;">
-          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: #93c5fd; user-select: none;">
-            <input type="checkbox" id="toggle-custom-domain" style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--accent);">
-            <span>Use completely custom domain / hostname</span>
-          </label>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Workstation Identifier (PC Name)</label>
-          <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: var(--font-mono);">
-          <div class="hint-text">A unique identifier in your lab or facility (e.g. PC-01, PC-02, DESK-14).</div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Workstation Enrollment Key</label>
-          <input type="text" id="enrollment-key" class="input-field" required placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" style="font-family: var(--font-mono); text-transform: uppercase;">
-          <div class="hint-text">
-            Find this in your administrator dashboard under <strong>Settings &rarr; Workstation Enrollment Key</strong>.
-          </div>
-        </div>
-
-        <button type="submit" class="btn-submit" id="submit-btn">
-          <span>Verify & Connect Workstation</span>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      <!-- Network Interface Tabs -->
+      <div class="tabs-nav">
+        <button type="button" class="tab-btn active" id="tab-net-ethernet">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          <span>Ethernet (Wired)</span>
         </button>
-      </form>
+        <button type="button" class="tab-btn" id="tab-net-wifi">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+          <span>Wi-Fi (Wireless)</span>
+        </button>
+      </div>
+
+      <!-- Ethernet Panel -->
+      <div id="panel-ethernet">
+        <div class="section-box">
+          <div class="form-group">
+            <label class="form-label">Ethernet Adapter</label>
+            <select id="net-ethernet-device" class="select-field">
+              <option value="">Detecting Ethernet adapters...</option>
+            </select>
+          </div>
+          <div id="ethernet-link-badge" style="font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px;">
+            <span>Link Status:</span>
+            <strong id="ethernet-link-text" style="color: #34d399;">Detecting...</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Wi-Fi Panel -->
+      <div id="panel-wifi" style="display: none;">
+        <div class="section-box">
+          <div class="section-title">
+            <span>Available Wi-Fi Networks</span>
+            <button type="button" id="btn-rescan-wifi" style="background: transparent; border: none; color: #60a5fa; cursor: pointer; font-size: 12px; font-weight: 600;">
+              &#8635; Refresh Scan
+            </button>
+          </div>
+
+          <div class="wifi-list" id="wifi-networks-list">
+            <div style="padding: 16px; text-align: center; color: var(--muted); font-size: 13px;">Scanning for wireless networks...</div>
+          </div>
+
+          <div class="form-group" id="wifi-password-group" style="display: none;">
+            <label class="form-label">Wi-Fi Password for <span id="selected-wifi-ssid" style="color: #60a5fa;">Network</span></label>
+            <div style="display: flex; gap: 8px;">
+              <input type="password" id="wifi-password" class="input-field" placeholder="Enter network security key" autocomplete="off">
+              <button type="button" id="toggle-wifi-pass" class="btn-secondary" style="border-radius: 8px; padding: 0 12px; cursor: pointer;">Show</button>
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end;">
+            <button type="button" id="btn-hidden-wifi" style="background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 11px; text-decoration: underline;">
+              Connect to hidden network...
+            </button>
+          </div>
+
+          <div id="hidden-wifi-group" style="display: none; margin-top: 10px;">
+            <label class="form-label">Hidden Network SSID</label>
+            <input type="text" id="hidden-wifi-ssid" class="input-field" placeholder="Enter hidden network name">
+          </div>
+        </div>
+      </div>
+
+      <!-- IP & DNS Addressing Accordion -->
+      <div class="section-box">
+        <div class="section-title accordion-toggle" id="toggle-addressing">
+          <span>⚙️ IP Addressing & DNS Settings</span>
+          <span id="addressing-chevron">&#9662;</span>
+        </div>
+
+        <div id="addressing-body">
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">IPv4 Configuration</label>
+              <select id="ipv4-mode" class="select-field">
+                <option value="auto">Automatic (DHCP)</option>
+                <option value="custom_dns">Automatic (DHCP) with Custom DNS</option>
+                <option value="manual">Static IP (Manual)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">IPv6 Configuration</label>
+              <select id="ipv6-mode" class="select-field">
+                <option value="auto">Automatic (DHCPv6 / SLAAC)</option>
+                <option value="custom_dns">Automatic with Custom DNS</option>
+                <option value="manual">Static IPv6 (Manual)</option>
+                <option value="disabled">Disabled</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- IPv4 Static Details -->
+          <div id="ipv4-static-fields" style="display: none;">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">IPv4 Address & Prefix</label>
+                <input type="text" id="ipv4-address" class="input-field" placeholder="192.168.1.50/24" style="font-family: var(--font-mono);">
+              </div>
+              <div class="form-group">
+                <label class="form-label">IPv4 Gateway</label>
+                <input type="text" id="ipv4-gateway" class="input-field" placeholder="192.168.1.1" style="font-family: var(--font-mono);">
+              </div>
+            </div>
+          </div>
+
+          <!-- IPv4 DNS Details -->
+          <div id="ipv4-dns-fields" style="display: none;">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">Primary DNS</label>
+                <input type="text" id="ipv4-dns1" class="input-field" placeholder="1.1.1.1" style="font-family: var(--font-mono);">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Secondary DNS</label>
+                <input type="text" id="ipv4-dns2" class="input-field" placeholder="8.8.8.8" style="font-family: var(--font-mono);">
+              </div>
+            </div>
+          </div>
+
+          <!-- IPv6 Static Details -->
+          <div id="ipv6-static-fields" style="display: none;">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">IPv6 Address & Prefix</label>
+                <input type="text" id="ipv6-address" class="input-field" placeholder="2001:db8::50/64" style="font-family: var(--font-mono);">
+              </div>
+              <div class="form-group">
+                <label class="form-label">IPv6 Gateway</label>
+                <input type="text" id="ipv6-gateway" class="input-field" placeholder="2001:db8::1" style="font-family: var(--font-mono);">
+              </div>
+            </div>
+          </div>
+
+          <!-- IPv6 DNS Details -->
+          <div id="ipv6-dns-fields" style="display: none;">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">Primary IPv6 DNS</label>
+                <input type="text" id="ipv6-dns1" class="input-field" placeholder="2606:4700:4700::1111" style="font-family: var(--font-mono);">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Secondary IPv6 DNS</label>
+                <input type="text" id="ipv6-dns2" class="input-field" placeholder="2001:4860:4860::8888" style="font-family: var(--font-mono);">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Optional HTTP/HTTPS Proxy -->
+      <div class="section-box">
+        <div class="section-title accordion-toggle" id="toggle-proxy">
+          <span>🛡️ School HTTP/HTTPS Proxy (Optional)</span>
+          <span id="proxy-chevron">&#9662;</span>
+        </div>
+        <div id="proxy-body" style="display: none;">
+          <div class="form-group">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: #93c5fd;">
+              <input type="checkbox" id="toggle-proxy-enable" style="width: 16px; height: 16px;">
+              <span>Enable HTTP/HTTPS outbound proxy</span>
+            </label>
+          </div>
+          <div id="proxy-fields" style="display: none;">
+            <div class="grid-2">
+              <div class="form-group">
+                <label class="form-label">Proxy Host</label>
+                <input type="text" id="proxy-host" class="input-field" placeholder="proxy.institution.edu" style="font-family: var(--font-mono);">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Proxy Port</label>
+                <input type="number" id="proxy-port" class="input-field" placeholder="8080" value="8080">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Bypass Hosts (Comma-separated)</label>
+              <input type="text" id="proxy-bypass" class="input-field" placeholder="localhost, 127.0.0.1, .local" style="font-family: var(--font-mono);">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Cluster -->
+      <div style="display: flex; gap: 12px; margin-top: 24px;">
+        <button type="button" class="btn-submit btn-secondary" id="btn-test-network" style="flex: 1;">
+          <span>Apply & Test Network</span>
+        </button>
+        <button type="button" class="btn-submit" id="btn-proceed-step2" style="flex: 1;">
+          <span>Proceed to Step 2 &rarr;</span>
+        </button>
+      </div>
+
+      <!-- Standalone Mode Close Button (when loaded via #network) -->
+      <button type="button" class="btn-submit btn-secondary" id="btn-return-kiosk" style="display: none; margin-top: 12px;">
+        <span>Done &mdash; Return to Kiosk</span>
+      </button>
     </div>
 
-    <!-- DISK INSTALL VIEW -->
-    <div id="view-install" style="display: none;">
-      <p class="wizard-desc">
-        Permanently install Lab Kiosk OS to this computer's internal storage (SSD/HDD). Once installed, the computer boots standalone into Lab Kiosk without needing a USB drive.
-      </p>
-
-      <div class="info-card">
-        <strong style="color: #34d399;">🛡️ 100% RAM Overlay Protection:</strong>
-        <p style="margin-top: 4px; color: var(--muted); font-size: 12px;">
-          Even when installed permanently to internal storage, all student sessions, browser downloads, and caches write strictly to RAM (<code style="color: #60a5fa;">tmpfs</code>), guaranteeing zero flash wear and instant reset on reboot.
-        </p>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Select Target Internal Storage Drive</label>
-        <select id="target-disk-select" class="select-field">
-          <option value="">Scanning for internal drives...</option>
-        </select>
-        <div class="hint-text" id="disk-warning-text" style="color: #f87171;">
-          ⚠️ WARNING: Installing will completely erase and re-partition the selected drive.
+    <!-- STEP 2: CHOOSE DESTINATION (INSTALL VS LIVE ENROLL) -->
+    <div id="step-2-destination" style="display: none;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+        <button type="button" id="btn-back-step1" style="background: transparent; border: none; color: #60a5fa; cursor: pointer; font-size: 13px; font-weight: 700;">
+          &larr; Reconfigure Network
+        </button>
+        <div id="network-status-summary" style="font-size: 12px; color: var(--muted); font-weight: 600;">
+          ⚪ Checking network...
         </div>
       </div>
 
-      <div class="form-group">
-        <label class="form-label">Boot Menu Password <span style="color: var(--muted); font-weight: 500;">(strongly recommended)</span></label>
-        <div style="display: flex; gap: 8px;">
-          <input type="password" id="grub-password" class="input-field" autocomplete="new-password"
-                 spellcheck="false" placeholder="Set a password for this lab"
-                 style="font-family: var(--font-mono);">
-          <button type="button" class="kiosk-generate-btn" id="generate-grub-password"
-                  style="white-space: nowrap; background: #1f2937; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 0 14px; font-size: 13px; font-weight: 600; cursor: pointer;">
-            Generate
+      <!-- Tab switcher for Step 2 -->
+      <div class="tabs-nav" id="tabs-nav">
+        <button type="button" class="tab-btn active" id="tab-btn-install">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>Install to Hard Disk</span>
+        </button>
+        <button type="button" class="tab-btn" id="tab-btn-enroll">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span>Live Preview & Enroll</span>
+        </button>
+      </div>
+
+      <!-- DISK INSTALL VIEW -->
+      <div id="view-install">
+        <p class="wizard-desc">
+          Permanently install Lab Kiosk OS to this computer's internal storage (SSD/HDD). The configured network will persist automatically.
+        </p>
+
+        <div class="info-card">
+          <strong style="color: #34d399;">🛡️ 100% RAM Overlay Protection:</strong>
+          <p style="margin-top: 4px; color: var(--muted); font-size: 12px;">
+            Even when installed permanently, all student sessions, browser downloads, and caches write strictly to RAM (<code style="color: #60a5fa;">tmpfs</code>), guaranteeing zero flash wear and instant reset on reboot.
+          </p>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Select Target Internal Storage Drive</label>
+          <select id="target-disk-select" class="select-field">
+            <option value="">Scanning for internal drives...</option>
+          </select>
+          <div class="hint-text" style="color: #f87171;">
+            ⚠️ WARNING: Installing will completely erase and re-partition the selected drive.
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Boot Menu & Admin Password <span style="color: var(--muted); font-weight: 500;">(Strongly recommended)</span></label>
+          <div style="display: flex; gap: 8px;">
+            <input type="password" id="grub-password" class="input-field" autocomplete="new-password"
+                   spellcheck="false" placeholder="Set administrator password"
+                   style="font-family: var(--font-mono);">
+            <button type="button" class="btn-secondary" id="generate-grub-password"
+                    style="white-space: nowrap; border-radius: 8px; padding: 0 14px; font-size: 13px; font-weight: 600; cursor: pointer;">
+              Generate
+            </button>
+          </div>
+          <div class="hint-text">
+            Protects the boot menu and is required for any later network change on this machine. Without one, network settings stay unlocked.
+          </div>
+          <div class="status-box" id="grub-password-reveal"
+               style="background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); color: #34d399; font-family: var(--font-mono); word-break: break-all; margin-top: 10px;"></div>
+        </div>
+
+        <div class="progress-bar-container" id="install-progress-bar-container">
+          <div class="progress-bar-fill" id="install-progress-bar"></div>
+        </div>
+        <div class="progress-status-text" id="install-status-text">Ready to install</div>
+
+        <button type="button" class="btn-submit btn-green" id="start-install-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Install Lab Kiosk to Selected Drive</span>
+        </button>
+
+        <button type="button" class="btn-submit" id="reboot-btn" style="display: none; margin-top: 14px; background: #3b82f6;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          <span>Reboot Computer Now</span>
+        </button>
+      </div>
+
+      <!-- ENROLLMENT VIEW -->
+      <div id="view-enroll" style="display: none;">
+        <p class="wizard-desc" id="enroll-desc">
+          Link this live session to your school lab account. The workstation will connect to your dashboard immediately in live kiosk mode.
+        </p>
+
+        <div class="status-box status-warn" id="storage-warning" role="alert">
+          <strong>This workstation cannot remember an enrolment.</strong>
+          What is at <code>/etc/labkiosk</code> is not the persistent data partition — it is
+          either nothing at all or a RAM overlay — so the school address and the device token
+          would live only in memory and be gone at the next reboot. Reinstall from a current
+          Lab Kiosk ISO. The agent log names what it found.
+        </div>
+
+        <form id="setup-form">
+          <div class="form-group" id="subdomain-group">
+            <label class="form-label">Institution Subdomain</label>
+            <div class="subdomain-wrap">
+              <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: var(--font-mono);">
+              <span class="subdomain-suffix" id="subdomain-suffix">.labkiosk.akbhoi.com</span>
+            </div>
+          </div>
+
+          <div class="form-group" id="custom-domain-group" style="display: none;">
+            <label class="form-label">Custom Domain or Server Address</label>
+            <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: var(--font-mono);">
+          </div>
+
+          <div class="form-group" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 10px 14px; margin-bottom: 18px;">
+            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: #93c5fd;">
+              <input type="checkbox" id="toggle-custom-domain" style="width: 16px; height: 16px; accent-color: var(--accent);">
+              <span>Use custom domain / hostname</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Workstation Identifier (PC Name)</label>
+            <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: var(--font-mono);">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Workstation Enrollment Key</label>
+            <input type="text" id="enrollment-key" class="input-field" required
+                   placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false"
+                   autocapitalize="characters" autocorrect="off" maxlength="23"
+                   style="font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 1px;">
+            <div class="hint-text" id="enrollment-key-hint">
+              Twenty characters in four groups. Type it without hyphens &mdash; they are added for
+              you &mdash; or paste it straight from <strong>Settings &rarr; Workstation Enrollment
+              Key</strong> on the dashboard.
+            </div>
+          </div>
+
+          <button type="submit" class="btn-submit" id="submit-btn">
+            <span>Verify & Connect Workstation</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+
+          <!-- Shown only when the enrolment could not be stored: leaving this
+               page is what would hide that warning, so it takes a click. -->
+          <button type="button" class="btn-submit btn-secondary" id="continue-anyway-btn" style="display: none;">
+            <span>I understand — continue to the lesson</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- AGENT LOG / DIAGNOSTICS -->
+    <div class="section-box" id="diagnostics-box" style="margin-top: 18px;">
+      <div class="section-title accordion-toggle" id="toggle-diagnostics">
+        <span>🩺 Agent Log &amp; Diagnostics</span>
+        <span id="diagnostics-chevron">&#9656;</span>
+      </div>
+      <div id="diagnostics-body" style="display: none;">
+        <p class="hint-text" style="margin-bottom: 10px;">
+          The workstation's own log, for when something fails here. It lives in RAM and is cleared on
+          every reboot, so read it before restarting.
+        </p>
+        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+          <button type="button" class="btn-submit btn-secondary" id="btn-refresh-log" style="flex: 1;">
+            <span>Refresh</span>
+          </button>
+          <button type="button" class="btn-submit btn-secondary" id="btn-copy-log" style="flex: 1;">
+            <span>Copy</span>
           </button>
         </div>
-        <div class="hint-text">
-          Stops a student editing the boot entry to bypass the kiosk. The computer still
-          starts up on its own with no prompt &mdash; this is asked for only when someone
-          presses <strong>e</strong> or <strong>c</strong> at the boot menu.
-          <strong style="color: #f87171;">Record it before installing: it cannot be recovered.</strong>
-          The password never leaves this page; only its hash is stored.
-        </div>
-        <div class="status-box" id="grub-password-reveal"
-             style="background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); color: #34d399; font-family: var(--font-mono); word-break: break-all; margin-top: 10px;"></div>
+        <pre id="agent-log" style="max-height: 260px; overflow: auto; background: var(--card-alt); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: var(--font-mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: #cbd5e1; user-select: text;">Press Refresh to load the agent log.</pre>
       </div>
+    </div>
 
-      <div class="progress-bar-container" id="install-progress-bar-container">
-        <div class="progress-bar-fill" id="install-progress-bar"></div>
+    <!-- ADMIN PASSWORD UNLOCK MODAL (FOR POST-INSTALL ACCESS) -->
+    <div id="modal-admin-auth" style="display: none; position: absolute; inset: 0; background: var(--card); border-radius: 20px; padding: 36px; z-index: 50; flex-direction: column; justify-content: center;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" style="margin: 0 auto 12px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <h2 style="font-size: 20px; font-weight: 800;">Administrator Authentication</h2>
+        <p id="admin-auth-offline" style="display: none; font-size: 13px; color: #f87171; margin-top: 10px; line-height: 1.5;">This workstation lost its network connection. It returns to the lesson automatically once the connection is back.</p>
+        <p style="font-size: 13px; color: var(--muted); margin-top: 6px;">Enter the administrator / boot menu password to unlock network settings.</p>
       </div>
-      <div class="progress-status-text" id="install-status-text">Ready to install</div>
-
-      <button type="button" class="btn-submit btn-green" id="start-install-btn">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        <span>Install Lab Kiosk to Selected Drive</span>
-      </button>
-
-      <button type="button" class="btn-submit" id="reboot-btn" style="display: none; margin-top: 14px; background: #3b82f6;">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-        <span>Reboot Computer Now</span>
-      </button>
+      <div class="form-group">
+        <label class="form-label">Administrator Password</label>
+        <input type="password" id="admin-auth-pass" class="input-field" placeholder="Enter password" style="font-family: var(--font-mono);">
+      </div>
+      <div class="status-box" id="admin-auth-error" style="display: none;"></div>
+      <div style="display: flex; gap: 12px;">
+        <button type="button" class="btn-submit btn-secondary" id="btn-admin-cancel" style="flex: 1;">Cancel</button>
+        <button type="button" class="btn-submit" id="btn-admin-unlock" style="flex: 1;">Unlock</button>
+      </div>
     </div>
 
   </div>
 
   <script>
-    const tabBtnEnroll = document.getElementById('tab-btn-enroll');
+    // State management
+    let baseDomain = 'labkiosk.akbhoi.com';
+    let currentTargetUrl = 'http://127.0.0.1:8888/setup';
+    let isLive = true;
+    let isConfigured = false;
+    let selectedWifiSsid = '';
+    let selectedWifiSecurity = '';
+
+    // #network            opened from the kiosk top bar to change settings
+    // #network&admin=...  the same, already unlocked by the top-bar modal
+    // #offline            the kiosk lost its connection; return once it is back
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const isOfflineRedirect = hashParams.has('offline');
+    let isStandaloneNetwork = hashParams.has('network') || isOfflineRedirect;
+    // Short-lived token from /api/admin/verify. Kept in memory only, and taken
+    // out of the address bar straight away.
+    let adminToken = hashParams.get('admin') || '';
+    if (adminToken) {
+      history.replaceState(null, '', window.location.pathname + '#network');
+    }
+    // A top-bar click while this page is already open changes only the hash.
+    window.addEventListener('hashchange', () => window.location.reload());
+
+    // Elements
+    const step1 = document.getElementById('step-1-network');
+    const step2 = document.getElementById('step-2-destination');
+    const stepNav1 = document.getElementById('step-nav-1');
+    const stepNav2 = document.getElementById('step-nav-2');
+    const statusBox = document.getElementById('status-box');
+
+    const tabNetEthernet = document.getElementById('tab-net-ethernet');
+    const tabNetWifi = document.getElementById('tab-net-wifi');
+    const panelEthernet = document.getElementById('panel-ethernet');
+    const panelWifi = document.getElementById('panel-wifi');
+    const netEthernetDevice = document.getElementById('net-ethernet-device');
+    const ethernetLinkText = document.getElementById('ethernet-link-text');
+
+    const wifiNetworksList = document.getElementById('wifi-networks-list');
+    const btnRescanWifi = document.getElementById('btn-rescan-wifi');
+    const wifiPasswordGroup = document.getElementById('wifi-password-group');
+    const selectedWifiSsidSpan = document.getElementById('selected-wifi-ssid');
+    const wifiPasswordInput = document.getElementById('wifi-password');
+    const toggleWifiPass = document.getElementById('toggle-wifi-pass');
+    const btnHiddenWifi = document.getElementById('btn-hidden-wifi');
+    const hiddenWifiGroup = document.getElementById('hidden-wifi-group');
+    const hiddenWifiSsidInput = document.getElementById('hidden-wifi-ssid');
+
+    const ipv4ModeSelect = document.getElementById('ipv4-mode');
+    const ipv4StaticFields = document.getElementById('ipv4-static-fields');
+    const ipv4DnsFields = document.getElementById('ipv4-dns-fields');
+    const ipv6ModeSelect = document.getElementById('ipv6-mode');
+    const ipv6StaticFields = document.getElementById('ipv6-static-fields');
+    const ipv6DnsFields = document.getElementById('ipv6-dns-fields');
+
+    const toggleProxyEnable = document.getElementById('toggle-proxy-enable');
+    const proxyFields = document.getElementById('proxy-fields');
+
+    const btnTestNetwork = document.getElementById('btn-test-network');
+    const btnProceedStep2 = document.getElementById('btn-proceed-step2');
+    const btnBackStep1 = document.getElementById('btn-back-step1');
+    const btnReturnKiosk = document.getElementById('btn-return-kiosk');
+
     const tabBtnInstall = document.getElementById('tab-btn-install');
-    const viewEnroll = document.getElementById('view-enroll');
+    const tabBtnEnroll = document.getElementById('tab-btn-enroll');
     const viewInstall = document.getElementById('view-install');
+    const viewEnroll = document.getElementById('view-enroll');
+
+    const targetDiskSelect = document.getElementById('target-disk-select');
+    const startInstallBtn = document.getElementById('start-install-btn');
+    const rebootBtn = document.getElementById('reboot-btn');
+    const progressBarContainer = document.getElementById('install-progress-bar-container');
+    const progressBar = document.getElementById('install-progress-bar');
+    const progressStatusText = document.getElementById('install-status-text');
+    const grubPasswordInput = document.getElementById('grub-password');
+    const generateGrubBtn = document.getElementById('generate-grub-password');
+    const grubPasswordReveal = document.getElementById('grub-password-reveal');
 
     const form = document.getElementById('setup-form');
     const submitBtn = document.getElementById('submit-btn');
-    const statusBox = document.getElementById('status-box');
+    const continueAnywayBtn = document.getElementById('continue-anyway-btn');
     const toggleCustomDomain = document.getElementById('toggle-custom-domain');
     const subdomainGroup = document.getElementById('subdomain-group');
     const customDomainGroup = document.getElementById('custom-domain-group');
@@ -273,25 +674,35 @@
     const clientIdInput = document.getElementById('client-id');
     const subdomainSuffix = document.getElementById('subdomain-suffix');
 
-    const grubPasswordInput = document.getElementById('grub-password');
-    const generateGrubBtn = document.getElementById('generate-grub-password');
-    const grubPasswordReveal = document.getElementById('grub-password-reveal');
+    const modalAdminAuth = document.getElementById('modal-admin-auth');
+    const adminAuthPass = document.getElementById('admin-auth-pass');
+    const adminAuthError = document.getElementById('admin-auth-error');
+    const btnAdminUnlock = document.getElementById('btn-admin-unlock');
+    const btnAdminCancel = document.getElementById('btn-admin-cancel');
+    const enrollDesc = document.getElementById('enroll-desc');
+    const networkSummary = document.getElementById('network-status-summary');
 
-    const targetDiskSelect = document.getElementById('target-disk-select');
-    const startInstallBtn = document.getElementById('start-install-btn');
-    const rebootBtn = document.getElementById('reboot-btn');
-    const progressBarContainer = document.getElementById('install-progress-bar-container');
-    const progressBar = document.getElementById('install-progress-bar');
-    const progressStatusText = document.getElementById('install-status-text');
+    function showStatus(msg, type = 'info') {
+      statusBox.className = 'status-box status-' + type;
+      statusBox.textContent = msg;
+      statusBox.style.display = 'block';
+    }
+    function hideStatus() { statusBox.style.display = 'none'; }
 
-    let baseDomain = 'labkiosk.akbhoi.com';
+    // Toggle Tab Helpers
+    tabNetEthernet.addEventListener('click', () => {
+      tabNetEthernet.classList.add('active');
+      tabNetWifi.classList.remove('active');
+      panelEthernet.style.display = 'block';
+      panelWifi.style.display = 'none';
+    });
 
-    tabBtnEnroll.addEventListener('click', () => {
-      tabBtnEnroll.classList.add('active');
-      tabBtnInstall.classList.remove('active');
-      viewEnroll.style.display = 'block';
-      viewInstall.style.display = 'none';
-      statusBox.style.display = 'none';
+    tabNetWifi.addEventListener('click', () => {
+      tabNetWifi.classList.add('active');
+      tabNetEthernet.classList.remove('active');
+      panelWifi.style.display = 'block';
+      panelEthernet.style.display = 'none';
+      scanWifi();
     });
 
     tabBtnInstall.addEventListener('click', () => {
@@ -299,15 +710,115 @@
       tabBtnEnroll.classList.remove('active');
       viewInstall.style.display = 'block';
       viewEnroll.style.display = 'none';
-      statusBox.style.display = 'none';
       loadAvailableDisks();
     });
 
-    async function loadAgentStatus() {
+    tabBtnEnroll.addEventListener('click', () => {
+      tabBtnEnroll.classList.add('active');
+      tabBtnInstall.classList.remove('active');
+      viewEnroll.style.display = 'block';
+      viewInstall.style.display = 'none';
+    });
+
+    btnBackStep1.addEventListener('click', () => {
+      step2.style.display = 'none';
+      step1.style.display = 'block';
+      stepNav1.classList.add('active');
+      stepNav2.classList.remove('active');
+      hideStatus();
+    });
+
+    btnProceedStep2.addEventListener('click', () => {
+      step1.style.display = 'none';
+      step2.style.display = 'block';
+      stepNav1.classList.remove('active');
+      stepNav1.classList.add('completed');
+      stepNav2.classList.add('active');
+      hideStatus();
+      loadNetworkStatus();
+      // Step 2 opens on the install tab, so its drive list must load now rather
+      // than only when the (already active) tab is clicked again.
+      if (isLive && tabBtnInstall.classList.contains('active')) loadAvailableDisks();
+    });
+
+    function targetIsThisWizard() {
+      try {
+        return new URL(currentTargetUrl, window.location.href).pathname.startsWith('/setup');
+      } catch {
+        return true;
+      }
+    }
+
+    function returnToKiosk() {
+      if (currentTargetUrl && !targetIsThisWizard()) {
+        window.location.href = currentTargetUrl;
+      } else {
+        window.location.href = '/setup';
+      }
+    }
+    btnReturnKiosk.addEventListener('click', returnToKiosk);
+
+    // Accordions
+    document.getElementById('toggle-addressing').addEventListener('click', () => {
+      const body = document.getElementById('addressing-body');
+      const chev = document.getElementById('addressing-chevron');
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? 'block' : 'none';
+      chev.innerHTML = hidden ? '&#9662;' : '&#9656;';
+    });
+
+    document.getElementById('toggle-proxy').addEventListener('click', () => {
+      const body = document.getElementById('proxy-body');
+      const chev = document.getElementById('proxy-chevron');
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? 'block' : 'none';
+      chev.innerHTML = hidden ? '&#9662;' : '&#9656;';
+    });
+
+    toggleProxyEnable.addEventListener('change', () => {
+      proxyFields.style.display = toggleProxyEnable.checked ? 'block' : 'none';
+    });
+
+    // IP Mode Dynamic Fields
+    function updateAddressingFields() {
+      const v4 = ipv4ModeSelect.value;
+      ipv4StaticFields.style.display = (v4 === 'manual') ? 'block' : 'none';
+      ipv4DnsFields.style.display = (v4 === 'manual' || v4 === 'custom_dns') ? 'block' : 'none';
+
+      const v6 = ipv6ModeSelect.value;
+      ipv6StaticFields.style.display = (v6 === 'manual') ? 'block' : 'none';
+      ipv6DnsFields.style.display = (v6 === 'manual' || v6 === 'custom_dns') ? 'block' : 'none';
+    }
+    ipv4ModeSelect.addEventListener('change', updateAddressingFields);
+    ipv6ModeSelect.addEventListener('change', updateAddressingFields);
+
+    toggleWifiPass.addEventListener('click', () => {
+      const isPass = wifiPasswordInput.type === 'password';
+      wifiPasswordInput.type = isPass ? 'text' : 'password';
+      toggleWifiPass.textContent = isPass ? 'Hide' : 'Show';
+    });
+
+    btnHiddenWifi.addEventListener('click', () => {
+      hiddenWifiGroup.style.display = 'block';
+      // A hidden network is not in the scan, so its security is unknown and the
+      // key field is always offered.
+      selectedWifiSsid = '';
+      selectedWifiSecurity = '';
+      document.querySelectorAll('.wifi-item').forEach(el => el.classList.remove('selected'));
+      selectedWifiSsidSpan.textContent = 'hidden network';
+      wifiPasswordGroup.style.display = 'block';
+      hiddenWifiSsidInput.focus();
+    });
+
+    // 1. Initial State & Interfaces Load
+    async function loadInitialState() {
       try {
         const res = await fetch('http://127.0.0.1:8888/api/status');
         if (res.ok) {
           const data = await res.json();
+          isLive = !!data.isLive;
+          isConfigured = !!data.isConfigured;
+          currentTargetUrl = data.targetUrl || currentTargetUrl;
           if (data.baseDomain) {
             baseDomain = data.baseDomain;
             subdomainSuffix.textContent = '.' + baseDomain;
@@ -315,27 +826,468 @@
           if (data.clientId && !clientIdInput.value) {
             clientIdInput.value = data.clientId;
           }
-          const tabsNav = document.getElementById('tabs-nav');
-          const wizardBadge = document.getElementById('wizard-badge');
-          if (data.isLive) {
-            if (tabsNav) tabsNav.style.display = 'flex';
-            if (wizardBadge) wizardBadge.textContent = 'LIVE INSTALLER & SETUP';
-            // Booted from the "Install Lab Kiosk to Hard Disk / SSD" menu entry:
-            // open that tab rather than making the operator find it.
+
+          // False only on an installed workstation whose LABKIOSK_DATA partition
+          // is missing: it can still be enrolled, and will forget it at the next
+          // power-off, so this has to be said before anyone types a key in.
+          const storageWarning = document.getElementById('storage-warning');
+          if (storageWarning) {
+            storageWarning.style.display = data.persistentStorage === false ? 'block' : 'none';
+          }
+
+          const badge = document.getElementById('wizard-badge');
+          if (isLive) {
+            if (badge) badge.textContent = 'LIVE INSTALLER & SETUP';
             if (data.installRequested) {
               tabBtnInstall.click();
             }
           } else {
-            if (tabsNav) tabsNav.style.display = 'none';
+            if (badge) badge.textContent = 'INSTALLED WORKSTATION';
+            document.getElementById('tabs-nav').style.display = 'none';
             viewInstall.style.display = 'none';
             viewEnroll.style.display = 'block';
-            if (wizardBadge) wizardBadge.textContent = 'INSTALLED WORKSTATION ENROLLMENT';
+            enrollDesc.textContent = 'Link this installed workstation to your school lab account.';
+            // An enrolled installed workstation has nothing left to set up here
+            // except its network, and that is behind the administrator password.
+            if (isConfigured) isStandaloneNetwork = true;
+            if (!isStandaloneNetwork) {
+              // The network was configured before the installation and came back
+              // with it, so a freshly installed workstation opens straight on
+              // enrolment. Network settings stay one click away in the kiosk top
+              // bar (the network icon), behind the administrator password.
+              step1.style.display = 'none';
+              step2.style.display = 'block';
+              document.getElementById('wizard-stepper').style.display = 'none';
+              document.getElementById('btn-back-step1').style.display = 'none';
+            }
+          }
+
+          if (isStandaloneNetwork) {
+            document.getElementById('wizard-stepper').style.display = 'none';
+            btnReturnKiosk.style.display = 'flex';
+            btnProceedStep2.style.display = 'none';
+            if (!isLive && !adminToken) openAdminModal();
+          }
+          if (isOfflineRedirect) {
+            document.getElementById('admin-auth-offline').style.display = 'block';
+            showStatus('This workstation lost its network connection. It returns to the lesson automatically once the connection is back.', 'error');
+            setInterval(checkBackOnline, 3000);
           }
         }
-      } catch {}
-    }
-    loadAgentStatus();
+      } catch {
+        showStatus('Could not reach the local agent service. Retrying may help once it has started.', 'error');
+      }
 
+      await loadInterfaces();
+      await loadNetworkStatus();
+    }
+
+    async function checkBackOnline() {
+      // Only return on its own when nobody is mid-way through changing settings.
+      if (btnTestNetwork.disabled || targetIsThisWizard()) return;
+      try {
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.isOnline) returnToKiosk();
+      } catch {
+        // Agent restarting; the next tick tries again.
+      }
+    }
+
+    let ethernetInterfaces = [];
+    function renderEthernetLink() {
+      const eth = ethernetInterfaces.find(i => i.device === netEthernetDevice.value);
+      if (!eth) {
+        ethernetLinkText.textContent = 'Hardware absent';
+        ethernetLinkText.style.color = 'var(--muted)';
+      } else if (eth.carrier) {
+        ethernetLinkText.textContent = 'Connected (Cable plugged in)';
+        ethernetLinkText.style.color = '#34d399';
+      } else {
+        ethernetLinkText.textContent = 'Unplugged (No carrier)';
+        ethernetLinkText.style.color = 'var(--muted)';
+      }
+    }
+    netEthernetDevice.addEventListener('change', renderEthernetLink);
+
+    async function loadInterfaces() {
+      try {
+        const res = await fetch('http://127.0.0.1:8888/api/network/interfaces');
+        if (res.ok) {
+          const ifaces = await res.json();
+          netEthernetDevice.replaceChildren();
+          ethernetInterfaces = ifaces.filter(i => i.type === 'ethernet');
+          if (ethernetInterfaces.length === 0) {
+            netEthernetDevice.appendChild(new Option('No Ethernet interface found', ''));
+          } else {
+            ethernetInterfaces.forEach(eth => {
+              netEthernetDevice.appendChild(new Option(`${eth.device} (${eth.state})`, eth.device));
+            });
+            const linked = ethernetInterfaces.find(i => i.carrier);
+            if (linked) netEthernetDevice.value = linked.device;
+          }
+          renderEthernetLink();
+
+          const wifis = ifaces.filter(i => i.type === 'wifi');
+          if (wifis.length === 0) {
+            tabNetWifi.style.opacity = '0.5';
+            tabNetWifi.title = 'No Wi-Fi hardware detected';
+          }
+        }
+      } catch {
+        ethernetInterfaces = [];
+        renderEthernetLink();
+      }
+    }
+
+    function wifiListMessage(text, color) {
+      const note = document.createElement('div');
+      note.style.cssText = `padding: 16px; text-align: center; color: ${color}; font-size: 13px;`;
+      note.textContent = text;
+      wifiNetworksList.replaceChildren(note);
+    }
+
+    function span(text, style) {
+      const el = document.createElement('span');
+      el.textContent = text;
+      if (style) el.style.cssText = style;
+      return el;
+    }
+
+    // SSIDs are chosen by whoever runs a nearby access point, so every value
+    // from the scan is rendered as text, never as markup.
+    function wifiRow(net) {
+      const row = document.createElement('div');
+      row.className = 'wifi-item' + (selectedWifiSsid === net.ssid ? ' selected' : '');
+      const name = document.createElement('div');
+      name.style.fontWeight = '600';
+      name.appendChild(span(String(net.ssid)));
+      if (net.inUse) name.appendChild(span(' (Connected)', 'color: #34d399; font-size: 11px;'));
+      const meta = document.createElement('div');
+      meta.className = 'wifi-meta';
+      meta.append(span(String(net.security)), span(String(net.bars), 'font-family: var(--font-mono);'));
+      row.append(name, meta);
+      row.addEventListener('click', () => {
+        document.querySelectorAll('.wifi-item').forEach(el => el.classList.remove('selected'));
+        row.classList.add('selected');
+        selectedWifiSsid = net.ssid;
+        selectedWifiSecurity = net.security || '';
+        hiddenWifiGroup.style.display = 'none';
+        selectedWifiSsidSpan.textContent = net.ssid;
+        const needsKey = net.security && net.security !== 'Open';
+        wifiPasswordGroup.style.display = needsKey ? 'block' : 'none';
+        if (needsKey) wifiPasswordInput.focus();
+      });
+      return row;
+    }
+
+    async function scanWifi() {
+      wifiListMessage('Scanning available Wi-Fi networks...', 'var(--muted)');
+      try {
+        const res = await fetch('http://127.0.0.1:8888/api/network/wifi/scan');
+        if (!res.ok) throw new Error('scan failed');
+        const list = await res.json();
+        if (list.length === 0) {
+          wifiListMessage('No Wi-Fi networks in range', 'var(--muted)');
+          return;
+        }
+        wifiNetworksList.replaceChildren(...list.map(wifiRow));
+      } catch {
+        wifiListMessage('Failed to scan Wi-Fi', '#f87171');
+      }
+    }
+    btnRescanWifi.addEventListener('click', scanWifi);
+
+    // Apply & Test Network Configuration
+    btnTestNetwork.addEventListener('click', async () => {
+      const isWifi = tabNetWifi.classList.contains('active');
+      const ifaceType = isWifi ? 'wifi' : 'ethernet';
+      const device = isWifi ? '' : netEthernetDevice.value;
+      const isHiddenSsid = isWifi && hiddenWifiGroup.style.display === 'block' && hiddenWifiSsidInput.value.trim() !== '';
+      const ssid = isWifi ? (isHiddenSsid ? hiddenWifiSsidInput.value.trim() : selectedWifiSsid) : '';
+      // Not trimmed: spaces are legal at either end of a WPA passphrase.
+      const password = isWifi ? wifiPasswordInput.value : '';
+
+      if (!isLive && !adminToken) {
+        openAdminModal();
+        return;
+      }
+
+      if (isWifi && !ssid) {
+        showStatus('Please select or specify a Wi-Fi network.', 'error');
+        return;
+      }
+
+      const ipv4Mode = ipv4ModeSelect.value;
+      const ipv4Data = { mode: ipv4Mode, dns: [] };
+      if (ipv4Mode === 'manual') {
+        ipv4Data.address = document.getElementById('ipv4-address').value.trim();
+        ipv4Data.gateway = document.getElementById('ipv4-gateway').value.trim();
+      }
+      if (ipv4Mode === 'manual' || ipv4Mode === 'custom_dns') {
+        const d1 = document.getElementById('ipv4-dns1').value.trim();
+        const d2 = document.getElementById('ipv4-dns2').value.trim();
+        if (d1) ipv4Data.dns.push(d1);
+        if (d2) ipv4Data.dns.push(d2);
+      }
+
+      const ipv6Mode = ipv6ModeSelect.value;
+      const ipv6Data = { mode: ipv6Mode, dns: [] };
+      if (ipv6Mode === 'manual') {
+        ipv6Data.address = document.getElementById('ipv6-address').value.trim();
+        ipv6Data.gateway = document.getElementById('ipv6-gateway').value.trim();
+      }
+      if (ipv6Mode === 'manual' || ipv6Mode === 'custom_dns') {
+        const d1 = document.getElementById('ipv6-dns1').value.trim();
+        const d2 = document.getElementById('ipv6-dns2').value.trim();
+        if (d1) ipv6Data.dns.push(d1);
+        if (d2) ipv6Data.dns.push(d2);
+      }
+
+      const proxyData = {
+        enabled: toggleProxyEnable.checked,
+        host: document.getElementById('proxy-host').value.trim(),
+        port: parseInt(document.getElementById('proxy-port').value.trim() || '8080', 10),
+        bypass: document.getElementById('proxy-bypass').value.trim(),
+      };
+
+      btnTestNetwork.disabled = true;
+      btnTestNetwork.querySelector('span').textContent = 'Applying & Connecting...';
+      showStatus('Connecting to network and verifying route...', 'info');
+
+      try {
+        const payload = {
+          interfaceType: ifaceType,
+          device,
+          ssid,
+          password,
+          security: isHiddenSsid ? '' : selectedWifiSecurity,
+          hidden: isHiddenSsid,
+          ipv4: ipv4Data,
+          ipv6: ipv6Data,
+          proxy: proxyData,
+        };
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (adminToken) headers['X-LabKiosk-Admin'] = adminToken;
+        const res = await fetch('http://127.0.0.1:8888/api/network/configure', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (res.status === 401) {
+          // The unlock expired; ask again rather than fail silently.
+          adminToken = '';
+          openAdminModal();
+          throw new Error('Administrator authentication expired. Unlock and apply again.');
+        }
+        if (!res.ok) throw new Error(data.error || 'Network configuration failed');
+
+        if (data.connectivity && data.connectivity.ok) {
+          showStatus('SUCCESS! Connected to network. Internet & DNS routes verified.', 'success');
+          btnProceedStep2.style.background = 'var(--green)';
+        } else {
+          showStatus('Connected to interface, but public internet route could not be confirmed: ' + ((data.connectivity && data.connectivity.details) || ''), 'info');
+        }
+        await loadNetworkStatus();
+      } catch (err) {
+        showStatus('Connection failed: ' + err.message, 'error');
+      } finally {
+        btnTestNetwork.disabled = false;
+        btnTestNetwork.querySelector('span').textContent = 'Apply & Test Network';
+      }
+    });
+
+    // Show the settings this workstation is actually running on, rather than an
+    // empty form that suggests nothing was ever configured.
+    function prefillFamily(family, saved) {
+      if (!saved) return false;
+      const modeSelect = family === 'ipv4' ? ipv4ModeSelect : ipv6ModeSelect;
+      const known = Array.from(modeSelect.options).some(opt => opt.value === saved.mode);
+      if (known) modeSelect.value = saved.mode;
+      if (saved.address) document.getElementById(`${family}-address`).value = saved.address;
+      if (saved.gateway) document.getElementById(`${family}-gateway`).value = saved.gateway;
+      const dns = Array.isArray(saved.dns) ? saved.dns : [];
+      if (dns[0]) document.getElementById(`${family}-dns1`).value = dns[0];
+      if (dns[1]) document.getElementById(`${family}-dns2`).value = dns[1];
+      return known && saved.mode !== 'auto';
+    }
+
+    function prefillFromProfile(profile) {
+      if (!profile) return;
+      const networkStepVisible = step1.style.display !== 'none';
+
+      if (profile.type === 'wifi') {
+        if (networkStepVisible && !tabNetWifi.classList.contains('active')) tabNetWifi.click();
+        if (profile.ssid) {
+          selectedWifiSsid = profile.ssid;
+          selectedWifiSsidSpan.textContent = profile.ssid;
+          wifiPasswordGroup.style.display = 'block';
+          // The passphrase is never sent back to this page. Leaving the field
+          // empty keeps the one NetworkManager already holds for this SSID.
+          wifiPasswordInput.placeholder = 'Saved — leave blank to keep it';
+        }
+        if (profile.hidden && profile.ssid) {
+          hiddenWifiGroup.style.display = 'block';
+          hiddenWifiSsidInput.value = profile.ssid;
+        }
+      } else if (profile.device) {
+        if (Array.from(netEthernetDevice.options).some(opt => opt.value === profile.device)) {
+          netEthernetDevice.value = profile.device;
+          renderEthernetLink();
+        }
+      }
+
+      const v4Custom = prefillFamily('ipv4', profile.ipv4);
+      const v6Custom = prefillFamily('ipv6', profile.ipv6);
+      updateAddressingFields();
+      // Open the accordion when there is something in it worth seeing.
+      if (v4Custom || v6Custom) {
+        document.getElementById('addressing-body').style.display = 'block';
+        document.getElementById('addressing-chevron').innerHTML = '&#9662;';
+      }
+    }
+
+    async function loadNetworkStatus() {
+      try {
+        const res = await fetch('http://127.0.0.1:8888/api/network/status');
+        if (!res.ok) throw new Error('status unavailable');
+        const st = await res.json();
+        const where = st.ipv4 && st.ipv4.address
+          ? ` (${String(st.activeType).toUpperCase()}: ${st.ipv4.address})` : '';
+        networkSummary.textContent = st.online ? `🟢 Online${where}` : '🔴 Offline — reconfigure the network';
+        networkSummary.style.color = st.online ? '#34d399' : '#f87171';
+        prefillFromProfile(st.profile);
+        const p = st.proxy || {};
+        if (p.enabled) {
+          toggleProxyEnable.checked = true;
+          proxyFields.style.display = 'block';
+          document.getElementById('proxy-body').style.display = 'block';
+          document.getElementById('proxy-host').value = p.host || '';
+          document.getElementById('proxy-port').value = p.port || 8080;
+          document.getElementById('proxy-bypass').value = p.bypass || '';
+        }
+      } catch {
+        networkSummary.textContent = '⚪ Network status unknown';
+        networkSummary.style.color = 'var(--muted)';
+      }
+    }
+
+    // Agent log: the only way to read /tmp/lab-agent.log on a real workstation,
+    // which has no terminal and blocks file:// in the browser.
+    const agentLogPre = document.getElementById('agent-log');
+    const diagnosticsBody = document.getElementById('diagnostics-body');
+
+    async function loadAgentLog() {
+      agentLogPre.textContent = 'Loading...';
+      try {
+        const headers = adminToken ? { 'X-LabKiosk-Admin': adminToken } : {};
+        const res = await fetch('http://127.0.0.1:8888/api/log', { headers, cache: 'no-store' });
+        if (res.status === 401) {
+          agentLogPre.textContent = 'The administrator password is required to read the log on an installed workstation.';
+          openAdminModal();
+          return;
+        }
+        const text = await res.text();
+        agentLogPre.textContent = text.trim() || '(the log is empty)';
+        agentLogPre.scrollTop = agentLogPre.scrollHeight;
+      } catch {
+        agentLogPre.textContent = 'Could not reach the local agent service.';
+      }
+    }
+
+    function showDiagnostics() {
+      diagnosticsBody.style.display = 'block';
+      document.getElementById('diagnostics-chevron').innerHTML = '&#9662;';
+      loadAgentLog();
+    }
+
+    document.getElementById('toggle-diagnostics').addEventListener('click', () => {
+      const hidden = diagnosticsBody.style.display === 'none';
+      if (hidden) {
+        showDiagnostics();
+      } else {
+        diagnosticsBody.style.display = 'none';
+        document.getElementById('diagnostics-chevron').innerHTML = '&#9656;';
+      }
+    });
+
+    document.getElementById('btn-refresh-log').addEventListener('click', loadAgentLog);
+    document.getElementById('btn-copy-log').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-copy-log').querySelector('span');
+      try {
+        await navigator.clipboard.writeText(agentLogPre.textContent);
+        btn.textContent = 'Copied';
+      } catch {
+        // Clipboard access can be refused; selecting the text still works.
+        const range = document.createRange();
+        range.selectNodeContents(agentLogPre);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        btn.textContent = 'Selected — press Ctrl+C';
+      }
+      setTimeout(() => { btn.textContent = 'Copy'; }, 2500);
+    });
+
+    // Admin Password Dialog Handler
+    function openAdminModal() {
+      adminAuthPass.value = '';
+      adminAuthError.style.display = 'none';
+      modalAdminAuth.style.display = 'flex';
+      adminAuthPass.focus();
+    }
+
+    async function unlockAdmin() {
+      const pass = adminAuthPass.value;
+      if (!pass) return;
+      btnAdminUnlock.disabled = true;
+      adminAuthError.style.display = 'none';
+
+      try {
+        const res = await fetch('http://127.0.0.1:8888/api/admin/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pass }),
+        });
+        const data = await res.json();
+        if (res.ok && data.verified && data.token) {
+          adminToken = data.token;
+          adminAuthPass.value = '';
+          modalAdminAuth.style.display = 'none';
+        } else {
+          adminAuthError.className = 'status-box status-error';
+          adminAuthError.textContent = data.error || 'Incorrect password.';
+          adminAuthError.style.display = 'block';
+        }
+      } catch {
+        adminAuthError.className = 'status-box status-error';
+        adminAuthError.textContent = 'Failed to verify password with local agent.';
+        adminAuthError.style.display = 'block';
+      } finally {
+        btnAdminUnlock.disabled = false;
+      }
+    }
+    btnAdminUnlock.addEventListener('click', unlockAdmin);
+    adminAuthPass.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        unlockAdmin();
+      }
+    });
+
+    btnAdminCancel.addEventListener('click', () => {
+      adminAuthPass.value = '';
+      if (isStandaloneNetwork && !targetIsThisWizard()) {
+        returnToKiosk();
+      } else {
+        modalAdminAuth.style.display = 'none';
+      }
+    });
+
+    // 2. Disk Installer Logic
     async function loadAvailableDisks() {
       targetDiskSelect.innerHTML = '<option value="">Scanning drives...</option>';
       try {
@@ -348,11 +1300,6 @@
             startInstallBtn.disabled = true;
             return;
           }
-          // The agent already excludes the live boot medium and sorts internal
-          // drives first, so the default selection is always an internal disk.
-          // Removable drives are still listed -- some thin clients expose
-          // internal eMMC as removable -- but they are labelled, because
-          // choosing one erases it.
           disks.forEach(d => {
             const opt = document.createElement('option');
             opt.value = d.path;
@@ -362,54 +1309,30 @@
           });
           startInstallBtn.disabled = false;
         }
-      } catch (e) {
+      } catch {
         targetDiskSelect.innerHTML = '<option value="">Failed to scan drives</option>';
         startInstallBtn.disabled = true;
       }
     }
 
-    // GRUB's own format, reproduced exactly:
-    //   grub.pbkdf2.sha512.<rounds>.<salt hex>.<hash hex>
-    // with a 64-byte random salt and a 64-byte PBKDF2-HMAC-SHA512 digest, both
-    // uppercase hex. Verified against grub-mkpasswd-pbkdf2 output.
-    //
-    // Doing this here rather than on the agent is the point: the plaintext
-    // password never crosses the loopback API, never lands in a process
-    // argument, and is never written to disk. 200000 rounds rather than GRUB's
-    // default 10000, because the cost is paid once by a person pressing `e`,
-    // while the digest may sit in a repository or an image for years.
     const GRUB_PBKDF2_ROUNDS = 200000;
-
     function toUpperHex(buffer) {
-      return Array.from(new Uint8Array(buffer))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('')
-        .toUpperCase();
+      return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
     }
-
     async function grubPbkdf2(password) {
       const salt = crypto.getRandomValues(new Uint8Array(64));
-      const key = await crypto.subtle.importKey(
-        'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']
-      );
-      const bits = await crypto.subtle.deriveBits(
-        { name: 'PBKDF2', salt, iterations: GRUB_PBKDF2_ROUNDS, hash: 'SHA-512' },
-        key,
-        64 * 8
-      );
+      const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+      const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: GRUB_PBKDF2_ROUNDS, hash: 'SHA-512' }, key, 64 * 8);
       return `grub.pbkdf2.sha512.${GRUB_PBKDF2_ROUNDS}.${toUpperHex(salt)}.${toUpperHex(bits)}`;
     }
 
     generateGrubBtn.addEventListener('click', () => {
-      // 20 chars from a 32-character alphabet is ~100 bits; unbiased because
-      // the alphabet length divides 256 exactly.
       const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789';
       const bytes = crypto.getRandomValues(new Uint8Array(20));
-      const generated = Array.from(bytes).map((b) => alphabet[b % alphabet.length]).join('');
+      const generated = Array.from(bytes).map(b => alphabet[b % alphabet.length]).join('');
       grubPasswordInput.value = generated;
       grubPasswordInput.type = 'text';
-      grubPasswordReveal.textContent =
-        'Write this down now — it cannot be recovered after installation: ' + generated;
+      grubPasswordReveal.textContent = 'Write this down now — required for future admin access: ' + generated;
       grubPasswordReveal.style.display = 'block';
     });
 
@@ -426,11 +1349,7 @@
 
       const grubPassword = grubPasswordInput.value;
       if (!grubPassword) {
-        if (!confirm(
-          'No boot menu password was set.\n\n' +
-          'Without one, a student can edit the boot entry and start the computer with a ' +
-          'root shell, bypassing every kiosk restriction.\n\nInstall anyway?'
-        )) {
+        if (!confirm('No administrator/boot menu password was set.\n\nWithout one, physical and network settings access will remain unlocked.\n\nInstall anyway?')) {
           return;
         }
       }
@@ -447,14 +1366,13 @@
       try {
         let grubPasswordHash = '';
         if (grubPassword) {
-          progressStatusText.textContent = 'Deriving the boot menu password hash...';
+          progressStatusText.textContent = 'Deriving the administrator password hash...';
           grubPasswordHash = await grubPbkdf2(grubPassword);
         }
 
         const res = await fetch('http://127.0.0.1:8888/api/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          // Only the hash is sent. The password itself stays in this page.
           body: JSON.stringify({ targetDisk: disk, grubPasswordHash })
         });
         if (!res.ok) {
@@ -473,16 +1391,12 @@
               if (status.state === 'completed') {
                 clearInterval(pollTimer);
                 progressBar.style.width = '100%';
-                statusBox.className = 'status-box status-success';
-                statusBox.textContent = 'SUCCESS! Lab Kiosk OS installed to internal drive. Please remove the USB installation drive and reboot.';
-                statusBox.style.display = 'block';
+                showStatus('SUCCESS! Lab Kiosk OS installed to internal drive. Please remove the USB installation drive and reboot.', 'success');
                 startInstallBtn.style.display = 'none';
                 rebootBtn.style.display = 'flex';
               } else if (status.state === 'error') {
                 clearInterval(pollTimer);
-                statusBox.className = 'status-box status-error';
-                statusBox.textContent = 'Installation failed: ' + (status.error || 'Unknown error');
-                statusBox.style.display = 'block';
+                showStatus('Installation failed: ' + (status.error || 'Unknown error'), 'error');
                 startInstallBtn.disabled = false;
                 targetDiskSelect.disabled = false;
                 grubPasswordInput.disabled = false;
@@ -492,9 +1406,7 @@
           } catch {}
         }, 1000);
       } catch (e) {
-        statusBox.className = 'status-box status-error';
-        statusBox.textContent = e.message;
-        statusBox.style.display = 'block';
+        showStatus(e.message, 'error');
         startInstallBtn.disabled = false;
         targetDiskSelect.disabled = false;
         grubPasswordInput.disabled = false;
@@ -509,6 +1421,71 @@
         rebootBtn.querySelector('span').textContent = 'Rebooting...';
       } catch {}
     });
+
+    // 3. Enrollment Logic
+
+    // The key is generated as four groups of five (see generateEnrollmentKey in
+    // the control plane) and is stored *with* its hyphens, so that is what has
+    // to be submitted. Typing it is the common case on a workstation with no
+    // keyboard shortcuts to speak of, so the hyphens are inserted here.
+    const ENROLLMENT_KEY_CHARS = 20;
+    const ENROLLMENT_KEY_GROUP = 5;
+    const enrollmentKeyInput = document.getElementById('enrollment-key');
+    const enrollmentKeyHint = document.getElementById('enrollment-key-hint');
+    const ENROLLMENT_KEY_HINT_HTML = enrollmentKeyHint.innerHTML;
+    const FULL_KEY_PATTERN = /[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}/;
+
+    function normaliseEnrollmentKey(raw) {
+      const upper = String(raw || '').toUpperCase();
+      // A paste that dragged a label along with it ("Enrollment key: ABCDE-...")
+      // still yields the key, because the formatted key is looked for first.
+      const whole = upper.match(FULL_KEY_PATTERN);
+      const chars = (whole ? whole[0] : upper)
+        .replace(/[^A-Z0-9]/g, '')
+        .slice(0, ENROLLMENT_KEY_CHARS);
+      return chars.replace(new RegExp(`(.{${ENROLLMENT_KEY_GROUP}})(?=.)`, 'g'), '$1-');
+    }
+
+    function formatEnrollmentKeyField() {
+      const el = enrollmentKeyInput;
+      // Count the key characters before the caret, then put the caret back after
+      // that same character, so editing in the middle does not jump to the end.
+      const typedBefore = el.value.slice(0, el.selectionStart || 0).replace(/[^A-Za-z0-9]/g, '').length;
+      el.value = normaliseEnrollmentKey(el.value);
+
+      let seen = 0;
+      let caret = typedBefore === 0 ? 0 : el.value.length;
+      for (let i = 0; i < el.value.length; i++) {
+        if (el.value[i] !== '-') seen++;
+        if (seen === typedBefore) {
+          caret = i + 1;
+          break;
+        }
+      }
+      try {
+        el.setSelectionRange(caret, caret);
+      } catch {
+        // Not every browser allows this on a field that is not focused.
+      }
+
+      const count = el.value.replace(/-/g, '').length;
+      const complete = count === ENROLLMENT_KEY_CHARS;
+      el.style.borderColor = count === 0 ? '' : (complete ? 'var(--green)' : 'var(--border)');
+      enrollmentKeyHint.style.color = complete ? '#34d399' : 'var(--muted)';
+      if (count === 0) {
+        enrollmentKeyHint.innerHTML = ENROLLMENT_KEY_HINT_HTML;
+      } else if (complete) {
+        enrollmentKeyHint.textContent = 'Complete key entered.';
+      } else {
+        enrollmentKeyHint.textContent = `${count} of ${ENROLLMENT_KEY_CHARS} characters entered.`;
+      }
+    }
+
+    enrollmentKeyInput.addEventListener('input', formatEnrollmentKeyField);
+    // Some paste paths (middle-click on X11, drag and drop) do not raise `input`
+    // in every browser; re-formatting on the event itself covers them.
+    enrollmentKeyInput.addEventListener('paste', () => setTimeout(formatEnrollmentKeyField, 0));
+    enrollmentKeyInput.addEventListener('drop', () => setTimeout(formatEnrollmentKeyField, 0));
 
     toggleCustomDomain.addEventListener('change', () => {
       if (toggleCustomDomain.checked) {
@@ -532,27 +1509,27 @@
       const subdomain = isCustom ? '' : schoolSubdomainInput.value.trim().toLowerCase();
       const customDomain = isCustom ? customDomainInput.value.trim() : '';
       const clientId = clientIdInput.value.trim().toUpperCase();
-      const enrollmentKey = document.getElementById('enrollment-key').value.trim().toUpperCase();
+      // Normalised again rather than trusted: the field may have been filled by
+      // something that never raised an input event.
+      const enrollmentKey = normaliseEnrollmentKey(enrollmentKeyInput.value);
 
       submitBtn.disabled = true;
       submitBtn.querySelector('span').textContent = 'Connecting & Verifying...';
-      statusBox.style.display = 'none';
+      hideStatus();
 
-      const fail = (message) => {
-        statusBox.className = 'status-box status-error';
-        statusBox.textContent = message;
-        statusBox.style.display = 'block';
+      const fail = (message, withLog = false) => {
+        showStatus(message, 'error');
         submitBtn.disabled = false;
         submitBtn.querySelector('span').textContent = 'Verify & Connect Workstation';
+        // An unexpected failure is exactly when the log matters, and this is the
+        // only place a workstation can show it.
+        if (withLog) showDiagnostics();
       };
 
       try {
         const payload = { clientId, enrollmentKey };
-        if (isCustom) {
-          payload.customDomain = customDomain;
-        } else {
-          payload.subdomain = subdomain;
-        }
+        if (isCustom) payload.customDomain = customDomain;
+        else payload.subdomain = subdomain;
 
         const res = await fetch('http://127.0.0.1:8888/api/setup', {
           method: 'POST',
@@ -562,13 +1539,15 @@
         const data = await res.json();
 
         if (res.ok && data.status === 'ok') {
-          statusBox.className = 'status-box status-success';
-          statusBox.textContent =
-            'Successfully connected to ' + (data.schoolName || subdomain || customDomain) +
-            ' as ' + (data.clientId || clientId) + '. Entering locked student kiosk mode...';
-          statusBox.style.display = 'block';
-          // targetUrl comes back from the control plane, so it is checked before
-          // it becomes a navigation the same way content.js checks its copy.
+          const lasting = data.persistent !== false;
+          showStatus(
+            lasting
+              ? 'Successfully connected to ' + (data.schoolName || subdomain || customDomain) +
+                ' as ' + (data.clientId || clientId) + '. Entering locked student kiosk mode...'
+              : 'Connected to ' + (data.schoolName || subdomain || customDomain) + ' as ' +
+                (data.clientId || clientId) + ', but it was not saved. ' + (data.warning || ''),
+            lasting ? 'success' : 'warn'
+          );
           let safeTarget = null;
           try {
             const parsed = new URL(data.targetUrl, window.location.href);
@@ -576,18 +1555,27 @@
               safeTarget = parsed.href;
             }
           } catch { safeTarget = null; }
-          if (safeTarget) {
+          if (safeTarget && lasting) {
             setTimeout(() => { window.location.href = safeTarget; }, 1500);
+          } else if (safeTarget) {
+            // Deliberately not automatic: leaving this page is what hides the
+            // one warning that says the workstation will forget all of this.
+            continueAnywayBtn.style.display = 'flex';
+            continueAnywayBtn.onclick = () => { window.location.href = safeTarget; };
+            submitBtn.style.display = 'none';
           } else {
             fail('The school returned an address this workstation cannot open.');
           }
         } else {
-          fail(data.error || 'Could not connect to the school.');
+          fail(data.error || 'Could not connect to the school.', res.status >= 500);
         }
-      } catch (err) {
-        fail('Could not communicate with the local agent service.');
+      } catch {
+        fail('Could not communicate with the local agent service.', true);
       }
     });
+
+    // Start
+    loadInitialState();
   </script>
 </body>
 </html>

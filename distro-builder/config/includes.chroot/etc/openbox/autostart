@@ -1,10 +1,11 @@
 #!/bin/bash
 # Openbox Autostart Script for Lab Kiosk
 
-# 1. Disable screen blanking, screensaver, and energy power-saving
-xset s off
-xset -dpms
-xset s noblank
+# 1. Screen blanking, the screensaver and DPMS power-saving are disabled in the
+#    X server itself (BlankTime/StandbyTime/SuspendTime/OffTime = 0 in
+#    /etc/X11/xorg.conf.d/10-kiosk-lockdown.conf, written by
+#    01-lockdown.hook.chroot). That replaces `xset`, whose package pulls in the
+#    C preprocessor for xrdb and nothing the kiosk uses.
 
 # 2. Hide mouse cursor after 5 seconds of inactivity
 which unclutter >/dev/null 2>&1 && unclutter -idle 5 -root &

@@ -39,6 +39,22 @@
   }
   let lastTargetUrl = null;
   let isLocked = false;
+  // When the agent first reported the workstation offline; null while online.
+  let offlineSince = null;
+  const OFFLINE_REDIRECT_MS = 6000;
+  // Long enough to notice the bar and read the workstation name, short enough
+  // that it is out of the way before anyone starts a lesson.
+  const BAR_INTRO_MS = 2500;
+  const AGENT_SETUP_URL = "http://127.0.0.1:8888/setup";
+
+  function isAgentPage(href) {
+    try {
+      const url = new URL(href);
+      return (url.hostname === "127.0.0.1" || url.hostname === "localhost") && url.port === "8888";
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Mirror of the active broadcast marker owned by the service worker.
@@ -286,6 +302,28 @@
           font-weight: 600;
         }
 
+        .kiosk-icon-btn {
+          background: transparent;
+          border: none;
+          color: #94a3b8;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 4px;
+          border-radius: 6px;
+          transition: all 0.15s ease;
+        }
+
+        .kiosk-icon-btn:hover {
+          color: #38bdf8;
+          background: #1e293b;
+        }
+
+        .kiosk-icon-btn:active {
+          transform: scale(0.95);
+        }
+
         .status-dot {
           width: 9px;
           height: 9px;
@@ -296,6 +334,125 @@
         .status-dot.offline {
           background: #ef4444;
           box-shadow: 0 0 8px #ef4444;
+        }
+
+        /* Administrator Verification Modal */
+        .modal-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100vw;
+          height: 100vh;
+          background: rgba(0, 0, 0, 0.75);
+          backdrop-filter: blur(4px);
+          -webkit-backdrop-filter: blur(4px);
+          z-index: 2147483647;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .modal-overlay.hidden {
+          display: none;
+        }
+
+        .modal-card {
+          background: #0f172a;
+          border: 1px solid #334155;
+          border-radius: 12px;
+          padding: 24px;
+          width: 380px;
+          max-width: 90vw;
+          box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7);
+          color: #f8fafc;
+        }
+
+        .modal-header {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 8px;
+        }
+
+        .modal-title {
+          font-size: 16px;
+          font-weight: 700;
+          color: #f8fafc;
+        }
+
+        .modal-desc {
+          font-size: 13px;
+          color: #94a3b8;
+          margin-bottom: 16px;
+          line-height: 1.4;
+        }
+
+        .modal-input {
+          width: 100%;
+          background: #1e293b;
+          border: 1px solid #475569;
+          border-radius: 6px;
+          padding: 9px 12px;
+          color: #f8fafc;
+          font-size: 14px;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+
+        .modal-input:focus {
+          border-color: #38bdf8;
+        }
+
+        .modal-err {
+          color: #f87171;
+          font-size: 12px;
+          margin-top: 6px;
+          font-weight: 500;
+        }
+
+        .modal-err.hidden {
+          display: none;
+        }
+
+        .modal-actions {
+          display: flex;
+          gap: 10px;
+          margin-top: 20px;
+          justify-content: flex-end;
+        }
+
+        .modal-btn {
+          border: none;
+          padding: 8px 16px;
+          border-radius: 6px;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .modal-btn-cancel {
+          background: #334155;
+          color: #cbd5e1;
+        }
+
+        .modal-btn-cancel:hover {
+          background: #475569;
+          color: #ffffff;
+        }
+
+        .modal-btn-confirm {
+          background: #2563eb;
+          color: #ffffff;
+        }
+
+        .modal-btn-confirm:hover {
+          background: #1d4ed8;
+        }
+
+        .modal-btn-confirm:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
 
         /* Fullscreen Lockdown Curtain */
@@ -378,6 +535,14 @@
         </div>
 
         <div class="client-meta">
+          <button class="kiosk-icon-btn" id="btn-network" title="Network Configuration">
+            <svg id="kiosk-net-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12.55a11 11 0 0 1 14.08 0"></path>
+              <path d="M1.42 9a16 16 0 0 1 21.16 0"></path>
+              <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
+              <line x1="12" y1="20" x2="12.01" y2="20"></line>
+            </svg>
+          </button>
           <div class="status-dot" id="kiosk-dot"></div>
           <span id="kiosk-client-id">PC-01</span>
         </div>
@@ -391,6 +556,25 @@
           </svg>
           <h1 class="lock-title">Attention Please</h1>
           <p class="lock-msg" id="lock-text">Screens locked by the instructor. Please look to the front.</p>
+        </div>
+      </div>
+
+      <div id="admin-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+          <div class="modal-header">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+            <h3 class="modal-title">Administrator Verification</h3>
+          </div>
+          <p class="modal-desc">Enter the administrator or boot password to configure network settings.</p>
+          <input type="password" id="admin-modal-input" class="modal-input" placeholder="Enter password" autocomplete="off" />
+          <div id="admin-modal-err" class="modal-err hidden">Invalid administrator password.</div>
+          <div class="modal-actions">
+            <button type="button" class="modal-btn modal-btn-cancel" id="btn-admin-modal-cancel">Cancel</button>
+            <button type="button" class="modal-btn modal-btn-confirm" id="btn-admin-modal-submit">Unlock</button>
+          </div>
         </div>
       </div>
     `;
@@ -458,6 +642,21 @@
 
     window.addEventListener("mouseleave", () => hideBar(200));
 
+    // Show the bar once at the start of each session, then let it hide itself.
+    // It is invisible until the pointer reaches the top edge, which nobody
+    // discovers by accident; this is how a student learns it is there at all.
+    // The service worker hands out the "first page of this session" flag, so
+    // this happens once per boot rather than on every navigation.
+    askAgent({ type: "labkiosk:intro-peek" })
+      .then((reply) => {
+        if (!reply || !reply.first) return;
+        showBar();
+        hideBar(BAR_INTRO_MS);
+      })
+      .catch(() => {
+        // The service worker may still be starting; the bar simply stays hidden.
+      });
+
     // Touch support for touchscreens
     window.addEventListener(
       "touchstart",
@@ -493,6 +692,74 @@
     };
     shadow.getElementById("btn-forward").onclick = () => window.history.forward();
     shadow.getElementById("btn-reload").onclick = () => window.location.reload();
+
+    const adminModal = shadow.getElementById("admin-modal");
+    const adminInput = shadow.getElementById("admin-modal-input");
+    const adminErr = shadow.getElementById("admin-modal-err");
+    const btnAdminSubmit = shadow.getElementById("btn-admin-modal-submit");
+    const btnAdminCancel = shadow.getElementById("btn-admin-modal-cancel");
+    const btnNetwork = shadow.getElementById("btn-network");
+
+    function openAdminModal() {
+      if (!adminModal) return;
+      if (adminErr) adminErr.classList.add("hidden");
+      if (adminInput) {
+        adminInput.value = "";
+        setTimeout(() => adminInput.focus(), 60);
+      }
+      adminModal.classList.remove("hidden");
+    }
+
+    function closeAdminModal() {
+      if (!adminModal) return;
+      adminModal.classList.add("hidden");
+      if (adminInput) adminInput.value = "";
+      if (adminErr) adminErr.classList.add("hidden");
+    }
+
+    async function submitAdminPassword() {
+      if (!adminInput || !btnAdminSubmit) return;
+      const val = adminInput.value;
+      btnAdminSubmit.disabled = true;
+      if (adminErr) adminErr.classList.add("hidden");
+
+      try {
+        const reply = await askAgent({ type: "labkiosk:verify-admin", password: val });
+        if (reply && reply.verified && reply.token) {
+          closeAdminModal();
+          // The wizard reads the short-lived unlock token from the fragment,
+          // which never leaves the browser, and removes it from the address.
+          window.location.href = `${AGENT_SETUP_URL}#network&admin=${encodeURIComponent(reply.token)}`;
+        } else {
+          if (adminErr) {
+            adminErr.textContent = (reply && reply.error) || "Invalid administrator password.";
+            adminErr.classList.remove("hidden");
+          }
+        }
+      } catch (err) {
+        if (adminErr) {
+          adminErr.textContent = (err && err.message) || "Verification failed.";
+          adminErr.classList.remove("hidden");
+        }
+      } finally {
+        btnAdminSubmit.disabled = false;
+      }
+    }
+
+    if (btnNetwork) btnNetwork.onclick = openAdminModal;
+    if (btnAdminCancel) btnAdminCancel.onclick = closeAdminModal;
+    if (btnAdminSubmit) btnAdminSubmit.onclick = submitAdminPassword;
+    if (adminInput) {
+      adminInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitAdminPassword();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          closeAdminModal();
+        }
+      });
+    }
 
     updateNavButtonStates(shadow);
     return shadow;
@@ -532,9 +799,31 @@
       const { status: data } = await askAgent({ type: "labkiosk:status" });
 
       if (shadowRoot) {
-        // Dot status
         const dot = shadowRoot.getElementById("kiosk-dot");
-        if (dot) dot.classList.remove("offline");
+        const netIcon = shadowRoot.getElementById("kiosk-net-icon");
+        const btnNet = shadowRoot.getElementById("btn-network");
+
+        if (data && data.isOnline) {
+          offlineSince = null;
+          if (dot) dot.classList.remove("offline");
+          if (netIcon) netIcon.setAttribute("stroke", "#10b981");
+          if (btnNet) btnNet.title = "Network Connected (Click to configure)";
+        } else {
+          if (offlineSince === null) offlineSince = Date.now();
+          if (dot) dot.classList.add("offline");
+          if (netIcon) netIcon.setAttribute("stroke", "#ef4444");
+          if (btnNet) btnNet.title = "Network Offline (Click to configure)";
+
+          // Measured in time, not ticks: offline, a status call can take several
+          // seconds, so ticks would stretch the grace period unpredictably. A
+          // locked screen stays locked rather than jumping to the wizard.
+          const offlineFor = Date.now() - offlineSince;
+          if (offlineFor > OFFLINE_REDIRECT_MS && !isAgentPage(window.location.href) && !(data && data.isLocked)) {
+            console.warn("[LabKiosk] Workstation offline for >6s, redirecting to network configuration");
+            window.location.replace(`${AGENT_SETUP_URL}#offline`);
+            return;
+          }
+        }
 
         // Client ID
         const cid = shadowRoot.getElementById("kiosk-client-id");
@@ -599,6 +888,8 @@
       if (shadowRoot) {
         const dot = shadowRoot.getElementById("kiosk-dot");
         if (dot) dot.classList.add("offline");
+        const netIcon = shadowRoot.getElementById("kiosk-net-icon");
+        if (netIcon) netIcon.setAttribute("stroke", "#ef4444");
       }
     }
   }
