@@ -82,7 +82,8 @@ VNC_PASSWD_FILE=/tmp/labkiosk/vnc.pass
 # published password on an endpoint that grants full keyboard and mouse control;
 # the RFB protocol caps it at 8 characters, so it is weak by construction and the
 # proxy or tunnel in front of it has to carry the real authentication.
-VNC_SECRET="${VNC_PASSWORD:-$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-8)}"
+VNC_SECRET="${VNC_PASSWORD:-$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n' | cut -c1-8)}"
+echo "VNC password: $VNC_SECRET"
 x11vnc -storepasswd "$VNC_SECRET" "$VNC_PASSWD_FILE" >/dev/null 2>&1
 chmod 600 "$VNC_PASSWD_FILE"
 # The agent reports this to the teacher console so "Remote Control" autoconnects.
