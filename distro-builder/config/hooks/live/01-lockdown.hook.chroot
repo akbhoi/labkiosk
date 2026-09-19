@@ -159,6 +159,19 @@ chmod 700 /etc/labkiosk
 mkdir -p /etc/labkiosk/system-connections
 chmod 700 /etc/labkiosk/system-connections
 
+# 3a. System clock in Asia/Kolkata (IST).
+#
+#     This is what an INSTALLED workstation uses: live-config does not run there
+#     (no boot=live on the command line), so /etc/localtime as built is what the
+#     machine keeps. A live session is a different story -- live-config's
+#     0070-tzdata component rewrites /etc/timezone on every live boot and falls
+#     back to Etc/UTC when nothing asks otherwise, so the boot menus pass
+#     timezone=Asia/Kolkata as well. Change one and change the other, or an
+#     installed machine and the USB it came from will disagree about the time.
+#     systemd-timesyncd (in the package list) keeps the clock itself correct.
+ln -snf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime
+echo "Asia/Kolkata" > /etc/timezone
+
 # 4. Mask virtual terminals so Ctrl+Alt+F1..F6 cannot reach a login prompt.
 for tty in 1 2 3 4 5 6; do
     systemctl mask "getty@tty${tty}.service" || true

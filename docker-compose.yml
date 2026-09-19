@@ -38,6 +38,9 @@ services:
       # to point the simulator at a different control plane -- a deployed worker,
       # or `pnpm dev` on a non-default port. The agent accepts an http origin only
       # for loopback and container-gateway hosts; everything else must be https.
+      # The image is built for Asia/Kolkata (IST); this lets a deployment
+      # elsewhere run the same image on its own clock without rebuilding.
+      - TZ=${TZ:-Asia/Kolkata}
       - WORKER_URL=${WORKER_URL:-http://host.docker.internal:8787}
       - LABKIOSK_DOMAIN=${LABKIOSK_DOMAIN:-labkiosk.akbhoi.com}
       # Left empty on purpose: the entrypoint then generates a random password

@@ -92,8 +92,8 @@ lb config noauto \
     --architectures amd64 \
     --binary-images iso-hybrid \
     --bootloaders "grub-efi,syslinux" \
-    --bootappend-live "boot=live components consoleblank=0 overlayroot=tmpfs:recurse=0 username=kiosk" \
-    --bootappend-live-failsafe "boot=live components nomodeset xforcevesa vga=791 overlayroot=tmpfs:recurse=0 username=kiosk" \
+    --bootappend-live "boot=live components consoleblank=0 overlayroot=tmpfs:recurse=0 timezone=Asia/Kolkata username=kiosk" \
+    --bootappend-live-failsafe "boot=live components nomodeset xforcevesa vga=791 overlayroot=tmpfs:recurse=0 timezone=Asia/Kolkata username=kiosk" \
     --compression gzip \
     --memtest none \
     --iso-application "Lab Kiosk OS" \
