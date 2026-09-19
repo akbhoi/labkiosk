@@ -31,7 +31,7 @@
   const ALLOWED_KEYS = new Set([
     "Backspace", "Delete", "Enter", "NumpadEnter", "Shift", "CapsLock", "Tab", "Escape",
     "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown",
-    "Control", "Alt", "AltGraph", "NumLock",
+    "Control", "Alt", "AltGraph", "NumLock", "Dead", "Process"
   ]);
 
   const isSetupPage = window.location.origin === AGENT_ORIGIN;
