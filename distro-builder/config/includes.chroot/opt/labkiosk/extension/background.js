@@ -77,6 +77,37 @@ async function claimBarIntro() {
   return { first: true };
 }
 
+const AGENT_I18N_URL = "http://127.0.0.1:8888/i18n/";
+const I18N_KEY = "labkiosk_catalog";
+
+/**
+ * The interface catalog for the language chosen in the setup wizard.
+ *
+ * Cached in chrome.storage.session because content.js runs again on every page
+ * a student opens, and the bar must not fetch a catalog each time. The cache
+ * lasts exactly as long as the boot does, which is also how long the chosen
+ * language can change without a restart.
+ */
+async function readCatalog() {
+  const cached = await chrome.storage.session.get(I18N_KEY);
+  if (cached && cached[I18N_KEY]) return cached[I18N_KEY];
+
+  let catalog = {};
+  try {
+    const status = await readStatus();
+    const tag = (status && status.uiLanguage) || "en-US";
+    if (tag && tag !== "en-US") {
+      const res = await fetch(AGENT_I18N_URL + encodeURIComponent(tag) + ".json", { cache: "no-store" });
+      if (res.ok) catalog = await res.json();
+    }
+  } catch {
+    // English is already in the markup; a missing catalog changes nothing.
+    catalog = {};
+  }
+  await chrome.storage.session.set({ [I18N_KEY]: catalog });
+  return catalog;
+}
+
 const AGENT_ADMIN_VERIFY_URL = "http://127.0.0.1:8888/api/admin/verify";
 const AGENT_NETWORK_STATUS_URL = "http://127.0.0.1:8888/api/network/status";
 
@@ -118,6 +149,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "labkiosk:status") {
     return reply(readStatus().then((status) => ({ status })));
+  }
+
+  if (message.type === "labkiosk:i18n") {
+    return reply(readCatalog().then((catalog) => ({ catalog })));
   }
 
   if (message.type === "labkiosk:verify-admin") {

@@ -45,6 +45,18 @@ CONFIG_FILE = "/etc/labkiosk/config.json"
 AGENT_LOG_FILE = "/tmp/lab-agent.log"
 MAX_LOG_BYTES = 64 * 1024
 PROXY_CONFIG_FILE = "/etc/labkiosk/proxy.json"
+# Language, region, timezone and keyboard, chosen in the wizard before the
+# network is configured -- a workstation with no route to an NTP server still
+# has to know what time it is. Persisted on LABKIOSK_DATA so the choice
+# survives a reboot, and carried onto the target disk by the installer.
+LOCALIZATION_CONFIG_FILE = "/etc/labkiosk/localization.json"
+LOCALIZATION_HELPER = "/usr/local/sbin/labkiosk-localization"
+LOCALIZATION_TIMEOUT_SECONDS = 60
+# en-US ships in the image; every other catalog is dropped onto the data
+# partition, which is how a school adds its language without a new ISO.
+UI_LANGUAGE_DIR = "/opt/labkiosk/i18n"
+UI_LANGUAGE_EXTRA_DIR = "/etc/labkiosk/i18n"
+UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 GRUB_PASSWORD_FILE = "/etc/grub.d/01_labkiosk_password"
 WIZARD_HTML_FILE = "/opt/labkiosk/setup/wizard.html"
 CHROMIUM_POLICY_FILE = "/etc/chromium/policies/managed/policies.json"
@@ -483,6 +495,195 @@ def save_config(payload):
             os.close(dir_fd)
     except OSError as err:
         log(f"Could not flush {directory} after saving the enrolment: {err}")
+
+
+# --------------------------------------------------------------------------
+# Language, region and clock
+# --------------------------------------------------------------------------
+
+def run_localization_helper(args, privileged):
+    """
+    Call the one privileged program the agent is allowed to run.
+
+    Listing what the system supports needs no privileges; changing anything
+    does, and goes through sudo against a single named program that re-validates
+    every argument (/etc/sudoers.d/51-labkiosk-localization).
+    """
+    command = (["sudo", "-n", LOCALIZATION_HELPER] if privileged else [LOCALIZATION_HELPER]) + args
+    try:
+        proc = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=LOCALIZATION_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as err:
+        raise RuntimeError(f"{LOCALIZATION_HELPER} is not installed on this image") from err
+    except subprocess.TimeoutExpired as err:
+        raise RuntimeError("the localization helper did not finish in time") from err
+
+    for line in proc.stderr.strip().splitlines():
+        log(line)
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except ValueError as err:
+        raise RuntimeError(
+            f"the localization helper returned no JSON ({proc.stdout[:120]!r})") from err
+    if proc.returncode != 0:
+        raise ValueError(payload.get("error", f"localization failed ({proc.returncode})"))
+    return payload
+
+
+def load_localization_config():
+    try:
+        with open(LOCALIZATION_CONFIG_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_localization_config(cfg):
+    directory = os.path.dirname(LOCALIZATION_CONFIG_FILE)
+    temp_path = LOCALIZATION_CONFIG_FILE + ".tmp"
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(cfg, handle, indent=2)
+        os.replace(temp_path, LOCALIZATION_CONFIG_FILE)
+    except OSError as err:
+        raise RuntimeError(
+            f"could not save the language and region settings to "
+            f"{LOCALIZATION_CONFIG_FILE} ({err.strerror}). {describe_config_dir()}"
+        ) from err
+
+
+def available_ui_languages():
+    """
+    Interface languages this workstation can display.
+
+    A catalog is <tag>.json; en-US is the source and ships in the image. The
+    rest are added by dropping files into /etc/labkiosk/i18n, so a school can
+    add its own language without rebuilding the ISO.
+    """
+    languages = {}
+    for directory in (UI_LANGUAGE_DIR, UI_LANGUAGE_EXTRA_DIR):
+        try:
+            entries = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.endswith(".json"):
+                continue
+            tag = entry[:-5]
+            if not UI_LANGUAGE_PATTERN.match(tag):
+                continue
+            try:
+                with open(os.path.join(directory, entry), "r", encoding="utf-8") as handle:
+                    catalog = json.load(handle)
+            except (OSError, ValueError) as err:
+                log(f"Ignoring language catalog {entry}: {err}")
+                continue
+            meta = catalog.get("_meta", {}) if isinstance(catalog, dict) else {}
+            languages[tag] = {
+                "tag": tag,
+                "name": str(meta.get("name", tag)),
+                "direction": "rtl" if str(meta.get("direction", "ltr")).lower() == "rtl" else "ltr",
+                "bundled": directory == UI_LANGUAGE_DIR,
+            }
+    return [languages[tag] for tag in sorted(languages)]
+
+
+def localization_options():
+    options = run_localization_helper(["--list-options"], privileged=False)
+    options["uiLanguages"] = available_ui_languages()
+    options["saved"] = load_localization_config()
+    return options
+
+
+def configure_localization(data):
+    """
+    Apply the Language & Region step, then remember it.
+
+    Validation lives in the helper, which checks each value against the system's
+    own tables, so a value this agent has never heard of cannot be smuggled
+    through by a caller that skipped the wizard.
+    """
+    args = []
+    timezone = str(data.get("timezone", "")).strip()
+    locale = str(data.get("locale", "")).strip()
+    ui_language = str(data.get("uiLanguage", "")).strip()
+    keymap = str(data.get("keymap", "")).strip()
+    keymap_variant = str(data.get("keymapVariant", "")).strip()
+    manual_time = str(data.get("time", "")).strip()
+    sync_time = bool(data.get("syncTime", True))
+
+    if timezone:
+        args += ["--timezone", timezone]
+    if locale:
+        args += ["--locale", locale]
+    if ui_language:
+        known = {entry["tag"] for entry in available_ui_languages()}
+        if ui_language not in known:
+            raise ValueError(f"{ui_language} is not an interface language on this workstation.")
+        args += ["--ui-language", ui_language]
+    if keymap:
+        args += ["--keymap", keymap]
+        if keymap_variant:
+            args += ["--keymap-variant", keymap_variant]
+    if manual_time and not sync_time:
+        args += ["--time", manual_time]
+    else:
+        args += ["--ntp", "on" if sync_time else "off"]
+
+    result = run_localization_helper(args, privileged=True)
+
+    cfg = load_localization_config()
+    cfg.update({
+        "timezone": timezone or cfg.get("timezone", ""),
+        "locale": locale or cfg.get("locale", ""),
+        "uiLanguage": ui_language or cfg.get("uiLanguage", ""),
+        "keymap": keymap or cfg.get("keymap", ""),
+        "keymapVariant": keymap_variant if keymap else cfg.get("keymapVariant", ""),
+        "syncTime": sync_time,
+    })
+    save_localization_config(cfg)
+
+    # Accept-Language is what actually changes which version of a lesson site a
+    # school gets, so the browser is told as well as the system.
+    sync_chromium_policies(cached_whitelist or [], force=True)
+    return {"status": "ok", "applied": result.get("applied", {}), "saved": cfg}
+
+
+def apply_saved_localization():
+    """
+    Re-apply the saved settings at every start.
+
+    On an installed workstation the timezone and the keyboard came back with the
+    root filesystem, but a locale generated after the installation lives in the
+    RAM overlay and is gone again by morning; the helper regenerates it and does
+    nothing when it is already there.
+    """
+    cfg = load_localization_config()
+    if not cfg:
+        return
+    args = []
+    if cfg.get("timezone"):
+        args += ["--timezone", str(cfg["timezone"])]
+    if cfg.get("locale"):
+        args += ["--locale", str(cfg["locale"])]
+    if cfg.get("uiLanguage"):
+        args += ["--ui-language", str(cfg["uiLanguage"])]
+    if cfg.get("keymap"):
+        args += ["--keymap", str(cfg["keymap"])]
+        if cfg.get("keymapVariant"):
+            args += ["--keymap-variant", str(cfg["keymapVariant"])]
+    if not args:
+        return
+    try:
+        run_localization_helper(args, privileged=True)
+        log("Re-applied the saved language and region settings.")
+    except (ValueError, RuntimeError) as err:
+        # Never fatal: a workstation with an odd locale must still come up.
+        log(f"Could not re-apply the saved language and region settings: {err}")
 
 
 # --------------------------------------------------------------------------
@@ -1511,6 +1712,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # partition is not mounted: it can be enrolled, but it
                         # forgets the enrolment at the next power-off.
                         "persistentStorage": enrolment_is_persistent(),
+                        # The kiosk bar asks for this to know which interface
+                        # catalog to fetch, once per boot.
+                        "uiLanguage": str(load_localization_config().get("uiLanguage", "") or "en-US"),
                         # Only meaningful on live media; an installed disk has
                         # nothing to install to and the wizard hides the tab.
                         "installRequested": live and install_mode_requested(),
@@ -1530,6 +1734,33 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/network/status":
             self._send(200, get_network_status())
+            return
+
+        if self.path.startswith("/i18n/") and self.path.endswith(".json"):
+            # Interface catalogs, for the wizard and (through the service
+            # worker) the kiosk top bar. Read-only, and the name is matched
+            # against the pattern before it ever reaches a path.
+            tag = self.path[len("/i18n/"):-len(".json")]
+            if not UI_LANGUAGE_PATTERN.match(tag):
+                self._send(404, {"error": "No such language"})
+                return
+            for directory in (UI_LANGUAGE_EXTRA_DIR, UI_LANGUAGE_DIR):
+                candidate = os.path.join(directory, tag + ".json")
+                try:
+                    with open(candidate, "rb") as handle:
+                        self._send(200, handle.read(), "application/json; charset=utf-8")
+                        return
+                except OSError:
+                    continue
+            self._send(404, {"error": "No such language"})
+            return
+
+        if self.path == "/api/localization/options":
+            try:
+                self._send(200, localization_options())
+            except (ValueError, RuntimeError) as err:
+                log(f"Could not list localization options: {err}")
+                self._send(500, {"error": str(err)})
             return
 
         if self.path == "/api/network/interfaces":
@@ -1627,6 +1858,25 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "detail": "See the agent log below for the full context.",
                     },
                 )
+            return
+
+        if self.path == "/api/localization/configure":
+            # Same gate as the network: open while the workstation is being set
+            # up, behind the boot password once it is installed and in a lab.
+            if admin_auth_required() and not has_admin_session(self.headers.get(ADMIN_TOKEN_HEADER, "")):
+                self._send(401, {"error": "Administrator authentication is required"})
+                return
+            data = self._read_json()
+            if not isinstance(data, dict):
+                self._send(400, {"error": "A JSON body is required"})
+                return
+            try:
+                self._send(200, configure_localization(data))
+            except ValueError as err:
+                self._send(400, {"error": str(err)})
+            except (RuntimeError, OSError) as err:
+                log(f"Localization failed: {err}")
+                self._send(500, {"error": f"Failed to apply language and region: {err}"})
             return
 
         if self.path == "/api/network/configure":
@@ -1775,6 +2025,20 @@ def sync_chromium_policies(new_whitelist, force=False):
             "the policy it booted with."
         )
         return
+
+    # The interface language the operator chose, and the locale's own language,
+    # are what a school website uses to decide which translation to serve.
+    localization = load_localization_config()
+    accept = []
+    for tag in (str(localization.get("uiLanguage", "")), str(localization.get("locale", ""))):
+        tag = tag.split(".")[0].replace("_", "-")
+        if tag and tag not in accept:
+            accept.append(tag)
+            base = tag.split("-")[0]
+            if base not in accept:
+                accept.append(base)
+    if accept:
+        policy_data["AcceptLanguages"] = ",".join(accept)
 
     policy_data["HomepageLocation"] = target_url
     policy_data["NewTabPageLocation"] = target_url
@@ -2060,6 +2324,7 @@ def telemetry_loop():
 
 def main():
     apply_proxy_to_environment(load_proxy_config())
+    apply_saved_localization()
     load_config()
     with state_lock:
         client_id = state["clientId"]

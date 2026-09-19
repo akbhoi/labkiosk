@@ -77,6 +77,11 @@ websockify
 network-manager
 # Recommends-only; the kiosk needs a correct clock for TLS and the ip tool.
 systemd-timesyncd
+# The locale definitions the setup wizard's Language & Region step generates
+# from (~21 MB). Not locales-all, which is 350 MB of pre-generated locales for
+# languages no single school uses: labkiosk-localization generates the one that
+# was chosen, in about three megabytes, at installation time.
+locales
 iproute2
 libnss-systemd
 wpasupplicant

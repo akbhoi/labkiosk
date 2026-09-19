@@ -511,21 +511,21 @@
 
       <div id="kiosk-bar">
         <div class="nav-cluster">
-          <button class="kiosk-btn" id="btn-home" title="Lesson Home">
+          <button class="kiosk-btn" id="btn-home" title="Lesson Home" data-i18n-title="bar.homeTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
-            Home
+            <span data-i18n="bar.home">Home</span>
           </button>
-          <button class="kiosk-btn" id="btn-back" title="Go Back">
+          <button class="kiosk-btn" id="btn-back" title="Go Back" data-i18n-title="bar.backTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-            Back
+            <span data-i18n="bar.back">Back</span>
           </button>
-          <button class="kiosk-btn" id="btn-forward" title="Go Forward">
+          <button class="kiosk-btn" id="btn-forward" title="Go Forward" data-i18n-title="bar.forwardTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
-            Forward
+            <span data-i18n="bar.forward">Forward</span>
           </button>
-          <button class="kiosk-btn" id="btn-reload" title="Reload Page">
+          <button class="kiosk-btn" id="btn-reload" title="Reload Page" data-i18n-title="bar.reloadTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-            Reload
+            <span data-i18n="bar.reload">Reload</span>
           </button>
         </div>
 
@@ -535,7 +535,7 @@
         </div>
 
         <div class="client-meta">
-          <button class="kiosk-icon-btn" id="btn-network" title="Network Configuration">
+          <button class="kiosk-icon-btn" id="btn-network" title="Network Configuration" data-i18n-title="bar.networkTitle">
             <svg id="kiosk-net-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M5 12.55a11 11 0 0 1 14.08 0"></path>
               <path d="M1.42 9a16 16 0 0 1 21.16 0"></path>
@@ -566,14 +566,14 @@
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
-            <h3 class="modal-title">Administrator Verification</h3>
+            <h3 class="modal-title" data-i18n="admin.title">Administrator Verification</h3>
           </div>
-          <p class="modal-desc">Enter the administrator or boot password to configure network settings.</p>
+          <p class="modal-desc" data-i18n="admin.prompt">Enter the administrator or boot password to configure network settings.</p>
           <input type="password" id="admin-modal-input" class="modal-input" placeholder="Enter password" autocomplete="off" />
-          <div id="admin-modal-err" class="modal-err hidden">Invalid administrator password.</div>
+          <div id="admin-modal-err" class="modal-err hidden" data-i18n="admin.invalid">Invalid administrator password.</div>
           <div class="modal-actions">
-            <button type="button" class="modal-btn modal-btn-cancel" id="btn-admin-modal-cancel">Cancel</button>
-            <button type="button" class="modal-btn modal-btn-confirm" id="btn-admin-modal-submit">Unlock</button>
+            <button type="button" class="modal-btn modal-btn-cancel" id="btn-admin-modal-cancel" data-i18n="admin.cancel">Cancel</button>
+            <button type="button" class="modal-btn modal-btn-confirm" id="btn-admin-modal-submit" data-i18n="admin.unlock">Unlock</button>
           </div>
         </div>
       </div>
@@ -671,6 +671,21 @@
     );
 
     // Button event listeners
+    // Interface language. The bar is built in English and then translated in
+    // place, so a missing, partial or broken catalog leaves it readable.
+    askAgent({ type: "labkiosk:i18n" }).then((reply) => {
+      const catalog = (reply && reply.catalog) || {};
+      shadow.querySelectorAll("[data-i18n]").forEach((el) => {
+        const value = catalog[el.dataset.i18n];
+        if (typeof value === "string" && value) el.textContent = value;
+      });
+      shadow.querySelectorAll("[data-i18n-title]").forEach((el) => {
+        const value = catalog[el.dataset.i18nTitle];
+        if (typeof value === "string" && value) el.title = value;
+      });
+      if ((catalog._meta || {}).direction === "rtl") bar.setAttribute("dir", "rtl");
+    }).catch(() => { /* English stands */ });
+
     shadow.getElementById("btn-home").onclick = async () => {
       try {
         const { status } = await askAgent({ type: "labkiosk:status" });

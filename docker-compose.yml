@@ -56,6 +56,8 @@ services:
       # Live-edit the client without rebuilding: these shadow the image's copies,
       # so `docker compose restart` picks up agent or extension changes.
       - ./distro-builder/config/includes.chroot/opt/labkiosk:/opt/labkiosk
+      # Live-edit the localization helper for the same reason.
+      - ./distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization:/usr/local/sbin/labkiosk-localization:ro
       # Mounted for the same reason, and because the agent fails closed without
       # it -- editing the policy base otherwise appears to do nothing until the
       # image is rebuilt.

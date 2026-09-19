@@ -105,7 +105,8 @@ jobs:
         run: |
           PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m py_compile \
             distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-            distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+            distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
           if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
             echo "::error::__pycache__ was written into the image overlay"
             exit 1
@@ -116,10 +117,18 @@ jobs:
           node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
           node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 
-      - name: Manifest and Chromium policy are valid JSON
+      - name: Manifest, Chromium policy and language catalogs are valid JSON
         run: |
           python3 - <<'EOF'
-          import json
+          import json, pathlib
+          # A catalog with a syntax error would leave the wizard in English with
+          # no sign of why, so it is parsed here rather than discovered in a lab.
+          for catalog in sorted(pathlib.Path(
+                  "distro-builder/config/includes.chroot/opt/labkiosk/i18n").glob("*.json")):
+              with open(catalog, encoding="utf-8") as handle:
+                  document = json.load(handle)
+              assert "_meta" in document, f"{catalog} has no _meta block"
+              print("ok", catalog, f"({len(document) - 1} strings)")
           for path in (
               "distro-builder/config/includes.chroot/opt/labkiosk/extension/manifest.json",
               "distro-builder/config/includes.chroot/etc/chromium/policies/managed/policies.json",

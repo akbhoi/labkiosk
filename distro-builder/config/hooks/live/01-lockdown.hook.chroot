@@ -107,6 +107,7 @@ EOF
 chmod +x /etc/openbox/autostart || true
 chmod +x /opt/labkiosk/agent/agent.py || true
 chmod +x /usr/local/bin/labkiosk-install || true
+chmod +x /usr/local/sbin/labkiosk-localization || true
 chown -R root:root /opt/labkiosk || true
 chmod -R go-w /opt/labkiosk || true
 chown -R root:root /etc/openbox || true
@@ -240,6 +241,15 @@ cat << 'EOF' > /etc/sudoers.d/50-labkiosk-install
 kiosk ALL=(ALL) NOPASSWD: /usr/local/bin/labkiosk-install
 EOF
 chmod 0440 /etc/sudoers.d/50-labkiosk-install
+
+# Setting a timezone, generating a locale and writing /etc/default/keyboard all
+# need root, and the agent deliberately does not run as root. One named program,
+# which re-validates every argument against the system's own tables rather than
+# trusting the caller -- the same rule the installer follows.
+cat << 'EOF' > /etc/sudoers.d/51-labkiosk-localization
+kiosk ALL=(ALL) NOPASSWD: /usr/local/sbin/labkiosk-localization
+EOF
+chmod 0440 /etc/sudoers.d/51-labkiosk-localization
 
 # 7. Enable kiosk services.
 systemctl enable nodm.service || true

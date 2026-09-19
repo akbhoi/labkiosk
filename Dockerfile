@@ -53,6 +53,9 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 #   docker build --build-arg WITH_INTL_FONTS=0 -t labkiosk:slim .
 ARG WITH_INTL_FONTS=1
 
+# tzdata, locales and xkb-data are the three tables the setup wizard's
+# Language & Region step reads its options from -- the same ones the ISO
+# carries, so the step can be exercised here as it is on a workstation.
 # One layer: update, install, and drop the package lists, so the lists never
 # reach a committed layer. alsa-utils is required -- the agent's "mute" command
 # shells out to amixer. chromium-sandbox carries the setuid helper: this image
@@ -68,6 +71,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     scrot \
     xdotool \
     alsa-utils \
+    tzdata \
+    locales \
+    xkb-data \
     fonts-liberation \
     ca-certificates \
     curl \
@@ -98,6 +104,12 @@ COPY --chmod=0755 docker-test/entrypoint.sh /entrypoint.sh
 
 # Highest churn during development, so it goes last.
 COPY --chmod=0755 distro-builder/config/includes.chroot/opt/labkiosk /opt/labkiosk
+
+# The same privileged helper the real image ships. It is what answers the
+# wizard's Language & Region step, and listing the timezones, locales and
+# keyboard layouts it offers needs no privileges -- so the step works here
+# even though this container has no systemd to apply them to.
+COPY --chmod=0755 distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization /usr/local/sbin/labkiosk-localization
 
 # A pristine copy of the boot-time policy, outside both paths docker-compose.yml
 # bind-mounts and outside the directory a read-only container mounts a tmpfs

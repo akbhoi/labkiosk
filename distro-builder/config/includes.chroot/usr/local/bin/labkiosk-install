@@ -20,6 +20,10 @@ STATUS_FILE = "/tmp/labkiosk-install-status.json"
 # /etc/sudoers.d/50-labkiosk-install lets the kiosk user run this binary
 # directly with NOPASSWD, so the argument is re-validated here rather than
 # trusted. Keep the two patterns identical.
+# The one program that knows how to write a timezone, a locale and a keyboard
+# layout, used here with --root so the choice made in the wizard lands on the
+# disk being installed rather than on the live session.
+LOCALIZATION_HELPER = "/usr/local/sbin/labkiosk-localization"
 TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$")
 
 # A grub-mkpasswd-pbkdf2 digest: grub.pbkdf2.sha512.<rounds>.<salt hex>.<hash hex>.
@@ -490,6 +494,47 @@ tmpfs             /tmp                               tmpfs defaults,noatime,mode
         fstab_path = os.path.join(mount_dir, "etc", "fstab")
         with open(fstab_path, "w") as f:
             f.write(fstab_content)
+
+        # Language, region, timezone and keyboard, as chosen in the wizard's
+        # first step. /etc/localtime, /etc/default/locale and
+        # /etc/default/keyboard live on the root filesystem rather than on
+        # LABKIOSK_DATA, so they have to be written while the target is still
+        # mounted; generating the locale here also keeps it off the RAM overlay,
+        # where it would have to be rebuilt at every boot.
+        localization_file = os.path.join(data_dir, "localization.json")
+        localization = {}
+        if os.path.isfile(localization_file):
+            try:
+                with open(localization_file, "r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                localization = loaded if isinstance(loaded, dict) else {}
+            except (OSError, ValueError) as err:
+                print(f"[INSTALL] WARNING: could not read {localization_file}: {err}", file=sys.stderr)
+
+        localization_args = []
+        for flag, key in (("--timezone", "timezone"), ("--locale", "locale"),
+                          ("--ui-language", "uiLanguage"), ("--keymap", "keymap")):
+            value = str(localization.get(key, "") or "").strip()
+            if value:
+                localization_args += [flag, value]
+        if localization.get("keymap") and str(localization.get("keymapVariant", "") or "").strip():
+            localization_args += ["--keymap-variant", str(localization["keymapVariant"]).strip()]
+
+        if localization_args and os.path.isfile(LOCALIZATION_HELPER):
+            proc = subprocess.run(
+                [LOCALIZATION_HELPER, "--root", mount_dir] + localization_args,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for line in proc.stderr.strip().splitlines():
+                print(f"[INSTALL] {line}", file=sys.stderr)
+            if proc.returncode != 0:
+                # Not fatal: a workstation with the wrong clock is recoverable
+                # from the wizard, an interrupted installation is not.
+                print(f"[INSTALL] WARNING: language and region were not applied to the target "
+                      f"({proc.stdout.strip() or proc.returncode}).", file=sys.stderr)
+            else:
+                print("[INSTALL] Applied the chosen language, region and timezone to the target.",
+                      file=sys.stderr)
 
         overlayroot_conf = os.path.join(mount_dir, "etc", "overlayroot.conf")
         with open(overlayroot_conf, "w") as f:

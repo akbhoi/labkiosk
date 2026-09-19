@@ -170,29 +170,125 @@
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
       <div>
-        <h1 class="wizard-title">Lab Kiosk OS</h1>
-        <div class="wizard-badge" id="wizard-badge">CLASSROOM WORKSTATION SETUP</div>
+        <h1 class="wizard-title" data-i18n="ui.lab-kiosk-os">Lab Kiosk OS</h1>
+        <div class="wizard-badge" id="wizard-badge" data-i18n="ui.classroom-workstation-setup">CLASSROOM WORKSTATION SETUP</div>
       </div>
     </div>
 
     <!-- Multi-Step Flow Stepper -->
     <div class="stepper" id="wizard-stepper">
-      <div class="step-item active" id="step-nav-1">
+      <div class="step-item active" id="step-nav-locale">
         <div class="step-circle">1</div>
-        <span>Network Setup</span>
+        <span data-i18n="step.locale">Language &amp; Region</span>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step-item" id="step-nav-1">
+        <div class="step-circle">2</div>
+        <span data-i18n="step.network">Network Setup</span>
       </div>
       <div class="step-divider"></div>
       <div class="step-item" id="step-nav-2">
-        <div class="step-circle">2</div>
-        <span>Install or Preview</span>
+        <div class="step-circle">3</div>
+        <span data-i18n="step.destination">Install or Preview</span>
       </div>
     </div>
 
     <div class="status-box" id="status-box" role="status" aria-live="polite"></div>
 
-    <!-- STEP 1: NETWORK CONFIGURATION -->
+    <!-- STEP 1: LANGUAGE, REGION AND CLOCK -->
+    <!--
+      First, and deliberately before the network: an NTP server is only
+      reachable once the network exists, so a workstation being installed in a
+      school with no DHCP yet would otherwise sit at the wrong date for its
+      whole first session -- and TLS, enrolment and the lesson site all care.
+      Everything offered here is read from the workstation's own tzdata, locale
+      and X11 keyboard tables; nothing is hardcoded in this page.
+    -->
+    <div id="step-0-locale" style="display: none;">
+      <p class="wizard-desc" data-i18n="locale.desc">
+        Choose the language, region and clock for this workstation. These are applied now and
+        carried onto the disk when you install.
+      </p>
+
+      <div class="form-group">
+        <label class="form-label" for="locale-ui-language" data-i18n="locale.uiLanguage">Interface language</label>
+        <select id="locale-ui-language" class="input-field"></select>
+        <div class="hint-text" data-i18n="locale.uiLanguageHint">
+          The language of this wizard and of the kiosk bar. Additional languages are added by
+          placing their catalog in /etc/labkiosk/i18n.
+        </div>
+      </div>
+
+      <div class="section-box">
+        <div class="section-title"><span data-i18n="locale.region">🌍 Region &amp; Time Zone</span></div>
+        <div class="grid-2">
+          <div class="form-group">
+            <label class="form-label" for="locale-continent" data-i18n="locale.continent">Continent</label>
+            <select id="locale-continent" class="input-field"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="locale-country" data-i18n="locale.country">Country</label>
+            <select id="locale-country" class="input-field"></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="locale-timezone" data-i18n="locale.timezone">Time zone</label>
+          <select id="locale-timezone" class="input-field"></select>
+        </div>
+      </div>
+
+      <div class="section-box">
+        <div class="section-title"><span data-i18n="locale.formats">🔤 Formats &amp; Keyboard</span></div>
+        <div class="grid-2">
+          <div class="form-group">
+            <label class="form-label" for="locale-locale" data-i18n="locale.locale">Regional formats</label>
+            <select id="locale-locale" class="input-field"></select>
+            <div class="hint-text" data-i18n="locale.localeHint">
+              Dates, numbers and the language websites are asked for. English (India) keeps English
+              wording with Indian date and number formats.
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="locale-keymap" data-i18n="locale.keymap">Keyboard layout</label>
+            <select id="locale-keymap" class="input-field"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-box">
+        <div class="section-title"><span data-i18n="locale.clock">🕒 Date &amp; Time</span></div>
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600;" for="locale-sync-time">
+            <input type="checkbox" id="locale-sync-time" checked style="width: 16px; height: 16px; accent-color: var(--accent);">
+            <span data-i18n="locale.syncTime">Set the clock automatically once the network is configured</span>
+          </label>
+        </div>
+        <div class="grid-2" id="locale-manual-clock" style="display: none;">
+          <div class="form-group">
+            <label class="form-label" for="locale-date" data-i18n="locale.date">Date</label>
+            <input type="date" id="locale-date" class="input-field">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="locale-time" data-i18n="locale.time">Time</label>
+            <input type="time" id="locale-time" step="1" class="input-field">
+          </div>
+        </div>
+        <div class="hint-text" id="locale-clock-preview"></div>
+      </div>
+
+      <button type="button" class="btn-submit" id="btn-proceed-network">
+        <span data-i18n="locale.continue">Apply &amp; Continue to Network Setup</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+
+      <button type="button" class="btn-submit btn-secondary" id="btn-locale-return" style="display: none; margin-top: 12px;">
+        <span data-i18n="locale.return">Done — Return to Kiosk</span>
+      </button>
+    </div>
+
+    <!-- STEP 2: NETWORK CONFIGURATION -->
     <div id="step-1-network">
-      <p class="wizard-desc">
+      <p class="wizard-desc" data-i18n="ui.configure-internet-connectivity-for-this-worksta">
         Configure internet connectivity for this workstation. Connect via wired Ethernet or wireless Wi-Fi before proceeding.
       </p>
 
@@ -200,11 +296,11 @@
       <div class="tabs-nav">
         <button type="button" class="tab-btn active" id="tab-net-ethernet">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-          <span>Ethernet (Wired)</span>
+          <span data-i18n="ui.ethernet-wired">Ethernet (Wired)</span>
         </button>
         <button type="button" class="tab-btn" id="tab-net-wifi">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-          <span>Wi-Fi (Wireless)</span>
+          <span data-i18n="ui.wi-fi-wireless">Wi-Fi (Wireless)</span>
         </button>
       </div>
 
@@ -212,13 +308,13 @@
       <div id="panel-ethernet">
         <div class="section-box">
           <div class="form-group">
-            <label class="form-label">Ethernet Adapter</label>
+            <label class="form-label" data-i18n="ui.ethernet-adapter">Ethernet Adapter</label>
             <select id="net-ethernet-device" class="select-field">
-              <option value="">Detecting Ethernet adapters...</option>
+              <option value="" data-i18n="ui.detecting-ethernet-adapters">Detecting Ethernet adapters...</option>
             </select>
           </div>
           <div id="ethernet-link-badge" style="font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px;">
-            <span>Link Status:</span>
+            <span data-i18n="ui.link-status">Link Status:</span>
             <strong id="ethernet-link-text" style="color: #34d399;">Detecting...</strong>
           </div>
         </div>
@@ -228,20 +324,20 @@
       <div id="panel-wifi" style="display: none;">
         <div class="section-box">
           <div class="section-title">
-            <span>Available Wi-Fi Networks</span>
+            <span data-i18n="ui.available-wi-fi-networks">Available Wi-Fi Networks</span>
             <button type="button" id="btn-rescan-wifi" style="background: transparent; border: none; color: #60a5fa; cursor: pointer; font-size: 12px; font-weight: 600;">
               &#8635; Refresh Scan
             </button>
           </div>
 
           <div class="wifi-list" id="wifi-networks-list">
-            <div style="padding: 16px; text-align: center; color: var(--muted); font-size: 13px;">Scanning for wireless networks...</div>
+            <div style="padding: 16px; text-align: center; color: var(--muted); font-size: 13px;" data-i18n="ui.scanning-for-wireless-networks">Scanning for wireless networks...</div>
           </div>
 
           <div class="form-group" id="wifi-password-group" style="display: none;">
-            <label class="form-label">Wi-Fi Password for <span id="selected-wifi-ssid" style="color: #60a5fa;">Network</span></label>
+            <label class="form-label">Wi-Fi Password for <span id="selected-wifi-ssid" style="color: #60a5fa;" data-i18n="ui.network">Network</span></label>
             <div style="display: flex; gap: 8px;">
-              <input type="password" id="wifi-password" class="input-field" placeholder="Enter network security key" autocomplete="off">
+              <input type="password" id="wifi-password" class="input-field" placeholder="Enter network security key" autocomplete="off" data-i18n-placeholder="ui.placeholder-enter-network-security-key">
               <button type="button" id="toggle-wifi-pass" class="btn-secondary" style="border-radius: 8px; padding: 0 12px; cursor: pointer;">Show</button>
             </div>
           </div>
@@ -253,8 +349,8 @@
           </div>
 
           <div id="hidden-wifi-group" style="display: none; margin-top: 10px;">
-            <label class="form-label">Hidden Network SSID</label>
-            <input type="text" id="hidden-wifi-ssid" class="input-field" placeholder="Enter hidden network name">
+            <label class="form-label" data-i18n="ui.hidden-network-ssid">Hidden Network SSID</label>
+            <input type="text" id="hidden-wifi-ssid" class="input-field" placeholder="Enter hidden network name" data-i18n-placeholder="ui.placeholder-enter-hidden-network-name">
           </div>
         </div>
       </div>
@@ -262,28 +358,28 @@
       <!-- IP & DNS Addressing Accordion -->
       <div class="section-box">
         <div class="section-title accordion-toggle" id="toggle-addressing">
-          <span>⚙️ IP Addressing & DNS Settings</span>
+          <span data-i18n="ui.ip-addressing-dns-settings">⚙️ IP Addressing & DNS Settings</span>
           <span id="addressing-chevron">&#9662;</span>
         </div>
 
         <div id="addressing-body">
           <div class="grid-2">
             <div class="form-group">
-              <label class="form-label">IPv4 Configuration</label>
+              <label class="form-label" data-i18n="ui.ipv4-configuration">IPv4 Configuration</label>
               <select id="ipv4-mode" class="select-field">
-                <option value="auto">Automatic (DHCP)</option>
-                <option value="custom_dns">Automatic (DHCP) with Custom DNS</option>
-                <option value="manual">Static IP (Manual)</option>
+                <option value="auto" data-i18n="ui.automatic-dhcp">Automatic (DHCP)</option>
+                <option value="custom_dns" data-i18n="ui.automatic-dhcp-with-custom-dns">Automatic (DHCP) with Custom DNS</option>
+                <option value="manual" data-i18n="ui.static-ip-manual">Static IP (Manual)</option>
               </select>
             </div>
 
             <div class="form-group">
-              <label class="form-label">IPv6 Configuration</label>
+              <label class="form-label" data-i18n="ui.ipv6-configuration">IPv6 Configuration</label>
               <select id="ipv6-mode" class="select-field">
-                <option value="auto">Automatic (DHCPv6 / SLAAC)</option>
-                <option value="custom_dns">Automatic with Custom DNS</option>
-                <option value="manual">Static IPv6 (Manual)</option>
-                <option value="disabled">Disabled</option>
+                <option value="auto" data-i18n="ui.automatic-dhcpv6-slaac">Automatic (DHCPv6 / SLAAC)</option>
+                <option value="custom_dns" data-i18n="ui.automatic-with-custom-dns">Automatic with Custom DNS</option>
+                <option value="manual" data-i18n="ui.static-ipv6-manual">Static IPv6 (Manual)</option>
+                <option value="disabled" data-i18n="ui.disabled">Disabled</option>
               </select>
             </div>
           </div>
@@ -292,11 +388,11 @@
           <div id="ipv4-static-fields" style="display: none;">
             <div class="grid-2">
               <div class="form-group">
-                <label class="form-label">IPv4 Address & Prefix</label>
+                <label class="form-label" data-i18n="ui.ipv4-address-prefix">IPv4 Address & Prefix</label>
                 <input type="text" id="ipv4-address" class="input-field" placeholder="192.168.1.50/24" style="font-family: var(--font-mono);">
               </div>
               <div class="form-group">
-                <label class="form-label">IPv4 Gateway</label>
+                <label class="form-label" data-i18n="ui.ipv4-gateway">IPv4 Gateway</label>
                 <input type="text" id="ipv4-gateway" class="input-field" placeholder="192.168.1.1" style="font-family: var(--font-mono);">
               </div>
             </div>
@@ -306,11 +402,11 @@
           <div id="ipv4-dns-fields" style="display: none;">
             <div class="grid-2">
               <div class="form-group">
-                <label class="form-label">Primary DNS</label>
+                <label class="form-label" data-i18n="ui.primary-dns">Primary DNS</label>
                 <input type="text" id="ipv4-dns1" class="input-field" placeholder="1.1.1.1" style="font-family: var(--font-mono);">
               </div>
               <div class="form-group">
-                <label class="form-label">Secondary DNS</label>
+                <label class="form-label" data-i18n="ui.secondary-dns">Secondary DNS</label>
                 <input type="text" id="ipv4-dns2" class="input-field" placeholder="8.8.8.8" style="font-family: var(--font-mono);">
               </div>
             </div>
@@ -320,12 +416,12 @@
           <div id="ipv6-static-fields" style="display: none;">
             <div class="grid-2">
               <div class="form-group">
-                <label class="form-label">IPv6 Address & Prefix</label>
-                <input type="text" id="ipv6-address" class="input-field" placeholder="2001:db8::50/64" style="font-family: var(--font-mono);">
+                <label class="form-label" data-i18n="ui.ipv6-address-prefix">IPv6 Address & Prefix</label>
+                <input type="text" id="ipv6-address" class="input-field" placeholder="2001:db8::50/64" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-2001-db8-50-64">
               </div>
               <div class="form-group">
-                <label class="form-label">IPv6 Gateway</label>
-                <input type="text" id="ipv6-gateway" class="input-field" placeholder="2001:db8::1" style="font-family: var(--font-mono);">
+                <label class="form-label" data-i18n="ui.ipv6-gateway">IPv6 Gateway</label>
+                <input type="text" id="ipv6-gateway" class="input-field" placeholder="2001:db8::1" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-2001-db8-1">
               </div>
             </div>
           </div>
@@ -334,11 +430,11 @@
           <div id="ipv6-dns-fields" style="display: none;">
             <div class="grid-2">
               <div class="form-group">
-                <label class="form-label">Primary IPv6 DNS</label>
+                <label class="form-label" data-i18n="ui.primary-ipv6-dns">Primary IPv6 DNS</label>
                 <input type="text" id="ipv6-dns1" class="input-field" placeholder="2606:4700:4700::1111" style="font-family: var(--font-mono);">
               </div>
               <div class="form-group">
-                <label class="form-label">Secondary IPv6 DNS</label>
+                <label class="form-label" data-i18n="ui.secondary-ipv6-dns">Secondary IPv6 DNS</label>
                 <input type="text" id="ipv6-dns2" class="input-field" placeholder="2001:4860:4860::8888" style="font-family: var(--font-mono);">
               </div>
             </div>
@@ -349,30 +445,30 @@
       <!-- Optional HTTP/HTTPS Proxy -->
       <div class="section-box">
         <div class="section-title accordion-toggle" id="toggle-proxy">
-          <span>🛡️ School HTTP/HTTPS Proxy (Optional)</span>
+          <span data-i18n="ui.school-http-https-proxy-optional">🛡️ School HTTP/HTTPS Proxy (Optional)</span>
           <span id="proxy-chevron">&#9662;</span>
         </div>
         <div id="proxy-body" style="display: none;">
           <div class="form-group">
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: #93c5fd;">
               <input type="checkbox" id="toggle-proxy-enable" style="width: 16px; height: 16px;">
-              <span>Enable HTTP/HTTPS outbound proxy</span>
+              <span data-i18n="ui.enable-http-https-outbound-proxy">Enable HTTP/HTTPS outbound proxy</span>
             </label>
           </div>
           <div id="proxy-fields" style="display: none;">
             <div class="grid-2">
               <div class="form-group">
-                <label class="form-label">Proxy Host</label>
-                <input type="text" id="proxy-host" class="input-field" placeholder="proxy.institution.edu" style="font-family: var(--font-mono);">
+                <label class="form-label" data-i18n="ui.proxy-host">Proxy Host</label>
+                <input type="text" id="proxy-host" class="input-field" placeholder="proxy.institution.edu" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-proxy-institution-edu">
               </div>
               <div class="form-group">
-                <label class="form-label">Proxy Port</label>
+                <label class="form-label" data-i18n="ui.proxy-port">Proxy Port</label>
                 <input type="number" id="proxy-port" class="input-field" placeholder="8080" value="8080">
               </div>
             </div>
             <div class="form-group">
-              <label class="form-label">Bypass Hosts (Comma-separated)</label>
-              <input type="text" id="proxy-bypass" class="input-field" placeholder="localhost, 127.0.0.1, .local" style="font-family: var(--font-mono);">
+              <label class="form-label" data-i18n="ui.bypass-hosts-comma-separated">Bypass Hosts (Comma-separated)</label>
+              <input type="text" id="proxy-bypass" class="input-field" placeholder="localhost, 127.0.0.1, .local" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-localhost-127-0-0-1">
             </div>
           </div>
         </div>
@@ -381,16 +477,20 @@
       <!-- Action Cluster -->
       <div style="display: flex; gap: 12px; margin-top: 24px;">
         <button type="button" class="btn-submit btn-secondary" id="btn-test-network" style="flex: 1;">
-          <span>Apply & Test Network</span>
+          <span data-i18n="ui.apply-test-network">Apply & Test Network</span>
         </button>
         <button type="button" class="btn-submit" id="btn-proceed-step2" style="flex: 1;">
-          <span>Proceed to Step 2 &rarr;</span>
+          <span data-i18n="ui.proceed-to-step-2-rarr">Proceed to Step 2 &rarr;</span>
         </button>
       </div>
 
       <!-- Standalone Mode Close Button (when loaded via #network) -->
+      <button type="button" class="btn-submit btn-secondary" id="btn-open-locale" style="margin-top: 12px;">
+        <span data-i18n="locale.open">Language, Region &amp; Time Zone</span>
+      </button>
+
       <button type="button" class="btn-submit btn-secondary" id="btn-return-kiosk" style="display: none; margin-top: 12px;">
-        <span>Done &mdash; Return to Kiosk</span>
+        <span data-i18n="ui.done-mdash-return-to-kiosk">Done &mdash; Return to Kiosk</span>
       </button>
     </div>
 
@@ -400,7 +500,7 @@
         <button type="button" id="btn-back-step1" style="background: transparent; border: none; color: #60a5fa; cursor: pointer; font-size: 13px; font-weight: 700;">
           &larr; Reconfigure Network
         </button>
-        <div id="network-status-summary" style="font-size: 12px; color: var(--muted); font-weight: 600;">
+        <div id="network-status-summary" style="font-size: 12px; color: var(--muted); font-weight: 600;" data-i18n="ui.checking-network">
           ⚪ Checking network...
         </div>
       </div>
@@ -409,49 +509,49 @@
       <div class="tabs-nav" id="tabs-nav">
         <button type="button" class="tab-btn active" id="tab-btn-install">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <span>Install to Hard Disk</span>
+          <span data-i18n="ui.install-to-hard-disk">Install to Hard Disk</span>
         </button>
         <button type="button" class="tab-btn" id="tab-btn-enroll">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-          <span>Live Preview & Enroll</span>
+          <span data-i18n="ui.live-preview-enroll">Live Preview & Enroll</span>
         </button>
       </div>
 
       <!-- DISK INSTALL VIEW -->
       <div id="view-install">
-        <p class="wizard-desc">
+        <p class="wizard-desc" data-i18n="ui.permanently-install-lab-kiosk-os-to">
           Permanently install Lab Kiosk OS to this computer's internal storage (SSD/HDD). The configured network will persist automatically.
         </p>
 
         <div class="info-card">
-          <strong style="color: #34d399;">🛡️ 100% RAM Overlay Protection:</strong>
+          <strong style="color: #34d399;" data-i18n="ui.100-ram-overlay-protection">🛡️ 100% RAM Overlay Protection:</strong>
           <p style="margin-top: 4px; color: var(--muted); font-size: 12px;">
             Even when installed permanently, all student sessions, browser downloads, and caches write strictly to RAM (<code style="color: #60a5fa;">tmpfs</code>), guaranteeing zero flash wear and instant reset on reboot.
           </p>
         </div>
 
         <div class="form-group">
-          <label class="form-label">Select Target Internal Storage Drive</label>
+          <label class="form-label" data-i18n="ui.select-target-internal-storage-drive">Select Target Internal Storage Drive</label>
           <select id="target-disk-select" class="select-field">
-            <option value="">Scanning for internal drives...</option>
+            <option value="" data-i18n="ui.scanning-for-internal-drives">Scanning for internal drives...</option>
           </select>
-          <div class="hint-text" style="color: #f87171;">
+          <div class="hint-text" style="color: #f87171;" data-i18n="ui.warning-installing-will-completely-erase-and">
             ⚠️ WARNING: Installing will completely erase and re-partition the selected drive.
           </div>
         </div>
 
         <div class="form-group">
-          <label class="form-label">Boot Menu & Admin Password <span style="color: var(--muted); font-weight: 500;">(Strongly recommended)</span></label>
+          <label class="form-label">Boot Menu & Admin Password <span style="color: var(--muted); font-weight: 500;" data-i18n="ui.strongly-recommended">(Strongly recommended)</span></label>
           <div style="display: flex; gap: 8px;">
             <input type="password" id="grub-password" class="input-field" autocomplete="new-password"
                    spellcheck="false" placeholder="Set administrator password"
-                   style="font-family: var(--font-mono);">
+                   style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-set-administrator-password">
             <button type="button" class="btn-secondary" id="generate-grub-password"
                     style="white-space: nowrap; border-radius: 8px; padding: 0 14px; font-size: 13px; font-weight: 600; cursor: pointer;">
               Generate
             </button>
           </div>
-          <div class="hint-text">
+          <div class="hint-text" data-i18n="ui.protects-the-boot-menu-and-is">
             Protects the boot menu and is required for any later network change on this machine. Without one, network settings stay unlocked.
           </div>
           <div class="status-box" id="grub-password-reveal"
@@ -461,16 +561,16 @@
         <div class="progress-bar-container" id="install-progress-bar-container">
           <div class="progress-bar-fill" id="install-progress-bar"></div>
         </div>
-        <div class="progress-status-text" id="install-status-text">Ready to install</div>
+        <div class="progress-status-text" id="install-status-text" data-i18n="ui.ready-to-install">Ready to install</div>
 
         <button type="button" class="btn-submit btn-green" id="start-install-btn">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span>Install Lab Kiosk to Selected Drive</span>
+          <span data-i18n="ui.install-lab-kiosk-to-selected-drive">Install Lab Kiosk to Selected Drive</span>
         </button>
 
         <button type="button" class="btn-submit" id="reboot-btn" style="display: none; margin-top: 14px; background: #3b82f6;">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-          <span>Reboot Computer Now</span>
+          <span data-i18n="ui.reboot-computer-now">Reboot Computer Now</span>
         </button>
       </div>
 
@@ -481,7 +581,7 @@
         </p>
 
         <div class="status-box status-warn" id="storage-warning" role="alert">
-          <strong>This workstation cannot remember an enrolment.</strong>
+          <strong data-i18n="ui.this-workstation-cannot-remember-an-enrolment">This workstation cannot remember an enrolment.</strong>
           What is at <code>/etc/labkiosk</code> is not the persistent data partition — it is
           either nothing at all or a RAM overlay — so the school address and the device token
           would live only in memory and be gone at the next reboot. Reinstall from a current
@@ -490,52 +590,52 @@
 
         <form id="setup-form">
           <div class="form-group" id="subdomain-group">
-            <label class="form-label">Institution Subdomain</label>
+            <label class="form-label" data-i18n="ui.institution-subdomain">Institution Subdomain</label>
             <div class="subdomain-wrap">
-              <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: var(--font-mono);">
+              <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-campus-lab">
               <span class="subdomain-suffix" id="subdomain-suffix">.labkiosk.akbhoi.com</span>
             </div>
           </div>
 
           <div class="form-group" id="custom-domain-group" style="display: none;">
-            <label class="form-label">Custom Domain or Server Address</label>
-            <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: var(--font-mono);">
+            <label class="form-label" data-i18n="ui.custom-domain-or-server-address">Custom Domain or Server Address</label>
+            <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-kiosk-institution-edu">
           </div>
 
           <div class="form-group" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 10px 14px; margin-bottom: 18px;">
             <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: #93c5fd;">
               <input type="checkbox" id="toggle-custom-domain" style="width: 16px; height: 16px; accent-color: var(--accent);">
-              <span>Use custom domain / hostname</span>
+              <span data-i18n="ui.use-custom-domain-hostname">Use custom domain / hostname</span>
             </label>
           </div>
 
           <div class="form-group">
-            <label class="form-label">Workstation Identifier (PC Name)</label>
-            <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: var(--font-mono);">
+            <label class="form-label" data-i18n="ui.workstation-identifier-pc-name">Workstation Identifier (PC Name)</label>
+            <input type="text" id="client-id" class="input-field" required placeholder="e.g. PC-01" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" maxlength="64" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-pc-01">
           </div>
 
           <div class="form-group">
-            <label class="form-label">Workstation Enrollment Key</label>
+            <label class="form-label" data-i18n="ui.workstation-enrollment-key">Workstation Enrollment Key</label>
             <input type="text" id="enrollment-key" class="input-field" required
                    placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false"
                    autocapitalize="characters" autocorrect="off" maxlength="23"
-                   style="font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 1px;">
+                   style="font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 1px;" data-i18n-placeholder="ui.placeholder-xxxxx-xxxxx-xxxxx-xxxxx">
             <div class="hint-text" id="enrollment-key-hint">
               Twenty characters in four groups. Type it without hyphens &mdash; they are added for
-              you &mdash; or paste it straight from <strong>Settings &rarr; Workstation Enrollment
+              you &mdash; or paste it straight from <strong data-i18n="ui.settings-rarr-workstation-enrollment-key">Settings &rarr; Workstation Enrollment
               Key</strong> on the dashboard.
             </div>
           </div>
 
           <button type="submit" class="btn-submit" id="submit-btn">
-            <span>Verify & Connect Workstation</span>
+            <span data-i18n="ui.verify-connect-workstation">Verify & Connect Workstation</span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
           </button>
 
           <!-- Shown only when the enrolment could not be stored: leaving this
                page is what would hide that warning, so it takes a click. -->
           <button type="button" class="btn-submit btn-secondary" id="continue-anyway-btn" style="display: none;">
-            <span>I understand — continue to the lesson</span>
+            <span data-i18n="ui.i-understand-continue-to-the-lesson">I understand — continue to the lesson</span>
           </button>
         </form>
       </div>
@@ -544,20 +644,20 @@
     <!-- AGENT LOG / DIAGNOSTICS -->
     <div class="section-box" id="diagnostics-box" style="margin-top: 18px;">
       <div class="section-title accordion-toggle" id="toggle-diagnostics">
-        <span>🩺 Agent Log &amp; Diagnostics</span>
+        <span data-i18n="ui.agent-log-amp-diagnostics">🩺 Agent Log &amp; Diagnostics</span>
         <span id="diagnostics-chevron">&#9656;</span>
       </div>
       <div id="diagnostics-body" style="display: none;">
-        <p class="hint-text" style="margin-bottom: 10px;">
+        <p class="hint-text" style="margin-bottom: 10px;" data-i18n="ui.the-workstation-s-own-log-for">
           The workstation's own log, for when something fails here. It lives in RAM and is cleared on
           every reboot, so read it before restarting.
         </p>
         <div style="display: flex; gap: 8px; margin-bottom: 10px;">
           <button type="button" class="btn-submit btn-secondary" id="btn-refresh-log" style="flex: 1;">
-            <span>Refresh</span>
+            <span data-i18n="ui.refresh">Refresh</span>
           </button>
           <button type="button" class="btn-submit btn-secondary" id="btn-copy-log" style="flex: 1;">
-            <span>Copy</span>
+            <span data-i18n="ui.copy">Copy</span>
           </button>
         </div>
         <pre id="agent-log" style="max-height: 260px; overflow: auto; background: var(--card-alt); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: var(--font-mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: #cbd5e1; user-select: text;">Press Refresh to load the agent log.</pre>
@@ -568,13 +668,13 @@
     <div id="modal-admin-auth" style="display: none; position: absolute; inset: 0; background: var(--card); border-radius: 20px; padding: 36px; z-index: 50; flex-direction: column; justify-content: center;">
       <div style="text-align: center; margin-bottom: 24px;">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" style="margin: 0 auto 12px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        <h2 style="font-size: 20px; font-weight: 800;">Administrator Authentication</h2>
-        <p id="admin-auth-offline" style="display: none; font-size: 13px; color: #f87171; margin-top: 10px; line-height: 1.5;">This workstation lost its network connection. It returns to the lesson automatically once the connection is back.</p>
-        <p style="font-size: 13px; color: var(--muted); margin-top: 6px;">Enter the administrator / boot menu password to unlock network settings.</p>
+        <h2 style="font-size: 20px; font-weight: 800;" data-i18n="ui.administrator-authentication">Administrator Authentication</h2>
+        <p id="admin-auth-offline" style="display: none; font-size: 13px; color: #f87171; margin-top: 10px; line-height: 1.5;" data-i18n="ui.this-workstation-lost-its-network-connection">This workstation lost its network connection. It returns to the lesson automatically once the connection is back.</p>
+        <p style="font-size: 13px; color: var(--muted); margin-top: 6px;" data-i18n="ui.enter-the-administrator-boot-menu-password">Enter the administrator / boot menu password to unlock network settings.</p>
       </div>
       <div class="form-group">
-        <label class="form-label">Administrator Password</label>
-        <input type="password" id="admin-auth-pass" class="input-field" placeholder="Enter password" style="font-family: var(--font-mono);">
+        <label class="form-label" data-i18n="ui.administrator-password">Administrator Password</label>
+        <input type="password" id="admin-auth-pass" class="input-field" placeholder="Enter password" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-enter-password">
       </div>
       <div class="status-box" id="admin-auth-error" style="display: none;"></div>
       <div style="display: flex; gap: 12px;">
@@ -600,16 +700,34 @@
     const hashParams = new URLSearchParams(window.location.hash.slice(1));
     const isOfflineRedirect = hashParams.has('offline');
     let isStandaloneNetwork = hashParams.has('network') || isOfflineRedirect;
+    // #locale / #locale&admin=... -- the same page opened straight on Language
+    // & Region, which is how an installed workstation changes its timezone.
+    let isStandaloneLocale = hashParams.has('locale');
     // Short-lived token from /api/admin/verify. Kept in memory only, and taken
     // out of the address bar straight away.
     let adminToken = hashParams.get('admin') || '';
     if (adminToken) {
-      history.replaceState(null, '', window.location.pathname + '#network');
+      history.replaceState(null, '', window.location.pathname + (isStandaloneLocale ? '#locale' : '#network'));
     }
     // A top-bar click while this page is already open changes only the hash.
     window.addEventListener('hashchange', () => window.location.reload());
 
     // Elements
+    const stepLocale = document.getElementById('step-0-locale');
+    const stepNavLocale = document.getElementById('step-nav-locale');
+    const localeUiLanguage = document.getElementById('locale-ui-language');
+    const localeContinent = document.getElementById('locale-continent');
+    const localeCountry = document.getElementById('locale-country');
+    const localeTimezone = document.getElementById('locale-timezone');
+    const localeLocale = document.getElementById('locale-locale');
+    const localeKeymap = document.getElementById('locale-keymap');
+    const localeSyncTime = document.getElementById('locale-sync-time');
+    const localeManualClock = document.getElementById('locale-manual-clock');
+    const localeDate = document.getElementById('locale-date');
+    const localeTime = document.getElementById('locale-time');
+    const localeClockPreview = document.getElementById('locale-clock-preview');
+    const btnProceedNetwork = document.getElementById('btn-proceed-network');
+    const btnLocaleReturn = document.getElementById('btn-locale-return');
     const step1 = document.getElementById('step-1-network');
     const step2 = document.getElementById('step-2-destination');
     const stepNav1 = document.getElementById('step-nav-1');
@@ -810,7 +928,263 @@
       hiddenWifiSsidInput.focus();
     });
 
+
+    // ---- Interface language -------------------------------------------
+    //
+    // Every translatable string carries data-i18n="<key>" and its English text
+    // in the markup, so this page is readable and correct with no catalog at
+    // all. A catalog only overrides what it has a key for, which means a
+    // half-finished translation degrades to English rather than to blanks.
+    // en-US ships in the image; anything else is a file in /etc/labkiosk/i18n.
+    let uiCatalog = {};
+    let uiLanguageTag = 'en-US';
+
+    function t(key, fallback) {
+      const value = uiCatalog[key];
+      return typeof value === 'string' && value ? value : fallback;
+    }
+
+    function applyTranslations() {
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const value = uiCatalog[el.dataset.i18n];
+        if (typeof value === 'string' && value) el.textContent = value;
+      });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+        const value = uiCatalog[el.dataset.i18nPlaceholder];
+        if (typeof value === 'string' && value) el.placeholder = value;
+      });
+      document.documentElement.lang = uiLanguageTag;
+      document.documentElement.dir = uiCatalog._direction === 'rtl' ? 'rtl' : 'ltr';
+    }
+
+    async function loadCatalog(tag) {
+      if (!tag) return;
+      uiLanguageTag = tag;
+      if (tag === 'en-US') {
+        // The source language: the markup already holds it.
+        uiCatalog = {};
+        applyTranslations();
+        return;
+      }
+      try {
+        const res = await fetch('/i18n/' + encodeURIComponent(tag) + '.json', { cache: 'no-store' });
+        if (!res.ok) throw new Error(String(res.status));
+        const catalog = await res.json();
+        const meta = catalog._meta || {};
+        uiCatalog = catalog;
+        uiCatalog._direction = meta.direction === 'rtl' ? 'rtl' : 'ltr';
+      } catch (err) {
+        // A missing or broken catalog must never blank the page out.
+        uiCatalog = {};
+      }
+      applyTranslations();
+    }
+
+    // ---- Language & Region step ---------------------------------------
+    let localeOptions = null;
+
+    function optionEl(value, label) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      return option;
+    }
+
+    function zonesForContinent(continent) {
+      if (!localeOptions) return [];
+      return localeOptions.zones.filter(z => z.zone.split('/')[0] === continent);
+    }
+
+    function refreshCountries(preferredCode) {
+      const continent = localeContinent.value;
+      const codes = new Set();
+      zonesForContinent(continent).forEach(z => (z.countries || []).forEach(c => codes.add(c)));
+      const countries = localeOptions.countries.filter(c => codes.has(c.code));
+      localeCountry.replaceChildren();
+      localeCountry.appendChild(optionEl('', t('locale.anyCountry', 'All countries in this region')));
+      countries.forEach(c => localeCountry.appendChild(optionEl(c.code, c.name)));
+      if (preferredCode && countries.some(c => c.code === preferredCode)) {
+        localeCountry.value = preferredCode;
+      }
+      refreshZones();
+    }
+
+    function refreshZones(preferredZone) {
+      const continent = localeContinent.value;
+      const country = localeCountry.value;
+      let zones = zonesForContinent(continent);
+      if (country) zones = zones.filter(z => (z.countries || []).includes(country));
+      localeTimezone.replaceChildren();
+      zones.forEach(z => {
+        const label = z.comment ? z.zone + ' \u2014 ' + z.comment : z.zone;
+        localeTimezone.appendChild(optionEl(z.zone, label));
+      });
+      if (preferredZone && zones.some(z => z.zone === preferredZone)) {
+        localeTimezone.value = preferredZone;
+      }
+      renderClockPreview();
+    }
+
+    function suggestForCountry(code) {
+      if (!code || !localeOptions) return;
+      // A sensible default, never a lock: the operator can pick anything.
+      const base = (localeUiLanguage.value || 'en').split('-')[0];
+      const matches = localeOptions.locales.filter(l => l.includes('_' + code + '.'));
+      const preferred = matches.find(l => l.startsWith(base + '_')) || matches[0];
+      if (preferred) localeLocale.value = preferred;
+      const layout = code.toLowerCase();
+      if (localeOptions.keyboards.some(k => k.code === layout)) localeKeymap.value = layout;
+    }
+
+    function renderClockPreview() {
+      const zone = localeTimezone.value;
+      if (!zone) { localeClockPreview.textContent = ''; return; }
+      try {
+        const shown = new Intl.DateTimeFormat(uiLanguageTag, {
+          timeZone: zone, dateStyle: 'full', timeStyle: 'medium',
+        }).format(new Date());
+        localeClockPreview.textContent = t('locale.preview', 'This workstation would read') + ': ' + shown;
+      } catch {
+        localeClockPreview.textContent = '';
+      }
+    }
+
+    function fillManualClock() {
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      localeDate.value = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+      localeTime.value = pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+    }
+
+    async function loadLocalizationOptions() {
+      const res = await fetch('/api/localization/options', { cache: 'no-store' });
+      if (!res.ok) throw new Error('options ' + res.status);
+      localeOptions = await res.json();
+
+      localeUiLanguage.replaceChildren();
+      (localeOptions.uiLanguages || []).forEach(l => {
+        localeUiLanguage.appendChild(optionEl(l.tag, l.name + (l.bundled ? '' : ' \u2022 ' + t('locale.added', 'added'))));
+      });
+
+      localeLocale.replaceChildren();
+      (localeOptions.locales || []).forEach(l => localeLocale.appendChild(optionEl(l, l)));
+
+      localeKeymap.replaceChildren();
+      (localeOptions.keyboards || []).forEach(k => localeKeymap.appendChild(optionEl(k.code, k.name + ' (' + k.code + ')')));
+
+      const continents = [...new Set((localeOptions.zones || []).map(z => z.zone.split('/')[0]))].sort();
+      localeContinent.replaceChildren();
+      continents.forEach(c => localeContinent.appendChild(optionEl(c, c.replace('_', ' '))));
+
+      const saved = localeOptions.saved || {};
+      const current = localeOptions.current || {};
+      const zone = saved.timezone || current.timezone || '';
+      if (zone && zone.includes('/')) localeContinent.value = zone.split('/')[0];
+      refreshCountries('');
+      refreshZones(zone);
+
+      // Falling back to the first entry alphabetically would offer aa_DJ, so a
+      // workstation that has never been configured starts from the language
+      // this image ships in and the operator changes it from there.
+      const hasOption = (select, value) => value && [...select.options].some(o => o.value === value);
+      const locale = saved.locale || current.locale || '';
+      if (hasOption(localeLocale, locale)) {
+        localeLocale.value = locale;
+      } else if (hasOption(localeLocale, 'en_US.UTF-8')) {
+        localeLocale.value = 'en_US.UTF-8';
+      }
+      const keymap = saved.keymap || current.keymap || '';
+      if (hasOption(localeKeymap, keymap)) {
+        localeKeymap.value = keymap;
+      } else if (hasOption(localeKeymap, 'us')) {
+        localeKeymap.value = 'us';
+      }
+      const language = saved.uiLanguage || 'en-US';
+      if ([...localeUiLanguage.options].some(o => o.value === language)) localeUiLanguage.value = language;
+
+      localeSyncTime.checked = saved.syncTime !== false;
+      localeManualClock.style.display = localeSyncTime.checked ? 'none' : '';
+      fillManualClock();
+      await loadCatalog(localeUiLanguage.value || 'en-US');
+      renderClockPreview();
+    }
+
+    async function applyLocalization() {
+      const payload = {
+        uiLanguage: localeUiLanguage.value,
+        timezone: localeTimezone.value,
+        locale: localeLocale.value,
+        keymap: localeKeymap.value,
+        syncTime: localeSyncTime.checked,
+      };
+      if (!localeSyncTime.checked && localeDate.value && localeTime.value) {
+        const time = localeTime.value.length === 5 ? localeTime.value + ':00' : localeTime.value;
+        payload.time = localeDate.value + ' ' + time;
+      }
+      const headers = { 'Content-Type': 'application/json' };
+      if (adminToken) headers['X-LabKiosk-Admin'] = adminToken;
+      const res = await fetch('/api/localization/configure', {
+        method: 'POST', headers, body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('Could not apply the settings (' + res.status + ')'));
+      await loadCatalog(payload.uiLanguage || 'en-US');
+      return data;
+    }
+
+    localeContinent.addEventListener('change', () => refreshCountries(''));
+    localeCountry.addEventListener('change', () => { refreshZones(); suggestForCountry(localeCountry.value); });
+    localeTimezone.addEventListener('change', renderClockPreview);
+    localeUiLanguage.addEventListener('change', () => loadCatalog(localeUiLanguage.value));
+    localeSyncTime.addEventListener('change', () => {
+      localeManualClock.style.display = localeSyncTime.checked ? 'none' : '';
+      if (!localeSyncTime.checked) fillManualClock();
+    });
+    setInterval(renderClockPreview, 1000);
+
+    btnProceedNetwork.addEventListener('click', async () => {
+      btnProceedNetwork.disabled = true;
+      try {
+        await applyLocalization();
+        hideStatus();
+        if (isStandaloneLocale) {
+          showStatus(t('locale.saved', 'Language, region and clock applied.'), 'success');
+        } else {
+          stepLocale.style.display = 'none';
+          step1.style.display = 'block';
+          stepNavLocale.classList.remove('active');
+          stepNavLocale.classList.add('completed');
+          stepNav1.classList.add('active');
+        }
+      } catch (err) {
+        showStatus((err && err.message) || 'Could not apply the settings.', 'error');
+      } finally {
+        btnProceedNetwork.disabled = false;
+      }
+    });
+
+    btnLocaleReturn.addEventListener('click', returnToKiosk);
+
+    // The network page is the only admin-gated page an installed workstation
+    // can reach from the top bar, so it is also the way to the language and
+    // clock settings. Switching in place keeps the unlock token, which a
+    // reload would throw away and ask for again.
+    document.getElementById('btn-open-locale').addEventListener('click', () => {
+      step1.style.display = 'none';
+      step2.style.display = 'none';
+      stepLocale.style.display = 'block';
+      btnLocaleReturn.style.display = 'flex';
+      hideStatus();
+    });
+
     // 1. Initial State & Interfaces Load
+    // The live flow opens on Language & Region; #network and #offline skip it,
+    // and an installed workstation is re-arranged below once /api/status says so.
+    if (!isStandaloneNetwork) {
+      stepLocale.style.display = 'block';
+      step1.style.display = 'none';
+    }
+
     async function loadInitialState() {
       try {
         const res = await fetch('http://127.0.0.1:8888/api/status');
@@ -850,11 +1224,12 @@
             // An enrolled installed workstation has nothing left to set up here
             // except its network, and that is behind the administrator password.
             if (isConfigured) isStandaloneNetwork = true;
-            if (!isStandaloneNetwork) {
+            if (!isStandaloneNetwork && !isStandaloneLocale) {
               // The network was configured before the installation and came back
               // with it, so a freshly installed workstation opens straight on
               // enrolment. Network settings stay one click away in the kiosk top
               // bar (the network icon), behind the administrator password.
+              stepLocale.style.display = 'none';
               step1.style.display = 'none';
               step2.style.display = 'block';
               document.getElementById('wizard-stepper').style.display = 'none';
@@ -868,6 +1243,17 @@
             btnProceedStep2.style.display = 'none';
             if (!isLive && !adminToken) openAdminModal();
           }
+
+          if (isStandaloneLocale) {
+            // Opened on its own to change the timezone or the language, so it
+            // gets the same administrator gate the network page has.
+            document.getElementById('wizard-stepper').style.display = 'none';
+            stepLocale.style.display = 'block';
+            step1.style.display = 'none';
+            step2.style.display = 'none';
+            btnLocaleReturn.style.display = 'flex';
+            if (!isLive && !adminToken) openAdminModal();
+          }
           if (isOfflineRedirect) {
             document.getElementById('admin-auth-offline').style.display = 'block';
             showStatus('This workstation lost its network connection. It returns to the lesson automatically once the connection is back.', 'error');
@@ -876,6 +1262,15 @@
         }
       } catch {
         showStatus('Could not reach the local agent service. Retrying may help once it has started.', 'error');
+      }
+
+      try {
+        await loadLocalizationOptions();
+      } catch (err) {
+        // The rest of the wizard still works; only this step cannot be offered.
+        stepLocale.style.display = 'none';
+        if (!isStandaloneNetwork && !isStandaloneLocale) step1.style.display = 'block';
+        if (stepNavLocale) stepNavLocale.style.display = 'none';
       }
 
       await loadInterfaces();
