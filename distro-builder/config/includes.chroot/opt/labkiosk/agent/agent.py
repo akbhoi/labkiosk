@@ -205,24 +205,25 @@ def trim_agent_log():
     always writes at the current end, so the next line from the autostart lands
     after what was kept rather than at the old offset.
     """
-    try:
-        if os.path.getsize(AGENT_LOG_FILE) <= LOG_TRIM_AT_BYTES:
-            return
-        with open(AGENT_LOG_FILE, "r+b") as handle:
-            handle.seek(-LOG_KEEP_BYTES, os.SEEK_END)
-            tail = handle.read()
-            # The seek landed mid-line; drop that fragment so the file starts
-            # with a whole entry.
-            newline = tail.find(b"\n")
-            if newline != -1:
-                tail = tail[newline + 1:]
-            handle.seek(0)
-            handle.write(b"[Agent] ---- earlier entries were dropped to keep this log out of RAM ----\n")
-            handle.write(tail)
-            handle.truncate()
-    except OSError:
-        # A log that cannot be trimmed must never stop the agent logging.
-        pass
+    with _log_lock:
+        try:
+            if os.path.getsize(AGENT_LOG_FILE) <= LOG_TRIM_AT_BYTES:
+                return
+            with open(AGENT_LOG_FILE, "r+b") as handle:
+                handle.seek(-LOG_KEEP_BYTES, os.SEEK_END)
+                tail = handle.read()
+                # The seek landed mid-line; drop that fragment so the file starts
+                # with a whole entry.
+                newline = tail.find(b"\n")
+                if newline != -1:
+                    tail = tail[newline + 1:]
+                handle.seek(0)
+                handle.write(b"[Agent] ---- earlier entries were dropped to keep this log out of RAM ----\n")
+                handle.write(tail)
+                handle.truncate()
+        except OSError:
+            # A log that cannot be trimmed must never stop the agent logging.
+            pass
 
 
 def log(message):

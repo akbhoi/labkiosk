@@ -43,6 +43,7 @@
   }
 
   function permitted(event) {
+    if (!event || typeof event.key !== "string") return false;
     if (typeof event.getModifierState === "function" && event.getModifierState("AltGraph")) {
       if (isTypedCharacter(event) || event.key === "Dead" || ALLOWED_KEYS.has(event.key)) {
         return true;

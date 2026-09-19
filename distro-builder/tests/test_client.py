@@ -395,6 +395,27 @@ class RebootEndpointGating(unittest.TestCase):
         finally:
             agent.is_live_session = orig_live
             agent.subprocess.Popen = orig_popen
+class AgentLogTrimming(unittest.TestCase):
+    def test_trim_agent_log_drops_head_when_exceeding_cap(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w+b", delete=False) as tf:
+            tf_path = tf.name
+            tf.write(b"header line\n" + b"x" * (agent.LOG_TRIM_AT_BYTES + 100) + b"\nfinal line\n")
+        try:
+            orig_file = agent.AGENT_LOG_FILE
+            agent.AGENT_LOG_FILE = tf_path
+            agent.trim_agent_log()
+            with open(tf_path, "rb") as f:
+                content = f.read()
+            self.assertIn(b"earlier entries were dropped", content)
+            self.assertTrue(content.endswith(b"final line\n"))
+            self.assertLessEqual(len(content), agent.LOG_KEEP_BYTES + 200)
+        finally:
+            agent.AGENT_LOG_FILE = orig_file
+            try:
+                os.unlink(tf_path)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
