@@ -170,6 +170,27 @@ distro-builder/
 - The catalog is applied with `textContent`, never `innerHTML`: a translation is data, and a school
   that pastes one in must not be able to inject markup into the wizard.
 - `_meta.direction: "rtl"` flips the wizard and the bar for right-to-left languages.
+- **Catalogs can also come from the control plane.** `GET /api/i18n` lists what the platform has
+  and `GET /i18n/<tag>.json` serves one; both are public, because a workstation fetches its
+  interface language before it is enrolled and holds no credential at that point, and the text is
+  the same for every school. Only a super admin writes them (`POST /api/super/i18n`), the upload is
+  sanitised on the way in, and the agent re-checks size, shape and types on the way out — neither
+  side may assume the other did.
+- The agent stores a downloaded catalog in `/etc/labkiosk/i18n`, so it survives the reboot and
+  needs no new ISO.
+
+### Rule 1g: The Clock in the Bar Is the Way Back to These Settings
+- The kiosk top bar shows the workstation's own date and time immediately after the network icon.
+  That is deliberate: the clock is the one place a teacher can *see* that the time is wrong, so it
+  is also where they can put it right.
+- Clicking it opens the same administrator modal the network icon opens, with wording that names
+  what is about to change, and lands on `/setup#locale` — the Language & Region step, on an
+  installed workstation, behind the boot password. A student cannot reach it, and a teacher does
+  not need a manual to find it.
+- The time server belongs to that step: `systemd-timesyncd` is configured through a drop-in at
+  `/etc/systemd/timesyncd.conf.d/labkiosk.conf` rather than by editing the package's own file, an
+  empty value restores Debian's pool, and the drop-in is rewritten at every boot because it lives
+  on the RAM overlay.
 
 ### Rule 2: Universal Dual Bootloader Compatibility (BIOS + UEFI)
 - Workstations in school environments range from legacy BIOS machines to modern UEFI-only hardware (e.g. Hyper-V Gen 2, modern laptops/NUCs).

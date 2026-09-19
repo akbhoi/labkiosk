@@ -44,7 +44,8 @@
   const OFFLINE_REDIRECT_MS = 6000;
   // Long enough to notice the bar and read the workstation name, short enough
   // that it is out of the way before anyone starts a lesson.
-  const BAR_INTRO_MS = 2500;
+  let barCatalog = {};
+const BAR_INTRO_MS = 2500;
   const AGENT_SETUP_URL = "http://127.0.0.1:8888/setup";
 
   function isAgentPage(href) {
@@ -336,6 +337,17 @@
           box-shadow: 0 0 8px #ef4444;
         }
 
+        .kiosk-clock {
+          display: flex; align-items: center; gap: 6px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: #e2e8f0; border-radius: 8px;
+          padding: 5px 10px; font-size: 12px; font-weight: 700;
+          font-variant-numeric: tabular-nums; cursor: pointer;
+          white-space: nowrap;
+        }
+        .kiosk-clock:hover { background: rgba(255, 255, 255, 0.12); }
+
         /* Administrator Verification Modal */
         .modal-overlay {
           position: fixed;
@@ -543,6 +555,19 @@
               <line x1="12" y1="20" x2="12.01" y2="20"></line>
             </svg>
           </button>
+          <!--
+            The clock sits right after the network icon and opens the same wizard
+            page the network icon does, on its Language & Region step: it is the
+            one place a teacher can see the time is wrong, so it is also where
+            they should be able to put it right. Behind the same password.
+          -->
+          <button class="kiosk-clock" id="btn-clock" title="Date, time and language"
+                  data-i18n-title="bar.clockTitle">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+              <circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline>
+            </svg>
+            <span id="kiosk-clock-text"></span>
+          </button>
           <div class="status-dot" id="kiosk-dot"></div>
           <span id="kiosk-client-id">PC-01</span>
         </div>
@@ -568,7 +593,7 @@
             </svg>
             <h3 class="modal-title" data-i18n="admin.title">Administrator Verification</h3>
           </div>
-          <p class="modal-desc" data-i18n="admin.prompt">Enter the administrator or boot password to configure network settings.</p>
+          <p class="modal-desc" id="admin-modal-desc" data-i18n="admin.prompt">Enter the administrator or boot password to configure network settings.</p>
           <input type="password" id="admin-modal-input" class="modal-input" placeholder="Enter password" autocomplete="off" />
           <div id="admin-modal-err" class="modal-err hidden" data-i18n="admin.invalid">Invalid administrator password.</div>
           <div class="modal-actions">
@@ -671,10 +696,19 @@
     );
 
     // Button event listeners
+    // Strings the bar sets from script rather than from its own markup: the
+    // English is the argument, so a catalog only ever overrides it.
+    const adminDesc = shadow.getElementById("admin-modal-desc");
+    function t(key, fallback) {
+      const value = barCatalog[key];
+      return typeof value === "string" && value ? value : fallback;
+    }
+
     // Interface language. The bar is built in English and then translated in
     // place, so a missing, partial or broken catalog leaves it readable.
     askAgent({ type: "labkiosk:i18n" }).then((reply) => {
       const catalog = (reply && reply.catalog) || {};
+      barCatalog = catalog;
       shadow.querySelectorAll("[data-i18n]").forEach((el) => {
         const value = catalog[el.dataset.i18n];
         if (typeof value === "string" && value) el.textContent = value;
@@ -715,7 +749,17 @@
     const btnAdminCancel = shadow.getElementById("btn-admin-modal-cancel");
     const btnNetwork = shadow.getElementById("btn-network");
 
-    function openAdminModal() {
+    // Which page the password is being asked for. The modal is shared, so the
+    // destination has to travel with it rather than be assumed.
+    let adminModalTarget = "network";
+
+    function openAdminModal(target) {
+      adminModalTarget = target === "locale" ? "locale" : "network";
+      if (adminDesc) {
+        adminDesc.textContent = adminModalTarget === "locale"
+          ? t("admin.promptLocale", "Enter the administrator or boot password to change the date, time and language.")
+          : t("admin.prompt", "Enter the administrator or boot password to configure network settings.");
+      }
       if (!adminModal) return;
       if (adminErr) adminErr.classList.add("hidden");
       if (adminInput) {
@@ -744,7 +788,8 @@
           closeAdminModal();
           // The wizard reads the short-lived unlock token from the fragment,
           // which never leaves the browser, and removes it from the address.
-          window.location.href = `${AGENT_SETUP_URL}#network&admin=${encodeURIComponent(reply.token)}`;
+          window.location.href =
+            `${AGENT_SETUP_URL}#${adminModalTarget}&admin=${encodeURIComponent(reply.token)}`;
         } else {
           if (adminErr) {
             adminErr.textContent = (reply && reply.error) || "Invalid administrator password.";
@@ -761,7 +806,28 @@
       }
     }
 
-    if (btnNetwork) btnNetwork.onclick = openAdminModal;
+    // The clock, in the workstation's own timezone -- which is the point: the
+    // Language & Region step is what set it, and this is where it shows.
+    const clockText = shadow.getElementById("kiosk-clock-text");
+    const btnClock = shadow.getElementById("btn-clock");
+
+    function renderClock() {
+      if (!clockText) return;
+      try {
+        clockText.textContent = new Intl.DateTimeFormat(undefined, {
+          weekday: "short", day: "2-digit", month: "short",
+          hour: "2-digit", minute: "2-digit",
+        }).format(new Date());
+      } catch {
+        clockText.textContent = new Date().toLocaleString();
+      }
+    }
+    renderClock();
+    setInterval(renderClock, 15000);
+
+    if (btnClock) btnClock.onclick = () => openAdminModal("locale");
+
+    if (btnNetwork) btnNetwork.onclick = () => openAdminModal("network");
     if (btnAdminCancel) btnAdminCancel.onclick = closeAdminModal;
     if (btnAdminSubmit) btnAdminSubmit.onclick = submitAdminPassword;
     if (adminInput) {

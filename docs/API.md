@@ -490,7 +490,8 @@ and zones from tzdata's `zone1970.tab`, countries from `iso3166.tab`, locales fr
 
 #### `POST /api/localization/configure`
 Applies language, region, timezone, keyboard and clock. Body:
-`{ uiLanguage, timezone, locale, keymap, keymapVariant, syncTime, time }`. `time` is
+`{ uiLanguage, timezone, locale, keymap, keymapVariant, syncTime, time }`. `ntpServer` accepts one to four host names or addresses and configures `systemd-timesyncd`
+through a drop-in; an empty value restores Debian's default pool. `time` is
 `YYYY-MM-DD HH:MM:SS` and is used only when `syncTime` is false — which is the point of the step,
 since NTP is unreachable until the network exists. Gated by the administrator token once the
 workstation is installed, exactly like `/api/network/configure`. Every value is re-validated by
@@ -500,6 +501,16 @@ workstation is installed, exactly like `/api/network/configure`. Every value is 
 An interface catalog. `en-US` ships in the image; other languages are files placed in
 `/etc/labkiosk/i18n` on the data partition. The tag is matched against a pattern before it becomes
 a path, and an unknown one returns `404`.
+
+#### `GET /api/localization/languages`
+Asks the school's control plane which interface languages it offers, and marks the ones already
+installed. Needs the network and an enrolment, which is why it is separate from
+`/api/localization/options` — that one has to work on a workstation that has neither.
+
+#### `POST /api/localization/language/download`
+Body `{ tag }`. Fetches that catalog from the control plane, checks its size, shape and value types,
+and stores it in `/etc/labkiosk/i18n`. Administrator token required once the workstation is
+installed.
 
 #### `GET /api/network/status`
 Returns complete network addressing, active route, DNS, and proxy status.

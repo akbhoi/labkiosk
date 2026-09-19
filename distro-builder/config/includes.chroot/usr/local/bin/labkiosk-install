@@ -513,7 +513,8 @@ tmpfs             /tmp                               tmpfs defaults,noatime,mode
 
         localization_args = []
         for flag, key in (("--timezone", "timezone"), ("--locale", "locale"),
-                          ("--ui-language", "uiLanguage"), ("--keymap", "keymap")):
+                          ("--ui-language", "uiLanguage"), ("--keymap", "keymap"),
+                          ("--ntp-server", "ntpServer")):
             value = str(localization.get(key, "") or "").strip()
             if value:
                 localization_args += [flag, value]

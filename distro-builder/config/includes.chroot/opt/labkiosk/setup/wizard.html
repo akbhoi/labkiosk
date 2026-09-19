@@ -214,9 +214,15 @@
         <label class="form-label" for="locale-ui-language" data-i18n="locale.uiLanguage">Interface language</label>
         <select id="locale-ui-language" class="input-field"></select>
         <div class="hint-text" data-i18n="locale.uiLanguageHint">
-          The language of this wizard and of the kiosk bar. Additional languages are added by
-          placing their catalog in /etc/labkiosk/i18n.
+          The language of this wizard and of the kiosk bar. More can be downloaded from your school
+          server once this workstation is enrolled and online, or added by placing a catalog in
+          /etc/labkiosk/i18n.
         </div>
+        <button type="button" class="btn-secondary" id="btn-locale-languages"
+                style="margin-top: 10px; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 12px;">
+          <span data-i18n="locale.checkLanguages">Check the school server for more languages</span>
+        </button>
+        <div id="locale-remote-languages" style="margin-top: 10px;"></div>
       </div>
 
       <div class="section-box">
@@ -271,6 +277,17 @@
           <div class="form-group">
             <label class="form-label" for="locale-time" data-i18n="locale.time">Time</label>
             <input type="time" id="locale-time" step="1" class="input-field">
+          </div>
+        </div>
+        <div class="form-group" id="locale-ntp-group">
+          <label class="form-label" for="locale-ntp-server" data-i18n="locale.ntpServer">Time server</label>
+          <input type="text" id="locale-ntp-server" class="input-field"
+                 placeholder="e.g. ntp.school.edu or 10.0.0.1"
+                 data-i18n-placeholder="locale.ntpServerPlaceholder"
+                 style="font-family: var(--font-mono);">
+          <div class="hint-text" data-i18n="locale.ntpServerHint">
+            Where this workstation asks for the time once it is online. Leave empty to use Debian's
+            public pool; a school that blocks outbound NTP should name its own server here.
           </div>
         </div>
         <div class="hint-text" id="locale-clock-preview"></div>
@@ -726,6 +743,9 @@
     const localeDate = document.getElementById('locale-date');
     const localeTime = document.getElementById('locale-time');
     const localeClockPreview = document.getElementById('locale-clock-preview');
+    const localeNtpServer = document.getElementById('locale-ntp-server');
+    const btnLocaleLanguages = document.getElementById('btn-locale-languages');
+    const localeRemoteLanguages = document.getElementById('locale-remote-languages');
     const btnProceedNetwork = document.getElementById('btn-proceed-network');
     const btnLocaleReturn = document.getElementById('btn-locale-return');
     const step1 = document.getElementById('step-1-network');
@@ -1102,6 +1122,7 @@
       const language = saved.uiLanguage || 'en-US';
       if ([...localeUiLanguage.options].some(o => o.value === language)) localeUiLanguage.value = language;
 
+      localeNtpServer.value = saved.ntpServer || current.ntpServers || '';
       localeSyncTime.checked = saved.syncTime !== false;
       localeManualClock.style.display = localeSyncTime.checked ? 'none' : '';
       fillManualClock();
@@ -1116,6 +1137,7 @@
         locale: localeLocale.value,
         keymap: localeKeymap.value,
         syncTime: localeSyncTime.checked,
+        ntpServer: localeNtpServer.value.trim(),
       };
       if (!localeSyncTime.checked && localeDate.value && localeTime.value) {
         const time = localeTime.value.length === 5 ? localeTime.value + ':00' : localeTime.value;
@@ -1160,6 +1182,78 @@
         showStatus((err && err.message) || 'Could not apply the settings.', 'error');
       } finally {
         btnProceedNetwork.disabled = false;
+      }
+    });
+
+    // ---- Languages from the school server ------------------------------
+    //
+    // Deliberately on demand rather than on load: this needs the network and an
+    // enrolment, and the step it lives in runs before either exists.
+    function renderRemoteLanguages(languages) {
+      localeRemoteLanguages.replaceChildren();
+      if (!languages.length) {
+        const empty = document.createElement('div');
+        empty.className = 'hint-text';
+        empty.textContent = t('locale.noLanguages', 'The school server offers no additional languages yet.');
+        localeRemoteLanguages.appendChild(empty);
+        return;
+      }
+      languages.forEach(language => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0;';
+        const name = document.createElement('span');
+        name.style.fontSize = '13px';
+        name.textContent = language.name + ' (' + language.tag + ')';
+        row.appendChild(name);
+
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'btn-secondary';
+        action.style.cssText = 'border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 12px;';
+        action.textContent = language.installed
+          ? t('locale.installed', 'Installed')
+          : t('locale.download', 'Download');
+        action.disabled = !!language.installed;
+        action.addEventListener('click', async () => {
+          action.disabled = true;
+          action.textContent = t('locale.downloading', 'Downloading…');
+          try {
+            const headers = { 'Content-Type': 'application/json' };
+            if (adminToken) headers['X-LabKiosk-Admin'] = adminToken;
+            const res = await fetch('/api/localization/language/download', {
+              method: 'POST', headers, body: JSON.stringify({ tag: language.tag }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || ('Download failed (' + res.status + ')'));
+            action.textContent = t('locale.installed', 'Installed');
+            // The new catalog is on disk; offer it in the picker straight away.
+            localeUiLanguage.replaceChildren();
+            (data.languages || []).forEach(l => localeUiLanguage.appendChild(optionEl(l.tag, l.name)));
+            localeUiLanguage.value = language.tag;
+            await loadCatalog(language.tag);
+          } catch (err) {
+            action.disabled = false;
+            action.textContent = t('locale.download', 'Download');
+            showStatus((err && err.message) || 'Could not download that language.', 'error');
+          }
+        });
+        row.appendChild(action);
+        localeRemoteLanguages.appendChild(row);
+      });
+    }
+
+    btnLocaleLanguages.addEventListener('click', async () => {
+      btnLocaleLanguages.disabled = true;
+      try {
+        const res = await fetch('/api/localization/languages', { cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'The school server could not be reached.');
+        renderRemoteLanguages(data.languages || []);
+        hideStatus();
+      } catch (err) {
+        showStatus((err && err.message) || 'Could not ask the school server.', 'error');
+      } finally {
+        btnLocaleLanguages.disabled = false;
       }
     });
 

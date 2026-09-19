@@ -33,6 +33,10 @@ ZONE_TAB_LEGACY = os.path.join(ZONEINFO_DIR, "zone.tab")
 COUNTRY_TAB = os.path.join(ZONEINFO_DIR, "iso3166.tab")
 SUPPORTED_LOCALES = "/usr/share/i18n/SUPPORTED"
 XKB_RULES = "/usr/share/X11/xkb/rules/evdev.lst"
+# A drop-in rather than timesyncd.conf itself: the package owns that file, and a
+# school that sets its own NTP server should not have to win a conffile prompt
+# on the next update.
+TIMESYNCD_DROPIN = "/etc/systemd/timesyncd.conf.d/labkiosk.conf"
 
 # Deliberately strict. These reach the filesystem and a command line, and a
 # value with "..", a slash too many or a newline in it must never get that far.
@@ -44,6 +48,11 @@ TIMEZONE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_.-]+){1,
 LOCALE_PATTERN = re.compile(r"^[a-z]{2,3}(?:_[A-Z]{2})?(?:\.[A-Za-z0-9-]{1,16})?(?:@[A-Za-z0-9]{1,16})?$")
 KEYMAP_PATTERN = re.compile(r"^[a-z0-9]{1,16}$")
 KEYMAP_VARIANT_PATTERN = re.compile(r"^[a-z0-9_-]{0,32}$")
+# A hostname or an address, which is all systemd-timesyncd accepts here. Kept
+# strict because this value is written into a configuration file: no spaces, no
+# newlines, nothing that could introduce a second directive.
+NTP_SERVER_PATTERN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._:-]{0,252}[A-Za-z0-9])?$")
+MAX_NTP_SERVERS = 4
 
 # A clock this far out is a typo or a dead RTC, not a choice anyone made.
 MIN_YEAR = 2020
@@ -246,6 +255,25 @@ def validate_keymap(layout, variant):
     return layout, variant or ""
 
 
+def validate_ntp_servers(value):
+    """
+    One to four time servers, space or comma separated.
+
+    An empty value is meaningful: it removes the drop-in and hands the
+    workstation back to Debian's pool, which is the right default for a school
+    with no time server of its own.
+    """
+    if not value.strip():
+        return []
+    servers = [part for part in re.split(r"[\s,]+", value.strip()) if part]
+    if len(servers) > MAX_NTP_SERVERS:
+        raise ValueError(f"At most {MAX_NTP_SERVERS} time servers.")
+    for server in servers:
+        if not NTP_SERVER_PATTERN.match(server):
+            raise ValueError(f"{server!r} is not a host name or address.")
+    return servers
+
+
 def validate_time(value):
     try:
         when = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
@@ -370,6 +398,41 @@ def apply_keymap(root, layout, variant):
     log(f"keyboard layout set to {layout}{'/' + variant if variant else ''}")
 
 
+def apply_ntp_servers(root, servers):
+    """Point systemd-timesyncd at the school's own time server, or let it go."""
+    path = os.path.join(root, TIMESYNCD_DROPIN.lstrip("/")) if root != "/" else TIMESYNCD_DROPIN
+    if not servers:
+        try:
+            os.unlink(path)
+            log("time server drop-in removed; the default pool applies again")
+        except FileNotFoundError:
+            pass
+        except OSError as err:
+            log(f"could not remove {path}: {err}")
+    else:
+        content = ("# Written by labkiosk-localization.\n"
+                   "[Time]\n"
+                   f"NTP={' '.join(servers)}\n")
+        write_file(root, TIMESYNCD_DROPIN, content)
+        log(f"time server set to {' '.join(servers)}")
+    if root == "/" and systemd_is_running():
+        # It reads this only at start, and the point of setting it is that the
+        # clock is wrong right now.
+        run(["systemctl", "restart", "systemd-timesyncd"], check=False)
+
+
+def read_ntp_servers():
+    try:
+        with open(TIMESYNCD_DROPIN, "r", encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                if key.strip().upper() == "NTP":
+                    return value.strip()
+    except OSError:
+        pass
+    return ""
+
+
 def apply_clock(when, ntp):
     """
     Set the clock by hand, or hand it back to NTP.
@@ -399,6 +462,7 @@ def current_state():
         "keymap": "",
         "keymapVariant": "",
         "ntp": False,
+        "ntpServers": read_ntp_servers(),
         "localTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     try:
@@ -448,6 +512,8 @@ def main():
     parser.add_argument("--keymap-variant", default="")
     parser.add_argument("--time", help="YYYY-MM-DD HH:MM:SS, sets the clock by hand")
     parser.add_argument("--ntp", choices=["on", "off"])
+    parser.add_argument("--ntp-server", default=None,
+                        help="one to four time servers; an empty value restores the default pool")
     parser.add_argument("--print-state", action="store_true",
                         help="report the current settings and exit")
     parser.add_argument("--list-options", action="store_true",
@@ -485,6 +551,7 @@ def main():
         locale = validate_locale(args.locale) if args.locale else None
         keymap = validate_keymap(args.keymap, args.keymap_variant) if args.keymap else None
         when = validate_time(args.time) if args.time else None
+        servers = validate_ntp_servers(args.ntp_server) if args.ntp_server is not None else None
     except ValueError as err:
         print(json.dumps({"error": str(err)}))
         return 2
@@ -502,6 +569,8 @@ def main():
             apply_locale(root, locale, args.ui_language)
         if keymap:
             apply_keymap(root, keymap[0], keymap[1])
+        if servers is not None:
+            apply_ntp_servers(root, servers)
         if root == "/":
             apply_clock(when, {"on": True, "off": False}.get(args.ntp))
     except (RuntimeError, OSError) as err:

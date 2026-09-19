@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 import base64
 import grp
 import hashlib
@@ -57,6 +58,12 @@ LOCALIZATION_TIMEOUT_SECONDS = 60
 UI_LANGUAGE_DIR = "/opt/labkiosk/i18n"
 UI_LANGUAGE_EXTRA_DIR = "/etc/labkiosk/i18n"
 UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
+# A catalog is UI text. These caps are what stops a compromised or simply
+# wrong control plane from filling the data partition, or handing the wizard
+# a document it will spend a second walking on every page load.
+CATALOG_MAX_BYTES = 256 * 1024
+CATALOG_MAX_KEYS = 2000
+CATALOG_MAX_VALUE = 2000
 GRUB_PASSWORD_FILE = "/etc/grub.d/01_labkiosk_password"
 WIZARD_HTML_FILE = "/opt/labkiosk/setup/wizard.html"
 CHROMIUM_POLICY_FILE = "/etc/chromium/policies/managed/policies.json"
@@ -172,7 +179,14 @@ state_lock = threading.Lock()
 
 
 def log(message):
-    print(f"[Agent] {message}", flush=True)
+    """
+    One line, stamped with the workstation's own local time.
+
+    The log is read through the wizard's diagnostics panel on a machine with no
+    terminal, usually to answer "when did this happen?" -- so the zone matters
+    as much as the clock, and both now follow the Language & Region step.
+    """
+    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {time.strftime('%Z')} [Agent] {message}", flush=True)
 
 
 # --------------------------------------------------------------------------
@@ -592,6 +606,113 @@ def available_ui_languages():
     return [languages[tag] for tag in sorted(languages)]
 
 
+def validate_catalog(document):
+    """
+    A catalog is a flat map of key to string, and nothing else.
+
+    It arrives from the control plane, so it is checked here rather than
+    trusted: the wizard inserts these values as text, and this keeps a
+    malformed one from reaching it at all.
+    """
+    if not isinstance(document, dict):
+        raise ValueError("A catalog must be a JSON object.")
+    if len(document) > CATALOG_MAX_KEYS:
+        raise ValueError(f"A catalog may hold at most {CATALOG_MAX_KEYS} entries.")
+    cleaned = {}
+    for key, value in document.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("A catalog key must be a non-empty string.")
+        if key == "_meta":
+            if not isinstance(value, dict):
+                raise ValueError("_meta must be an object.")
+            cleaned[key] = {
+                "name": str(value.get("name", ""))[:120],
+                "direction": "rtl" if str(value.get("direction", "")).lower() == "rtl" else "ltr",
+            }
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"The value for {key!r} is not a string.")
+        cleaned[key] = value[:CATALOG_MAX_VALUE]
+    return cleaned
+
+
+def remote_languages():
+    """
+    Interface languages the school's control plane offers.
+
+    Only meaningful once the workstation is enrolled and online, which is why
+    this is a separate call and not part of the options the wizard opens with.
+    """
+    with state_lock:
+        worker_url = state["workerUrl"]
+    if not worker_url:
+        raise ValueError("This workstation is not enrolled yet, so it has no server to ask.")
+    request = Request(f"{worker_url}/api/i18n", headers={"User-Agent": "LabKioskAgent/i18n"})
+    try:
+        with open_url(request, timeout=10) as response:
+            document = json.loads(response.read(CATALOG_MAX_BYTES).decode("utf-8"))
+    except HTTPError as err:
+        raise ValueError(f"The server answered {err.code} when asked for its languages.") from err
+    except (URLError, TimeoutError, socket.timeout, ValueError, OSError) as err:
+        raise ValueError(f"Could not reach {worker_url}: {err}") from err
+
+    languages = document.get("languages", []) if isinstance(document, dict) else []
+    installed = {entry["tag"] for entry in available_ui_languages()}
+    result = []
+    for entry in languages:
+        if not isinstance(entry, dict):
+            continue
+        tag = str(entry.get("tag", ""))
+        if not UI_LANGUAGE_PATTERN.match(tag):
+            continue
+        result.append({
+            "tag": tag,
+            "name": str(entry.get("name", tag))[:120],
+            "direction": "rtl" if str(entry.get("direction", "")).lower() == "rtl" else "ltr",
+            "installed": tag in installed,
+        })
+    return {"languages": result}
+
+
+def download_language_catalog(tag):
+    """Fetch one catalog and keep it on the data partition, where it survives."""
+    if not UI_LANGUAGE_PATTERN.match(str(tag or "")):
+        raise ValueError(f"{tag!r} is not a language tag.")
+    with state_lock:
+        worker_url = state["workerUrl"]
+    if not worker_url:
+        raise ValueError("This workstation is not enrolled yet, so it has no server to ask.")
+
+    request = Request(f"{worker_url}/i18n/{tag}.json", headers={"User-Agent": "LabKioskAgent/i18n"})
+    try:
+        with open_url(request, timeout=15) as response:
+            raw = response.read(CATALOG_MAX_BYTES + 1)
+    except HTTPError as err:
+        if err.code == 404:
+            raise ValueError(f"The server has no catalog for {tag}.") from err
+        raise ValueError(f"The server answered {err.code} for {tag}.") from err
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        raise ValueError(f"Could not download {tag}: {err}") from err
+
+    if len(raw) > CATALOG_MAX_BYTES:
+        raise ValueError(f"The catalog for {tag} is larger than {CATALOG_MAX_BYTES // 1024} KB.")
+    try:
+        catalog = validate_catalog(json.loads(raw.decode("utf-8")))
+    except ValueError as err:
+        raise ValueError(f"The catalog for {tag} is not usable: {err}") from err
+
+    os.makedirs(UI_LANGUAGE_EXTRA_DIR, exist_ok=True)
+    destination = os.path.join(UI_LANGUAGE_EXTRA_DIR, f"{tag}.json")
+    temp_path = destination + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(catalog, handle, ensure_ascii=False, indent=2)
+    os.chmod(temp_path, 0o644)
+    os.replace(temp_path, destination)
+    log(f"Installed the {tag} interface catalog ({len(catalog)} entries).")
+    return {"status": "ok", "tag": tag, "entries": len(catalog),
+            "languages": available_ui_languages()}
+
+
 def localization_options():
     options = run_localization_helper(["--list-options"], privileged=False)
     options["uiLanguages"] = available_ui_languages()
@@ -615,6 +736,7 @@ def configure_localization(data):
     keymap_variant = str(data.get("keymapVariant", "")).strip()
     manual_time = str(data.get("time", "")).strip()
     sync_time = bool(data.get("syncTime", True))
+    ntp_server = data.get("ntpServer", None)
 
     if timezone:
         args += ["--timezone", timezone]
@@ -633,6 +755,8 @@ def configure_localization(data):
         args += ["--time", manual_time]
     else:
         args += ["--ntp", "on" if sync_time else "off"]
+    if ntp_server is not None:
+        args += ["--ntp-server", str(ntp_server).strip()]
 
     result = run_localization_helper(args, privileged=True)
 
@@ -644,6 +768,8 @@ def configure_localization(data):
         "keymap": keymap or cfg.get("keymap", ""),
         "keymapVariant": keymap_variant if keymap else cfg.get("keymapVariant", ""),
         "syncTime": sync_time,
+        "ntpServer": (str(ntp_server).strip() if ntp_server is not None
+                      else cfg.get("ntpServer", "")),
     })
     save_localization_config(cfg)
 
@@ -676,10 +802,17 @@ def apply_saved_localization():
         args += ["--keymap", str(cfg["keymap"])]
         if cfg.get("keymapVariant"):
             args += ["--keymap-variant", str(cfg["keymapVariant"])]
+    if cfg.get("ntpServer"):
+        # The drop-in lives on the root filesystem, which is a RAM overlay on an
+        # installed workstation, so it has to be written again at every boot.
+        args += ["--ntp-server", str(cfg["ntpServer"])]
     if not args:
         return
     try:
         run_localization_helper(args, privileged=True)
+        # The helper changed /etc/localtime under this process, which caches it.
+        os.environ.pop("TZ", None)
+        time.tzset()
         log("Re-applied the saved language and region settings.")
     except (ValueError, RuntimeError) as err:
         # Never fatal: a workstation with an odd locale must still come up.
@@ -1755,6 +1888,15 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             self._send(404, {"error": "No such language"})
             return
 
+        if self.path == "/api/localization/languages":
+            # Deliberately separate from the options above: this one needs the
+            # network and the control plane, and the wizard opens before either.
+            try:
+                self._send(200, remote_languages())
+            except ValueError as err:
+                self._send(400, {"error": str(err)})
+            return
+
         if self.path == "/api/localization/options":
             try:
                 self._send(200, localization_options())
@@ -1858,6 +2000,23 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "detail": "See the agent log below for the full context.",
                     },
                 )
+            return
+
+        if self.path == "/api/localization/language/download":
+            if admin_auth_required() and not has_admin_session(self.headers.get(ADMIN_TOKEN_HEADER, "")):
+                self._send(401, {"error": "Administrator authentication is required"})
+                return
+            data = self._read_json()
+            if not isinstance(data, dict):
+                self._send(400, {"error": "A JSON body is required"})
+                return
+            try:
+                self._send(200, download_language_catalog(data.get("tag", "")))
+            except ValueError as err:
+                self._send(400, {"error": str(err)})
+            except OSError as err:
+                log(f"Could not store the catalog: {err}")
+                self._send(500, {"error": f"Could not store the catalog: {err}"})
             return
 
         if self.path == "/api/localization/configure":
