@@ -122,7 +122,7 @@ jobs:
       # never publishing; failing on fixed criticals catches the case that
       # matters -- a base image that is simply out of date.
       - name: Scan the published image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
           format: table
