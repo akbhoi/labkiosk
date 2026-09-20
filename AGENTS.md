@@ -145,6 +145,13 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - Super admins are restricted from accessing any school's admin console, telemetry, or VNC remote desktop *except* for the dedicated `demo` school tenant to ensure school data privacy.
 - School admins can delegate functions to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`).
 
+### Rule 4b: Left-Side Multi-Level Panels Design & Seamless Transitions
+- The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) enforce a unified **Left-Side Multi-Level Panels Architecture**:
+  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, primary module icons (Workstations, Broadcast, Portal, Whitelist, Teachers, Settings), live counter pills, user badge, and collapse toggle.
+  - **Level 2 (Secondary Action Panel — 260px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific sub-views, quick filters (All, Online, Locked), and batch action triggers.
+  - **Content Area**: Fluid layout adapting smoothly to panel states without content jumping or horizontal scrollbars.
+  - **Transitions & Micro-Interactions**: Hardware-accelerated CSS transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
+
 ### Rule 5: Zero Placeholders
 - ❌ No `// TODO: Implement later`
 - ❌ No empty `catch (e) {}` blocks.

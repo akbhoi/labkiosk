@@ -92,6 +92,13 @@ cloudflare-control/
 - **No inline event handler attributes anywhere** (`onclick=`, `onsubmit=`, `onmouseover=`, ...): they are blocked by the CSP. Use `data-action` attributes and delegated event listeners (or `addEventListener`).
 - `test/worker.test.ts` renders every page and fails if any script lacks the nonce or any `on*=` attribute is detected.
 
+### Rule 5b: Left-Side Multi-Level Panels Design & Seamless Transitions
+- The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
+  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Broadcast, Portal, Whitelist, Teachers, Settings), live stats counter, user avatar, and panel expand/collapse toggle.
+  - **Level 2 (Secondary Action Panel — 260px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific sub-views, quick filters (All, Online, Locked), and batch action triggers.
+  - **Content Area**: Fluid layout adapting smoothly to panel states without content jumping or horizontal scrollbars.
+  - **Transitions & Micro-Interactions**: Hardware-accelerated transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
+
 ### Rule 6: State-Changing Requests Prove Their Origin
 - Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host, the platform domain, or a dev host. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.

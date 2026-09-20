@@ -96,8 +96,19 @@ export function renderDashboardHtml(options: DashboardOptions): string {
 
   // Render Sub-Page Content
   let contentHtml = "";
+  let modalsHtml = "";
   let pageTitle = "Workstations";
   let scriptsHtml = "";
+
+  const subPanel = getSubPanelForPage(
+    activePage,
+    tenant,
+    config,
+    presets,
+    sites,
+    teachers,
+    tenantParam
+  );
 
   switch (activePage) {
     case "broadcast":
@@ -129,6 +140,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     default:
       pageTitle = "Workstation Grid & Control";
       contentHtml = renderWorkstationsPageHtml(tenant, config, presets, sites, baseDomain);
+      modalsHtml = renderWorkstationsModalsHtml(tenant, config, presets, sites, baseDomain);
       scriptsHtml = renderWorkstationsScripts(nonce, tenant, config, presets, sites);
       break;
   }
@@ -139,12 +151,325 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     brandSubtitle: `${subdomain}.${baseDomain} • Control Console`,
     navItems,
     activeNavId: activePage,
+    subPanelTitle: subPanel.subPanelTitle,
+    subPanelSubtitle: subPanel.subPanelSubtitle,
+    subPanelHtml: subPanel.subPanelHtml,
     stats,
     userMeta: currentUser ? { name: currentUser.name, email: currentUser.email, role: currentUser.role } : undefined,
     contentHtml,
+    modalsHtml,
     scriptsHtml,
     nonce
   });
+}
+
+// ============================================================================
+// SUB-PANEL GENERATOR FOR MULTI-LEVEL PANELS
+// ============================================================================
+
+function getSubPanelForPage(
+  page: "workstations" | "broadcast" | "portal" | "whitelist" | "teachers" | "settings",
+  tenant?: Tenant,
+  config?: LabConfig,
+  presets: BroadcastPreset[] = [],
+  sites: PortalSite[] = [],
+  teachers: TenantUser[] = [],
+  tenantParam: string = ""
+): { subPanelTitle: string; subPanelSubtitle: string; subPanelHtml: string } {
+  switch (page) {
+    case "broadcast":
+      return {
+        subPanelTitle: "Broadcast Tools",
+        subPanelSubtitle: "Synchronize lesson screens",
+        subPanelHtml: `
+          <div class="sub-section-title">Active Lesson Status</div>
+          <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); margin-bottom: 12px;">
+            <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Current Broadcast URL</div>
+            <div style="font-size: 12px; font-weight: 700; color: #93c5fd; margin-top: 4px; word-break: break-all; font-family: 'JetBrains Mono', monospace;" id="sub-active-url">${escapeHtml(tenant?.default_url || "None (Student Portal Active)")}</div>
+          </div>
+          <div class="sub-action-list">
+            <button type="button" class="sub-action-item" id="sub-btn-reset-portal" data-action="quick-reset-portal">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                Clear / Release to Portal
+              </span>
+            </button>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Quick Educational Presets</div>
+          <div class="sub-action-list">
+            <button type="button" class="sub-action-item" data-preset="https://scratch.mit.edu">
+              <span>Scratch Programming</span>
+            </button>
+            <button type="button" class="sub-action-item" data-preset="https://phet.colorado.edu">
+              <span>PhET Simulations</span>
+            </button>
+            <button type="button" class="sub-action-item" data-preset="https://www.khanacademy.org">
+              <span>Khan Academy</span>
+            </button>
+            <button type="button" class="sub-action-item" data-preset="https://en.wikipedia.org">
+              <span>Wikipedia</span>
+            </button>
+            ${presets
+              .map(
+                (p) => `
+              <button type="button" class="sub-action-item" data-preset="${escapeAttr(p.url)}">
+                <span>${escapeHtml(p.title)}</span>
+              </button>
+            `
+              )
+              .join("")}
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
+          <div class="sub-action-list">
+            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
+              <span>← Back to Workstations</span>
+            </a>
+          </div>
+        `
+      };
+
+    case "portal":
+      return {
+        subPanelTitle: "Portal Manager",
+        subPanelSubtitle: "Curate educational resources",
+        subPanelHtml: `
+          <div class="sub-section-title">Actions</div>
+          <div class="sub-action-list">
+            <a href="#new-app-title" class="sub-action-item" data-action="focus-new-app">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add App Card
+              </span>
+            </a>
+            <a href="/?tenant=${encodeURIComponent(tenant?.subdomain || "demo")}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                Preview Student Portal
+              </span>
+            </a>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Summary</div>
+          <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 13px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <span style="color: var(--text-muted);">Total Apps:</span>
+              <strong>${sites.length}</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--text-muted);">Current Mode:</span>
+              <span class="badge ${tenant?.mode === "single_url" ? "badge-yellow" : "badge-green"}">${tenant?.mode === "single_url" ? "Single URL" : "App Grid"}</span>
+            </div>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
+          <div class="sub-action-list">
+            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
+              <span>← Back to Workstations</span>
+            </a>
+          </div>
+        `
+      };
+
+    case "whitelist":
+      return {
+        subPanelTitle: "Domain Allowlist",
+        subPanelSubtitle: "Chromium policy firewall",
+        subPanelHtml: `
+          <div class="sub-section-title">Actions</div>
+          <div class="sub-action-list">
+            <a href="#new-domain-input" class="sub-action-item" data-action="focus-new-domain">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add Domain
+              </span>
+            </a>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Quick Presets</div>
+          <div class="sub-action-list">
+            <button type="button" class="sub-action-item" data-quick-domain="scratch.mit.edu">
+              <span>+ scratch.mit.edu</span>
+            </button>
+            <button type="button" class="sub-action-item" data-quick-domain="phet.colorado.edu">
+              <span>+ phet.colorado.edu</span>
+            </button>
+            <button type="button" class="sub-action-item" data-quick-domain="khanacademy.org">
+              <span>+ khanacademy.org</span>
+            </button>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Policy Info</div>
+          <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.4;">
+            Permitted domains are merged into Chromium's enterprise managed policy (<code>URLAllowlist</code>) upon each 3-second heartbeat.
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
+          <div class="sub-action-list">
+            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
+              <span>← Back to Workstations</span>
+            </a>
+          </div>
+        `
+      };
+
+    case "teachers":
+      return {
+        subPanelTitle: "Staff Directory",
+        subPanelSubtitle: "Sub-admin delegation",
+        subPanelHtml: `
+          <div class="sub-section-title">Actions</div>
+          <div class="sub-action-list">
+            <a href="#new-teacher-name" class="sub-action-item" data-action="focus-new-teacher">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+                Add Staff Member
+              </span>
+            </a>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Roles &amp; Access</div>
+          <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.5;">
+            Teachers can be granted granular permissions:
+            <ul style="padding-left: 16px; margin-top: 6px;">
+              <li>Workstation control</li>
+              <li>Lesson broadcasting</li>
+              <li>Portal curation</li>
+              <li>Domain allowlist</li>
+              <li>Lab settings</li>
+            </ul>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
+          <div class="sub-action-list">
+            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
+              <span>← Back to Workstations</span>
+            </a>
+          </div>
+        `
+      };
+
+    case "settings":
+      return {
+        subPanelTitle: "Lab Configuration",
+        subPanelSubtitle: "Settings & preferences",
+        subPanelHtml: `
+          <div class="sub-section-title">Jump to Section</div>
+          <div class="sub-action-list">
+            <a href="#section-general" class="sub-action-item">
+              <span>General Information</span>
+            </a>
+            <a href="#section-subdomain" class="sub-action-item">
+              <span>Subdomain &amp; Routing</span>
+            </a>
+            <a href="#section-custom-domain" class="sub-action-item">
+              <span>Custom Domain</span>
+            </a>
+            <a href="#section-vnc" class="sub-action-item">
+              <span>VNC &amp; Remote Control</span>
+            </a>
+            <a href="#section-password" class="sub-action-item">
+              <span>Admin Password</span>
+            </a>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Security Audit</div>
+          <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.4;">
+            Passwords use PBKDF2-HMAC-SHA256 (100k rounds) via WebCrypto. Device enrollment keys use cryptographically secure random bytes.
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
+          <div class="sub-action-list">
+            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
+              <span>← Back to Workstations</span>
+            </a>
+          </div>
+        `
+      };
+
+    case "workstations":
+    default:
+      return {
+        subPanelTitle: "Workstations",
+        subPanelSubtitle: "Telemetry & batch commands",
+        subPanelHtml: `
+          <div class="sub-section-title">Telemetry Filters</div>
+          <div class="sub-action-list">
+            <button type="button" class="sub-action-item active" data-filter="all">
+              <span>All Workstations</span>
+              <span class="sub-action-badge" id="sub-filter-all-count">0</span>
+            </button>
+            <button type="button" class="sub-action-item" data-filter="online">
+              <span>Online (Active)</span>
+              <span class="sub-action-badge" id="sub-filter-online-count" style="color: #6ee7b7;">0</span>
+            </button>
+            <button type="button" class="sub-action-item" data-filter="offline">
+              <span>Offline / Standby</span>
+              <span class="sub-action-badge" id="sub-filter-offline-count">0</span>
+            </button>
+            <button type="button" class="sub-action-item" data-filter="locked">
+              <span>Locked Screens</span>
+              <span class="sub-action-badge" id="sub-filter-locked-count" style="color: #fde68a;">0</span>
+            </button>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Classroom Commands</div>
+          <div class="sub-action-list">
+            <button type="button" class="sub-action-item" data-action="open-broadcast">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
+                Broadcast URL
+              </span>
+            </button>
+            <button type="button" class="sub-action-item" data-action="open-lock-all">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                Lock All Screens
+              </span>
+            </button>
+            <button type="button" class="sub-action-item" data-action="open-unlock-all">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+                Unlock All
+              </span>
+            </button>
+            <button type="button" class="sub-action-item" data-action="reset-portal">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                Reset to Portal
+              </span>
+            </button>
+            <button type="button" class="sub-action-item" data-action="open-reboot-all" style="color: #fca5a5;">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+                Reboot All PCs
+              </span>
+            </button>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Quick Navigation</div>
+          <div class="sub-action-list">
+            <a href="/admin/broadcast${tenantParam}" class="sub-action-item">
+              <span>Lesson Broadcast</span>
+              <span style="color: var(--text-muted);">→</span>
+            </a>
+            <a href="/admin/portal${tenantParam}" class="sub-action-item">
+              <span>Portal Apps (${sites.length})</span>
+              <span style="color: var(--text-muted);">→</span>
+            </a>
+            <a href="/admin/whitelist${tenantParam}" class="sub-action-item">
+              <span>Allowed Domains (${config?.whitelist?.length || 0})</span>
+              <span style="color: var(--text-muted);">→</span>
+            </a>
+            <a href="/admin/settings${tenantParam}" class="sub-action-item">
+              <span>Lab Settings</span>
+              <span style="color: var(--text-muted);">→</span>
+            </a>
+          </div>
+        `
+      };
+  }
 }
 
 // ============================================================================
@@ -206,7 +531,17 @@ function renderWorkstationsPageHtml(
         <p style="font-size: 13px;">Workstations will appear here automatically once enrolled.</p>
       </div>
     </div>
+  `;
+}
 
+function renderWorkstationsModalsHtml(
+  tenant?: Tenant,
+  config?: LabConfig,
+  presets: BroadcastPreset[] = [],
+  sites: PortalSite[] = [],
+  baseDomain: string = "labkiosk.akbhoi.com"
+): string {
+  return `
     <!-- VNC Remote Control Modal -->
     <div class="modal-overlay" id="vnc-modal">
       <div class="modal-box" style="max-width: 1000px; width: 95%; height: 85vh; display: flex; flex-direction: column; padding: 20px;">
@@ -321,14 +656,18 @@ function renderWorkstationsPageHtml(
           </div>
         </div>
         <div id="portal-apps-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto; margin-bottom: 16px; padding: 10px; background: var(--bg-base); border: 1px solid var(--border); border-radius: 8px;">
-          ${sites.map((s) => `
+          ${sites
+            .map(
+              (s) => `
             <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--border-subtle);">
               <div>
                 <strong>${escapeHtml(s.title)}</strong>
                 <span style="font-size: 12px; color: var(--text-muted); margin-left: 6px;">${escapeHtml(s.domain || "")}</span>
               </div>
             </div>
-          `).join("")}
+          `
+            )
+            .join("")}
         </div>
         <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; margin-bottom: 16px;">
           <div style="font-size: 12px; font-weight: 700; margin-bottom: 8px;">Add New Resource</div>
