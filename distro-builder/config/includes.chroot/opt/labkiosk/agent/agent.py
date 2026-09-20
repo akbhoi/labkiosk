@@ -1827,7 +1827,7 @@ def _log_rejected_origin(origin):
 
 
 class LocalApiHandler(BaseHTTPRequestHandler):
-    server_version = "LabKioskAgent/2.0"
+    server_version = "LabKioskAgent/2.1.0"
 
     def log_message(self, fmt, *args):
         pass  # Suppress per-request noise; the agent logs what matters itself.
@@ -2501,7 +2501,7 @@ def post_telemetry():
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": "LabKioskAgent/2.0",
+            "User-Agent": "LabKioskAgent/2.1.0",
         },
     )
 
