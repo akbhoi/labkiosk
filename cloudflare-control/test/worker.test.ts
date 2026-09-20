@@ -1292,6 +1292,308 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     await callJson("/api/super/i18n/fr-FR", { method: "DELETE", cookie: superSessionCookie });
   });
+
+  // ------------------------------------------ modern admin & privacy isolation
+
+  test("Super admin is restricted from school consoles but allowed on demo tenant", async () => {
+    // 1. Super admin attempts to access greenwood school console -> 403 Forbidden
+    const deniedRes = await call("/admin?tenant=greenwood", { cookie: superSessionCookie });
+    assert.equal(deniedRes.status, 403);
+    const deniedHtml = await deniedRes.text();
+    assert.match(deniedHtml, /You do not have access to that school(?:'|&#39;)s console/);
+
+    // 2. Super admin accesses demo tenant console -> 200 OK
+    const demoRes = await call("/admin?tenant=demo", { cookie: superSessionCookie });
+    assert.equal(demoRes.status, 200);
+    const demoHtml = await demoRes.text();
+    assert.match(demoHtml, /Workstation Grid &amp; Remote Control/);
+  });
+
+  test("Redirects /admin on apex domain to appropriate tenant subdomain or super console", async () => {
+    // School admin without tenant query param on apex -> 302 to https://greenwood.labkiosk.akbhoi.com/admin
+    const schoolRes = await call("/admin", { cookie: schoolSessionCookie });
+    assert.equal(schoolRes.status, 302);
+    assert.equal(schoolRes.headers.get("Location"), "https://greenwood.labkiosk.akbhoi.com/admin");
+
+    // Super admin without tenant query param on apex -> 302 to https://labkiosk.akbhoi.com/super
+    const superRes = await call("/admin", { cookie: superSessionCookie });
+    assert.equal(superRes.status, 302);
+    assert.equal(superRes.headers.get("Location"), "https://labkiosk.akbhoi.com/super");
+  });
+
+  test("Renders all dedicated multi-page school admin sub-routes with CSP nonces", async () => {
+    const routes = [
+      ["/admin/workstations?tenant=greenwood", /Workstation Grid &amp; Remote Control/],
+      ["/admin/broadcast?tenant=greenwood", /Lesson Broadcast Center/],
+      ["/admin/portal?tenant=greenwood", /Student Learning Portal Manager/],
+      ["/admin/whitelist?tenant=greenwood", /Allowed Educational Domains/],
+      ["/admin/teachers?tenant=greenwood", /Teachers &amp; Sub-Admin Delegation/],
+      ["/admin/settings?tenant=greenwood", /Lab Settings &amp; Configuration/]
+    ] as const;
+
+    for (const [route, pattern] of routes) {
+      const res = await call(route, { cookie: schoolSessionCookie });
+      assert.equal(res.status, 200, `${route} should return 200`);
+      const csp = res.headers.get("Content-Security-Policy") || "";
+      assert.match(csp, /script-src 'nonce-[^']+'/);
+      const html = await res.text();
+      assert.match(html, pattern, `${route} should contain expected heading`);
+    }
+  });
+
+  test("Manages teachers and sub-admin delegation with granular permissions", async () => {
+    // 1. School admin creates a sub-admin teacher with specific permissions
+    const { res: createRes, data: createData } = await callJson("/api/tenant/teachers?tenant=greenwood", {
+      ...json({
+        name: "Assistant Teacher Bob",
+        email: "bob@greenwood.edu",
+        role: "sub_admin",
+        permissions: ["workstations", "broadcast"]
+      }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(createRes.status, 200);
+    assert.equal(createData.status, "ok");
+    const teacherId = createData.teacher.id;
+    assert.ok(teacherId);
+    assert.equal(createData.teacher.name, "Assistant Teacher Bob");
+    assert.deepEqual(createData.teacher.permissions, ["workstations", "broadcast"]);
+
+    // 2. List teachers for the school
+    const { res: listRes, data: listData } = await callJson("/api/tenant/teachers?tenant=greenwood", {
+      cookie: schoolSessionCookie
+    });
+    assert.equal(listRes.status, 200);
+    assert.ok(Array.isArray(listData.teachers));
+    const found = listData.teachers.find((t: any) => t.id === teacherId);
+    assert.ok(found);
+    assert.equal(found.role, "sub_admin");
+
+    // 3. Update teacher role/permissions
+    const { res: updateRes, data: updateData } = await callJson("/api/tenant/teachers/update?tenant=greenwood", {
+      ...json({
+        id: teacherId,
+        role: "teacher",
+        permissions: ["workstations"]
+      }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(updateRes.status, 200);
+    assert.equal(updateData.status, "ok");
+
+    // 4. Delete the teacher
+    const { res: delRes, data: delData } = await callJson(`/api/tenant/teachers/${teacherId}?tenant=greenwood`, {
+      method: "DELETE",
+      cookie: schoolSessionCookie
+    });
+    assert.equal(delRes.status, 200);
+    assert.equal(delData.status, "ok");
+
+    // 5. Verify deleted from list
+    const { data: listAfter } = await callJson("/api/tenant/teachers?tenant=greenwood", {
+      cookie: schoolSessionCookie
+    });
+    assert.ok(!listAfter.teachers.some((t: any) => t.id === teacherId));
+  });
+
+  test("Delegated teacher login, session scoping, and granular permissions enforcement", async () => {
+    // 1. School admin creates a teacher with password and ONLY workstations permission
+    const { res: createRes, data: createData } = await callJson("/api/tenant/teachers?tenant=greenwood", {
+      ...json({
+        name: "Math Teacher Alice",
+        email: "alice@greenwood.edu",
+        password: "AlicePassword123!",
+        role: "teacher",
+        permissions: ["workstations"]
+      }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(createRes.status, 200);
+    assert.equal(createData.status, "ok");
+    const teacherId = createData.teacher.id;
+
+    // 2. Teacher logs in via /api/auth/login
+    const { res: loginRes, data: loginData } = await callJson("/api/auth/login", {
+      ...json({
+        email: "alice@greenwood.edu",
+        password: "AlicePassword123!"
+      })
+    });
+    assert.equal(loginRes.status, 200);
+    assert.equal(loginData.status, "ok");
+    assert.equal(loginData.subdomain, "greenwood");
+
+    const teacherCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+
+    // 3. /api/auth/me returns permissions and tenantRole
+    const { res: meRes, data: meData } = await callJson("/api/auth/me", {
+      cookie: teacherCookie
+    });
+    assert.equal(meRes.status, 200);
+    assert.equal(meData.user.email, "alice@greenwood.edu");
+    assert.equal(meData.tenantRole, "teacher");
+    assert.deepEqual(meData.permissions, ["workstations"]);
+
+    // 4. Allowed: Teacher can view workstations list via /api/clients
+    const { res: clientsRes } = await callJson("/api/clients?tenant=greenwood", {
+      cookie: teacherCookie
+    });
+    assert.equal(clientsRes.status, 200);
+
+    // 5. Allowed: Teacher can dispatch workstation lock command
+    const { res: lockRes, data: lockData } = await callJson("/api/command?tenant=greenwood", {
+      ...json({ target: "all", action: "lock" }),
+      cookie: teacherCookie
+    });
+    assert.equal(lockRes.status, 200);
+    assert.equal(lockData.status, "ok");
+
+    // 6. Refused: Teacher without 'broadcast' cannot dispatch navigate command
+    const { res: navRes } = await callJson("/api/command?tenant=greenwood", {
+      ...json({ target: "all", action: "navigate", url: "https://khanacademy.org" }),
+      cookie: teacherCookie
+    });
+    assert.equal(navRes.status, 403);
+
+    // 7. Refused: Teacher without 'portal' cannot create portal sites
+    const { res: portalRes } = await callJson("/api/portal-sites?tenant=greenwood", {
+      ...json({ title: "Alice Site", url: "https://alicesite.org" }),
+      cookie: teacherCookie
+    });
+    assert.equal(portalRes.status, 403);
+
+    // 8. Refused: Teacher without 'whitelist' cannot modify allowlist
+    const { res: wlRes } = await callJson("/api/whitelist?tenant=greenwood", {
+      ...json({ action: "add", domain: "unauthorized.org" }),
+      cookie: teacherCookie
+    });
+    assert.equal(wlRes.status, 403);
+
+    // 9. Refused: Teacher without 'settings' cannot modify subdomain or settings
+    const { res: subRes } = await callJson("/api/settings/subdomain?tenant=greenwood", {
+      ...json({ subdomain: "hacked" }),
+      cookie: teacherCookie
+    });
+    assert.equal(subRes.status, 403);
+
+    // 10. Dashboard navigation: Visiting /admin/broadcast without broadcast perm redirects to /admin
+    const bcastPageRes = await call("/admin/broadcast?tenant=greenwood", {
+      cookie: teacherCookie
+    });
+    assert.equal(bcastPageRes.status, 302);
+    assert.match(bcastPageRes.headers.get("Location") || "", /\/admin(\?|$)/);
+
+    // Clean up teacher
+    await callJson(`/api/tenant/teachers/${teacherId}?tenant=greenwood`, {
+      method: "DELETE",
+      cookie: schoolSessionCookie
+    });
+  });
+
+  test("Unauthenticated /admin on subdomain redirects to landing page with tenant param", async () => {
+    // Simulated subdomain request: Host = greenwood.labkiosk.akbhoi.com
+    const req = new Request("https://greenwood.labkiosk.akbhoi.com/admin", {
+      headers: { Host: "greenwood.labkiosk.akbhoi.com" }
+    });
+    const res = await worker.fetch(req, mockEnv);
+    assert.equal(res.status, 302);
+    const loc = res.headers.get("Location") || "";
+    assert.equal(loc, "https://labkiosk.akbhoi.com/?login=1&tenant=greenwood");
+  });
+
+  test("Allows school admin to update subdomain and enforces slug validation", async () => {
+    // 1. Reject invalid subdomain
+    const { res: badRes, data: badData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
+      ...json({ subdomain: "ab" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(badRes.status, 400);
+    assert.match(badData.error, /3-63 characters/);
+
+    // 2. Reject reserved slug
+    const { res: resvRes, data: resvData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
+      ...json({ subdomain: "admin" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(resvRes.status, 400);
+    assert.match(resvData.error, /reserved/);
+
+    // 3. Reject duplicate subdomain (already claimed by riverside)
+    const { res: dupRes, data: dupData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
+      ...json({ subdomain: "riverside" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(dupRes.status, 400);
+    assert.match(dupData.error, /already claimed/);
+
+    // 4. Successfully update subdomain to greenwood-high
+    const { res: okRes, data: okData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
+      ...json({ subdomain: "greenwood-high" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(okRes.status, 200);
+    assert.equal(okData.status, "ok");
+    assert.equal(okData.subdomain, "greenwood-high");
+
+    // Restore subdomain back to greenwood for subsequent tests
+    await callJson("/api/tenant/subdomain?tenant=greenwood-high", {
+      ...json({ subdomain: "greenwood" }),
+      cookie: schoolSessionCookie
+    });
+  });
+
+  test("Updates lab settings including custom home route and tunnel domain", async () => {
+    // 1. Update settings
+    const { res: setRes, data: setData } = await callJson("/api/tenant/settings?tenant=greenwood", {
+      ...json({
+        homeRoute: "/home",
+        tunnelDomain: "custom-tunnel.school.edu",
+        portalTitle: "Greenwood STEM Portal"
+      }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(setRes.status, 200);
+    assert.equal(setData.status, "ok");
+    assert.equal(setData.updates.home_route, "/home");
+    assert.equal(setData.updates.tunnel_domain, "custom-tunnel.school.edu");
+
+    // 2. /home route serves the student portal
+    const homeRes = await call("/home?tenant=greenwood");
+    assert.equal(homeRes.status, 200);
+    const homeHtml = await homeRes.text();
+    assert.match(homeHtml, /Greenwood STEM Portal/);
+
+    // Reset settings
+    await callJson("/api/tenant/settings?tenant=greenwood", {
+      ...json({ homeRoute: "/", tunnelDomain: "" }),
+      cookie: schoolSessionCookie
+    });
+  });
+
+  test("Serves Privacy Policy and Terms of Service compliance pages", async () => {
+    // /privacy
+    const privRes = await call("/privacy");
+    assert.equal(privRes.status, 200);
+    const privHtml = await privRes.text();
+    assert.match(privHtml, /Privacy Policy/);
+    assert.match(privHtml, /FERPA/);
+    assert.match(privHtml, /COPPA/);
+    assert.match(privHtml, /100% In-Memory RAM Overlay/);
+    const privCsp = privRes.headers.get("Content-Security-Policy") || "";
+    assert.match(privCsp, /script-src 'nonce-[^']+'/);
+
+    // /terms
+    const termsRes = await call("/terms");
+    assert.equal(termsRes.status, 200);
+    const termsHtml = await termsRes.text();
+    assert.match(termsHtml, /Terms of Service/);
+    assert.match(termsHtml, /Educational Use/);
+    assert.match(termsHtml, /45-Computer/);
+    assert.match(termsHtml, /Subscriber Licensing/);
+    assert.match(termsHtml, /Institution Responsibilities/);
+    const termsCsp = termsRes.headers.get("Content-Security-Policy") || "";
+    assert.match(termsCsp, /script-src 'nonce-[^']+'/);
+  });
 });
 
 /**

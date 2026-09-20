@@ -31,7 +31,7 @@ labkiosk/
 │   └── build-iso.sh                    # Native Debian/WSL2 build script
 │
 ├── cloudflare-control/                 # Cloudflare Workers Control Plane (Edge SaaS)
-│   ├── migrations/                     # Cloudflare D1 SQL migrations (0001..0005)
+│   ├── migrations/                     # Cloudflare D1 SQL migrations (0001..0007)
 │   ├── wrangler.jsonc                  # Routes, D1 binding, hourly cron trigger
 │   ├── src/
 │   │   ├── index.ts                    # Edge router, REST APIs, telemetry cache, scheduled()
@@ -40,10 +40,12 @@ labkiosk/
 │   │   ├── db.ts                       # D1 Database queries, SCHEMA_SQL & tenant seeding
 │   │   ├── auth.ts                     # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   │   ├── d1_adapter.ts               # Node 22+ native `node:sqlite` mock for local unit tests
-│   │   ├── ui.ts                       # Teacher Lab Dashboard HTML/JS
+│   │   ├── ui.ts                       # Teacher Lab Dashboard HTML/JS & multi-page sub-routes
+│   │   ├── ui_layout.ts                # Shared responsive layout shell, nav tabs, design tokens
 │   │   ├── ui_landing.ts               # Public SaaS Landing Page
 │   │   ├── ui_portal.ts                # Student Learning Portal (Educational Cards Grid)
 │   │   ├── ui_super.ts                 # Super Admin Master Console (/super)
+│   │   ├── ui_legal.ts                 # Legal compliance pages (/privacy, /terms)
 │   │   └── types.ts                    # Strict TypeScript interfaces
 │   └── test/worker.test.ts             # Multi-tenant automated integration tests
 │
@@ -140,6 +142,8 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
 - Authoritative state (broadcasts, credentials, sessions) resides in D1, not isolate memory.
 - Every endpoint is strictly guarded via `guard.ts`: `resolveTenant()`, `requireTenantAdmin()`, `requireSuperAdmin()`, `requireDevice()`, and `rejectCrossSiteMutation()`.
+- Super admins are restricted from accessing any school's admin console, telemetry, or VNC remote desktop *except* for the dedicated `demo` school tenant to ensure school data privacy.
+- School admins can delegate functions to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`).
 
 ### Rule 5: Zero Placeholders
 - ❌ No `// TODO: Implement later`

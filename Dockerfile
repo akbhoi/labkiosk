@@ -36,7 +36,7 @@ FROM debian:bookworm-slim
 # inherited visibility.
 LABEL org.opencontainers.image.source="https://github.com/akbhoi/labkiosk" \
       org.opencontainers.image.description="Lab Kiosk workstation simulator: Debian 12 kiosk environment with Chromium, x11vnc and noVNC." \
-      org.opencontainers.image.licenses="BUSL-1.1"
+      org.opencontainers.image.licenses="SEE LICENSE IN LICENSE"
 
 ENV DEBIAN_FRONTEND=noninteractive
 

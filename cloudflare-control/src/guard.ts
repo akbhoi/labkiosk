@@ -11,7 +11,8 @@ import {
   findTenantByCustomDomain,
   findTenantById,
   findDeviceByToken,
-  touchDeviceToken
+  touchDeviceToken,
+  getTenantUserPermissions
 } from "./db";
 import { cleanSubdomain } from "./escape";
 
@@ -216,7 +217,7 @@ export function requireSuperAdmin(session: Session | null, headers: Record<strin
   return null;
 }
 
-/** 403 unless the session administers this tenant (super admins may act on any). */
+/** 403 unless the session administers this tenant (super admin restricted to demo tenant only). */
 export function requireTenantAdmin(
   session: Session | null,
   tenant: Tenant | null,
@@ -224,9 +225,40 @@ export function requireTenantAdmin(
 ): Response | null {
   if (!session) return jsonError("Authentication required", 401, headers);
   if (!tenant) return jsonError("No school selected for this request", 400, headers);
-  if (session.role === "super_admin") return null;
+
+  if (session.role === "super_admin") {
+    // Super admin can ONLY access the demo tenant for testing/preview!
+    if (tenant.subdomain === "demo") return null;
+    return jsonError("Platform administrators cannot access individual school consoles for privacy and security", 403, headers);
+  }
+
   if (session.tenant_id !== tenant.id) {
     return jsonError("You do not have access to this school", 403, headers);
+  }
+  return null;
+}
+
+/** 403 unless the session holds the specified permission for this tenant. */
+export async function requireTenantPermission(
+  db: D1Database,
+  session: Session | null,
+  tenant: Tenant | null,
+  permission: string,
+  headers: Record<string, string>
+): Promise<Response | null> {
+  const adminDenied = requireTenantAdmin(session, tenant, headers);
+  if (adminDenied) return adminDenied;
+
+  // Super admin on demo has full permission
+  if (session!.role === "super_admin") return null;
+
+  // Primary owner of the tenant has all permissions
+  if (tenant!.user_id === session!.user_id) return null;
+
+  // Check granular permissions for delegated sub-admins / teachers
+  const perms = await getTenantUserPermissions(db, tenant!.id, session!.user_id);
+  if (!perms.includes(permission) && !perms.includes("*")) {
+    return jsonError(`You do not have permission to access ${permission}`, 403, headers);
   }
   return null;
 }

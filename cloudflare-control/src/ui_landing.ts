@@ -1110,7 +1110,7 @@ export function renderLandingHtml(data: LandingOptions): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Free for schools, yes. The entire operating system build pipeline (Debian 12 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the Business Source License 1.1: free and unrestricted for schools, universities, non-profits and personal use, with a commercial licence required only for companies reselling it as a paid service. On 1 January 2030 the code converts to the Apache 2.0 open-source licence. There are no per-seat licences, user limits, or hidden subscription tiers.
+            Free for schools up to 45 computers, yes. The operating system build pipeline (Debian 12 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the LabKiosk Software License: free and unrestricted for accredited schools, universities, non-profits, and personal non-commercial use on up to 45 workstations. Any deployment with more than 45 computers is viewed as commercial and requires a commercial or subscriber license. Paid subscribers utilizing the Cloudflare Worker platform are supported per the Subscriber License.
           </div>
         </div>
 
@@ -1341,10 +1341,12 @@ export function renderLandingHtml(data: LandingOptions): string {
     </div>
 
     <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Akbhoi Innovations • Source-available under BSL 1.1, free for schools</div>
-      <div style="display: flex; gap: 16px;">
+      <div>&copy; 2026 Lab Kiosk OS • Akbhoi Innovations • Free for accredited schools, commercial license required for resale</div>
+      <div style="display: flex; gap: 16px; flex-wrap: wrap;">
         <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
         <a href="/register" data-action="open-modal" data-modal="register">Register School</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="/terms">Terms of Service</a>
         <a href="#security">Security</a>
       </div>
     </div>
@@ -1510,6 +1512,8 @@ export function renderLandingHtml(data: LandingOptions): string {
       window.location.href = 'mailto:' + target + '?subject=' + subject + '&body=' + body;
     }
 
+    const BASE_DOMAIN = ${escapeJson(baseDomain)};
+
     // Login Form Submission
     document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1529,7 +1533,12 @@ export function renderLandingHtml(data: LandingOptions): string {
           if (data.role === 'super_admin') {
             window.location.href = '/super';
           } else if (data.subdomain) {
-            window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
+            const host = window.location.hostname;
+            if (host === 'localhost' || host === '127.0.0.1' || host.includes('docker')) {
+              window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
+            } else {
+              window.location.href = 'https://' + encodeURIComponent(data.subdomain) + '.' + BASE_DOMAIN + '/admin';
+            }
           } else {
             window.location.href = '/admin';
           }
@@ -1562,7 +1571,12 @@ export function renderLandingHtml(data: LandingOptions): string {
         const data = await res.json();
         if (data.status === 'ok') {
           if (data.subdomain) {
-            window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
+            const host = window.location.hostname;
+            if (host === 'localhost' || host === '127.0.0.1' || host.includes('docker')) {
+              window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
+            } else {
+              window.location.href = 'https://' + encodeURIComponent(data.subdomain) + '.' + BASE_DOMAIN + '/admin';
+            }
           } else {
             window.location.href = '/admin';
           }

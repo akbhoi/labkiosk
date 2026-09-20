@@ -397,7 +397,7 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
   </main>
 
   <footer>
-    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Educational Environment Restricted")}
+    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Educational Environment Restricted")} • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy</a> • <a href="/terms" style="color: var(--text-muted); text-decoration: underline;">Terms</a>
   </footer>
 
   <script nonce="${escapeHtml(nonce)}">

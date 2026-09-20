@@ -23,9 +23,12 @@ The control plane handles tenant routing, teacher management dashboards, student
    - Session tokens are random 32-byte hex strings stored with SHA-256 hashes in D1.
    - Cookies are marked `HttpOnly; Secure; SameSite=Lax` and scoped to the parent domain.
 
-3. **Multi-Tenant Scoping & Data Isolation:**
+3. **Multi-Tenant Scoping, Privacy Isolation & Delegation:**
    - School tenants are authoritatively resolved from the incoming `Host` header via `resolveTenant()` in `src/guard.ts`.
-   - Query overrides (`?tenant=demo`) and `X-Tenant` headers are permitted **only** on local development hosts (`localhost`, `127.0.0.1`, `*.local`) or for authenticated platform super-admins.
+   - Query overrides (`?tenant=demo`) and `X-Tenant` headers are permitted **only** on local development hosts (`localhost`, `127.0.0.1`, `*.local`) or for authenticated platform super-admins (restricted to `demo`).
+   - School admin consoles reside at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`); apex domain `/admin` redirects to the school's subdomain.
+   - Super admins are restricted from accessing any school's admin console, telemetry, or VNC remote-control *except* for the dedicated `demo` school tenant, preserving institutional privacy.
+   - School admins can delegate management tasks to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`).
    - Every database query in `src/db.ts` filters explicitly by `tenant_id`.
    - Telemetry cache (`tenantTelemetryCache`) is partitioned by tenant ID and serves as an ephemeral cache only; D1 `client_devices` is the single source of truth across worker isolates.
    - Active broadcast URL and epoch reside in D1 (`tenants.broadcast_url` / `broadcast_epoch`), preventing colo isolate drift.
@@ -43,7 +46,7 @@ The control plane handles tenant routing, teacher management dashboards, student
 
 ```text
 cloudflare-control/
-├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0005)
+├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0007)
 ├── src/
 │   ├── index.ts               # Worker router, REST endpoints, telemetry cache, scheduled()
 │   ├── guard.ts               # Tenant resolution, authorization guards, CSRF origin checks
@@ -51,10 +54,12 @@ cloudflare-control/
 │   ├── db.ts                  # D1 database queries, schema definitions, tenant seeding
 │   ├── auth.ts                # Web Crypto PBKDF2 authentication, nonces, password policy
 │   ├── d1_adapter.ts          # Node 22+ native node:sqlite mock for local testing
-│   ├── ui.ts                  # Teacher Lab Dashboard HTML/JS console
+│   ├── ui.ts                  # Teacher Lab Dashboard HTML/JS & multi-page sub-routes
+│   ├── ui_layout.ts           # Shared responsive layout shell, nav tabs, design tokens
 │   ├── ui_landing.ts          # Public SaaS landing page and registration
 │   ├── ui_portal.ts           # Student Learning Portal (Educational Apps Grid)
 │   ├── ui_super.ts            # Super Admin Master Console (/super)
+│   ├── ui_legal.ts            # Legal compliance pages (/privacy, /terms)
 │   └── types.ts               # TypeScript interfaces and telemetry models
 ├── test/
 │   └── worker.test.ts         # Automated integration and security test suite

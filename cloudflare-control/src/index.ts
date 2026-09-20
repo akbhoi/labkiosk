@@ -6,11 +6,12 @@
  * No route in this file may resolve a tenant or render untrusted data without them.
  */
 
-import { Env, LabConfig, ClientTelemetry, Tenant, User } from "./types";
+import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole } from "./types";
 import { renderDashboardHtml } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
+import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import {
   initSchema,
   ensureSuperAdmin,
@@ -68,7 +69,13 @@ import {
   recordRateLimitHit,
   purgeStaleLoginAttempts,
   assertSchemaCurrent,
-  LOCAL_DEV_SUPER_ADMIN
+  LOCAL_DEV_SUPER_ADMIN,
+  listTenantUsers,
+  createTenantUser,
+  updateTenantUser,
+  deleteTenantUser,
+  getTenantUser,
+  getTenantUserPermissions
 } from "./db";
 import {
   verifyPassword,
@@ -85,6 +92,7 @@ import {
   resolveTenant,
   requireSuperAdmin,
   requireTenantAdmin,
+  requireTenantPermission,
   requireDevice,
   jsonError,
   hostname,
@@ -201,7 +209,7 @@ const DEFAULT_CONFIG: LabConfig = {
   version: 3,
   updatedAt: new Date().toISOString(),
   defaultHomepage: "https://labkiosk.akbhoi.com",
-  tunnelDomain: "lab.myschool.edu",
+  tunnelDomain: "demo.labkiosk.akbhoi.com",
   whitelist: [],
   scheduledShutdown: "17:00"
 };
@@ -236,7 +244,8 @@ function effectiveOrigin(request: Request, url: URL): string {
 
 function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): string {
   const origin = effectiveOrigin(request, url);
-  const named = `${origin}/?tenant=${encodeURIComponent(tenant.subdomain)}`;
+  const homePath = tenant.home_route && tenant.home_route.startsWith("/") ? tenant.home_route : "/";
+  const named = `${origin}${homePath === "/" ? "" : homePath}?tenant=${encodeURIComponent(tenant.subdomain)}`;
 
   if (tenant.mode === "single_url") {
     return safeHttpUrl(tenant.default_url) || named;
@@ -253,17 +262,17 @@ function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): str
     return named;
   }
 
-  // Already on this school's own subdomain or custom domain: its root is the portal.
+  // Already on this school's own subdomain or custom domain:
   if (
     hostSubdomain(request, env.DEFAULT_DOMAIN) === tenant.subdomain ||
     (tenant.custom_domain && hostname(request) === tenant.custom_domain.toLowerCase())
   ) {
-    return `${url.origin}/`;
+    return `${url.origin}${homePath}`;
   }
 
   // If an active custom domain is configured, it is the canonical address for this school.
   if (tenant.custom_domain) {
-    return `https://${tenant.custom_domain}/`;
+    return `https://${tenant.custom_domain}${homePath}`;
   }
 
   // Talking to the production domain, so the school has a canonical address.
@@ -271,7 +280,7 @@ function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): str
     const base = env.DEFAULT_DOMAIN.replace(/^\./, "").toLowerCase();
     const host = hostname(request);
     if (host === base || host.endsWith("." + base)) {
-      return `https://${tenant.subdomain}.${base}/`;
+      return `https://${tenant.subdomain}.${base}${homePath}`;
     }
   }
 
@@ -340,7 +349,7 @@ const output: Record<string, unknown> = Object.create(null);
 }
 
 function isPublicTenantRoute(path: string, method: string): boolean {
-  if (path === "/" || path === "/portal" || path === "/api/status") return true;
+  if (path === "/" || path === "/home" || path === "/portal" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
@@ -668,9 +677,18 @@ export default {
       const user = await findUserById(db, session.user_id);
       // Only ever describe the tenant this session actually belongs to.
       const ownTenant = session.tenant_id ? await findTenantById(db, session.tenant_id) : null;
+      let permissions: string[] = ["*"];
+      let tenantRole = user?.role;
+      if (ownTenant && user) {
+        permissions = await getTenantUserPermissions(db, ownTenant.id, user.id);
+        const tu = await getTenantUser(db, ownTenant.id, user.id);
+        if (tu) tenantRole = tu.role as any;
+      }
       return new Response(
         JSON.stringify({
-          user: user ? { email: user.email, name: user.name, role: user.role } : null,
+          user: user ? { email: user.email, name: user.name, role: tenantRole, permissions } : null,
+          tenantRole,
+          permissions,
           tenant: ownTenant
             ? { id: ownTenant.id, name: ownTenant.name, subdomain: ownTenant.subdomain, mode: ownTenant.mode }
             : null
@@ -719,7 +737,7 @@ export default {
     // SUPER ADMIN API & MASTER CONSOLE
     // ==========================================
 
-    if (path === "/super" || (hostname(request).split(".")[0] === "super" && path === "/")) {
+    if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/")) {
       if (!session || session.role !== "super_admin") {
         return new Response(
           renderLandingHtml({
@@ -734,6 +752,11 @@ export default {
         );
       }
 
+      let activeTab: "schools" | "approvals" | "catalogs" | "system" = "schools";
+      if (path === "/super/approvals") activeTab = "approvals";
+      else if (path === "/super/catalogs") activeTab = "catalogs";
+      else if (path === "/super/system") activeTab = "system";
+
       const allTenants = await listAllTenants(db);
       const catalogs = await listUiCatalogs(db);
       return new Response(
@@ -742,6 +765,7 @@ export default {
           tenants: allTenants,
           catalogs,
           baseDomain,
+          activeTab,
           nonce
         }),
         { headers: htmlHeaders }
@@ -1053,7 +1077,7 @@ export default {
 
     // POST /api/portal-sites: Add new app card to student launcher
     if (path === "/api/portal-sites" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "portal", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{
@@ -1099,7 +1123,7 @@ export default {
 
     // DELETE /api/portal-sites/:id: Remove an app card
     if (path.startsWith("/api/portal-sites/") && method === "DELETE") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "portal", jsonHeaders);
       if (denied) return denied;
       try {
         const id = decodeURIComponent(path.substring("/api/portal-sites/".length));
@@ -1127,7 +1151,7 @@ export default {
 
     // POST /api/broadcast-presets: Add a new custom broadcast preset
     if (path === "/api/broadcast-presets" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "broadcast", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{ title: string; url: string }>();
@@ -1160,7 +1184,7 @@ export default {
 
     // DELETE /api/broadcast-presets/:id: Remove a custom broadcast preset
     if (path.startsWith("/api/broadcast-presets/") && method === "DELETE") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "broadcast", jsonHeaders);
       if (denied) return denied;
       try {
         const presetId = decodeURIComponent(path.substring("/api/broadcast-presets/".length));
@@ -1182,7 +1206,7 @@ export default {
 
     // POST /api/settings/subdomain: School requests new subdomain
     if (path === "/api/settings/subdomain" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{ requestedSubdomain: string }>();
@@ -1215,7 +1239,7 @@ export default {
 
     // POST /api/settings/mode: Switch between 'portal' launcher and 'single_url'
     if (path === "/api/settings/mode" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{ mode: "portal" | "single_url"; defaultUrl?: string; default_url?: string }>();
@@ -1254,7 +1278,7 @@ export default {
 
     // GET /api/settings/customization: Read tenant branding and customization settings
     if (path === "/api/settings/customization" && method === "GET") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       return new Response(
         JSON.stringify({
@@ -1276,7 +1300,7 @@ export default {
 
     // POST /api/settings/customization: Update tenant branding and customization settings
     if (path === "/api/settings/customization" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{
@@ -1382,7 +1406,7 @@ export default {
 
     // GET /api/settings/enrollment-key: reveal the key used to enrol workstations
     if (path === "/api/settings/enrollment-key" && method === "GET") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       return new Response(
         JSON.stringify({ enrollmentKey: currentTenant!.enrollment_key, subdomain: currentTenant!.subdomain }),
@@ -1392,7 +1416,7 @@ export default {
 
     // POST /api/settings/enrollment-key: rotate it (previously enrolled devices keep working)
     if (path === "/api/settings/enrollment-key" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       const enrollmentKey = await regenerateEnrollmentKey(db, currentTenant!.id);
       await writeAuditLog(db, {
@@ -1405,7 +1429,7 @@ export default {
 
     // POST /api/settings/custom-domain: Request or register a custom domain
     if (path === "/api/settings/custom-domain" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{ domain: string }>();
@@ -1452,7 +1476,7 @@ export default {
 
     // DELETE /api/settings/custom-domain: Cancel request or disconnect custom domain
     if (path === "/api/settings/custom-domain" && method === "DELETE") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       try {
         await removeCustomDomain(db, currentTenant!.id);
@@ -1470,11 +1494,233 @@ export default {
 
     // GET /api/audit-logs: recent activity for this school
     if (path === "/api/audit-logs" && method === "GET") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       const limit = Number(url.searchParams.get("limit") || 100);
       const logs = await listAuditLogs(db, currentTenant!.id, Number.isFinite(limit) ? limit : 100);
       return new Response(JSON.stringify({ logs }), { headers: jsonHeaders });
+    }
+
+    // ==========================================
+    // TENANT STAFF / TEACHER DELEGATION API
+    // ==========================================
+
+    // GET /api/tenant/teachers: list staff accounts
+    if (path === "/api/tenant/teachers" && method === "GET") {
+      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      if (denied) return denied;
+      const teachers = await listTenantUsers(db, currentTenant!.id);
+      return new Response(JSON.stringify({ status: "ok", teachers }), { headers: jsonHeaders });
+    }
+
+    // POST /api/tenant/teachers: create staff account
+    if (path === "/api/tenant/teachers" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "teachers", jsonHeaders);
+      if (denied) return denied;
+      try {
+        const body = await request.json<{
+          name: string;
+          email: string;
+          password?: string;
+          role?: TenantUserRole;
+          permissions?: string[];
+        }>();
+
+        if (!body.name || !body.email) {
+          return jsonError("Name and email are required", 400, jsonHeaders);
+        }
+        if (!isPlausibleEmail(body.email)) {
+          return jsonError("Please enter a valid email address", 400, jsonHeaders);
+        }
+
+        const validRoles: Set<string> = new Set(["school_admin", "sub_admin", "teacher", "lab_assistant", "content_manager"]);
+        const role: TenantUserRole = body.role && validRoles.has(body.role) ? body.role : "teacher";
+        const permissions = Array.isArray(body.permissions) ? body.permissions.map(String) : [];
+
+        const teacher = await createTenantUser(db, {
+          tenantId: currentTenant!.id,
+          email: body.email,
+          name: body.name,
+          password: body.password,
+          role,
+          permissions
+        });
+
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: session!.user_id,
+          action: "staff.create",
+          details: `email=${teacher.email} role=${role}`
+        });
+
+        return new Response(JSON.stringify({ status: "ok", teacher }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Create teacher failed:", err);
+        return jsonError("Could not create teacher account", 400, jsonHeaders);
+      }
+    }
+
+    // POST /api/tenant/teachers/update: update role or permissions
+    if (path === "/api/tenant/teachers/update" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "teachers", jsonHeaders);
+      if (denied) return denied;
+      try {
+        const body = await request.json<{ id: string; role?: TenantUserRole; permissions?: string[] }>();
+        if (!body.id) return jsonError("Staff ID is required", 400, jsonHeaders);
+
+        await updateTenantUser(db, currentTenant!.id, body.id, {
+          role: body.role,
+          permissions: body.permissions
+        });
+
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: session!.user_id,
+          action: "staff.update",
+          details: `id=${body.id}`
+        });
+
+        return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Update teacher failed:", err);
+        return jsonError("Could not update staff account", 400, jsonHeaders);
+      }
+    }
+
+    // DELETE /api/tenant/teachers/:id: remove staff account
+    if (path.startsWith("/api/tenant/teachers/") && method === "DELETE") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "teachers", jsonHeaders);
+      if (denied) return denied;
+      try {
+        const teacherId = path.slice("/api/tenant/teachers/".length);
+        if (!teacherId) return jsonError("Staff ID is required", 400, jsonHeaders);
+
+        await deleteTenantUser(db, currentTenant!.id, teacherId);
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: session!.user_id,
+          action: "staff.delete",
+          details: `id=${teacherId}`
+        });
+
+        return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Delete teacher failed:", err);
+        return jsonError("Could not remove staff account", 400, jsonHeaders);
+      }
+    }
+
+    // POST /api/tenant/subdomain: update school subdomain
+    if (path === "/api/tenant/subdomain" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      try {
+        const body = await request.json<{ subdomain: string }>();
+        const cleanSub = cleanSubdomain(body.subdomain);
+        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH) {
+          return jsonError(`Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters`, 400, jsonHeaders);
+        }
+        if (isReservedSlug(cleanSub)) {
+          return jsonError("That subdomain is reserved by the platform", 400, jsonHeaders);
+        }
+
+        const existing = await findTenantBySubdomain(db, cleanSub);
+        if (existing && existing.id !== currentTenant!.id) {
+          return jsonError("That subdomain is already claimed by another school", 400, jsonHeaders);
+        }
+
+        await updateTenant(db, currentTenant!.id, { subdomain: cleanSub });
+        currentTenant!.subdomain = cleanSub;
+
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: session!.user_id,
+          action: "tenant.update_subdomain",
+          details: `subdomain=${cleanSub}`
+        });
+
+        const redirectUrl = isDev
+          ? `/admin?tenant=${encodeURIComponent(cleanSub)}`
+          : `https://${cleanSub}.${baseDomain}/admin`;
+
+        return new Response(JSON.stringify({ status: "ok", subdomain: cleanSub, redirectUrl }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Subdomain update failed:", err);
+        return jsonError("Could not update subdomain", 400, jsonHeaders);
+      }
+    }
+
+    // POST /api/tenant/settings: update lab settings (mode, home_route, tunnel_domain, profile)
+    if (path === "/api/tenant/settings" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      try {
+        const body = await request.json<{
+          name?: string;
+          mode?: "portal" | "single_url";
+          defaultUrl?: string;
+          defaultLockMessage?: string;
+          homeRoute?: string;
+          tunnelDomain?: string;
+          portalTitle?: string;
+          portalSubtitle?: string;
+          portalDescription?: string;
+          portalFooter?: string;
+        }>();
+
+        const updates: Partial<Tenant> = {};
+        if (body.name !== undefined) {
+          const trimmed = String(body.name).trim().slice(0, 120);
+          if (trimmed) updates.name = trimmed;
+        }
+        if (body.mode === "portal" || body.mode === "single_url") {
+          updates.mode = body.mode;
+        }
+        if (body.defaultUrl !== undefined) {
+          const validated = safeHttpUrl(body.defaultUrl);
+          if (validated) updates.default_url = validated;
+        }
+        if (body.defaultLockMessage !== undefined) {
+          updates.default_lock_message = String(body.defaultLockMessage).trim().slice(0, 280);
+        }
+        if (body.homeRoute !== undefined) {
+          const cleanRoute = String(body.homeRoute).trim().startsWith("/")
+            ? String(body.homeRoute).trim()
+            : "/" + String(body.homeRoute).trim();
+          updates.home_route = cleanRoute;
+        }
+        if (body.tunnelDomain !== undefined) {
+          updates.tunnel_domain = cleanCustomDomain(body.tunnelDomain) || null;
+        }
+        if (body.portalTitle !== undefined) {
+          updates.portal_title = String(body.portalTitle).trim().slice(0, 100) || null;
+        }
+        if (body.portalSubtitle !== undefined) {
+          updates.portal_subtitle = String(body.portalSubtitle).trim().slice(0, 150) || null;
+        }
+        if (body.portalDescription !== undefined) {
+          updates.portal_description = String(body.portalDescription).trim().slice(0, 300) || null;
+        }
+        if (body.portalFooter !== undefined) {
+          updates.portal_footer = String(body.portalFooter).trim().slice(0, 200) || null;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          await updateTenant(db, currentTenant!.id, updates);
+          Object.assign(currentTenant!, updates);
+          await writeAuditLog(db, {
+            tenantId: currentTenant!.id,
+            userId: session!.user_id,
+            action: "settings.update",
+            details: JSON.stringify(updates)
+          });
+        }
+
+        return new Response(JSON.stringify({ status: "ok", updates }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Settings update failed:", err);
+        return jsonError("Could not update lab settings", 400, jsonHeaders);
+      }
     }
 
     // ==========================================
@@ -1675,7 +1921,7 @@ export default {
 
     // GET /api/clients: Active client list for dashboard
     if (path === "/api/clients" && method === "GET") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
 
       const now = Math.floor(Date.now() / 1000);
@@ -1712,7 +1958,7 @@ export default {
 
     // POST /api/clients/remove: Decommission a workstation
     if (path === "/api/clients/remove" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{ clientId: string }>();
@@ -1747,8 +1993,6 @@ export default {
 
     // POST /api/command: Remote command dispatch
     if (path === "/api/command" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
-      if (denied) return denied;
       try {
         const body = await request.json<{
           target: string;
@@ -1765,6 +2009,10 @@ export default {
         if (!ALLOWED_COMMANDS.has(action)) {
           return jsonError(`Unsupported action: ${action}`, 400, jsonHeaders);
         }
+
+        const requiredPerm = action === "navigate" ? "broadcast" : "workstations";
+        const denied = await requireTenantPermission(db, session, currentTenant, requiredPerm, jsonHeaders);
+        if (denied) return denied;
 
         let commandUrl: string | undefined;
         let commandEpoch: number | undefined;
@@ -1847,7 +2095,7 @@ export default {
     }
 
     if (path === "/api/whitelist" && method === "POST") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "whitelist", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{ action: "add" | "remove"; domain: string }>();
@@ -1908,16 +2156,21 @@ export default {
     }
 
     // ==========================================
-    // FRONTEND WEB UI ROUTING
-    // ==========================================
+    // Legal & Compliance Pages
+    if (path === "/privacy") {
+      return new Response(renderPrivacyPolicyHtml(nonce, baseDomain), { headers: htmlHeaders });
+    }
+    if (path === "/terms") {
+      return new Response(renderTermsOfServiceHtml(nonce, baseDomain), { headers: htmlHeaders });
+    }
 
-    // 1. School Admin Dashboard (/admin)
-    if (path === "/admin") {
+    // 1. School Admin Dashboard (/admin and /admin/*)
+    if (path === "/admin" || path.startsWith("/admin/")) {
       if (!session) {
-        const suffix = url.searchParams.has("tenant")
-          ? `?login=1&tenant=${encodeURIComponent(cleanSubdomain(url.searchParams.get("tenant")))}`
-          : "?login=1";
-        return Response.redirect(`${url.origin}/${suffix}`, 302);
+        const slug = cleanSubdomain(url.searchParams.get("tenant") || hostSubdomain(request, env.DEFAULT_DOMAIN) || "");
+        const suffix = slug ? `?login=1&tenant=${encodeURIComponent(slug)}` : "?login=1";
+        const targetOrigin = (!isDev && env.DEFAULT_DOMAIN) ? `https://${baseDomain}` : url.origin;
+        return Response.redirect(`${targetOrigin}/${suffix}`, 302);
       }
 
       // A teacher who explicitly named another school is refused, not silently
@@ -1936,14 +2189,36 @@ export default {
         );
       }
 
+      // If arriving on apex/base domain without a subdomain:
+      const explicitTenant = url.searchParams.get("tenant") || request.headers.get("x-tenant");
+      const onApex = !isDev && env.DEFAULT_DOMAIN && hostname(request) === env.DEFAULT_DOMAIN.toLowerCase().replace(/^\./, "") && !explicitTenant;
+      if (onApex) {
+        if (session.role === "super_admin") {
+          return Response.redirect(`${url.origin}/super`, 302);
+        }
+        if (session.tenant_id) {
+          const userTenant = await findTenantById(db, session.tenant_id);
+          if (userTenant) {
+            return Response.redirect(`https://${userTenant.subdomain}.${baseDomain}${path}`, 302);
+          }
+        }
+      }
+
       // Land a school admin on their own console when none was named.
       if (!currentTenant && session.tenant_id) {
         const userTenant = await findTenantById(db, session.tenant_id);
         if (userTenant) {
-          return Response.redirect(
-            `${url.origin}/admin?tenant=${encodeURIComponent(userTenant.subdomain)}`,
-            302
-          );
+          if (isDev) {
+            return Response.redirect(
+              `${url.origin}${path}?tenant=${encodeURIComponent(userTenant.subdomain)}`,
+              302
+            );
+          } else {
+            return Response.redirect(
+              `https://${userTenant.subdomain}.${baseDomain}${path}`,
+              302
+            );
+          }
         }
       }
 
@@ -1963,15 +2238,58 @@ export default {
       }
 
       const tenant = currentTenant!;
-      const [portalSites, broadcastPresets, whitelist] = await Promise.all([
+      let activePage: "workstations" | "broadcast" | "portal" | "whitelist" | "teachers" | "settings" = "workstations";
+      if (path === "/admin/broadcast") activePage = "broadcast";
+      else if (path === "/admin/portal") activePage = "portal";
+      else if (path === "/admin/whitelist") activePage = "whitelist";
+      else if (path === "/admin/teachers") activePage = "teachers";
+      else if (path === "/admin/settings") activePage = "settings";
+
+      const userPerms = await getTenantUserPermissions(db, tenant.id, session.user_id);
+      const hasAccess = userPerms.includes("*") || userPerms.includes(activePage);
+
+      if (!hasAccess) {
+        const pages: ("workstations" | "broadcast" | "portal" | "whitelist" | "teachers" | "settings")[] = [
+          "workstations", "broadcast", "portal", "whitelist", "teachers", "settings"
+        ];
+        const allowedPage = pages.find(p => userPerms.includes(p));
+        if (allowedPage) {
+          const redirectPath = allowedPage === "workstations" ? "/admin" : `/admin/${allowedPage}`;
+          const targetUrl = isDev
+            ? `${url.origin}${redirectPath}?tenant=${encodeURIComponent(tenant.subdomain)}`
+            : `https://${tenant.subdomain}.${baseDomain}${redirectPath}`;
+          return Response.redirect(targetUrl, 302);
+        }
+        return new Response(
+          renderLandingHtml({
+            error: "You do not have permission to access this section.",
+            openModal: "login",
+            isoDownloadUrl: env.ISO_DOWNLOAD_URL,
+            baseDomain,
+            contactEmail: "contact@akbhoi.com",
+            nonce
+          }),
+          { status: 403, headers: htmlHeaders }
+        );
+      }
+
+      const [portalSites, broadcastPresets, whitelist, teachers, user, tenantUser] = await Promise.all([
         listPortalSites(db, tenant.id),
         listBroadcastPresets(db, tenant.id),
-        buildEffectiveWhitelist(db, tenant.id)
+        buildEffectiveWhitelist(db, tenant.id),
+        listTenantUsers(db, tenant.id),
+        findUserById(db, session.user_id),
+        getTenantUser(db, tenant.id, session.user_id)
       ]);
+      const userRole = session.role === "super_admin"
+        ? "super_admin"
+        : (tenant.user_id === session.user_id ? "school_admin" : (tenantUser?.role || "teacher"));
+
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
-        tunnelDomain: env.TUNNEL_DOMAIN || DEFAULT_CONFIG.tunnelDomain,
+        tunnelDomain: tenant.tunnel_domain || env.TUNNEL_DOMAIN || DEFAULT_CONFIG.tunnelDomain,
         defaultHomepage: env.DEFAULT_HOMEPAGE || DEFAULT_CONFIG.defaultHomepage,
+        homeRoute: tenant.home_route || "/",
         whitelist
       };
 
@@ -1982,6 +2300,10 @@ export default {
           sites: portalSites,
           baseDomain,
           presets: broadcastPresets,
+          teachers,
+          activePage,
+          currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
+          userPermissions: userPerms,
           nonce
         }),
         { headers: htmlHeaders }
@@ -1989,7 +2311,7 @@ export default {
     }
 
     // 2. Student Learning Portal (root of a school subdomain or custom domain)
-    const wantsPortal = path === "/" || path === "/portal";
+    const wantsPortal = path === "/" || path === "/home" || path === "/portal";
     const namedTenant = url.searchParams.has("tenant") || request.headers.has("x-tenant");
     const onSubdomain = hostSubdomain(request, env.DEFAULT_DOMAIN) !== null;
     const isCustomDomainHost = Boolean(

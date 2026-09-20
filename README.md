@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1%20(Free%20for%20Schools)-blue.svg)](LICENSE)
+[![License: Source-Available](https://img.shields.io/badge/License-Source--Available%20(Free%20for%20Schools)-blue.svg)](LICENSE)
 [![Co-Developed with AI](https://img.shields.io/badge/Co--Developed%20with-AI%20(Google%20DeepMind%20Antigravity)-7952b3.svg)](#ai-co-development-statement)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers%20%2B%20D1%20SQL-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![Debian 12](https://img.shields.io/badge/OS-Debian%2012%20(Bookworm)-A81D33?logo=debian&logoColor=white)](https://www.debian.org/)
@@ -185,10 +185,12 @@ We believe in open collaboration, transparent AI authorship, and leveraging arti
 <a id="licensing--commercial-use"></a><a id="-licensing--commercial-use"></a>
 ## 📜 Licensing & Commercial Use
 
-Lab Kiosk is released under the **Business Source License 1.1 (BSL 1.1)**:
+Lab Kiosk is licensed under the **LabKiosk Software License (Source-Available, Educational & Commercial)**:
 
-- **Free for Schools & Non-Profits:** 100% free and unrestricted for all public and non-commercial K-12 schools, colleges, universities, teachers, educational foundations, and personal evaluation.
-- **Commercial & MSP Use:** Any commercial enterprise, private for-profit academy, or Managed Service Provider (MSP) reselling Lab Kiosk as a paid commercial service or utilizing it for commercial gain must obtain a commercial license.
-- **Change Date:** On **January 1, 2030**, this software automatically converts to the fully open-source **Apache License, Version 2.0**.
+- **Free for Schools & Non-Profits (Up to 45 Computers):** 100% free and unrestricted for all accredited public and private K-12 schools, colleges, universities, teachers, educational foundations, and personal non-commercial evaluation on **up to 45 workstations**.
+- **45+ Computer Commercial Threshold:** Any party (including educational, academic, and non-commercial organizations) deploying **more than 45 computers** is viewed and treated as commercial scale, requiring a separate paid Commercial License or active Subscription License.
+- **Commercial & MSP Restrictions:** Any commercial enterprise, for-profit corporate training academy, or Managed Service Provider (MSP) reselling Lab Kiosk as a paid commercial service, hosting it as a paid offering, or utilizing it for commercial gain must obtain a separate, paid Commercial License.
+- **Software License vs. Subscriber License:** This document is the Software License. Subscribers utilizing the hosted Cloudflare Worker control plane are supported in accordance with the **Subscriber License** available directly within the Cloudflare Worker.
+- **Proprietary & Source-Available:** This software does not convert to an open-source license. The copyright holders retain all intellectual property, proprietary title, and copyright worldwide.
 
-For commercial licensing inquiries or custom deployment support, please open an issue or contact the maintainers.
+For commercial licensing inquiries, large-scale deployments, or subscriber agreements, contact `legal@akbhoi.com`.

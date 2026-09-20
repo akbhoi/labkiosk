@@ -8,7 +8,7 @@
 School computer labs need locked-down workstations with teacher oversight. Commercial kiosk software is expensive per seat, and thin clients with 4 GB RAM and 12 GB SSDs are not what it targets. Lab Kiosk gives you an immutable RAM-only OS, a live teacher console, and per-school isolation on infrastructure that costs almost nothing to run.
 
 **Is it free?**
-Free and unrestricted for public and non-commercial schools, colleges, universities, teachers, educational foundations, and personal evaluation. A commercial licence is required for for-profit academies and for MSPs reselling it as a paid service. It converts to Apache 2.0 on **1 January 2030**.
+Free and unrestricted for accredited public and private schools, colleges, universities, teachers, educational foundations, and personal non-commercial evaluation on up to 45 computers. Any deployment exceeding 45 computers is viewed as commercial scale and requires a commercial or subscriber license. Subscribers utilizing the Cloudflare Worker platform are supported per the Subscriber License.
 
 **How much does the infrastructure cost?**
 A Cloudflare Worker plus D1 is inexpensive at classroom scale, and the free tier covers evaluation comfortably. There is no per-seat cost, and no server to run on-site.

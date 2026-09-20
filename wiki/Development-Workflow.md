@@ -174,6 +174,6 @@ Lab Kiosk is openly co-developed with AI assistants, and contributions authored 
 
 ## Licensing
 
-Contributions are made under the **Business Source License 1.1**: free for schools and non-profits, commercial licence required for for-profit resale or MSP use, converting to Apache 2.0 on 1 January 2030.
+Contributions and code use are subject to the **LabKiosk Software License (Source-Available)**: free for accredited schools and non-profits, commercial license required for for-profit resale, SaaS hosting, or MSP use.
 
 → [Testing Guide](Testing-Guide) · [Control Plane Internals](Control-Plane-Internals) · [Client Agent](Client-Agent)

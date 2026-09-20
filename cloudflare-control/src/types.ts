@@ -2,6 +2,18 @@ export type UserRole = "super_admin" | "school_admin";
 export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
 export type KioskMode = "portal" | "single_url";
 export type CommandAction = "lock" | "unlock" | "navigate" | "reload" | "reboot" | "shutdown" | "mute";
+export type TenantUserRole = "school_admin" | "sub_admin" | "teacher" | "lab_assistant" | "content_manager";
+
+export interface TenantUser {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  role: TenantUserRole;
+  permissions: string[];
+  created_at: number;
+  email?: string;
+  name?: string;
+}
 
 export interface User {
   id: string;
@@ -36,6 +48,8 @@ export interface Tenant {
   broadcast_url?: string | null;
   /** Monotonic marker workstations use to detect a new broadcast; 0 when none is active. */
   broadcast_epoch?: number;
+  home_route?: string | null;
+  tunnel_domain?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -143,6 +157,7 @@ export interface LabConfig {
   updatedAt: string;
   defaultHomepage: string;
   tunnelDomain: string;
+  homeRoute?: string;
   /** Effective allowlist for this school: its own domains plus portal app hosts. */
   whitelist: string[];
   scheduledShutdown: string;

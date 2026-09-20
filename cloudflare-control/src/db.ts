@@ -13,7 +13,9 @@ import {
   CommandAction,
   DeviceToken,
   AuditLogEntry,
-  BroadcastPreset
+  BroadcastPreset,
+  TenantUser,
+  TenantUserRole
 } from "./types";
 import {
   hashPassword,
@@ -55,6 +57,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   portal_footer TEXT,
   broadcast_url TEXT,
   broadcast_epoch INTEGER NOT NULL DEFAULT 0,
+  home_route TEXT DEFAULT '/',
+  tunnel_domain TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -166,6 +170,16 @@ CREATE TABLE IF NOT EXISTS ui_catalogs (
   updated_by TEXT
 );
 
+CREATE TABLE IF NOT EXISTS tenant_users (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'teacher' CHECK (role IN ('school_admin', 'sub_admin', 'teacher', 'lab_assistant', 'content_manager')),
+  permissions TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  UNIQUE (tenant_id, user_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
@@ -181,6 +195,8 @@ CREATE INDEX IF NOT EXISTS idx_command_deliveries_client ON command_deliveries(c
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
+CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_users_user ON tenant_users(user_id);
 `;
 
 /**
@@ -300,6 +316,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
   try {
     await db.prepare("SELECT broadcast_epoch FROM tenants LIMIT 1").run();
     await db.prepare("SELECT remote_host FROM client_devices LIMIT 1").run();
+    await db.prepare("SELECT home_route FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT role FROM tenant_users LIMIT 1").run();
   } catch (err: any) {
     throw new Error(
       "The D1 database is missing the current schema. Run `wrangler d1 migrations apply labkiosk-db --remote` (or `--local` for `wrangler dev`) before starting the worker. " +
@@ -319,9 +337,15 @@ export async function ensureDefaultTenant(
     .prepare("SELECT * FROM tenants WHERE subdomain = 'demo' LIMIT 1")
     .first<Tenant>();
 
-  if (existing) return existing;
+  if (existing) {
+    if (!existing.tunnel_domain) {
+      await updateTenant(db, existing.id, { tunnel_domain: "demo.labkiosk.akbhoi.com" });
+      existing.tunnel_domain = "demo.labkiosk.akbhoi.com";
+    }
+    return existing;
+  }
 
-  return await createTenant(db, {
+  const tenant = await createTenant(db, {
     userId: superAdminId,
     name: "Demonstration High School",
     subdomain: "demo",
@@ -329,6 +353,10 @@ export async function ensureDefaultTenant(
     mode: "portal",
     defaultUrl: "https://www.khanacademy.org"
   });
+
+  await updateTenant(db, tenant.id, { tunnel_domain: "demo.labkiosk.akbhoi.com" });
+  tenant.tunnel_domain = "demo.labkiosk.akbhoi.com";
+  return tenant;
 }
 
 export async function findUserByEmail(db: D1Database, email: string): Promise<User | null> {
@@ -395,7 +423,17 @@ export async function findTenantById(db: D1Database, id: string): Promise<Tenant
 }
 
 export async function findTenantByUserId(db: D1Database, userId: string): Promise<Tenant | null> {
-  return await db.prepare("SELECT * FROM tenants WHERE user_id = ?").bind(userId).first<Tenant>();
+  const direct = await db.prepare("SELECT * FROM tenants WHERE user_id = ?").bind(userId).first<Tenant>();
+  if (direct) return direct;
+  return await db
+    .prepare(
+      `SELECT t.* FROM tenants t
+       JOIN tenant_users tu ON tu.tenant_id = t.id
+       WHERE tu.user_id = ?
+       LIMIT 1`
+    )
+    .bind(userId)
+    .first<Tenant>();
 }
 
 export async function createTenant(
@@ -569,7 +607,9 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "portal_description",
   "portal_footer",
   "broadcast_url",
-  "broadcast_epoch"
+  "broadcast_epoch",
+  "home_route",
+  "tunnel_domain"
 ]);
 
 export async function updateTenant(
@@ -661,6 +701,169 @@ export async function removeCustomDomain(db: D1Database, tenantId: string): Prom
     requested_custom_domain: null,
     custom_domain_status: "none"
   });
+}
+
+export async function listTenantUsers(db: D1Database, tenantId: string): Promise<TenantUser[]> {
+  const res = await db
+    .prepare(
+      `SELECT tu.*, u.email, u.name
+       FROM tenant_users tu
+       JOIN users u ON tu.user_id = u.id
+       WHERE tu.tenant_id = ?
+       ORDER BY tu.created_at ASC`
+    )
+    .bind(tenantId)
+    .all<any>();
+
+  return (res.results || []).map((row) => ({
+    id: row.id,
+    tenant_id: row.tenant_id,
+    user_id: row.user_id,
+    role: row.role as TenantUserRole,
+    permissions: typeof row.permissions === "string" ? JSON.parse(row.permissions) : (row.permissions || []),
+    created_at: row.created_at,
+    email: row.email,
+    name: row.name
+  }));
+}
+
+export async function createTenantUser(
+  db: D1Database,
+  data: {
+    tenantId: string;
+    email: string;
+    name: string;
+    password?: string;
+    role?: TenantUserRole;
+    permissions?: string[];
+  }
+): Promise<TenantUser> {
+  const email = data.email.toLowerCase().trim();
+  let user = await findUserByEmail(db, email);
+  if (!user) {
+    user = await createUser(db, {
+      email,
+      name: data.name.trim(),
+      password: data.password || crypto.randomUUID().slice(0, 16) + "Aa1!",
+      role: "school_admin"
+    });
+  }
+
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  const role: TenantUserRole = data.role || "teacher";
+  const permissions = data.permissions || [];
+  const permissionsJson = JSON.stringify(permissions);
+
+  await db
+    .prepare(
+      `INSERT INTO tenant_users (id, tenant_id, user_id, role, permissions, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .bind(id, data.tenantId, user.id, role, permissionsJson, now)
+    .run();
+
+  return {
+    id,
+    tenant_id: data.tenantId,
+    user_id: user.id,
+    role,
+    permissions,
+    created_at: now,
+    email: user.email,
+    name: user.name
+  };
+}
+
+export async function updateTenantUser(
+  db: D1Database,
+  tenantId: string,
+  id: string,
+  updates: { role?: TenantUserRole; permissions?: string[] }
+): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+
+  if (updates.role !== undefined) {
+    fields.push("role = ?");
+    values.push(updates.role);
+  }
+  if (updates.permissions !== undefined) {
+    fields.push("permissions = ?");
+    values.push(JSON.stringify(updates.permissions));
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  values.push(tenantId);
+
+  await db
+    .prepare(`UPDATE tenant_users SET ${fields.join(", ")} WHERE id = ? AND tenant_id = ?`)
+    .bind(...values)
+    .run();
+}
+
+export async function deleteTenantUser(db: D1Database, tenantId: string, id: string): Promise<void> {
+  await db
+    .prepare("DELETE FROM tenant_users WHERE id = ? AND tenant_id = ?")
+    .bind(id, tenantId)
+    .run();
+}
+
+export async function getTenantUser(
+  db: D1Database,
+  tenantId: string,
+  userId: string
+): Promise<TenantUser | null> {
+  const row = await db
+    .prepare(
+      `SELECT tu.*, u.email, u.name
+       FROM tenant_users tu
+       JOIN users u ON tu.user_id = u.id
+       WHERE tu.tenant_id = ? AND tu.user_id = ?
+       LIMIT 1`
+    )
+    .bind(tenantId, userId)
+    .first<any>();
+
+  if (!row) return null;
+  return {
+    id: row.id,
+    tenant_id: row.tenant_id,
+    user_id: row.user_id,
+    role: row.role as TenantUserRole,
+    permissions: typeof row.permissions === "string" ? JSON.parse(row.permissions) : (row.permissions || []),
+    created_at: row.created_at,
+    email: row.email,
+    name: row.name
+  };
+}
+
+export async function getTenantUserPermissions(
+  db: D1Database,
+  tenantId: string,
+  userId: string
+): Promise<string[]> {
+  const tenant = await findTenantById(db, tenantId);
+  if (tenant && tenant.user_id === userId) {
+    return ["*"];
+  }
+
+  const row = await db
+    .prepare("SELECT role, permissions FROM tenant_users WHERE tenant_id = ? AND user_id = ? LIMIT 1")
+    .bind(tenantId, userId)
+    .first<{ role?: string; permissions: string }>();
+
+  if (!row) return [];
+  if (row.role === "school_admin") {
+    return ["*"];
+  }
+  try {
+    return typeof row.permissions === "string" ? JSON.parse(row.permissions) : (row.permissions || []);
+  } catch {
+    return [];
+  }
 }
 
 export async function listAllTenants(

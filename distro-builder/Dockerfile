@@ -18,7 +18,7 @@ FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.source="https://github.com/akbhoi/labkiosk" \
       org.opencontainers.image.description="Debian 12 live-build environment that compiles the Lab Kiosk ISO." \
-      org.opencontainers.image.licenses="BUSL-1.1"
+      org.opencontainers.image.licenses="SEE LICENSE IN LICENSE"
 
 ENV DEBIAN_FRONTEND=noninteractive
 

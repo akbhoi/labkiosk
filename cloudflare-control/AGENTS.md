@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0005)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0007)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1 binding, hourly cron trigger
 ├── src/
@@ -19,10 +19,12 @@ cloudflare-control/
 │   ├── db.ts                           # D1 Database queries, SCHEMA_SQL & tenant seeding
 │   ├── auth.ts                         # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   ├── d1_adapter.ts                   # Node 22+ native `node:sqlite` mock for local unit tests
-│   ├── ui.ts                           # Teacher Lab Dashboard HTML/JS
+│   ├── ui.ts                           # Teacher Lab Dashboard HTML/JS & multi-page sub-routes
+│   ├── ui_layout.ts                    # Shared responsive layout shell, nav tabs, design tokens
 │   ├── ui_landing.ts                   # Public SaaS Landing Page
 │   ├── ui_portal.ts                    # Student Learning Portal (Educational Cards Grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
+│   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms)
 │   └── types.ts                        # Strict TypeScript interfaces
 └── test/worker.test.ts                 # Multi-tenant automated integration & security test suite
 ```
@@ -40,12 +42,16 @@ cloudflare-control/
   - Key derivation: `deriveBits` producing 256 bits, encoded in hexadecimal.
 - Never add external routing libraries, auth frameworks, or heavy database ORMs. Keep cold start under 10ms.
 
-### Rule 2: Multi-Tenant Scoping & Data Isolation
+### Rule 2: Multi-Tenant Scoping, Privacy Isolation & Delegation
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
 - The in-memory telemetry cache is partitioned by tenant ID: `tenantTelemetryCache[tenantKey]`. It is a cache only; `client_devices` in D1 is the source of truth, because worker isolates are per-colo and short-lived.
 - **Nothing that two requests must agree on lives in module memory.** The active broadcast (`tenants.broadcast_url` / `broadcast_epoch`) and a workstation's remote-control details (`client_devices.vnc_password` / `remote_host`) are rows in D1.
-- **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin, for a session that already owns that tenant, or on an explicitly public route.
-- **Never write a route without a guard.** Every endpoint that reads or changes a school's data calls `requireTenantAdmin()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry` calls `requireDevice()`. A route with no guard is a security vulnerability.
+- **Subdomain Routing & Apex Redirection**: School admin dashboards are located at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`). Accessing `/admin` on the base apex domain redirects (302) to the authenticated school admin's subdomain `/admin` (or `/super` for super admins).
+- **Super Admin Privacy Isolation**: Super admins are strictly restricted from accessing any school's admin console (`/admin`), workstation telemetry, or remote desktop/VNC channel *except* for the dedicated `demo` school tenant. Super admin privileges permit approving custom domains, managing interface catalogs, and system maintenance, but protect institutional privacy.
+- **Granular Staff Delegation & Sub-admins**: School admins can delegate management functions by creating staff accounts (`tenant_users` table) with roles (`sub_admin`, `teacher`, `lab_assistant`, `content_manager`) and granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`).
+- **Customizable Subdomain & Lab Settings**: School admins can customize their subdomain (`POST /api/tenant/subdomain`), default home route (`home_route`: e.g. `/` vs `/home`), and tunnel domain (`tunnel_domain` for per-school Cloudflare Tunnels).
+- **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (restricted to `demo`), for a session that already owns that tenant, or on an explicitly public route.
+- **Never write a route without a guard.** Every endpoint that reads or changes a school's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry` calls `requireDevice()`. A route with no guard is a security vulnerability.
 - A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims.
 - Only the `Host` header says where a request arrived. Never read `X-Forwarded-Host` (or any other caller-supplied header) to build a URL that is handed back to a workstation.
 
