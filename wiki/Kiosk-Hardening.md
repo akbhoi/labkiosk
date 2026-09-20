@@ -6,12 +6,36 @@ Everything that stands between a curious student and a shell. Each layer assumes
 
 ## Layer 1 — Immutable storage
 
+## Keyboard and mouse
+
+Three layers, because each one only catches what the layer below it let through.
+
+1. **Openbox binds nothing.** `rc.xml` has an empty `<keyboard>` section and a `Root` mouse context
+   with no menu, and it is installed to `~/.config/openbox/rc.xml` and `/etc/xdg/openbox/rc.xml` —
+   the two paths `openbox-session` actually reads. Shipping it to `/etc/openbox/rc.xml` alone left
+   Alt+Tab, Alt+F4, Super+E and the right-click desktop menu working on every installed machine.
+2. **The keys are taken off the keyboard.** `labkiosk-lock-keys` rewrites the X keymap at session
+   start so every F key, both Super keys, the menu key, Print Screen, Pause, Scroll Lock, Insert
+   and the `XF86` media block carry no symbol at all. Nothing can bind a key that produces nothing
+   — not even Chromium's built-in accelerators. Re-run it after any keyboard-layout change.
+3. **The extension refuses the rest.** Every Ctrl/Alt/Meta combination, every non-printable key
+   outside Backspace, Delete, Enter, Shift, Caps Lock, Tab, Escape and the cursor/page keys, and
+   the context menu, are blocked in the capture phase, in every frame.
+
+The single exception is the clipboard (Ctrl+A/C/V/X/Z/Y) on the setup wizard's own loopback origin,
+so an administrator can paste the enrolment key. No page a student can reach has that origin.
+
 `/etc/overlayroot.conf`:
 
 ```ini
-overlayroot="tmpfs"
-overlayroot_options="recurse=0"
+overlayroot="tmpfs:recurse=0"
 ```
+
+`recurse=0` has to be part of the value. overlayroot reads only the `overlayroot` and
+`overlayroot_cfgdisk` variables from this file, so a separate `overlayroot_options=` line
+does nothing and leaves `recurse` at its default of `1` — which overlays **every** fstab
+entry with a RAM upper layer, `LABKIOSK_DATA` included, and quietly loses every enrolment
+at reboot.
 
 The real root filesystem is mounted **read-only**, with a `tmpfs` overlay on top. Every write — browser cache, agent logs, downloads, student files, session state — lands in RAM and is gone at power-off.
 

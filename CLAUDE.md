@@ -21,6 +21,8 @@ The operating procedures live in the specialized skills under `skills/`. Both ar
   `PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`
   (the cache prefix keeps `__pycache__` out of the image overlay)
   and `node --check` on both files in `distro-builder/config/includes.chroot/opt/labkiosk/extension/`
+- Client tests:
+  `PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests`
 - Chromium policy: `python3 distro-builder/tools/generate-chromium-policy.py --check` — the static
   policy is declared once in `usr/share/labkiosk/chromium-policy-base.json`; never hand-edit the
   generated `etc/chromium/policies/managed/policies.json`.

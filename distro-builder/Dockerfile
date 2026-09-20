@@ -22,6 +22,13 @@ LABEL org.opencontainers.image.source="https://github.com/akbhoi/labkiosk" \
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Asia/Kolkata (IST) everywhere, so container logs and anything the browser
+# renders read in the same clock as the school running it. tzdata is already in
+# the base image; only the link and the name have to be set, and TZ covers the
+# libraries that read the variable instead of /etc/localtime.
+ENV TZ=Asia/Kolkata
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 # Installed before the source is copied, so editing the kiosk config does not
 # re-run apt on every rebuild.
 RUN apt-get update && apt-get install -y --no-install-recommends \

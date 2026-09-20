@@ -22,13 +22,21 @@ A Docker container that behaves like an enrolled thin client — real agent, rea
 
 ## Deliberate differences from real hardware
 
-These three are intentional, and each one matters when you are reasoning about a bug:
+These are intentional, and each one matters when you are reasoning about a bug:
 
 | Aspect | Simulator | Real image |
 | :--- | :--- | :--- |
-| **Chromium sandbox** | `--no-sandbox`, because container processes run as root | Full sandbox, running as unprivileged `kiosk` |
-| **websockify binding** | `0.0.0.0:6080`, so you can view it from the host | `127.0.0.1:6080`, reachable only through a Cloudflare Tunnel |
+| **Chromium sandbox** | Full sandbox, as the unprivileged `kiosk` user — same as the real image. `--no-sandbox` only if the container is started as root, with a warning in the log | Full sandbox, running as unprivileged `kiosk` |
+| **websockify binding** | `0.0.0.0:6080` inside the container, published only on the host's `127.0.0.1` | `127.0.0.1:6080`, reachable only through a Cloudflare Tunnel |
+| **Filesystem** | Read-only root, tmpfs for `/tmp`, `/run`, `/etc/labkiosk` and the Chromium policy directory | Read-only root with an `overlayroot="tmpfs"` RAM overlay |
 | **Agent API** | `127.0.0.1:8888` — **unchanged** | `127.0.0.1:8888` |
+
+The container also runs with `cap_drop: ALL` apart from `SYS_CHROOT`, which Chromium's sandbox
+needs to chroot its zygote; without it every tab dies with
+`Check failed: sys_chroot("/proc/self/fdinfo/")` and the screen stays black. Published images are
+multi-architecture (amd64 and arm64), signed with cosign, and carry an SBOM and provenance; see
+[`docker-test/README.md`](https://github.com/akbhoi/labkiosk/blob/main/docker-test/README.md) for
+the verification command.
 
 The agent's loopback binding is preserved exactly, which is why you drive the setup wizard from the simulated noVNC screen rather than from your host browser.
 
@@ -120,9 +128,10 @@ Set in `docker-compose.yml`:
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
+| `TZ` | `Asia/Kolkata` | Container timezone (IST). Baked into the image; override here to run the simulator on another clock. |
 | `WORKER_URL` | `http://host.docker.internal:8787` | Control plane target. Point it at a deployed worker to test against staging. |
 | `LABKIOSK_DOMAIN` | `labkiosk.akbhoi.com` | Base platform domain shown in the wizard |
-| `VNC_PASSWORD` | `labkiosk` | The noVNC session password |
+| `VNC_PASSWORD` | random per container | The noVNC session password; printed in the startup log when generated |
 | `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional hostname to report as `remoteHost`, exercising the Remote Control button |
 
 ---

@@ -22,7 +22,8 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_start",
-      "all_frames": false
+      "_all_frames_comment": "true, so the keyboard and right-click lockdown also covers an embedded player or editor: key events inside an iframe never reach a listener in the parent document. The navigation bar and the lock curtain still build only in the top frame -- content.js returns early everywhere else.",
+      "all_frames": true
     }
   ]
 }

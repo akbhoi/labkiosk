@@ -1,0 +1,4 @@
+# Lab Kiosk: xz-compress the initramfs (about a third smaller than gzip).
+# The initrd is read once per boot, so the slower decompression is negligible.
+# Needs xz-utils, which config/package-lists/kiosk.list.chroot installs.
+COMPRESS=xz

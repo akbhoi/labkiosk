@@ -105,7 +105,19 @@ jobs:
         run: |
           PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m py_compile \
             distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-            distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+            distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+          if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
+            echo "::error::__pycache__ was written into the image overlay"
+            exit 1
+          fi
+
+      # The workstation's validators are what stands between a caller and a
+      # subprocess, a filesystem path or the browser policy. The control plane
+      # has had a suite since the beginning; this is the client's.
+      - name: Client validators
+        run: |
+          PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m unittest discover             -s distro-builder/tests -t distro-builder/tests -v
           if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
             echo "::error::__pycache__ was written into the image overlay"
             exit 1
@@ -116,10 +128,18 @@ jobs:
           node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
           node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 
-      - name: Manifest and Chromium policy are valid JSON
+      - name: Manifest, Chromium policy and language catalogs are valid JSON
         run: |
           python3 - <<'EOF'
-          import json
+          import json, pathlib
+          # A catalog with a syntax error would leave the wizard in English with
+          # no sign of why, so it is parsed here rather than discovered in a lab.
+          for catalog in sorted(pathlib.Path(
+                  "distro-builder/config/includes.chroot/opt/labkiosk/i18n").glob("*.json")):
+              with open(catalog, encoding="utf-8") as handle:
+                  document = json.load(handle)
+              assert "_meta" in document, f"{catalog} has no _meta block"
+              print("ok", catalog, f"({len(document) - 1} strings)")
           for path in (
               "distro-builder/config/includes.chroot/opt/labkiosk/extension/manifest.json",
               "distro-builder/config/includes.chroot/etc/chromium/policies/managed/policies.json",
@@ -163,6 +183,43 @@ jobs:
                   print("  " + b)
               sys.exit(1)
           print("ok: all image scripts are LF")
+          EOF
+
+      # overlayroot reads exactly two variables from /etc/overlayroot.conf --
+      # "overlayroot" and "overlayroot_cfgdisk". An overlayroot_options= line is
+      # read by nothing, and the recurse default of 1 then overlays EVERY fstab
+      # entry with a RAM upper layer, LABKIOSK_DATA included: the workstation
+      # enrols, looks fine, and forgets everything at the next power-off.
+      - name: overlayroot keeps recurse=0 inside its value
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys
+
+          targets = [
+              "distro-builder/config/includes.chroot/etc/overlayroot.conf",
+              "distro-builder/auto/config",
+              "distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install",
+          ] + [str(p) for p in pathlib.Path("distro-builder/config/bootloaders").rglob("*")
+               if p.is_file() and p.suffix not in {".png", ".jpg", ".pf2"}]
+
+          bad = []
+          for name in targets:
+              path = pathlib.Path(name)
+              if not path.is_file():
+                  continue
+              for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                  if line.lstrip().startswith("#"):
+                      continue
+                  if "overlayroot_options" in line:
+                      bad.append(f"{name}:{number}: overlayroot_options is read by nothing")
+                  if "overlayroot=" in line and "recurse=0" not in line:
+                      bad.append(f"{name}:{number}: overlayroot= without recurse=0")
+          if bad:
+              print("::error::overlayroot would overlay the data partition with RAM:")
+              for item in bad:
+                  print("  " + item)
+              sys.exit(1)
+          print("ok: every overlayroot setting carries recurse=0")
           EOF
 
       # shellcheck validates the shell, but a hook that pipes a heredoc into

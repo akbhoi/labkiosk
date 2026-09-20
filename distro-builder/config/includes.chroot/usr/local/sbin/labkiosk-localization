@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+"""
+Apply localization settings as root, on behalf of the unprivileged agent.
+
+The kiosk user may run exactly this program through sudo
+(/etc/sudoers.d/51-labkiosk-localization), so **the caller is not a trust
+boundary**: every value is re-validated here against the system's own data --
+the timezone against /usr/share/zoneinfo, the locale against
+/usr/share/i18n/SUPPORTED, the keyboard layout against the X11 rules list --
+exactly as labkiosk-install re-validates its target disk.
+
+The same program applies settings to a *target* root with --root, which is how
+the installer carries the choices made in the wizard onto the installed disk:
+/etc/localtime and friends live on the root filesystem, not on LABKIOSK_DATA,
+so they have to be written while the target is still mounted.
+
+Output: human-readable progress on stderr, JSON on stdout. Nothing else may
+reach stdout -- agent.py parses it.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+ZONEINFO_DIR = "/usr/share/zoneinfo"
+ZONE_TAB = os.path.join(ZONEINFO_DIR, "zone1970.tab")
+ZONE_TAB_LEGACY = os.path.join(ZONEINFO_DIR, "zone.tab")
+COUNTRY_TAB = os.path.join(ZONEINFO_DIR, "iso3166.tab")
+SUPPORTED_LOCALES = "/usr/share/i18n/SUPPORTED"
+XKB_RULES = "/usr/share/X11/xkb/rules/evdev.lst"
+# A drop-in rather than timesyncd.conf itself: the package owns that file, and a
+# school that sets its own NTP server should not have to win a conffile prompt
+# on the next update.
+TIMESYNCD_DROPIN = "/etc/systemd/timesyncd.conf.d/labkiosk.conf"
+
+# Deliberately strict. These reach the filesystem and a command line, and a
+# value with "..", a slash too many or a newline in it must never get that far.
+TIMEZONE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_.-]+){1,2}\Z")
+# lang[_TERRITORY][.CODESET][@modifier]. The codeset is optional because
+# /usr/share/i18n/SUPPORTED writes some entries without one ("en_IN UTF-8"),
+# while locale -a reports the generated result as "en_IN.utf8". Three
+# spellings of one locale, so everything is normalised before comparison.
+LOCALE_PATTERN = re.compile(r"^[a-z]{2,3}(?:_[A-Z]{2})?(?:\.[A-Za-z0-9-]{1,16})?(?:@[A-Za-z0-9]{1,16})?\Z")
+KEYMAP_PATTERN = re.compile(r"^[a-z0-9]{1,16}\Z")
+KEYMAP_VARIANT_PATTERN = re.compile(r"^[a-z0-9_-]{0,32}\Z")
+# A hostname or an address, which is all systemd-timesyncd accepts here. Kept
+# strict because this value is written into a configuration file: no spaces, no
+# newlines, nothing that could introduce a second directive.
+NTP_SERVER_PATTERN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._:-]{0,252}[A-Za-z0-9])?\Z")
+MAX_NTP_SERVERS = 4
+
+# A clock this far out is a typo or a dead RTC, not a choice anyone made.
+MIN_YEAR = 2020
+MAX_YEAR = 2100
+
+
+def split_locale(name):
+    rest, _, modifier = name.partition("@")
+    language, _, codeset = rest.partition(".")
+    return language, codeset, modifier
+
+
+def canonical_locale(name):
+    """The spelling this project uses everywhere: en_IN.UTF-8."""
+    language, codeset, modifier = split_locale(name)
+    return f"{language}.{codeset or 'UTF-8'}" + (f"@{modifier}" if modifier else "")
+
+
+def locale_key(name):
+    """A spelling-insensitive key, for comparing against `locale -a`."""
+    language, codeset, modifier = split_locale(name)
+    codeset = (codeset or "UTF-8").replace("-", "").lower()
+    return f"{language}.{codeset}" + (f"@{modifier}" if modifier else "")
+
+
+def log(message):
+    print(f"[localization] {message}", file=sys.stderr)
+
+
+def run(cmd, check=True):
+    """
+    Run a command, tolerating one that is not installed.
+
+    timedatectl, localectl, hwclock and setxkbmap are all optional in practice:
+    absent in the simulator container, absent inside the installer's target
+    root, or present with no X session to talk to. A missing binary must read
+    the same as a command that declined, never as a crash in the middle of
+    applying settings the operator asked for.
+    """
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        if check:
+            raise RuntimeError(f"{cmd[0]} is not installed")
+        log(f"{cmd[0]} is not installed; skipping")
+        return subprocess.CompletedProcess(cmd, 127, "", f"{cmd[0]}: not found")
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} failed ({proc.returncode}): {proc.stderr.strip()}")
+    return proc
+
+
+def systemd_is_running():
+    """Whether timedatectl/localectl have a bus to talk to.
+
+    False in the Docker simulator and inside the installer's chroot, where the
+    files have to be written directly instead.
+    """
+    return os.path.isdir("/run/systemd/system")
+
+
+# ---------------------------------------------------------------------------
+# The system's own data, which is also what the wizard offers
+# ---------------------------------------------------------------------------
+
+def read_countries():
+    """ISO 3166 code -> country name, from tzdata's own table."""
+    countries = {}
+    try:
+        with open(COUNTRY_TAB, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("#"):
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 2 and len(parts[0]) == 2:
+                    countries[parts[0]] = parts[1]
+    except OSError:
+        pass
+    return countries
+
+
+def read_zones():
+    """
+    Every timezone tzdata knows, with the countries it belongs to.
+
+    zone1970.tab is the current table and lists a zone once with every country
+    that shares it; zone.tab is the older per-country one and is read as a
+    fallback so a zone missing from the first still appears.
+    """
+    zones = {}
+
+    def absorb(path, comment_index):
+        try:
+            handle = open(path, "r", encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        with handle:
+            for line in handle:
+                if line.startswith("#"):
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 3:
+                    continue
+                codes = [c for c in parts[0].split(",") if len(c) == 2]
+                name = parts[2]
+                if not TIMEZONE_PATTERN.match(name):
+                    continue
+                entry = zones.setdefault(name, {"zone": name, "countries": [], "comment": ""})
+                for code in codes:
+                    if code not in entry["countries"]:
+                        entry["countries"].append(code)
+                if not entry["comment"] and len(parts) > comment_index:
+                    entry["comment"] = parts[comment_index]
+
+    absorb(ZONE_TAB, 3)
+    absorb(ZONE_TAB_LEGACY, 3)
+    return zones
+
+
+def read_supported_locales():
+    """
+    UTF-8 locales this image can generate, from the locales package.
+
+    Returns an empty list when that package is absent, which is how the wizard
+    knows to offer only the locale already in use.
+    """
+    found = []
+    try:
+        with open(SUPPORTED_LOCALES, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                parts = line.split()
+                if len(parts) == 2 and parts[1].upper() == "UTF-8" and LOCALE_PATTERN.match(parts[0]):
+                    found.append(canonical_locale(parts[0]))
+    except OSError:
+        return []
+    return sorted(set(found))
+
+
+def read_keyboard_layouts():
+    """X11 keyboard layouts, parsed out of the xkb rules list."""
+    layouts = []
+    try:
+        handle = open(XKB_RULES, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return layouts
+    section = None
+    with handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped.startswith("!"):
+                section = stripped[1:].strip().split()[0] if len(stripped) > 1 else None
+                continue
+            if section != "layout" or not stripped:
+                continue
+            code, _, description = stripped.partition(" ")
+            if KEYMAP_PATTERN.match(code):
+                layouts.append({"code": code, "name": description.strip()})
+    return layouts
+
+
+def generated_locales():
+    proc = run(["locale", "-a"], check=False)
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+def validate_timezone(value):
+    if not TIMEZONE_PATTERN.match(value):
+        raise ValueError(f"{value!r} is not a timezone name.")
+    path = os.path.realpath(os.path.join(ZONEINFO_DIR, value))
+    if not path.startswith(ZONEINFO_DIR + os.sep) or not os.path.isfile(path):
+        raise ValueError(f"{value!r} is not a timezone this system knows.")
+    if value not in read_zones():
+        raise ValueError(f"{value!r} is not listed in tzdata's zone table.")
+    return value
+
+
+def validate_locale(value):
+    if not LOCALE_PATTERN.match(value):
+        raise ValueError(f"{value!r} is not a locale name.")
+    canonical = canonical_locale(value)
+    if locale_key(canonical).partition(".")[2].split("@")[0] != "utf8":
+        raise ValueError(f"{value!r} is not a UTF-8 locale; this image ships UTF-8 only.")
+    supported = read_supported_locales()
+    if supported and canonical not in supported:
+        raise ValueError(f"{canonical!r} is not in {SUPPORTED_LOCALES}.")
+    return canonical
+
+
+def validate_keymap(layout, variant):
+    if not KEYMAP_PATTERN.match(layout):
+        raise ValueError(f"{layout!r} is not a keyboard layout name.")
+    known = {entry["code"] for entry in read_keyboard_layouts()}
+    if known and layout not in known:
+        raise ValueError(f"{layout!r} is not a layout this system knows.")
+    if variant and not KEYMAP_VARIANT_PATTERN.match(variant):
+        raise ValueError(f"{variant!r} is not a keyboard variant name.")
+    return layout, variant or ""
+
+
+def validate_ntp_servers(value):
+    """
+    One to four time servers, space or comma separated.
+
+    An empty value is meaningful: it removes the drop-in and hands the
+    workstation back to Debian's pool, which is the right default for a school
+    with no time server of its own.
+    """
+    if not value.strip():
+        return []
+    servers = [part for part in re.split(r"[\s,]+", value.strip()) if part]
+    if len(servers) > MAX_NTP_SERVERS:
+        raise ValueError(f"At most {MAX_NTP_SERVERS} time servers.")
+    for server in servers:
+        if not NTP_SERVER_PATTERN.match(server):
+            raise ValueError(f"{server!r} is not a host name or address.")
+    return servers
+
+
+def validate_time(value):
+    try:
+        when = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError as err:
+        raise ValueError(f"{value!r} is not a date and time (YYYY-MM-DD HH:MM:SS).") from err
+    if not MIN_YEAR <= when.year <= MAX_YEAR:
+        raise ValueError(f"{when.year} is outside {MIN_YEAR}-{MAX_YEAR}.")
+    return when
+
+
+# ---------------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------------
+
+def write_file(root, relative, content):
+    path = os.path.join(root, relative.lstrip("/")) if root != "/" else relative
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return path
+
+
+def apply_timezone(root, timezone):
+    if root == "/" and systemd_is_running():
+        run(["timedatectl", "set-timezone", timezone])
+        log(f"timezone set to {timezone}")
+        return
+    # No bus: write what timedatectl would have written. This is the path the
+    # installer takes for the target disk, and the one the simulator takes.
+    link = os.path.join(root, "etc/localtime") if root != "/" else "/etc/localtime"
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    if os.path.lexists(link):
+        os.unlink(link)
+    os.symlink(os.path.join(ZONEINFO_DIR, timezone), link)
+    write_file(root, "/etc/timezone", timezone + "\n")
+    log(f"timezone written as {timezone}")
+
+
+def adopt_timezone():
+    """
+    Make this process see the timezone it has just set.
+
+    Python reads the zone once and caches it, so without this the state
+    reported back to the wizard is still in the old zone and the change looks
+    as though it did not take.
+    """
+    os.environ.pop("TZ", None)
+    time.tzset()
+
+
+def ensure_locale_generated(root, locale):
+    """
+    Generate the locale if it is missing.
+
+    On a running system this lands in the RAM overlay and costs a second or two
+    at each boot; on a target root it is written to the disk being installed and
+    is there for good.
+    """
+    if root == "/" and locale_key(locale) in {locale_key(name) for name in generated_locales()}:
+        return False
+    if not os.path.isdir("/usr/share/i18n/locales"):
+        log(f"cannot generate {locale}: the locales package is not installed")
+        return False
+
+    language, _, modifier = split_locale(locale)
+    base = language + (f"@{modifier}" if modifier else "")
+    cmd = ["localedef", "-i", base, "-c", "-f", "UTF-8"]
+    if root != "/":
+        # --prefix makes localedef write into the target's /usr/lib/locale,
+        # which has to exist first: on a freshly rsynced target it does, but
+        # saying so plainly beats a cryptic "cannot create temporary file".
+        os.makedirs(os.path.join(root, "usr/lib/locale"), exist_ok=True)
+        cmd += ["--prefix", root]
+    cmd.append(locale)
+    proc = run(cmd, check=False)
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else str(proc.returncode)
+        log(f"could not generate {locale}: {detail}")
+        return False
+    log(f"locale {locale} generated")
+    return True
+
+
+def apply_locale(root, locale, ui_language):
+    generated = ensure_locale_generated(root, locale)
+    lines = [f"LANG={locale}\n"]
+    if ui_language:
+        # Chromium and anything else that reads LANGUAGE honours the interface
+        # language separately from the formats LANG selects, which is what lets
+        # an en_IN workstation keep English formats with a Hindi interface.
+        lines.append(f"LANGUAGE={ui_language}\n")
+    write_file(root, "/etc/default/locale", "".join(lines))
+    if root == "/" and systemd_is_running():
+        run(["localectl", "set-locale", f"LANG={locale}"], check=False)
+    log(f"locale set to {locale}")
+    return generated
+
+
+def apply_keymap(root, layout, variant):
+    content = (
+        "# Written by labkiosk-localization.\n"
+        'XKBMODEL="pc105"\n'
+        f'XKBLAYOUT="{layout}"\n'
+        f'XKBVARIANT="{variant}"\n'
+        'XKBOPTIONS=""\n'
+        'BACKSPACE="guess"\n'
+    )
+    write_file(root, "/etc/default/keyboard", content)
+    if root == "/":
+        if systemd_is_running():
+            run(["localectl", "set-x11-keymap", layout, "pc105", variant], check=False)
+        # The running X session only changes when it is told to, and there may
+        # not be one -- this also runs from the wizard before nodm starts.
+        env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
+        cmd = ["setxkbmap", "-layout", layout]
+        if variant:
+            cmd += ["-variant", variant]
+        try:
+            subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as err:
+            log(f"setxkbmap did not run ({err}); the layout still applies at the next start")
+    log(f"keyboard layout set to {layout}{'/' + variant if variant else ''}")
+
+
+def apply_ntp_servers(root, servers):
+    """Point systemd-timesyncd at the school's own time server, or let it go."""
+    path = os.path.join(root, TIMESYNCD_DROPIN.lstrip("/")) if root != "/" else TIMESYNCD_DROPIN
+    if not servers:
+        try:
+            os.unlink(path)
+            log("time server drop-in removed; the default pool applies again")
+        except FileNotFoundError:
+            pass
+        except OSError as err:
+            log(f"could not remove {path}: {err}")
+    else:
+        content = ("# Written by labkiosk-localization.\n"
+                   "[Time]\n"
+                   f"NTP={' '.join(servers)}\n")
+        write_file(root, TIMESYNCD_DROPIN, content)
+        log(f"time server set to {' '.join(servers)}")
+    if root == "/" and systemd_is_running():
+        # It reads this only at start, and the point of setting it is that the
+        # clock is wrong right now.
+        run(["systemctl", "restart", "systemd-timesyncd"], check=False)
+
+
+def read_ntp_servers():
+    try:
+        with open(TIMESYNCD_DROPIN, "r", encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                if key.strip().upper() == "NTP":
+                    return value.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def apply_clock(when, ntp):
+    """
+    Set the clock by hand, or hand it back to NTP.
+
+    systemd refuses set-time while NTP is enabled, so that is switched off
+    first; the wizard offers this precisely because the network -- and with it
+    any chance of NTP -- is configured in a later step.
+    """
+    if when is not None:
+        if systemd_is_running():
+            run(["timedatectl", "set-ntp", "false"], check=False)
+            run(["timedatectl", "set-time", when.strftime("%Y-%m-%d %H:%M:%S")])
+        else:
+            run(["date", "-s", when.strftime("%Y-%m-%d %H:%M:%S")])
+        run(["hwclock", "--systohc"], check=False)
+        log(f"clock set to {when:%Y-%m-%d %H:%M:%S}")
+    elif ntp is not None and systemd_is_running():
+        run(["timedatectl", "set-ntp", "true" if ntp else "false"], check=False)
+        log(f"network time synchronisation {'enabled' if ntp else 'disabled'}")
+
+
+def current_state():
+    state = {
+        "timezone": "",
+        "locale": "",
+        "uiLanguage": "",
+        "keymap": "",
+        "keymapVariant": "",
+        "ntp": False,
+        "ntpServers": read_ntp_servers(),
+        "localTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    try:
+        with open("/etc/timezone", "r", encoding="utf-8") as handle:
+            state["timezone"] = handle.read().strip()
+    except OSError:
+        link = os.path.realpath("/etc/localtime")
+        if link.startswith(ZONEINFO_DIR + os.sep):
+            state["timezone"] = link[len(ZONEINFO_DIR) + 1:]
+    try:
+        with open("/etc/default/locale", "r", encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                value = value.strip('"')
+                if key == "LANG":
+                    state["locale"] = value
+                elif key == "LANGUAGE":
+                    state["uiLanguage"] = value
+    except OSError:
+        pass
+    try:
+        with open("/etc/default/keyboard", "r", encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                value = value.strip('"')
+                if key == "XKBLAYOUT":
+                    state["keymap"] = value
+                elif key == "XKBVARIANT":
+                    state["keymapVariant"] = value
+    except OSError:
+        pass
+    if systemd_is_running():
+        proc = run(["timedatectl", "show", "-p", "NTP", "--value"], check=False)
+        state["ntp"] = proc.stdout.strip() == "yes"
+    return state
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Apply Lab Kiosk localization settings.")
+    parser.add_argument("--root", default="/",
+                        help="apply to this root instead of the running system (the installer's target)")
+    parser.add_argument("--timezone")
+    parser.add_argument("--locale")
+    parser.add_argument("--ui-language", default="",
+                        help="interface language tag, e.g. en-US; stored as LANGUAGE")
+    parser.add_argument("--keymap")
+    parser.add_argument("--keymap-variant", default="")
+    parser.add_argument("--time", help="YYYY-MM-DD HH:MM:SS, sets the clock by hand")
+    parser.add_argument("--ntp", choices=["on", "off"])
+    parser.add_argument("--ntp-server", default=None,
+                        help="one to four time servers; an empty value restores the default pool")
+    parser.add_argument("--print-state", action="store_true",
+                        help="report the current settings and exit")
+    parser.add_argument("--list-options", action="store_true",
+                        help="report every timezone, country, locale and keyboard layout this system knows")
+    args = parser.parse_args()
+
+    if args.print_state:
+        print(json.dumps(current_state()))
+        return 0
+
+    if args.list_options:
+        # Read-only, so the agent runs this without sudo. Everything comes from
+        # the system's own tables: no list of countries or zones is carried in
+        # this project, which would go stale with every tzdata update.
+        zones = read_zones()
+        print(json.dumps({
+            "countries": [{"code": code, "name": name}
+                          for code, name in sorted(read_countries().items(), key=lambda kv: kv[1])],
+            "zones": [zones[name] for name in sorted(zones)],
+            "locales": read_supported_locales(),
+            "keyboards": read_keyboard_layouts(),
+            "current": current_state(),
+        }))
+        return 0
+
+    root = args.root
+    if root != "/":
+        if not os.path.isdir(root):
+            print(json.dumps({"error": f"{root} is not a directory"}))
+            return 1
+        root = os.path.realpath(root)
+
+    try:
+        timezone = validate_timezone(args.timezone) if args.timezone else None
+        locale = validate_locale(args.locale) if args.locale else None
+        keymap = validate_keymap(args.keymap, args.keymap_variant) if args.keymap else None
+        when = validate_time(args.time) if args.time else None
+        servers = validate_ntp_servers(args.ntp_server) if args.ntp_server is not None else None
+    except ValueError as err:
+        print(json.dumps({"error": str(err)}))
+        return 2
+
+    if args.ui_language and not re.match(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\\Z", args.ui_language):
+        print(json.dumps({"error": f"{args.ui_language!r} is not a language tag"}))
+        return 2
+
+    try:
+        if timezone:
+            apply_timezone(root, timezone)
+            if root == "/":
+                adopt_timezone()
+        if locale:
+            apply_locale(root, locale, args.ui_language)
+        if keymap:
+            apply_keymap(root, keymap[0], keymap[1])
+        if servers is not None:
+            apply_ntp_servers(root, servers)
+        if root == "/":
+            apply_clock(when, {"on": True, "off": False}.get(args.ntp))
+    except (RuntimeError, OSError) as err:
+        print(json.dumps({"error": str(err)}))
+        return 3
+
+    print(json.dumps({"status": "ok", "applied": current_state() if root == "/" else {"root": root}}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

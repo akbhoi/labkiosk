@@ -39,6 +39,14 @@ A service-worker fetch is governed by the extension's `host_permissions` instead
 
 **`content.js` must never fetch the agent directly.** That is an architectural invariant, not a style preference.
 
+One consequence is easy to trip over. Chromium attaches `Origin: chrome-extension://<id>` to every
+non-`GET` fetch from the service worker, so the administrator modal's `POST /api/admin/verify`
+does not look like a loopback caller — the agent answered *"Cross-origin requests are not
+accepted"* until it was taught this one extra origin. `GET`s carry no `Origin` at all, which is
+why the online/offline indicator kept working while the modal did not. The agent matches the
+extension's pinned id (`KIOSK_EXTENSION_ORIGIN`), never the `chrome-extension:` scheme, and it
+names any other rejected origin in its log.
+
 ### Broadcast state lives in extension storage
 
 The active broadcast epoch and URL are held in `chrome.storage.session` under `labkiosk_broadcast`, owned by the service worker.
@@ -63,7 +71,18 @@ Closed matters: a closed shadow root is not reachable from the host element, so 
 
 **Never modify `document.body.style.marginTop`.** Reserving space for the bar breaks full-height layouts on real sites and reintroduces a scrollbar the kiosk does not want.
 
-Controls: Home, Back, Forward, Reload, and a status shield. Navigation is done entirely with the History API in the content script and never touches the agent, so there is no navigation channel to the loopback API at all.
+Controls: Home, Back, Forward, Reload, domain pill, and `.client-meta` housing the network status icon (`#btn-network`), connection status dot (`#kiosk-dot`), and client ID. Navigation is done entirely with the History API in the content script and never touches the agent, so there is no navigation channel to the loopback API at all.
+
+---
+
+## Network management & administrator modal
+
+In addition to navigation buttons, the top bar includes an interactive network indicator (`#btn-network`):
+- **Visual status:** SVG network icon renders with a green stroke (`#10b981`) when online and red (`#ef4444`) when offline.
+- **Discoverability:** the bar slides into view for 2.5 seconds on the first page of each session, then hides itself. A bar that only appears when the pointer reaches the top edge is otherwise invisible to anyone who has not been told about it. The service worker hands out the one-shot flag (`labkiosk:intro-peek`, stored in `chrome.storage.session`), so it happens once per boot rather than on every navigation.
+- **Admin Authentication Modal (`#admin-modal`):** Because students must not tamper with network routes or IPs during class or exams, clicking `#btn-network` renders an isolated password prompt inside the Shadow DOM.
+- **Verification Bridge:** Entering the boot/admin password dispatches `askAgent({ type: "labkiosk:verify-admin", password })` to `background.js`, which invokes the agent's `/api/admin/verify`.
+- **Navigation:** Upon successful verification, the browser navigates to `http://127.0.0.1:8888/setup#network&admin=<token>`. The wizard keeps the short-lived token in memory and strips it from the address bar, so the password is asked only once.
 
 ---
 
@@ -79,7 +98,7 @@ keydown  keypress  keyup
 touchstart  touchmove  touchend
 ```
 
-Events whose `composedPath()` includes `#labkiosk-root` are let through, so the curtain itself keeps working; everything else is discarded with `preventDefault()` and `stopImmediatePropagation()`.
+Events whose `composedPath()` includes `#labkiosk-root` are let through, so the curtain itself and the admin verification modal keep working; everything else is discarded with `preventDefault()` and `stopImmediatePropagation()`.
 
 > This is a **DOM-level block, not an X11 input grab.** It stops the student interacting with the page. Browser- and window-level shortcuts are covered by different layers: Chromium's `--kiosk` switches, the blocked `chrome://` scheme, and Openbox's emptied keybinding table. → [Kiosk Hardening](Kiosk-Hardening)
 
@@ -93,7 +112,11 @@ Independently of the curtain, the content script suppresses `F12`, `Ctrl+Shift+I
 setInterval(syncLoop, 1000);
 ```
 
-Once a second the content script asks the service worker for the agent's status and reconciles: curtain up or down, message text, broadcast navigation when the epoch has advanced. The epoch comparison is what makes a broadcast fire exactly once rather than re-navigating every second.
+Once a second the content script asks the service worker for the agent's status and reconciles:
+- **Lock curtain:** curtain up or down, message text.
+- **Broadcast synchronization:** broadcast navigation when the epoch has advanced.
+- **Online/Offline status:** Updates `#kiosk-dot` and `#kiosk-net-icon`.
+- **Offline Auto-Fallback:** If `data.isOnline` stays false for more than 6 seconds (measured in time, not polls) on a non-loopback, unlocked page, the content script redirects the browser to `http://127.0.0.1:8888/setup#offline`, which returns to the lesson by itself once the connection is back. This allows lab technicians to remediate Wi-Fi/Ethernet disconnects immediately without rebooting or opening a terminal.
 
 Failures are handled deliberately rather than swallowed — an early version let a transient error leave the status dot green while the lock curtain never appeared again.
 

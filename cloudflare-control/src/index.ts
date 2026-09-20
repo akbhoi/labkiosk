@@ -45,6 +45,10 @@ import {
   normalizeDomain,
   regenerateEnrollmentKey,
   writeAuditLog,
+  listUiCatalogs,
+  getUiCatalog,
+  putUiCatalog,
+  deleteUiCatalog,
   listAuditLogs,
   recordLoginFailure,
   clearLoginFailures,
@@ -281,10 +285,69 @@ function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): str
  * they carry their own credential (`/api/telemetry` uses a device token, and
  * `/api/devices/enroll` proves possession of the enrollment key).
  */
+/**
+ * A language tag, and the size limits a catalog has to stay inside.
+ *
+ * A workstation refuses anything larger or stranger than this as well; the
+ * limits exist in both places because neither side may assume the other has
+ * checked.
+ */
+const LANGUAGE_TAG_PATTERN = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$/;
+const CATALOG_MAX_BYTES = 256 * 1024;
+const CATALOG_MAX_KEYS = 2000;
+const CATALOG_MAX_VALUE = 2000;
+
+/**
+ * Reduce a submitted catalog to what a workstation will accept: a flat map of
+ * string to string, plus an optional _meta block. Anything else is rejected
+ * rather than stored, so a bad upload fails here and not in a classroom.
+ */
+function sanitizeCatalog(input: unknown): { body: string; entryCount: number } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("The catalog must be a JSON object");
+  }
+  const source = input as Record<string, unknown>;
+  const keys = Object.keys(source);
+  if (keys.length > CATALOG_MAX_KEYS) {
+    throw new Error(`A catalog may hold at most ${CATALOG_MAX_KEYS} entries`);
+  }
+const output: Record<string, unknown> = Object.create(null);
+  let entryCount = 0;
+  for (const key of keys) {
+    const value = source[key];
+    if (key === "_meta") {
+      const meta = (value && typeof value === "object" && !Array.isArray(value))
+        ? (value as Record<string, unknown>)
+        : {};
+      output._meta = {
+        name: String(meta.name ?? "").slice(0, 120),
+        direction: String(meta.direction ?? "").toLowerCase() === "rtl" ? "rtl" : "ltr",
+      };
+      continue;
+    }
+    if (typeof value !== "string") {
+      throw new Error(`The value for "${key}" is not a string`);
+    }
+    output[key] = value.slice(0, CATALOG_MAX_VALUE);
+    entryCount += 1;
+  }
+  const body = JSON.stringify(output);
+  const byteLength = new TextEncoder().encode(body).length;
+  if (byteLength > CATALOG_MAX_BYTES) {
+    throw new Error(`The catalog is larger than ${Math.floor(CATALOG_MAX_BYTES / 1024)} KB`);
+  }
+  return { body, entryCount };
+}
+
 function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/portal" || path === "/api/status") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
+  // Interface catalogs. A workstation asks for its language before it is
+  // enrolled and holds no credential at that point, and the text is the same
+  // for every school, so these are readable without a session.
+  if (path === "/api/i18n" && method === "GET") return true;
+  if (path.startsWith("/i18n/") && method === "GET") return true;
   return false;
 }
 
@@ -672,10 +735,12 @@ export default {
       }
 
       const allTenants = await listAllTenants(db);
+      const catalogs = await listUiCatalogs(db);
       return new Response(
         renderSuperAdminHtml({
           superAdminEmail: (await findUserById(db, session.user_id))?.email || "admin@akbhoi.com",
           tenants: allTenants,
+          catalogs,
           baseDomain,
           nonce
         }),
@@ -713,6 +778,116 @@ export default {
         console.error("[Worker] Tenant status change failed:", err);
         return jsonError("Could not change this school's status", 400, jsonHeaders);
       }
+    }
+
+    // GET /api/i18n: which interface languages this platform can supply.
+    // Public and read-only: a workstation asks before it is enrolled.
+    if (path === "/api/i18n" && method === "GET") {
+      const catalogs = await listUiCatalogs(db);
+      return new Response(
+        JSON.stringify({
+          languages: catalogs.map((row) => ({
+            tag: row.tag,
+            name: row.name,
+            direction: row.direction,
+            entries: row.entry_count,
+            updatedAt: row.updated_at,
+          })),
+        }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // GET /i18n/<tag>.json: the catalog itself, in the shape the wizard and the
+    // kiosk bar read. Stored already sanitised, so it is handed back verbatim.
+    if (path.startsWith("/i18n/") && path.endsWith(".json") && method === "GET") {
+      const tag = path.slice("/i18n/".length, -".json".length);
+      if (!LANGUAGE_TAG_PATTERN.test(tag)) {
+        return jsonError("No such language", 404, jsonHeaders);
+      }
+      const row = await getUiCatalog(db, tag);
+      if (!row) return jsonError("No such language", 404, jsonHeaders);
+      return new Response(row.body, {
+        headers: {
+          ...jsonHeaders,
+          "Content-Type": "application/json; charset=utf-8",
+          // Interface text changes rarely, and a lab of forty workstations
+          // fetches it at the same moment after a holiday.
+          "Cache-Control": "public, max-age=3600",
+        },
+      });
+    }
+
+    // GET /api/super/i18n: list stored interface catalogs for the super admin.
+    if (path === "/api/super/i18n" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const catalogs = await listUiCatalogs(db);
+      return new Response(
+        JSON.stringify({
+          languages: catalogs.map((row) => ({
+            tag: row.tag,
+            name: row.name,
+            direction: row.direction,
+            entries: row.entry_count,
+            updatedAt: row.updated_at,
+          })),
+        }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // POST /api/super/i18n: upload or replace a catalog. Platform-wide, so it
+    // is the super admin's to write and nobody else's.
+    if (path === "/api/super/i18n" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      try {
+        const body = await request.json<{ tag: string; name?: string; direction?: string; catalog: unknown }>();
+        const tag = String(body.tag || "").trim();
+        if (!LANGUAGE_TAG_PATTERN.test(tag)) {
+          return jsonError("A language tag looks like en-US or hi-IN", 400, jsonHeaders);
+        }
+        const { body: catalogBody, entryCount } = sanitizeCatalog(body.catalog);
+        const name = String(body.name || tag).trim().slice(0, 120) || tag;
+        const direction = String(body.direction || "").toLowerCase() === "rtl" ? "rtl" : "ltr";
+        await putUiCatalog(db, {
+          tag,
+          name,
+          direction,
+          body: catalogBody,
+          entryCount,
+          updatedBy: session?.user_id ?? null,
+        });
+        await writeAuditLog(db, {
+          tenantId: null,
+          userId: session?.user_id ?? null,
+          action: "i18n.upload",
+          details: `${tag} (${entryCount} entries)`,
+        });
+        return new Response(JSON.stringify({ status: "ok", tag, entries: entryCount }), { headers: jsonHeaders });
+      } catch (err) {
+        return jsonError(err instanceof Error ? err.message : "Invalid catalog", 400, jsonHeaders);
+      }
+    }
+
+    // DELETE /api/super/i18n/<tag>: withdraw one. Workstations that already
+    // downloaded it keep what they have; nothing new receives it.
+    if (path.startsWith("/api/super/i18n/") && method === "DELETE") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const tag = path.slice("/api/super/i18n/".length);
+      if (!LANGUAGE_TAG_PATTERN.test(tag)) {
+        return jsonError("No such language", 404, jsonHeaders);
+      }
+      await deleteUiCatalog(db, tag);
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session?.user_id ?? null,
+        action: "i18n.delete",
+        details: tag,
+      });
+      return new Response(JSON.stringify({ status: "ok", tag }), { headers: jsonHeaders });
     }
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain

@@ -3,6 +3,14 @@ linux-image-amd64
 live-boot
 live-config
 live-config-systemd
+# live-tools ships /lib/systemd/system-shutdown/live-tools.shutdown, which is what
+# prints "Please remove the live-medium ... press ENTER" when a live session
+# reboots. It is only a *Recommends* of live-boot, so it vanished when this build
+# stopped installing recommends -- and a machine that had just been installed to
+# disk rebooted straight back into the installer ISO. eject is what that script
+# uses to open a real optical tray; without it the prompt still appears.
+live-tools
+eject
 overlayroot
 systemd-sysv
 grub-efi-amd64-bin
@@ -15,12 +23,21 @@ dosfstools
 e2fsprogs
 rsync
 sudo
-
+# initramfs is xz-compressed (auto/config); without xz the rebuild fails.
+xz-utils
+# Recommends-only, and live media must still boot with Secure Boot enabled.
+shim-signed
+grub-efi-amd64-signed
 
 # Hyper-V & Virtualization Integration
 hyperv-daemons
 
 # Hardware Firmware
+# Listed explicitly: auto/config turns off live-build's "install every firmware
+# package in the archive" default, which added ~875 MB of server-NIC, GPU-compute
+# and Raspberry Pi blobs. CPU microcode carries security fixes, so it stays.
+intel-microcode
+amd64-microcode
 firmware-linux-free
 firmware-misc-nonfree
 firmware-realtek
@@ -32,9 +49,11 @@ xserver-xorg-legacy
 xserver-xorg-video-all
 xserver-xorg-video-fbdev
 xserver-xorg-video-vesa
+# Recommends of xserver-xorg-video-all: Intel iGPUs and QEMU/Proxmox guests.
+xserver-xorg-video-intel
+xserver-xorg-video-qxl
 xserver-xorg-input-all
 xinit
-x11-xserver-utils
 nodm
 openbox
 xdotool
@@ -52,9 +71,22 @@ fonts-noto-color-emoji
 
 # Remote Management & Networking
 x11vnc
-novnc
+# noVNC's web client is vendored from a pinned release (usr/share/labkiosk/novnc.pin):
+# Debian's novnc package drags in Node.js and OpenStack libraries it never uses.
 websockify
 network-manager
+# Recommends-only; the kiosk needs a correct clock for TLS and the ip tool.
+systemd-timesyncd
+# The locale definitions the setup wizard's Language & Region step generates
+# from (~21 MB). Not locales-all, which is 350 MB of pre-generated locales for
+# languages no single school uses: labkiosk-localization generates the one that
+# was chosen, in about three megabytes, at installation time.
+locales
+iproute2
+libnss-systemd
+wpasupplicant
+wireless-regdb
+rfkill
 curl
 python3
 ca-certificates
