@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # debootstrap, the squashfs and the finished hybrid ISO together need
       # well over the free space a stock runner has once its preinstalled
@@ -48,13 +48,13 @@ jobs:
           fi
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Built through buildx so the apt layer is cached. The scope is shared
       # with docker-publish.yml, so a publish run and a release build reuse the
       # same layers instead of each installing live-build from scratch.
       - name: Build the ISO builder image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: distro-builder
           file: distro-builder/Dockerfile
