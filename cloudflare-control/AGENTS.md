@@ -19,7 +19,14 @@ cloudflare-control/
 │   ├── db.ts                           # D1 Database queries, SCHEMA_SQL & tenant seeding
 │   ├── auth.ts                         # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   ├── d1_adapter.ts                   # Node 22+ native `node:sqlite` mock for local unit tests
-│   ├── ui.ts                           # Teacher Lab Dashboard HTML/JS & multi-page sub-routes
+│   ├── ui.ts                           # School admin console: picks the page, fills the shell
+│   ├── ui_admin_shared.ts              # Tenant API scope + Level 2 context panel behaviour
+│   ├── ui_admin_workstations.ts        # One module per admin page: its markup, its context
+│   ├── ui_admin_broadcast.ts           #   panel and its client script together, so a control
+│   ├── ui_admin_portal.ts              #   sits beside the handler that reads it
+│   ├── ui_admin_whitelist.ts
+│   ├── ui_admin_teachers.ts
+│   ├── ui_admin_settings.ts
 │   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
 │   │                                   #   radii and easing, plus the legacy aliases the public
 │   │                                   #   pages were written against
@@ -146,6 +153,20 @@ cloudflare-control/
 - Whether this is a dev host is a property of the **request** (`isDevHost()` in
   `guard.ts`, passed to the renderer as `isDevHost`), never of the configured
   `DEFAULT_DOMAIN`: that is `labkiosk.akbhoi.com` in local development too.
+
+### Rule 5f: One Module Per Admin Page
+- A page of the school console owns its markup, its context-panel contents and
+  its client script in one `ui_admin_<page>.ts`, exported as a single
+  `build<Page>Page(options): AdminPageParts`. `ui.ts` picks the builder and
+  fills the shell; it renders nothing itself.
+- This is not tidiness. All six panels used to live in one switch in a
+  2,450-line module, hundreds of lines from the handlers meant to read them,
+  and that distance is precisely why thirty dead controls sat there unnoticed.
+- `ui_admin_shared.ts` holds only what every page needs: `renderApiScopeScript`
+  (Rule 5e) and `renderSubPanelScripts` (Rule 5d).
+- `test/dump_admin_html.ts` renders all six pages from fixed inputs. Diff its
+  output across a refactor of these modules; the split that created them was
+  verified byte-for-byte that way.
 ### Rule 6: State-Changing Requests Prove Their Origin
 - Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host, the platform domain, or a dev host. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.

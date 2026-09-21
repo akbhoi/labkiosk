@@ -40,7 +40,10 @@ labkiosk/
 │   │   ├── db.ts                       # D1 Database queries, SCHEMA_SQL & tenant seeding
 │   │   ├── auth.ts                     # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   │   ├── d1_adapter.ts               # Node 22+ native `node:sqlite` mock for local unit tests
-│   │   ├── ui.ts                       # Teacher Lab Dashboard HTML/JS & multi-page sub-routes
+│   │   ├── ui.ts                       # School admin console: picks the page, fills the shell
+│   │   ├── ui_admin_shared.ts          # Tenant API scope + Level 2 context panel behaviour
+│   │   ├── ui_admin_*.ts               # One module per admin page: its markup, its context
+│   │   │                               #   panel and its client script together
 │   │   ├── ui_tokens.ts                # The one declaration of the design language: colours,
 │   │   │                               #   radii and easing, plus the legacy aliases the public
 │   │   │                               #   pages were written against
