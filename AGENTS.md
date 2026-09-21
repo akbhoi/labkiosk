@@ -40,10 +40,17 @@ labkiosk/
 │   │   ├── db.ts                       # D1 Database queries, SCHEMA_SQL & tenant seeding
 │   │   ├── auth.ts                     # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   │   ├── d1_adapter.ts               # Node 22+ native `node:sqlite` mock for local unit tests
-│   │   ├── ui.ts                       # Teacher Lab Dashboard HTML/JS & multi-page sub-routes
-│   │   ├── ui_layout.ts                # Shared responsive layout shell, nav tabs, design tokens
+│   │   ├── ui.ts                       # School admin console: picks the page, fills the shell
+│   │   ├── ui_admin_shared.ts          # Tenant API scope + Level 2 context panel behaviour
+│   │   ├── ui_admin_*.ts               # One module per admin page: its markup, its context
+│   │   │                               #   panel and its client script together
+│   │   ├── ui_tokens.ts                # The one declaration of the design language: colours,
+│   │   │                               #   radii and easing, plus the legacy aliases the public
+│   │   │                               #   pages were written against
+│   │   ├── ui_layout.ts                # Shared shell: 72px rail, 272px context panel, primitives
 │   │   ├── ui_landing.ts               # Public SaaS Landing Page
-│   │   ├── ui_portal.ts                # Student Learning Portal (Educational Cards Grid)
+│   │   ├── ui_school_home.ts           # The school homepage at the subdomain root (/)
+│   │   ├── ui_portal.ts                # Student Learning Portal at /home (cards grid)
 │   │   ├── ui_super.ts                 # Super Admin Master Console (/super)
 │   │   ├── ui_legal.ts                 # Legal compliance pages (/privacy, /terms)
 │   │   └── types.ts                    # Strict TypeScript interfaces
@@ -148,10 +155,19 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 ### Rule 4b: Left-Side Multi-Level Panels Design & Seamless Transitions
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) enforce a unified **Left-Side Multi-Level Panels Architecture**:
   - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, primary module icons (Workstations, Broadcast, Portal, Whitelist, Teachers, Settings), live counter pills, user badge, and collapse toggle.
-  - **Level 2 (Secondary Action Panel — 260px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific sub-views, quick filters (All, Online, Locked), and batch action triggers.
+  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific sub-views, quick filters (All, Online, Locked), and batch action triggers.
   - **Content Area**: Fluid layout adapting smoothly to panel states without content jumping or horizontal scrollbars.
   - **Transitions & Micro-Interactions**: Hardware-accelerated CSS transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
 
+
+### Rule 4c: One Design Language, Declared Once
+- `cloudflare-control/src/ui_tokens.ts` is the single declaration of the design
+  language for every web surface: the two consoles, the public landing page, the
+  student portal and the legal pages. Each renders its `:root` from
+  `rootTokensCss()` and its fonts from `FONT_LINKS`; none opens a `:root` of its own.
+- A class a page renders must be a class the shell declares, and the test suite
+  fails otherwise. See Rule 5c in
+  [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md).
 ### Rule 5: Zero Placeholders
 - ❌ No `// TODO: Implement later`
 - ❌ No empty `catch (e) {}` blocks.

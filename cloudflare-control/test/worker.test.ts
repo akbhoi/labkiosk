@@ -222,8 +222,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ---------------------------------------------------------- student portal
 
-  test("Serves Student Learning Portal on school subdomain /", async () => {
-    const res = await call("/?tenant=greenwood");
+  test("Serves the Student Learning Portal at /home on a school subdomain", async () => {
+    const res = await call("/home?tenant=greenwood");
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Content-Type"), "text/html; charset=utf-8");
     const html = await res.text();
@@ -231,6 +231,89 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /Select an Educational Resource/);
     assert.match(html, /Khan Academy/);
     assert.match(html, /Scratch Studio/);
+  });
+
+  test("The subdomain root is the school homepage, and /portal is gone", async () => {
+    // The root used to render the app grid, the same page as /home and /portal.
+    // It is the school's own page now.
+    const home = await call("/?tenant=greenwood");
+    assert.equal(home.status, 200);
+    const html = await home.text();
+    assert.match(html, /Greenwood High School/);
+    assert.match(html, /Enter the Lab/);
+    // It is not the app grid.
+    assert.doesNotMatch(html, /Select an Educational Resource/);
+    // And it links to where the grid actually is.
+    assert.match(html, /href="\/home\?tenant=greenwood"/);
+
+    // /portal was dropped. It must not quietly render something else.
+    const gone = await call("/portal?tenant=greenwood");
+    assert.notEqual(gone.status, 200, "/portal must no longer serve a page");
+  });
+
+  test("A school edits its homepage, and the editor is guarded", async () => {
+    const payload = {
+      headline: "Welcome to Greenwood Computing",
+      intro: "Lessons run here every weekday.",
+      blocks: [
+        { title: "Library", body: "Open at break.", url: "library.greenwood.edu" },
+        { title: "", body: "", url: "https://dropped.example" },
+        { title: "No link", body: "Just a notice." }
+      ]
+    };
+
+    // Anonymous callers are refused. An anonymous request that names another
+    // school is refused at tenant resolution (403) rather than at the guard.
+    const anon = await call("/api/tenant/homepage?tenant=greenwood", json(payload));
+    assert.ok(anon.status === 401 || anon.status === 403, `anonymous got ${anon.status}`);
+
+    // And so is a signed-in account that does not own this school. Rule 2 keeps
+    // the super admin out of every school but demo.
+    const asSuper = await call("/api/tenant/homepage?tenant=greenwood", {
+      ...json(payload),
+      cookie: superSessionCookie
+    });
+    assert.ok(asSuper.status === 401 || asSuper.status === 403, `super admin got ${asSuper.status}`);
+
+    const saved = await callJson("/api/tenant/homepage?tenant=greenwood", {
+      ...json(payload),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(saved.res.status, 200);
+    // The empty block is dropped and the scheme-less URL is repaired.
+    assert.equal(saved.data.blocks.length, 2);
+    assert.equal(saved.data.blocks[0].url, "https://library.greenwood.edu/");
+    assert.equal(saved.data.blocks[1].url, null);
+
+    const html = await (await call("/?tenant=greenwood")).text();
+    assert.match(html, /Welcome to Greenwood Computing/);
+    assert.match(html, /Lessons run here every weekday/);
+    assert.match(html, /Open at break/);
+    assert.match(html, /Just a notice/);
+  });
+
+  test("A hostile homepage block cannot break out of the page", async () => {
+    const hostileTitle = '</h3><script>alert("xss")</script>';
+    await callJson("/api/tenant/homepage?tenant=greenwood", {
+      ...json({
+        headline: '</h1><img src=x onerror="alert(1)">',
+        intro: "",
+        blocks: [{ title: hostileTitle, body: "ok", url: "javascript:alert(1)" }]
+      }),
+      cookie: schoolSessionCookie
+    });
+
+    const html = await (await call("/?tenant=greenwood")).text();
+    assert.ok(!html.includes(hostileTitle), "a hostile block title must not render as markup");
+    assert.ok(!html.includes('onerror="alert(1)"'), "a hostile headline must not render as an attribute");
+    assert.ok(!html.includes("javascript:alert(1)"), "a non-http(s) link must be dropped, not rendered");
+    assert.match(html, /&lt;\/h3&gt;/);
+
+    // Put it back so later tests see a normal page.
+    await callJson("/api/tenant/homepage?tenant=greenwood", {
+      ...json({ headline: "", intro: "", blocks: [] }),
+      cookie: schoolSessionCookie
+    });
   });
 
   test("Returns 404 for an unknown subdomain without reflecting it as markup", async () => {
@@ -259,7 +342,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(addData.site.domain, "eyes.nasa.gov");
     createdSiteId = addData.site.id;
 
-    const portalHtml = await (await call("/?tenant=greenwood")).text();
+    const portalHtml = await (await call("/home?tenant=greenwood")).text();
     assert.match(portalHtml, /NASA Space Sims/);
 
     const { res: delRes, data: delData } = await callJson(
@@ -286,7 +369,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: schoolSessionCookie
     });
 
-    const html = await (await call("/?tenant=greenwood")).text();
+    const html = await (await call("/home?tenant=greenwood")).text();
     assert.ok(!html.includes(hostileTitle), "a hostile title must not break out of the portal markup");
     assert.match(html, /&lt;\/script&gt;/);
   });
@@ -311,13 +394,288 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(opened, closed, "unbalanced <div> tags nest the modals inside one another");
 
     // Each dialog must be a top-level sibling, not a child of a hidden overlay.
-    for (const id of ["vnc-modal", "url-modal", "lock-modal", "whitelist-modal", "portal-modal", "settings-modal"]) {
+    for (const id of ["vnc-modal", "url-modal", "lock-modal"]) {
       const start = body.indexOf(`<div class="modal-overlay" id="${id}">`);
       assert.notEqual(start, -1, `${id} overlay not found in the rendered dashboard`);
       const before = body.slice(0, start);
       const depth = (before.match(/<div\b/g) || []).length - (before.match(/<\/div>/g) || []).length;
       assert.equal(depth, 0, `${id} must not be nested inside another modal`);
     }
+
+    // The allowlist, portal and settings editors live on their own pages. A
+    // second copy used to sit in a dialog here, built on an `input-field`
+    // class that was never defined -- so those inputs rendered as white
+    // browser defaults -- and the settings copy saved nothing at all.
+    for (const id of ["whitelist-modal", "portal-modal", "settings-modal"]) {
+      assert.equal(body.includes(`id="${id}"`), false, `${id} duplicates a dedicated page and must not come back`);
+    }
+    for (const page of ["/admin/whitelist", "/admin/portal", "/admin/settings"]) {
+      assert.ok(body.includes(`href="${page}"`), `the toolbar must link to ${page}`);
+    }
+  });
+
+  test("Every CSS class the consoles render is declared by the shared shell", async () => {
+    // `input-field` was used fourteen times and declared nowhere, which is how a
+    // white-on-white form ended up inside a dark console. Nothing catches that
+    // but a render, so render every page and compare the two sets.
+    const pages = [
+      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
+      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
+      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
+      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
+      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
+      ["/super/schools", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie]
+    ];
+
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, { cookie })).text();
+      const style = html.split("<style>")[1].split("</style>")[0];
+      const declared = new Set((style.match(/\.[a-z][a-z0-9_-]*/g) || []).map((c) => c.slice(1)));
+      const used = new Set<string>();
+      for (const attr of html.match(/class="[^"<>]*"/g) || []) {
+        for (const name of attr.slice(7, -1).split(/\s+/)) {
+          if (/^[a-z][a-z0-9_-]*$/.test(name)) used.add(name);
+        }
+      }
+      // A "btn-" name is a JavaScript hook; its appearance is carried by .btn.
+      const missing = [...used].filter((c) => !declared.has(c) && !c.startsWith("btn-"));
+      assert.deepEqual(missing, [], `${page} renders CSS classes the shell never declares: ${missing.join(", ")}`);
+    }
+  });
+
+  test("The consoles never speak through a native browser dialog", async () => {
+    // window.alert/confirm/prompt cannot be styled, block the 3-second telemetry
+    // poll for as long as they are up, and made the platform console look like a
+    // different product from the school one. The shell provides lkToast,
+    // lkConfirm and lkPrompt instead.
+    const pages = [
+      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
+      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
+      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
+      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
+      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
+      ["/super/schools", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie]
+    ];
+
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, { cookie })).text();
+      for (const script of html.split("<script").slice(1)) {
+        const body = script.slice(script.indexOf(">") + 1);
+        const offender = body.split("\n").find((line) => /(^|[^\w.])(alert|confirm|prompt)\s*\(/.test(line));
+        assert.equal(
+          offender,
+          undefined,
+          `${page} still calls a native dialog: ${(offender || "").trim()}`
+        );
+      }
+      // And the replacements have to actually be on the page.
+      assert.ok(html.includes("window.lkToast"), `${page} is missing the toast kit`);
+      assert.ok(html.includes("window.lkConfirm"), `${page} is missing the confirm dialog`);
+    }
+  });
+
+  test("Every inline script on every page actually parses", async () => {
+    // A stray brace in the student portal clock made its whole <script> block a
+    // syntax error, so the clock never started. Nothing caught it: the block
+    // lives inside a template literal, so tsc never sees it as code, and
+    // rendering a page does not run it. new Function parses without executing.
+    const pages: Array<[string, string | undefined]> = [
+      ["/", undefined],
+      ["/home?tenant=greenwood", undefined],
+      ["/privacy", undefined],
+      ["/terms", undefined],
+      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
+      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
+      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
+      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
+      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
+      ["/super/schools", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie]
+    ];
+
+    let parsed = 0;
+    for (const [page, cookie] of pages) {
+      const res = await call(page, cookie ? { cookie } : {});
+      assert.equal(res.status, 200, `${page} did not render`);
+      const html = await res.text();
+
+      for (const chunk of html.split("<script").slice(1)) {
+        const opens = chunk.indexOf(">");
+        const closes = chunk.indexOf("</script>");
+        if (opens < 0 || closes < 0) continue;
+        const body = chunk.slice(opens + 1, closes);
+        if (!body.trim()) continue;
+        try {
+          new Function(body);
+        } catch (err) {
+          assert.fail(`${page} has a <script> that does not parse: ${(err as Error).message}`);
+        }
+        parsed++;
+      }
+    }
+
+    // Guard the guard: if the extraction ever stops finding scripts, this test
+    // would pass by checking nothing.
+    assert.ok(parsed >= pages.length, `only ${parsed} scripts were parsed across ${pages.length} pages`);
+  });
+
+  test("Every data- control in the context panel is one the panel script reads", async () => {
+    // The panel shipped once as markup with no behaviour at all, and later a
+    // density toggle was added whose attribute was left out of the delegated
+    // selector -- so the buttons rendered, highlighted on hover, and did
+    // nothing. Neither failure shows up in a typecheck.
+    const pages = [
+      "/admin/workstations?tenant=greenwood",
+      "/admin/broadcast?tenant=greenwood",
+      "/admin/portal?tenant=greenwood",
+      "/admin/whitelist?tenant=greenwood",
+      "/admin/teachers?tenant=greenwood",
+      "/admin/settings?tenant=greenwood"
+    ];
+
+    for (const page of pages) {
+      const html = await (await call(page, { cookie: schoolSessionCookie })).text();
+      const panel = html.match(/<aside class="sub-panel"[\s\S]*?<\/aside>/);
+      assert.ok(panel, `${page} has no context panel`);
+
+      const used = new Set((panel![0].match(/\sdata-(focus|density|filter|action|preset|quick-domain)=/g) || []).map((a) => a.trim().slice(0, -1)));
+      assert.ok(used.size > 0, `${page} renders a panel with no controls at all`);
+
+      // The one selector the delegated listener matches against.
+      const selector = html.match(/event\.target\.closest\("([^"]+)"\)/);
+      assert.ok(selector, `${page} does not delegate panel clicks`);
+
+      for (const attribute of used) {
+        assert.ok(
+          selector![1].includes(`[${attribute}]`),
+          `${page} renders ${attribute} but the panel listener never matches it`
+        );
+      }
+    }
+  });
+
+  test("Every link the console renders goes somewhere, and the portal preview goes to the grid", async () => {
+    // Moving the app grid from / to /home left the context panel's "Preview
+    // Student Portal" link pointing at /, which had quietly become the school
+    // homepage. It did not 404 and it did not fail a typecheck -- it simply
+    // opened the wrong page, which is the whole failure mode Rule 5g warns
+    // about: these paths are somewhere a link, or a workstation, is pinned.
+    // On the school's own host, which is where the console lives in production
+    // and what its host-relative links are written against.
+    const host = "greenwood.labkiosk.akbhoi.com";
+    const open = (path: string) => call(path, { cookie: schoolSessionCookie, headers: { host } });
+    const pages = [
+      "/admin/workstations",
+      "/admin/broadcast",
+      "/admin/portal",
+      "/admin/whitelist",
+      "/admin/teachers",
+      "/admin/settings"
+    ];
+
+    const targets = new Map<string, string>();
+    let portalHtml = "";
+    for (const page of pages) {
+      const html = await (await open(page)).text();
+      if (page === "/admin/portal") portalHtml = html;
+      for (const match of html.matchAll(/href="(\/[^"#]*)"/g)) targets.set(match[1], page);
+    }
+    assert.ok(targets.size > 0, "no internal links were found at all");
+
+    for (const [target, page] of targets) {
+      const res = await open(target);
+      assert.notEqual(res.status, 404, `${page} links to ${target}, which does not exist`);
+    }
+
+    // The two preview links on the portal manager open the same thing, and it
+    // is the app grid rather than the school's own homepage.
+    const previews = [...portalHtml.matchAll(/href="([^"]+)"[^>]*>[\s\S]{0,400}?Preview Student Portal/g)].map((m) => m[1]);
+    assert.equal(previews.length, 2, `expected both preview links, found ${previews.length}`);
+    for (const href of previews) {
+      assert.ok(href.startsWith("/home"), `a "Preview Student Portal" link points at ${href}, not the app grid`);
+    }
+
+    const grid = await (await open(previews[0])).text();
+    assert.match(grid, /Select an Educational Resource/, "the preview link must reach the app grid");
+  });
+
+  test("Platform action history is readable, and only by a super admin", async () => {
+    // Every privileged action was already written to audit_logs and none of it
+    // could be read back: listAuditLogs filters `tenant_id = ?`, so the entries
+    // with no tenant -- catalog uploads and deletions -- were invisible to
+    // everything, and no console called the tenant-scoped route either.
+    await callJson("/api/super/i18n", {
+      ...json({ tag: "de-DE", name: "Deutsch", catalog: { "bar.home": "Startseite" } }),
+      cookie: superSessionCookie
+    });
+
+    const res = await call("/api/super/audit-logs", { cookie: superSessionCookie });
+    assert.equal(res.status, 200);
+    const { logs } = (await res.json()) as { logs: Array<{ action: string; details?: string | null }> };
+    assert.ok(logs.some((entry) => entry.action === "i18n.upload"), "the catalog upload must be listed");
+
+    // Anonymous and school-admin callers are refused.
+    assert.equal((await call("/api/super/audit-logs")).status, 401);
+    const asSchool = await call("/api/super/audit-logs", { cookie: schoolSessionCookie });
+    assert.ok(asSchool.status === 401 || asSchool.status === 403, `school admin got ${asSchool.status}`);
+
+    await callJson("/api/super/i18n/de-DE", { method: "DELETE", cookie: superSessionCookie });
+  });
+
+  test("Platform history never exposes a school's own activity", async () => {
+    // Rule 2 keeps super admins out of school data. The query matches on who
+    // acted, never on which school was acted upon, so a teacher adding a portal
+    // card must not appear here even though that row carries a tenant_id.
+    await callJson("/api/portal-sites?tenant=greenwood", {
+      ...json({ title: "Private Lab Tool", url: "https://internal.greenwood.example" }),
+      cookie: schoolSessionCookie
+    });
+
+    const { logs } = (await (await call("/api/super/audit-logs?limit=200", { cookie: superSessionCookie })).json()) as {
+      logs: Array<{ action: string; details?: string | null }>;
+    };
+    // Prove the row exists before asserting it is absent, so this cannot pass
+    // just because nothing was written.
+    const own = (await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json()) as {
+      logs: Array<{ action: string; details?: string | null }>;
+    };
+    assert.ok(
+      own.logs.some((entry) => (entry.details || "").includes("Private Lab Tool")),
+      "the school must be able to see its own action"
+    );
+
+    const leaked = logs.find((entry) => (entry.details || "").includes("Private Lab Tool"));
+    assert.equal(leaked, undefined, "a school's own action leaked into the platform history");
+  });
+
+  test("A school can read what the platform did to its lab", async () => {
+    // The answer to \"who changed our subdomain\". The super admin acts with the
+    // school's tenant_id on the row, so it belongs in that school's own log.
+    const meRes = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+    const greenwoodTenantId = meRes.data.tenant.id;
+
+    const before = await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json();
+    assert.ok(Array.isArray((before as { logs: unknown[] }).logs));
+
+    await callJson("/api/super/tenants/suspend", { ...json({ tenantId: greenwoodTenantId }), cookie: superSessionCookie });
+    await callJson("/api/super/tenants/reactivate", { ...json({ tenantId: greenwoodTenantId }), cookie: superSessionCookie });
+
+    const { logs } = (await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json()) as {
+      logs: Array<{ action: string }>;
+    };
+    assert.ok(logs.some((entry) => entry.action === "tenant.suspend"), "the suspension must be visible to the school");
+    assert.ok(logs.some((entry) => entry.action === "tenant.reactivate"), "so must the reactivation");
   });
 
   test("Redirects an unauthenticated visitor away from /admin", async () => {
@@ -603,7 +961,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       mockEnv
     );
     assert.equal(school.status, 200);
-    assert.match(await school.text(), /Select an Educational Resource/);
+    // The root is the school homepage now; the app grid is at /home.
+    assert.match(await school.text(), /Enter the Lab/);
   });
 
   // ---------------------------------------------------------- custom domains
@@ -643,11 +1002,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     );
     assert.equal(portal.status, 200);
     const html = await portal.text();
-    assert.match(html, /Protected Kiosk Session/);
-    assert.match(html, /<title>Greenwood High School - Student Learning Portal<\/title>/);
-    assert.match(html, /Select an Educational Resource/);
+    // The custom domain root is the school homepage, same as the subdomain root.
+    assert.match(html, /Enter the Lab/);
     assert.match(html, /Greenwood High School/);
     assert.ok(!html.includes("Centralized School Computer Lab Management"), "custom domain must not render landing page");
+
+    // And /home on that domain is the app grid.
+    const grid = await worker.fetch(
+      new Request("https://kiosk.greenwood.edu/home", { headers: { host: "kiosk.greenwood.edu" } }),
+      mockEnv
+    );
+    assert.equal(grid.status, 200);
+    const gridHtml = await grid.text();
+    assert.match(gridHtml, /Protected Kiosk Session/);
+    assert.match(gridHtml, /<title>Greenwood High School - Student Learning Portal<\/title>/);
+    assert.match(gridHtml, /Select an Educational Resource/);
   });
 
   test("Enrols a workstation using customDomain", async () => {
@@ -760,7 +1129,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(getData.portalFooter, "RESTRICTED LAB ENVIRONMENT • MIT COMPUTING");
 
     // 3. Student portal renders the customized branding
-    const portalHtml = await (await call("/?tenant=greenwood")).text();
+    const portalHtml = await (await call("/home?tenant=greenwood")).text();
     assert.ok(portalHtml.includes("Robotics Workstation Portal"), "portal title must be customized");
     assert.ok(portalHtml.includes("Department of Mechanical Engineering"), "portal subtitle must be customized");
     assert.ok(portalHtml.includes("Select an engineering simulation tool below:"), "portal description must be customized");
@@ -855,14 +1224,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ------------------------------------------------- security headers & CSP
 
   test("Every HTML page carries a strict CSP whose nonce matches every script and no inline handlers", async () => {
-    const pages: Array<[string, string | undefined]> = [
-      ["/", undefined],
-      ["/?login=1", undefined],
-      ["/?tenant=greenwood", undefined],
-      ["/admin?tenant=greenwood", schoolSessionCookie],
-      ["/super", superSessionCookie]
+    // The third element says whether this page is expected to carry a script.
+    // A page with none is legitimate -- the school homepage has no script at
+    // all -- but every script that does render must carry this nonce.
+    const pages: Array<[string, string | undefined, boolean]> = [
+      ["/", undefined, true],
+      ["/?login=1", undefined, true],
+      ["/?tenant=greenwood", undefined, false],
+      ["/home?tenant=greenwood", undefined, true],
+      ["/admin?tenant=greenwood", schoolSessionCookie, true],
+      ["/super", superSessionCookie, true]
     ];
-    for (const [path, cookie] of pages) {
+    for (const [path, cookie, expectsScript] of pages) {
       const res = await call(path, cookie ? { cookie } : {});
       assert.equal(res.status, 200, `${path} should render`);
       const csp = res.headers.get("Content-Security-Policy") || "";
@@ -876,7 +1249,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
       const html = await res.text();
       const scripts = html.match(/<script\b[^>]*>/g) || [];
-      assert.ok(scripts.length > 0, `${path} renders at least one script block`);
+      if (expectsScript) {
+        assert.ok(scripts.length > 0, `${path} renders at least one script block`);
+      }
       for (const tag of scripts) {
         assert.ok(tag.includes(`nonce="${nonce}"`), `${path}: script tag without this response's nonce: ${tag}`);
       }
@@ -1283,7 +1658,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: superSessionCookie
     });
 
-    const page = await call("/super", { cookie: superSessionCookie });
+    const page = await call("/super/catalogs", { cookie: superSessionCookie });
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.ok(html.includes("Workstation Interface Catalogs (i18n)"));
@@ -1293,6 +1668,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await callJson("/api/super/i18n/fr-FR", { method: "DELETE", cookie: superSessionCookie });
   });
 
+  test("Super console renders one tab at a time", async () => {
+    // The four panes were emitted together and hidden with an inline `display`,
+    // except the schools directory, which had neither a display rule nor any
+    // matching CSS -- so every tenant row rendered on the approvals, catalogs
+    // and system pages too.
+    const directoryHeading = "Registered Schools &amp; Institutions";
+
+    const schools = await (await call("/super/schools", { cookie: superSessionCookie })).text();
+    assert.ok(schools.includes(directoryHeading), "schools tab shows the directory");
+
+    for (const tab of ["/super/approvals", "/super/catalogs", "/super/system"]) {
+      const res = await call(tab, { cookie: superSessionCookie });
+      assert.equal(res.status, 200);
+      const body = await res.text();
+      assert.ok(!body.includes(directoryHeading), tab + " must not leak the schools directory");
+    }
+
+    const approvals = await (await call("/super/approvals", { cookie: superSessionCookie })).text();
+    assert.ok(approvals.includes("Pending Subdomain Requests"));
+    const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
+    assert.ok(system.includes("Platform Architecture"));
+    assert.ok(!system.includes("Pending Subdomain Requests"));
+  });
+
   // ------------------------------------------ modern admin & privacy isolation
 
   test("Super admin is restricted from school consoles but allowed on demo tenant", async () => {
@@ -1300,13 +1699,133 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const deniedRes = await call("/admin?tenant=greenwood", { cookie: superSessionCookie });
     assert.equal(deniedRes.status, 403);
     const deniedHtml = await deniedRes.text();
-    assert.match(deniedHtml, /You do not have access to that school(?:'|&#39;)s console/);
+    // The refusal has to say which refusal it is. Telling a platform admin
+    // "you do not have access" reads like a broken account rather than the
+    // privacy isolation it actually is, and gives no route onward.
+    assert.match(deniedHtml, /Platform administrators cannot open a school console/);
+    assert.match(deniedHtml, /only the demo school is available for testing/);
+    assert.match(deniedHtml, /Super Admin console/);
+    // And it must not claim the account lacks access.
+    assert.doesNotMatch(deniedHtml, /You do not have access to that school(?:'|&#39;)s console/);
 
     // 2. Super admin accesses demo tenant console -> 200 OK
     const demoRes = await call("/admin?tenant=demo", { cookie: superSessionCookie });
     assert.equal(demoRes.status, 200);
     const demoHtml = await demoRes.text();
     assert.match(demoHtml, /Workstation Grid &amp; Remote Control/);
+  });
+
+  test("Sign-in lands where the request came from, not always on /super", async () => {
+    // The landing page used to decide this itself and sent every super admin to
+    // /super whatever host they had signed in on. Signing in on demo.<domain> to
+    // reach the demo console threw you to the platform console, and nothing in
+    // the UI led back. The server decides now: it is the only side that knows
+    // the host and which consoles the account may open.
+    const login = (body: object, headers: Record<string, string> = {}) =>
+      call("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(body)
+      });
+
+    const superCreds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
+
+    // On the apex, a super admin belongs in the platform console.
+    const onApex = await (await login(superCreds)).json();
+    assert.equal((onApex as { redirect: string }).redirect, "/super");
+
+    // On the demo subdomain, they belong in the console they were looking at.
+    const onDemo = await (await login(superCreds, { host: "demo.labkiosk.akbhoi.com" })).json();
+    assert.equal(
+      (onDemo as { redirect: string }).redirect,
+      "https://demo.labkiosk.akbhoi.com/admin",
+      "a super admin signing in on demo must land on the demo console"
+    );
+
+    // On any other school, Rule 2 applies: they may not open it, so /super.
+    const onGreenwood = await (await login(superCreds, { host: "greenwood.labkiosk.akbhoi.com" })).json();
+    assert.equal(
+      (onGreenwood as { redirect: string }).redirect,
+      "/super",
+      "a super admin must never be sent into a school they cannot open"
+    );
+
+    // A school admin still lands on their own console wherever they signed in.
+    const asSchool = await (await login(
+      { email: "teacher@greenwood.edu", password: "SchoolPassword123!" },
+      { host: "labkiosk.akbhoi.com" }
+    )).json();
+    assert.equal((asSchool as { redirect: string }).redirect, "https://greenwood.labkiosk.akbhoi.com/admin");
+  });
+
+  test("Sign-in honours the school the page was showing, not just the host", async () => {
+    // The first version of this fix only read the Host header, and the sign-in
+    // POST goes to /api/auth/login with no query string. So on a dev host, and
+    // on the apex with ?tenant=demo, the server still saw no school and sent a
+    // super admin to /super -- which is the whole complaint, unfixed. The page
+    // now sends the school it was showing.
+    const login = (body: object) =>
+      call("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+
+    const creds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
+
+    const viaBody = await (await login({ ...creds, tenant: "demo" })).json();
+    assert.equal(
+      (viaBody as { redirect: string }).redirect,
+      "https://demo.labkiosk.akbhoi.com/admin",
+      "the page said it was showing demo, so that is where the sign-in belongs"
+    );
+
+    // The hint is a hint. It cannot open a school Rule 2 keeps them out of.
+    const notAllowed = await (await login({ ...creds, tenant: "greenwood" })).json();
+    assert.equal(
+      (notAllowed as { redirect: string }).redirect,
+      "/super",
+      "a client-supplied school must not route a super admin into it"
+    );
+
+    // Nor does a school admin get moved by one.
+    const teacher = await (await login({
+      email: "teacher@greenwood.edu",
+      password: "SchoolPassword123!",
+      tenant: "demo"
+    })).json();
+    assert.equal(
+      (teacher as { redirect: string }).redirect,
+      "https://greenwood.labkiosk.akbhoi.com/admin",
+      "a school admin goes to their own console whatever the page claimed"
+    );
+  });
+
+  test("A signed-out teacher can follow /admin all the way to a sign-in form", async () => {
+    // The whole chain, because every link in it was broken independently and
+    // each one on its own looked fine.
+
+    // 1. /admin while signed out redirects to the sign-in page, naming the school.
+    const bounced = await call("/admin", { headers: { host: "demo.labkiosk.akbhoi.com" } });
+    assert.equal(bounced.status, 302);
+    const target = bounced.headers.get("Location")!;
+    assert.match(target, /login=1/);
+    assert.match(target, /tenant=demo/);
+
+    // 2. That target must actually render a sign-in form. Naming a school used
+    //    to route it to that school's own page -- the portal before the
+    //    homepage existed, the homepage after -- so this link never reached one.
+    const page = await call(new URL(target).pathname + new URL(target).search);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /id="login-form"/, "the sign-in redirect must reach a sign-in form");
+    assert.doesNotMatch(html, /Enter the Lab/, "it must not be the school homepage");
+    // Not asserting the absence of the app grid text here: the landing page's
+    // own live simulator mimics the portal and legitimately contains it.
+
+    // 3. And the page has to tell the server which school it was showing, or the
+    //    sign-in lands on /super however the rest of this works.
+    assert.match(html, /currentTenantSlug/, "the page must send its tenant with the sign-in");
   });
 
   test("Redirects /admin on apex domain to appropriate tenant subdomain or super console", async () => {

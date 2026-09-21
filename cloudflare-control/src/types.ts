@@ -49,6 +49,12 @@ export interface Tenant {
   /** Monotonic marker workstations use to detect a new broadcast; 0 when none is active. */
   broadcast_epoch?: number;
   home_route?: string | null;
+  /** Headline on the school homepage. Falls back to the school name. */
+  homepage_headline?: string | null;
+  /** One or two lines under the headline. */
+  homepage_intro?: string | null;
+  /** A JSON array of HomepageBlock; read it with parseHomepageBlocks. */
+  homepage_blocks?: string | null;
   tunnel_domain?: string | null;
   created_at: number;
   updated_at: number;
@@ -117,6 +123,14 @@ export interface WhitelistEntry {
   tenant_id: string;
   domain: string;
   created_at: number;
+}
+
+/** One editable section of a school homepage. */
+export interface HomepageBlock {
+  title: string;
+  body: string;
+  /** An http(s) link, already validated by safeHttpUrl. */
+  url: string | null;
 }
 
 export interface AuditLogEntry {

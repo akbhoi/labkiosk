@@ -19,10 +19,21 @@ cloudflare-control/
 │   ├── db.ts                           # D1 Database queries, SCHEMA_SQL & tenant seeding
 │   ├── auth.ts                         # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   ├── d1_adapter.ts                   # Node 22+ native `node:sqlite` mock for local unit tests
-│   ├── ui.ts                           # Teacher Lab Dashboard HTML/JS & multi-page sub-routes
-│   ├── ui_layout.ts                    # Shared responsive layout shell, nav tabs, design tokens
+│   ├── ui.ts                           # School admin console: picks the page, fills the shell
+│   ├── ui_admin_shared.ts              # Tenant API scope + Level 2 context panel behaviour
+│   ├── ui_admin_workstations.ts        # One module per admin page: its markup, its context
+│   ├── ui_admin_broadcast.ts           #   panel and its client script together, so a control
+│   ├── ui_admin_portal.ts              #   sits beside the handler that reads it
+│   ├── ui_admin_whitelist.ts
+│   ├── ui_admin_teachers.ts
+│   ├── ui_admin_settings.ts
+│   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
+│   │                                   #   radii and easing, plus the legacy aliases the public
+│   │                                   #   pages were written against
+│   ├── ui_layout.ts                    # Shared shell: 72px rail, 272px context panel, primitives
 │   ├── ui_landing.ts                   # Public SaaS Landing Page
-│   ├── ui_portal.ts                    # Student Learning Portal (Educational Cards Grid)
+│   ├── ui_school_home.ts               # The school homepage at the subdomain root (/)
+│   ├── ui_portal.ts                    # Student Learning Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms)
 │   └── types.ts                        # Strict TypeScript interfaces
@@ -95,10 +106,88 @@ cloudflare-control/
 ### Rule 5b: Left-Side Multi-Level Panels Design & Seamless Transitions
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
   - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Broadcast, Portal, Whitelist, Teachers, Settings), live stats counter, user avatar, and panel expand/collapse toggle.
-  - **Level 2 (Secondary Action Panel — 260px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific sub-views, quick filters (All, Online, Locked), and batch action triggers.
+  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific sub-views, quick filters (All, Online, Locked), and batch action triggers.
   - **Content Area**: Fluid layout adapting smoothly to panel states without content jumping or horizontal scrollbars.
   - **Transitions & Micro-Interactions**: Hardware-accelerated transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
 
+
+### Rule 5c: One Design Language, Declared Once
+- **`src/ui_tokens.ts` is the only place a colour, radius, easing curve or panel
+  width is defined.** Every surface renders its `:root` from `rootTokensCss()` and
+  its typography from `FONT_LINKS`. Never open a second `:root` block in a `ui*.ts`
+  file.
+- This rule exists because the four surfaces each used to carry their own: the
+  consoles on `#080c14`, the landing page and the portal on `#090d16` with a
+  different border grey, and the legal pages on a third set declared twice in one
+  file. Near-miss values are what make one product look like four.
+- `LEGACY_*_ALIASES` map the older variable names (`--bg`, `--panel`, `--muted`,
+  `--green`) onto the canonical ones so the existing rules in `ui_landing.ts`,
+  `ui_portal.ts` and `ui_legal.ts` keep working. New CSS uses the canonical names.
+- **A class a page renders must be a class the shell declares.** `input-field` was
+  used fourteen times and declared nowhere, so those inputs rendered as white
+  browser defaults inside a dark console for as long as they existed. A test
+  renders every console page and fails on any class the stylesheet does not carry.
+- `--text-subtle` is `#808fa6` and not a darker slate because the section headings
+  it paints have to clear 4.5:1 against `--bg-panel`, `--bg-surface` and
+  `--bg-card`. The WCAG 2.2 AA claim in Rule 5b is only true while it does.
+
+### Rule 5d: The Context Panel Is Wired, Not Decorative
+- Every control the Level 2 panel renders does something. It shipped as markup
+  only once: `data-filter`, `data-action`, `data-preset` and `data-quick-domain`
+  were read by nothing, the three "Add ..." shortcuts pointed at element ids that
+  did not exist, the five settings jump links pointed at sections that did not
+  exist, and the four telemetry counts never moved off the zero they rendered with.
+  That is roughly thirty dead controls in the product's most-used surface.
+- `renderSubPanelScripts()` in `ui.ts` owns the behaviour and is emitted on every
+  admin page. A panel control is a `data-` attribute that function reads, or it does
+  not go in the panel.
+- A command the panel triggers delegates to the page's own button rather than
+  re-implementing the call, so there is one code path per action. Where the page
+  has no such button, the panel navigates to the page that does.
+
+### Rule 5e: The Tenant Rides Along on a Dev Host
+- Client-side calls go through `window.labkioskApi(path)`, never bare `fetch("/api/...")`.
+- In production the school is its own subdomain and the `Host` header resolves the
+  tenant. On `localhost` / `127.0.0.1` there is no subdomain, the tenant travels as
+  `?tenant=<slug>`, and a call without it answers `400 No school selected` -- which
+  is what made the entire dashboard untestable with `pnpm dev`.
+- Whether this is a dev host is a property of the **request** (`isDevHost()` in
+  `guard.ts`, passed to the renderer as `isDevHost`), never of the configured
+  `DEFAULT_DOMAIN`: that is `labkiosk.akbhoi.com` in local development too.
+
+### Rule 5f: One Module Per Admin Page
+- A page of the school console owns its markup, its context-panel contents and
+  its client script in one `ui_admin_<page>.ts`, exported as a single
+  `build<Page>Page(options): AdminPageParts`. `ui.ts` picks the builder and
+  fills the shell; it renders nothing itself.
+- This is not tidiness. All six panels used to live in one switch in a
+  2,450-line module, hundreds of lines from the handlers meant to read them,
+  and that distance is precisely why thirty dead controls sat there unnoticed.
+- `ui_admin_shared.ts` holds only what every page needs: `renderApiScopeScript`
+  (Rule 5e) and `renderSubPanelScripts` (Rule 5d).
+- `test/dump_admin_html.ts` renders all six pages from fixed inputs. Diff its
+  output across a refactor of these modules; the split that created them was
+  verified byte-for-byte that way.
+
+### Rule 5g: Three Paths on a School Host, Each With One Job
+- `/` is the **school homepage**: a headline, an introduction and the content
+  blocks the school publishes, rendered by `ui_school_home.ts`. It is the page
+  a school puts its own name on, and the only one a visitor sees first.
+- `/home` is the **student app grid** (`ui_portal.ts`), the launcher a student
+  picks a site from.
+- `/admin` is the **school console**, and `/admin/<page>` its sub-pages.
+- `/portal` no longer exists. All three paths used to render the same grid,
+  which is why `home_route` could be set to any of them. A school that had
+  pointed its workstations at `/portal` would have had them reset to a 404, so
+  migration 0008 moves those to `/home` and the option is gone from Lab
+  Settings. **Never add a fourth alias**: every one of them is somewhere a
+  workstation can be pinned, and removing it later breaks classrooms.
+- Single-site lockdown outranks both public paths: a school in `single_url`
+  mode redirects to its locked site from `/` and `/home` alike.
+- Homepage text is school-supplied and rendered to students. It is normalised
+  and size-capped on the way in (`sanitizeHomepageBlocks`), escaped on the way
+  out, and a block link goes through `safeHttpUrl()` on both sides -- neither
+  side may assume the other did it.
 ### Rule 6: State-Changing Requests Prove Their Origin
 - Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host, the platform domain, or a dev host. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.
@@ -151,6 +240,11 @@ pnpm dev                        # predev applies migrations/ to local D1
 | **"Columns of 'x' differ between SCHEMA_SQL and migrations/"** | The two copies of the database schema drifted. | Apply schema changes to both `migrations/` (new file) and `SCHEMA_SQL` in `src/db.ts`. |
 | **"No D1 database bound" on startup** | Worker failed closed because `env.DB` was missing. | Bind `DB` in `wrangler.jsonc`, or set `ALLOW_LOCAL_DB=1` for local development/tests only. |
 | **Workstations disagree about the active broadcast** | Broadcast state was stored in isolate memory, which differs across edge colos. | Store `broadcast_url` and `broadcast_epoch` in the `tenants` table in D1. |
+| **A form inside the console renders as a white box with black text** | The markup used a class the shell never declared (`input-field`). An undeclared class styles nothing, so the control falls back to the browser default. | Use `.form-input` / `.form-select` / `.form-textarea` from `ui_layout.ts`. A test renders every console page and fails on any class the stylesheet does not carry. |
+| **A control in the left context panel does nothing** | Its `data-` attribute is not one `renderSubPanelScripts()` reads, or its target element id does not exist on that page. | Add the case to that function, or take the control out. See Rule 5d. |
+| **Every dashboard API call answers `400 No school selected` under `pnpm dev`** | The call was written as a bare `fetch("/api/...")`. There is no school subdomain on a dev host, so nothing resolves the tenant. | Call `labkioskApi(path)`. See Rule 5e. |
+| **A page looks subtly off-brand next to the consoles** | It declared its own `:root`. Four surfaces each had one, on four different backgrounds. | Render `:root` from `rootTokensCss()` in `ui_tokens.ts`. See Rule 5c. |
+| **A `/super` tab shows another tab's content** | All four panes were emitted together and hidden with an inline `display`, and `.tab-pane` had no CSS at all -- so the pane without an inline rule rendered everywhere. | Render one pane. `panesByTab[activeTab]` in `ui_super.ts` is the only thing that reaches the page. |
 | **Resetting Broadcast lands on SaaS landing page instead of school portal** | `resetBroadcastToPortal()` sent `origin + "/"` without tenant scoping. | Authoritatively resolve `portalUrlFor(tenant)` in `POST /api/command`. |
 | **Single-Site Lockdown URL rejected without scheme** | URL lacked `https://` prefix (e.g. `canvas.institution.edu`). | `safeHttpUrl()` in `escape.ts` automatically prepends `https://` for scheme-less domains. |
 | **Cloudflare Dashboard env vars overwritten on deploy** | Defining `vars` in `wrangler.jsonc` overrides Cloudflare dashboard variables. | Omit `vars` block from `wrangler.jsonc`. Manage production secrets via Cloudflare Dashboard / `wrangler secret`. |

@@ -82,9 +82,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <td>${escapeHtml(new Date(t.created_at * 1000).toISOString().slice(0, 10))}</td>
       <td>
         <div style="display: flex; gap: 6px;">
-          <button class="btn btn-sm btn-success btn-approve-sub" data-tenant="${escapeHtml(t.id)}" data-subdomain="${escapeHtml(t.requested_subdomain || t.subdomain)}">Approve</button>
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeHtml(t.id)}">Assign Custom</button>
-          <button class="btn btn-sm btn-danger btn-reject-sub" data-tenant="${escapeHtml(t.id)}">Reject</button>
+          <button class="btn btn-sm btn-success btn-approve-sub" data-tenant="${escapeAttr(t.id)}" data-subdomain="${escapeAttr(t.requested_subdomain || t.subdomain)}">Approve</button>
+          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Assign Custom</button>
+          <button class="btn btn-sm btn-danger btn-reject-sub" data-tenant="${escapeAttr(t.id)}">Reject</button>
         </div>
       </td>
     </tr>
@@ -105,8 +105,8 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </td>
       <td>
         <div style="display: flex; gap: 6px;">
-          <button class="btn btn-sm btn-success btn-approve-custom" data-tenant="${escapeHtml(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}">Approve Domain</button>
-          <button class="btn btn-sm btn-danger btn-reject-custom" data-tenant="${escapeHtml(t.id)}">Reject</button>
+          <button class="btn btn-sm btn-success btn-approve-custom" data-tenant="${escapeAttr(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}">Approve Domain</button>
+          <button class="btn btn-sm btn-danger btn-reject-custom" data-tenant="${escapeAttr(t.id)}">Reject</button>
         </div>
       </td>
     </tr>
@@ -150,17 +150,17 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         <div style="display: flex; gap: 6px; flex-wrap: wrap;">
           ${
             isDemo
-              ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">Open Test Console (Demo)</a>`
+              ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">Open Test Console (Demo)</a>`
               : `<span class="badge" style="background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid var(--border);">Console Restricted (Privacy)</span>`
           }
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeHtml(t.id)}">Edit Subdomain</button>
-          <button class="btn btn-sm btn-secondary btn-assign-custom" data-tenant="${escapeHtml(t.id)}">Assign Custom</button>
-          ${t.custom_domain ? `<button class="btn btn-sm btn-danger btn-remove-custom" data-tenant="${escapeHtml(t.id)}">Disconnect</button>` : ""}
+          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>
+          <button class="btn btn-sm btn-secondary btn-assign-custom" data-tenant="${escapeAttr(t.id)}">Assign Custom</button>
+          ${t.custom_domain ? `<button class="btn btn-sm btn-danger btn-remove-custom" data-tenant="${escapeAttr(t.id)}">Disconnect</button>` : ""}
           ${
             t.status === "active"
-              ? `<button class="btn btn-sm btn-danger btn-suspend" data-tenant="${escapeHtml(t.id)}">Suspend</button>`
+              ? `<button class="btn btn-sm btn-danger btn-suspend" data-tenant="${escapeAttr(t.id)}">Suspend</button>`
               : t.status === "suspended"
-                ? `<button class="btn btn-sm btn-success btn-reactivate" data-tenant="${escapeHtml(t.id)}">Reactivate</button>`
+                ? `<button class="btn btn-sm btn-success btn-reactivate" data-tenant="${escapeAttr(t.id)}">Reactivate</button>`
                 : ""
           }
         </div>
@@ -183,6 +183,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       label: "Approvals Queue",
       href: "/super/approvals",
       badge: pendingCount > 0 ? pendingCount : undefined,
+      badgeTone: "attention",
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`
     },
     {
@@ -232,15 +233,20 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     </div>
   `;
 
-  const contentHtml = `
-    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: var(--radius); padding: 16px 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 14px; font-size: 13px; color: #bfdbfe;">
+  // Each console tab renders on its own. The four panes used to be emitted
+  // together and hidden with an inline `display`, except #pane-schools, which
+  // carried no display rule and no matching CSS -- so the whole schools
+  // directory, every tenant row included, rendered above the approvals,
+  // catalogs and system pages as well.
+  const bannerHtml = `    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: var(--radius); padding: 16px 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 14px; font-size: 13px; color: #bfdbfe;">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       <div>
         <strong>Privacy Invariant Enforced:</strong> Platform Super Administrators cannot access individual school consoles or view student workstation telemetry. Consoles are accessible solely to authorized school instructors. The dedicated <code>demo</code> tenant is available for platform testing.
       </div>
     </div>
+  `;
 
-    <div class="tab-pane ${activeTab === "schools" ? "active" : ""}" id="pane-schools">
+  const schoolsPaneHtml = `
       <div class="card" style="padding: 0; overflow: hidden;">
         <div style="padding: 20px 24px; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
           <h2 class="card-title" style="margin-bottom: 0;">Registered Schools &amp; Institutions (${tenants.length})</h2>
@@ -264,9 +270,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </table>
         </div>
       </div>
-    </div>
+  `;
 
-    <div class="tab-pane ${activeTab === "approvals" ? "active" : ""}" id="pane-approvals" style="display: ${activeTab === "approvals" ? "block" : "none"};">
+  const approvalsPaneHtml = `
       <div class="card">
         <h2 class="card-title">Pending Subdomain Requests (${pendingList.length})</h2>
         <p class="card-sub">Schools requesting initial activation or subdomain modifications.</p>
@@ -307,34 +313,35 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </table>
         </div>
       </div>
-    </div>
+  `;
 
-    <div class="tab-pane ${activeTab === "catalogs" ? "active" : ""}" id="pane-catalogs" style="display: ${activeTab === "catalogs" ? "block" : "none"};">
+  const catalogsPaneHtml = `
       <div class="card">
         <h2 class="card-title">Upload / Replace Translation Catalog</h2>
         <p class="card-sub">Deploy multi-language user interfaces to the first-boot setup wizard and top bar.</p>
 
         <form id="form-upload-catalog" style="max-width: 600px;">
-          <div style="display: flex; gap: 12px; margin-bottom: 14px;">
-            <div style="flex: 1;">
-              <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px;">Language Tag</label>
+          <div class="grid-2col" style="gap: 12px;">
+            <div class="form-group">
+              <label class="form-label" for="catalog-tag">Language Tag</label>
               <input type="text" id="catalog-tag" required placeholder="e.g. hi-IN or fr-FR" class="form-input">
             </div>
-            <div style="flex: 1;">
-              <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px;">Display Name</label>
+            <div class="form-group">
+              <label class="form-label" for="catalog-name">Display Name</label>
               <input type="text" id="catalog-name" placeholder="e.g. Hindi or Français" class="form-input">
             </div>
           </div>
-          <div style="margin-bottom: 14px;">
-            <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px;">Direction</label>
+          <div class="form-group">
+            <label class="form-label" for="catalog-direction">Direction</label>
             <select id="catalog-direction" class="form-select">
               <option value="ltr">LTR (Left to Right)</option>
               <option value="rtl">RTL (Right to Left)</option>
             </select>
           </div>
-          <div style="margin-bottom: 16px;">
-            <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px;">Catalog JSON Content</label>
+          <div class="form-group">
+            <label class="form-label" for="catalog-json">Catalog JSON Content</label>
             <textarea id="catalog-json" rows="6" required placeholder='{"bar.home": "Home", ...}' class="form-textarea" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;"></textarea>
+            <p class="form-hint">A flat map of string to string. Uploaded catalogs are platform-wide: never put anything school-specific in one.</p>
           </div>
           <button type="submit" class="btn btn-primary">Upload Translation Catalog</button>
         </form>
@@ -360,9 +367,30 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </table>
         </div>
       </div>
-    </div>
+  `;
 
-    <div class="tab-pane ${activeTab === "system" ? "active" : ""}" id="pane-system" style="display: ${activeTab === "system" ? "block" : "none"};">
+  const auditCardHtml = `
+      <div class="card" id="platform-audit">
+        <h2 class="card-title">Platform Action History</h2>
+        <p class="card-sub">Catalog changes, and every platform action taken on a school. A school\u2019s own activity is not shown here and is not readable from this console.</p>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody id="platform-audit-rows">
+              <tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 24px;">Loading\u2026</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+  `;
+
+  const systemPaneHtml = `
       <div class="card">
         <h2 class="card-title">Platform Architecture &amp; Database Health</h2>
         <p class="card-sub">Cloudflare D1 edge database status and real-time operational telemetry.</p>
@@ -370,7 +398,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
             <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Database Engine</div>
             <div style="font-size: 18px; font-weight: 800; margin-top: 4px; color: #93c5fd;">Cloudflare D1 (SQLite)</div>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">Schema migrations: 0001..0007 applied</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">Schema verified at boot by assertSchemaCurrent()</div>
           </div>
           <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
             <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Zero Runtime NPM</div>
@@ -380,20 +408,35 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
             <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Client OS Overlay</div>
             <div style="font-size: 18px; font-weight: 800; margin-top: 4px; color: #fde68a;">100% RAM Overlay</div>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">overlayroot="tmpfs", 0 SSD Wear</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">overlayroot="tmpfs:recurse=0", 0 SSD Wear</div>
           </div>
         </div>
       </div>
-    </div>
+${auditCardHtml}
   `;
 
+  const panesByTab: Record<typeof activeTab, string> = {
+    schools: schoolsPaneHtml,
+    approvals: approvalsPaneHtml,
+    catalogs: catalogsPaneHtml,
+    system: systemPaneHtml
+  };
+
+  const contentHtml = `${bannerHtml}
+${panesByTab[activeTab] || schoolsPaneHtml}`;
+
   const scriptsHtml = `
-    <script nonce="${escapeHtml(nonce)}">
+    <script nonce="${escapeAttr(nonce)}">
       document.querySelectorAll(".btn-approve-sub").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const subdomain = btn.dataset.subdomain;
-          if (!confirm("Approve subdomain '" + subdomain + "' for this school?")) return;
+          const agreed = await lkConfirm({
+            title: "Approve '" + subdomain + "'?",
+            message: "The console and student portal for this school go live on that address straight away, and its workstations can enrol against it.",
+            confirmLabel: "Approve"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/approve", {
               method: "POST",
@@ -404,10 +447,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Approval failed");
+              lkToast(data.error || "Approval failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -415,7 +458,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       document.querySelectorAll(".btn-reject-sub").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Reject this school's registration / subdomain request?")) return;
+          const agreed = await lkConfirm({
+            title: "Reject this request?",
+            message: "The school stays pending and cannot enrol workstations. Nothing is deleted, so you can approve it later.",
+            confirmLabel: "Reject",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/reject", {
               method: "POST",
@@ -426,10 +475,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Rejection failed");
+              lkToast(data.error || "Rejection failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -438,7 +487,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const customDomain = btn.dataset.domain;
-          if (!confirm("Approve custom domain '" + customDomain + "'?")) return;
+          const agreed = await lkConfirm({
+            title: "Approve " + customDomain + "?",
+            message: "Traffic on that hostname will route to this school. Their DNS has to point at the worker before it resolves.",
+            confirmLabel: "Approve domain"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/custom-domain/approve", {
               method: "POST",
@@ -449,10 +503,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Custom domain approval failed");
+              lkToast(data.error || "Custom domain approval failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -460,7 +514,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       document.querySelectorAll(".btn-reject-custom").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Reject this custom domain request?")) return;
+          const agreed = await lkConfirm({
+            title: "Reject this domain request?",
+            message: "The school keeps its subdomain address and can request a different domain later.",
+            confirmLabel: "Reject",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/custom-domain/reject", {
               method: "POST",
@@ -471,10 +531,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to reject custom domain");
+              lkToast(data.error || "Failed to reject custom domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -482,7 +542,14 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       document.querySelectorAll(".btn-edit-sub").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          const newSub = prompt("Enter new subdomain for this school:");
+          const newSub = await lkPrompt({
+            title: "Assign a subdomain",
+            message: "The school reaches its console and portal at this address. Changing it breaks the old one immediately.",
+            label: "Subdomain",
+            placeholder: "greenwood",
+            hint: "Lowercase letters, digits and hyphens. Reserved slugs are refused.",
+            confirmLabel: "Assign"
+          });
           if (!newSub) return;
           try {
             const res = await fetch("/api/super/tenants/approve", {
@@ -494,10 +561,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to assign subdomain");
+              lkToast(data.error || "Failed to assign subdomain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -505,7 +572,14 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       document.querySelectorAll(".btn-assign-custom").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          const customDomain = prompt("Enter custom domain to assign (e.g. kiosk.myschool.edu):");
+          const customDomain = await lkPrompt({
+            title: "Assign a custom domain",
+            message: "The hostname the school owns. Their DNS has to point at this worker before it will resolve.",
+            label: "Domain",
+            placeholder: "kiosk.myschool.edu",
+            hint: "A hostname only: no scheme, no path, no port.",
+            confirmLabel: "Assign"
+          });
           if (!customDomain) return;
           try {
             const res = await fetch("/api/super/tenants/custom-domain/approve", {
@@ -517,10 +591,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to assign custom domain");
+              lkToast(data.error || "Failed to assign custom domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -528,7 +602,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       document.querySelectorAll(".btn-remove-custom").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Disconnect custom domain from this school?")) return;
+          const agreed = await lkConfirm({
+            title: "Disconnect this custom domain?",
+            message: "The school falls back to its subdomain. Workstations enrolled against the custom domain will need reconfiguring.",
+            confirmLabel: "Disconnect",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/custom-domain/remove", {
               method: "POST",
@@ -539,10 +619,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to disconnect domain");
+              lkToast(data.error || "Failed to disconnect domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -550,7 +630,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       document.querySelectorAll(".btn-suspend").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Suspend this school? Workstations and student portal will be deactivated.")) return;
+          const agreed = await lkConfirm({
+            title: "Suspend this school?",
+            message: "Its student portal stops serving, its workstations stop reporting and no new one can enrol. Nothing is deleted and you can reactivate at any time.",
+            confirmLabel: "Suspend school",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/suspend", {
               method: "POST",
@@ -561,10 +647,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to suspend school");
+              lkToast(data.error || "Failed to suspend school", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -572,7 +658,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       document.querySelectorAll(".btn-reactivate").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Reactivate this school?")) return;
+          const agreed = await lkConfirm({
+            title: "Reactivate this school?",
+            message: "Its portal, console and workstation telemetry all resume.",
+            confirmLabel: "Reactivate"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/reactivate", {
               method: "POST",
@@ -583,13 +674,69 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to reactivate school");
+              lkToast(data.error || "Failed to reactivate school", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
+
+      const auditRows = document.getElementById("platform-audit-rows");
+      if (auditRows) {
+        (async function loadPlatformAudit() {
+          function placeholder(text) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 3;
+            cell.style.cssText = "text-align: center; color: var(--text-muted); padding: 24px;";
+            cell.textContent = text;
+            row.appendChild(cell);
+            return row;
+          }
+          try {
+            const res = await fetch("/api/super/audit-logs?limit=60");
+            const data = await res.json();
+            const logs = Array.isArray(data.logs) ? data.logs : [];
+            auditRows.replaceChildren();
+            if (!logs.length) {
+              auditRows.appendChild(placeholder("No platform actions recorded yet."));
+              return;
+            }
+            for (const entry of logs) {
+              const row = document.createElement("tr");
+
+              const when = document.createElement("td");
+              when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
+              const date = new Date(entry.created_at * 1000);
+              when.textContent = isNaN(date.getTime()) ? "\u2014" : date.toISOString().slice(0, 16).replace("T", " ");
+              row.appendChild(when);
+
+              const action = document.createElement("td");
+              const badge = document.createElement("span");
+              // Red for what takes something away, green for what grants it.
+              const removes = /suspend|reject|delete|remove/.test(entry.action);
+              const grants = /approve|reactivate|upload/.test(entry.action);
+              badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
+              // textContent: an action string is data, and details carries a
+              // school-supplied subdomain or domain.
+              badge.textContent = entry.action;
+              action.appendChild(badge);
+              row.appendChild(action);
+
+              const detail = document.createElement("td");
+              detail.style.cssText = "color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere;";
+              detail.textContent = entry.details || "\u2014";
+              row.appendChild(detail);
+
+              auditRows.appendChild(row);
+            }
+          } catch (err) {
+            auditRows.replaceChildren();
+            auditRows.appendChild(placeholder("Could not load the action history."));
+          }
+        })();
+      }
 
       const catalogForm = document.getElementById("form-upload-catalog");
       if (catalogForm) {
@@ -604,7 +751,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           try {
             parsed = JSON.parse(rawJson);
           } catch {
-            alert("Invalid JSON format");
+            lkToast("Invalid JSON format", "error");
             return;
           }
 
@@ -616,13 +763,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             });
             const data = await res.json();
             if (data.status === "ok") {
-              alert("Catalog uploaded successfully (" + data.entries + " entries)");
+              lkToastAfterReload("Catalog uploaded: " + data.entries + " entries.", "success");
               window.location.reload();
             } else {
-              alert(data.error || "Upload failed");
+              lkToast(data.error || "Upload failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       }
@@ -630,17 +777,24 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       document.querySelectorAll(".btn-delete-catalog").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tag = btn.dataset.tag;
-          if (!tag || !confirm("Delete interface catalog '" + tag + "'?")) return;
+          if (!tag) return;
+          const agreed = await lkConfirm({
+            title: "Delete the '" + tag + "' catalog?",
+            message: "Workstations set to that language fall back to English at their next start. The catalogs are platform-wide, so this affects every school.",
+            confirmLabel: "Delete",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/i18n/" + encodeURIComponent(tag), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to delete catalog");
+              lkToast(data.error || "Failed to delete catalog", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -652,6 +806,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     brandTitle: "Super Admin Master Console",
     brandSubtitle: `${baseDomain} • Global Governance`,
     brandIconSvg: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`,
+    brandHref: "/super",
     navItems,
     activeNavId: activeTab,
     subPanelTitle: "Platform Governance",

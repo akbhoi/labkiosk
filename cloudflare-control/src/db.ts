@@ -3,12 +3,14 @@
  * Handles schema initialization, Super Admin seeding, multi-tenant queries, and device state.
  */
 
+import { safeHttpUrl } from "./escape";
 import {
   User,
   Tenant,
   Session,
   PortalSite,
   ClientDevice,
+  HomepageBlock,
   RemoteCommand,
   CommandAction,
   DeviceToken,
@@ -59,6 +61,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   broadcast_epoch INTEGER NOT NULL DEFAULT 0,
   home_route TEXT DEFAULT '/',
   tunnel_domain TEXT,
+  homepage_headline TEXT,
+  homepage_intro TEXT,
+  homepage_blocks TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -609,8 +614,63 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "broadcast_url",
   "broadcast_epoch",
   "home_route",
-  "tunnel_domain"
+  "tunnel_domain",
+  "homepage_headline",
+  "homepage_intro",
+  "homepage_blocks"
 ]);
+
+/** How many blocks a school may publish, and how long each part may be. */
+export const HOMEPAGE_LIMITS = { blocks: 12, title: 120, body: 600, intro: 400, headline: 120 } as const;
+
+/**
+ * Parse the stored block list.
+ *
+ * Anything malformed reads as an empty list rather than throwing: this is
+ * rendered on the page students land on, and a homepage with no notices is a
+ * far better failure than a school whose site will not load.
+ */
+export function parseHomepageBlocks(raw: unknown): HomepageBlock[] {
+  if (typeof raw !== "string" || !raw.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const block = entry as Record<string, unknown>;
+    const title = typeof block.title === "string" ? block.title : "";
+    const body = typeof block.body === "string" ? block.body : "";
+    const url = typeof block.url === "string" ? block.url : "";
+    if (!title && !body) return [];
+    return [{ title, body, url: url || null }];
+  });
+}
+
+/**
+ * Normalise a block list on its way in: trim, cap, drop the empty ones and
+ * keep only http(s) links. The caller is a browser and is not a trust
+ * boundary; the renderer escapes as well, because neither side may assume
+ * the other did.
+ */
+export function sanitizeHomepageBlocks(raw: unknown): HomepageBlock[] {
+  if (!Array.isArray(raw)) return [];
+  const blocks: HomepageBlock[] = [];
+  for (const entry of raw) {
+    if (blocks.length >= HOMEPAGE_LIMITS.blocks) break;
+    if (!entry || typeof entry !== "object") continue;
+    const block = entry as Record<string, unknown>;
+    const title = String(block.title ?? "").trim().slice(0, HOMEPAGE_LIMITS.title);
+    const body = String(block.body ?? "").trim().slice(0, HOMEPAGE_LIMITS.body);
+    if (!title && !body) continue;
+    const url = safeHttpUrl(block.url);
+    blocks.push({ title, body, url });
+  }
+  return blocks;
+}
 
 export async function updateTenant(
   db: D1Database,
@@ -1494,6 +1554,29 @@ export async function writeAuditLog(
     // record is itself worth surfacing in the worker logs.
     console.error("[DB] Failed writing audit log:", err);
   }
+}
+
+/**
+ * The platform action history, for the super admin console.
+ *
+ * Two kinds of entry qualify, and both were unreadable before this: rows with
+ * no tenant at all (a catalog upload is not any school's business, and
+ * `listAuditLogs` filters `tenant_id = ?`, so nothing could ever list them),
+ * and rows a super admin wrote against a school -- approving a subdomain,
+ * suspending a lab.
+ *
+ * It deliberately cannot reach a school's own activity. Rule 2 keeps super
+ * admins out of school data, so the second clause matches on who acted, never
+ * on which school was acted upon.
+ */
+export async function listPlatformAuditLogs(db: D1Database, limit = 100): Promise<AuditLogEntry[]> {
+  const res = await db
+    .prepare(
+      "SELECT * FROM audit_logs WHERE tenant_id IS NULL OR user_id IN (SELECT id FROM users WHERE role = 'super_admin') ORDER BY created_at DESC LIMIT ?"
+    )
+    .bind(Math.min(Math.max(limit, 1), 500))
+    .all<AuditLogEntry>();
+  return res.results || [];
 }
 
 export async function listAuditLogs(

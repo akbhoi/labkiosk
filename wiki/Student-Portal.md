@@ -2,7 +2,7 @@
 
 The Student Learning Portal is what a student sees when a workstation is idle: a grid of application cards curated by their teacher, served from their school's own subdomain.
 
-It is rendered by `src/ui_portal.ts` at `/` on a tenant host, and at `/portal` explicitly.
+It is rendered by `src/ui_portal.ts` at `/home` on a tenant host. The root `/` serves the school homepage (`src/ui_school_home.ts`) instead, and `/portal` was removed.
 
 ---
 

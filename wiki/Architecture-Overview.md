@@ -120,7 +120,7 @@ labkiosk.example.edu            ->  platform apex: landing page, no tenant
 - the request arrived on a development host (`localhost`, `127.0.0.1`, `host.docker.internal`, …), or
 - the caller holds an active `super_admin` session, or
 - the caller's session already owns that tenant, or
-- the route is explicitly public (`/`, `/portal`, `/api/status`, `/api/portal-sites`, `/api/devices/enroll`, `/api/telemetry`).
+- the route is explicitly public (`/`, `/home`, `/api/status`, `/api/portal-sites`, `/api/devices/enroll`, `/api/telemetry`).
 
 `X-Forwarded-Host` is never read. A set of [reserved slugs](Configuration-Reference#reserved-subdomains) — `www`, `super`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `labkiosk`, `root` — can be neither registered nor resolved as a school.
 

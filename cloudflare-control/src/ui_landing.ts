@@ -17,7 +17,8 @@
  *   - Escapes all server-rendered values via escapeHtml / escapeJson / safeHttpUrl
  */
 
-import { escapeHtml, escapeJson, safeHttpUrl } from "./escape";
+import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
+import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES } from "./ui_tokens";
 
 export interface LandingOptions {
   /** Message shown in a banner above the hero, e.g. after a rejected redirect. */
@@ -63,29 +64,9 @@ export function renderLandingHtml(data: LandingOptions): string {
   <title>Lab Kiosk OS - Centralized School & University Computer Lab Management</title>
   <meta name="description" content="Centralized Computer Lab Kiosk Operating System for schools, universities, and training labs. 100% RAM overlay, Eyes-Front screen lock, zero SSD wear, and global Cloudflare Edge management.">
   <meta name="theme-color" content="#090d16">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+${FONT_LINKS}
   <style>
-    :root {
-      --bg: #090d16;
-      --panel: #0f172a;
-      --card: #1e293b;
-      --card-hover: #273549;
-      --border: #334155;
-      --border-focus: #3b82f6;
-      --text: #f8fafc;
-      --muted: #94a3b8;
-      --accent: #3b82f6;
-      --accent-hover: #2563eb;
-      --accent-glow: rgba(59, 130, 246, 0.35);
-      --green: #10b981;
-      --green-glow: rgba(16, 185, 129, 0.2);
-      --amber: #f59e0b;
-      --red: #ef4444;
-      --radius: 12px;
-      --radius-lg: 20px;
-    }
+${rootTokensCss(LEGACY_LANDING_ALIASES)}
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif; }
     html { scroll-behavior: smooth; color-scheme: dark; }
     body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; overflow-x: hidden; line-height: 1.6; }
@@ -939,7 +920,7 @@ export function renderLandingHtml(data: LandingOptions): string {
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           </div>
           <h3 class="feature-title">Zero SSD Wear (RAM Overlay)</h3>
-          <p class="feature-desc">All disk writes are strictly directed to volatile RAM via <code>overlayroot="tmpfs"</code>. Protects thin-client SSDs from wearing out and erases student files on every reboot.</p>
+          <p class="feature-desc">All disk writes are strictly directed to volatile RAM via <code>overlayroot="tmpfs:recurse=0"</code>. Protects thin-client SSDs from wearing out and erases student files on every reboot.</p>
         </div>
 
         <div class="feature-card">
@@ -980,6 +961,22 @@ export function renderLandingHtml(data: LandingOptions): string {
           </div>
           <h3 class="feature-title">Auto-Hiding Floating Navigation</h3>
           <p class="feature-desc">The 4-button locked navigation bar hides off-screen and smoothly slides down only when moving the mouse to the top edge, ensuring zero webpage overflow.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature-title">Runs in Your Language</h3>
+          <p class="feature-desc">The workstation interface itself is translatable, with right-to-left layout where a language needs it. New languages reach workstations over the air, without a new ISO.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </div>
+          <h3 class="feature-title">A Record of Every Change</h3>
+          <p class="feature-desc">Subdomain changes, staff accounts, allowlist edits and key rotations are recorded and readable from your console, including anything the platform did to your school.</p>
         </div>
       </div>
     </section>
@@ -1352,7 +1349,7 @@ export function renderLandingHtml(data: LandingOptions): string {
     </div>
   </footer>
 
-  <script nonce="${escapeHtml(data.nonce)}">
+  <script nonce="${escapeAttr(data.nonce)}">
     function openModal(id) {
       const el = document.getElementById(id);
       if (el) el.classList.add('active');
@@ -1514,6 +1511,30 @@ export function renderLandingHtml(data: LandingOptions): string {
 
     const BASE_DOMAIN = ${escapeJson(baseDomain)};
 
+    /**
+     * Which school this page is showing, if any.
+     *
+     * The sign-in POST goes to /api/auth/login with no query string, so the
+     * server cannot see the ?tenant= that put this page on screen. On a real
+     * subdomain the Host header carries it; on a dev host, and on the apex
+     * with ?tenant=, nothing did -- which is why signing in to reach the demo
+     * console still landed on /super.
+     *
+     * This is a hint for where to go next, not a claim of access: the server
+     * decides what to do with it, and every console is guarded on arrival.
+     */
+    function currentTenantSlug() {
+      const named = new URLSearchParams(window.location.search).get('tenant');
+      if (named) return named;
+      const host = window.location.hostname;
+      const suffix = '.' + BASE_DOMAIN;
+      if (host.endsWith(suffix)) {
+        const prefix = host.slice(0, -suffix.length);
+        if (prefix && prefix.indexOf('.') === -1) return prefix;
+      }
+      return '';
+    }
+
     // Login Form Submission
     document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1526,22 +1547,15 @@ export function renderLandingHtml(data: LandingOptions): string {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
+          body: JSON.stringify({ email, password, tenant: currentTenantSlug() })
         });
         const data = await res.json();
         if (data.status === 'ok') {
-          if (data.role === 'super_admin') {
-            window.location.href = '/super';
-          } else if (data.subdomain) {
-            const host = window.location.hostname;
-            if (host === 'localhost' || host === '127.0.0.1' || host.includes('docker')) {
-              window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
-            } else {
-              window.location.href = 'https://' + encodeURIComponent(data.subdomain) + '.' + BASE_DOMAIN + '/admin';
-            }
-          } else {
-            window.location.href = '/admin';
-          }
+          // The server decides. It is the only side that knows which host this
+          // request arrived on and which consoles the account may open. This used
+          // to be worked out here, and sent every super admin to /super whatever
+          // subdomain they had signed in on.
+          window.location.href = data.redirect || '/admin';
         } else {
           alertBox.textContent = data.error || 'Login failed';
           alertBox.style.display = 'block';

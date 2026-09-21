@@ -218,6 +218,13 @@ export function requireSuperAdmin(session: Session | null, headers: Record<strin
 }
 
 /** 403 unless the session administers this tenant (super admin restricted to demo tenant only). */
+/**
+ * The only school a platform super admin may open, per Rule 2. It exists so
+ * the platform can be demonstrated and tested without reaching into a real
+ * school's data.
+ */
+export const SUPER_ADMIN_TENANT_SLUG = "demo";
+
 export function requireTenantAdmin(
   session: Session | null,
   tenant: Tenant | null,
@@ -228,7 +235,7 @@ export function requireTenantAdmin(
 
   if (session.role === "super_admin") {
     // Super admin can ONLY access the demo tenant for testing/preview!
-    if (tenant.subdomain === "demo") return null;
+    if (tenant.subdomain === SUPER_ADMIN_TENANT_SLUG) return null;
     return jsonError("Platform administrators cannot access individual school consoles for privacy and security", 403, headers);
   }
 

@@ -9,6 +9,7 @@
 import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole } from "./types";
 import { renderDashboardHtml } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
+import { renderSchoolHomeHtml } from "./ui_school_home";
 import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
 import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
@@ -46,6 +47,10 @@ import {
   normalizeDomain,
   regenerateEnrollmentKey,
   writeAuditLog,
+  HOMEPAGE_LIMITS,
+  parseHomepageBlocks,
+  sanitizeHomepageBlocks,
+  listPlatformAuditLogs,
   listUiCatalogs,
   getUiCatalog,
   putUiCatalog,
@@ -91,6 +96,7 @@ import {
 import {
   resolveTenant,
   requireSuperAdmin,
+  SUPER_ADMIN_TENANT_SLUG,
   requireTenantAdmin,
   requireTenantPermission,
   requireDevice,
@@ -242,6 +248,41 @@ function effectiveOrigin(request: Request, url: URL): string {
   return url.origin;
 }
 
+/**
+ * Where a successful sign-in should land.
+ *
+ * This used to be decided in the landing page script, which sent every super
+ * admin to /super whatever host they signed in on -- so signing in on
+ * demo.<domain> to reach the demo console threw you to the platform console
+ * instead, and there was no route back through the UI.
+ *
+ * A super admin signing in on a school subdomain lands on that school when it
+ * is one they may open (Rule 2 allows `demo` only) and on /super otherwise.
+ */
+function postLoginRedirect(options: {
+  role: string;
+  ownSubdomain: string | null;
+  hostSlug: string | null;
+  requestedSlug: string | null;
+  isDev: boolean;
+  baseDomain: string;
+}): string {
+  const { role, ownSubdomain, hostSlug, requestedSlug, isDev, baseDomain } = options;
+
+  const consoleFor = (slug: string) =>
+    isDev ? `/admin?tenant=${encodeURIComponent(slug)}` : `https://${slug}.${baseDomain}/admin`;
+
+  if (role === "super_admin") {
+    // The school they were already looking at, if they are allowed in it.
+    const context = hostSlug || requestedSlug;
+    if (context && SUPER_ADMIN_TENANT_SLUG === context) return consoleFor(context);
+    return "/super";
+  }
+
+  if (ownSubdomain) return consoleFor(ownSubdomain);
+  return "/admin";
+}
+
 function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): string {
   const origin = effectiveOrigin(request, url);
   const homePath = tenant.home_route && tenant.home_route.startsWith("/") ? tenant.home_route : "/";
@@ -349,7 +390,7 @@ const output: Record<string, unknown> = Object.create(null);
 }
 
 function isPublicTenantRoute(path: string, method: string): boolean {
-  if (path === "/" || path === "/home" || path === "/portal" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
+  if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
@@ -591,7 +632,7 @@ export default {
     // POST /api/auth/login: Teacher or Super Admin Sign In
     if (path === "/api/auth/login" && method === "POST") {
       try {
-        const body = await request.json<{ email: string; password: string }>();
+        const body = await request.json<{ email: string; password: string; tenant?: string }>();
         if (!body.email || !body.password) {
           return jsonError("Email and password required", 400, jsonHeaders);
         }
@@ -639,7 +680,25 @@ export default {
         });
 
         return new Response(
-          JSON.stringify({ status: "ok", role: user.role, subdomain: tenant?.subdomain || null }),
+          JSON.stringify({
+            status: "ok",
+            role: user.role,
+            subdomain: tenant?.subdomain || null,
+            redirect: postLoginRedirect({
+              role: user.role,
+              ownSubdomain: tenant?.subdomain || null,
+              hostSlug: hostSubdomain(request, env.DEFAULT_DOMAIN),
+              // The sign-in POST has no query string of its own, so the page
+              // sends the school it was showing. It is a hint about where to go
+              // next: postLoginRedirect honours it only for the one school a
+              // super admin may open, a school admin is sent to their own
+              // regardless, and the console guards on arrival either way.
+              requestedSlug:
+                cleanSubdomain(url.searchParams.get("tenant") || body.tenant || "") || null,
+              isDev,
+              baseDomain
+            })
+          }),
           { headers: { ...jsonHeaders, "Set-Cookie": sessionCookie(token) } }
         );
       } catch (err: any) {
@@ -915,6 +974,19 @@ export default {
     }
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
+    // GET /api/super/audit-logs: what the platform has done -- catalog uploads
+    // and deletions, and every super-admin action taken on a school. Every one
+    // of these was already being written and none of it could be read back:
+    // `listAuditLogs` is scoped to a tenant, so the entries with no tenant were
+    // invisible to everything.
+    if (path === "/api/super/audit-logs" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const limit = Number(url.searchParams.get("limit") || 100);
+      const logs = await listPlatformAuditLogs(db, Number.isFinite(limit) ? limit : 100);
+      return new Response(JSON.stringify({ logs }), { headers: jsonHeaders });
+    }
+
     if (path === "/api/super/tenants/approve" && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
@@ -1651,6 +1723,46 @@ export default {
     }
 
     // POST /api/tenant/settings: update lab settings (mode, home_route, tunnel_domain, profile)
+    // POST /api/tenant/homepage: the school homepage served at the subdomain
+    // root. Guarded by the same `settings` permission as the rest of the lab
+    // configuration, and every field is normalised here rather than trusted:
+    // this text is rendered on the page students land on.
+    if (path === "/api/tenant/homepage" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      try {
+        const body = await request.json<{
+          headline?: unknown;
+          intro?: unknown;
+          blocks?: unknown;
+        }>();
+
+        const headline = String(body.headline ?? "").trim().slice(0, HOMEPAGE_LIMITS.headline);
+        const intro = String(body.intro ?? "").trim().slice(0, HOMEPAGE_LIMITS.intro);
+        const blocks = sanitizeHomepageBlocks(body.blocks);
+
+        await updateTenant(db, currentTenant!.id, {
+          // Empty means "use the default", which is the school name and the
+          // standard welcome line, so store null rather than an empty string.
+          homepage_headline: headline || null,
+          homepage_intro: intro || null,
+          homepage_blocks: blocks.length ? JSON.stringify(blocks) : null
+        });
+
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: session!.user_id,
+          action: "homepage.update",
+          details: `${blocks.length} block(s)`
+        });
+
+        return new Response(JSON.stringify({ status: "ok", blocks }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Homepage update failed:", err);
+        return jsonError("Could not save the homepage", 400, jsonHeaders);
+      }
+    }
+
     if (path === "/api/tenant/settings" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
@@ -2158,10 +2270,10 @@ export default {
     // ==========================================
     // Legal & Compliance Pages
     if (path === "/privacy") {
-      return new Response(renderPrivacyPolicyHtml(nonce, baseDomain), { headers: htmlHeaders });
+      return new Response(renderPrivacyPolicyHtml(), { headers: htmlHeaders });
     }
     if (path === "/terms") {
-      return new Response(renderTermsOfServiceHtml(nonce, baseDomain), { headers: htmlHeaders });
+      return new Response(renderTermsOfServiceHtml(), { headers: htmlHeaders });
     }
 
     // 1. School Admin Dashboard (/admin and /admin/*)
@@ -2174,7 +2286,9 @@ export default {
       }
 
       // A teacher who explicitly named another school is refused, not silently
-      // bounced to their own console.
+      // bounced to their own console. (A super admin never lands here: the
+      // override in resolveTenant admits them, and requireTenantAdmin below is
+      // what holds the `demo`-only line.)
       if (resolution.denied) {
         return new Response(
           renderLandingHtml({
@@ -2224,10 +2338,26 @@ export default {
 
       const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
       if (denied) {
+        // Say which refusal this is. A platform administrator is not locked
+        // out by accident: `demo` is the one school they may open, and the
+        // console they actually want is /super.
+        //
+        // Only when the isolation is what actually refused them. A super admin
+        // naming a school that does not exist gets a 400 from the guard, and
+        // telling them about privacy isolation would send them looking for the
+        // wrong problem.
+        const isPlatformIsolation =
+          session.role === "super_admin" &&
+          denied.status === 403 &&
+          Boolean(currentTenant) &&
+          currentTenant!.subdomain !== SUPER_ADMIN_TENANT_SLUG;
+        const message = isPlatformIsolation
+          ? `Platform administrators cannot open a school console. This is the privacy isolation described in the Terms: only the ${SUPER_ADMIN_TENANT_SLUG} school is available for testing. Use the Super Admin console instead.`
+          : "You do not have access to that school's console.";
         return new Response(
           renderLandingHtml({
-            error: "You do not have access to that school's console.",
-            openModal: "login",
+            error: message,
+            openModal: isPlatformIsolation ? undefined : "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@akbhoi.com",
@@ -2304,6 +2434,7 @@ export default {
           activePage,
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
           userPermissions: userPerms,
+          isDevHost: isDev,
           nonce
         }),
         { headers: htmlHeaders }
@@ -2311,14 +2442,23 @@ export default {
     }
 
     // 2. Student Learning Portal (root of a school subdomain or custom domain)
-    const wantsPortal = path === "/" || path === "/home" || path === "/portal";
+    const wantsSchoolHome = path === "/";
+    const wantsPortal = path === "/home";
+    // ?login=1 and ?register=1 are an explicit request for the sign-in page, and
+    // they outrank the tenant on the URL. The redirect that sends a signed-out
+    // teacher here is `/?login=1&tenant=<school>`, and naming a school used to
+    // route it to that school’s page instead -- the portal before, the homepage
+    // after -- so the one link in the product that offers a sign-in form never
+    // reached one.
+    const wantsAuthPage = url.searchParams.has("login") || url.searchParams.has("register");
+    const wantsSchoolPage = (wantsSchoolHome || wantsPortal) && !wantsAuthPage;
     const namedTenant = url.searchParams.has("tenant") || request.headers.has("x-tenant");
     const onSubdomain = hostSubdomain(request, env.DEFAULT_DOMAIN) !== null;
     const isCustomDomainHost = Boolean(
       currentTenant?.custom_domain && hostname(request) === currentTenant.custom_domain.toLowerCase()
     );
 
-    if (wantsPortal && (namedTenant || onSubdomain || isCustomDomainHost)) {
+    if (wantsSchoolPage && (namedTenant || onSubdomain || isCustomDomainHost)) {
       if (!currentTenant) {
         const requested = cleanSubdomain(url.searchParams.get("tenant") ?? hostSubdomain(request, env.DEFAULT_DOMAIN) ?? "");
         return new Response(
@@ -2345,10 +2485,27 @@ export default {
         );
       }
 
+      // Single-site lockdown outranks both pages: the school has chosen that
+      // its workstations only ever see one site.
       if (currentTenant.mode === "single_url") {
         const target = safeHttpUrl(currentTenant.default_url);
         if (target) return Response.redirect(target, 302);
         console.warn(`[Worker] Tenant ${currentTenant.subdomain} has an invalid default_url; showing the portal instead.`);
+      }
+
+      // The root is the school's own page; the grid lives at /home.
+      if (wantsSchoolHome) {
+        const portalPath = namedTenant
+          ? `/home?tenant=${encodeURIComponent(currentTenant.subdomain)}`
+          : "/home";
+        return new Response(
+          renderSchoolHomeHtml({
+            tenant: currentTenant,
+            blocks: parseHomepageBlocks(currentTenant.homepage_blocks),
+            portalPath
+          }),
+          { headers: htmlHeaders }
+        );
       }
 
       const portalSites = await listPortalSites(db, currentTenant.id);
