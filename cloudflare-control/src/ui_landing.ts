@@ -962,6 +962,22 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <h3 class="feature-title">Auto-Hiding Floating Navigation</h3>
           <p class="feature-desc">The 4-button locked navigation bar hides off-screen and smoothly slides down only when moving the mouse to the top edge, ensuring zero webpage overflow.</p>
         </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature-title">Runs in Your Language</h3>
+          <p class="feature-desc">The workstation interface itself is translatable, with right-to-left layout where a language needs it. New languages reach workstations over the air, without a new ISO.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </div>
+          <h3 class="feature-title">A Record of Every Change</h3>
+          <p class="feature-desc">Subdomain changes, staff accounts, allowlist edits and key rotations are recorded and readable from your console, including anything the platform did to your school.</p>
+        </div>
       </div>
     </section>
 
