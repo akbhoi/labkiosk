@@ -1511,6 +1511,30 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
 
     const BASE_DOMAIN = ${escapeJson(baseDomain)};
 
+    /**
+     * Which school this page is showing, if any.
+     *
+     * The sign-in POST goes to /api/auth/login with no query string, so the
+     * server cannot see the ?tenant= that put this page on screen. On a real
+     * subdomain the Host header carries it; on a dev host, and on the apex
+     * with ?tenant=, nothing did -- which is why signing in to reach the demo
+     * console still landed on /super.
+     *
+     * This is a hint for where to go next, not a claim of access: the server
+     * decides what to do with it, and every console is guarded on arrival.
+     */
+    function currentTenantSlug() {
+      const named = new URLSearchParams(window.location.search).get('tenant');
+      if (named) return named;
+      const host = window.location.hostname;
+      const suffix = '.' + BASE_DOMAIN;
+      if (host.endsWith(suffix)) {
+        const prefix = host.slice(0, -suffix.length);
+        if (prefix && prefix.indexOf('.') === -1) return prefix;
+      }
+      return '';
+    }
+
     // Login Form Submission
     document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1523,7 +1547,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
+          body: JSON.stringify({ email, password, tenant: currentTenantSlug() })
         });
         const data = await res.json();
         if (data.status === 'ok') {

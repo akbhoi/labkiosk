@@ -1713,6 +1713,76 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((asSchool as { redirect: string }).redirect, "https://greenwood.labkiosk.akbhoi.com/admin");
   });
 
+  test("Sign-in honours the school the page was showing, not just the host", async () => {
+    // The first version of this fix only read the Host header, and the sign-in
+    // POST goes to /api/auth/login with no query string. So on a dev host, and
+    // on the apex with ?tenant=demo, the server still saw no school and sent a
+    // super admin to /super -- which is the whole complaint, unfixed. The page
+    // now sends the school it was showing.
+    const login = (body: object) =>
+      call("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+
+    const creds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
+
+    const viaBody = await (await login({ ...creds, tenant: "demo" })).json();
+    assert.equal(
+      (viaBody as { redirect: string }).redirect,
+      "https://demo.labkiosk.akbhoi.com/admin",
+      "the page said it was showing demo, so that is where the sign-in belongs"
+    );
+
+    // The hint is a hint. It cannot open a school Rule 2 keeps them out of.
+    const notAllowed = await (await login({ ...creds, tenant: "greenwood" })).json();
+    assert.equal(
+      (notAllowed as { redirect: string }).redirect,
+      "/super",
+      "a client-supplied school must not route a super admin into it"
+    );
+
+    // Nor does a school admin get moved by one.
+    const teacher = await (await login({
+      email: "teacher@greenwood.edu",
+      password: "SchoolPassword123!",
+      tenant: "demo"
+    })).json();
+    assert.equal(
+      (teacher as { redirect: string }).redirect,
+      "https://greenwood.labkiosk.akbhoi.com/admin",
+      "a school admin goes to their own console whatever the page claimed"
+    );
+  });
+
+  test("A signed-out teacher can follow /admin all the way to a sign-in form", async () => {
+    // The whole chain, because every link in it was broken independently and
+    // each one on its own looked fine.
+
+    // 1. /admin while signed out redirects to the sign-in page, naming the school.
+    const bounced = await call("/admin", { headers: { host: "demo.labkiosk.akbhoi.com" } });
+    assert.equal(bounced.status, 302);
+    const target = bounced.headers.get("Location")!;
+    assert.match(target, /login=1/);
+    assert.match(target, /tenant=demo/);
+
+    // 2. That target must actually render a sign-in form. Naming a school used
+    //    to route it to that school's own page -- the portal before the
+    //    homepage existed, the homepage after -- so this link never reached one.
+    const page = await call(new URL(target).pathname + new URL(target).search);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /id="login-form"/, "the sign-in redirect must reach a sign-in form");
+    assert.doesNotMatch(html, /Enter the Lab/, "it must not be the school homepage");
+    // Not asserting the absence of the app grid text here: the landing page's
+    // own live simulator mimics the portal and legitimately contains it.
+
+    // 3. And the page has to tell the server which school it was showing, or the
+    //    sign-in lands on /super however the rest of this works.
+    assert.match(html, /currentTenantSlug/, "the page must send its tenant with the sign-in");
+  });
+
   test("Redirects /admin on apex domain to appropriate tenant subdomain or super console", async () => {
     // School admin without tenant query param on apex -> 302 to https://greenwood.labkiosk.akbhoi.com/admin
     const schoolRes = await call("/admin", { cookie: schoolSessionCookie });

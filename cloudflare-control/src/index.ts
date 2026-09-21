@@ -632,7 +632,7 @@ export default {
     // POST /api/auth/login: Teacher or Super Admin Sign In
     if (path === "/api/auth/login" && method === "POST") {
       try {
-        const body = await request.json<{ email: string; password: string }>();
+        const body = await request.json<{ email: string; password: string; tenant?: string }>();
         if (!body.email || !body.password) {
           return jsonError("Email and password required", 400, jsonHeaders);
         }
@@ -688,7 +688,13 @@ export default {
               role: user.role,
               ownSubdomain: tenant?.subdomain || null,
               hostSlug: hostSubdomain(request, env.DEFAULT_DOMAIN),
-              requestedSlug: cleanSubdomain(url.searchParams.get("tenant") || "") || null,
+              // The sign-in POST has no query string of its own, so the page
+              // sends the school it was showing. It is a hint about where to go
+              // next: postLoginRedirect honours it only for the one school a
+              // super admin may open, a school admin is sent to their own
+              // regardless, and the console guards on arrival either way.
+              requestedSlug:
+                cleanSubdomain(url.searchParams.get("tenant") || body.tenant || "") || null,
               isDev,
               baseDomain
             })
@@ -2438,7 +2444,14 @@ export default {
     // 2. Student Learning Portal (root of a school subdomain or custom domain)
     const wantsSchoolHome = path === "/";
     const wantsPortal = path === "/home";
-    const wantsSchoolPage = wantsSchoolHome || wantsPortal;
+    // ?login=1 and ?register=1 are an explicit request for the sign-in page, and
+    // they outrank the tenant on the URL. The redirect that sends a signed-out
+    // teacher here is `/?login=1&tenant=<school>`, and naming a school used to
+    // route it to that school’s page instead -- the portal before, the homepage
+    // after -- so the one link in the product that offers a sign-in form never
+    // reached one.
+    const wantsAuthPage = url.searchParams.has("login") || url.searchParams.has("register");
+    const wantsSchoolPage = (wantsSchoolHome || wantsPortal) && !wantsAuthPage;
     const namedTenant = url.searchParams.has("tenant") || request.headers.has("x-tenant");
     const onSubdomain = hostSubdomain(request, env.DEFAULT_DOMAIN) !== null;
     const isCustomDomainHost = Boolean(
