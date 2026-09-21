@@ -1496,6 +1496,29 @@ export async function writeAuditLog(
   }
 }
 
+/**
+ * The platform action history, for the super admin console.
+ *
+ * Two kinds of entry qualify, and both were unreadable before this: rows with
+ * no tenant at all (a catalog upload is not any school's business, and
+ * `listAuditLogs` filters `tenant_id = ?`, so nothing could ever list them),
+ * and rows a super admin wrote against a school -- approving a subdomain,
+ * suspending a lab.
+ *
+ * It deliberately cannot reach a school's own activity. Rule 2 keeps super
+ * admins out of school data, so the second clause matches on who acted, never
+ * on which school was acted upon.
+ */
+export async function listPlatformAuditLogs(db: D1Database, limit = 100): Promise<AuditLogEntry[]> {
+  const res = await db
+    .prepare(
+      "SELECT * FROM audit_logs WHERE tenant_id IS NULL OR user_id IN (SELECT id FROM users WHERE role = 'super_admin') ORDER BY created_at DESC LIMIT ?"
+    )
+    .bind(Math.min(Math.max(limit, 1), 500))
+    .all<AuditLogEntry>();
+  return res.results || [];
+}
+
 export async function listAuditLogs(
   db: D1Database,
   tenantId: string,

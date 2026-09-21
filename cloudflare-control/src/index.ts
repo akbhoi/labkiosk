@@ -46,6 +46,7 @@ import {
   normalizeDomain,
   regenerateEnrollmentKey,
   writeAuditLog,
+  listPlatformAuditLogs,
   listUiCatalogs,
   getUiCatalog,
   putUiCatalog,
@@ -915,6 +916,19 @@ export default {
     }
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
+    // GET /api/super/audit-logs: what the platform has done -- catalog uploads
+    // and deletions, and every super-admin action taken on a school. Every one
+    // of these was already being written and none of it could be read back:
+    // `listAuditLogs` is scoped to a tenant, so the entries with no tenant were
+    // invisible to everything.
+    if (path === "/api/super/audit-logs" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const limit = Number(url.searchParams.get("limit") || 100);
+      const logs = await listPlatformAuditLogs(db, Number.isFinite(limit) ? limit : 100);
+      return new Response(JSON.stringify({ logs }), { headers: jsonHeaders });
+    }
+
     if (path === "/api/super/tenants/approve" && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;

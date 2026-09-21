@@ -532,6 +532,9 @@ function getSubPanelForPage(
             <a href="#section-enrollment" class="sub-action-item">
               <span>Workstation Enrollment Key</span>
             </a>
+            <a href="#section-activity" class="sub-action-item">
+              <span>Recent Lab Activity</span>
+            </a>
             <a href="#section-password" class="sub-action-item">
               <span>Admin Password</span>
             </a>
@@ -2019,6 +2022,25 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
       </div>
 
       <!-- Card 7: Account Security -->
+      <div class="card" id="section-activity">
+        <h2 class="card-title">Recent Lab Activity</h2>
+        <p class="card-sub">Privileged changes to this lab, including anything the platform did to it. Every one of these was already being recorded; this is the first place it can be read.</p>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody id="lab-audit-rows">
+              <tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 24px;">Loading\u2026</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card" id="section-password">
         <h2 class="card-title">Account Security &amp; Password</h2>
         <p class="card-sub">Change the password for this administrative account.</p>
@@ -2239,6 +2261,60 @@ function renderSettingsScripts(nonce: string): string {
           lkToast("Network error: " + err.message, "error");
         }
       });
+
+      const labAuditRows = document.getElementById("lab-audit-rows");
+      if (labAuditRows) {
+        (async function loadLabActivity() {
+          function placeholder(text) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 3;
+            cell.style.cssText = "text-align: center; color: var(--text-muted); padding: 24px;";
+            cell.textContent = text;
+            row.appendChild(cell);
+            return row;
+          }
+          try {
+            const res = await fetch(labkioskApi("/api/audit-logs?limit=60"));
+            const data = await res.json();
+            const logs = Array.isArray(data.logs) ? data.logs : [];
+            labAuditRows.replaceChildren();
+            if (!logs.length) {
+              labAuditRows.appendChild(placeholder("Nothing recorded for this lab yet."));
+              return;
+            }
+            for (const entry of logs) {
+              const row = document.createElement("tr");
+
+              const when = document.createElement("td");
+              when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
+              when.textContent = new Date(entry.created_at * 1000).toISOString().slice(0, 16).replace("T", " ");
+              row.appendChild(when);
+
+              const action = document.createElement("td");
+              const badge = document.createElement("span");
+              const removes = /suspend|reject|delete|remove|revoke|rotate/.test(entry.action);
+              const grants = /approve|reactivate|create|add/.test(entry.action);
+              badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
+              // textContent throughout: details carries teacher names, domains
+              // and URLs that arrived from the console.
+              badge.textContent = entry.action;
+              action.appendChild(badge);
+              row.appendChild(action);
+
+              const detail = document.createElement("td");
+              detail.style.cssText = "color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere;";
+              detail.textContent = entry.details || "\u2014";
+              row.appendChild(detail);
+
+              labAuditRows.appendChild(row);
+            }
+          } catch (err) {
+            labAuditRows.replaceChildren();
+            labAuditRows.appendChild(placeholder("Could not load recent activity."));
+          }
+        })();
+      }
 
       document.getElementById("form-change-password").addEventListener("submit", async (e) => {
         e.preventDefault();

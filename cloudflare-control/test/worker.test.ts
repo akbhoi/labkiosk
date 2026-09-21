@@ -399,6 +399,74 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Platform action history is readable, and only by a super admin", async () => {
+    // Every privileged action was already written to audit_logs and none of it
+    // could be read back: listAuditLogs filters `tenant_id = ?`, so the entries
+    // with no tenant -- catalog uploads and deletions -- were invisible to
+    // everything, and no console called the tenant-scoped route either.
+    await callJson("/api/super/i18n", {
+      ...json({ tag: "de-DE", name: "Deutsch", catalog: { "bar.home": "Startseite" } }),
+      cookie: superSessionCookie
+    });
+
+    const res = await call("/api/super/audit-logs", { cookie: superSessionCookie });
+    assert.equal(res.status, 200);
+    const { logs } = (await res.json()) as { logs: Array<{ action: string; details?: string | null }> };
+    assert.ok(logs.some((entry) => entry.action === "i18n.upload"), "the catalog upload must be listed");
+
+    // Anonymous and school-admin callers are refused.
+    assert.equal((await call("/api/super/audit-logs")).status, 401);
+    const asSchool = await call("/api/super/audit-logs", { cookie: schoolSessionCookie });
+    assert.ok(asSchool.status === 401 || asSchool.status === 403, `school admin got ${asSchool.status}`);
+
+    await callJson("/api/super/i18n/de-DE", { method: "DELETE", cookie: superSessionCookie });
+  });
+
+  test("Platform history never exposes a school's own activity", async () => {
+    // Rule 2 keeps super admins out of school data. The query matches on who
+    // acted, never on which school was acted upon, so a teacher adding a portal
+    // card must not appear here even though that row carries a tenant_id.
+    await callJson("/api/portal-sites?tenant=greenwood", {
+      ...json({ title: "Private Lab Tool", url: "https://internal.greenwood.example" }),
+      cookie: schoolSessionCookie
+    });
+
+    const { logs } = (await (await call("/api/super/audit-logs?limit=200", { cookie: superSessionCookie })).json()) as {
+      logs: Array<{ action: string; details?: string | null }>;
+    };
+    // Prove the row exists before asserting it is absent, so this cannot pass
+    // just because nothing was written.
+    const own = (await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json()) as {
+      logs: Array<{ action: string; details?: string | null }>;
+    };
+    assert.ok(
+      own.logs.some((entry) => (entry.details || "").includes("Private Lab Tool")),
+      "the school must be able to see its own action"
+    );
+
+    const leaked = logs.find((entry) => (entry.details || "").includes("Private Lab Tool"));
+    assert.equal(leaked, undefined, "a school's own action leaked into the platform history");
+  });
+
+  test("A school can read what the platform did to its lab", async () => {
+    // The answer to \"who changed our subdomain\". The super admin acts with the
+    // school's tenant_id on the row, so it belongs in that school's own log.
+    const meRes = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+    const greenwoodTenantId = meRes.data.tenant.id;
+
+    const before = await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json();
+    assert.ok(Array.isArray((before as { logs: unknown[] }).logs));
+
+    await callJson("/api/super/tenants/suspend", { ...json({ tenantId: greenwoodTenantId }), cookie: superSessionCookie });
+    await callJson("/api/super/tenants/reactivate", { ...json({ tenantId: greenwoodTenantId }), cookie: superSessionCookie });
+
+    const { logs } = (await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json()) as {
+      logs: Array<{ action: string }>;
+    };
+    assert.ok(logs.some((entry) => entry.action === "tenant.suspend"), "the suspension must be visible to the school");
+    assert.ok(logs.some((entry) => entry.action === "tenant.reactivate"), "so must the reactivation");
+  });
+
   test("Redirects an unauthenticated visitor away from /admin", async () => {
     const res = await call("/admin?tenant=greenwood");
     assert.equal(res.status, 302);

@@ -369,6 +369,27 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
   `;
 
+  const auditCardHtml = `
+      <div class="card" id="platform-audit">
+        <h2 class="card-title">Platform Action History</h2>
+        <p class="card-sub">Catalog changes, and every platform action taken on a school. A school\u2019s own activity is not shown here and is not readable from this console.</p>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody id="platform-audit-rows">
+              <tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 24px;">Loading\u2026</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+  `;
+
   const systemPaneHtml = `
       <div class="card">
         <h2 class="card-title">Platform Architecture &amp; Database Health</h2>
@@ -391,6 +412,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </div>
         </div>
       </div>
+${auditCardHtml}
   `;
 
   const panesByTab: Record<typeof activeTab, string> = {
@@ -659,6 +681,61 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           }
         });
       });
+
+      const auditRows = document.getElementById("platform-audit-rows");
+      if (auditRows) {
+        (async function loadPlatformAudit() {
+          function placeholder(text) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 3;
+            cell.style.cssText = "text-align: center; color: var(--text-muted); padding: 24px;";
+            cell.textContent = text;
+            row.appendChild(cell);
+            return row;
+          }
+          try {
+            const res = await fetch("/api/super/audit-logs?limit=60");
+            const data = await res.json();
+            const logs = Array.isArray(data.logs) ? data.logs : [];
+            auditRows.replaceChildren();
+            if (!logs.length) {
+              auditRows.appendChild(placeholder("No platform actions recorded yet."));
+              return;
+            }
+            for (const entry of logs) {
+              const row = document.createElement("tr");
+
+              const when = document.createElement("td");
+              when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
+              when.textContent = new Date(entry.created_at * 1000).toISOString().slice(0, 16).replace("T", " ");
+              row.appendChild(when);
+
+              const action = document.createElement("td");
+              const badge = document.createElement("span");
+              // Red for what takes something away, green for what grants it.
+              const removes = /suspend|reject|delete|remove/.test(entry.action);
+              const grants = /approve|reactivate|upload/.test(entry.action);
+              badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
+              // textContent: an action string is data, and details carries a
+              // school-supplied subdomain or domain.
+              badge.textContent = entry.action;
+              action.appendChild(badge);
+              row.appendChild(action);
+
+              const detail = document.createElement("td");
+              detail.style.cssText = "color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere;";
+              detail.textContent = entry.details || "\u2014";
+              row.appendChild(detail);
+
+              auditRows.appendChild(row);
+            }
+          } catch (err) {
+            auditRows.replaceChildren();
+            auditRows.appendChild(placeholder("Could not load the action history."));
+          }
+        })();
+      }
 
       const catalogForm = document.getElementById("form-upload-catalog");
       if (catalogForm) {
