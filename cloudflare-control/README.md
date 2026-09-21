@@ -55,7 +55,8 @@ cloudflare-control/
 │   ├── auth.ts                # Web Crypto PBKDF2 authentication, nonces, password policy
 │   ├── d1_adapter.ts          # Node 22+ native node:sqlite mock for local testing
 │   ├── ui.ts                  # Teacher Lab Dashboard HTML/JS & multi-page sub-routes
-│   ├── ui_layout.ts           # Shared responsive layout shell, nav tabs, design tokens
+│   ├── ui_tokens.ts           # The one declaration of the design language (colours, radii, easing)
+│   ├── ui_layout.ts           # Shared shell: 72px rail, 272px context panel, primitives
 │   ├── ui_landing.ts          # Public SaaS landing page and registration
 │   ├── ui_portal.ts           # Student Learning Portal (Educational Apps Grid)
 │   ├── ui_super.ts            # Super Admin Master Console (/super)
@@ -101,12 +102,29 @@ pnpm dev
 > [!NOTE]
 > The `pnpm dev` script automatically triggers `predev`, which applies all migrations from `migrations/` into the local D1 SQLite store (`.wrangler/state/v3/d1`). The worker refuses to serve until migrations are applied.
 
-### 5. Local Endpoints
+### 5. Checking the UI Without Wrangler
+`test/dev_server.ts` serves the same worker over plain Node on the same port,
+backed by the in-memory `node:sqlite` adapter. It needs no D1 database, no
+`.dev.vars` and no migrations, which makes it the quickest way to look at a
+page or drive it from a browser:
+```bash
+pnpm --prefix cloudflare-control exec tsx test/dev_server.ts
+```
+It seeds the `demo` school and a super admin (`admin@akbhoi.com` /
+`SuperAdminPassword2026!`, set at the top of that file). Use `pnpm dev` instead
+whenever the change touches D1 itself, migrations or Workers runtime behaviour.
+
+### 6. Local Endpoints
 Once running on `http://localhost:8787`:
 - **Public SaaS Landing Page:** `http://localhost:8787/`
-- **Student Learning Portal:** `http://localhost:8787/?tenant=demo`
+- **Student Learning Portal:** `http://localhost:8787/portal?tenant=demo`
 - **Teacher Lab Dashboard:** `http://localhost:8787/admin?tenant=demo` (Sign in with teacher account)
 - **Super Admin Platform Console:** `http://localhost:8787/super` (Sign in with credentials from `.dev.vars`)
+
+> [!NOTE]
+> On a dev host there is no school subdomain, so the tenant travels as
+> `?tenant=<slug>`. The dashboard keeps it on every link and every API call it
+> makes; in production the school's own subdomain carries it instead.
 
 ---
 
@@ -142,7 +160,7 @@ Cloudflare D1 schema migrations are tracked in two places:
 2. `src/db.ts` (`SCHEMA_SQL`): Synchronized schema used by the in-memory test adapter and `assertSchemaCurrent()`.
 
 ### Creating a New Migration
-1. Create `migrations/0006_<description>.sql`.
+1. Create the next numbered file, `migrations/0008_<description>.sql` (0001..0007 are applied; never edit one of those).
 2. Add the corresponding `CREATE TABLE` or `ALTER TABLE` statement into `SCHEMA_SQL` in `src/db.ts`.
 3. Run `pnpm test` — the schema drift test will assert that both definitions match.
 

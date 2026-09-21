@@ -4,7 +4,8 @@
  */
 
 import { Tenant, PortalSite } from "./types";
-import { escapeHtml, safeHttpUrl } from "./escape";
+import { escapeHtml, safeHttpUrl, escapeAttr } from "./escape";
+import { FONT_LINKS, rootTokensCss, LEGACY_PORTAL_ALIASES } from "./ui_tokens";
 
 export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string): string {
   const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
@@ -52,21 +53,9 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(tenant.name)} - ${escapeHtml(tenant.portal_title || "Student Learning Portal")}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+${FONT_LINKS}
   <style>
-    :root {
-      --bg-dark: #090d16;
-      --bg-surface: #0f172a;
-      --bg-card: #1e293b;
-      --border: #334155;
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
-      --accent: #3b82f6;
-      --accent-hover: #2563eb;
-      --green: #10b981;
-    }
+${rootTokensCss(LEGACY_PORTAL_ALIASES)}
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
     body {
       background: radial-gradient(circle at 50% 0%, #1e293b 0%, #090d16 80%);
@@ -400,7 +389,7 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
     ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Educational Environment Restricted")} • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy</a> • <a href="/terms" style="color: var(--text-muted); text-decoration: underline;">Terms</a>
   </footer>
 
-  <script nonce="${escapeHtml(nonce)}">
+  <script nonce="${escapeAttr(nonce)}">
     function updateClock() {
       const now = new Date();
       document.getElementById('live-clock').textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });

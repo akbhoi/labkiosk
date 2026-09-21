@@ -2304,6 +2304,7 @@ export default {
           activePage,
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
           userPermissions: userPerms,
+          isDevHost: isDev,
           nonce
         }),
         { headers: htmlHeaders }

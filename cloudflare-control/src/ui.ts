@@ -18,6 +18,15 @@ export interface DashboardOptions {
   activePage?: "workstations" | "broadcast" | "portal" | "whitelist" | "teachers" | "settings";
   currentUser?: { name: string; email?: string; role: string; permissions?: string[] };
   userPermissions?: string[];
+  /**
+   * True when the request arrived on a dev host (localhost, 127.0.0.1, ...).
+   * There is no school subdomain there, so the tenant has to travel as
+   * ?tenant=<slug> on every link and every API call. Only the request knows
+   * this; it used to be guessed from the configured base domain, which is
+   * "labkiosk.akbhoi.com" in local development too -- so the guess said
+   * "production", the parameter was dropped, and every call answered 400.
+   */
+  isDevHost?: boolean;
   nonce: string;
 }
 
@@ -36,7 +45,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
 
   const labName = tenant?.name || "School Computer Lab";
   const subdomain = tenant?.subdomain || "demo";
-  const isDev = !baseDomain || baseDomain.includes("localhost") || baseDomain.includes("127.0.0.1");
+  const isDev = options.isDevHost === true || !baseDomain;
   const tenantParam = isDev ? `?tenant=${encodeURIComponent(subdomain)}` : "";
 
   const userPermissions = options.userPermissions || currentUser?.permissions || ["*"];
@@ -139,15 +148,21 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     case "workstations":
     default:
       pageTitle = "Workstation Grid & Control";
-      contentHtml = renderWorkstationsPageHtml(tenant, config, presets, sites, baseDomain);
-      modalsHtml = renderWorkstationsModalsHtml(tenant, config, presets, sites, baseDomain);
+      contentHtml = renderWorkstationsPageHtml(tenantParam);
+      modalsHtml = renderWorkstationsModalsHtml(tenant, presets);
       scriptsHtml = renderWorkstationsScripts(nonce, tenant, config, presets, sites);
       break;
   }
 
+  // The tenant scope has to be in place before any page script runs, and the
+  // context panel is part of the shell, so its behaviour ships with every page
+  // rather than being re-implemented per page.
+  scriptsHtml = renderApiScopeScript(nonce, tenantParam) + scriptsHtml + renderSubPanelScripts(nonce, activePage, tenantParam);
+
   return renderLayoutHtml({
     title: `${labName} • ${pageTitle}`,
     brandTitle: labName,
+    brandHref: `/admin/workstations${tenantParam}`,
     brandSubtitle: `${subdomain}.${baseDomain} • Control Console`,
     navItems,
     activeNavId: activePage,
@@ -167,6 +182,148 @@ export function renderDashboardHtml(options: DashboardOptions): string {
 // SUB-PANEL GENERATOR FOR MULTI-LEVEL PANELS
 // ============================================================================
 
+/**
+ * Keeps the tenant on every dashboard API call.
+ *
+ * In production the school is its own subdomain, so the Host header carries it
+ * and a bare "/api/clients" resolves. On a dev host there is no subdomain, the
+ * tenant travels as ?tenant=<slug>, and every one of these calls answered 400 --
+ * which made the whole console untestable with `pnpm dev`.
+ */
+function renderApiScopeScript(nonce: string, tenantParam: string): string {
+  return `
+    <script nonce="${escapeAttr(nonce)}">
+      (function () {
+        "use strict";
+        var scope = ${escapeJson(tenantParam)};
+        window.labkioskApi = function (path) {
+          if (!scope) return path;
+          return path + (path.indexOf("?") === -1 ? scope : "&" + scope.slice(1));
+        };
+      })();
+    </script>
+  `;
+}
+/**
+ * Behaviour for the Level 2 context panel, on every page that has one.
+ *
+ * The panel shipped as markup only: `data-filter`, `data-action`, `data-preset`
+ * and `data-quick-domain` were read by nothing, the "Add ..." shortcuts pointed
+ * at element ids that did not exist, and the four telemetry counts never moved
+ * off the zero they were rendered with. Every control in it was inert.
+ *
+ * Handlers are delegated from the panel itself, so a page that does not use a
+ * given control simply has no element carrying it.
+ */
+function renderSubPanelScripts(nonce: string, activePage: string, tenantParam: string): string {
+  return `
+    <script nonce="${escapeAttr(nonce)}">
+      (function () {
+        "use strict";
+        var panel = document.getElementById("sub-panel");
+        if (!panel) return;
+        var activePage = ${escapeJson(activePage)};
+        var workstationsHref = "/admin/workstations" + ${escapeJson(tenantParam)};
+
+        /** Bring a field into view and put the caret in it. */
+        function focusField(id) {
+          var field = document.getElementById(id);
+          if (!field) return;
+          field.scrollIntoView({ behavior: "smooth", block: "center" });
+          field.focus({ preventScroll: true });
+        }
+
+        /**
+         * Run one of the workstation batch commands. The toolbar on the
+         * workstations page owns the real handlers, so click through to it;
+         * from any other page there is nothing to click, so navigate there.
+         */
+        function runToolbarAction() {
+          for (var i = 0; i < arguments.length; i++) {
+            var button = document.getElementById(arguments[i]);
+            if (button) {
+              button.click();
+              return;
+            }
+          }
+          window.location.href = workstationsHref;
+        }
+
+        function setActiveFilter(button) {
+          var buttons = panel.querySelectorAll("[data-filter]");
+          for (var i = 0; i < buttons.length; i++) buttons[i].classList.remove("active");
+          button.classList.add("active");
+          window.labkioskApplyFilter(button.getAttribute("data-filter"));
+        }
+
+        panel.addEventListener("click", function (event) {
+          var target = event.target && event.target.closest ? event.target.closest("[data-focus], [data-filter], [data-action], [data-preset], [data-quick-domain]") : null;
+          if (!target) return;
+
+          var focusId = target.getAttribute("data-focus");
+          if (focusId) {
+            event.preventDefault();
+            focusField(focusId);
+            return;
+          }
+
+          if (target.hasAttribute("data-filter")) {
+            event.preventDefault();
+            if (typeof window.labkioskApplyFilter === "function") setActiveFilter(target);
+            return;
+          }
+
+          var preset = target.getAttribute("data-preset");
+          if (preset) {
+            event.preventDefault();
+            var urlField = document.getElementById("broadcast-url");
+            if (urlField) {
+              urlField.value = preset;
+              urlField.focus({ preventScroll: true });
+              urlField.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+            return;
+          }
+
+          var quickDomain = target.getAttribute("data-quick-domain");
+          if (quickDomain) {
+            event.preventDefault();
+            var field = document.getElementById("domain-input");
+            var form = document.getElementById("add-domain-form");
+            if (field && form) {
+              field.value = quickDomain;
+              form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event("submit", { cancelable: true }));
+            }
+            return;
+          }
+
+          var action = target.getAttribute("data-action");
+          if (!action) return;
+          event.preventDefault();
+          if (action === "open-broadcast") runToolbarAction("btn-open-broadcast");
+          else if (action === "open-lock-all") {
+            // The lock dialog carries the announcement students will read. The
+            // toolbar button locks immediately with the saved default; this is
+            // the path for setting a message first.
+            if (typeof window.labkioskOpenLockDialog === "function") window.labkioskOpenLockDialog();
+            else window.location.href = workstationsHref;
+          }
+          else if (action === "open-unlock-all") runToolbarAction("btn-unlock-all");
+          else if (action === "open-reboot-all") runToolbarAction("btn-reboot-all");
+          // The broadcast page calls the same thing "Stop Broadcast".
+          else if (action === "reset-portal" || action === "quick-reset-portal") runToolbarAction("btn-reset-portal", "btn-stop-broadcast");
+        });
+
+        // Pages other than the grid cannot filter anything; leave the buttons out
+        // of the tab order there rather than offering a control that cannot work.
+        if (activePage !== "workstations") {
+          var filters = panel.querySelectorAll("[data-filter]");
+          for (var j = 0; j < filters.length; j++) filters[j].setAttribute("disabled", "disabled");
+        }
+      })();
+    </script>
+  `;
+}
 function getSubPanelForPage(
   page: "workstations" | "broadcast" | "portal" | "whitelist" | "teachers" | "settings",
   tenant?: Tenant,
@@ -237,12 +394,12 @@ function getSubPanelForPage(
         subPanelHtml: `
           <div class="sub-section-title">Actions</div>
           <div class="sub-action-list">
-            <a href="#new-app-title" class="sub-action-item" data-action="focus-new-app">
+            <button type="button" class="sub-action-item" data-focus="app-title">
               <span style="display: flex; align-items: center; gap: 8px;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 Add App Card
               </span>
-            </a>
+            </button>
             <a href="/?tenant=${encodeURIComponent(tenant?.subdomain || "demo")}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
               <span style="display: flex; align-items: center; gap: 8px;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
@@ -279,12 +436,12 @@ function getSubPanelForPage(
         subPanelHtml: `
           <div class="sub-section-title">Actions</div>
           <div class="sub-action-list">
-            <a href="#new-domain-input" class="sub-action-item" data-action="focus-new-domain">
+            <button type="button" class="sub-action-item" data-focus="domain-input">
               <span style="display: flex; align-items: center; gap: 8px;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 Add Domain
               </span>
-            </a>
+            </button>
           </div>
 
           <div class="sub-section-title" style="margin-top: 14px;">Quick Presets</div>
@@ -321,12 +478,12 @@ function getSubPanelForPage(
         subPanelHtml: `
           <div class="sub-section-title">Actions</div>
           <div class="sub-action-list">
-            <a href="#new-teacher-name" class="sub-action-item" data-action="focus-new-teacher">
+            <button type="button" class="sub-action-item" data-focus="teacher-name">
               <span style="display: flex; align-items: center; gap: 8px;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
                 Add Staff Member
               </span>
-            </a>
+            </button>
           </div>
 
           <div class="sub-section-title" style="margin-top: 14px;">Roles &amp; Access</div>
@@ -366,8 +523,14 @@ function getSubPanelForPage(
             <a href="#section-custom-domain" class="sub-action-item">
               <span>Custom Domain</span>
             </a>
+            <a href="#section-routing" class="sub-action-item">
+              <span>Kiosk Routing &amp; Home URL</span>
+            </a>
             <a href="#section-vnc" class="sub-action-item">
               <span>VNC &amp; Remote Control</span>
+            </a>
+            <a href="#section-enrollment" class="sub-action-item">
+              <span>Workstation Enrollment Key</span>
             </a>
             <a href="#section-password" class="sub-action-item">
               <span>Admin Password</span>
@@ -476,13 +639,14 @@ function getSubPanelForPage(
 // 1. WORKSTATIONS PAGE
 // ============================================================================
 
-function renderWorkstationsPageHtml(
-  tenant?: Tenant,
-  config?: LabConfig,
-  presets: BroadcastPreset[] = [],
-  sites: PortalSite[] = [],
-  baseDomain: string = "labkiosk.akbhoi.com"
-): string {
+/**
+ * The workstation grid and its batch-command toolbar.
+ *
+ * Allowed Domains, Portal Apps and Settings are links to their own pages, not
+ * modals. They used to be both: a second, unstyled copy of each editor lived
+ * in a dialog here, and the settings copy had no save handler at all.
+ */
+function renderWorkstationsPageHtml(tenantParam: string): string {
   return `
     <div class="page-head">
       <div>
@@ -502,18 +666,18 @@ function renderWorkstationsPageHtml(
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
           Broadcast URL
         </button>
-        <button type="button" class="btn btn-secondary" id="btn-open-whitelist">
+        <a class="btn btn-secondary" href="/admin/whitelist${tenantParam}">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           Allowed Domains
-        </button>
-        <button type="button" class="btn btn-secondary" id="btn-open-portal">
+        </a>
+        <a class="btn btn-secondary" href="/admin/portal${tenantParam}">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
           Portal Apps
-        </button>
-        <button type="button" class="btn btn-secondary" id="btn-open-settings">
+        </a>
+        <a class="btn btn-secondary" href="/admin/settings${tenantParam}">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           Settings
-        </button>
+        </a>
         <button type="button" class="btn btn-primary" id="btn-reset-portal">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
           Reset to Portal
@@ -525,22 +689,17 @@ function renderWorkstationsPageHtml(
       </div>
     </div>
 
-    <div class="kiosk-grid" id="kiosk-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px;">
-      <div class="empty-lab-state" style="grid-column: 1 / -1; background: var(--bg-card); border: 1px dashed var(--border); border-radius: var(--radius); padding: 60px 24px; text-align: center; color: var(--text-muted);">
-        <p style="font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 8px;">Connecting to classroom telemetry...</p>
-        <p style="font-size: 13px;">Workstations will appear here automatically once enrolled.</p>
+    <div class="kiosk-grid" id="kiosk-grid">
+      <div class="empty-lab-state">
+        <p class="empty-lab-title">Connecting to classroom telemetry...</p>
+        <p>Workstations will appear here automatically once enrolled.</p>
       </div>
     </div>
   `;
 }
 
-function renderWorkstationsModalsHtml(
-  tenant?: Tenant,
-  config?: LabConfig,
-  presets: BroadcastPreset[] = [],
-  sites: PortalSite[] = [],
-  baseDomain: string = "labkiosk.akbhoi.com"
-): string {
+/** Remote control, broadcast and lock-screen dialogs for the workstation grid. */
+function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[] = []): string {
   return `
     <!-- VNC Remote Control Modal -->
     <div class="modal-overlay" id="vnc-modal">
@@ -567,7 +726,7 @@ function renderWorkstationsModalsHtml(
           Enter an educational website URL to immediately navigate all student workstations.
         </p>
         <div style="margin-bottom: 14px;">
-          <input type="url" id="target-url-input" class="input-field" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}" style="width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 13px;">
+          <input type="url" id="target-url-input" class="form-input" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}" style="width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 13px;">
         </div>
         <div id="broadcast-error" style="color: var(--danger); font-size: 12px; margin-bottom: 10px; min-height: 16px;"></div>
         <div style="margin-bottom: 16px;">
@@ -579,7 +738,7 @@ function renderWorkstationsModalsHtml(
             <button type="button" class="btn btn-sm btn-secondary" data-url="https://en.wikipedia.org">Wikipedia</button>
           </div>
           <div id="broadcast-custom-shortcuts" style="display: flex; gap: 6px; flex-wrap: wrap;">
-            ${presets.map((p) => `<button type="button" class="btn btn-sm btn-secondary chip" data-url="${escapeAttr(p.url)}">${escapeHtml(p.title)}</button>`).join("")}
+            ${presets.map((p) => `<button type="button" class="btn btn-sm btn-secondary" data-url="${escapeAttr(p.url)}">${escapeHtml(p.title)}</button>`).join("")}
           </div>
         </div>
         <div style="display: flex; justify-content: flex-end; gap: 8px;">
@@ -601,7 +760,7 @@ function renderWorkstationsModalsHtml(
         </p>
         <div style="margin-bottom: 16px;">
           <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Announcement Message</label>
-          <input type="text" id="lock-msg-input" class="input-field" value="${escapeHtml(tenant?.default_lock_message || "Screens locked by the instructor. Please look to the front.")}" maxlength="280" style="width: 100%;">
+          <input type="text" id="lock-msg-input" class="form-input" value="${escapeHtml(tenant?.default_lock_message || "Screens locked by the instructor. Please look to the front.")}" maxlength="280" style="width: 100%;">
         </div>
         <div style="display: flex; justify-content: flex-end; gap: 8px;">
           <button type="button" class="btn btn-secondary" id="btn-cancel-lock-action">Cancel</button>
@@ -610,113 +769,6 @@ function renderWorkstationsModalsHtml(
       </div>
     </div>
 
-    <!-- Whitelist Modal -->
-    <div class="modal-overlay" id="whitelist-modal">
-      <div class="modal-box" style="max-width: 600px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-          <h3 id="whitelist-modal-title" style="font-size: 16px; font-weight: 700;">Educational Allowed Domains</h3>
-          <button type="button" class="modal-close" id="btn-close-whitelist" aria-label="Close dialog">✕</button>
-        </div>
-        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
-          Domains student workstations are permitted to access via Chromium enterprise policies.
-        </p>
-        <div id="whitelist-tags" style="display: flex; gap: 6px; flex-wrap: wrap; max-height: 160px; overflow-y: auto; margin-bottom: 14px; padding: 10px; background: var(--bg-base); border: 1px solid var(--border); border-radius: 8px;">
-          ${(config?.whitelist || []).map((d) => `<span class="badge badge-blue" style="font-family: 'JetBrains Mono', monospace;">${escapeHtml(d)}</span>`).join("")}
-        </div>
-        <div style="display: flex; gap: 8px; margin-bottom: 14px;">
-          <input type="text" id="new-domain-input" class="input-field" placeholder="e.g. scratch.mit.edu" style="flex: 1; font-family: 'JetBrains Mono', monospace; font-size: 13px;">
-          <button type="button" class="btn btn-primary" id="btn-add-domain">Add Domain</button>
-        </div>
-        <div id="whitelist-presets" style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px;">
-          <button type="button" class="btn btn-sm btn-secondary" data-domain="scratch.mit.edu">+ Scratch</button>
-          <button type="button" class="btn btn-sm btn-secondary" data-domain="phet.colorado.edu">+ PhET</button>
-          <button type="button" class="btn btn-sm btn-secondary" data-domain="khanacademy.org">+ Khan Academy</button>
-        </div>
-        <div style="display: flex; justify-content: flex-end;">
-          <button type="button" class="btn btn-secondary" id="btn-done-whitelist">Done</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Portal Apps Modal -->
-    <div class="modal-overlay" id="portal-modal">
-      <div class="modal-box" style="max-width: 650px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-          <h3 id="portal-modal-title" style="font-size: 16px; font-weight: 700;">Student Portal Resources</h3>
-          <button type="button" class="modal-close" id="btn-close-portal" aria-label="Close dialog">✕</button>
-        </div>
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Kiosk Mode</label>
-          <select id="kiosk-mode-select" class="input-field" style="width: 100%; margin-bottom: 8px;">
-            <option value="portal" ${tenant?.mode === "portal" ? "selected" : ""}>Visual App Launcher Grid</option>
-            <option value="single_url" ${tenant?.mode === "single_url" ? "selected" : ""}>Direct Single-Site Lockdown</option>
-          </select>
-          <div id="single-url-wrap" style="display: ${tenant?.mode === "single_url" ? "block" : "none"};">
-            <input type="url" id="single-url-input" class="input-field" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}" style="width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 13px;">
-          </div>
-        </div>
-        <div id="portal-apps-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto; margin-bottom: 16px; padding: 10px; background: var(--bg-base); border: 1px solid var(--border); border-radius: 8px;">
-          ${sites
-            .map(
-              (s) => `
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--border-subtle);">
-              <div>
-                <strong>${escapeHtml(s.title)}</strong>
-                <span style="font-size: 12px; color: var(--text-muted); margin-left: 6px;">${escapeHtml(s.domain || "")}</span>
-              </div>
-            </div>
-          `
-            )
-            .join("")}
-        </div>
-        <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; margin-bottom: 16px;">
-          <div style="font-size: 12px; font-weight: 700; margin-bottom: 8px;">Add New Resource</div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
-            <input type="text" id="new-app-title" class="input-field" placeholder="App Title (e.g. GeoGebra)">
-            <input type="url" id="new-app-url" class="input-field" placeholder="URL (https://...)">
-          </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
-            <input type="text" id="new-app-category" class="input-field" placeholder="Category">
-            <input type="text" id="new-app-icon" class="input-field" placeholder="Icon (Emoji)">
-          </div>
-          <div id="portal-error" style="color: var(--danger); font-size: 12px; min-height: 16px; margin-bottom: 6px;"></div>
-          <button type="button" class="btn btn-sm btn-primary" id="btn-add-app" style="width: 100%;">Add to Portal</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Settings Modal -->
-    <div class="modal-overlay" id="settings-modal">
-      <div class="modal-box" style="max-width: 600px; max-height: 85vh; overflow-y: auto;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-          <h3 id="settings-modal-title" style="font-size: 16px; font-weight: 700;">Lab Settings &amp; Customization</h3>
-          <button type="button" class="modal-close" id="btn-close-settings" aria-label="Close dialog">✕</button>
-        </div>
-        <div style="margin-bottom: 14px;">
-          <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Lab / Institution Name</label>
-          <input id="setting-lab-name" type="text" class="input-field" value="${escapeHtml(tenant?.name || "")}" maxlength="120" style="width: 100%;">
-        </div>
-        <div style="margin-bottom: 14px;">
-          <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Active Subdomain</label>
-          <input id="setting-active-subdomain" type="text" class="input-field" value="${escapeHtml(tenant ? `${tenant.subdomain}.${baseDomain}` : "")}" readonly style="width: 100%; font-family: 'JetBrains Mono', monospace;">
-        </div>
-        <div style="margin-bottom: 14px;">
-          <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Kiosk Mode</label>
-          <select id="setting-kiosk-mode" class="input-field" style="width: 100%; margin-bottom: 8px;">
-            <option value="portal" ${tenant?.mode === "portal" ? "selected" : ""}>Visual App Launcher</option>
-            <option value="single_url" ${tenant?.mode === "single_url" ? "selected" : ""}>Single-Site Lockdown</option>
-          </select>
-          <input id="setting-default-url" type="url" class="input-field" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}" style="width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 13px;">
-        </div>
-        <div style="margin-bottom: 14px;">
-          <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Default Lock Screen Message</label>
-          <input id="setting-lock-message" type="text" class="input-field" value="${escapeHtml(tenant?.default_lock_message || "Screens locked by the instructor. Please look to the front.")}" maxlength="280" style="width: 100%;">
-        </div>
-        <div style="display: flex; justify-content: flex-end;">
-          <button type="button" class="btn btn-secondary" id="btn-done-settings">Close</button>
-        </div>
-      </div>
-    </div>
   `;
 }
 
@@ -731,7 +783,7 @@ function renderWorkstationsScripts(
   const isDemo = tenant?.subdomain === "demo";
 
   return `
-    <script nonce="${escapeHtml(nonce)}">
+    <script nonce="${escapeAttr(nonce)}">
       const TUNNEL_DOMAIN = ${escapeJson(tunnelDomain)};
       const IS_DEMO = ${isDemo ? "true" : "false"};
       let clientsData = {};
@@ -844,7 +896,7 @@ function renderWorkstationsScripts(
 
       async function pollClients() {
         try {
-          const res = await fetch("/api/clients");
+          const res = await fetch(labkioskApi("/api/clients"));
           if (!res.ok) return;
           const data = await res.json();
           clientsData = data.clients || {};
@@ -853,10 +905,11 @@ function renderWorkstationsScripts(
           const ids = Object.keys(clientsData).sort();
 
           if (!ids.length) {
-            grid.innerHTML = '<div class="empty-lab-state" style="grid-column: 1 / -1; background: var(--bg-card); border: 1px dashed var(--border); border-radius: var(--radius); padding: 60px 24px; text-align: center; color: var(--text-muted);"><p style="font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 8px;">No Thin Clients Connected</p><p style="font-size: 13px;">Workstations appear here once enrolled with the school key.</p></div>';
+            grid.innerHTML = '<div class="empty-lab-state"><p class="empty-lab-title">No Thin Clients Connected</p><p>Workstations appear here once enrolled with the school key.</p></div>';
             document.getElementById("stat-online-count").textContent = "0";
             document.getElementById("stat-total-count").textContent = "0";
             document.getElementById("stat-locked-count").textContent = "0";
+            setPanelCounts(0, 0, 0, 0);
             return;
           }
 
@@ -883,6 +936,8 @@ function renderWorkstationsScripts(
           document.getElementById("stat-online-count").textContent = String(online);
           document.getElementById("stat-total-count").textContent = String(ids.length);
           document.getElementById("stat-locked-count").textContent = String(locked);
+          setPanelCounts(ids.length, online, ids.length - online, locked);
+          applyFilter(activeFilter);
         } catch (err) {
           console.warn("Telemetry poll:", err);
         }
@@ -923,7 +978,7 @@ function renderWorkstationsScripts(
 
       async function sendCommand(target, action, extra = {}) {
         try {
-          const res = await fetch("/api/command", {
+          const res = await fetch(labkioskApi("/api/command"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ target, action, ...extra })
@@ -942,7 +997,7 @@ function renderWorkstationsScripts(
       async function removeClient(clientId) {
         if (!confirm("Decommission " + clientId + "? It must be re-enrolled to reconnect.")) return;
         try {
-          const res = await fetch("/api/clients/remove", {
+          const res = await fetch(labkioskApi("/api/clients/remove"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ clientId })
@@ -967,6 +1022,72 @@ function renderWorkstationsScripts(
       document.getElementById("btn-reboot-all").addEventListener("click", () => {
         if (confirm("Are you sure you want to REBOOT all lab computers?")) sendCommand("all", "reboot");
       });
+
+      // ------------------------------------------------ context panel hooks
+      // The Level 2 panel is rendered by the shell and has no access to this
+      // closure, so the two things it needs are published on window.
+
+      var activeFilter = "all";
+
+      /**
+       * The four tallies beside the panel filters. They were server-rendered
+       * as zero and then never touched, so the panel always claimed an empty
+       * lab however many workstations were reporting.
+       */
+      function setPanelCounts(total, online, offline, locked) {
+        var counts = {
+          "sub-filter-all-count": total,
+          "sub-filter-online-count": online,
+          "sub-filter-offline-count": offline,
+          "sub-filter-locked-count": locked
+        };
+        for (var id in counts) {
+          var el = document.getElementById(id);
+          if (el) el.textContent = String(counts[id]);
+        }
+      }
+
+      /** Does this workstation belong in the current filter? */
+      function matchesFilter(client) {
+        var online = !!(client && client.online);
+        if (activeFilter === "online") return online;
+        if (activeFilter === "offline") return !online;
+        if (activeFilter === "locked") return online && !!client.isLocked;
+        return true;
+      }
+
+      /** Show only the cards the filter keeps, and say so when none remain. */
+      function applyFilter(name) {
+        activeFilter = name || "all";
+        var grid = document.getElementById("kiosk-grid");
+        if (!grid) return;
+        var shown = 0;
+        var cards = grid.querySelectorAll(".kiosk-card");
+        for (var i = 0; i < cards.length; i++) {
+          var card = cards[i];
+          var keep = matchesFilter(clientsData[card.id.replace("card-", "")]);
+          card.style.display = keep ? "" : "none";
+          if (keep) shown++;
+        }
+        var note = document.getElementById("filter-empty-note");
+        if (cards.length && !shown) {
+          if (!note) {
+            note = document.createElement("div");
+            note.id = "filter-empty-note";
+            note.className = "empty-lab-state";
+            grid.appendChild(note);
+          }
+          note.textContent = "No workstations match this filter.";
+        } else if (note) {
+          note.remove();
+        }
+      }
+      window.labkioskApplyFilter = applyFilter;
+
+      /** Open the lock dialog so a teacher can set the announcement text. */
+      window.labkioskOpenLockDialog = function () {
+        openModal("lock-modal");
+      };
 
       function openModal(id) {
         const modal = document.getElementById(id);
@@ -1026,95 +1147,6 @@ function renderWorkstationsScripts(
         });
       }
 
-      const btnOpenWhitelist = document.getElementById("btn-open-whitelist");
-      if (btnOpenWhitelist) btnOpenWhitelist.addEventListener("click", () => openModal("whitelist-modal"));
-      const btnCloseWhitelist = document.getElementById("btn-close-whitelist");
-      if (btnCloseWhitelist) btnCloseWhitelist.addEventListener("click", () => closeModal("whitelist-modal"));
-      const btnDoneWhitelist = document.getElementById("btn-done-whitelist");
-      if (btnDoneWhitelist) btnDoneWhitelist.addEventListener("click", () => closeModal("whitelist-modal"));
-
-      const btnAddDomain = document.getElementById("btn-add-domain");
-      if (btnAddDomain) {
-        btnAddDomain.addEventListener("click", async () => {
-          const input = document.getElementById("new-domain-input");
-          const domain = input ? input.value.trim() : "";
-          if (!domain) return;
-          try {
-            const res = await fetch("/api/whitelist", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "add", domain })
-            });
-            if (res.ok) {
-              input.value = "";
-              const tag = document.createElement("span");
-              tag.className = "badge badge-blue";
-              tag.style.fontFamily = "'JetBrains Mono', monospace";
-              tag.textContent = domain;
-              const tagsEl = document.getElementById("whitelist-tags");
-              if (tagsEl) tagsEl.appendChild(tag);
-            }
-          } catch {}
-        });
-      }
-
-      const whitelistPresets = document.getElementById("whitelist-presets");
-      if (whitelistPresets) {
-        whitelistPresets.addEventListener("click", (e) => {
-          const btn = e.target.closest("[data-domain]");
-          if (btn && btn.dataset.domain) {
-            const input = document.getElementById("new-domain-input");
-            if (input) {
-              input.value = btn.dataset.domain;
-              if (btnAddDomain) btnAddDomain.click();
-            }
-          }
-        });
-      }
-
-      const btnOpenPortal = document.getElementById("btn-open-portal");
-      if (btnOpenPortal) btnOpenPortal.addEventListener("click", () => openModal("portal-modal"));
-      const btnClosePortal = document.getElementById("btn-close-portal");
-      if (btnClosePortal) btnClosePortal.addEventListener("click", () => closeModal("portal-modal"));
-
-      const btnAddApp = document.getElementById("btn-add-app");
-      if (btnAddApp) {
-        btnAddApp.addEventListener("click", async () => {
-          const title = (document.getElementById("new-app-title") || {}).value || "";
-          const url = (document.getElementById("new-app-url") || {}).value || "";
-          const category = (document.getElementById("new-app-category") || {}).value || "";
-          const icon = (document.getElementById("new-app-icon") || {}).value || "";
-          const errEl = document.getElementById("portal-error");
-          if (!title || !url) {
-            if (errEl) errEl.textContent = "Title and URL are required";
-            return;
-          }
-          try {
-            const res = await fetch("/api/portal-sites", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ title, url, category, icon })
-            });
-            const data = await res.json();
-            if (data.status === "ok") {
-              closeModal("portal-modal");
-              window.location.reload();
-            } else if (errEl) {
-              errEl.textContent = data.error || "Failed to add resource";
-            }
-          } catch (err) {
-            if (errEl) errEl.textContent = "Network error";
-          }
-        });
-      }
-
-      const btnOpenSettings = document.getElementById("btn-open-settings");
-      if (btnOpenSettings) btnOpenSettings.addEventListener("click", () => openModal("settings-modal"));
-      const btnCloseSettings = document.getElementById("btn-close-settings");
-      if (btnCloseSettings) btnCloseSettings.addEventListener("click", () => closeModal("settings-modal"));
-      const btnDoneSettings = document.getElementById("btn-done-settings");
-      if (btnDoneSettings) btnDoneSettings.addEventListener("click", () => closeModal("settings-modal"));
-
       document.addEventListener("keydown", (e) => {
         if (e.key !== "Escape") return;
         for (const overlay of document.querySelectorAll(".modal-overlay.active")) {
@@ -1156,7 +1188,7 @@ function renderBroadcastPageHtml(tenant?: Tenant, sites: PortalSite[] = [], pres
 
   const presetsHtml = presets
     .map((p) => `
-      <div class="preset-item" style="display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;">
+      <div class="preset-item">
         <div>
           <div style="font-weight: 700; font-size: 14px;">${escapeHtml(p.title)}</div>
           <div style="font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">${escapeHtml(p.url)}</div>
@@ -1258,13 +1290,13 @@ function renderBroadcastPageHtml(tenant?: Tenant, sites: PortalSite[] = [], pres
 
 function renderBroadcastScripts(nonce: string): string {
   return `
-    <script nonce="${escapeHtml(nonce)}">
+    <script nonce="${escapeAttr(nonce)}">
       document.getElementById("broadcast-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const url = document.getElementById("broadcast-url").value.trim();
         if (!url) return;
         try {
-          const res = await fetch("/api/command", {
+          const res = await fetch(labkioskApi("/api/command"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ target: "all", action: "navigate", url })
@@ -1284,7 +1316,7 @@ function renderBroadcastScripts(nonce: string): string {
       if (stopBtn) {
         stopBtn.addEventListener("click", async () => {
           try {
-            const res = await fetch("/api/command", {
+            const res = await fetch(labkioskApi("/api/command"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ target: "all", action: "navigate", resetPortal: true })
@@ -1307,7 +1339,7 @@ function renderBroadcastScripts(nonce: string): string {
         const url = document.getElementById("preset-url").value.trim();
         if (!title || !url) return;
         try {
-          const res = await fetch("/api/broadcast-presets", {
+          const res = await fetch(labkioskApi("/api/broadcast-presets"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ title, url })
@@ -1328,7 +1360,7 @@ function renderBroadcastScripts(nonce: string): string {
           const url = btn.dataset.url;
           if (!url) return;
           try {
-            const res = await fetch("/api/command", {
+            const res = await fetch(labkioskApi("/api/command"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ target: "all", action: "navigate", url })
@@ -1350,7 +1382,7 @@ function renderBroadcastScripts(nonce: string): string {
           const id = btn.dataset.id;
           if (!id || !confirm("Delete this shortcut?")) return;
           try {
-            const res = await fetch("/api/broadcast-presets/" + encodeURIComponent(id), { method: "DELETE" });
+            const res = await fetch(labkioskApi("/api/broadcast-presets/" + encodeURIComponent(id)), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
@@ -1451,7 +1483,7 @@ function renderPortalPageHtml(_tenant?: Tenant, sites: PortalSite[] = []): strin
 
 function renderPortalScripts(nonce: string): string {
   return `
-    <script nonce="${escapeHtml(nonce)}">
+    <script nonce="${escapeAttr(nonce)}">
       document.getElementById("add-app-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const title = document.getElementById("app-title").value.trim();
@@ -1462,7 +1494,7 @@ function renderPortalScripts(nonce: string): string {
 
         if (!title || !url) return;
         try {
-          const res = await fetch("/api/portal-sites", {
+          const res = await fetch(labkioskApi("/api/portal-sites"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ title, url, category, icon, thumbnailUrl })
@@ -1483,7 +1515,7 @@ function renderPortalScripts(nonce: string): string {
           const id = btn.dataset.id;
           if (!id || !confirm("Remove this application from the student portal?")) return;
           try {
-            const res = await fetch("/api/portal-sites/" + encodeURIComponent(id), { method: "DELETE" });
+            const res = await fetch(labkioskApi("/api/portal-sites/" + encodeURIComponent(id)), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
@@ -1506,7 +1538,7 @@ function renderPortalScripts(nonce: string): string {
 function renderWhitelistPageHtml(domains: string[] = []): string {
   const domainTagsHtml = domains
     .map((d) => `
-      <span class="domain-tag" style="display: inline-flex; align-items: center; gap: 6px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 20px; padding: 6px 14px; font-size: 13px; font-family: 'JetBrains Mono', monospace;">
+      <span class="domain-tag">
         <span>${escapeHtml(d)}</span>
         <button type="button" class="btn-remove-domain" data-domain="${escapeAttr(d)}" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 0 2px;">✕</button>
       </span>
@@ -1563,13 +1595,13 @@ function renderWhitelistPageHtml(domains: string[] = []): string {
 
 function renderWhitelistScripts(nonce: string): string {
   return `
-    <script nonce="${escapeHtml(nonce)}">
+    <script nonce="${escapeAttr(nonce)}">
       document.getElementById("add-domain-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const domain = document.getElementById("domain-input").value.trim();
         if (!domain) return;
         try {
-          const res = await fetch("/api/whitelist", {
+          const res = await fetch(labkioskApi("/api/whitelist"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "add", domain })
@@ -1590,7 +1622,7 @@ function renderWhitelistScripts(nonce: string): string {
           const domain = btn.dataset.domain;
           if (!domain || !confirm("Remove " + domain + " from the allowlist?")) return;
           try {
-            const res = await fetch("/api/whitelist", {
+            const res = await fetch(labkioskApi("/api/whitelist"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ action: "remove", domain })
@@ -1612,7 +1644,7 @@ function renderWhitelistScripts(nonce: string): string {
           const raw = btn.dataset.domains || "";
           const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
           for (const d of list) {
-            await fetch("/api/whitelist", {
+            await fetch(labkioskApi("/api/whitelist"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ action: "add", domain: d })
@@ -1751,7 +1783,7 @@ function renderTeachersPageHtml(teachers: TenantUser[] = []): string {
 
 function renderTeachersScripts(nonce: string): string {
   return `
-    <script nonce="${escapeHtml(nonce)}">
+    <script nonce="${escapeAttr(nonce)}">
       document.getElementById("add-teacher-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const name = document.getElementById("teacher-name").value.trim();
@@ -1761,7 +1793,7 @@ function renderTeachersScripts(nonce: string): string {
         const perms = Array.from(document.querySelectorAll('input[name="perms"]:checked')).map((c) => c.value);
 
         try {
-          const res = await fetch("/api/tenant/teachers", {
+          const res = await fetch(labkioskApi("/api/tenant/teachers"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name, email, password, role, permissions: perms })
@@ -1782,7 +1814,7 @@ function renderTeachersScripts(nonce: string): string {
           const id = btn.dataset.id;
           if (!id || !confirm("Remove this teacher from the lab?")) return;
           try {
-            const res = await fetch("/api/tenant/teachers/" + encodeURIComponent(id), { method: "DELETE" });
+            const res = await fetch(labkioskApi("/api/tenant/teachers/" + encodeURIComponent(id)), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
@@ -1819,7 +1851,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
 
     <div class="grid-2col">
       <!-- Card 1: Lab Profile & Kiosk Mode -->
-      <div class="card">
+      <div class="card" id="section-general">
         <h2 class="card-title">Institution &amp; Kiosk Profile</h2>
         <p class="card-sub">General settings for this computer lab environment.</p>
 
@@ -1848,7 +1880,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
       </div>
 
       <!-- Card 2: Subdomain Customization -->
-      <div class="card">
+      <div class="card" id="section-subdomain">
         <h2 class="card-title">School Subdomain Customization</h2>
         <p class="card-sub">Customize your school's unique address on <code>${escapeHtml(baseDomain)}</code>.</p>
 
@@ -1866,7 +1898,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
       </div>
 
       <!-- Card 3: Custom Domain -->
-      <div class="card">
+      <div class="card" id="section-custom-domain">
         <h2 class="card-title">White-Label Custom Domain</h2>
         <p class="card-sub">Point your own institutional domain (e.g. <code>kiosk.myschool.edu</code>) to this lab.</p>
 
@@ -1901,7 +1933,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
       </div>
 
       <!-- Card 4: Kiosk Routing & Home Page -->
-      <div class="card">
+      <div class="card" id="section-routing">
         <h2 class="card-title">Kiosk Routing &amp; Home URL</h2>
         <p class="card-sub">Choose where workstations navigate upon boot and when resetting.</p>
 
@@ -1920,7 +1952,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
       </div>
 
       <!-- Card 5: VNC & Remote Control Tunnel -->
-      <div class="card">
+      <div class="card" id="section-vnc">
         <h2 class="card-title">Remote Control &amp; VNC Tunnel</h2>
         <p class="card-sub">Cloudflare Tunnel hostname for live classroom screen control.</p>
 
@@ -1935,7 +1967,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
       </div>
 
       <!-- Card 6: Workstation Enrollment Key -->
-      <div class="card">
+      <div class="card" id="section-enrollment">
         <h2 class="card-title">Workstation Enrollment Key</h2>
         <p class="card-sub">Secret key used to securely pair thin clients to this school.</p>
 
@@ -1947,7 +1979,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
       </div>
 
       <!-- Card 7: Account Security -->
-      <div class="card">
+      <div class="card" id="section-password">
         <h2 class="card-title">Account Security &amp; Password</h2>
         <p class="card-sub">Change the password for this administrative account.</p>
 
@@ -1969,7 +2001,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
 
 function renderSettingsScripts(nonce: string): string {
   return `
-    <script nonce="${escapeHtml(nonce)}">
+    <script nonce="${escapeAttr(nonce)}">
       document.getElementById("form-profile-settings").addEventListener("submit", async (e) => {
         e.preventDefault();
         const name = document.getElementById("setting-school-name").value.trim();
@@ -1978,7 +2010,7 @@ function renderSettingsScripts(nonce: string): string {
         const defaultLockMessage = document.getElementById("setting-lock-msg").value.trim();
 
         try {
-          const res = await fetch("/api/tenant/settings", {
+          const res = await fetch(labkioskApi("/api/tenant/settings"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name, mode, defaultUrl, defaultLockMessage })
@@ -2001,7 +2033,7 @@ function renderSettingsScripts(nonce: string): string {
         if (!confirm("Update subdomain to '" + subdomain + "'? Workstations will need their configuration updated.")) return;
 
         try {
-          const res = await fetch("/api/tenant/subdomain", {
+          const res = await fetch(labkioskApi("/api/tenant/subdomain"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ subdomain })
@@ -2024,7 +2056,7 @@ function renderSettingsScripts(nonce: string): string {
           e.preventDefault();
           const domain = document.getElementById("setting-custom-domain").value.trim();
           try {
-            const res = await fetch("/api/settings/custom-domain", {
+            const res = await fetch(labkioskApi("/api/settings/custom-domain"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ domain })
@@ -2047,7 +2079,7 @@ function renderSettingsScripts(nonce: string): string {
         disconnectBtn.addEventListener("click", async () => {
           if (!confirm("Disconnect your custom domain?")) return;
           try {
-            const res = await fetch("/api/settings/custom-domain", { method: "DELETE" });
+            const res = await fetch(labkioskApi("/api/settings/custom-domain"), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
@@ -2064,7 +2096,7 @@ function renderSettingsScripts(nonce: string): string {
       if (cancelCustomBtn) {
         cancelCustomBtn.addEventListener("click", async () => {
           try {
-            await fetch("/api/settings/custom-domain", { method: "DELETE" });
+            await fetch(labkioskApi("/api/settings/custom-domain"), { method: "DELETE" });
             window.location.reload();
           } catch (err) {
             alert("Network error: " + err.message);
@@ -2076,7 +2108,7 @@ function renderSettingsScripts(nonce: string): string {
         e.preventDefault();
         const homeRoute = document.getElementById("setting-home-route").value;
         try {
-          const res = await fetch("/api/tenant/settings", {
+          const res = await fetch(labkioskApi("/api/tenant/settings"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ homeRoute })
@@ -2096,7 +2128,7 @@ function renderSettingsScripts(nonce: string): string {
         e.preventDefault();
         const tunnelDomain = document.getElementById("setting-tunnel-domain").value.trim();
         try {
-          const res = await fetch("/api/tenant/settings", {
+          const res = await fetch(labkioskApi("/api/tenant/settings"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ tunnelDomain })
@@ -2118,7 +2150,7 @@ function renderSettingsScripts(nonce: string): string {
         const btn = document.getElementById("btn-reveal-key");
         if (!keyRevealed) {
           try {
-            const res = await fetch("/api/settings/enrollment-key");
+            const res = await fetch(labkioskApi("/api/settings/enrollment-key"));
             const data = await res.json();
             display.textContent = data.enrollmentKey;
             btn.textContent = "Copy Key";
@@ -2135,7 +2167,7 @@ function renderSettingsScripts(nonce: string): string {
       document.getElementById("btn-rotate-key").addEventListener("click", async () => {
         if (!confirm("Rotate enrollment key? Previously enrolled devices will continue functioning, but newly enrolled machines will require the fresh key.")) return;
         try {
-          const res = await fetch("/api/settings/enrollment-key", { method: "POST" });
+          const res = await fetch(labkioskApi("/api/settings/enrollment-key"), { method: "POST" });
           const data = await res.json();
           if (data.status === "ok") {
             document.getElementById("enrollment-key-display").textContent = data.enrollmentKey;
@@ -2151,7 +2183,7 @@ function renderSettingsScripts(nonce: string): string {
         const currentPassword = document.getElementById("pwd-current").value;
         const newPassword = document.getElementById("pwd-new").value;
         try {
-          const res = await fetch("/api/auth/change-password", {
+          const res = await fetch(labkioskApi("/api/auth/change-password"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ currentPassword, newPassword })

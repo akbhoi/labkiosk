@@ -1,10 +1,11 @@
 /**
  * Modern Responsive Dashboard Shell & Left-Side Multi-Level Panels Layout
- * Provides Level 1 primary navigation rail (72px), Level 2 context action panel (268px),
+ * Provides Level 1 primary navigation rail (72px), Level 2 context action panel (272px),
  * seamless hardware-accelerated transitions, fluid content canvas, and 2026 design tokens.
  */
 
 import { escapeHtml, escapeAttr } from "./escape";
+import { FONT_LINKS, rootTokensCss } from "./ui_tokens";
 
 export interface NavItem {
   id: string;
@@ -12,6 +13,12 @@ export interface NavItem {
   href: string;
   iconSvg: string;
   badge?: string | number;
+  /**
+   * How the badge reads. "count" (the default) is a neutral tally -- six portal
+   * apps is not a problem. "attention" is the red one, for a queue that is
+   * waiting on the person looking at it.
+   */
+  badgeTone?: "count" | "attention";
 }
 
 export interface StatItem {
@@ -26,6 +33,12 @@ export interface LayoutOptions {
   brandTitle: string;
   brandSubtitle: string;
   brandIconSvg?: string;
+  /**
+   * Where the brand glyph links. It used to be hardcoded to "/admin", which on
+   * the super-admin console is a route super admins are refused (HTTP 400), and
+   * on a dev host silently dropped the ?tenant= parameter.
+   */
+  brandHref?: string;
   navItems: NavItem[];
   activeNavId: string;
   subPanelTitle?: string;
@@ -38,6 +51,18 @@ export interface LayoutOptions {
   modalsHtml?: string;
   scriptsHtml?: string;
   nonce: string;
+}
+
+/**
+ * A rail badge, or nothing. A zero count is omitted: an empty allowlist is
+ * already legible from the page, and a badge reading "0" only adds noise.
+ */
+function renderRailBadge(item: NavItem): string {
+  if (item.badge === undefined) return "";
+  const text = String(item.badge);
+  if (text === "" || text === "0") return "";
+  const tone = item.badgeTone === "attention" ? " attention" : "";
+  return `<span class="rail-badge${tone}">${escapeHtml(text)}</span>`;
 }
 
 export function renderLayoutHtml(options: LayoutOptions): string {
@@ -62,6 +87,7 @@ export function renderLayoutHtml(options: LayoutOptions): string {
 
   const defaultBrandIcon = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
 
+  const brandHref = options.brandHref || "/admin";
   const activeItem = navItems.find((item) => item.id === activeNavId) || navItems[0];
   const activeNavLabel = activeItem ? activeItem.label : "Dashboard";
 
@@ -73,7 +99,7 @@ export function renderLayoutHtml(options: LayoutOptions): string {
         <a href="${escapeAttr(item.href)}" class="rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" title="${escapeAttr(item.label)}">
           <span class="rail-icon">${item.iconSvg}</span>
           <span class="rail-tooltip">${escapeHtml(item.label)}</span>
-          ${item.badge !== undefined ? `<span class="rail-badge">${escapeHtml(String(item.badge))}</span>` : ""}
+          ${renderRailBadge(item)}
         </a>
       `;
     })
@@ -100,36 +126,9 @@ export function renderLayoutHtml(options: LayoutOptions): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(title)}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+${FONT_LINKS}
   <style>
-    :root {
-      --bg-base: #080c14;
-      --bg-rail: #0c121e;
-      --bg-panel: #111827;
-      --bg-surface: #141d2d;
-      --bg-card: #1a2538;
-      --bg-card-hover: #223049;
-      --border-subtle: rgba(255, 255, 255, 0.08);
-      --border: #2d3748;
-      --border-focus: #3b82f6;
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
-      --text-subtle: #64748b;
-      --accent: #3b82f6;
-      --accent-hover: #2563eb;
-      --accent-glow: rgba(59, 130, 246, 0.28);
-      --accent-gradient: linear-gradient(135deg, #3b82f6, #6366f1);
-      --success: #10b981;
-      --danger: #ef4444;
-      --warning: #f59e0b;
-      --radius: 12px;
-      --radius-sm: 8px;
-      --rail-width: 72px;
-      --subpanel-width: 272px;
-      --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
-    }
+${rootTokensCss()}
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -277,8 +276,9 @@ export function renderLayoutHtml(options: LayoutOptions): string {
       position: absolute;
       top: 4px;
       right: 4px;
-      background: var(--danger);
-      color: #fff;
+      background: var(--bg-card-hover);
+      color: var(--text-main);
+      border: 1px solid var(--border);
       font-size: 10px;
       font-weight: 700;
       min-width: 16px;
@@ -288,6 +288,11 @@ export function renderLayoutHtml(options: LayoutOptions): string {
       align-items: center;
       justify-content: center;
       padding: 0 4px;
+    }
+    .rail-badge.attention {
+      background: var(--danger);
+      color: #fff;
+      border-color: var(--danger);
     }
 
     .rail-bottom {
@@ -462,6 +467,15 @@ export function renderLayoutHtml(options: LayoutOptions): string {
       background: rgba(255, 255, 255, 0.03);
       border-color: var(--border-subtle);
     }
+    .sub-action-item:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .sub-action-item:disabled:hover {
+      color: var(--text-muted);
+      background: transparent;
+      border-color: transparent;
+    }
     .sub-action-item.active {
       color: #93c5fd;
       background: rgba(59, 130, 246, 0.1);
@@ -528,6 +542,13 @@ export function renderLayoutHtml(options: LayoutOptions): string {
 
     .canvas-breadcrumb {
       display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1px;
+      min-width: 0;
+    }
+    .breadcrumb-trail {
+      display: flex;
       align-items: center;
       gap: 8px;
       font-size: 14px;
@@ -535,6 +556,17 @@ export function renderLayoutHtml(options: LayoutOptions): string {
     .breadcrumb-school { font-weight: 700; color: var(--text-main); }
     .breadcrumb-sep { color: var(--text-subtle); }
     .breadcrumb-page { color: var(--text-muted); font-weight: 500; }
+    /* The console's own address. Passed in as brandSubtitle since the shell
+       was written, but until now never rendered anywhere. */
+    .breadcrumb-host {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
 
     .canvas-header-center {
       display: flex;
@@ -554,6 +586,8 @@ export function renderLayoutHtml(options: LayoutOptions): string {
       font-size: 12px;
     }
     .stat-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .stat-label { color: var(--text-muted); }
+    .stat-val { color: var(--text-main); font-variant-numeric: tabular-nums; }
     .dot-green { background: var(--success); box-shadow: 0 0 6px var(--success); }
     .dot-red { background: var(--danger); }
     .dot-yellow { background: var(--warning); }
@@ -655,6 +689,55 @@ export function renderLayoutHtml(options: LayoutOptions): string {
       gap: 10px;
     }
     .card-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; }
+
+    /* Workstation grid, and the placeholder it shows while telemetry is empty.
+       These carried their whole appearance in inline style attributes, so the
+       class names on them described nothing. */
+    .kiosk-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 20px;
+    }
+    .empty-lab-state {
+      grid-column: 1 / -1;
+      background: var(--bg-card);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 60px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+    .empty-lab-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-bottom: 8px;
+    }
+
+    /* A saved broadcast preset, and one allowed domain. */
+    .preset-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      margin-bottom: 10px;
+    }
+    .domain-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-family: 'JetBrains Mono', monospace;
+    }
 
     .grid-2col {
       display: grid;
@@ -815,7 +898,7 @@ export function renderLayoutHtml(options: LayoutOptions): string {
     <!-- Level 1: Primary Navigation Rail (72px) -->
     <aside class="nav-rail" id="nav-rail">
       <div class="rail-top">
-        <a href="/admin" class="brand-glyph" title="${escapeAttr(brandTitle)}">
+        <a href="${escapeAttr(brandHref)}" class="brand-glyph" title="${escapeAttr(brandTitle)}">
           <div class="brand-icon">${brandIconSvg || defaultBrandIcon}</div>
         </a>
         <div class="rail-divider"></div>
@@ -869,9 +952,12 @@ export function renderLayoutHtml(options: LayoutOptions): string {
             </svg>
           </button>
           <div class="canvas-breadcrumb">
-            <span class="breadcrumb-school">${escapeHtml(brandTitle)}</span>
-            <span class="breadcrumb-sep">/</span>
-            <span class="breadcrumb-page">${escapeHtml(activeNavLabel)}</span>
+            <div class="breadcrumb-trail">
+              <span class="breadcrumb-school">${escapeHtml(brandTitle)}</span>
+              <span class="breadcrumb-sep">/</span>
+              <span class="breadcrumb-page">${escapeHtml(activeNavLabel)}</span>
+            </div>
+            ${brandSubtitle ? `<div class="breadcrumb-host">${escapeHtml(brandSubtitle)}</div>` : ""}
           </div>
         </div>
 

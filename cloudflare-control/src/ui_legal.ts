@@ -1,33 +1,33 @@
 /**
- * Privacy Policy & Terms of Service UI
- * Educational compliance (FERPA, COPPA) and RAM overlay privacy guarantees.
+ * Privacy Policy & Terms of Service.
+ *
+ * Educational compliance (FERPA, COPPA) and the RAM overlay privacy guarantee.
+ * Both pages share one shell: they used to be two complete HTML documents with
+ * their own token block, head, header and footer, which is how they drifted onto
+ * a third palette while the consoles were on a fourth.
  */
 
 import { escapeHtml } from "./escape";
+import { FONT_LINKS, rootTokensCss, LEGACY_LEGAL_ALIASES } from "./ui_tokens";
 
-export function renderPrivacyPolicyHtml(nonce: string, baseDomain = "labkiosk.akbhoi.com"): string {
+/** The chrome both legal pages sit inside. */
+function renderLegalShell(options: {
+  title: string;
+  /** The other legal page, linked from the nav. */
+  siblingHref: string;
+  siblingLabel: string;
+  mainHtml: string;
+}): string {
+  const { title, siblingHref, siblingLabel, mainHtml } = options;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Privacy Policy - Lab Kiosk OS</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <title>${escapeHtml(title)}</title>
+${FONT_LINKS}
   <style>
-    :root {
-      --bg: #090d16;
-      --surface: #111827;
-      --card: #1f2937;
-      --border: #374151;
-      --text: #f9fafb;
-      --muted: #9ca3af;
-      --accent: #3b82f6;
-      --accent-hover: #2563eb;
-      --green: #10b981;
-      --radius: 12px;
-    }
+${rootTokensCss(LEGACY_LEGAL_ALIASES)}
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
     body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; line-height: 1.7; }
     header {
@@ -97,11 +97,26 @@ export function renderPrivacyPolicyHtml(nonce: string, baseDomain = "labkiosk.ak
     </a>
     <nav class="nav-links">
       <a href="/">Home</a>
-      <a href="/terms">Terms of Service</a>
+      <a href="${escapeHtml(siblingHref)}">${escapeHtml(siblingLabel)}</a>
       <a href="/login">Teacher Sign In</a>
     </nav>
   </header>
 
+${mainHtml}
+
+  <footer>
+    &copy; 2026 Lab Kiosk OS • Akbhoi Innovations • <a href="/">Return to Platform Home</a>
+  </footer>
+</body>
+</html>`;
+}
+
+export function renderPrivacyPolicyHtml(_nonce: string, _baseDomain = "labkiosk.akbhoi.com"): string {
+  return renderLegalShell({
+    title: "Privacy Policy - Lab Kiosk OS",
+    siblingHref: "/terms",
+    siblingLabel: "Terms of Service",
+    mainHtml: `
   <main>
     <div class="legal-card">
       <h1>Privacy &amp; Data Protection Policy</h1>
@@ -109,7 +124,7 @@ export function renderPrivacyPolicyHtml(nonce: string, baseDomain = "labkiosk.ak
 
       <div class="highlight-box">
         <strong>100% In-Memory RAM Overlay Guarantee</strong>
-        Lab Kiosk OS runs on an immutable read-only root filesystem with <code>overlayroot="tmpfs"</code>. No student personal data, browsing history, downloaded files, or session cookies are ever written to physical disk storage. All transient data is instantly and permanently destroyed upon power-off or reboot.
+        Lab Kiosk OS runs on an immutable read-only root filesystem with <code>overlayroot="tmpfs:recurse=0"</code>. No student personal data, browsing history, downloaded files, or session cookies are ever written to physical disk storage. All transient data is instantly and permanently destroyed upon power-off or reboot.
       </div>
 
       <h2>1. Introduction &amp; Educational Commitment</h2>
@@ -142,100 +157,16 @@ export function renderPrivacyPolicyHtml(nonce: string, baseDomain = "labkiosk.ak
       <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@akbhoi.com" style="color: var(--accent);">privacy@akbhoi.com</a>.</p>
     </div>
   </main>
-
-  <footer>
-    &copy; 2026 Lab Kiosk OS • Akbhoi Innovations • <a href="/">Return to Platform Home</a>
-  </footer>
-</body>
-</html>`;
+`
+  });
 }
 
-export function renderTermsOfServiceHtml(nonce: string, baseDomain = "labkiosk.akbhoi.com"): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Terms of Service - Lab Kiosk OS</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #090d16;
-      --surface: #111827;
-      --card: #1f2937;
-      --border: #374151;
-      --text: #f9fafb;
-      --muted: #9ca3af;
-      --accent: #3b82f6;
-      --accent-hover: #2563eb;
-      --radius: 12px;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
-    body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; line-height: 1.7; }
-    header {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 18px 36px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; }
-    .brand-icon {
-      width: 36px; height: 36px; background: linear-gradient(135deg, #3b82f6, #6366f1);
-      border-radius: 8px; display: flex; align-items: center; justify-content: center;
-    }
-    .brand-title { font-size: 18px; font-weight: 800; }
-    .nav-links { display: flex; align-items: center; gap: 20px; font-size: 14px; }
-    .nav-links a { color: var(--muted); text-decoration: none; transition: color 0.2s; }
-    .nav-links a:hover { color: var(--text); }
-    main {
-      flex: 1;
-      max-width: 900px;
-      width: 100%;
-      margin: 40px auto;
-      padding: 0 24px 60px;
-    }
-    .legal-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 40px;
-    }
-    h1 { font-size: 32px; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.5px; }
-    .updated-date { color: var(--muted); font-size: 13px; margin-bottom: 30px; }
-    h2 { font-size: 20px; font-weight: 700; margin: 32px 0 12px; color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
-    p { margin-bottom: 16px; color: #d1d5db; font-size: 15px; }
-    ul { margin: 0 0 20px 24px; color: #d1d5db; font-size: 15px; }
-    li { margin-bottom: 8px; }
-    footer {
-      background: var(--surface);
-      border-top: 1px solid var(--border);
-      padding: 24px 36px;
-      text-align: center;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    footer a { color: var(--accent); text-decoration: none; }
-  </style>
-</head>
-<body>
-  <header>
-    <a href="/" class="brand">
-      <div class="brand-icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-      </div>
-      <div class="brand-title">Lab Kiosk OS</div>
-    </a>
-    <nav class="nav-links">
-      <a href="/">Home</a>
-      <a href="/privacy">Privacy Policy</a>
-      <a href="/login">Teacher Sign In</a>
-    </nav>
-  </header>
-
+export function renderTermsOfServiceHtml(_nonce: string, _baseDomain = "labkiosk.akbhoi.com"): string {
+  return renderLegalShell({
+    title: "Terms of Service - Lab Kiosk OS",
+    siblingHref: "/privacy",
+    siblingLabel: "Privacy Policy",
+    mainHtml: `
   <main>
     <div class="legal-card">
       <h1>Terms of Service</h1>
@@ -273,10 +204,6 @@ export function renderTermsOfServiceHtml(nonce: string, baseDomain = "labkiosk.a
       <p>For legal inquiries, contact <a href="mailto:legal@akbhoi.com" style="color: var(--accent);">legal@akbhoi.com</a>.</p>
     </div>
   </main>
-
-  <footer>
-    &copy; 2026 Lab Kiosk OS • Akbhoi Innovations • <a href="/">Return to Platform Home</a>
-  </footer>
-</body>
-</html>`;
+`
+  });
 }

@@ -82,9 +82,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <td>${escapeHtml(new Date(t.created_at * 1000).toISOString().slice(0, 10))}</td>
       <td>
         <div style="display: flex; gap: 6px;">
-          <button class="btn btn-sm btn-success btn-approve-sub" data-tenant="${escapeHtml(t.id)}" data-subdomain="${escapeHtml(t.requested_subdomain || t.subdomain)}">Approve</button>
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeHtml(t.id)}">Assign Custom</button>
-          <button class="btn btn-sm btn-danger btn-reject-sub" data-tenant="${escapeHtml(t.id)}">Reject</button>
+          <button class="btn btn-sm btn-success btn-approve-sub" data-tenant="${escapeAttr(t.id)}" data-subdomain="${escapeAttr(t.requested_subdomain || t.subdomain)}">Approve</button>
+          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Assign Custom</button>
+          <button class="btn btn-sm btn-danger btn-reject-sub" data-tenant="${escapeAttr(t.id)}">Reject</button>
         </div>
       </td>
     </tr>
@@ -105,8 +105,8 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </td>
       <td>
         <div style="display: flex; gap: 6px;">
-          <button class="btn btn-sm btn-success btn-approve-custom" data-tenant="${escapeHtml(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}">Approve Domain</button>
-          <button class="btn btn-sm btn-danger btn-reject-custom" data-tenant="${escapeHtml(t.id)}">Reject</button>
+          <button class="btn btn-sm btn-success btn-approve-custom" data-tenant="${escapeAttr(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}">Approve Domain</button>
+          <button class="btn btn-sm btn-danger btn-reject-custom" data-tenant="${escapeAttr(t.id)}">Reject</button>
         </div>
       </td>
     </tr>
@@ -150,17 +150,17 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         <div style="display: flex; gap: 6px; flex-wrap: wrap;">
           ${
             isDemo
-              ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">Open Test Console (Demo)</a>`
+              ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">Open Test Console (Demo)</a>`
               : `<span class="badge" style="background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid var(--border);">Console Restricted (Privacy)</span>`
           }
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeHtml(t.id)}">Edit Subdomain</button>
-          <button class="btn btn-sm btn-secondary btn-assign-custom" data-tenant="${escapeHtml(t.id)}">Assign Custom</button>
-          ${t.custom_domain ? `<button class="btn btn-sm btn-danger btn-remove-custom" data-tenant="${escapeHtml(t.id)}">Disconnect</button>` : ""}
+          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>
+          <button class="btn btn-sm btn-secondary btn-assign-custom" data-tenant="${escapeAttr(t.id)}">Assign Custom</button>
+          ${t.custom_domain ? `<button class="btn btn-sm btn-danger btn-remove-custom" data-tenant="${escapeAttr(t.id)}">Disconnect</button>` : ""}
           ${
             t.status === "active"
-              ? `<button class="btn btn-sm btn-danger btn-suspend" data-tenant="${escapeHtml(t.id)}">Suspend</button>`
+              ? `<button class="btn btn-sm btn-danger btn-suspend" data-tenant="${escapeAttr(t.id)}">Suspend</button>`
               : t.status === "suspended"
-                ? `<button class="btn btn-sm btn-success btn-reactivate" data-tenant="${escapeHtml(t.id)}">Reactivate</button>`
+                ? `<button class="btn btn-sm btn-success btn-reactivate" data-tenant="${escapeAttr(t.id)}">Reactivate</button>`
                 : ""
           }
         </div>
@@ -183,6 +183,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       label: "Approvals Queue",
       href: "/super/approvals",
       badge: pendingCount > 0 ? pendingCount : undefined,
+      badgeTone: "attention",
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`
     },
     {
@@ -232,15 +233,20 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     </div>
   `;
 
-  const contentHtml = `
-    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: var(--radius); padding: 16px 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 14px; font-size: 13px; color: #bfdbfe;">
+  // Each console tab renders on its own. The four panes used to be emitted
+  // together and hidden with an inline `display`, except #pane-schools, which
+  // carried no display rule and no matching CSS -- so the whole schools
+  // directory, every tenant row included, rendered above the approvals,
+  // catalogs and system pages as well.
+  const bannerHtml = `    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: var(--radius); padding: 16px 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 14px; font-size: 13px; color: #bfdbfe;">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       <div>
         <strong>Privacy Invariant Enforced:</strong> Platform Super Administrators cannot access individual school consoles or view student workstation telemetry. Consoles are accessible solely to authorized school instructors. The dedicated <code>demo</code> tenant is available for platform testing.
       </div>
     </div>
+  `;
 
-    <div class="tab-pane ${activeTab === "schools" ? "active" : ""}" id="pane-schools">
+  const schoolsPaneHtml = `
       <div class="card" style="padding: 0; overflow: hidden;">
         <div style="padding: 20px 24px; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
           <h2 class="card-title" style="margin-bottom: 0;">Registered Schools &amp; Institutions (${tenants.length})</h2>
@@ -264,9 +270,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </table>
         </div>
       </div>
-    </div>
+  `;
 
-    <div class="tab-pane ${activeTab === "approvals" ? "active" : ""}" id="pane-approvals" style="display: ${activeTab === "approvals" ? "block" : "none"};">
+  const approvalsPaneHtml = `
       <div class="card">
         <h2 class="card-title">Pending Subdomain Requests (${pendingList.length})</h2>
         <p class="card-sub">Schools requesting initial activation or subdomain modifications.</p>
@@ -307,34 +313,35 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </table>
         </div>
       </div>
-    </div>
+  `;
 
-    <div class="tab-pane ${activeTab === "catalogs" ? "active" : ""}" id="pane-catalogs" style="display: ${activeTab === "catalogs" ? "block" : "none"};">
+  const catalogsPaneHtml = `
       <div class="card">
         <h2 class="card-title">Upload / Replace Translation Catalog</h2>
         <p class="card-sub">Deploy multi-language user interfaces to the first-boot setup wizard and top bar.</p>
 
         <form id="form-upload-catalog" style="max-width: 600px;">
-          <div style="display: flex; gap: 12px; margin-bottom: 14px;">
-            <div style="flex: 1;">
-              <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px;">Language Tag</label>
+          <div class="grid-2col" style="gap: 12px;">
+            <div class="form-group">
+              <label class="form-label" for="catalog-tag">Language Tag</label>
               <input type="text" id="catalog-tag" required placeholder="e.g. hi-IN or fr-FR" class="form-input">
             </div>
-            <div style="flex: 1;">
-              <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px;">Display Name</label>
+            <div class="form-group">
+              <label class="form-label" for="catalog-name">Display Name</label>
               <input type="text" id="catalog-name" placeholder="e.g. Hindi or Français" class="form-input">
             </div>
           </div>
-          <div style="margin-bottom: 14px;">
-            <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px;">Direction</label>
+          <div class="form-group">
+            <label class="form-label" for="catalog-direction">Direction</label>
             <select id="catalog-direction" class="form-select">
               <option value="ltr">LTR (Left to Right)</option>
               <option value="rtl">RTL (Right to Left)</option>
             </select>
           </div>
-          <div style="margin-bottom: 16px;">
-            <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px;">Catalog JSON Content</label>
+          <div class="form-group">
+            <label class="form-label" for="catalog-json">Catalog JSON Content</label>
             <textarea id="catalog-json" rows="6" required placeholder='{"bar.home": "Home", ...}' class="form-textarea" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;"></textarea>
+            <p class="form-hint">A flat map of string to string. Uploaded catalogs are platform-wide: never put anything school-specific in one.</p>
           </div>
           <button type="submit" class="btn btn-primary">Upload Translation Catalog</button>
         </form>
@@ -360,9 +367,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </table>
         </div>
       </div>
-    </div>
+  `;
 
-    <div class="tab-pane ${activeTab === "system" ? "active" : ""}" id="pane-system" style="display: ${activeTab === "system" ? "block" : "none"};">
+  const systemPaneHtml = `
       <div class="card">
         <h2 class="card-title">Platform Architecture &amp; Database Health</h2>
         <p class="card-sub">Cloudflare D1 edge database status and real-time operational telemetry.</p>
@@ -370,7 +377,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
             <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Database Engine</div>
             <div style="font-size: 18px; font-weight: 800; margin-top: 4px; color: #93c5fd;">Cloudflare D1 (SQLite)</div>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">Schema migrations: 0001..0007 applied</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">Schema verified at boot by assertSchemaCurrent()</div>
           </div>
           <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
             <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Zero Runtime NPM</div>
@@ -380,15 +387,24 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
             <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Client OS Overlay</div>
             <div style="font-size: 18px; font-weight: 800; margin-top: 4px; color: #fde68a;">100% RAM Overlay</div>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">overlayroot="tmpfs", 0 SSD Wear</div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">overlayroot="tmpfs:recurse=0", 0 SSD Wear</div>
           </div>
         </div>
       </div>
-    </div>
   `;
 
+  const panesByTab: Record<typeof activeTab, string> = {
+    schools: schoolsPaneHtml,
+    approvals: approvalsPaneHtml,
+    catalogs: catalogsPaneHtml,
+    system: systemPaneHtml
+  };
+
+  const contentHtml = `${bannerHtml}
+${panesByTab[activeTab] || schoolsPaneHtml}`;
+
   const scriptsHtml = `
-    <script nonce="${escapeHtml(nonce)}">
+    <script nonce="${escapeAttr(nonce)}">
       document.querySelectorAll(".btn-approve-sub").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
@@ -652,6 +668,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     brandTitle: "Super Admin Master Console",
     brandSubtitle: `${baseDomain} • Global Governance`,
     brandIconSvg: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`,
+    brandHref: "/super",
     navItems,
     activeNavId: activeTab,
     subPanelTitle: "Platform Governance",

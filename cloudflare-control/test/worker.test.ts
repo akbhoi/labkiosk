@@ -311,12 +311,56 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(opened, closed, "unbalanced <div> tags nest the modals inside one another");
 
     // Each dialog must be a top-level sibling, not a child of a hidden overlay.
-    for (const id of ["vnc-modal", "url-modal", "lock-modal", "whitelist-modal", "portal-modal", "settings-modal"]) {
+    for (const id of ["vnc-modal", "url-modal", "lock-modal"]) {
       const start = body.indexOf(`<div class="modal-overlay" id="${id}">`);
       assert.notEqual(start, -1, `${id} overlay not found in the rendered dashboard`);
       const before = body.slice(0, start);
       const depth = (before.match(/<div\b/g) || []).length - (before.match(/<\/div>/g) || []).length;
       assert.equal(depth, 0, `${id} must not be nested inside another modal`);
+    }
+
+    // The allowlist, portal and settings editors live on their own pages. A
+    // second copy used to sit in a dialog here, built on an `input-field`
+    // class that was never defined -- so those inputs rendered as white
+    // browser defaults -- and the settings copy saved nothing at all.
+    for (const id of ["whitelist-modal", "portal-modal", "settings-modal"]) {
+      assert.equal(body.includes(`id="${id}"`), false, `${id} duplicates a dedicated page and must not come back`);
+    }
+    for (const page of ["/admin/whitelist", "/admin/portal", "/admin/settings"]) {
+      assert.ok(body.includes(`href="${page}"`), `the toolbar must link to ${page}`);
+    }
+  });
+
+  test("Every CSS class the consoles render is declared by the shared shell", async () => {
+    // `input-field` was used fourteen times and declared nowhere, which is how a
+    // white-on-white form ended up inside a dark console. Nothing catches that
+    // but a render, so render every page and compare the two sets.
+    const pages = [
+      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
+      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
+      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
+      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
+      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
+      ["/super/schools", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie]
+    ];
+
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, { cookie })).text();
+      const style = html.split("<style>")[1].split("</style>")[0];
+      const declared = new Set((style.match(/\.[a-z][a-z0-9_-]*/g) || []).map((c) => c.slice(1)));
+      const used = new Set<string>();
+      for (const attr of html.match(/class="[^"<>]*"/g) || []) {
+        for (const name of attr.slice(7, -1).split(/\s+/)) {
+          if (/^[a-z][a-z0-9_-]*$/.test(name)) used.add(name);
+        }
+      }
+      // A "btn-" name is a JavaScript hook; its appearance is carried by .btn.
+      const missing = [...used].filter((c) => !declared.has(c) && !c.startsWith("btn-"));
+      assert.deepEqual(missing, [], `${page} renders CSS classes the shell never declares: ${missing.join(", ")}`);
     }
   });
 
@@ -1283,7 +1327,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: superSessionCookie
     });
 
-    const page = await call("/super", { cookie: superSessionCookie });
+    const page = await call("/super/catalogs", { cookie: superSessionCookie });
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.ok(html.includes("Workstation Interface Catalogs (i18n)"));
@@ -1291,6 +1335,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(html.includes("Français"));
 
     await callJson("/api/super/i18n/fr-FR", { method: "DELETE", cookie: superSessionCookie });
+  });
+
+  test("Super console renders one tab at a time", async () => {
+    // The four panes were emitted together and hidden with an inline `display`,
+    // except the schools directory, which had neither a display rule nor any
+    // matching CSS -- so every tenant row rendered on the approvals, catalogs
+    // and system pages too.
+    const directoryHeading = "Registered Schools &amp; Institutions";
+
+    const schools = await (await call("/super/schools", { cookie: superSessionCookie })).text();
+    assert.ok(schools.includes(directoryHeading), "schools tab shows the directory");
+
+    for (const tab of ["/super/approvals", "/super/catalogs", "/super/system"]) {
+      const res = await call(tab, { cookie: superSessionCookie });
+      assert.equal(res.status, 200);
+      const body = await res.text();
+      assert.ok(!body.includes(directoryHeading), tab + " must not leak the schools directory");
+    }
+
+    const approvals = await (await call("/super/approvals", { cookie: superSessionCookie })).text();
+    assert.ok(approvals.includes("Pending Subdomain Requests"));
+    const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
+    assert.ok(system.includes("Platform Architecture"));
+    assert.ok(!system.includes("Pending Subdomain Requests"));
   });
 
   // ------------------------------------------ modern admin & privacy isolation
