@@ -24,7 +24,7 @@ export function buildBroadcastPage(options: AdminPageInput): AdminPageParts {
           <div class="sub-section-title">Active Lesson Status</div>
           <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); margin-bottom: 12px;">
             <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Current Broadcast URL</div>
-            <div style="font-size: 12px; font-weight: 700; color: #93c5fd; margin-top: 4px; word-break: break-all; font-family: 'JetBrains Mono', monospace;" id="sub-active-url">${escapeHtml(tenant?.default_url || "None (Student Portal Active)")}</div>
+            <div style="font-size: 12px; font-weight: 700; color: #93c5fd; margin-top: 4px; word-break: break-all; font-family: 'JetBrains Mono', monospace;" id="sub-active-url">${escapeHtml(tenant?.broadcast_url || "None (Student Portal Active)")}</div>
           </div>
           <div class="sub-action-list">
             <button type="button" class="sub-action-item" id="sub-btn-reset-portal" data-action="quick-reset-portal">
