@@ -708,7 +708,8 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
 
               const when = document.createElement("td");
               when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
-              when.textContent = new Date(entry.created_at * 1000).toISOString().slice(0, 16).replace("T", " ");
+              const date = new Date(entry.created_at * 1000);
+              when.textContent = isNaN(date.getTime()) ? "\u2014" : date.toISOString().slice(0, 16).replace("T", " ");
               row.appendChild(when);
 
               const action = document.createElement("td");
