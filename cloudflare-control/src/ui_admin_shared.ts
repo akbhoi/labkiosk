@@ -125,7 +125,7 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
 
         panel.addEventListener("click", function (event) {
           var target = event.target && event.target.closest ? event.target.closest("[data-focus], [data-density], [data-filter], [data-action], [data-preset], [data-quick-domain]") : null;
-          if (!target) return;
+          if (!target || target.hasAttribute("disabled")) return;
 
           var focusId = target.getAttribute("data-focus");
           if (focusId) {
