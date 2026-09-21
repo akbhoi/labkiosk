@@ -173,13 +173,13 @@ function renderWhitelistScripts(nonce: string): string {
         btn.addEventListener("click", async () => {
           const raw = btn.dataset.domains || "";
           const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
-          for (const d of list) {
-            await fetch(labkioskApi("/api/whitelist"), {
+          await Promise.all(list.map(d => 
+            fetch(labkioskApi("/api/whitelist"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ action: "add", domain: d })
-            });
-          }
+            })
+          ));
           window.location.reload();
         });
       });
