@@ -2172,10 +2172,10 @@ export default {
     // ==========================================
     // Legal & Compliance Pages
     if (path === "/privacy") {
-      return new Response(renderPrivacyPolicyHtml(nonce, baseDomain), { headers: htmlHeaders });
+      return new Response(renderPrivacyPolicyHtml(), { headers: htmlHeaders });
     }
     if (path === "/terms") {
-      return new Response(renderTermsOfServiceHtml(nonce, baseDomain), { headers: htmlHeaders });
+      return new Response(renderTermsOfServiceHtml(), { headers: htmlHeaders });
     }
 
     // 1. School Admin Dashboard (/admin and /admin/*)

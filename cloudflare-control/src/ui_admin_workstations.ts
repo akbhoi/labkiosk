@@ -69,7 +69,7 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
             <button type="button" class="sub-action-item" data-action="open-lock-all">
               <span style="display: flex; align-items: center; gap: 8px;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                Lock All Screens
+                Lock with a Message
               </span>
             </button>
             <button type="button" class="sub-action-item" data-action="open-unlock-all">
@@ -123,7 +123,7 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
         <p class="page-desc">Real-time classroom telemetry, live screen monitoring, and remote command execution.</p>
       </div>
       <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-        <button type="button" class="btn btn-warning" id="btn-lock-all">
+        <button type="button" class="btn btn-warning" id="btn-lock-all" title="Locks every screen at once using the saved announcement. To write a different one, use Lock with a Message in the side panel.">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           Lock All Screens
         </button>

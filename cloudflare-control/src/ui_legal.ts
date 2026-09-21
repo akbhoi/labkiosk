@@ -111,7 +111,12 @@ ${mainHtml}
 </html>`;
 }
 
-export function renderPrivacyPolicyHtml(_nonce: string, _baseDomain = "labkiosk.akbhoi.com"): string {
+/**
+ * Neither legal page carries a script, so neither needs a CSP nonce. They
+ * used to take one anyway, which implied a contract the pages do not have.
+ * The response still gets its nonce-based CSP from buildHtmlHeaders.
+ */
+export function renderPrivacyPolicyHtml(): string {
   return renderLegalShell({
     title: "Privacy Policy - Lab Kiosk OS",
     siblingHref: "/terms",
@@ -161,7 +166,7 @@ export function renderPrivacyPolicyHtml(_nonce: string, _baseDomain = "labkiosk.
   });
 }
 
-export function renderTermsOfServiceHtml(_nonce: string, _baseDomain = "labkiosk.akbhoi.com"): string {
+export function renderTermsOfServiceHtml(): string {
   return renderLegalShell({
     title: "Terms of Service - Lab Kiosk OS",
     siblingHref: "/privacy",
