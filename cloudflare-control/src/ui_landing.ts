@@ -1527,18 +1527,11 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         });
         const data = await res.json();
         if (data.status === 'ok') {
-          if (data.role === 'super_admin') {
-            window.location.href = '/super';
-          } else if (data.subdomain) {
-            const host = window.location.hostname;
-            if (host === 'localhost' || host === '127.0.0.1' || host.includes('docker')) {
-              window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
-            } else {
-              window.location.href = 'https://' + encodeURIComponent(data.subdomain) + '.' + BASE_DOMAIN + '/admin';
-            }
-          } else {
-            window.location.href = '/admin';
-          }
+          // The server decides. It is the only side that knows which host this
+          // request arrived on and which consoles the account may open. This used
+          // to be worked out here, and sent every super admin to /super whatever
+          // subdomain they had signed in on.
+          window.location.href = data.redirect || '/admin';
         } else {
           alertBox.textContent = data.error || 'Login failed';
           alertBox.style.display = 'block';

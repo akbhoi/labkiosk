@@ -92,6 +92,7 @@ import {
 import {
   resolveTenant,
   requireSuperAdmin,
+  SUPER_ADMIN_TENANT_SLUG,
   requireTenantAdmin,
   requireTenantPermission,
   requireDevice,
@@ -241,6 +242,41 @@ function effectiveOrigin(request: Request, url: URL): string {
     return `${proto}//${host}`;
   }
   return url.origin;
+}
+
+/**
+ * Where a successful sign-in should land.
+ *
+ * This used to be decided in the landing page script, which sent every super
+ * admin to /super whatever host they signed in on -- so signing in on
+ * demo.<domain> to reach the demo console threw you to the platform console
+ * instead, and there was no route back through the UI.
+ *
+ * A super admin signing in on a school subdomain lands on that school when it
+ * is one they may open (Rule 2 allows `demo` only) and on /super otherwise.
+ */
+function postLoginRedirect(options: {
+  role: string;
+  ownSubdomain: string | null;
+  hostSlug: string | null;
+  requestedSlug: string | null;
+  isDev: boolean;
+  baseDomain: string;
+}): string {
+  const { role, ownSubdomain, hostSlug, requestedSlug, isDev, baseDomain } = options;
+
+  const consoleFor = (slug: string) =>
+    isDev ? `/admin?tenant=${encodeURIComponent(slug)}` : `https://${slug}.${baseDomain}/admin`;
+
+  if (role === "super_admin") {
+    // The school they were already looking at, if they are allowed in it.
+    const context = hostSlug || requestedSlug;
+    if (context && SUPER_ADMIN_TENANT_SLUG === context) return consoleFor(context);
+    return "/super";
+  }
+
+  if (ownSubdomain) return consoleFor(ownSubdomain);
+  return "/admin";
 }
 
 function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): string {
@@ -640,7 +676,19 @@ export default {
         });
 
         return new Response(
-          JSON.stringify({ status: "ok", role: user.role, subdomain: tenant?.subdomain || null }),
+          JSON.stringify({
+            status: "ok",
+            role: user.role,
+            subdomain: tenant?.subdomain || null,
+            redirect: postLoginRedirect({
+              role: user.role,
+              ownSubdomain: tenant?.subdomain || null,
+              hostSlug: hostSubdomain(request, env.DEFAULT_DOMAIN),
+              requestedSlug: cleanSubdomain(url.searchParams.get("tenant") || "") || null,
+              isDev,
+              baseDomain
+            })
+          }),
           { headers: { ...jsonHeaders, "Set-Cookie": sessionCookie(token) } }
         );
       } catch (err: any) {
@@ -2188,7 +2236,9 @@ export default {
       }
 
       // A teacher who explicitly named another school is refused, not silently
-      // bounced to their own console.
+      // bounced to their own console. (A super admin never lands here: the
+      // override in resolveTenant admits them, and requireTenantAdmin below is
+      // what holds the `demo`-only line.)
       if (resolution.denied) {
         return new Response(
           renderLandingHtml({
@@ -2238,10 +2288,26 @@ export default {
 
       const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
       if (denied) {
+        // Say which refusal this is. A platform administrator is not locked
+        // out by accident: `demo` is the one school they may open, and the
+        // console they actually want is /super.
+        //
+        // Only when the isolation is what actually refused them. A super admin
+        // naming a school that does not exist gets a 400 from the guard, and
+        // telling them about privacy isolation would send them looking for the
+        // wrong problem.
+        const isPlatformIsolation =
+          session.role === "super_admin" &&
+          denied.status === 403 &&
+          Boolean(currentTenant) &&
+          currentTenant!.subdomain !== SUPER_ADMIN_TENANT_SLUG;
+        const message = isPlatformIsolation
+          ? `Platform administrators cannot open a school console. This is the privacy isolation described in the Terms: only the ${SUPER_ADMIN_TENANT_SLUG} school is available for testing. Use the Super Admin console instead.`
+          : "You do not have access to that school's console.";
         return new Response(
           renderLandingHtml({
-            error: "You do not have access to that school's console.",
-            openModal: "login",
+            error: message,
+            openModal: isPlatformIsolation ? undefined : "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@akbhoi.com",

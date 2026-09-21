@@ -1554,13 +1554,63 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const deniedRes = await call("/admin?tenant=greenwood", { cookie: superSessionCookie });
     assert.equal(deniedRes.status, 403);
     const deniedHtml = await deniedRes.text();
-    assert.match(deniedHtml, /You do not have access to that school(?:'|&#39;)s console/);
+    // The refusal has to say which refusal it is. Telling a platform admin
+    // "you do not have access" reads like a broken account rather than the
+    // privacy isolation it actually is, and gives no route onward.
+    assert.match(deniedHtml, /Platform administrators cannot open a school console/);
+    assert.match(deniedHtml, /only the demo school is available for testing/);
+    assert.match(deniedHtml, /Super Admin console/);
+    // And it must not claim the account lacks access.
+    assert.doesNotMatch(deniedHtml, /You do not have access to that school(?:'|&#39;)s console/);
 
     // 2. Super admin accesses demo tenant console -> 200 OK
     const demoRes = await call("/admin?tenant=demo", { cookie: superSessionCookie });
     assert.equal(demoRes.status, 200);
     const demoHtml = await demoRes.text();
     assert.match(demoHtml, /Workstation Grid &amp; Remote Control/);
+  });
+
+  test("Sign-in lands where the request came from, not always on /super", async () => {
+    // The landing page used to decide this itself and sent every super admin to
+    // /super whatever host they had signed in on. Signing in on demo.<domain> to
+    // reach the demo console threw you to the platform console, and nothing in
+    // the UI led back. The server decides now: it is the only side that knows
+    // the host and which consoles the account may open.
+    const login = (body: object, headers: Record<string, string> = {}) =>
+      call("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(body)
+      });
+
+    const superCreds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
+
+    // On the apex, a super admin belongs in the platform console.
+    const onApex = await (await login(superCreds)).json();
+    assert.equal((onApex as { redirect: string }).redirect, "/super");
+
+    // On the demo subdomain, they belong in the console they were looking at.
+    const onDemo = await (await login(superCreds, { host: "demo.labkiosk.akbhoi.com" })).json();
+    assert.equal(
+      (onDemo as { redirect: string }).redirect,
+      "https://demo.labkiosk.akbhoi.com/admin",
+      "a super admin signing in on demo must land on the demo console"
+    );
+
+    // On any other school, Rule 2 applies: they may not open it, so /super.
+    const onGreenwood = await (await login(superCreds, { host: "greenwood.labkiosk.akbhoi.com" })).json();
+    assert.equal(
+      (onGreenwood as { redirect: string }).redirect,
+      "/super",
+      "a super admin must never be sent into a school they cannot open"
+    );
+
+    // A school admin still lands on their own console wherever they signed in.
+    const asSchool = await (await login(
+      { email: "teacher@greenwood.edu", password: "SchoolPassword123!" },
+      { host: "labkiosk.akbhoi.com" }
+    )).json();
+    assert.equal((asSchool as { redirect: string }).redirect, "https://greenwood.labkiosk.akbhoi.com/admin");
   });
 
   test("Redirects /admin on apex domain to appropriate tenant subdomain or super console", async () => {
