@@ -399,6 +399,41 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Every data- control in the context panel is one the panel script reads", async () => {
+    // The panel shipped once as markup with no behaviour at all, and later a
+    // density toggle was added whose attribute was left out of the delegated
+    // selector -- so the buttons rendered, highlighted on hover, and did
+    // nothing. Neither failure shows up in a typecheck.
+    const pages = [
+      "/admin/workstations?tenant=greenwood",
+      "/admin/broadcast?tenant=greenwood",
+      "/admin/portal?tenant=greenwood",
+      "/admin/whitelist?tenant=greenwood",
+      "/admin/teachers?tenant=greenwood",
+      "/admin/settings?tenant=greenwood"
+    ];
+
+    for (const page of pages) {
+      const html = await (await call(page, { cookie: schoolSessionCookie })).text();
+      const panel = html.match(/<aside class="sub-panel"[\s\S]*?<\/aside>/);
+      assert.ok(panel, `${page} has no context panel`);
+
+      const used = new Set((panel![0].match(/\sdata-(focus|density|filter|action|preset|quick-domain)=/g) || []).map((a) => a.trim().slice(0, -1)));
+      assert.ok(used.size > 0, `${page} renders a panel with no controls at all`);
+
+      // The one selector the delegated listener matches against.
+      const selector = html.match(/event\.target\.closest\("([^"]+)"\)/);
+      assert.ok(selector, `${page} does not delegate panel clicks`);
+
+      for (const attribute of used) {
+        assert.ok(
+          selector![1].includes(`[${attribute}]`),
+          `${page} renders ${attribute} but the panel listener never matches it`
+        );
+      }
+    }
+  });
+
   test("Platform action history is readable, and only by a super admin", async () => {
     // Every privileged action was already written to audit_logs and none of it
     // could be read back: listAuditLogs filters `tenant_id = ?`, so the entries

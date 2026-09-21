@@ -249,6 +249,17 @@ function renderSubPanelScripts(nonce: string, activePage: string, tenantParam: s
           window.location.href = workstationsHref;
         }
 
+        function markDensity(choice) {
+          var buttons = panel.querySelectorAll("[data-density]");
+          for (var i = 0; i < buttons.length; i++) {
+            buttons[i].classList.toggle("active", buttons[i].getAttribute("data-density") === choice);
+          }
+        }
+
+        // The grid restores the density it was left in, so the panel has to show
+        // which one that is rather than always marking the first button.
+        if (typeof window.labkioskGridDensity === "function") markDensity(window.labkioskGridDensity());
+
         function setActiveFilter(button) {
           var buttons = panel.querySelectorAll("[data-filter]");
           for (var i = 0; i < buttons.length; i++) buttons[i].classList.remove("active");
@@ -257,13 +268,23 @@ function renderSubPanelScripts(nonce: string, activePage: string, tenantParam: s
         }
 
         panel.addEventListener("click", function (event) {
-          var target = event.target && event.target.closest ? event.target.closest("[data-focus], [data-filter], [data-action], [data-preset], [data-quick-domain]") : null;
+          var target = event.target && event.target.closest ? event.target.closest("[data-focus], [data-density], [data-filter], [data-action], [data-preset], [data-quick-domain]") : null;
           if (!target) return;
 
           var focusId = target.getAttribute("data-focus");
           if (focusId) {
             event.preventDefault();
             focusField(focusId);
+            return;
+          }
+
+          var densityChoice = target.getAttribute("data-density");
+          if (densityChoice) {
+            event.preventDefault();
+            if (typeof window.labkioskApplyDensity === "function") {
+              window.labkioskApplyDensity(densityChoice);
+              markDensity(densityChoice);
+            }
             return;
           }
 
@@ -317,8 +338,8 @@ function renderSubPanelScripts(nonce: string, activePage: string, tenantParam: s
         // Pages other than the grid cannot filter anything; leave the buttons out
         // of the tab order there rather than offering a control that cannot work.
         if (activePage !== "workstations") {
-          var filters = panel.querySelectorAll("[data-filter]");
-          for (var j = 0; j < filters.length; j++) filters[j].setAttribute("disabled", "disabled");
+          var inert = panel.querySelectorAll("[data-filter], [data-density]");
+          for (var j = 0; j < inert.length; j++) inert[j].setAttribute("disabled", "disabled");
         }
       })();
     </script>
@@ -560,7 +581,23 @@ function getSubPanelForPage(
         subPanelTitle: "Workstations",
         subPanelSubtitle: "Telemetry & batch commands",
         subPanelHtml: `
-          <div class="sub-section-title">Telemetry Filters</div>
+          <div class="sub-section-title">Grid Density</div>
+          <div class="sub-action-list">
+            <button type="button" class="sub-action-item" data-density="thumbs">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                Screen Thumbnails
+              </span>
+            </button>
+            <button type="button" class="sub-action-item" data-density="compact">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                Compact List
+              </span>
+            </button>
+          </div>
+
+          <div class="sub-section-title" style="margin-top: 14px;">Telemetry Filters</div>
           <div class="sub-action-list">
             <button type="button" class="sub-action-item active" data-filter="all">
               <span>All Workstations</span>
@@ -798,21 +835,94 @@ function renderWorkstationsScripts(
         return node;
       }
 
+      // --------------------------------------------------------- grid density
+      // A 40-machine lab decodes 40 base64 JPEGs every three seconds and runs to
+      // four rows of scrolling. Two things cut that: a compact mode with no
+      // thumbnails at all, and never assigning a frame to a card nobody can see.
+
+      var DENSITY_KEY = "labkiosk_grid_density";
+      var density = "thumbs";
+      try {
+        if (localStorage.getItem(DENSITY_KEY) === "compact") density = "compact";
+      } catch (err) {
+        // Storage denied. The default is the right one to fall back to.
+      }
+
+      // Visibility is measured, not remembered. An IntersectionObserver was the
+      // obvious choice and went stale here: cards are observed before they are
+      // appended, so the first batch kept the flag from its initial callback and
+      // scrolling never corrected it. A rect read cannot disagree with the
+      // layout, and 30-odd of them every three seconds is nothing next to the
+      // JPEG decodes this exists to avoid.
+      var VIEWPORT_MARGIN = 250;
+
+      /** Is this card on screen, or about to be? */
+      function isNearViewport(card) {
+        var box = card.getBoundingClientRect();
+        if (box.width === 0 && box.height === 0) return false;
+        var limit = window.innerHeight || document.documentElement.clientHeight;
+        return box.bottom >= -VIEWPORT_MARGIN && box.top <= limit + VIEWPORT_MARGIN;
+      }
+
+      /** Is this card worth decoding a frame for right now? */
+      function wantsThumbnail(card) {
+        if (density === "compact") return false;
+        return isNearViewport(card);
+      }
+
+      /**
+       * Repaint whatever scrolling has just brought into view, rather than
+       * waiting up to three seconds for the next telemetry poll.
+       */
+      var refreshQueued = false;
+      function refreshVisibleCards() {
+        if (refreshQueued) return;
+        refreshQueued = true;
+        requestAnimationFrame(function () {
+          refreshQueued = false;
+          if (density === "compact") return;
+          for (var id in clientsData) {
+            var card = document.getElementById("card-" + id);
+            if (!card) continue;
+            var thumb = card.querySelector('[data-role="thumb"]');
+            var hasFrame = !!(thumb && thumb.getAttribute("src"));
+            // Only touch the cards whose answer has actually changed.
+            if (hasFrame !== wantsThumbnail(card)) updateCard(card, id, clientsData[id]);
+          }
+        });
+      }
+      window.addEventListener("scroll", refreshVisibleCards, { passive: true });
+      window.addEventListener("resize", refreshVisibleCards, { passive: true });
+
+      /** Switch between the thumbnail grid and the one-line-per-machine list. */
+      function applyDensity(next) {
+        density = next === "compact" ? "compact" : "thumbs";
+        var grid = document.getElementById("kiosk-grid");
+        if (grid) grid.classList.toggle("compact", density === "compact");
+        try {
+          localStorage.setItem(DENSITY_KEY, density);
+        } catch (err) {
+          // A preference that cannot be remembered still applies to this session.
+        }
+        for (var id in clientsData) {
+          var card = document.getElementById("card-" + id);
+          if (card) updateCard(card, id, clientsData[id]);
+        }
+      }
+      window.labkioskApplyDensity = applyDensity;
+      window.labkioskGridDensity = function () { return density; };
+
       function createCardElement(id) {
         const card = el("div", "card kiosk-card");
         card.id = "card-" + id;
-        card.style.cssText = "display: flex; flex-direction: column; gap: 12px; padding: 16px; transition: transform 0.2s, border-color 0.2s;";
 
-        const head = el("div");
-        head.style.cssText = "display: flex; justify-content: space-between; align-items: center;";
-        const idWrap = el("div");
-        idWrap.style.cssText = "display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px;";
+        const head = el("div", "kc-head");
+        const idWrap = el("div", "kc-id");
         const dot = el("span", "stat-dot dot-red");
         dot.dataset.role = "dot";
         idWrap.append(dot, el("span", null, id));
 
-        const badges = el("div");
-        badges.style.cssText = "display: flex; align-items: center; gap: 6px;";
+        const badges = el("div", "kc-badges");
         const lockBadge = el("span", "badge badge-yellow", "LOCKED");
         lockBadge.dataset.role = "lock-badge";
         lockBadge.style.display = "none";
@@ -822,19 +932,19 @@ function renderWorkstationsScripts(
         badges.append(lockBadge, removeBtn);
         head.append(idWrap, badges);
 
-        const thumbBox = el("div");
-        thumbBox.style.cssText = "position: relative; width: 100%; aspect-ratio: 16/10; background: #000; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: center;";
+        const thumbBox = el("div", "kc-thumb-box");
         const thumb = document.createElement("img");
         thumb.dataset.role = "thumb";
-        thumb.style.cssText = "width: 100%; height: 100%; object-fit: cover; display: none;";
-        thumb.alt = "Screen preview";
-        const placeholder = el("div", null, "Standby / Offline");
+        thumb.className = "kc-thumb";
+        thumb.alt = "Screen preview for " + id;
+        // The browser still decodes a frame it is told to paint off-screen.
+        thumb.loading = "lazy";
+        thumb.decoding = "async";
+        const placeholder = el("div", "kc-placeholder", "Standby / Offline");
         placeholder.dataset.role = "placeholder";
-        placeholder.style.cssText = "color: var(--text-muted); font-size: 12px; font-weight: 600;";
         thumbBox.append(thumb, placeholder);
 
-        const actions = el("div");
-        actions.style.cssText = "display: grid; grid-template-columns: 1fr 1fr; gap: 8px;";
+        const actions = el("div", "kc-actions");
         const vncBtn = el("button", "btn btn-sm btn-primary", "Remote Control");
         vncBtn.addEventListener("click", () => openVncSession(id));
         const lockBtn = el("button", "btn btn-sm btn-secondary", "Lock");
@@ -845,14 +955,11 @@ function renderWorkstationsScripts(
         reloadBtn.addEventListener("click", () => sendCommand(id, "reload"));
         actions.append(vncBtn, lockBtn, unlockBtn, reloadBtn);
 
-        const footer = el("div");
-        footer.style.cssText = "display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); padding-top: 4px; border-top: 1px solid var(--border-subtle);";
-        const urlSpan = el("span", null, "Ready");
+        const footer = el("div", "kc-footer");
+        const urlSpan = el("span", "kc-url", "Ready");
         urlSpan.dataset.role = "url";
-        urlSpan.style.cssText = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;";
-        const ipSpan = el("span", null, "--");
+        const ipSpan = el("span", "kc-ip", "--");
         ipSpan.dataset.role = "ip";
-        ipSpan.style.cssText = "font-family: 'JetBrains Mono', monospace;";
         footer.append(urlSpan, ipSpan);
 
         card.append(head, thumbBox, actions, footer);
@@ -869,13 +976,15 @@ function renderWorkstationsScripts(
 
         if (client && client.online) {
           dot.className = "stat-dot dot-green";
-          if (client.thumbnail && client.thumbnail.startsWith("data:image/")) {
+          if (client.thumbnail && client.thumbnail.startsWith("data:image/") && wantsThumbnail(card)) {
             thumb.src = client.thumbnail;
-            thumb.style.display = "block";
+            thumb.classList.add("live");
             placeholder.style.display = "none";
           } else {
+            // Drop the data URL as well as hiding the element: an <img> keeps a
+            // decoded bitmap alive for as long as it has a src.
             thumb.removeAttribute("src");
-            thumb.style.display = "none";
+            thumb.classList.remove("live");
             placeholder.style.display = "block";
             placeholder.textContent = "Live (No Frame)";
           }
@@ -888,7 +997,7 @@ function renderWorkstationsScripts(
         } else {
           dot.className = "stat-dot dot-red";
           thumb.removeAttribute("src");
-          thumb.style.display = "none";
+          thumb.classList.remove("live");
           placeholder.style.display = "block";
           placeholder.textContent = "Standby / Offline";
           lockBadge.style.display = "none";
@@ -1186,6 +1295,8 @@ function renderWorkstationsScripts(
           }
         });
       }
+
+      applyDensity(density);
 
       pollClients();
       setInterval(pollClients, 3000);

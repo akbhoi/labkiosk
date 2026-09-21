@@ -698,6 +698,80 @@ ${rootTokensCss()}
       grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
       gap: 20px;
     }
+    /* A workstation card. Every part of this used to be an inline cssText
+       string set from JavaScript, which meant a compact layout could not
+       override any of it without !important. */
+    .kiosk-card {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      margin-bottom: 0;
+      transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    .kc-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .kc-id { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+    .kc-badges { display: flex; align-items: center; gap: 6px; }
+    .kc-thumb-box {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .kc-thumb { width: 100%; height: 100%; object-fit: cover; display: none; }
+    .kc-thumb.live { display: block; }
+    .kc-placeholder { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+    .kc-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .kc-footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+      padding-top: 4px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .kc-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+    .kc-ip { font-family: 'JetBrains Mono', monospace; }
+
+    /* Compact density. A 40-workstation lab is four rows of scrolling and 40
+       JPEG decodes every three seconds before a teacher finds PC-37; this is
+       one line per machine and no thumbnails at all. */
+    .kiosk-grid.compact { grid-template-columns: 1fr; gap: 8px; }
+    .kiosk-grid.compact .kiosk-card {
+      flex-direction: row;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 14px;
+    }
+    .kiosk-grid.compact .kc-thumb-box { display: none; }
+    .kiosk-grid.compact .kc-head { flex: 0 0 auto; min-width: 190px; }
+    .kiosk-grid.compact .kc-footer {
+      flex: 1;
+      justify-content: flex-start;
+      gap: 18px;
+      border-top: none;
+      padding-top: 0;
+    }
+    .kiosk-grid.compact .kc-url { max-width: none; }
+    .kiosk-grid.compact .kc-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+      margin-left: auto;
+    }
+    @media (max-width: 760px) {
+      .kiosk-grid.compact .kiosk-card { flex-wrap: wrap; }
+      .kiosk-grid.compact .kc-actions { margin-left: 0; }
+    }
+
     .empty-lab-state {
       grid-column: 1 / -1;
       background: var(--bg-card);
