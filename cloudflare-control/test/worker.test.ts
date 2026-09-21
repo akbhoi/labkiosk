@@ -565,6 +565,51 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Every link the console renders goes somewhere, and the portal preview goes to the grid", async () => {
+    // Moving the app grid from / to /home left the context panel's "Preview
+    // Student Portal" link pointing at /, which had quietly become the school
+    // homepage. It did not 404 and it did not fail a typecheck -- it simply
+    // opened the wrong page, which is the whole failure mode Rule 5g warns
+    // about: these paths are somewhere a link, or a workstation, is pinned.
+    // On the school's own host, which is where the console lives in production
+    // and what its host-relative links are written against.
+    const host = "greenwood.labkiosk.akbhoi.com";
+    const open = (path: string) => call(path, { cookie: schoolSessionCookie, headers: { host } });
+    const pages = [
+      "/admin/workstations",
+      "/admin/broadcast",
+      "/admin/portal",
+      "/admin/whitelist",
+      "/admin/teachers",
+      "/admin/settings"
+    ];
+
+    const targets = new Map<string, string>();
+    let portalHtml = "";
+    for (const page of pages) {
+      const html = await (await open(page)).text();
+      if (page === "/admin/portal") portalHtml = html;
+      for (const match of html.matchAll(/href="(\/[^"#]*)"/g)) targets.set(match[1], page);
+    }
+    assert.ok(targets.size > 0, "no internal links were found at all");
+
+    for (const [target, page] of targets) {
+      const res = await open(target);
+      assert.notEqual(res.status, 404, `${page} links to ${target}, which does not exist`);
+    }
+
+    // The two preview links on the portal manager open the same thing, and it
+    // is the app grid rather than the school's own homepage.
+    const previews = [...portalHtml.matchAll(/href="([^"]+)"[^>]*>[\s\S]{0,400}?Preview Student Portal/g)].map((m) => m[1]);
+    assert.equal(previews.length, 2, `expected both preview links, found ${previews.length}`);
+    for (const href of previews) {
+      assert.ok(href.startsWith("/home"), `a "Preview Student Portal" link points at ${href}, not the app grid`);
+    }
+
+    const grid = await (await open(previews[0])).text();
+    assert.match(grid, /Select an Educational Resource/, "the preview link must reach the app grid");
+  });
+
   test("Platform action history is readable, and only by a super admin", async () => {
     // Every privileged action was already written to audit_logs and none of it
     // could be read back: listAuditLogs filters `tenant_id = ?`, so the entries
