@@ -399,6 +399,54 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Every inline script on every page actually parses", async () => {
+    // A stray brace in the student portal clock made its whole <script> block a
+    // syntax error, so the clock never started. Nothing caught it: the block
+    // lives inside a template literal, so tsc never sees it as code, and
+    // rendering a page does not run it. new Function parses without executing.
+    const pages: Array<[string, string | undefined]> = [
+      ["/", undefined],
+      ["/portal?tenant=greenwood", undefined],
+      ["/privacy", undefined],
+      ["/terms", undefined],
+      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
+      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
+      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
+      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
+      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
+      ["/super/schools", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie]
+    ];
+
+    let parsed = 0;
+    for (const [page, cookie] of pages) {
+      const res = await call(page, cookie ? { cookie } : {});
+      assert.equal(res.status, 200, `${page} did not render`);
+      const html = await res.text();
+
+      for (const chunk of html.split("<script").slice(1)) {
+        const opens = chunk.indexOf(">");
+        const closes = chunk.indexOf("</script>");
+        if (opens < 0 || closes < 0) continue;
+        const body = chunk.slice(opens + 1, closes);
+        if (!body.trim()) continue;
+        try {
+          new Function(body);
+        } catch (err) {
+          assert.fail(`${page} has a <script> that does not parse: ${(err as Error).message}`);
+        }
+        parsed++;
+      }
+    }
+
+    // Guard the guard: if the extraction ever stops finding scripts, this test
+    // would pass by checking nothing.
+    assert.ok(parsed >= pages.length, `only ${parsed} scripts were parsed across ${pages.length} pages`);
+  });
+
   test("Every data- control in the context panel is one the panel script reads", async () => {
     // The panel shipped once as markup with no behaviour at all, and later a
     // density toggle was added whose attribute was left out of the delegated

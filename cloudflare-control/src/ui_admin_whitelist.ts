@@ -173,13 +173,27 @@ function renderWhitelistScripts(nonce: string): string {
         btn.addEventListener("click", async () => {
           const raw = btn.dataset.domains || "";
           const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
-          await Promise.all(list.map(d => 
-            fetch(labkioskApi("/api/whitelist"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "add", domain: d })
-            })
-          ));
+          // Each domain is its own INSERT OR IGNORE row, so these do not race.
+          // allSettled rather than all: one refusal should not hide the rest, and
+          // a pack that only half applied must not reload as though it worked.
+          const results = await Promise.allSettled(
+            list.map((d) =>
+              fetch(labkioskApi("/api/whitelist"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "add", domain: d })
+              }).then((res) => {
+                if (!res.ok) throw new Error(d);
+                return d;
+              })
+            )
+          );
+          const failed = results.filter((r) => r.status === "rejected").length;
+          if (failed) {
+            // The reload is what shows which ones landed, so the message has to
+            // survive it.
+            lkToastAfterReload(failed + " of " + list.length + " domains in this pack could not be added.", "error");
+          }
           window.location.reload();
         });
       });
