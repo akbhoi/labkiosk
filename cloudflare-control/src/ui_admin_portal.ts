@@ -15,7 +15,7 @@ export function buildPortalPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, teachers, tenantParam, baseDomain, nonce } = options;
   return {
     title: "Student Learning Portal Manager",
-    contentHtml: renderPortalPageHtml(tenant, sites),
+    contentHtml: renderPortalPageHtml(tenant, sites, tenantParam),
     scriptsHtml: renderPortalScripts(nonce),
         subPanelTitle: "Portal Manager",
         subPanelSubtitle: "Curate educational resources",
@@ -58,7 +58,7 @@ export function buildPortalPage(options: AdminPageInput): AdminPageParts {
   };
 }
 
-function renderPortalPageHtml(_tenant?: Tenant, sites: PortalSite[] = []): string {
+function renderPortalPageHtml(_tenant: Tenant | undefined, sites: PortalSite[], tenantParam: string): string {
   const cardsHtml = sites
     .map((s) => `
       <div class="card" style="display: flex; flex-direction: column; justify-content: space-between; gap: 12px; padding: 18px;">
@@ -87,7 +87,7 @@ function renderPortalPageHtml(_tenant?: Tenant, sites: PortalSite[] = []): strin
         <p class="page-desc">Configure the application cards students see when logging into thin client workstations.</p>
       </div>
       <div>
-        <a href="/portal" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+        <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
           Preview Student Portal &rarr;
         </a>
       </div>

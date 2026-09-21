@@ -8,16 +8,17 @@
  * handled went unnoticed for so long.
  */
 
-import { LabConfig, Tenant } from "./types";
-import { escapeHtml, escapeAttr } from "./escape";
+import { LabConfig, Tenant, HomepageBlock } from "./types";
+import { parseHomepageBlocks } from "./db";
+import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, teachers, tenantParam, baseDomain, nonce } = options;
   return {
     title: "Lab Settings & Configuration",
-    contentHtml: renderSettingsPageHtml(tenant, config, baseDomain),
-    scriptsHtml: renderSettingsScripts(nonce),
+    contentHtml: renderSettingsPageHtml(tenant, config, baseDomain, tenantParam),
+    scriptsHtml: renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)),
         subPanelTitle: "Lab Configuration",
         subPanelSubtitle: "Settings & preferences",
         subPanelHtml: `
@@ -40,6 +41,9 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
             </a>
             <a href="#section-enrollment" class="sub-action-item">
               <span>Workstation Enrollment Key</span>
+            </a>
+            <a href="#section-homepage" class="sub-action-item">
+              <span>School Homepage</span>
             </a>
             <a href="#section-activity" class="sub-action-item">
               <span>Recent Lab Activity</span>
@@ -64,7 +68,7 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   };
 }
 
-function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain = "labkiosk.akbhoi.com"): string {
+function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | undefined, baseDomain: string, tenantParam: string): string {
   const currentSubdomain = tenant?.subdomain || "";
   const customDomain = tenant?.custom_domain || "";
   const customDomainStatus = tenant?.custom_domain_status || "none";
@@ -171,11 +175,10 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
           <div class="form-group">
             <label class="form-label" for="setting-home-route">Default Landing Path</label>
             <select class="form-select" id="setting-home-route">
-              <option value="/home" ${homeRoute === "/home" ? "selected" : ""}>/home (Dedicated Student Portal)</option>
-              <option value="/" ${homeRoute === "/" ? "selected" : ""}>/ (Subdomain Apex)</option>
-              <option value="/portal" ${homeRoute === "/portal" ? "selected" : ""}>/portal (Portal Direct)</option>
+              <option value="/" ${homeRoute === "/" ? "selected" : ""}>/ &mdash; the school homepage</option>
+              <option value="/home" ${homeRoute === "/home" ? "selected" : ""}>/home &mdash; straight to the app grid</option>
             </select>
-            <div class="form-hint">Workstations will open this route automatically when starting up.</div>
+            <div class="form-hint">Where a workstation lands on start-up and on Reset to Portal. The homepage is a page your school writes; the app grid is the launcher students pick a site from.</div>
           </div>
           <button type="submit" class="btn btn-secondary">Save Routing</button>
         </form>
@@ -209,6 +212,32 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
       </div>
 
       <!-- Card 7: Account Security -->
+      <div class="card" id="section-homepage">
+        <h2 class="card-title">School Homepage</h2>
+        <p class="card-sub">The page at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}/</code>. Leave the headline and introduction empty to use your school name and the standard welcome line.</p>
+
+        <form id="form-homepage">
+          <div class="form-group">
+            <label class="form-label" for="homepage-headline">Headline</label>
+            <input type="text" class="form-input" id="homepage-headline" maxlength="120" placeholder="${escapeAttr(tenant?.name || "Your school")}" value="${escapeAttr(tenant?.homepage_headline || "")}">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="homepage-intro">Introduction</label>
+            <textarea class="form-textarea" id="homepage-intro" rows="2" maxlength="400" placeholder="One or two lines under the headline.">${escapeHtml(tenant?.homepage_intro || "")}</textarea>
+          </div>
+
+          <div class="sub-section-title" style="margin: 18px 0 8px;">Content Blocks</div>
+          <p class="form-hint" style="margin-bottom: 12px;">Notices, links to your own site, anything else worth saying. Up to 12.</p>
+          <div id="homepage-blocks"></div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-add-block" style="margin-bottom: 16px;">Add a block</button>
+
+          <div>
+            <button type="submit" class="btn btn-primary">Save Homepage</button>
+            <a class="btn btn-secondary" href="/${tenantParam}" target="_blank" rel="noopener noreferrer">Preview &rarr;</a>
+          </div>
+        </form>
+      </div>
+
       <div class="card" id="section-activity">
         <h2 class="card-title">Recent Lab Activity</h2>
         <p class="card-sub">Privileged changes to this lab, including anything the platform did to it. Every one of these was already being recorded; this is the first place it can be read.</p>
@@ -248,7 +277,7 @@ function renderSettingsPageHtml(tenant?: Tenant, config?: LabConfig, baseDomain 
   `;
 }
 
-function renderSettingsScripts(nonce: string): string {
+function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
       document.getElementById("form-profile-settings").addEventListener("submit", async (e) => {
@@ -448,6 +477,98 @@ function renderSettingsScripts(nonce: string): string {
           lkToast("Network error: " + err.message, "error");
         }
       });
+
+      // ------------------------------------------------------ school homepage
+      // The block list is seeded from the server and edited entirely in the DOM;
+      // it is posted back whole. escapeJson, because a block carries whatever
+      // text the school typed.
+      const homepageBlocks = ${escapeJson(blocks)};
+      const blocksHost = document.getElementById("homepage-blocks");
+
+      function blockRow(block) {
+        const row = document.createElement("div");
+        row.className = "homepage-block-row";
+
+        const title = document.createElement("input");
+        title.type = "text";
+        title.className = "form-input";
+        title.placeholder = "Title";
+        title.maxLength = 120;
+        title.value = block.title || "";
+
+        const body = document.createElement("textarea");
+        body.className = "form-textarea";
+        body.rows = 2;
+        body.placeholder = "What this block says";
+        body.maxLength = 600;
+        body.value = block.body || "";
+
+        const url = document.createElement("input");
+        url.type = "url";
+        url.className = "form-input";
+        url.placeholder = "Optional link (https://...)";
+        url.value = block.url || "";
+
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn btn-danger btn-sm";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", () => row.remove());
+
+        row.append(title, body, url, remove);
+        return row;
+      }
+
+      function readBlocks() {
+        return Array.from(blocksHost ? blocksHost.children : []).map((row) => ({
+          title: row.children[0].value,
+          body: row.children[1].value,
+          url: row.children[2].value
+        }));
+      }
+
+      if (blocksHost) {
+        for (const block of homepageBlocks) blocksHost.appendChild(blockRow(block));
+      }
+
+      const btnAddBlock = document.getElementById("btn-add-block");
+      if (btnAddBlock && blocksHost) {
+        btnAddBlock.addEventListener("click", () => {
+          if (blocksHost.children.length >= 12) {
+            lkToast("A homepage can hold 12 blocks.", "warning");
+            return;
+          }
+          const row = blockRow({});
+          blocksHost.appendChild(row);
+          row.children[0].focus();
+        });
+      }
+
+      const homepageForm = document.getElementById("form-homepage");
+      if (homepageForm) {
+        homepageForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          try {
+            const res = await fetch(labkioskApi("/api/tenant/homepage"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                headline: document.getElementById("homepage-headline").value,
+                intro: document.getElementById("homepage-intro").value,
+                blocks: readBlocks()
+              })
+            });
+            const data = await res.json();
+            if (data.status === "ok") {
+              lkToast("Homepage saved. " + data.blocks.length + " block(s) published.", "success");
+            } else {
+              lkToast(data.error || "Could not save the homepage", "error");
+            }
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      }
 
       const labAuditRows = document.getElementById("lab-audit-rows");
       if (labAuditRows) {

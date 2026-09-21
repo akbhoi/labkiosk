@@ -49,7 +49,8 @@ labkiosk/
 │   │   │                               #   pages were written against
 │   │   ├── ui_layout.ts                # Shared shell: 72px rail, 272px context panel, primitives
 │   │   ├── ui_landing.ts               # Public SaaS Landing Page
-│   │   ├── ui_portal.ts                # Student Learning Portal (Educational Cards Grid)
+│   │   ├── ui_school_home.ts           # The school homepage at the subdomain root (/)
+│   │   ├── ui_portal.ts                # Student Learning Portal at /home (cards grid)
 │   │   ├── ui_super.ts                 # Super Admin Master Console (/super)
 │   │   ├── ui_legal.ts                 # Legal compliance pages (/privacy, /terms)
 │   │   └── types.ts                    # Strict TypeScript interfaces

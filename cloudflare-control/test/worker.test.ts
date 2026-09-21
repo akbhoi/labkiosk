@@ -222,8 +222,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ---------------------------------------------------------- student portal
 
-  test("Serves Student Learning Portal on school subdomain /", async () => {
-    const res = await call("/?tenant=greenwood");
+  test("Serves the Student Learning Portal at /home on a school subdomain", async () => {
+    const res = await call("/home?tenant=greenwood");
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Content-Type"), "text/html; charset=utf-8");
     const html = await res.text();
@@ -231,6 +231,89 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /Select an Educational Resource/);
     assert.match(html, /Khan Academy/);
     assert.match(html, /Scratch Studio/);
+  });
+
+  test("The subdomain root is the school homepage, and /portal is gone", async () => {
+    // The root used to render the app grid, the same page as /home and /portal.
+    // It is the school's own page now.
+    const home = await call("/?tenant=greenwood");
+    assert.equal(home.status, 200);
+    const html = await home.text();
+    assert.match(html, /Greenwood High School/);
+    assert.match(html, /Enter the Lab/);
+    // It is not the app grid.
+    assert.doesNotMatch(html, /Select an Educational Resource/);
+    // And it links to where the grid actually is.
+    assert.match(html, /href="\/home\?tenant=greenwood"/);
+
+    // /portal was dropped. It must not quietly render something else.
+    const gone = await call("/portal?tenant=greenwood");
+    assert.notEqual(gone.status, 200, "/portal must no longer serve a page");
+  });
+
+  test("A school edits its homepage, and the editor is guarded", async () => {
+    const payload = {
+      headline: "Welcome to Greenwood Computing",
+      intro: "Lessons run here every weekday.",
+      blocks: [
+        { title: "Library", body: "Open at break.", url: "library.greenwood.edu" },
+        { title: "", body: "", url: "https://dropped.example" },
+        { title: "No link", body: "Just a notice." }
+      ]
+    };
+
+    // Anonymous callers are refused. An anonymous request that names another
+    // school is refused at tenant resolution (403) rather than at the guard.
+    const anon = await call("/api/tenant/homepage?tenant=greenwood", json(payload));
+    assert.ok(anon.status === 401 || anon.status === 403, `anonymous got ${anon.status}`);
+
+    // And so is a signed-in account that does not own this school. Rule 2 keeps
+    // the super admin out of every school but demo.
+    const asSuper = await call("/api/tenant/homepage?tenant=greenwood", {
+      ...json(payload),
+      cookie: superSessionCookie
+    });
+    assert.ok(asSuper.status === 401 || asSuper.status === 403, `super admin got ${asSuper.status}`);
+
+    const saved = await callJson("/api/tenant/homepage?tenant=greenwood", {
+      ...json(payload),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(saved.res.status, 200);
+    // The empty block is dropped and the scheme-less URL is repaired.
+    assert.equal(saved.data.blocks.length, 2);
+    assert.equal(saved.data.blocks[0].url, "https://library.greenwood.edu/");
+    assert.equal(saved.data.blocks[1].url, null);
+
+    const html = await (await call("/?tenant=greenwood")).text();
+    assert.match(html, /Welcome to Greenwood Computing/);
+    assert.match(html, /Lessons run here every weekday/);
+    assert.match(html, /Open at break/);
+    assert.match(html, /Just a notice/);
+  });
+
+  test("A hostile homepage block cannot break out of the page", async () => {
+    const hostileTitle = '</h3><script>alert("xss")</script>';
+    await callJson("/api/tenant/homepage?tenant=greenwood", {
+      ...json({
+        headline: '</h1><img src=x onerror="alert(1)">',
+        intro: "",
+        blocks: [{ title: hostileTitle, body: "ok", url: "javascript:alert(1)" }]
+      }),
+      cookie: schoolSessionCookie
+    });
+
+    const html = await (await call("/?tenant=greenwood")).text();
+    assert.ok(!html.includes(hostileTitle), "a hostile block title must not render as markup");
+    assert.ok(!html.includes('onerror="alert(1)"'), "a hostile headline must not render as an attribute");
+    assert.ok(!html.includes("javascript:alert(1)"), "a non-http(s) link must be dropped, not rendered");
+    assert.match(html, /&lt;\/h3&gt;/);
+
+    // Put it back so later tests see a normal page.
+    await callJson("/api/tenant/homepage?tenant=greenwood", {
+      ...json({ headline: "", intro: "", blocks: [] }),
+      cookie: schoolSessionCookie
+    });
   });
 
   test("Returns 404 for an unknown subdomain without reflecting it as markup", async () => {
@@ -259,7 +342,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(addData.site.domain, "eyes.nasa.gov");
     createdSiteId = addData.site.id;
 
-    const portalHtml = await (await call("/?tenant=greenwood")).text();
+    const portalHtml = await (await call("/home?tenant=greenwood")).text();
     assert.match(portalHtml, /NASA Space Sims/);
 
     const { res: delRes, data: delData } = await callJson(
@@ -286,7 +369,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: schoolSessionCookie
     });
 
-    const html = await (await call("/?tenant=greenwood")).text();
+    const html = await (await call("/home?tenant=greenwood")).text();
     assert.ok(!html.includes(hostileTitle), "a hostile title must not break out of the portal markup");
     assert.match(html, /&lt;\/script&gt;/);
   });
@@ -406,7 +489,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // rendering a page does not run it. new Function parses without executing.
     const pages: Array<[string, string | undefined]> = [
       ["/", undefined],
-      ["/portal?tenant=greenwood", undefined],
+      ["/home?tenant=greenwood", undefined],
       ["/privacy", undefined],
       ["/terms", undefined],
       ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
@@ -833,7 +916,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       mockEnv
     );
     assert.equal(school.status, 200);
-    assert.match(await school.text(), /Select an Educational Resource/);
+    // The root is the school homepage now; the app grid is at /home.
+    assert.match(await school.text(), /Enter the Lab/);
   });
 
   // ---------------------------------------------------------- custom domains
@@ -873,11 +957,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     );
     assert.equal(portal.status, 200);
     const html = await portal.text();
-    assert.match(html, /Protected Kiosk Session/);
-    assert.match(html, /<title>Greenwood High School - Student Learning Portal<\/title>/);
-    assert.match(html, /Select an Educational Resource/);
+    // The custom domain root is the school homepage, same as the subdomain root.
+    assert.match(html, /Enter the Lab/);
     assert.match(html, /Greenwood High School/);
     assert.ok(!html.includes("Centralized School Computer Lab Management"), "custom domain must not render landing page");
+
+    // And /home on that domain is the app grid.
+    const grid = await worker.fetch(
+      new Request("https://kiosk.greenwood.edu/home", { headers: { host: "kiosk.greenwood.edu" } }),
+      mockEnv
+    );
+    assert.equal(grid.status, 200);
+    const gridHtml = await grid.text();
+    assert.match(gridHtml, /Protected Kiosk Session/);
+    assert.match(gridHtml, /<title>Greenwood High School - Student Learning Portal<\/title>/);
+    assert.match(gridHtml, /Select an Educational Resource/);
   });
 
   test("Enrols a workstation using customDomain", async () => {
@@ -990,7 +1084,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(getData.portalFooter, "RESTRICTED LAB ENVIRONMENT • MIT COMPUTING");
 
     // 3. Student portal renders the customized branding
-    const portalHtml = await (await call("/?tenant=greenwood")).text();
+    const portalHtml = await (await call("/home?tenant=greenwood")).text();
     assert.ok(portalHtml.includes("Robotics Workstation Portal"), "portal title must be customized");
     assert.ok(portalHtml.includes("Department of Mechanical Engineering"), "portal subtitle must be customized");
     assert.ok(portalHtml.includes("Select an engineering simulation tool below:"), "portal description must be customized");
@@ -1085,14 +1179,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ------------------------------------------------- security headers & CSP
 
   test("Every HTML page carries a strict CSP whose nonce matches every script and no inline handlers", async () => {
-    const pages: Array<[string, string | undefined]> = [
-      ["/", undefined],
-      ["/?login=1", undefined],
-      ["/?tenant=greenwood", undefined],
-      ["/admin?tenant=greenwood", schoolSessionCookie],
-      ["/super", superSessionCookie]
+    // The third element says whether this page is expected to carry a script.
+    // A page with none is legitimate -- the school homepage has no script at
+    // all -- but every script that does render must carry this nonce.
+    const pages: Array<[string, string | undefined, boolean]> = [
+      ["/", undefined, true],
+      ["/?login=1", undefined, true],
+      ["/?tenant=greenwood", undefined, false],
+      ["/home?tenant=greenwood", undefined, true],
+      ["/admin?tenant=greenwood", schoolSessionCookie, true],
+      ["/super", superSessionCookie, true]
     ];
-    for (const [path, cookie] of pages) {
+    for (const [path, cookie, expectsScript] of pages) {
       const res = await call(path, cookie ? { cookie } : {});
       assert.equal(res.status, 200, `${path} should render`);
       const csp = res.headers.get("Content-Security-Policy") || "";
@@ -1106,7 +1204,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
       const html = await res.text();
       const scripts = html.match(/<script\b[^>]*>/g) || [];
-      assert.ok(scripts.length > 0, `${path} renders at least one script block`);
+      if (expectsScript) {
+        assert.ok(scripts.length > 0, `${path} renders at least one script block`);
+      }
       for (const tag of scripts) {
         assert.ok(tag.includes(`nonce="${nonce}"`), `${path}: script tag without this response's nonce: ${tag}`);
       }

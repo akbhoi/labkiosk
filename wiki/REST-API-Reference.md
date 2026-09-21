@@ -112,7 +112,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Path | Serves |
 | :--- | :--- |
 | `/` | Landing page on the platform apex; Student Portal on a tenant host |
-| `/portal` | Student Learning Portal |
+| `/` | School homepage (school-authored headline, intro and content blocks) |
+| `/home` | Student Learning Portal (educational app grid) |
 | `/admin` | Teacher Lab Dashboard |
 | `/super` | Super Admin Master Console |
 | `/login`, `/register`, `/contact` | Landing-page sections |

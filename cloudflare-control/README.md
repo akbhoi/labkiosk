@@ -60,6 +60,7 @@ cloudflare-control/
 │   ├── ui_tokens.ts           # The one declaration of the design language (colours, radii, easing)
 │   ├── ui_layout.ts           # Shared shell: 72px rail, 272px context panel, primitives
 │   ├── ui_landing.ts          # Public SaaS landing page and registration
+│   ├── ui_school_home.ts      # The school homepage served at the subdomain root
 │   ├── ui_portal.ts           # Student Learning Portal (Educational Apps Grid)
 │   ├── ui_super.ts            # Super Admin Master Console (/super)
 │   ├── ui_legal.ts            # Legal compliance pages (/privacy, /terms)
@@ -119,7 +120,8 @@ whenever the change touches D1 itself, migrations or Workers runtime behaviour.
 ### 6. Local Endpoints
 Once running on `http://localhost:8787`:
 - **Public SaaS Landing Page:** `http://localhost:8787/`
-- **Student Learning Portal:** `http://localhost:8787/portal?tenant=demo`
+- **School Homepage:** `http://localhost:8787/?tenant=demo`
+- **Student Learning Portal:** `http://localhost:8787/home?tenant=demo`
 - **Teacher Lab Dashboard:** `http://localhost:8787/admin?tenant=demo` (Sign in with teacher account)
 - **Super Admin Platform Console:** `http://localhost:8787/super` (Sign in with credentials from `.dev.vars`)
 

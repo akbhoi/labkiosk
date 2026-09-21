@@ -9,6 +9,7 @@
 import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole } from "./types";
 import { renderDashboardHtml } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
+import { renderSchoolHomeHtml } from "./ui_school_home";
 import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
 import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
@@ -46,6 +47,9 @@ import {
   normalizeDomain,
   regenerateEnrollmentKey,
   writeAuditLog,
+  HOMEPAGE_LIMITS,
+  parseHomepageBlocks,
+  sanitizeHomepageBlocks,
   listPlatformAuditLogs,
   listUiCatalogs,
   getUiCatalog,
@@ -386,7 +390,7 @@ const output: Record<string, unknown> = Object.create(null);
 }
 
 function isPublicTenantRoute(path: string, method: string): boolean {
-  if (path === "/" || path === "/home" || path === "/portal" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
+  if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
@@ -1713,6 +1717,46 @@ export default {
     }
 
     // POST /api/tenant/settings: update lab settings (mode, home_route, tunnel_domain, profile)
+    // POST /api/tenant/homepage: the school homepage served at the subdomain
+    // root. Guarded by the same `settings` permission as the rest of the lab
+    // configuration, and every field is normalised here rather than trusted:
+    // this text is rendered on the page students land on.
+    if (path === "/api/tenant/homepage" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      try {
+        const body = await request.json<{
+          headline?: unknown;
+          intro?: unknown;
+          blocks?: unknown;
+        }>();
+
+        const headline = String(body.headline ?? "").trim().slice(0, HOMEPAGE_LIMITS.headline);
+        const intro = String(body.intro ?? "").trim().slice(0, HOMEPAGE_LIMITS.intro);
+        const blocks = sanitizeHomepageBlocks(body.blocks);
+
+        await updateTenant(db, currentTenant!.id, {
+          // Empty means "use the default", which is the school name and the
+          // standard welcome line, so store null rather than an empty string.
+          homepage_headline: headline || null,
+          homepage_intro: intro || null,
+          homepage_blocks: blocks.length ? JSON.stringify(blocks) : null
+        });
+
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: session!.user_id,
+          action: "homepage.update",
+          details: `${blocks.length} block(s)`
+        });
+
+        return new Response(JSON.stringify({ status: "ok", blocks }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Homepage update failed:", err);
+        return jsonError("Could not save the homepage", 400, jsonHeaders);
+      }
+    }
+
     if (path === "/api/tenant/settings" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
@@ -2392,14 +2436,16 @@ export default {
     }
 
     // 2. Student Learning Portal (root of a school subdomain or custom domain)
-    const wantsPortal = path === "/" || path === "/home" || path === "/portal";
+    const wantsSchoolHome = path === "/";
+    const wantsPortal = path === "/home";
+    const wantsSchoolPage = wantsSchoolHome || wantsPortal;
     const namedTenant = url.searchParams.has("tenant") || request.headers.has("x-tenant");
     const onSubdomain = hostSubdomain(request, env.DEFAULT_DOMAIN) !== null;
     const isCustomDomainHost = Boolean(
       currentTenant?.custom_domain && hostname(request) === currentTenant.custom_domain.toLowerCase()
     );
 
-    if (wantsPortal && (namedTenant || onSubdomain || isCustomDomainHost)) {
+    if (wantsSchoolPage && (namedTenant || onSubdomain || isCustomDomainHost)) {
       if (!currentTenant) {
         const requested = cleanSubdomain(url.searchParams.get("tenant") ?? hostSubdomain(request, env.DEFAULT_DOMAIN) ?? "");
         return new Response(
@@ -2426,10 +2472,27 @@ export default {
         );
       }
 
+      // Single-site lockdown outranks both pages: the school has chosen that
+      // its workstations only ever see one site.
       if (currentTenant.mode === "single_url") {
         const target = safeHttpUrl(currentTenant.default_url);
         if (target) return Response.redirect(target, 302);
         console.warn(`[Worker] Tenant ${currentTenant.subdomain} has an invalid default_url; showing the portal instead.`);
+      }
+
+      // The root is the school's own page; the grid lives at /home.
+      if (wantsSchoolHome) {
+        const portalPath = namedTenant
+          ? `/home?tenant=${encodeURIComponent(currentTenant.subdomain)}`
+          : "/home";
+        return new Response(
+          renderSchoolHomeHtml({
+            tenant: currentTenant,
+            blocks: parseHomepageBlocks(currentTenant.homepage_blocks),
+            portalPath
+          }),
+          { headers: htmlHeaders }
+        );
       }
 
       const portalSites = await listPortalSites(db, currentTenant.id);

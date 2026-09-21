@@ -32,7 +32,8 @@ cloudflare-control/
 │   │                                   #   pages were written against
 │   ├── ui_layout.ts                    # Shared shell: 72px rail, 272px context panel, primitives
 │   ├── ui_landing.ts                   # Public SaaS Landing Page
-│   ├── ui_portal.ts                    # Student Learning Portal (Educational Cards Grid)
+│   ├── ui_school_home.ts               # The school homepage at the subdomain root (/)
+│   ├── ui_portal.ts                    # Student Learning Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms)
 │   └── types.ts                        # Strict TypeScript interfaces
@@ -167,6 +168,26 @@ cloudflare-control/
 - `test/dump_admin_html.ts` renders all six pages from fixed inputs. Diff its
   output across a refactor of these modules; the split that created them was
   verified byte-for-byte that way.
+
+### Rule 5g: Three Paths on a School Host, Each With One Job
+- `/` is the **school homepage**: a headline, an introduction and the content
+  blocks the school publishes, rendered by `ui_school_home.ts`. It is the page
+  a school puts its own name on, and the only one a visitor sees first.
+- `/home` is the **student app grid** (`ui_portal.ts`), the launcher a student
+  picks a site from.
+- `/admin` is the **school console**, and `/admin/<page>` its sub-pages.
+- `/portal` no longer exists. All three paths used to render the same grid,
+  which is why `home_route` could be set to any of them. A school that had
+  pointed its workstations at `/portal` would have had them reset to a 404, so
+  migration 0008 moves those to `/home` and the option is gone from Lab
+  Settings. **Never add a fourth alias**: every one of them is somewhere a
+  workstation can be pinned, and removing it later breaks classrooms.
+- Single-site lockdown outranks both public paths: a school in `single_url`
+  mode redirects to its locked site from `/` and `/home` alike.
+- Homepage text is school-supplied and rendered to students. It is normalised
+  and size-capped on the way in (`sanitizeHomepageBlocks`), escaped on the way
+  out, and a block link goes through `safeHttpUrl()` on both sides -- neither
+  side may assume the other did it.
 ### Rule 6: State-Changing Requests Prove Their Origin
 - Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host, the platform domain, or a dev host. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.

@@ -869,6 +869,27 @@ ${rootTokensCss()}
     }
     .form-row { display: flex; gap: 12px; align-items: flex-end; }
 
+    /* One editable block on the school homepage: title, body, optional link,
+       and the button that removes it. */
+    .homepage-block-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: start;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .homepage-block-row > textarea,
+    .homepage-block-row > input { grid-column: 1; }
+    .homepage-block-row > .btn { grid-column: 2; grid-row: 1; }
+    @media (max-width: 620px) {
+      .homepage-block-row { grid-template-columns: 1fr; }
+      .homepage-block-row > .btn { grid-column: 1; grid-row: auto; justify-self: start; }
+    }
+
     /* Tables */
     .table-container {
       overflow-x: auto;
