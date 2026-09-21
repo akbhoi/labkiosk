@@ -409,7 +409,12 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const subdomain = btn.dataset.subdomain;
-          if (!confirm("Approve subdomain '" + subdomain + "' for this school?")) return;
+          const agreed = await lkConfirm({
+            title: "Approve '" + subdomain + "'?",
+            message: "The console and student portal for this school go live on that address straight away, and its workstations can enrol against it.",
+            confirmLabel: "Approve"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/approve", {
               method: "POST",
@@ -420,10 +425,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Approval failed");
+              lkToast(data.error || "Approval failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -431,7 +436,13 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
       document.querySelectorAll(".btn-reject-sub").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Reject this school's registration / subdomain request?")) return;
+          const agreed = await lkConfirm({
+            title: "Reject this request?",
+            message: "The school stays pending and cannot enrol workstations. Nothing is deleted, so you can approve it later.",
+            confirmLabel: "Reject",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/reject", {
               method: "POST",
@@ -442,10 +453,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Rejection failed");
+              lkToast(data.error || "Rejection failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -454,7 +465,12 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const customDomain = btn.dataset.domain;
-          if (!confirm("Approve custom domain '" + customDomain + "'?")) return;
+          const agreed = await lkConfirm({
+            title: "Approve " + customDomain + "?",
+            message: "Traffic on that hostname will route to this school. Their DNS has to point at the worker before it resolves.",
+            confirmLabel: "Approve domain"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/custom-domain/approve", {
               method: "POST",
@@ -465,10 +481,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Custom domain approval failed");
+              lkToast(data.error || "Custom domain approval failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -476,7 +492,13 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
       document.querySelectorAll(".btn-reject-custom").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Reject this custom domain request?")) return;
+          const agreed = await lkConfirm({
+            title: "Reject this domain request?",
+            message: "The school keeps its subdomain address and can request a different domain later.",
+            confirmLabel: "Reject",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/custom-domain/reject", {
               method: "POST",
@@ -487,10 +509,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to reject custom domain");
+              lkToast(data.error || "Failed to reject custom domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -498,7 +520,14 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
       document.querySelectorAll(".btn-edit-sub").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          const newSub = prompt("Enter new subdomain for this school:");
+          const newSub = await lkPrompt({
+            title: "Assign a subdomain",
+            message: "The school reaches its console and portal at this address. Changing it breaks the old one immediately.",
+            label: "Subdomain",
+            placeholder: "greenwood",
+            hint: "Lowercase letters, digits and hyphens. Reserved slugs are refused.",
+            confirmLabel: "Assign"
+          });
           if (!newSub) return;
           try {
             const res = await fetch("/api/super/tenants/approve", {
@@ -510,10 +539,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to assign subdomain");
+              lkToast(data.error || "Failed to assign subdomain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -521,7 +550,14 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
       document.querySelectorAll(".btn-assign-custom").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          const customDomain = prompt("Enter custom domain to assign (e.g. kiosk.myschool.edu):");
+          const customDomain = await lkPrompt({
+            title: "Assign a custom domain",
+            message: "The hostname the school owns. Their DNS has to point at this worker before it will resolve.",
+            label: "Domain",
+            placeholder: "kiosk.myschool.edu",
+            hint: "A hostname only: no scheme, no path, no port.",
+            confirmLabel: "Assign"
+          });
           if (!customDomain) return;
           try {
             const res = await fetch("/api/super/tenants/custom-domain/approve", {
@@ -533,10 +569,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to assign custom domain");
+              lkToast(data.error || "Failed to assign custom domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -544,7 +580,13 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
       document.querySelectorAll(".btn-remove-custom").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Disconnect custom domain from this school?")) return;
+          const agreed = await lkConfirm({
+            title: "Disconnect this custom domain?",
+            message: "The school falls back to its subdomain. Workstations enrolled against the custom domain will need reconfiguring.",
+            confirmLabel: "Disconnect",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/custom-domain/remove", {
               method: "POST",
@@ -555,10 +597,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to disconnect domain");
+              lkToast(data.error || "Failed to disconnect domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -566,7 +608,13 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
       document.querySelectorAll(".btn-suspend").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Suspend this school? Workstations and student portal will be deactivated.")) return;
+          const agreed = await lkConfirm({
+            title: "Suspend this school?",
+            message: "Its student portal stops serving, its workstations stop reporting and no new one can enrol. Nothing is deleted and you can reactivate at any time.",
+            confirmLabel: "Suspend school",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/suspend", {
               method: "POST",
@@ -577,10 +625,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to suspend school");
+              lkToast(data.error || "Failed to suspend school", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -588,7 +636,12 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
       document.querySelectorAll(".btn-reactivate").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
-          if (!confirm("Reactivate this school?")) return;
+          const agreed = await lkConfirm({
+            title: "Reactivate this school?",
+            message: "Its portal, console and workstation telemetry all resume.",
+            confirmLabel: "Reactivate"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/tenants/reactivate", {
               method: "POST",
@@ -599,10 +652,10 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to reactivate school");
+              lkToast(data.error || "Failed to reactivate school", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -620,7 +673,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           try {
             parsed = JSON.parse(rawJson);
           } catch {
-            alert("Invalid JSON format");
+            lkToast("Invalid JSON format", "error");
             return;
           }
 
@@ -632,13 +685,13 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             });
             const data = await res.json();
             if (data.status === "ok") {
-              alert("Catalog uploaded successfully (" + data.entries + " entries)");
+              lkToastAfterReload("Catalog uploaded: " + data.entries + " entries.", "success");
               window.location.reload();
             } else {
-              alert(data.error || "Upload failed");
+              lkToast(data.error || "Upload failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       }
@@ -646,17 +699,24 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
       document.querySelectorAll(".btn-delete-catalog").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tag = btn.dataset.tag;
-          if (!tag || !confirm("Delete interface catalog '" + tag + "'?")) return;
+          if (!tag) return;
+          const agreed = await lkConfirm({
+            title: "Delete the '" + tag + "' catalog?",
+            message: "Workstations set to that language fall back to English at their next start. The catalogs are platform-wide, so this affects every school.",
+            confirmLabel: "Delete",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch("/api/super/i18n/" + encodeURIComponent(tag), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to delete catalog");
+              lkToast(data.error || "Failed to delete catalog", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });

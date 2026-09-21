@@ -364,6 +364,41 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("The consoles never speak through a native browser dialog", async () => {
+    // window.alert/confirm/prompt cannot be styled, block the 3-second telemetry
+    // poll for as long as they are up, and made the platform console look like a
+    // different product from the school one. The shell provides lkToast,
+    // lkConfirm and lkPrompt instead.
+    const pages = [
+      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
+      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
+      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
+      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
+      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
+      ["/super/schools", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie]
+    ];
+
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, { cookie })).text();
+      for (const script of html.split("<script").slice(1)) {
+        const body = script.slice(script.indexOf(">") + 1);
+        const offender = body.split("\n").find((line) => /(^|[^\w.])(alert|confirm|prompt)\s*\(/.test(line));
+        assert.equal(
+          offender,
+          undefined,
+          `${page} still calls a native dialog: ${(offender || "").trim()}`
+        );
+      }
+      // And the replacements have to actually be on the page.
+      assert.ok(html.includes("window.lkToast"), `${page} is missing the toast kit`);
+      assert.ok(html.includes("window.lkConfirm"), `${page} is missing the confirm dialog`);
+    }
+  });
+
   test("Redirects an unauthenticated visitor away from /admin", async () => {
     const res = await call("/admin?tenant=greenwood");
     assert.equal(res.status, 302);

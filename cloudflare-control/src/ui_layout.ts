@@ -835,6 +835,89 @@ ${rootTokensCss()}
     .badge-yellow { background: rgba(245, 158, 11, 0.15); color: #fde68a; border-color: rgba(245, 158, 11, 0.3); }
     .badge-red { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border-color: rgba(239, 68, 68, 0.3); }
 
+    /* ---------------------------------------------------------------------- */
+    /* Toasts and dialogs                                                     */
+    /* ---------------------------------------------------------------------- */
+    /* The consoles used to speak through window.alert/confirm/prompt: 77
+       native boxes that cannot be styled, that stop the 3-second telemetry
+       poll dead while they are up, and that made the platform console feel
+       like a different product from the school one. These are the shell
+       replacements, available on every page that uses this layout. */
+    .lk-toast-stack {
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      z-index: 3000;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: min(420px, calc(100vw - 36px));
+      pointer-events: none;
+    }
+    .lk-toast {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--text-main);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      pointer-events: auto;
+      opacity: 0;
+      transform: translateY(12px);
+      transition: opacity 0.2s ease, transform 0.24s var(--ease-spring);
+    }
+    .lk-toast.visible { opacity: 1; transform: translateY(0); }
+    .lk-toast.success { border-left-color: var(--success); }
+    .lk-toast.error { border-left-color: var(--danger); }
+    .lk-toast.warning { border-left-color: var(--warning); }
+    .lk-toast-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .lk-toast-close {
+      background: transparent;
+      border: none;
+      color: var(--text-subtle);
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .lk-toast-close:hover { color: var(--text-main); }
+
+    .lk-dialog-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.78);
+      backdrop-filter: blur(6px);
+      z-index: 3100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .lk-dialog {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 460px;
+      padding: 24px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
+    }
+    .lk-dialog-title { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+    .lk-dialog-message {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin-bottom: 18px;
+      overflow-wrap: anywhere;
+    }
+    .lk-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
     /* Modal Overlay (VNC remote control & quick confirmation) */
     .modal-overlay {
       position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(8px);
@@ -995,6 +1078,216 @@ ${rootTokensCss()}
       </footer>
     </div>
   </div>
+
+  <div class="lk-toast-stack" id="lk-toast-stack" aria-live="polite" role="status"></div>
+
+  <script nonce="${escapeAttr(nonce)}">
+    (function () {
+      "use strict";
+
+      var stack = document.getElementById("lk-toast-stack");
+
+      /**
+       * Announce something without stopping the page.
+       * Tone is one of "info" (the default), "success", "error", "warning".
+       */
+      window.lkToast = function (message, tone, holdMs) {
+        if (!stack || !message) return;
+        var toast = document.createElement("div");
+        toast.className = "lk-toast " + (tone || "info");
+
+        var text = document.createElement("div");
+        text.className = "lk-toast-text";
+        // textContent, never innerHTML: these carry school names, domains and
+        // error strings that came back from the server.
+        text.textContent = String(message);
+        toast.appendChild(text);
+
+        var close = document.createElement("button");
+        close.type = "button";
+        close.className = "lk-toast-close";
+        close.setAttribute("aria-label", "Dismiss");
+        close.textContent = "\u2715";
+        toast.appendChild(close);
+
+        stack.appendChild(toast);
+        // A batch command that fails per workstation can raise a dozen of these
+        // at once; keep the newest few rather than filling the viewport.
+        while (stack.children.length > 4) stack.removeChild(stack.firstChild);
+        requestAnimationFrame(function () { toast.classList.add("visible"); });
+
+        var timer = null;
+        function dismiss() {
+          if (timer) clearTimeout(timer);
+          toast.classList.remove("visible");
+          setTimeout(function () { if (toast.parentNode) toast.remove(); }, 240);
+        }
+        close.addEventListener("click", dismiss);
+        // An error stays up longer: it is the one a person actually needs to read.
+        timer = setTimeout(dismiss, holdMs || (tone === "error" ? 7000 : 4000));
+        return dismiss;
+      };
+
+      var HANDOFF_KEY = "labkiosk_toast_handoff";
+
+      /**
+       * Say something that has to survive the navigation it triggers.
+       *
+       * A blocking browser alert used to hold the page open long enough to be
+       * read; a toast is destroyed by the reload that follows it. This parks the
+       * message and the next page picks it up.
+       */
+      window.lkToastAfterReload = function (message, tone) {
+        try {
+          sessionStorage.setItem(HANDOFF_KEY, JSON.stringify({ message: String(message), tone: tone || "success" }));
+        } catch (err) {
+          // Private browsing, or storage denied. The navigation still matters
+          // more than the message, so fall back to saying it now.
+          window.lkToast(message, tone);
+        }
+      };
+
+      (function drainHandoff() {
+        var raw = null;
+        try {
+          raw = sessionStorage.getItem(HANDOFF_KEY);
+          if (raw) sessionStorage.removeItem(HANDOFF_KEY);
+        } catch (err) {
+          return;
+        }
+        if (!raw) return;
+        try {
+          var parked = JSON.parse(raw);
+          if (parked && parked.message) window.lkToast(parked.message, parked.tone);
+        } catch (err) {
+          // A malformed entry is not worth failing the page load over.
+        }
+      })();
+
+      /** Shared chrome for the confirm and prompt dialogs. */
+      function buildDialog(options, buildBody) {
+        var overlay = document.createElement("div");
+        overlay.className = "lk-dialog-overlay";
+
+        var box = document.createElement("div");
+        box.className = "lk-dialog";
+        box.setAttribute("role", "dialog");
+        box.setAttribute("aria-modal", "true");
+        overlay.appendChild(box);
+
+        var title = document.createElement("h3");
+        title.className = "lk-dialog-title";
+        title.textContent = options.title || "Please confirm";
+        box.appendChild(title);
+
+        if (options.message) {
+          var message = document.createElement("p");
+          message.className = "lk-dialog-message";
+          message.textContent = options.message;
+          box.appendChild(message);
+        }
+
+        var field = buildBody ? buildBody(box) : null;
+
+        var actions = document.createElement("div");
+        actions.className = "lk-dialog-actions";
+        var cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "btn btn-secondary";
+        cancel.textContent = options.cancelLabel || "Cancel";
+        var accept = document.createElement("button");
+        accept.type = "button";
+        accept.className = "btn " + (options.tone === "danger" ? "btn-danger" : "btn-primary");
+        accept.textContent = options.confirmLabel || "Confirm";
+        actions.appendChild(cancel);
+        actions.appendChild(accept);
+        box.appendChild(actions);
+
+        document.body.appendChild(overlay);
+        return { overlay: overlay, cancel: cancel, accept: accept, field: field };
+      }
+
+      /** Resolve once, tear the dialog down, hand focus back where it was. */
+      function settleWith(parts, resolve) {
+        var previous = document.activeElement;
+        var done = false;
+        return function settle(value) {
+          if (done) return;
+          done = true;
+          parts.overlay.remove();
+          if (previous && previous.focus) previous.focus();
+          resolve(value);
+        };
+      }
+
+      function wire(parts, settle, outcome) {
+        parts.cancel.addEventListener("click", function () { settle(outcome.cancelled); });
+        parts.accept.addEventListener("click", function () { settle(outcome.accepted()); });
+        parts.overlay.addEventListener("click", function (event) {
+          if (event.target === parts.overlay) settle(outcome.cancelled);
+        });
+        parts.overlay.addEventListener("keydown", function (event) {
+          if (event.key === "Escape") {
+            settle(outcome.cancelled);
+          } else if (event.key === "Enter" && event.target !== parts.cancel) {
+            event.preventDefault();
+            settle(outcome.accepted());
+          }
+        });
+      }
+
+      /** Ask a yes/no question. Resolves true only on an explicit yes. */
+      window.lkConfirm = function (options) {
+        var opts = typeof options === "string" ? { message: options } : (options || {});
+        return new Promise(function (resolve) {
+          var parts = buildDialog(opts, null);
+          var settle = settleWith(parts, resolve);
+          wire(parts, settle, { cancelled: false, accepted: function () { return true; } });
+          parts.accept.focus();
+        });
+      };
+
+      /** Ask for a value. Resolves null when dismissed or left empty. */
+      window.lkPrompt = function (options) {
+        var opts = options || {};
+        return new Promise(function (resolve) {
+          var parts = buildDialog(opts, function (box) {
+            var group = document.createElement("div");
+            group.className = "form-group";
+            if (opts.label) {
+              var label = document.createElement("label");
+              label.className = "form-label";
+              label.textContent = opts.label;
+              group.appendChild(label);
+            }
+            var input = document.createElement("input");
+            input.type = "text";
+            input.className = "form-input";
+            input.value = opts.value || "";
+            input.placeholder = opts.placeholder || "";
+            group.appendChild(input);
+            if (opts.hint) {
+              var hint = document.createElement("p");
+              hint.className = "form-hint";
+              hint.textContent = opts.hint;
+              group.appendChild(hint);
+            }
+            box.appendChild(group);
+            return input;
+          });
+          var settle = settleWith(parts, resolve);
+          wire(parts, settle, {
+            cancelled: null,
+            accepted: function () {
+              var value = parts.field ? parts.field.value.trim() : "";
+              return value || null;
+            }
+          });
+          if (parts.field) { parts.field.focus(); parts.field.select(); }
+        });
+      };
+    })();
+  <\/script>
 
   ${modalsHtml}
 

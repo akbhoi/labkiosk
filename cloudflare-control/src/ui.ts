@@ -987,15 +987,21 @@ function renderWorkstationsScripts(
           if (data.status === "ok") {
             pollClients();
           } else {
-            alert(data.error || "Command failed");
+            lkToast(data.error || "Command failed", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       }
 
       async function removeClient(clientId) {
-        if (!confirm("Decommission " + clientId + "? It must be re-enrolled to reconnect.")) return;
+        var agreed = await lkConfirm({
+          title: "Decommission " + clientId + "?",
+          message: "Its device token is revoked immediately. The workstation has to be re-enrolled with the school key before it can reconnect.",
+          confirmLabel: "Decommission",
+          tone: "danger"
+        });
+        if (!agreed) return;
         try {
           const res = await fetch(labkioskApi("/api/clients/remove"), {
             method: "POST",
@@ -1009,18 +1015,24 @@ function renderWorkstationsScripts(
             delete clientsData[clientId];
             pollClients();
           } else {
-            alert(data.error || "Failed to remove workstation");
+            lkToast(data.error || "Failed to remove workstation", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       }
 
       document.getElementById("btn-lock-all").addEventListener("click", () => sendCommand("all", "lock"));
       document.getElementById("btn-unlock-all").addEventListener("click", () => sendCommand("all", "unlock"));
       document.getElementById("btn-reset-portal").addEventListener("click", () => sendCommand("all", "navigate", { resetPortal: true }));
-      document.getElementById("btn-reboot-all").addEventListener("click", () => {
-        if (confirm("Are you sure you want to REBOOT all lab computers?")) sendCommand("all", "reboot");
+      document.getElementById("btn-reboot-all").addEventListener("click", async () => {
+        const agreed = await lkConfirm({
+          title: "Reboot every workstation?",
+          message: "All student machines restart now. Anything on screen is lost, and each one comes back to the portal after about a minute.",
+          confirmLabel: "Reboot all",
+          tone: "danger"
+        });
+        if (agreed) sendCommand("all", "reboot");
       });
 
       // ------------------------------------------------ context panel hooks
@@ -1305,10 +1317,10 @@ function renderBroadcastScripts(nonce: string): string {
           if (data.status === "ok") {
             window.location.reload();
           } else {
-            alert(data.error || "Broadcast failed");
+            lkToast(data.error || "Broadcast failed", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
@@ -1325,10 +1337,10 @@ function renderBroadcastScripts(nonce: string): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to stop broadcast");
+              lkToast(data.error || "Failed to stop broadcast", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       }
@@ -1348,10 +1360,10 @@ function renderBroadcastScripts(nonce: string): string {
           if (data.preset) {
             window.location.reload();
           } else {
-            alert(data.error || "Failed to save preset");
+            lkToast(data.error || "Failed to save preset", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
@@ -1369,10 +1381,10 @@ function renderBroadcastScripts(nonce: string): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Broadcast failed");
+              lkToast(data.error || "Broadcast failed", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -1380,17 +1392,24 @@ function renderBroadcastScripts(nonce: string): string {
       document.querySelectorAll(".btn-delete-preset").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const id = btn.dataset.id;
-          if (!id || !confirm("Delete this shortcut?")) return;
+          if (!id) return;
+          const agreed = await lkConfirm({
+            title: "Delete this shortcut?",
+            message: "The saved lesson shortcut is removed from the broadcast panel. Workstations already on that page are not affected.",
+            confirmLabel: "Delete",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch(labkioskApi("/api/broadcast-presets/" + encodeURIComponent(id)), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to delete preset");
+              lkToast(data.error || "Failed to delete preset", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -1503,27 +1522,34 @@ function renderPortalScripts(nonce: string): string {
           if (data.site) {
             window.location.reload();
           } else {
-            alert(data.error || "Failed to add application");
+            lkToast(data.error || "Failed to add application", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
       document.querySelectorAll(".btn-delete-app").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const id = btn.dataset.id;
-          if (!id || !confirm("Remove this application from the student portal?")) return;
+          if (!id) return;
+          const agreed = await lkConfirm({
+            title: "Remove this app from the portal?",
+            message: "Students will no longer see this card. The site stays on the domain allowlist unless you remove it there too.",
+            confirmLabel: "Remove",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch(labkioskApi("/api/portal-sites/" + encodeURIComponent(id)), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to remove application");
+              lkToast(data.error || "Failed to remove application", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -1610,17 +1636,24 @@ function renderWhitelistScripts(nonce: string): string {
           if (data.status === "ok") {
             window.location.reload();
           } else {
-            alert(data.error || "Failed to add domain");
+            lkToast(data.error || "Failed to add domain", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
       document.querySelectorAll(".btn-remove-domain").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const domain = btn.dataset.domain;
-          if (!domain || !confirm("Remove " + domain + " from the allowlist?")) return;
+          if (!domain) return;
+          const agreed = await lkConfirm({
+            title: "Remove " + domain + "?",
+            message: "Workstations pick this up on their next 3-second heartbeat and will be blocked from the domain after that.",
+            confirmLabel: "Remove",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch(labkioskApi("/api/whitelist"), {
               method: "POST",
@@ -1631,10 +1664,10 @@ function renderWhitelistScripts(nonce: string): string {
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to remove domain");
+              lkToast(data.error || "Failed to remove domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -1802,27 +1835,34 @@ function renderTeachersScripts(nonce: string): string {
           if (data.status === "ok") {
             window.location.reload();
           } else {
-            alert(data.error || "Failed to create teacher account");
+            lkToast(data.error || "Failed to create teacher account", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
       document.querySelectorAll(".btn-delete-teacher").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const id = btn.dataset.id;
-          if (!id || !confirm("Remove this teacher from the lab?")) return;
+          if (!id) return;
+          const agreed = await lkConfirm({
+            title: "Remove this staff account?",
+            message: "Their sign-in stops working immediately and any session they have open is ended.",
+            confirmLabel: "Remove",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch(labkioskApi("/api/tenant/teachers/" + encodeURIComponent(id)), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to remove teacher");
+              lkToast(data.error || "Failed to remove teacher", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       });
@@ -2017,20 +2057,25 @@ function renderSettingsScripts(nonce: string): string {
           });
           const data = await res.json();
           if (data.status === "ok") {
-            alert("Profile settings saved successfully.");
+            lkToastAfterReload("Profile settings saved.", "success");
             window.location.reload();
           } else {
-            alert(data.error || "Failed to save settings");
+            lkToast(data.error || "Failed to save settings", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
       document.getElementById("form-subdomain-settings").addEventListener("submit", async (e) => {
         e.preventDefault();
         const subdomain = document.getElementById("setting-subdomain").value.trim().toLowerCase();
-        if (!confirm("Update subdomain to '" + subdomain + "'? Workstations will need their configuration updated.")) return;
+        const agreed = await lkConfirm({
+          title: "Move the lab to '" + subdomain + "'?",
+          message: "The current address stops working once this is approved, and every enrolled workstation needs its configuration updated to the new one.",
+          confirmLabel: "Request change"
+        });
+        if (!agreed) return;
 
         try {
           const res = await fetch(labkioskApi("/api/tenant/subdomain"), {
@@ -2040,13 +2085,13 @@ function renderSettingsScripts(nonce: string): string {
           });
           const data = await res.json();
           if (data.status === "ok") {
-            alert("Subdomain updated successfully! Redirecting to new console URL...");
+            lkToastAfterReload("Subdomain updated. This is the new console address.", "success");
             window.location.href = data.redirectUrl || "/admin";
           } else {
-            alert(data.error || "Failed to update subdomain");
+            lkToast(data.error || "Failed to update subdomain", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
@@ -2063,13 +2108,13 @@ function renderSettingsScripts(nonce: string): string {
             });
             const data = await res.json();
             if (data.status === "ok") {
-              alert("Custom domain request submitted for Super Admin review.");
+              lkToastAfterReload("Custom domain submitted for platform review.", "success");
               window.location.reload();
             } else {
-              alert(data.error || "Failed to submit custom domain");
+              lkToast(data.error || "Failed to submit custom domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       }
@@ -2077,17 +2122,23 @@ function renderSettingsScripts(nonce: string): string {
       const disconnectBtn = document.getElementById("btn-disconnect-custom");
       if (disconnectBtn) {
         disconnectBtn.addEventListener("click", async () => {
-          if (!confirm("Disconnect your custom domain?")) return;
+          const agreed = await lkConfirm({
+            title: "Disconnect the custom domain?",
+            message: "The lab goes back to its subdomain address. Workstations enrolled against the custom domain will need reconfiguring.",
+            confirmLabel: "Disconnect",
+            tone: "danger"
+          });
+          if (!agreed) return;
           try {
             const res = await fetch(labkioskApi("/api/settings/custom-domain"), { method: "DELETE" });
             const data = await res.json();
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              alert(data.error || "Failed to disconnect domain");
+              lkToast(data.error || "Failed to disconnect domain", "error");
             }
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       }
@@ -2099,7 +2150,7 @@ function renderSettingsScripts(nonce: string): string {
             await fetch(labkioskApi("/api/settings/custom-domain"), { method: "DELETE" });
             window.location.reload();
           } catch (err) {
-            alert("Network error: " + err.message);
+            lkToast("Network error: " + err.message, "error");
           }
         });
       }
@@ -2115,12 +2166,12 @@ function renderSettingsScripts(nonce: string): string {
           });
           const data = await res.json();
           if (data.status === "ok") {
-            alert("Routing saved.");
+            lkToast("Routing saved.", "success");
           } else {
-            alert(data.error || "Failed to save routing");
+            lkToast(data.error || "Failed to save routing", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
@@ -2135,12 +2186,12 @@ function renderSettingsScripts(nonce: string): string {
           });
           const data = await res.json();
           if (data.status === "ok") {
-            alert("Tunnel domain updated.");
+            lkToast("Tunnel domain updated.", "success");
           } else {
-            alert(data.error || "Failed to update tunnel");
+            lkToast(data.error || "Failed to update tunnel", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
@@ -2156,25 +2207,36 @@ function renderSettingsScripts(nonce: string): string {
             btn.textContent = "Copy Key";
             keyRevealed = true;
           } catch (err) {
-            alert("Failed to fetch key");
+            lkToast("Failed to fetch key", "error");
           }
         } else {
-          navigator.clipboard.writeText(display.textContent);
-          alert("Enrollment key copied to clipboard!");
+          try {
+            await navigator.clipboard.writeText(display.textContent);
+            lkToast("Enrollment key copied to the clipboard.", "success");
+          } catch (err) {
+            // A denied permission, or a page served over plain http. Say so
+            // rather than reporting a copy that did not happen.
+            lkToast("Could not reach the clipboard. Select the key above and copy it by hand.", "warning");
+          }
         }
       });
 
       document.getElementById("btn-rotate-key").addEventListener("click", async () => {
-        if (!confirm("Rotate enrollment key? Previously enrolled devices will continue functioning, but newly enrolled machines will require the fresh key.")) return;
+        const agreed = await lkConfirm({
+          title: "Rotate the enrollment key?",
+          message: "Workstations already enrolled keep working. Any machine enrolled from now on needs the new key, so update whatever you hand to staff.",
+          confirmLabel: "Rotate key"
+        });
+        if (!agreed) return;
         try {
           const res = await fetch(labkioskApi("/api/settings/enrollment-key"), { method: "POST" });
           const data = await res.json();
           if (data.status === "ok") {
             document.getElementById("enrollment-key-display").textContent = data.enrollmentKey;
-            alert("Enrollment key rotated: " + data.enrollmentKey);
+            lkToast("Enrollment key rotated. The new key is shown above.", "success");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
 
@@ -2190,13 +2252,13 @@ function renderSettingsScripts(nonce: string): string {
           });
           const data = await res.json();
           if (data.status === "ok") {
-            alert("Password updated successfully.");
+            lkToast("Password updated successfully.", "success");
             document.getElementById("form-change-password").reset();
           } else {
-            alert(data.error || "Failed to change password");
+            lkToast(data.error || "Failed to change password", "error");
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          lkToast("Network error: " + err.message, "error");
         }
       });
     </script>
