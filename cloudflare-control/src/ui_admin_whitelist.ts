@@ -47,13 +47,6 @@ export function buildWhitelistPage(options: AdminPageInput): AdminPageParts {
           <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.4;">
             Permitted domains are merged into Chromium's enterprise managed policy (<code>URLAllowlist</code>) upon each 3-second heartbeat.
           </div>
-
-          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
-          <div class="sub-action-list">
-            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
-              <span>← Back to Workstations</span>
-            </a>
-          </div>
         `
   };
 }

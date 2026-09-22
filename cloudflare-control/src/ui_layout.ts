@@ -341,7 +341,163 @@ ${rootTokensCss()}
       font-weight: 700;
       font-size: 14px;
       color: #93c5fd;
-      cursor: default;
+      cursor: pointer;
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .rail-profile-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+    }
+
+    .rail-user-btn {
+      background: transparent;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      border-radius: 50%;
+      outline: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .rail-user-btn:hover .rail-user-avatar {
+      border-color: var(--accent);
+      transform: scale(1.05);
+      box-shadow: 0 0 14px var(--accent-glow);
+    }
+    .rail-user-btn:focus-visible .rail-user-avatar {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .rail-profile-menu {
+      position: absolute;
+      left: calc(var(--rail-width) + 8px);
+      bottom: 0;
+      width: 260px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+      padding: 14px;
+      z-index: 1060;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px) scale(0.96);
+      transform-origin: bottom left;
+      transition: opacity 0.18s ease, transform 0.2s var(--ease-spring);
+      backdrop-filter: blur(12px);
+    }
+    .rail-profile-menu.active {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0) scale(1);
+    }
+
+    .profile-menu-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .profile-menu-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #1e293b, #334155);
+      border: 2px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      color: #93c5fd;
+      flex-shrink: 0;
+    }
+    .profile-menu-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .profile-menu-name {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .profile-menu-email {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .profile-menu-role {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.15);
+      padding: 2px 6px;
+      border-radius: 6px;
+      align-self: flex-start;
+      margin-top: 2px;
+    }
+
+    .profile-menu-divider {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: 0 -4px;
+    }
+
+    .profile-menu-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .profile-menu-link,
+    .profile-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-decoration: none;
+      background: transparent;
+      border: none;
+      width: 100%;
+      cursor: pointer;
+      text-align: left;
+      font-family: inherit;
+      transition: color 0.15s ease, background 0.15s ease;
+    }
+    .profile-menu-link:hover,
+    .profile-menu-item:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .profile-logout-btn {
+      color: #fca5a5;
+    }
+    .profile-logout-btn:hover {
+      color: #fff;
+      background: rgba(239, 68, 68, 0.2);
     }
 
     /* ---------------------------------------------------------------------- */
@@ -1090,8 +1246,44 @@ ${rootTokensCss()}
             <polyline points="15 18 9 12 15 6"></polyline>
           </svg>
         </button>
-        <div class="rail-user-avatar" title="${escapeAttr(userMeta?.name || 'Admin')} (${escapeAttr(userMeta?.role || '')})">
-          <span>${escapeHtml((userMeta?.name || 'A').slice(0, 1).toUpperCase())}</span>
+        <div class="rail-profile-wrap">
+          <button type="button" class="rail-user-btn" id="btn-user-profile" aria-expanded="false" aria-haspopup="true" title="${escapeAttr(userMeta?.name || 'User Profile')} (${escapeAttr(userMeta?.role || 'Admin')})">
+            <div class="rail-user-avatar">
+              <span>${escapeHtml((userMeta?.name || 'A').slice(0, 1).toUpperCase())}</span>
+            </div>
+          </button>
+          <div class="rail-profile-menu" id="rail-profile-menu" role="menu" aria-label="User profile menu">
+            <div class="profile-menu-header">
+              <div class="profile-menu-avatar">
+                <span>${escapeHtml((userMeta?.name || 'A').slice(0, 1).toUpperCase())}</span>
+              </div>
+              <div class="profile-menu-info">
+                <div class="profile-menu-name">${escapeHtml(userMeta?.name || 'Administrator')}</div>
+                ${userMeta?.email ? `<div class="profile-menu-email">${escapeHtml(userMeta.email)}</div>` : ""}
+                <div class="profile-menu-role">${escapeHtml(userMeta?.role || 'Admin')}</div>
+              </div>
+            </div>
+            <div class="profile-menu-divider"></div>
+            <div class="profile-menu-actions">
+              ${
+                brandHref.startsWith("/super")
+                  ? `<a href="/super/system" class="profile-menu-link">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                      <span>System Settings</span>
+                    </a>`
+                  : `<a href="${escapeAttr(brandHref.includes("?") ? "/admin/settings?" + brandHref.split("?")[1] + "#section-password" : "/admin/settings#section-password")}" class="profile-menu-link">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                      <span>Change Password</span>
+                    </a>`
+              }
+              <form action="${escapeAttr(logoutAction)}" method="POST" style="margin:0;">
+                <button type="submit" class="profile-menu-item profile-logout-btn">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                  <span>Sign Out</span>
+                </button>
+              </form>
+            </div>
+          </div>
         </div>
       </div>
     </aside>
@@ -1141,21 +1333,7 @@ ${rootTokensCss()}
 
         ${stats.length ? `<div class="canvas-header-center">${statsHtml}</div>` : ""}
 
-        <div class="canvas-header-right">
-          ${
-            userMeta
-              ? `
-            <div class="user-pill">
-              <span class="user-name">${escapeHtml(userMeta.name)}</span>
-              <span class="user-role">${escapeHtml(userMeta.role)}</span>
-            </div>
-          `
-              : ""
-          }
-          <form action="${escapeAttr(logoutAction)}" method="POST" style="margin:0;">
-            <button type="submit" class="btn-logout">Sign Out</button>
-          </form>
-        </div>
+        <div class="canvas-header-right"></div>
       </header>
 
       <!-- Main Content Canvas -->
@@ -1434,6 +1612,32 @@ ${rootTokensCss()}
           toggleSubpanel();
         }
       });
+
+      // Bottom-left profile menu toggle and outside-click dismiss
+      const profileBtn = document.getElementById("btn-user-profile");
+      const profileMenu = document.getElementById("rail-profile-menu");
+      if (profileBtn && profileMenu) {
+        profileBtn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          const isOpen = profileMenu.classList.toggle("active");
+          profileBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        });
+
+        document.addEventListener("click", function(e) {
+          if (!profileMenu.contains(e.target) && !profileBtn.contains(e.target)) {
+            profileMenu.classList.remove("active");
+            profileBtn.setAttribute("aria-expanded", "false");
+          }
+        });
+
+        document.addEventListener("keydown", function(e) {
+          if (e.key === "Escape" && profileMenu.classList.contains("active")) {
+            profileMenu.classList.remove("active");
+            profileBtn.setAttribute("aria-expanded", "false");
+            profileBtn.focus();
+          }
+        });
+      }
     })();
   </script>
 </body>

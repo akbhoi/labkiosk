@@ -91,26 +91,6 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
               </span>
             </button>
           </div>
-
-          <div class="sub-section-title" style="margin-top: 14px;">Quick Navigation</div>
-          <div class="sub-action-list">
-            <a href="/admin/broadcast${tenantParam}" class="sub-action-item">
-              <span>Lesson Broadcast</span>
-              <span style="color: var(--text-muted);">→</span>
-            </a>
-            <a href="/admin/portal${tenantParam}" class="sub-action-item">
-              <span>Portal Apps (${sites.length})</span>
-              <span style="color: var(--text-muted);">→</span>
-            </a>
-            <a href="/admin/whitelist${tenantParam}" class="sub-action-item">
-              <span>Allowed Domains (${config?.whitelist?.length || 0})</span>
-              <span style="color: var(--text-muted);">→</span>
-            </a>
-            <a href="/admin/settings${tenantParam}" class="sub-action-item">
-              <span>Lab Settings</span>
-              <span style="color: var(--text-muted);">→</span>
-            </a>
-          </div>
         `
   };
 }
@@ -123,6 +103,10 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
         <p class="page-desc">Real-time classroom telemetry, live screen monitoring, and remote command execution.</p>
       </div>
       <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <button type="button" class="btn btn-primary" id="btn-open-broadcast">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
+          Broadcast URL
+        </button>
         <button type="button" class="btn btn-warning" id="btn-lock-all" title="Locks every screen at once using the saved announcement. To write a different one, use Lock with a Message in the side panel.">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           Lock All Screens
@@ -131,23 +115,7 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
           Unlock All
         </button>
-        <button type="button" class="btn btn-primary" id="btn-open-broadcast">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
-          Broadcast URL
-        </button>
-        <a class="btn btn-secondary" href="/admin/whitelist${tenantParam}">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          Allowed Domains
-        </a>
-        <a class="btn btn-secondary" href="/admin/portal${tenantParam}">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-          Portal Apps
-        </a>
-        <a class="btn btn-secondary" href="/admin/settings${tenantParam}">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          Settings
-        </a>
-        <button type="button" class="btn btn-primary" id="btn-reset-portal">
+        <button type="button" class="btn btn-secondary" id="btn-reset-portal">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
           Reset to Portal
         </button>

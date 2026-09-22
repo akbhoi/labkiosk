@@ -57,13 +57,6 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
           <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.4;">
             Passwords use PBKDF2-HMAC-SHA256 (100k rounds) via WebCrypto. Device enrollment keys use cryptographically secure random bytes.
           </div>
-
-          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
-          <div class="sub-action-list">
-            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
-              <span>← Back to Workstations</span>
-            </a>
-          </div>
         `
   };
 }

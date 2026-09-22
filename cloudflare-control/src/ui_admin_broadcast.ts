@@ -59,13 +59,6 @@ export function buildBroadcastPage(options: AdminPageInput): AdminPageParts {
               )
               .join("")}
           </div>
-
-          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
-          <div class="sub-action-list">
-            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
-              <span>← Back to Workstations</span>
-            </a>
-          </div>
         `
   };
 }

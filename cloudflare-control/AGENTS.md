@@ -105,9 +105,9 @@ cloudflare-control/
 
 ### Rule 5b: Left-Side Multi-Level Panels Design & Seamless Transitions
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
-  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Broadcast, Portal, Whitelist, Teachers, Settings), live stats counter, user avatar, and panel expand/collapse toggle.
-  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific sub-views, quick filters (All, Online, Locked), and batch action triggers.
-  - **Content Area**: Fluid layout adapting smoothly to panel states without content jumping or horizontal scrollbars.
+  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Broadcast, Portal Apps, Whitelist, Teachers, Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
+  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
+  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu. The Workstation toolbar contains direct classroom commands (`Broadcast URL`, `Lock All`, `Unlock All`, `Reset to Portal`, `Reboot All`) rather than cross-page navigation links.
   - **Transitions & Micro-Interactions**: Hardware-accelerated transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
 
 

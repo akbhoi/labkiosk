@@ -207,31 +207,104 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     { label: "Approvals", value: pendingCount, color: pendingCount > 0 ? "yellow" : "blue" }
   ];
 
-  const subPanelHtml = `
-    <div class="sub-section-title">Master Navigation</div>
-    <div class="sub-action-list">
-      <a href="/super/schools" class="sub-action-item ${activeTab === "schools" ? "active" : ""}">
-        <span>Schools Directory</span>
-        <span class="sub-action-badge">${tenants.length}</span>
-      </a>
-      <a href="/super/approvals" class="sub-action-item ${activeTab === "approvals" ? "active" : ""}">
-        <span>Approvals Queue</span>
-        ${pendingCount > 0 ? `<span class="sub-action-badge" style="color: #fde68a;">${pendingCount}</span>` : ""}
-      </a>
-      <a href="/super/catalogs" class="sub-action-item ${activeTab === "catalogs" ? "active" : ""}">
-        <span>Translation Catalogs</span>
-        <span class="sub-action-badge">${catalogList.length}</span>
-      </a>
-      <a href="/super/system" class="sub-action-item ${activeTab === "system" ? "active" : ""}">
-        <span>System Health &amp; Logs</span>
-      </a>
-    </div>
+  const activeTenantsCount = tenants.filter((t) => t.status === "active").length;
+  const suspendedTenantsCount = tenants.filter((t) => t.status === "suspended").length;
 
-    <div class="sub-section-title" style="margin-top: 16px;">Privacy Invariant</div>
-    <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); line-height: 1.5;">
-      Super Admins cannot access any school's internal console or telemetry except for <code>demo</code>. School data isolation is enforced at the edge D1 layer.
-    </div>
-  `;
+  let subPanelTitle = "Platform Governance";
+  let subPanelSubtitle = "Global tenant administration";
+  let subPanelHtml = "";
+
+  if (activeTab === "schools") {
+    subPanelTitle = "Schools Directory";
+    subPanelSubtitle = "Tenant overview & filters";
+    subPanelHtml = `
+      <div class="sub-section-title">Directory Overview</div>
+      <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 8px; font-size: 13px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: var(--text-muted);">Total Schools:</span>
+          <span class="sub-action-badge">${tenants.length}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: var(--text-muted);">Active:</span>
+          <span class="badge badge-green">${activeTenantsCount}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: var(--text-muted);">Suspended:</span>
+          <span class="badge badge-red">${suspendedTenantsCount}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: var(--text-muted);">Online Thin Clients:</span>
+          <strong style="color: #6ee7b7; font-family: 'JetBrains Mono', monospace;">${totalOnline} / ${totalClients}</strong>
+        </div>
+      </div>
+
+      <div class="sub-section-title" style="margin-top: 16px;">Privacy Invariant</div>
+      <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); line-height: 1.5;">
+        Super Admins cannot access any school's internal console or telemetry except for <code>demo</code>. School data isolation is enforced at the edge D1 layer.
+      </div>
+    `;
+  } else if (activeTab === "approvals") {
+    subPanelTitle = "Approvals Queue";
+    subPanelSubtitle = "Domain review & routing";
+    subPanelHtml = `
+      <div class="sub-section-title">Queue Status</div>
+      <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 8px; font-size: 13px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: var(--text-muted);">Subdomains Pending:</span>
+          <span class="badge ${pendingList.length > 0 ? "badge-yellow" : "badge-green"}">${pendingList.length}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: var(--text-muted);">Custom Domains Pending:</span>
+          <span class="badge ${pendingCustomList.length > 0 ? "badge-yellow" : "badge-green"}">${pendingCustomList.length}</span>
+        </div>
+      </div>
+
+      <div class="sub-section-title" style="margin-top: 16px;">Approval Policy</div>
+      <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); line-height: 1.5;">
+        Approved subdomains immediately bind in edge routing. Custom domains require DNS CNAME records pointing to <code>${escapeHtml(baseDomain)}</code>.
+      </div>
+    `;
+  } else if (activeTab === "catalogs") {
+    subPanelTitle = "Translation Catalogs";
+    subPanelSubtitle = "Language & localization";
+    subPanelHtml = `
+      <div class="sub-section-title">Catalogs Overview</div>
+      <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 8px; font-size: 13px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: var(--text-muted);">Installed Languages:</span>
+          <span class="sub-action-badge">${catalogList.length}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="color: var(--text-muted);">Default Language:</span>
+          <span class="badge badge-blue">English (en-US)</span>
+        </div>
+      </div>
+
+      <div class="sub-section-title" style="margin-top: 16px;">Standard Locale Tags</div>
+      <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); line-height: 1.5;">
+        Catalogs follow BCP 47 language tags (e.g. <code>hi-IN</code>, <code>fr-FR</code>, <code>de-DE</code>, <code>es-ES</code>, <code>ar-SA</code>). Kiosk clients fetch translations dynamically at boot.
+      </div>
+    `;
+  } else {
+    subPanelTitle = "System Health";
+    subPanelSubtitle = "Diagnostics & audit logs";
+    subPanelHtml = `
+      <div class="sub-section-title">Quick Jump</div>
+      <div class="sub-action-list">
+        <a href="#platform-architecture" class="sub-action-item">
+          <span>Platform Architecture</span>
+        </a>
+        <a href="#platform-audit" class="sub-action-item">
+          <span>Platform Audit Logs</span>
+        </a>
+      </div>
+
+      <div class="sub-section-title" style="margin-top: 16px;">Edge Security</div>
+      <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); line-height: 1.5;">
+        Native Web Crypto PBKDF2 authentication with 100,000 iterations. Zero external runtime NPM packages. Immutable RAM overlay client OS.
+      </div>
+    `;
+  }
 
   // Each console tab renders on its own. The four panes used to be emitted
   // together and hidden with an inline `display`, except #pane-schools, which
@@ -391,7 +464,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   `;
 
   const systemPaneHtml = `
-      <div class="card">
+      <div class="card" id="platform-architecture">
         <h2 class="card-title">Platform Architecture &amp; Database Health</h2>
         <p class="card-sub">Cloudflare D1 edge database status and real-time operational telemetry.</p>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
@@ -809,8 +882,8 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
     brandHref: "/super",
     navItems,
     activeNavId: activeTab,
-    subPanelTitle: "Platform Governance",
-    subPanelSubtitle: "Global tenant administration",
+    subPanelTitle,
+    subPanelSubtitle,
     subPanelHtml,
     stats,
     userMeta: { name: "Super Admin", email: superAdminEmail, role: "Super Admin" },

@@ -47,13 +47,6 @@ export function buildPortalPage(options: AdminPageInput): AdminPageParts {
               <span class="badge ${tenant?.mode === "single_url" ? "badge-yellow" : "badge-green"}">${tenant?.mode === "single_url" ? "Single URL" : "App Grid"}</span>
             </div>
           </div>
-
-          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
-          <div class="sub-action-list">
-            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
-              <span>← Back to Workstations</span>
-            </a>
-          </div>
         `
   };
 }
