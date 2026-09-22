@@ -2311,6 +2311,29 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /id="teachers-tbody"/);
     assert.match(html, /id="teachers-count"/);
   });
+
+  test("Settings console renders tabbed panes and horizontal card grouping", async () => {
+    const res = await call("/admin/settings?tenant=greenwood", {
+      cookie: schoolSessionCookie
+    });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+
+    // 1. Context subpanel renders tab switching buttons (not scrolling anchor jumps)
+    assert.match(html, /data-action="tab-general"/);
+    assert.match(html, /data-action="tab-domains"/);
+    assert.match(html, /data-action="tab-homepage"/);
+    assert.match(html, /data-action="tab-security"/);
+
+    // 2. All 4 tab panes exist with horizontal 2-column card grouping
+    assert.match(html, /id="pane-general"/);
+    assert.match(html, /id="pane-domains"/);
+    assert.match(html, /id="pane-homepage"/);
+    assert.match(html, /id="pane-security"/);
+
+    // 3. Script wires window.labkioskSwitchTab
+    assert.match(html, /window\.labkioskSwitchTab = switchTab/);
+  });
 });
 
 /**
