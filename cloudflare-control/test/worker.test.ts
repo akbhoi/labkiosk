@@ -1838,6 +1838,35 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const superRes = await call("/admin", { cookie: superSessionCookie });
     assert.equal(superRes.status, 302);
     assert.equal(superRes.headers.get("Location"), "https://labkiosk.akbhoi.com/super");
+
+    // Super admin accessing school admin sub-routes (/admin/workstations, /admin/broadcast, etc.)
+    // without tenant query param -> 302 to demo school console (NOT to /super)
+    const superWorkstationsRes = await call("/admin/workstations", { cookie: superSessionCookie });
+    assert.equal(superWorkstationsRes.status, 302);
+    assert.equal(superWorkstationsRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/workstations?tenant=demo");
+
+    const superBroadcastRes = await call("/admin/broadcast", { cookie: superSessionCookie });
+    assert.equal(superBroadcastRes.status, 302);
+    assert.equal(superBroadcastRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/broadcast?tenant=demo");
+
+    // Super admin on dev host visiting /admin/workstations without tenant param -> 302 to ?tenant=demo
+    const devReq = new Request("http://localhost:8787/admin/workstations", {
+      headers: { Cookie: superSessionCookie, Host: "localhost:8787" }
+    });
+    const devRes = await worker.fetch(devReq, mockEnv);
+    assert.equal(devRes.status, 302);
+    assert.equal(devRes.headers.get("Location"), "http://localhost:8787/admin/workstations?tenant=demo");
+
+    // Super admin in demo console on apex domain preserves ?tenant=demo across all navigation links
+    const demoApexRes = await call("/admin?tenant=demo", { cookie: superSessionCookie });
+    assert.equal(demoApexRes.status, 200);
+    const demoApexHtml = await demoApexRes.text();
+    assert.match(demoApexHtml, /href="\/admin\/workstations\?tenant=demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/broadcast\?tenant=demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/portal\?tenant=demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/whitelist\?tenant=demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/teachers\?tenant=demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/settings\?tenant=demo"/);
   });
 
   test("Renders all dedicated multi-page school admin sub-routes with CSP nonces", async () => {

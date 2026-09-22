@@ -149,7 +149,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
 - Authoritative state (broadcasts, credentials, sessions) resides in D1, not isolate memory.
 - Every endpoint is strictly guarded via `guard.ts`: `resolveTenant()`, `requireTenantAdmin()`, `requireSuperAdmin()`, `requireDevice()`, and `rejectCrossSiteMutation()`.
-- Super admins are restricted from accessing any school's admin console, telemetry, or VNC remote desktop *except* for the dedicated `demo` school tenant to ensure school data privacy.
+- Super admins are restricted from accessing any school's admin console, telemetry, or VNC remote desktop *except* for the dedicated `demo` school tenant to ensure school data privacy. Accessing school admin sub-routes (`/admin/workstations`, `/admin/broadcast`, etc.) as super admin routes directly to the `demo` school console (`?tenant=demo`) rather than bouncing to `/super`, and all internal console links preserve `?tenant=<subdomain>` when rendered outside the dedicated school subdomain. Full access permissions (`*`) are guaranteed for super admins on the `demo` tenant.
 - School admins can delegate functions to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`).
 
 ### Rule 4b: Left-Side Multi-Level Panels Design & Seamless Transitions

@@ -117,7 +117,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const allRows = tenants
     .map((t) => {
       const isDemo = t.subdomain === "demo";
-      const href = `/admin?tenant=${encodeURIComponent(t.subdomain)}`;
+      const href = `/admin/workstations?tenant=${encodeURIComponent(t.subdomain)}`;
       return `
     <tr>
       <td>

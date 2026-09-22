@@ -26,7 +26,13 @@ const DEV_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "host.d
  */
 export function hostname(request: Request): string {
   const header = request.headers.get("host");
-  if (header) return header.split(":")[0].toLowerCase();
+  if (header) {
+    if (header.startsWith("[")) {
+      const closing = header.indexOf("]");
+      if (closing !== -1) return header.slice(0, closing + 1).toLowerCase();
+    }
+    return header.split(":")[0].toLowerCase();
+  }
   try {
     return new URL(request.url).hostname.toLowerCase();
   } catch {
@@ -35,7 +41,13 @@ export function hostname(request: Request): string {
 }
 
 export function isDevHost(request: Request): boolean {
-  return DEV_HOSTS.has(hostname(request));
+  const host = hostname(request);
+  if (DEV_HOSTS.has(host)) return true;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return false;
 }
 
 export function jsonError(message: string, status: number, headers: Record<string, string>): Response {

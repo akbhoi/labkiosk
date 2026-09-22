@@ -49,6 +49,12 @@ export interface DashboardOptions {
    * "production", the parameter was dropped, and every call answered 400.
    */
   isDevHost?: boolean;
+  /**
+   * Explicit override indicating whether navigation links must preserve ?tenant=<subdomain>
+   * (e.g. when accessing the console on the apex domain or another host where the host
+   * itself does not carry the tenant subdomain).
+   */
+  needsTenantParam?: boolean;
   nonce: string;
 }
 
@@ -77,7 +83,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   const labName = tenant?.name || "School Computer Lab";
   const subdomain = tenant?.subdomain || "demo";
   const isDev = options.isDevHost === true || !baseDomain;
-  const tenantParam = isDev ? `?tenant=${encodeURIComponent(subdomain)}` : "";
+  const needsTenantParam = options.needsTenantParam !== undefined ? options.needsTenantParam : isDev;
+  const tenantParam = needsTenantParam ? `?tenant=${encodeURIComponent(subdomain)}` : "";
 
   const userPermissions = options.userPermissions || currentUser?.permissions || ["*"];
 

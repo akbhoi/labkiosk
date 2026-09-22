@@ -2308,6 +2308,15 @@ export default {
       const onApex = !isDev && env.DEFAULT_DOMAIN && hostname(request) === env.DEFAULT_DOMAIN.toLowerCase().replace(/^\./, "") && !explicitTenant;
       if (onApex) {
         if (session.role === "super_admin") {
+          // If the super admin requested a specific school admin sub-route (/admin/workstations, /admin/broadcast, etc.),
+          // they are accessing the demo school console (the only school console a platform admin may open).
+          // Redirect them to the demo console sub-route instead of bouncing them to /super.
+          if (path !== "/admin") {
+            return Response.redirect(
+              `${url.origin}${path}?tenant=${encodeURIComponent(SUPER_ADMIN_TENANT_SLUG)}`,
+              302
+            );
+          }
           return Response.redirect(`${url.origin}/super`, 302);
         }
         if (session.tenant_id) {
@@ -2334,6 +2343,14 @@ export default {
             );
           }
         }
+      }
+
+      // Land a super admin on the demo school console when visiting /admin/* without a tenant on dev.
+      if (!currentTenant && session.role === "super_admin" && path !== "/admin") {
+        return Response.redirect(
+          `${url.origin}${path}?tenant=${encodeURIComponent(SUPER_ADMIN_TENANT_SLUG)}`,
+          302
+        );
       }
 
       const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
@@ -2375,7 +2392,9 @@ export default {
       else if (path === "/admin/teachers") activePage = "teachers";
       else if (path === "/admin/settings") activePage = "settings";
 
-      const userPerms = await getTenantUserPermissions(db, tenant.id, session.user_id);
+      const userPerms = session.role === "super_admin"
+        ? ["*"]
+        : await getTenantUserPermissions(db, tenant.id, session.user_id);
       const hasAccess = userPerms.includes("*") || userPerms.includes(activePage);
 
       if (!hasAccess) {
@@ -2423,6 +2442,12 @@ export default {
         whitelist
       };
 
+      const host = hostname(request);
+      const isTenantHost =
+        host === `${tenant.subdomain}.${baseDomain}`.toLowerCase() ||
+        (tenant.custom_domain && host === tenant.custom_domain.toLowerCase());
+      const needsTenantParam = isDev || (tenant.subdomain === SUPER_ADMIN_TENANT_SLUG && !isTenantHost);
+
       return new Response(
         renderDashboardHtml({
           config,
@@ -2435,6 +2460,7 @@ export default {
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
           userPermissions: userPerms,
           isDevHost: isDev,
+          needsTenantParam,
           nonce
         }),
         { headers: htmlHeaders }
