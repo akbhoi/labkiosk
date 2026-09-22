@@ -26,7 +26,7 @@ function renderAppsWebSubPanelHtml(
   tenant: Tenant | undefined,
   config: LabConfig,
   sites: PortalSite[],
-  presets: BroadcastPreset[],
+  _presets: BroadcastPreset[],
   tenantParam: string
 ): string {
   const activeUrl = tenant?.broadcast_url;
@@ -55,107 +55,29 @@ function renderAppsWebSubPanelHtml(
       </button>
     </div>
 
-    <!-- Broadcast Context Tools -->
-    <div data-tab-content="broadcast">
-      <div class="sub-section-title" style="margin-top: 14px;">Active Lesson Status</div>
-      <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); margin-bottom: 12px;">
-        <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Current Broadcast URL</div>
-        <div style="font-size: 12px; font-weight: 700; color: #93c5fd; margin-top: 4px; word-break: break-all; font-family: 'JetBrains Mono', monospace;" id="sub-active-url">${escapeHtml(activeUrl || "None (Student Portal Active)")}</div>
-      </div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item" id="sub-btn-reset-portal" data-action="quick-reset-portal">
-          <span style="display: flex; align-items: center; gap: 8px;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-            Clear / Release to Portal
-          </span>
-        </button>
-      </div>
-
-      <div class="sub-section-title" style="margin-top: 14px;">Quick Presets</div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item" data-preset="https://scratch.mit.edu">
-          <span>Scratch Programming</span>
-        </button>
-        <button type="button" class="sub-action-item" data-preset="https://phet.colorado.edu">
-          <span>PhET Simulations</span>
-        </button>
-        <button type="button" class="sub-action-item" data-preset="https://www.khanacademy.org">
-          <span>Khan Academy</span>
-        </button>
-        <button type="button" class="sub-action-item" data-preset="https://en.wikipedia.org">
-          <span>Wikipedia</span>
-        </button>
-        ${presets
-          .map(
-            (p) => `
-          <button type="button" class="sub-action-item" data-preset="${escapeAttr(p.url)}">
-            <span>${escapeHtml(p.title)}</span>
-          </button>
-        `
-          )
-          .join("")}
-      </div>
+    <div class="sub-section-title" style="margin-top: 18px;">Quick Actions</div>
+    <div class="sub-action-list">
+      <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
+        <span style="display: flex; align-items: center; gap: 8px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          Preview Student Portal
+        </span>
+      </a>
     </div>
 
-    <!-- Portal Context Tools -->
-    <div data-tab-content="portal" style="display: none;">
-      <div class="sub-section-title" style="margin-top: 14px;">Portal Actions</div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item" data-focus="app-title">
-          <span style="display: flex; align-items: center; gap: 8px;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Add App Card
-          </span>
-        </button>
-        <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
-          <span style="display: flex; align-items: center; gap: 8px;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            Preview Student Portal
-          </span>
-        </a>
+    <div class="sub-section-title" style="margin-top: 18px;">Module Summary</div>
+    <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 13px;">
+      <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+        <span style="color: var(--text-muted);">Total Apps:</span>
+        <strong>${sites.length}</strong>
       </div>
-
-      <div class="sub-section-title" style="margin-top: 14px;">Portal Summary</div>
-      <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 13px;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-          <span style="color: var(--text-muted);">Total Apps:</span>
-          <strong>${sites.length}</strong>
-        </div>
-        <div style="display: flex; justify-content: space-between;">
-          <span style="color: var(--text-muted);">Current Mode:</span>
-          <span class="badge ${tenant?.mode === "single_url" ? "badge-yellow" : "badge-green"}">${tenant?.mode === "single_url" ? "Single URL" : "App Grid"}</span>
-        </div>
+      <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+        <span style="color: var(--text-muted);">Allowed Domains:</span>
+        <strong>${config.whitelist.length}</strong>
       </div>
-    </div>
-
-    <!-- Allowlist Context Tools -->
-    <div data-tab-content="whitelist" style="display: none;">
-      <div class="sub-section-title" style="margin-top: 14px;">Firewall Actions</div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item" data-focus="domain-input">
-          <span style="display: flex; align-items: center; gap: 8px;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Add Domain
-          </span>
-        </button>
-      </div>
-
-      <div class="sub-section-title" style="margin-top: 14px;">Quick Presets</div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item" data-quick-domain="scratch.mit.edu">
-          <span>+ scratch.mit.edu</span>
-        </button>
-        <button type="button" class="sub-action-item" data-quick-domain="phet.colorado.edu">
-          <span>+ phet.colorado.edu</span>
-        </button>
-        <button type="button" class="sub-action-item" data-quick-domain="khanacademy.org">
-          <span>+ khanacademy.org</span>
-        </button>
-      </div>
-
-      <div class="sub-section-title" style="margin-top: 14px;">Policy Info</div>
-      <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.4;">
-        Permitted domains are merged into Chromium's enterprise managed policy (<code>URLAllowlist</code>) upon each 3-second heartbeat.
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Broadcast:</span>
+        <span class="badge ${activeUrl ? "badge-green" : "badge-yellow"}">${activeUrl ? "Active" : "Portal"}</span>
       </div>
     </div>
   `;
@@ -234,25 +156,6 @@ function renderAppsWebContentHtml(
         <h1 class="page-title">Apps &amp; Web Control</h1>
         <p class="page-desc">Manage curriculum applications, synchronize live broadcast lessons, and configure allowed web domains.</p>
       </div>
-      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-        <div class="segmented-nav" id="apps-web-tabs" role="tablist">
-          <button type="button" class="segmented-tab active" data-tab="broadcast" role="tab" aria-selected="true" id="tab-btn-broadcast">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
-            Lesson Broadcast
-          </button>
-          <button type="button" class="segmented-tab" data-tab="portal" role="tab" aria-selected="false" id="tab-btn-portal">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-            Student Portal (${sites.length})
-          </button>
-          <button type="button" class="segmented-tab" data-tab="whitelist" role="tab" aria-selected="false" id="tab-btn-whitelist">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-            Domain Allowlist (${config.whitelist.length})
-          </button>
-        </div>
-        <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Preview Student Portal">
-          Preview Student Portal &rarr;
-        </a>
-      </div>
     </div>
 
     <!-- ============================================================== -->
@@ -305,6 +208,53 @@ function renderAppsWebContentHtml(
 
         <div>
           <div class="card">
+            <h2 class="card-title">Standard Educational Presets</h2>
+            <p class="card-sub">Instant 1-click broadcast of vetted interactive learning tools.</p>
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">🎨</span>
+                  <div>
+                    <div style="font-size: 13px; font-weight: 600;">Scratch Programming</div>
+                    <div style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">scratch.mit.edu</div>
+                  </div>
+                </div>
+                <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="https://scratch.mit.edu">Broadcast</button>
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">🔬</span>
+                  <div>
+                    <div style="font-size: 13px; font-weight: 600;">PhET Interactive Simulations</div>
+                    <div style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">phet.colorado.edu</div>
+                  </div>
+                </div>
+                <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="https://phet.colorado.edu">Broadcast</button>
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">📐</span>
+                  <div>
+                    <div style="font-size: 13px; font-weight: 600;">Khan Academy</div>
+                    <div style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">khanacademy.org</div>
+                  </div>
+                </div>
+                <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="https://www.khanacademy.org">Broadcast</button>
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">📚</span>
+                  <div>
+                    <div style="font-size: 13px; font-weight: 600;">Wikipedia Encyclopedia</div>
+                    <div style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">wikipedia.org</div>
+                  </div>
+                </div>
+                <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="https://en.wikipedia.org">Broadcast</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top: 20px;">
             <h2 class="card-title">Custom Lesson Presets &amp; Shortcuts</h2>
             <p class="card-sub">Saved bookmarks for recurring classroom activities and exams.</p>
 
@@ -332,6 +282,16 @@ function renderAppsWebContentHtml(
     <!-- TAB 2: STUDENT PORTAL APPS                                    -->
     <!-- ============================================================== -->
     <div class="tab-pane" id="pane-portal">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 14px; color: var(--text-muted);">Current Mode:</span>
+          <span class="badge ${tenant?.mode === "single_url" ? "badge-yellow" : "badge-green"}">${tenant?.mode === "single_url" ? "Single URL Lockdown" : "App Grid Launcher"}</span>
+        </div>
+        <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Preview Student Portal">
+          Preview Student Portal &rarr;
+        </a>
+      </div>
+
       <div class="grid-2col">
         <div>
           <div class="card">
@@ -418,6 +378,10 @@ function renderAppsWebContentHtml(
             <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px;" id="whitelist-tags-container">
               ${domainTagsHtml || `<p style="color: var(--text-muted); font-size: 13px;">No domains currently whitelisted.</p>`}
             </div>
+
+            <div style="margin-top: 20px; padding: 12px 14px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: var(--radius-sm); font-size: 12px; color: var(--text-muted); line-height: 1.5;">
+              <strong style="color: #93c5fd;">Enterprise Managed Policy:</strong> Permitted domains are merged into Chromium's managed policy (<code>URLAllowlist</code>) upon each 3-second workstation heartbeat.
+            </div>
           </div>
         </div>
       </div>
@@ -436,24 +400,10 @@ function renderAppsWebScripts(nonce: string): string {
           const validTabs = ["broadcast", "portal", "whitelist"];
           if (!validTabs.includes(tabId)) tabId = "broadcast";
 
-          // Update Top Segmented Tabs
-          const tabBtns = document.querySelectorAll("#apps-web-tabs .segmented-tab");
-          tabBtns.forEach(btn => {
-            const isMatch = btn.getAttribute("data-tab") === tabId;
-            btn.classList.toggle("active", isMatch);
-            btn.setAttribute("aria-selected", isMatch ? "true" : "false");
-          });
-
           // Update Subpanel Tabs
           const subBtns = document.querySelectorAll("#sub-tab-list .sub-action-item");
           subBtns.forEach(btn => {
             btn.classList.toggle("active", btn.getAttribute("data-action") === "tab-" + tabId);
-          });
-
-          // Update Subpanel Content Sections
-          const subContents = document.querySelectorAll("[data-tab-content]");
-          subContents.forEach(el => {
-            el.style.display = el.getAttribute("data-tab-content") === tabId ? "block" : "none";
           });
 
           // Update Tab Panes
@@ -475,11 +425,6 @@ function renderAppsWebScripts(nonce: string): string {
         // Initialize Tab from URL
         const initialTab = new URLSearchParams(window.location.search).get("tab") || "broadcast";
         switchTab(initialTab);
-
-        // Top tab click listeners
-        document.querySelectorAll("#apps-web-tabs [data-tab]").forEach(btn => {
-          btn.addEventListener("click", () => switchTab(btn.getAttribute("data-tab")));
-        });
 
         // -------------------------------------------------------------
         // Broadcast Form
