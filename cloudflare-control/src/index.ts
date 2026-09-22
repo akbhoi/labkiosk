@@ -36,6 +36,10 @@ import {
   upsertClientDevice,
   listClientDevices,
   deleteClientDevice,
+  listWorkstationGroups,
+  createWorkstationGroup,
+  deleteWorkstationGroup,
+  assignClientsToGroup,
   enqueueCommand,
   popCommandsForClient,
   purgeExpiredCommands,
@@ -2054,14 +2058,15 @@ export default {
           lastSeen: new Date(row.last_seen * 1000).toISOString(),
           online: now - row.last_seen < 12,
           vncPassword: row.vnc_password || undefined,
-          remoteHost: row.remote_host || undefined
+          remoteHost: row.remote_host || undefined,
+          groupName: row.group_name || undefined
         };
       }
 
       for (const [id, cached] of Object.entries(cache)) {
         const existing = clientsWithStatus[id];
         if (!existing || cached.timestamp >= existing.timestamp) {
-          clientsWithStatus[id] = { ...cached, online: now - cached.timestamp < 12 };
+          clientsWithStatus[id] = { ...cached, groupName: existing?.groupName, online: now - cached.timestamp < 12 };
         }
       }
 
@@ -2103,19 +2108,111 @@ export default {
       }
     }
 
+    // POST /api/clients/group: Assign workstations to a group
+    if (path === "/api/clients/group" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      try {
+        const body = await request.json<{ clientIds: string[]; groupName: string | null }>();
+        if (!Array.isArray(body.clientIds) || !body.clientIds.length) {
+          return jsonError("Client IDs array required", 400, jsonHeaders);
+        }
+        const clientIds = body.clientIds.map((c) => String(c || "").trim()).filter(Boolean);
+        const groupName = body.groupName ? String(body.groupName).trim().slice(0, 50) : null;
+
+        await assignClientsToGroup(db, currentTenant!.id, clientIds, groupName);
+
+        const cache = tenantTelemetryCache[currentTenant!.id] || {};
+        for (const cid of clientIds) {
+          if (cache[cid]) cache[cid].groupName = groupName || undefined;
+        }
+
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: session!.user_id,
+          action: "group.assign",
+          details: `clients=${clientIds.join(",")} group=${groupName || "none"}`
+        });
+
+        return new Response(JSON.stringify({ status: "ok", count: clientIds.length }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Assign group failed:", err);
+        return jsonError("Could not assign clients to group", 400, jsonHeaders);
+      }
+    }
+
+    // GET /api/groups: List groups for current school tenant
+    if (path === "/api/groups" && method === "GET") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+
+      const groups = await listWorkstationGroups(db, currentTenant!.id);
+      return new Response(JSON.stringify({ groups }), { headers: jsonHeaders });
+    }
+
+    // POST /api/groups: Create a new workstation group
+    if (path === "/api/groups" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+
+      try {
+        const body = await request.json<{ name: string }>();
+        const name = String(body.name || "").trim().slice(0, 50);
+        if (!name) return jsonError("Group name is required", 400, jsonHeaders);
+
+        const group = await createWorkstationGroup(db, currentTenant!.id, name);
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: session!.user_id,
+          action: "group.create",
+          details: `name=${name} id=${group.id}`
+        });
+
+        return new Response(JSON.stringify({ status: "ok", group }), { headers: jsonHeaders });
+      } catch (err: any) {
+        console.error("[Worker] Create group failed:", err);
+        return jsonError("Could not create workstation group", 400, jsonHeaders);
+      }
+    }
+
+    // DELETE /api/groups/:id: Delete a workstation group
+    if (path.startsWith("/api/groups/") && method === "DELETE") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+
+      const groupId = path.slice("/api/groups/".length).trim();
+      if (!groupId) return jsonError("Group ID is required", 400, jsonHeaders);
+
+      await deleteWorkstationGroup(db, currentTenant!.id, groupId);
+      await writeAuditLog(db, {
+        tenantId: currentTenant!.id,
+        userId: session!.user_id,
+        action: "group.delete",
+        details: `id=${groupId}`
+      });
+
+      return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+    }
+
     // POST /api/command: Remote command dispatch
     if (path === "/api/command" && method === "POST") {
       try {
         const body = await request.json<{
-          target: string;
+          target?: string;
+          targets?: string[];
           action: string;
           url?: string;
           message?: string;
         }>();
 
-        const target = String(body.target || "").trim();
+        const rawTargets = Array.isArray(body.targets)
+          ? (body.targets as unknown[]).map((t) => String(t || "").trim()).filter(Boolean)
+          : [];
+        const singleTarget = String(body.target || "").trim();
+        const targets = rawTargets.length > 0 ? rawTargets : (singleTarget ? [singleTarget] : []);
+
         const action = String(body.action || "").trim();
-        if (!target || !action) {
+        if (targets.length === 0 || !action) {
           return jsonError("Target and action required", 400, jsonHeaders);
         }
         if (!ALLOWED_COMMANDS.has(action)) {
@@ -2146,7 +2243,7 @@ export default {
 
             if (commandUrl === portalUrl) {
               await updateTenant(db, currentTenant!.id, { broadcast_url: null, broadcast_epoch: 0 });
-            } else if (target === "all") {
+            } else if (targets.includes("all")) {
               await updateTenant(db, currentTenant!.id, { broadcast_url: commandUrl, broadcast_epoch: commandEpoch });
             }
           }
@@ -2159,23 +2256,28 @@ export default {
           ? (currentTenant!.default_lock_message || "Screens locked by the instructor. Please look to the front.")
           : undefined;
 
-        const cmdId = await enqueueCommand(db, {
-          tenantId,
-          target,
-          action: action as any,
-          url: commandUrl,
-          epoch: commandEpoch,
-          message: lockMsg
-        });
+        const cmdIds: string[] = [];
+        const cache = tenantTelemetryCache[tenantId] || {};
+        const isLock = action === "lock";
+        const isUnlock = action === "unlock";
 
-        // Reflect lock state immediately so the console does not wait a heartbeat.
-        if (action === "lock" || action === "unlock") {
-          const isLock = action === "lock";
-          const cache = tenantTelemetryCache[tenantId] || {};
-          if (target === "all") {
-            for (const c of Object.values(cache)) c.isLocked = isLock;
-          } else if (cache[target]) {
-            cache[target].isLocked = isLock;
+        for (const target of targets) {
+          const cmdId = await enqueueCommand(db, {
+            tenantId,
+            target,
+            action: action as any,
+            url: commandUrl,
+            epoch: commandEpoch,
+            message: lockMsg
+          });
+          cmdIds.push(cmdId);
+
+          if (isLock || isUnlock) {
+            if (target === "all") {
+              for (const c of Object.values(cache)) c.isLocked = isLock;
+            } else if (cache[target]) {
+              cache[target].isLocked = isLock;
+            }
           }
         }
 
@@ -2183,13 +2285,13 @@ export default {
           tenantId,
           userId: session!.user_id,
           action: `command.${action}`,
-          details: `target=${target}${commandUrl ? ` url=${commandUrl}` : ""}`
+          details: `targets=${targets.join(",")}${commandUrl ? ` url=${commandUrl}` : ""}`
         });
 
         // Opportunistic housekeeping; command rows are short-lived by design.
         await purgeExpiredCommands(db);
 
-        return new Response(JSON.stringify({ status: "ok", commandId: cmdId }), { headers: jsonHeaders });
+        return new Response(JSON.stringify({ status: "ok", commandId: cmdIds[0], commandIds: cmdIds, count: cmdIds.length }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Command dispatch failed:", err);
         return jsonError("Could not dispatch this command", 400, jsonHeaders);
@@ -2422,13 +2524,14 @@ export default {
         );
       }
 
-      const [portalSites, broadcastPresets, whitelist, teachers, user, tenantUser] = await Promise.all([
+      const [portalSites, broadcastPresets, whitelist, teachers, user, tenantUser, workstationGroups] = await Promise.all([
         listPortalSites(db, tenant.id),
         listBroadcastPresets(db, tenant.id),
         buildEffectiveWhitelist(db, tenant.id),
         listTenantUsers(db, tenant.id),
         findUserById(db, session.user_id),
-        getTenantUser(db, tenant.id, session.user_id)
+        getTenantUser(db, tenant.id, session.user_id),
+        listWorkstationGroups(db, tenant.id)
       ]);
       const userRole = session.role === "super_admin"
         ? "super_admin"
@@ -2456,6 +2559,7 @@ export default {
           baseDomain,
           presets: broadcastPresets,
           teachers,
+          groups: workstationGroups,
           activePage,
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
           userPermissions: userPerms,

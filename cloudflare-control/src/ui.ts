@@ -7,7 +7,7 @@
  * file, and what is left here is the routing between them.
  */
 
-import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser } from "./types";
+import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import {
   AdminPageInput,
@@ -37,6 +37,7 @@ export interface DashboardOptions {
   baseDomain?: string;
   presets?: BroadcastPreset[];
   teachers?: TenantUser[];
+  groups?: WorkstationGroup[];
   activePage?: AdminPageId;
   currentUser?: { name: string; email?: string; role: string; permissions?: string[] };
   userPermissions?: string[];
@@ -145,6 +146,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     sites,
     presets,
     teachers,
+    groups: options.groups || [],
     baseDomain,
     tenantParam,
     nonce

@@ -17,7 +17,8 @@ import {
   AuditLogEntry,
   BroadcastPreset,
   TenantUser,
-  TenantUserRole
+  TenantUserRole,
+  WorkstationGroup
 } from "./types";
 import {
   hashPassword,
@@ -102,6 +103,7 @@ CREATE TABLE IF NOT EXISTS client_devices (
   thumbnail TEXT,
   vnc_password TEXT,
   remote_host TEXT,
+  group_name TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -185,6 +187,13 @@ CREATE TABLE IF NOT EXISTS tenant_users (
   UNIQUE (tenant_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS workstation_groups (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
@@ -202,6 +211,7 @@ CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(ten
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_user ON tenant_users(user_id);
+CREATE INDEX IF NOT EXISTS idx_workstation_groups_tenant ON workstation_groups(tenant_id);
 `;
 
 /**
@@ -323,6 +333,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT remote_host FROM client_devices LIMIT 1").run();
     await db.prepare("SELECT home_route FROM tenants LIMIT 1").run();
     await db.prepare("SELECT role FROM tenant_users LIMIT 1").run();
+    await db.prepare("SELECT group_name FROM client_devices LIMIT 1").run();
+    await db.prepare("SELECT name FROM workstation_groups LIMIT 1").run();
   } catch (err: any) {
     throw new Error(
       "The D1 database is missing the current schema. Run `wrangler d1 migrations apply labkiosk-db --remote` (or `--local` for `wrangler dev`) before starting the worker. " +
@@ -1144,6 +1156,73 @@ export async function deleteClientDevice(
   await db
     .prepare("DELETE FROM client_devices WHERE tenant_id = ? AND client_id = ?")
     .bind(tenantId, clientId)
+    .run();
+}
+
+export async function listWorkstationGroups(
+  db: D1Database,
+  tenantId: string
+): Promise<WorkstationGroup[]> {
+  const res = await db
+    .prepare("SELECT * FROM workstation_groups WHERE tenant_id = ? ORDER BY name ASC")
+    .bind(tenantId)
+    .all<WorkstationGroup>();
+
+  return res.results || [];
+}
+
+export async function createWorkstationGroup(
+  db: D1Database,
+  tenantId: string,
+  name: string
+): Promise<WorkstationGroup> {
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare("INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES (?, ?, ?, ?)")
+    .bind(id, tenantId, name, now)
+    .run();
+
+  return { id, tenant_id: tenantId, name, created_at: now };
+}
+
+export async function deleteWorkstationGroup(
+  db: D1Database,
+  tenantId: string,
+  groupId: string
+): Promise<void> {
+  const group = await db
+    .prepare("SELECT name FROM workstation_groups WHERE id = ? AND tenant_id = ?")
+    .bind(groupId, tenantId)
+    .first<{ name: string }>();
+
+  if (group) {
+    await db
+      .prepare("UPDATE client_devices SET group_name = NULL WHERE tenant_id = ? AND group_name = ?")
+      .bind(tenantId, group.name)
+      .run();
+  }
+
+  await db
+    .prepare("DELETE FROM workstation_groups WHERE id = ? AND tenant_id = ?")
+    .bind(groupId, tenantId)
+    .run();
+}
+
+export async function assignClientsToGroup(
+  db: D1Database,
+  tenantId: string,
+  clientIds: string[],
+  groupName: string | null
+): Promise<void> {
+  if (!clientIds.length) return;
+  const placeholders = clientIds.map(() => "?").join(",");
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      `UPDATE client_devices SET group_name = ?, updated_at = ? WHERE tenant_id = ? AND client_id IN (${placeholders})`
+    )
+    .bind(groupName, now, tenantId, ...clientIds)
     .run();
 }
 

@@ -104,8 +104,16 @@ export interface ClientDevice {
   vnc_password?: string | null;
   /** Hostname the workstation's noVNC gateway is reachable on (Cloudflare Tunnel). */
   remote_host?: string | null;
+  group_name?: string | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface WorkstationGroup {
+  id: string;
+  tenant_id: string;
+  name: string;
+  created_at: number;
 }
 
 export interface DeviceToken {
@@ -154,6 +162,7 @@ export interface ClientTelemetry {
   online?: boolean;
   vncPassword?: string;
   remoteHost?: string;
+  groupName?: string;
 }
 
 export interface RemoteCommand {

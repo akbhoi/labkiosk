@@ -2142,6 +2142,128 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const termsCsp = termsRes.headers.get("Content-Security-Policy") || "";
     assert.match(termsCsp, /script-src 'nonce-[^']+'/);
   });
+
+  test("Manages workstation groups and assigns client devices", async () => {
+    // 0. Enrol PC-01 and report initial telemetry
+    const enrollRes = await callJson("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-01" }),
+      headers: { "CF-Connecting-IP": "198.51.100.99" }
+    });
+    assert.equal(enrollRes.res.status, 200);
+    deviceToken = enrollRes.data.deviceToken;
+    await callJson("/api/telemetry", {
+      ...json({ activeUrl: "https://khanacademy.org" }),
+      bearer: deviceToken
+    });
+
+    // 1. Create a group
+    const { res: createRes, data: createData } = await callJson("/api/groups?tenant=greenwood", {
+      ...json({ name: "Row 1" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(createRes.status, 200);
+    assert.equal(createData.status, "ok");
+    assert.equal(createData.group.name, "Row 1");
+    const groupId = createData.group.id;
+
+    // 2. List groups
+    const { res: listRes, data: listData } = await callJson("/api/groups?tenant=greenwood", {
+      cookie: schoolSessionCookie
+    });
+    assert.equal(listRes.status, 200);
+    assert.ok(listData.groups.some((g: any) => g.id === groupId && g.name === "Row 1"));
+
+    // 3. Assign client PC-01 to "Row 1"
+    const { res: assignRes, data: assignData } = await callJson("/api/clients/group?tenant=greenwood", {
+      ...json({ clientIds: ["PC-01"], groupName: "Row 1" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(assignRes.status, 200);
+    assert.equal(assignData.status, "ok");
+
+    // 4. Verify client list includes groupName
+    const { res: clientsRes, data: clientsData } = await callJson("/api/clients?tenant=greenwood", {
+      cookie: schoolSessionCookie
+    });
+    assert.equal(clientsRes.status, 200);
+    assert.equal(clientsData.clients["PC-01"].groupName, "Row 1");
+
+    // 5. Delete group and verify client group is unassigned
+    const { res: delRes, data: delData } = await callJson(`/api/groups/${groupId}?tenant=greenwood`, {
+      method: "DELETE",
+      cookie: schoolSessionCookie
+    });
+    assert.equal(delRes.status, 200);
+    assert.equal(delData.status, "ok");
+
+    const { data: clientsAfterDel } = await callJson("/api/clients?tenant=greenwood", {
+      cookie: schoolSessionCookie
+    });
+    assert.equal(clientsAfterDel.clients["PC-01"].groupName, undefined);
+  });
+
+  test("Dispatches batch commands across multiple selected workstation targets", async () => {
+    // Enrol PC-02
+    const enrollRes2 = await callJson("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-02" }),
+      headers: { "CF-Connecting-IP": "198.51.100.98" }
+    });
+    assert.equal(enrollRes2.res.status, 200);
+    const token2 = enrollRes2.data.deviceToken;
+    await callJson("/api/telemetry", {
+      ...json({ activeUrl: "https://khanacademy.org" }),
+      bearer: token2
+    });
+
+    const { res, data } = await callJson("/api/command?tenant=greenwood", {
+      ...json({
+        targets: ["PC-01", "PC-02"],
+        action: "lock",
+        message: "Exam in progress"
+      }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.status, "ok");
+    assert.equal(data.count, 2);
+    assert.equal(data.commandIds.length, 2);
+
+    // Verify both PC-01 and PC-02 receive the lock command on their next telemetry heartbeat
+    const pc1Telem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    const pc2Telem = await callJson("/api/telemetry", { ...json({}), bearer: token2 });
+
+    const pc1Lock = pc1Telem.data.commands.find((c: any) => c.action === "lock");
+    const pc2Lock = pc2Telem.data.commands.find((c: any) => c.action === "lock");
+
+    assert.ok(pc1Lock, "PC-01 must receive the lock command");
+    assert.equal(pc1Lock.message, "Exam in progress");
+    assert.ok(pc2Lock, "PC-02 must receive the lock command");
+    assert.equal(pc2Lock.message, "Exam in progress");
+  });
+
+  test("Workstations console sidebar renders Workstation Groups and removes duplicate commands", async () => {
+    const res = await call("/admin/workstations?tenant=greenwood", { cookie: schoolSessionCookie });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+
+    // Verify sidebar has Workstation Groups
+    assert.match(html, /Workstation Groups/);
+    assert.match(html, /data-filter="group:all"/);
+    assert.match(html, /data-filter="group:__ungrouped__"/);
+    assert.match(html, /data-action="new-group"/);
+
+    // Verify duplicate "Classroom Commands" block is absent from sidebar
+    assert.ok(!html.includes("Classroom Commands"));
+    assert.ok(!html.includes("data-action=\"open-lock-all\""));
+
+    // Verify toolbar has Select All and targeted buttons
+    assert.match(html, /id="btn-select-all"/);
+    assert.match(html, /id="selection-summary"/);
+    assert.match(html, /id="btn-move-group"/);
+    assert.match(html, /id="btn-lock-label">Lock</);
+    assert.match(html, /id="btn-unlock-label">Unlock</);
+    assert.match(html, /id="btn-reboot-label">Reboot</);
+  });
 });
 
 /**

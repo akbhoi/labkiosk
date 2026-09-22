@@ -7,7 +7,7 @@
  * now owns its own panel.
  */
 
-import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser } from "./types";
+import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { escapeAttr, escapeJson } from "./escape";
 
 /** Everything a page builder is handed. */
@@ -17,6 +17,7 @@ export interface AdminPageInput {
   sites: PortalSite[];
   presets: BroadcastPreset[];
   teachers: TenantUser[];
+  groups?: WorkstationGroup[];
   baseDomain: string;
   /** `?tenant=<slug>` on a dev host, empty in production. See Rule 5e. */
   tenantParam: string;
@@ -189,6 +190,14 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
           else if (action === "open-reboot-all") runToolbarAction("btn-reboot-all");
           // The broadcast page calls the same thing "Stop Broadcast".
           else if (action === "reset-portal" || action === "quick-reset-portal") runToolbarAction("btn-reset-portal", "btn-stop-broadcast");
+          else if (action === "new-group") {
+            if (typeof window.labkioskOpenNewGroupDialog === "function") window.labkioskOpenNewGroupDialog();
+          }
+          else if (action === "delete-group") {
+            var gid = target.getAttribute("data-id");
+            var gname = target.getAttribute("data-name");
+            if (typeof window.labkioskDeleteGroup === "function") window.labkioskDeleteGroup(gid, gname);
+          }
         });
 
         // Pages other than the grid cannot filter anything; leave the buttons out

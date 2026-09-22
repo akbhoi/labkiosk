@@ -945,6 +945,97 @@ ${rootTokensCss()}
       margin-bottom: 8px;
     }
 
+    /* Workstation Groups and Section Dividers */
+    .group-section {
+      grid-column: 1 / -1;
+      width: 100%;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    .group-section-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-subtle);
+      cursor: pointer;
+      user-select: none;
+    }
+    .group-section.collapsed .group-section-header {
+      border-bottom: none;
+    }
+    .group-collapse-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px 4px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .group-chevron {
+      transition: transform 0.2s ease;
+    }
+    .group-section.collapsed .group-chevron {
+      transform: rotate(-90deg);
+    }
+    .group-select-checkbox {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: var(--accent);
+    }
+    .group-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+    .group-count-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: var(--bg-base);
+      padding: 2px 8px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+    }
+    .group-cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 16px;
+      padding: 16px;
+    }
+    .group-section.collapsed .group-cards-grid {
+      display: none;
+    }
+    .kiosk-grid.compact .group-cards-grid {
+      grid-template-columns: 1fr;
+      gap: 8px;
+      padding: 10px;
+    }
+    .kc-select-checkbox {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: var(--accent);
+      margin-right: 4px;
+    }
+    .kiosk-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 14px var(--accent-glow);
+    }
+    .sub-action-group-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+
     /* A saved broadcast preset, and one allowed domain. */
     .preset-item {
       display: flex;

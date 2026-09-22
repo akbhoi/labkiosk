@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0007)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0009)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1 binding, hourly cron trigger
 ├── src/
@@ -81,6 +81,17 @@ cloudflare-control/
   `addEventListener`, completely avoiding inline event handlers.
 - Nothing tenant-specific may be put in a catalog, precisely because it is served to everyone.
 
+### Rule 2c: Workstation Groups & Batch Command Architecture
+- **Workstation Groups Table (`workstation_groups`)**: Tenants can organize client devices into named groups (e.g. "Row 1", "Lab A", "Physics"). Devices link via `client_devices.group_name`.
+- **Management Endpoints**:
+  - `GET /api/groups`: List workstation groups for the tenant.
+  - `POST /api/groups`: Create a new group (`{ name }`).
+  - `DELETE /api/groups/:id`: Delete group; sets member devices' `group_name` to `NULL`.
+  - `POST /api/clients/group`: Assign devices to a group (`{ clientIds: string[], groupName: string }`).
+- **Batch Command Dispatch (`POST /api/command`)**:
+  - Accepts `targets: string[]` (or legacy single `target: string`).
+  - Iterates targets and enqueues commands for each device, returning `{ status: "ok", count, commandIds }`.
+
 ### Rule 3: The Schema Has Two Homes
 - `migrations/` is what a deployed D1 database has; `SCHEMA_SQL` in `db.ts` builds the in-memory database that tests and local development use. Both must be changed together.
 - Add a **new** numbered migration file (e.g. `0006_feature.sql`); **never** edit an applied migration.
@@ -107,7 +118,11 @@ cloudflare-control/
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
   - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Broadcast, Portal Apps, Whitelist, Teachers, Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
-  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu. The Workstation toolbar contains direct classroom commands (`Broadcast URL`, `Lock All`, `Unlock All`, `Reset to Portal`, `Reboot All`) rather than cross-page navigation links.
+  - **Workstations Page Layout**:
+    - **Sidebar Subpanel**: Removed duplicate classroom commands. Dedicated to Workstation Groups management (`+ New Group`, member counts, filtering by group, and delete group actions).
+    - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted classroom actions (`Lock`, `Unlock`, `Reboot`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
+    - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, saving collapse states in `localStorage`.
+  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
   - **Transitions & Micro-Interactions**: Hardware-accelerated transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
 
 
