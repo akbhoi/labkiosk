@@ -116,8 +116,12 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
           Reset to Portal
         </button>
         <button type="button" class="btn btn-danger" id="btn-reboot-all" title="Reboot selected workstations (or all if none selected)">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           <span id="btn-reboot-label">Reboot</span>
+        </button>
+        <button type="button" class="btn btn-danger" id="btn-shutdown-all" title="Shutdown selected workstations (or all if none selected)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          <span id="btn-shutdown-label">Shutdown</span>
         </button>
         <button type="button" class="btn btn-secondary" id="btn-move-group" style="display: none;">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -380,6 +384,9 @@ function renderWorkstationsScripts(
 
         const rebootLabel = document.getElementById("btn-reboot-label");
         if (rebootLabel) rebootLabel.textContent = selCount ? "Reboot (" + selCount + ")" : "Reboot";
+
+        const shutdownLabel = document.getElementById("btn-shutdown-label");
+        if (shutdownLabel) shutdownLabel.textContent = selCount ? "Shutdown (" + selCount + ")" : "Shutdown";
 
         const moveBtn = document.getElementById("btn-move-group");
         if (moveBtn) moveBtn.style.display = selCount > 0 ? "inline-flex" : "none";
@@ -835,6 +842,18 @@ function renderWorkstationsScripts(
           tone: "danger"
         });
         if (agreed) sendCommand(targets, "reboot");
+      });
+
+      document.getElementById("btn-shutdown-all").addEventListener("click", async () => {
+        const targets = getSelectedOrAll(false);
+        if (!targets) return;
+        const agreed = await lkConfirm({
+          title: "Shutdown " + targets.length + " workstation(s)?",
+          message: "Selected student machines will power off completely. All transient data in the RAM overlay will reset, and machines must be powered back on physically.",
+          confirmLabel: "Shutdown",
+          tone: "danger"
+        });
+        if (agreed) sendCommand(targets, "shutdown");
       });
 
       document.getElementById("btn-open-broadcast").addEventListener("click", () => {

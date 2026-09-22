@@ -188,6 +188,7 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
           }
           else if (action === "open-unlock-all") runToolbarAction("btn-unlock-all");
           else if (action === "open-reboot-all") runToolbarAction("btn-reboot-all");
+          else if (action === "open-shutdown-all") runToolbarAction("btn-shutdown-all");
           // The broadcast page calls the same thing "Stop Broadcast".
           else if (action === "reset-portal" || action === "quick-reset-portal") runToolbarAction("btn-reset-portal", "btn-stop-broadcast");
           else if (action === "new-group") {

@@ -126,8 +126,8 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   - `POST /api/clients/group`: Assign devices to a group (`{ clientIds: string[], groupName: string }`).
 - **Batch Command Dispatch (`POST /api/command`):**
   - Accepts `targets: string[]` (or legacy single `target: string`).
-  - Allows targeting specific subsets of machines or selected workstations for commands (`lock`, `unlock`, `reboot`, `reset`).
-  - The teacher console features a "Select All" toggle, per-workstation and per-group selection checkboxes, dynamic selection count indicators, and targeted command buttons ("Lock", "Unlock", "Reboot").
+  - Allows targeting specific subsets of machines or selected workstations for commands (`lock`, `unlock`, `reboot`, `shutdown`, `reset`).
+  - The teacher console features a "Select All" toggle, per-workstation and per-group selection checkboxes, dynamic selection count indicators, and targeted command buttons ("Lock", "Unlock", "Reboot", "Shutdown").
 
 ---
 
@@ -167,7 +167,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) enforce a unified **Left-Side Multi-Level Panels Architecture**:
   - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, primary module icons (Workstations, Broadcast, Portal Apps, Whitelist, Teachers, Settings), live counter pills, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel collapse toggle.
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists). On the Workstations page, duplicate command buttons are removed; the subpanel manages Workstation Groups (`+ New Group`, member counts, filtering, and deletion).
-  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu. The Workstation toolbar contains a "Select All" toggle, selection count indicator, targeted actions (`Lock`, `Unlock`, `Reboot`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`. Workstations in the main view are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, with collapse states saved to `localStorage`.
+  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu. The Workstation toolbar contains a "Select All" toggle, selection count indicator, targeted actions (`Lock`, `Unlock`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`. Workstations in the main view are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, with collapse states saved to `localStorage`.
   - **Transitions & Micro-Interactions**: Hardware-accelerated CSS transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
 
 

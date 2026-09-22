@@ -2239,6 +2239,22 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(pc1Lock.message, "Exam in progress");
     assert.ok(pc2Lock, "PC-02 must receive the lock command");
     assert.equal(pc2Lock.message, "Exam in progress");
+
+    // Also dispatch batch shutdown command
+    const { res: shutRes, data: shutData } = await callJson("/api/command?tenant=greenwood", {
+      ...json({
+        targets: ["PC-01", "PC-02"],
+        action: "shutdown"
+      }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(shutRes.status, 200);
+    assert.equal(shutData.status, "ok");
+    assert.equal(shutData.count, 2);
+
+    const pc1ShutTelem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    const pc1Shut = pc1ShutTelem.data.commands.find((c: any) => c.action === "shutdown");
+    assert.ok(pc1Shut, "PC-01 must receive the shutdown command");
   });
 
   test("Workstations console sidebar renders Workstation Groups and removes duplicate commands", async () => {
@@ -2263,6 +2279,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /id="btn-lock-label">Lock</);
     assert.match(html, /id="btn-unlock-label">Unlock</);
     assert.match(html, /id="btn-reboot-label">Reboot</);
+    assert.match(html, /id="btn-shutdown-label">Shutdown</);
+    assert.match(html, /id="btn-shutdown-all"/);
   });
 });
 
