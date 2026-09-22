@@ -4,7 +4,7 @@
   "description": "Centralized Cloudflare Controller & Real-Time Monitoring Dashboard for School Lab Kiosks",
   "main": "src/index.ts",
   "scripts": {
-    "dev": "wrangler dev --ip 0.0.0.0",
+    "dev": "wrangler dev --ip 0.0.0.0 --var ALLOW_LOCAL_DB:1",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json",
     "test": "tsx --test test/worker.test.ts",
