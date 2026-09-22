@@ -382,7 +382,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const html = await res.text();
     assert.match(html, /Greenwood High School/);
     assert.match(html, /greenwood\.labkiosk\.akbhoi\.com/);
-    assert.match(html, /Portal Apps/);
+    assert.match(html, /Apps &amp; Web/);
     assert.match(html, /Settings/);
   });
 
@@ -409,7 +409,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const id of ["whitelist-modal", "portal-modal", "settings-modal"]) {
       assert.equal(body.includes(`id="${id}"`), false, `${id} duplicates a dedicated page and must not come back`);
     }
-    for (const page of ["/admin/whitelist", "/admin/portal", "/admin/settings"]) {
+    for (const page of ["/admin/apps-web", "/admin/settings"]) {
       assert.ok(body.includes(`href="${page}"`), `the toolbar must link to ${page}`);
     }
   });
@@ -420,9 +420,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // but a render, so render every page and compare the two sets.
     const pages = [
       ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
-      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
-      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
-      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", schoolSessionCookie],
       ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
       ["/admin/settings?tenant=greenwood", schoolSessionCookie],
       ["/super/schools", superSessionCookie],
@@ -454,9 +452,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // lkConfirm and lkPrompt instead.
     const pages = [
       ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
-      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
-      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
-      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", schoolSessionCookie],
       ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
       ["/admin/settings?tenant=greenwood", schoolSessionCookie],
       ["/super/schools", superSessionCookie],
@@ -493,9 +489,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/privacy", undefined],
       ["/terms", undefined],
       ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
-      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
-      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
-      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", schoolSessionCookie],
       ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
       ["/admin/settings?tenant=greenwood", schoolSessionCookie],
       ["/super/schools", superSessionCookie],
@@ -537,9 +531,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // nothing. Neither failure shows up in a typecheck.
     const pages = [
       "/admin/workstations?tenant=greenwood",
-      "/admin/broadcast?tenant=greenwood",
-      "/admin/portal?tenant=greenwood",
-      "/admin/whitelist?tenant=greenwood",
+      "/admin/apps-web?tenant=greenwood",
       "/admin/teachers?tenant=greenwood",
       "/admin/settings?tenant=greenwood"
     ];
@@ -577,9 +569,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const open = (path: string) => call(path, { cookie: schoolSessionCookie, headers: { host } });
     const pages = [
       "/admin/workstations",
-      "/admin/broadcast",
-      "/admin/portal",
-      "/admin/whitelist",
+      "/admin/apps-web",
       "/admin/teachers",
       "/admin/settings"
     ];
@@ -588,7 +578,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     let portalHtml = "";
     for (const page of pages) {
       const html = await (await open(page)).text();
-      if (page === "/admin/portal") portalHtml = html;
+      if (page === "/admin/apps-web") portalHtml = html;
       for (const match of html.matchAll(/href="(\/[^"#]*)"/g)) targets.set(match[1], page);
     }
     assert.ok(targets.size > 0, "no internal links were found at all");
@@ -1845,9 +1835,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(superWorkstationsRes.status, 302);
     assert.equal(superWorkstationsRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/workstations?tenant=demo");
 
-    const superBroadcastRes = await call("/admin/broadcast", { cookie: superSessionCookie });
-    assert.equal(superBroadcastRes.status, 302);
-    assert.equal(superBroadcastRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/broadcast?tenant=demo");
+    const superAppsWebRes = await call("/admin/apps-web", { cookie: superSessionCookie });
+    assert.equal(superAppsWebRes.status, 302);
+    assert.equal(superAppsWebRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tenant=demo");
+
+    const superLegacyBroadcastRes = await call("/admin/broadcast", { cookie: superSessionCookie });
+    assert.equal(superLegacyBroadcastRes.status, 302);
+    assert.equal(superLegacyBroadcastRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tab=broadcast");
 
     // Super admin on dev host visiting /admin/workstations without tenant param -> 302 to ?tenant=demo
     const devReq = new Request("http://localhost:8787/admin/workstations", {
@@ -1862,9 +1856,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(demoApexRes.status, 200);
     const demoApexHtml = await demoApexRes.text();
     assert.match(demoApexHtml, /href="\/admin\/workstations\?tenant=demo"/);
-    assert.match(demoApexHtml, /href="\/admin\/broadcast\?tenant=demo"/);
-    assert.match(demoApexHtml, /href="\/admin\/portal\?tenant=demo"/);
-    assert.match(demoApexHtml, /href="\/admin\/whitelist\?tenant=demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/apps-web\?tenant=demo"/);
     assert.match(demoApexHtml, /href="\/admin\/teachers\?tenant=demo"/);
     assert.match(demoApexHtml, /href="\/admin\/settings\?tenant=demo"/);
   });
@@ -1872,9 +1864,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Renders all dedicated multi-page school admin sub-routes with CSP nonces", async () => {
     const routes = [
       ["/admin/workstations?tenant=greenwood", /Workstation Grid &amp; Remote Control/],
-      ["/admin/broadcast?tenant=greenwood", /Lesson Broadcast Center/],
-      ["/admin/portal?tenant=greenwood", /Student Learning Portal Manager/],
-      ["/admin/whitelist?tenant=greenwood", /Allowed Educational Domains/],
+      ["/admin/apps-web?tenant=greenwood", /Apps &amp; Web Control/],
       ["/admin/teachers?tenant=greenwood", /Teachers &amp; Sub-Admin Delegation/],
       ["/admin/settings?tenant=greenwood", /Lab Settings &amp; Configuration/]
     ] as const;
@@ -1886,6 +1876,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.match(csp, /script-src 'nonce-[^']+'/);
       const html = await res.text();
       assert.match(html, pattern, `${route} should contain expected heading`);
+    }
+
+    // Legacy routes 302 redirect to /admin/apps-web?tab=...
+    for (const legacy of ["/admin/broadcast", "/admin/portal", "/admin/whitelist"]) {
+      const res = await call(`${legacy}?tenant=greenwood`, { cookie: schoolSessionCookie });
+      assert.equal(res.status, 302, `${legacy} should return 302`);
+      assert.match(res.headers.get("Location") || "", /\/admin\/apps-web\?/);
     }
   });
 
@@ -2024,12 +2021,19 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(subRes.status, 403);
 
-    // 10. Dashboard navigation: Visiting /admin/broadcast without broadcast perm redirects to /admin
+    // 10. Dashboard navigation: Visiting /admin/apps-web without apps-web perm redirects to /admin
+    const appsWebPageRes = await call("/admin/apps-web?tenant=greenwood", {
+      cookie: teacherCookie
+    });
+    assert.equal(appsWebPageRes.status, 302);
+    assert.match(appsWebPageRes.headers.get("Location") || "", /\/admin(\?|$)/);
+
+    // 10b. Legacy /admin/broadcast redirects to /admin/apps-web?tab=broadcast
     const bcastPageRes = await call("/admin/broadcast?tenant=greenwood", {
       cookie: teacherCookie
     });
     assert.equal(bcastPageRes.status, 302);
-    assert.match(bcastPageRes.headers.get("Location") || "", /\/admin(\?|$)/);
+    assert.match(bcastPageRes.headers.get("Location") || "", /\/admin\/apps-web\?.*tab=broadcast/);
 
     // Clean up teacher
     await callJson(`/api/tenant/teachers/${teacherId}?tenant=greenwood`, {

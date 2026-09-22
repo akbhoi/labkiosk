@@ -7,7 +7,7 @@
  */
 
 import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole } from "./types";
-import { renderDashboardHtml } from "./ui";
+import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderSchoolHomeHtml } from "./ui_school_home";
 import { renderSuperAdminHtml } from "./ui_super";
@@ -2380,6 +2380,14 @@ export default {
 
     // 1. School Admin Dashboard (/admin and /admin/*)
     if (path === "/admin" || path.startsWith("/admin/")) {
+      // Legacy redirects for consolidated pages
+      if (path === "/admin/broadcast" || path === "/admin/portal" || path === "/admin/whitelist") {
+        const tab = path === "/admin/broadcast" ? "broadcast" : (path === "/admin/portal" ? "portal" : "whitelist");
+        const redirectUrl = new URL(request.url);
+        redirectUrl.pathname = "/admin/apps-web";
+        redirectUrl.searchParams.set("tab", tab);
+        return Response.redirect(redirectUrl.toString(), 302);
+      }
       if (!session) {
         const slug = cleanSubdomain(url.searchParams.get("tenant") || hostSubdomain(request, env.DEFAULT_DOMAIN) || "");
         const suffix = slug ? `?login=1&tenant=${encodeURIComponent(slug)}` : "?login=1";
@@ -2447,6 +2455,7 @@ export default {
         }
       }
 
+
       // Land a super admin on the demo school console when visiting /admin/* without a tenant on dev.
       if (!currentTenant && session.role === "super_admin" && path !== "/admin") {
         return Response.redirect(
@@ -2487,23 +2496,32 @@ export default {
       }
 
       const tenant = currentTenant!;
-      let activePage: "workstations" | "broadcast" | "portal" | "whitelist" | "teachers" | "settings" = "workstations";
-      if (path === "/admin/broadcast") activePage = "broadcast";
-      else if (path === "/admin/portal") activePage = "portal";
-      else if (path === "/admin/whitelist") activePage = "whitelist";
+      let activePage: AdminPageId = "workstations";
+      if (path === "/admin/apps-web") activePage = "apps-web";
       else if (path === "/admin/teachers") activePage = "teachers";
       else if (path === "/admin/settings") activePage = "settings";
 
       const userPerms = session.role === "super_admin"
         ? ["*"]
         : await getTenantUserPermissions(db, tenant.id, session.user_id);
-      const hasAccess = userPerms.includes("*") || userPerms.includes(activePage);
+
+      const checkPermission = (page: AdminPageId) => {
+        if (userPerms.includes("*") || userPerms.includes(page)) return true;
+        if (page === "apps-web") {
+          return (
+            userPerms.includes("broadcast") ||
+            userPerms.includes("portal") ||
+            userPerms.includes("whitelist")
+          );
+        }
+        return false;
+      };
+
+      const hasAccess = checkPermission(activePage);
 
       if (!hasAccess) {
-        const pages: ("workstations" | "broadcast" | "portal" | "whitelist" | "teachers" | "settings")[] = [
-          "workstations", "broadcast", "portal", "whitelist", "teachers", "settings"
-        ];
-        const allowedPage = pages.find(p => userPerms.includes(p));
+        const pages: AdminPageId[] = ["workstations", "apps-web", "teachers", "settings"];
+        const allowedPage = pages.find(p => checkPermission(p));
         if (allowedPage) {
           const redirectPath = allowedPage === "workstations" ? "/admin" : `/admin/${allowedPage}`;
           const targetUrl = isDev

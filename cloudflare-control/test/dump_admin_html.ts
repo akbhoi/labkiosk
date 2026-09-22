@@ -45,7 +45,7 @@ const teachers = [
   { id: "t1", tenant_id: "tenant-fixed", user_id: "u1", name: "R. Mehta", email: "r.mehta@greenwood.edu", role: "teacher", permissions: ["workstations", "broadcast"], created_at: 1700000000 }
 ] as unknown as TenantUser[];
 
-const pages = ["workstations", "broadcast", "portal", "whitelist", "teachers", "settings"] as const;
+const pages = ["workstations", "apps-web", "teachers", "settings"] as const;
 
 for (const page of pages) {
   const html = renderDashboardHtml({

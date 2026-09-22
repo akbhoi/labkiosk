@@ -131,6 +131,11 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
           var focusId = target.getAttribute("data-focus");
           if (focusId) {
             event.preventDefault();
+            if (focusId === "app-title") {
+              if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab("portal");
+            } else if (focusId === "domain-input") {
+              if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab("whitelist");
+            }
             focusField(focusId);
             return;
           }
@@ -154,6 +159,7 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
           var preset = target.getAttribute("data-preset");
           if (preset) {
             event.preventDefault();
+            if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab("broadcast");
             var urlField = document.getElementById("broadcast-url");
             if (urlField) {
               urlField.value = preset;
@@ -166,6 +172,7 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
           var quickDomain = target.getAttribute("data-quick-domain");
           if (quickDomain) {
             event.preventDefault();
+            if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab("whitelist");
             var field = document.getElementById("domain-input");
             var form = document.getElementById("add-domain-form");
             if (field && form) {
@@ -178,7 +185,11 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
           var action = target.getAttribute("data-action");
           if (!action) return;
           event.preventDefault();
-          if (action === "open-broadcast") runToolbarAction("btn-open-broadcast");
+          if (action.startsWith("tab-")) {
+            var tabId = action.slice(4);
+            if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab(tabId);
+          }
+          else if (action === "open-broadcast") runToolbarAction("btn-open-broadcast");
           else if (action === "open-lock-all") {
             // The lock dialog carries the announcement students will read. The
             // toolbar button locks immediately with the saved default; this is

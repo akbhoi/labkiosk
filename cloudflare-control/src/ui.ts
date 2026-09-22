@@ -16,17 +16,13 @@ import {
   renderSubPanelScripts
 } from "./ui_admin_shared";
 import { buildWorkstationsPage } from "./ui_admin_workstations";
-import { buildBroadcastPage } from "./ui_admin_broadcast";
-import { buildPortalPage } from "./ui_admin_portal";
-import { buildWhitelistPage } from "./ui_admin_whitelist";
+import { buildAppsWebPage } from "./ui_admin_apps_web";
 import { buildTeachersPage } from "./ui_admin_teachers";
 import { buildSettingsPage } from "./ui_admin_settings";
 
 export type AdminPageId =
   | "workstations"
-  | "broadcast"
-  | "portal"
-  | "whitelist"
+  | "apps-web"
   | "teachers"
   | "settings";
 
@@ -61,9 +57,7 @@ export interface DashboardOptions {
 
 const PAGE_BUILDERS: Record<AdminPageId, (input: AdminPageInput) => AdminPageParts> = {
   workstations: buildWorkstationsPage,
-  broadcast: buildBroadcastPage,
-  portal: buildPortalPage,
-  whitelist: buildWhitelistPage,
+  "apps-web": buildAppsWebPage,
   teachers: buildTeachersPage,
   settings: buildSettingsPage
 };
@@ -97,24 +91,11 @@ export function renderDashboardHtml(options: DashboardOptions): string {
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`
     },
     {
-      id: "broadcast",
-      label: "Lesson Broadcast",
-      href: `/admin/broadcast${tenantParam}`,
-      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>`
-    },
-    {
-      id: "portal",
-      label: "Portal Apps",
-      href: `/admin/portal${tenantParam}`,
-      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>`,
+      id: "apps-web",
+      label: "Apps & Web",
+      href: `/admin/apps-web${tenantParam}`,
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`,
       badge: sites.length
-    },
-    {
-      id: "whitelist",
-      label: "Domain Allowlist",
-      href: `/admin/whitelist${tenantParam}`,
-      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
-      badge: config.whitelist.length
     },
     {
       id: "teachers",
@@ -132,7 +113,19 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   ];
 
   const hasAll = userPermissions.includes("*");
-  const navItems = hasAll ? allNavItems : allNavItems.filter((item) => userPermissions.includes(item.id));
+  const navItems = hasAll
+    ? allNavItems
+    : allNavItems.filter((item) => {
+        if (item.id === "apps-web") {
+          return (
+            userPermissions.includes("apps-web") ||
+            userPermissions.includes("broadcast") ||
+            userPermissions.includes("portal") ||
+            userPermissions.includes("whitelist")
+          );
+        }
+        return userPermissions.includes(item.id);
+      });
 
   const stats: StatItem[] = [
     { label: "Online", value: 0, color: "green", id: "stat-online-count" },

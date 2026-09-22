@@ -22,10 +22,8 @@ cloudflare-control/
 │   ├── ui.ts                           # School admin console: picks the page, fills the shell
 │   ├── ui_admin_shared.ts              # Tenant API scope + Level 2 context panel behaviour
 │   ├── ui_admin_workstations.ts        # One module per admin page: its markup, its context
-│   ├── ui_admin_broadcast.ts           #   panel and its client script together, so a control
-│   ├── ui_admin_portal.ts              #   sits beside the handler that reads it
-│   ├── ui_admin_whitelist.ts
-│   ├── ui_admin_teachers.ts
+│   ├── ui_admin_apps_web.ts            #   panel and its client script together, unifying
+│   ├── ui_admin_teachers.ts            #   lesson broadcast, portal apps, and domain allowlist
 │   ├── ui_admin_settings.ts
 │   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
 │   │                                   #   radii and easing, plus the legacy aliases the public
@@ -116,8 +114,13 @@ cloudflare-control/
 
 ### Rule 5b: Left-Side Multi-Level Panels Design & Seamless Transitions
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
-  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Broadcast, Portal Apps, Whitelist, Teachers, Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
+  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Apps & Web, Teachers & Staff, Lab Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
+  - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
+    - Unifies Lesson Broadcast, Student Portal Apps, and Domain Allowlist into a single, cohesive view.
+    - Features a 3-tab segmented control (`Lesson Broadcast`, `Student Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`).
+    - The Level 2 context subpanel synchronizes its contextual tools dynamically with the active tab.
+    - Legacy paths (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
   - **Workstations Page Layout**:
     - **Sidebar Subpanel**: Removed duplicate classroom commands. Dedicated to Workstation Groups management (`+ New Group`, member counts, filtering by group, and delete group actions).
     - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted classroom actions (`Lock`, `Unlock`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.

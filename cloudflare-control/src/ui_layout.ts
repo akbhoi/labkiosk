@@ -1060,6 +1060,48 @@ ${rootTokensCss()}
       font-family: 'JetBrains Mono', monospace;
     }
 
+    /* Segmented Navigation Tabs */
+    .segmented-nav {
+      display: inline-flex;
+      align-items: center;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 3px;
+      gap: 3px;
+    }
+    .segmented-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s ease;
+      text-decoration: none;
+    }
+    .segmented-tab:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .segmented-tab.active {
+      color: #fff;
+      background: var(--accent);
+      box-shadow: 0 2px 8px var(--accent-glow);
+    }
+    .tab-pane {
+      display: none;
+    }
+    .tab-pane.active {
+      display: block;
+    }
+
     .grid-2col {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
