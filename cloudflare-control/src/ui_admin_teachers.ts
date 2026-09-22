@@ -13,35 +13,61 @@ import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 
 export function buildTeachersPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, teachers, tenantParam, baseDomain, nonce } = options;
+
+  const standardRoles: { id: string; label: string }[] = [
+    { id: "teacher", label: "Teacher" },
+    { id: "lab_assistant", label: "Lab Assistant" },
+    { id: "content_manager", label: "Content Manager" },
+    { id: "school_admin", label: "Co-Administrator" }
+  ];
+
+  const knownRoleIds = new Set(standardRoles.map((r) => r.id));
+  const extraRoleIds = Array.from(new Set(teachers.map((t) => t.role).filter((role) => role && !knownRoleIds.has(role))));
+  const extraRoles = extraRoleIds.map((role) => ({
+    id: role,
+    label: role === "sub_admin" ? "Sub-Admin" : role.charAt(0).toUpperCase() + role.slice(1).replace(/_/g, " ")
+  }));
+
+  const allRoles = [...standardRoles, ...extraRoles];
+
+  const roleButtonsHtml = allRoles
+    .map((r) => {
+      const count = teachers.filter((t) => t.role === r.id).length;
+      return `
+        <button type="button" class="sub-action-item" data-filter="${escapeAttr(r.id)}">
+          <span>${escapeHtml(r.label)}</span>
+          <span class="sub-action-badge">${count}</span>
+        </button>
+      `;
+    })
+    .join("");
+
   return {
     title: "Teachers & Sub-Admin Delegation",
     contentHtml: renderTeachersPageHtml(teachers),
     scriptsHtml: renderTeachersScripts(nonce),
-        subPanelTitle: "Staff Directory",
-        subPanelSubtitle: "Sub-admin delegation",
-        subPanelHtml: `
-          <div class="sub-section-title">Actions</div>
-          <div class="sub-action-list">
-            <button type="button" class="sub-action-item" data-focus="teacher-name">
-              <span style="display: flex; align-items: center; gap: 8px;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-                Add Staff Member
-              </span>
-            </button>
-          </div>
+    subPanelTitle: "Staff Directory",
+    subPanelSubtitle: "Sub-admin delegation",
+    subPanelHtml: `
+      <div class="sub-section-title">Actions</div>
+      <div class="sub-action-list">
+        <button type="button" class="sub-action-item" data-focus="teacher-name">
+          <span style="display: flex; align-items: center; gap: 8px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+            Add Staff Member
+          </span>
+        </button>
+      </div>
 
-          <div class="sub-section-title" style="margin-top: 14px;">Roles &amp; Access</div>
-          <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.5;">
-            Teachers can be granted granular permissions:
-            <ul style="padding-left: 16px; margin-top: 6px;">
-              <li>Workstation control</li>
-              <li>Lesson broadcasting</li>
-              <li>Portal curation</li>
-              <li>Domain allowlist</li>
-              <li>Lab settings</li>
-            </ul>
-          </div>
-        `
+      <div class="sub-section-title" style="margin-top: 14px;">Role</div>
+      <div class="sub-action-list" id="sub-role-list">
+        <button type="button" class="sub-action-item active" data-filter="all">
+          <span>All Roles</span>
+          <span class="sub-action-badge">${teachers.length}</span>
+        </button>
+        ${roleButtonsHtml}
+      </div>
+    `
   };
 }
 
@@ -50,7 +76,7 @@ function renderTeachersPageHtml(teachers: TenantUser[] = []): string {
     .map((t) => {
       const permsList = (t.permissions || []).map((p) => `<span class="badge badge-blue" style="font-size: 10px; margin-right: 4px;">${escapeHtml(p)}</span>`).join("");
       return `
-        <tr>
+        <tr data-role="${escapeAttr(t.role)}">
           <td>
             <strong>${escapeHtml(t.name || "Teacher")}</strong>
             <div style="font-size: 12px; color: var(--text-muted);">${escapeHtml(t.email || "")}</div>
@@ -108,21 +134,26 @@ function renderTeachersPageHtml(teachers: TenantUser[] = []): string {
 
             <div class="form-group">
               <label class="form-label">Delegated Permissions</label>
-              <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 6px;">
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 13px;">
-                  <input type="checkbox" name="perms" value="workstations" checked> Workstations (Monitor &amp; Lock PCs)
+              <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+                <label class="form-checkbox-label">
+                  <input type="checkbox" class="form-checkbox" name="perms" value="workstations" checked>
+                  <span>Workstations (Monitor &amp; Lock PCs)</span>
                 </label>
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 13px;">
-                  <input type="checkbox" name="perms" value="broadcast" checked> Broadcast (Broadcast Lessons)
+                <label class="form-checkbox-label">
+                  <input type="checkbox" class="form-checkbox" name="perms" value="broadcast" checked>
+                  <span>Broadcast (Broadcast Lessons)</span>
                 </label>
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 13px;">
-                  <input type="checkbox" name="perms" value="portal" checked> Student Portal (Manage Cards)
+                <label class="form-checkbox-label">
+                  <input type="checkbox" class="form-checkbox" name="perms" value="portal" checked>
+                  <span>Student Portal (Manage Cards)</span>
                 </label>
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 13px;">
-                  <input type="checkbox" name="perms" value="whitelist"> Allowlist (Manage Educational Domains)
+                <label class="form-checkbox-label">
+                  <input type="checkbox" class="form-checkbox" name="perms" value="whitelist">
+                  <span>Allowlist (Manage Educational Domains)</span>
                 </label>
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 13px;">
-                  <input type="checkbox" name="perms" value="settings"> Lab Settings (Profile &amp; Keys)
+                <label class="form-checkbox-label">
+                  <input type="checkbox" class="form-checkbox" name="perms" value="settings">
+                  <span>Lab Settings (Profile &amp; Keys)</span>
                 </label>
               </div>
             </div>
@@ -135,7 +166,7 @@ function renderTeachersPageHtml(teachers: TenantUser[] = []): string {
       <div>
         <div class="card" style="padding: 0; overflow: hidden;">
           <div style="padding: 20px 24px; border-bottom: 1px solid var(--border);">
-            <h2 class="card-title" style="margin-bottom: 0;">Authorized Lab Instructors (${teachers.length})</h2>
+            <h2 class="card-title" style="margin-bottom: 0;">Authorized Lab Instructors <span id="teachers-count">(${teachers.length})</span></h2>
           </div>
           <div class="table-container" style="border: none; border-radius: 0;">
             <table>
@@ -147,7 +178,7 @@ function renderTeachersPageHtml(teachers: TenantUser[] = []): string {
                   <th>Actions</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody id="teachers-tbody">
                 ${rowsHtml || `<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 32px;">No sub-admins or teachers added yet.</td></tr>`}
               </tbody>
             </table>
@@ -161,6 +192,62 @@ function renderTeachersPageHtml(teachers: TenantUser[] = []): string {
 function renderTeachersScripts(nonce: string): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
+      // -------------------------------------------------------------
+      // Role Filter Handler (Level 2 Subpanel)
+      // -------------------------------------------------------------
+      window.labkioskApplyFilter = function (filter) {
+        const rows = document.querySelectorAll("#teachers-tbody tr[data-role]");
+        let visibleCount = 0;
+        rows.forEach((row) => {
+          const role = row.getAttribute("data-role");
+          const matches = filter === "all" || role === filter;
+          row.style.display = matches ? "" : "none";
+          if (matches) visibleCount++;
+        });
+
+        let emptyRow = document.getElementById("empty-filter-row");
+        if (visibleCount === 0 && rows.length > 0) {
+          if (!emptyRow) {
+            emptyRow = document.createElement("tr");
+            emptyRow.id = "empty-filter-row";
+            emptyRow.innerHTML = '<td colspan="4" style="text-align: center; color: var(--text-muted); padding: 32px;">No staff members found with this role.</td>';
+            const tbody = document.getElementById("teachers-tbody");
+            if (tbody) tbody.appendChild(emptyRow);
+          }
+          emptyRow.style.display = "";
+        } else if (emptyRow) {
+          emptyRow.style.display = "none";
+        }
+
+        const countEl = document.getElementById("teachers-count");
+        if (countEl) {
+          countEl.textContent = filter === "all" ? "(" + rows.length + ")" : "(" + visibleCount + " of " + rows.length + ")";
+        }
+      };
+
+      // -------------------------------------------------------------
+      // Role Select Preset Defaults
+      // -------------------------------------------------------------
+      const roleSelect = document.getElementById("teacher-role");
+      if (roleSelect) {
+        const defaultPermsByRole = {
+          teacher: ["workstations", "broadcast", "portal"],
+          lab_assistant: ["workstations"],
+          content_manager: ["portal", "whitelist"],
+          school_admin: ["workstations", "broadcast", "portal", "whitelist", "settings"]
+        };
+        roleSelect.addEventListener("change", () => {
+          const selected = roleSelect.value;
+          const defaults = defaultPermsByRole[selected] || ["workstations"];
+          document.querySelectorAll('input[name="perms"]').forEach((cb) => {
+            cb.checked = defaults.includes(cb.value);
+          });
+        });
+      }
+
+      // -------------------------------------------------------------
+      // Create Teacher Form
+      // -------------------------------------------------------------
       document.getElementById("add-teacher-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const name = document.getElementById("teacher-name").value.trim();
@@ -186,6 +273,9 @@ function renderTeachersScripts(nonce: string): string {
         }
       });
 
+      // -------------------------------------------------------------
+      // Delete Teacher
+      // -------------------------------------------------------------
       document.querySelectorAll(".btn-delete-teacher").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const id = btn.dataset.id;

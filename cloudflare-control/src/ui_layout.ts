@@ -1157,6 +1157,49 @@ ${rootTokensCss()}
       box-shadow: 0 0 0 3px var(--accent-glow);
     }
     .form-row { display: flex; gap: 12px; align-items: flex-end; }
+    .form-checkbox {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-xs);
+      background: var(--bg-card);
+      cursor: pointer;
+      display: inline-grid;
+      place-content: center;
+      margin: 0;
+      vertical-align: middle;
+      transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+      flex-shrink: 0;
+    }
+    .form-checkbox:hover {
+      border-color: var(--accent);
+    }
+    .form-checkbox:checked {
+      background-color: var(--accent);
+      border-color: var(--accent);
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='3.5 8.5 6.5 11.5 12.5 4.5'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: 12px 12px;
+    }
+    .form-checkbox:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .form-checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--text-main);
+      cursor: pointer;
+      user-select: none;
+    }
+    .form-checkbox-label:hover {
+      color: #fff;
+    }
 
     /* One editable block on the school homepage: title, body, optional link,
        and the button that removes it. */

@@ -2286,6 +2286,31 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /id="btn-shutdown-label">Shutdown</);
     assert.match(html, /id="btn-shutdown-all"/);
   });
+
+  test("Teachers console sidebar renders Role filter and standard form-checkbox styling", async () => {
+    const res = await call("/admin/teachers?tenant=greenwood", {
+      cookie: schoolSessionCookie
+    });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+
+    // 1. Context subpanel renders "Role" section and filter options
+    assert.match(html, /<div class="sub-section-title"[^>]*>Role<\/div>/);
+    assert.match(html, /id="sub-role-list"/);
+    assert.match(html, /data-filter="all"/);
+    assert.match(html, /data-filter="teacher"/);
+    assert.match(html, /data-filter="lab_assistant"/);
+    assert.match(html, /data-filter="content_manager"/);
+    assert.match(html, /data-filter="school_admin"/);
+
+    // 2. Form uses standard .form-checkbox and .form-checkbox-label styling
+    assert.match(html, /class="form-checkbox"/);
+    assert.match(html, /class="form-checkbox-label"/);
+
+    // 3. Table rows are tagged with data-role for client-side filtering
+    assert.match(html, /id="teachers-tbody"/);
+    assert.match(html, /id="teachers-count"/);
+  });
 });
 
 /**
