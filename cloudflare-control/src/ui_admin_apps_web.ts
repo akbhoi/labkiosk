@@ -208,53 +208,6 @@ function renderAppsWebContentHtml(
 
         <div>
           <div class="card">
-            <h2 class="card-title">Standard Educational Presets</h2>
-            <p class="card-sub">Instant 1-click broadcast of vetted interactive learning tools.</p>
-            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 12px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="font-size: 18px;">🎨</span>
-                  <div>
-                    <div style="font-size: 13px; font-weight: 600;">Scratch Programming</div>
-                    <div style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">scratch.mit.edu</div>
-                  </div>
-                </div>
-                <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="https://scratch.mit.edu">Broadcast</button>
-              </div>
-              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="font-size: 18px;">🔬</span>
-                  <div>
-                    <div style="font-size: 13px; font-weight: 600;">PhET Interactive Simulations</div>
-                    <div style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">phet.colorado.edu</div>
-                  </div>
-                </div>
-                <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="https://phet.colorado.edu">Broadcast</button>
-              </div>
-              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="font-size: 18px;">📐</span>
-                  <div>
-                    <div style="font-size: 13px; font-weight: 600;">Khan Academy</div>
-                    <div style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">khanacademy.org</div>
-                  </div>
-                </div>
-                <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="https://www.khanacademy.org">Broadcast</button>
-              </div>
-              <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="font-size: 18px;">📚</span>
-                  <div>
-                    <div style="font-size: 13px; font-weight: 600;">Wikipedia Encyclopedia</div>
-                    <div style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">wikipedia.org</div>
-                  </div>
-                </div>
-                <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="https://en.wikipedia.org">Broadcast</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="card" style="margin-top: 20px;">
             <h2 class="card-title">Custom Lesson Presets &amp; Shortcuts</h2>
             <p class="card-sub">Saved bookmarks for recurring classroom activities and exams.</p>
 
