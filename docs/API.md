@@ -67,7 +67,14 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/whitelist` | `POST` | Teacher Admin | Add or remove a domain from the permanent allowlist |
 | `/api/clients` | `GET` | Teacher Admin | List active workstation fleet with live thumbnails |
 | `/api/clients/remove` | `POST` | Teacher Admin | Decommission workstation and revoke its device token |
-| `/api/command` | `POST` | Teacher Admin | Dispatch remote command (lock, unlock, navigate, reload) |
+| `/api/clients/group` | `POST` | Teacher Admin | Assign multiple workstations to a named group |
+| `/api/groups` | `GET` | Teacher Admin | List workstation groups for the school tenant |
+| `/api/groups` | `POST` | Teacher Admin | Create a new workstation group |
+| `/api/groups/:id` | `DELETE` | Teacher Admin | Delete a workstation group |
+| `/api/teachers` | `GET` | Teacher Admin | List delegated instructors, staff, and sub-admins |
+| `/api/teachers` | `POST` | Teacher Admin | Invite/create instructor account with role and permissions |
+| `/api/teachers/:id` | `DELETE` | Teacher Admin | Revoke delegated instructor access |
+| `/api/command` | `POST` | Teacher Admin | Dispatch remote command to targets (lock, unlock, reboot, shutdown, etc.) |
 | `/api/audit-logs` | `GET` | Teacher Admin | Retrieve paginated institutional security audit log |
 | `/api/devices/enroll` | `POST` | Public / Key | Exchange school enrollment key for persistent device token |
 | `/api/telemetry` | `POST` | Device Token | 3-second heartbeat, thumbnail ingest, command retrieval |
@@ -309,16 +316,24 @@ Retrieves all currently registered workstations and their latest telemetry state
   ```
 
 #### `POST /api/command`
-Dispatches remote actions to one or all workstations.
-- **Access:** School Admin
-- **Supported Actions:** `lock`, `unlock`, `navigate`, `reload`, `poweroff`, `reboot`
+Dispatches remote actions to one, selected subsets, or all workstations.
+- **Access:** School Admin (requires `workstations` permission)
+- **Supported Actions:** `lock`, `unlock`, `reboot`, `shutdown`, `poweroff`, `navigate`, `reload`, `reset`
+- **Targeting:** Specify either `targets: string[]` (array of client IDs, e.g. `["PC-01", "PC-02"]`) or single `target: string` (`"all"` or `"PC-01"`).
 - **Request Body Examples:**
-  - **Freeze screens with custom message:**
+  - **Batch lock selected workstations with custom message:**
     ```json
     {
-      "target": "all",
+      "targets": ["PC-01", "PC-02", "PC-05"],
       "action": "lock",
       "message": "Class attention! Midterm examination is beginning."
+    }
+    ```
+  - **Reboot or shutdown specific machines:**
+    ```json
+    {
+      "targets": ["PC-03"],
+      "action": "shutdown"
     }
     ```
   - **Broadcast website to all screens:**
@@ -333,8 +348,7 @@ Dispatches remote actions to one or all workstations.
     ```json
     {
       "target": "all",
-      "action": "navigate",
-      "resetPortal": true
+      "action": "reset"
     }
     ```
 - **Response `200 OK`:**
@@ -344,6 +358,42 @@ Dispatches remote actions to one or all workstations.
     "commandId": "cmd-uuid-99"
   }
   ```
+
+#### `GET /api/groups`
+Retrieves all defined workstation groups for the school tenant.
+- **Access:** School Admin (requires `workstations` permission)
+- **Response `200 OK`:**
+  ```json
+  {
+    "groups": [
+      { "id": 1, "name": "Row 1", "created_at": 1726300000 },
+      { "id": 2, "name": "Lab A", "created_at": 1726300100 }
+    ]
+  }
+  ```
+
+#### `POST /api/groups`
+Creates a new named workstation group.
+- **Access:** School Admin (requires `workstations` permission)
+- **Request Body:** `{ "name": "Robotics Bay" }`
+- **Response `200 OK`:** `{ "status": "ok", "id": 3, "name": "Robotics Bay" }`
+
+#### `DELETE /api/groups/:id`
+Deletes a workstation group and resets member devices' `group_name` to `NULL`.
+- **Access:** School Admin (requires `workstations` permission)
+- **Response `200 OK`:** `{ "status": "ok" }`
+
+#### `POST /api/clients/group`
+Assigns multiple workstations to a designated group (or unassigns if `groupName` is empty).
+- **Access:** School Admin (requires `workstations` permission)
+- **Request Body:**
+  ```json
+  {
+    "clientIds": ["PC-01", "PC-02"],
+    "groupName": "Row 1"
+  }
+  ```
+- **Response `200 OK`:** `{ "status": "ok" }`
 
 #### `POST /api/clients/remove`
 Decommissions a client device and revokes its bearer token.
@@ -356,6 +406,50 @@ Decommissions a client device and revokes its bearer token.
   ```json
   { "status": "ok", "remaining": 14 }
   ```
+
+---
+
+### 5b. Teachers & Staff Delegation
+
+#### `GET /api/teachers`
+Lists all authorized instructors, assistants, and sub-administrators delegated for this school tenant.
+- **Access:** School Admin (requires `teachers` permission)
+- **Response `200 OK`:**
+  ```json
+  {
+    "teachers": [
+      {
+        "id": 1,
+        "email": "sarah.smith@greenwood.edu",
+        "name": "Sarah Smith",
+        "role": "Teacher",
+        "permissions": "workstations,apps-web",
+        "created_at": 1726300000,
+        "last_login": 1726310000
+      }
+    ]
+  }
+  ```
+
+#### `POST /api/teachers`
+Invites or creates a delegated instructor account with specific role and granular permission flags.
+- **Access:** School Admin (requires `teachers` permission)
+- **Request Body:**
+  ```json
+  {
+    "email": "john.doe@greenwood.edu",
+    "password": "SecurePassword123!",
+    "name": "John Doe",
+    "role": "Teacher",
+    "permissions": ["workstations", "apps-web"]
+  }
+  ```
+- **Response `200 OK`:** `{ "status": "ok", "id": 2 }`
+
+#### `DELETE /api/teachers/:id`
+Revokes an instructor's access and invalidates their active sessions.
+- **Access:** School Admin (requires `teachers` permission)
+- **Response `200 OK`:** `{ "status": "ok" }`
 
 ---
 

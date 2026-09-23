@@ -8,7 +8,7 @@ How `cloudflare-control/` is put together, and the rules for changing it.
 
 ```text
 cloudflare-control/
-├── migrations/             D1 SQL migrations 0001..0005
+├── migrations/             D1 SQL migrations 0001..0009
 ├── src/
 │   ├── index.ts            Router, REST endpoints, telemetry cache, scheduled()
 │   ├── guard.ts            Tenant resolution, authorization, CSRF origin guard
@@ -16,10 +16,19 @@ cloudflare-control/
 │   ├── db.ts               D1 queries, SCHEMA_SQL, tenant seeding
 │   ├── auth.ts             Web Crypto PBKDF2, tokens, nonces, password policy
 │   ├── d1_adapter.ts       node:sqlite mock for local tests
-│   ├── ui.ts               Teacher Lab Dashboard
+│   ├── ui.ts               School admin console router: selects page, wraps shell
+│   ├── ui_admin_shared.ts  Shared context panel actions & client scripts
+│   ├── ui_admin_workstations.ts Workstations fleet, groups & commands
+│   ├── ui_admin_apps_web.ts     Apps & Web: broadcast, portal & allowlist
+│   ├── ui_admin_teachers.ts     Teachers & staff accounts, roles & permissions
+│   ├── ui_admin_settings.ts     Lab settings: 4 tab panes & scrollable audit
+│   ├── ui_tokens.ts        Design system tokens (colors, radii, easing)
+│   ├── ui_layout.ts        Shared multi-level shell, headers & styles
 │   ├── ui_landing.ts       Public SaaS landing page
-│   ├── ui_portal.ts        Student Learning Portal
-│   ├── ui_super.ts         Super Admin console
+│   ├── ui_school_home.ts   School homepage at subdomain root (/)
+│   ├── ui_portal.ts        Student Learning Portal at /home
+│   ├── ui_super.ts         Super Admin console (/super)
+│   ├── ui_legal.ts         Legal compliance pages (/privacy, /terms)
 │   └── types.ts            Strict TypeScript interfaces
 ├── test/worker.test.ts     Multi-tenant integration and security suite
 ├── .dev.vars.example       Local secrets template

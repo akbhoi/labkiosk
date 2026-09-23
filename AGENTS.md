@@ -165,12 +165,25 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 
 ### Rule 4b: Left-Side Multi-Level Panels Design & Seamless Transitions
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) enforce a unified **Left-Side Multi-Level Panels Architecture**:
-  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, primary module icons (Workstations, Apps & Web, Teachers & Staff, Lab Settings), live counter pills, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel collapse toggle.
-  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists). On the Workstations page, duplicate command buttons are removed; the subpanel manages Workstation Groups (`+ New Group`, member counts, filtering, and deletion).
-  - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**: Merges Lesson Broadcast, Student Portal Apps, and Domain Allowlist into a single, segmented module. The Level 2 context subpanel and top segmented navigation offer 3 tab panes (`Lesson Broadcast`, `Student Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy routes (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
-  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu. The Workstation toolbar contains a "Select All" toggle, selection count indicator, targeted actions (`Lock`, `Unlock`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`. Workstations in the main view are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, with collapse states saved to `localStorage`.
+  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, exactly 4 primary module icons (Workstations, Apps & Web, Teachers & Staff, Lab Settings), live counter pills, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel collapse toggle.
+  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
+  - **Workstations Module (`/admin/workstations`)**:
+    - **Level 2 Subpanel**: Dedicated to Workstation Groups (`+ New Group`, live group member counts, group filtering, and group deletion). Removed redundant individual command buttons from sidebar.
+    - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted classroom actions (`Lock`, `Unlock`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
+    - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes; collapse states persist in `localStorage`.
+  - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
+    - Merges Lesson Broadcast, Student Portal Apps, and Domain Allowlist into a single, segmented module with 3 tab panes (`Lesson Broadcast`, `Student Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy routes (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
+    - **Stabilized Sidebar Subpanel**: Fixed, non-shifting Level 2 subpanel featuring static tab view switchers (`📶 Lesson Broadcast`, `⊞ Student Portal`, `🛡️ Domain Allowlist`), a `Preview Student Portal &rarr;` shortcut opening `/home` in a new tab, and a static Module Overview card (total apps, allowed domains, live broadcast status). Eliminates dynamic layout shift.
+    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant "Standard Educational Presets" from Lesson Broadcast to prevent duplicate lists.
+  - **Teachers & Staff Module (`/admin/teachers`)**:
+    - **Level 2 Subpanel**: Interactive **"Role"** filter section (`All Roles`, `Teacher`, `Lab Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with live count badges that filter the authorized instructors table instantly without page reload.
+    - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
+  - **Lab Settings Module (`/admin/settings`)**:
+    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 4 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `School Homepage`, `Security & Audit`) with instant client-side switching and deep linking (`?tab=...`).
+    - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Institution Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain & VNC Tunnel \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Lab Activity).
+    - **Scrollable Activity Table (`.table-scrollable`)**: Recent Lab Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
+  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
   - **Transitions & Micro-Interactions**: Hardware-accelerated CSS transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
-
 
 ### Rule 4c: One Design Language, Declared Once
 - `cloudflare-control/src/ui_tokens.ts` is the single declaration of the design
@@ -178,7 +191,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   student portal and the legal pages. Each renders its `:root` from
   `rootTokensCss()` and its fonts from `FONT_LINKS`; none opens a `:root` of its own.
 - A class a page renders must be a class the shell declares, and the test suite
-  fails otherwise. See Rule 5c in
+  fails otherwise (including `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`). See Rule 5c in
   [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md).
 ### Rule 5: Zero Placeholders
 - ❌ No `// TODO: Implement later`

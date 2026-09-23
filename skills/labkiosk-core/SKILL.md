@@ -24,9 +24,12 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
    `requireSuperAdmin()` or `requireDevice()`; every rendered value is escaped. There are no
    exceptions, and the test suite asserts both. Cookie-authenticated mutations already pass the
    CSRF origin check in `index.ts`; do not add routes outside `/api/` that mutate state.
-3. **Before touching a `ui*.ts` template**: every `<script>` carries `nonce="${escapeAttr(nonce)}"`
-   and there are no inline `on*=` handlers, only `data-action` attributes with a delegated
-   listener (or `addEventListener`). The CSP test renders every page and fails otherwise.
+3. **Before touching a `ui*.ts` template**:
+   - Every `<script>` carries `nonce="${escapeAttr(nonce)}"`.
+   - Zero inline `on*=` handlers, only `data-action` attributes with a delegated listener in `ui_admin_shared.ts` (or `addEventListener`).
+   - The school dashboard enforces a 4-module primary rail (`workstations`, `apps-web`, `teachers`, `settings`).
+   - All rendered CSS classes MUST be declared in `src/ui_layout.ts` (e.g. `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`).
+   - Scrollable tables must use `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned `th`.
 4. State two requests must agree on goes in D1, never in a module-level variable: the active broadcast
    (`tenants.broadcast_url` / `broadcast_epoch`) and device remote-control credentials (`vnc_password` / `remote_host`).
 5. If altering the database schema:

@@ -76,7 +76,12 @@ Every route passes through `src/guard.ts` before its handler runs:
 | :--- | :--- | :--- |
 | `/api/clients` | `GET` | Fleet state with live thumbnails and remote-control details |
 | `/api/clients/remove` | `POST` | Decommission a workstation and revoke its token |
-| `/api/command` | `POST` | Dispatch a command to one workstation or the whole lab |
+| `/api/clients/group` | `POST` | Assign workstations to a group |
+| `/api/groups` | `GET` `POST` | List and create workstation groups |
+| `/api/groups/:id` | `DELETE` | Delete a workstation group |
+| `/api/teachers` | `GET` `POST` | List and invite delegated instructors and sub-admins |
+| `/api/teachers/:id` | `DELETE` | Revoke a delegated instructor account |
+| `/api/command` | `POST` | Dispatch a command to one, selected, or all workstations |
 | `/api/whitelist` | `GET` `POST` | Read and modify the permanent domain allowlist |
 | `/api/portal-sites` | `POST` | Add a student portal card |
 | `/api/portal-sites/:id` | `DELETE` | Remove a student portal card |
@@ -240,7 +245,7 @@ Dispatches a remote action to one workstation or the whole lab.
 Anything else is rejected with `400 Unsupported action`. There is no `broadcast` action — a broadcast is `navigate` to `target: "all"`, which additionally writes `broadcast_url` and `broadcast_epoch` onto the tenant row.
 
 ```json
-{ "target": "all", "action": "lock", "message": "Midterm examination is beginning." }
+{ "targets": ["PC-01", "PC-02"], "action": "lock", "message": "Midterm examination is beginning." }
 ```
 
 ```json
@@ -248,10 +253,10 @@ Anything else is rejected with `400 Unsupported action`. There is no `broadcast`
 ```
 
 ```json
-{ "target": "all", "action": "navigate", "resetPortal": true }
+{ "target": "all", "action": "reset" }
 ```
 
-`target` is either `"all"` or a specific `clientId`. When `action` is `lock` and no `message` is supplied, the tenant's `default_lock_message` is used.
+Targeting supports either `targets: string[]` (array of `clientId` strings) or `target: string` (`"all"` or a single `clientId`). When `action` is `lock` and no `message` is supplied, the tenant's `default_lock_message` is used.
 
 **`200 OK`** → `{ "status": "ok", "commandId": "cmd-uuid-99" }`
 

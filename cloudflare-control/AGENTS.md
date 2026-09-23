@@ -114,20 +114,25 @@ cloudflare-control/
 
 ### Rule 5b: Left-Side Multi-Level Panels Design & Seamless Transitions
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
-  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Apps & Web, Teachers & Staff, Lab Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
+  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, exactly 4 primary module icons (Workstations, Apps & Web, Teachers & Staff, Lab Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
-  - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
-    - Unifies Lesson Broadcast, Student Portal Apps, and Domain Allowlist into a single, cohesive view.
-    - Features a 3-tab segmented control (`Lesson Broadcast`, `Student Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`).
-    - The Level 2 context subpanel synchronizes its contextual tools dynamically with the active tab.
-    - Legacy paths (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
-  - **Workstations Page Layout**:
+  - **Workstations Page Layout (`/admin/workstations`)**:
     - **Sidebar Subpanel**: Removed duplicate classroom commands. Dedicated to Workstation Groups management (`+ New Group`, member counts, filtering by group, and delete group actions).
     - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted classroom actions (`Lock`, `Unlock`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
     - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, saving collapse states in `localStorage`.
+  - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
+    - Unifies Lesson Broadcast, Student Portal Apps, and Domain Allowlist into a single, cohesive view with 3 tab panes (`Lesson Broadcast`, `Student Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy paths (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
+    - **Stabilized Sidebar Subpanel**: Fixed, non-shifting Level 2 subpanel featuring static tab view switchers (`📶 Lesson Broadcast`, `⊞ Student Portal`, `🛡️ Domain Allowlist`), a `Preview Student Portal &rarr;` shortcut opening `/home` in a new tab, and a static Module Overview card (total apps, allowed domains, live broadcast status). Eliminates dynamic layout shift.
+    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant "Standard Educational Presets" from Lesson Broadcast to prevent duplicate lists.
+  - **Teachers & Staff Page Layout (`/admin/teachers`)**:
+    - **Sidebar Subpanel**: Active **"Role"** filter section (`All Roles`, `Teacher`, `Lab Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with live count badges that filter the authorized instructors table instantly without page reload.
+    - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
+  - **Lab Settings Page Layout (`/admin/settings`)**:
+    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 4 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `School Homepage`, `Security & Audit`) with instant client-side switching and deep linking (`?tab=...`).
+    - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Institution Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain & VNC Tunnel \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Lab Activity).
+    - **Scrollable Activity Table (`.table-scrollable`)**: Recent Lab Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
   - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
   - **Transitions & Micro-Interactions**: Hardware-accelerated transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
-
 
 ### Rule 5c: One Design Language, Declared Once
 - **`src/ui_tokens.ts` is the only place a colour, radius, easing curve or panel
@@ -144,7 +149,8 @@ cloudflare-control/
 - **A class a page renders must be a class the shell declares.** `input-field` was
   used fourteen times and declared nowhere, so those inputs rendered as white
   browser defaults inside a dark console for as long as they existed. A test
-  renders every console page and fails on any class the stylesheet does not carry.
+  renders every console page and fails on any class the stylesheet does not carry
+  (including `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`).
 - `--text-subtle` is `#808fa6` and not a darker slate because the section headings
   it paints have to clear 4.5:1 against `--bg-panel`, `--bg-surface` and
   `--bg-card`. The WCAG 2.2 AA claim in Rule 5b is only true while it does.
@@ -156,7 +162,7 @@ cloudflare-control/
   did not exist, the five settings jump links pointed at sections that did not
   exist, and the four telemetry counts never moved off the zero they rendered with.
   That is roughly thirty dead controls in the product's most-used surface.
-- `renderSubPanelScripts()` in `ui.ts` owns the behaviour and is emitted on every
+- `renderSubPanelScripts()` in `ui_admin_shared.ts` owns the behaviour and is emitted on every
   admin page. A panel control is a `data-` attribute that function reads, or it does
   not go in the panel.
 - A command the panel triggers delegates to the page's own button rather than

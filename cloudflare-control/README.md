@@ -28,7 +28,7 @@ The control plane handles tenant routing, teacher management dashboards, student
    - Query overrides (`?tenant=demo`) and `X-Tenant` headers are permitted **only** on local development hosts (`localhost`, `127.0.0.1`, `*.local`) or for authenticated platform super-admins (restricted to `demo`).
    - School admin consoles reside at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`); apex domain `/admin` redirects to the school's subdomain.
    - Super admins are restricted from accessing any school's admin console, telemetry, or VNC remote-control *except* for the dedicated `demo` school tenant, preserving institutional privacy.
-   - School admins can delegate management tasks to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`).
+   - School admins can delegate management tasks to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `apps-web`, `teachers`, `settings`, with backward-compatible support for legacy `broadcast`, `portal`, `whitelist`).
    - Every database query in `src/db.ts` filters explicitly by `tenant_id`.
    - Telemetry cache (`tenantTelemetryCache`) is partitioned by tenant ID and serves as an ephemeral cache only; D1 `client_devices` is the single source of truth across worker isolates.
    - Active broadcast URL and epoch reside in D1 (`tenants.broadcast_url` / `broadcast_epoch`), preventing colo isolate drift.
@@ -46,7 +46,7 @@ The control plane handles tenant routing, teacher management dashboards, student
 
 ```text
 cloudflare-control/
-├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0007)
+├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0009)
 ├── src/
 │   ├── index.ts               # Worker router, REST endpoints, telemetry cache, scheduled()
 │   ├── guard.ts               # Tenant resolution, authorization guards, CSRF origin checks

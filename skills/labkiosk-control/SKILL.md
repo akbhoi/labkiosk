@@ -36,6 +36,12 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
    - Server-side: All dynamic variables MUST be escaped via `escapeHtml()` or `escapeJson()` from `src/escape.ts`.
    - Client-side: Construct DOM elements and assign `textContent`. Never concatenate values into `innerHTML`.
    - URLs: Validate and sanitize via `safeHttpUrl()`.
+4. **Primary Rail & Multi-Level Layout Architecture:**
+   - Level 1 Rail (72px) has exactly 4 modules: Workstations, Apps & Web, Teachers & Staff, Lab Settings.
+   - Level 2 Action Panel (272px) provides module-specific tools without duplicating navigation.
+   - **Declared CSS Classes Only:** Every class rendered in markup MUST be declared in `ui_layout.ts` (e.g. `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`).
+   - Use `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky `th` for long tables to prevent awkward vertical growth.
+   - Wire subpanel buttons using `data-action="tab-<id>"` and integrate with `window.labkioskSwitchTab()`.
 
 ---
 
