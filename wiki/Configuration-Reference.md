@@ -124,9 +124,11 @@ Configured in Step 1 of the setup wizard or via `POST /api/network/configure`. A
 
 Contains NetworkManager connection keyfiles (`mode 0600`, owned by `root:root`).
 On installed disks, this directory is hosted on the persistent `LABKIOSK_DATA` partition and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab`:
+
 ```text
 /etc/labkiosk/system-connections /etc/NetworkManager/system-connections none bind,nofail 0 0
 ```
+
 This guarantees Wi-Fi credentials and static IP configurations persist across `overlayroot="tmpfs"` reboots.
 
 ### `/etc/localtime` and `/etc/timezone`

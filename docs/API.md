@@ -9,6 +9,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 ## 🌟 Architecture & Security Contracts
 
 ### 1. Protocols & Content Types
+
 - **Protocol:** HTTPS only in production (enforced via HSTS and edge redirection).
 - **Format:** All requests and responses use `application/json; charset=utf-8` unless rendering HTML or redirecting.
 - **Cache-Control:** All API responses specify `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
@@ -22,12 +23,14 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | **Public / Key-Exchanged** | No auth or one-time verification (`enrollmentKey`) | Setup wizard, sign-in, signup, student portal sites, health probe |
 
 ### 3. Tenant Scoping & Resolution Rules
+
 - The target school tenant is resolved authoritatively from the HTTP `Host` header via `resolveTenant()` in `src/guard.ts`.
 - Subdomain format: `<school>.labkiosk.institution.edu` or an approved custom FQDN (e.g. `kiosk.institution.edu`).
 - Query overrides (`?tenant=<subdomain>`) and `X-Tenant` headers are accepted **only** on local development hosts (`localhost`, `127.0.0.1`) or for requests carrying an active `super_admin` session.
 - A caller attempting to act upon a tenant they do not administer is rejected with `403 Forbidden`.
 
 ### 4. Defense-in-Depth Security Controls
+
 - **CSRF Origin Guard:** All cookie-authenticated mutations (`POST`, `DELETE`) pass `rejectCrossSiteMutation()`. Foreign cross-site `Origin` headers are rejected with `403 Forbidden`. Sign-out (`/api/auth/logout`) is POST-only.
 - **Sign-In Rate Limiting:** Repeated failed sign-in attempts result in exponential back-off (`429 Too Many Requests`).
 - **Enrolment Rate Limiting:** Failed device enrolment attempts from a given IP address are throttled after repeated invalid keys.
@@ -56,11 +59,11 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/broadcast-presets` | `POST` | Teacher Admin | Add a custom broadcast shortcut |
 | `/api/broadcast-presets/:id` | `DELETE` | Teacher Admin | Remove a broadcast shortcut |
 | `/api/settings/mode` | `POST` | Teacher Admin | Toggle between `portal` launcher and `single_url` mode |
-| `/api/settings/customization`| `GET` | Teacher Admin | Read custom branding and lock message configurations |
-| `/api/settings/customization`| `POST` | Teacher Admin | Update custom branding, hero titles, and lock messages |
+| `/api/settings/customization` | `GET` | Teacher Admin | Read custom branding and lock message configurations |
+| `/api/settings/customization` | `POST` | Teacher Admin | Update custom branding, hero titles, and lock messages |
 | `/api/settings/subdomain` | `POST` | Teacher Admin | Request change of school subdomain |
-| `/api/settings/enrollment-key`| `GET` | Teacher Admin | View current workstation enrollment key |
-| `/api/settings/enrollment-key`| `POST` | Teacher Admin | Regenerate/rotate workstation enrollment key |
+| `/api/settings/enrollment-key` | `GET` | Teacher Admin | View current workstation enrollment key |
+| `/api/settings/enrollment-key` | `POST` | Teacher Admin | Regenerate/rotate workstation enrollment key |
 | `/api/settings/custom-domain` | `POST` | Teacher Admin | Request custom domain binding (e.g. `kiosk.school.edu`) |
 | `/api/settings/custom-domain` | `DELETE` | Teacher Admin | Disconnect custom domain binding |
 | `/api/whitelist` | `GET` | Teacher Admin | List effective allowed domains for student workstations |
@@ -71,9 +74,10 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/groups` | `GET` | Teacher Admin | List workstation groups for the school tenant |
 | `/api/groups` | `POST` | Teacher Admin | Create a new workstation group |
 | `/api/groups/:id` | `DELETE` | Teacher Admin | Delete a workstation group |
-| `/api/teachers` | `GET` | Teacher Admin | List delegated instructors, staff, and sub-admins |
-| `/api/teachers` | `POST` | Teacher Admin | Invite/create instructor account with role and permissions |
-| `/api/teachers/:id` | `DELETE` | Teacher Admin | Revoke delegated instructor access |
+| `/api/tenant/teachers` | `GET` | Teacher Admin (`teachers`) | List delegated instructors, staff, and sub-admins |
+| `/api/tenant/teachers` | `POST` | Teacher Admin (`teachers`) | Create a staff account with role and permissions |
+| `/api/tenant/teachers/update` | `POST` | Teacher Admin (`teachers`) | Change a staff account's role or permissions |
+| `/api/tenant/teachers/:id` | `DELETE` | Teacher Admin (`teachers`) | Remove a staff account and end its sessions |
 | `/api/command` | `POST` | Teacher Admin | Dispatch remote command to targets (lock, unlock, reboot, shutdown, etc.) |
 | `/api/audit-logs` | `GET` | Teacher Admin | Retrieve paginated institutional security audit log |
 | `/api/devices/enroll` | `POST` | Public / Key | Exchange school enrollment key for persistent device token |
@@ -81,10 +85,10 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending school subdomain registration |
 | `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending school registration |
 | `/api/super/tenants/suspend` | `POST` | Super Admin | Suspend active school tenant |
-| `/api/super/tenants/reactivate`| `POST` | Super Admin | Reactivate suspended school tenant |
-| `/api/super/tenants/custom-domain/approve`| `POST`| Super Admin | Approve and bind custom domain for a school |
-| `/api/super/tenants/custom-domain/reject` | `POST`| Super Admin | Reject requested custom domain |
-| `/api/super/tenants/custom-domain/remove` | `POST`| Super Admin | Remove assigned custom domain |
+| `/api/super/tenants/reactivate` | `POST` | Super Admin | Reactivate suspended school tenant |
+| `/api/super/tenants/custom-domain/approve` | `POST` | Super Admin | Approve and bind custom domain for a school |
+| `/api/super/tenants/custom-domain/reject` | `POST` | Super Admin | Reject requested custom domain |
+| `/api/super/tenants/custom-domain/remove` | `POST` | Super Admin | Remove assigned custom domain |
 
 ---
 
@@ -93,9 +97,12 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 ### 1. System Health & Probes
 
 #### `GET /api/status`
+
 Returns the operational mode and current landing target. Used by the first-boot onboarding wizard.
+
 - **Access:** Public
 - **Response `200 OK`:**
+
   ```json
   {
     "status": "online",
@@ -110,9 +117,12 @@ Returns the operational mode and current landing target. Used by the first-boot 
 ### 2. Authentication & Account Management
 
 #### `POST /api/auth/register`
+
 Creates a new school organization and initializes an administrator account.
+
 - **Access:** Public (rate-limited per IP)
 - **Request Body:**
+
   ```json
   {
     "name": "Oakridge High School",
@@ -121,7 +131,9 @@ Creates a new school organization and initializes an administrator account.
     "subdomain": "oakridge"
   }
   ```
+
 - **Response `200 OK`:**
+
   ```json
   {
     "status": "ok",
@@ -131,16 +143,21 @@ Creates a new school organization and initializes an administrator account.
   ```
 
 #### `POST /api/auth/login`
+
 Authenticates a teacher or platform super administrator.
+
 - **Access:** Public (exponential back-off after repeated failures)
 - **Request Body:**
+
   ```json
   {
     "email": "teacher@oakridge.edu",
     "password": "StrongPassword123!"
   }
   ```
+
 - **Response `200 OK`:** Sets `labkiosk_session` cookie.
+
   ```json
   {
     "status": "ok",
@@ -150,9 +167,12 @@ Authenticates a teacher or platform super administrator.
   ```
 
 #### `GET /api/auth/me`
+
 Fetches profile details of the current signed-in user.
+
 - **Access:** Session authenticated
 - **Response `200 OK`:**
+
   ```json
   {
     "user": {
@@ -170,16 +190,21 @@ Fetches profile details of the current signed-in user.
   ```
 
 #### `POST /api/auth/change-password`
+
 Rotates password for the authenticated user and terminates all other concurrent sessions.
+
 - **Access:** Session authenticated
 - **Request Body:**
+
   ```json
   {
     "currentPassword": "OldPassword123!",
     "newPassword": "NewStrongPassword456!"
   }
   ```
+
 - **Response `200 OK`:**
+
   ```json
   { "status": "ok" }
   ```
@@ -189,9 +214,12 @@ Rotates password for the authenticated user and terminates all other concurrent 
 ### 3. Student Learning Portal & Apps
 
 #### `GET /api/portal-sites`
+
 Fetches educational application cards displayed on the student launcher.
+
 - **Access:** Public (scoped to host tenant)
 - **Response `200 OK`:**
+
   ```json
   {
     "sites": [
@@ -208,9 +236,12 @@ Fetches educational application cards displayed on the student launcher.
   ```
 
 #### `POST /api/portal-sites`
+
 Adds a new application card to the student launcher.
+
 - **Access:** School Admin
 - **Request Body:**
+
   ```json
   {
     "title": "Scratch Programming",
@@ -220,7 +251,9 @@ Adds a new application card to the student launcher.
     "thumbnailUrl": "https://images.unsplash.com/photo-scratch"
   }
   ```
+
 - **Response `200 OK`:**
+
   ```json
   {
     "status": "ok",
@@ -233,9 +266,12 @@ Adds a new application card to the student launcher.
 ### 4. Workstation Onboarding & Telemetry
 
 #### `POST /api/devices/enroll`
+
 Exchanges the school's enrollment key for a persistent workstation device token.
+
 - **Access:** Public / Enrollment Key holder (throttled on failure)
 - **Request Body:**
+
   ```json
   {
     "subdomain": "oakridge",
@@ -243,7 +279,9 @@ Exchanges the school's enrollment key for a persistent workstation device token.
     "enrollmentKey": "KEY-ABCD-1234-EFGH"
   }
   ```
+
 - **Response `200 OK`:**
+
   ```json
   {
     "status": "ok",
@@ -257,9 +295,12 @@ Exchanges the school's enrollment key for a persistent workstation device token.
   ```
 
 #### `POST /api/telemetry`
+
 Transmits 3-second heartbeat, active URL, screen screenshot thumbnail, and retrieves queued commands.
+
 - **Access:** Workstation (`Authorization: Bearer <deviceToken>`)
 - **Request Body:**
+
   ```json
   {
     "clientNum": 1,
@@ -270,7 +311,9 @@ Transmits 3-second heartbeat, active URL, screen screenshot thumbnail, and retri
     "remoteHost": "pc-01.labkiosk.institution.edu"
   }
   ```
+
 - **Response `200 OK`:**
+
   ```json
   {
     "status": "ok",
@@ -294,9 +337,12 @@ Transmits 3-second heartbeat, active URL, screen screenshot thumbnail, and retri
 ### 5. Teacher Lab Console: Fleet & Commands
 
 #### `GET /api/clients`
+
 Retrieves all currently registered workstations and their latest telemetry state.
+
 - **Access:** School Admin
 - **Response `200 OK`:**
+
   ```json
   {
     "clients": {
@@ -316,12 +362,19 @@ Retrieves all currently registered workstations and their latest telemetry state
   ```
 
 #### `POST /api/command`
+
 Dispatches remote actions to one, selected subsets, or all workstations.
-- **Access:** School Admin (requires `workstations` permission)
-- **Supported Actions:** `lock`, `unlock`, `reboot`, `shutdown`, `poweroff`, `navigate`, `reload`, `reset`
+
+- **Access:** School Admin. `navigate` requires the `broadcast` permission; every other action requires `workstations`.
+- **Supported Actions:** `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `mute`. Anything else answers `400`.
 - **Targeting:** Specify either `targets: string[]` (array of client IDs, e.g. `["PC-01", "PC-02"]`) or single `target: string` (`"all"` or `"PC-01"`).
+  Duplicates are removed, `"all"` replaces any named targets rather than queueing a second command for each,
+  and at most **500** targets are accepted per request (`400` otherwise).
+- **`message`** (optional, `lock` only): shown on the lock curtain, truncated to 280 characters. Without it the
+  school's default lock message is used.
 - **Request Body Examples:**
   - **Batch lock selected workstations with custom message:**
+
     ```json
     {
       "targets": ["PC-01", "PC-02", "PC-05"],
@@ -329,14 +382,18 @@ Dispatches remote actions to one, selected subsets, or all workstations.
       "message": "Class attention! Midterm examination is beginning."
     }
     ```
+
   - **Reboot or shutdown specific machines:**
+
     ```json
     {
       "targets": ["PC-03"],
       "action": "shutdown"
     }
     ```
+
   - **Broadcast website to all screens:**
+
     ```json
     {
       "target": "all",
@@ -344,65 +401,91 @@ Dispatches remote actions to one, selected subsets, or all workstations.
       "url": "https://scratch.mit.edu"
     }
     ```
-  - **Reset broadcast to student portal:**
+
+  - **Reset broadcast to student portal** (there is no `reset` action; it is `navigate` with `resetPortal`):
+
     ```json
     {
       "target": "all",
-      "action": "reset"
+      "action": "navigate",
+      "resetPortal": true
     }
     ```
+
 - **Response `200 OK`:**
+
   ```json
   {
     "status": "ok",
-    "commandId": "cmd-uuid-99"
+    "commandId": "cmd-uuid-99",
+    "commandIds": ["cmd-uuid-99", "cmd-uuid-100"],
+    "count": 2
   }
   ```
 
 #### `GET /api/groups`
+
 Retrieves all defined workstation groups for the school tenant.
+
 - **Access:** School Admin (requires `workstations` permission)
 - **Response `200 OK`:**
+
   ```json
   {
     "groups": [
-      { "id": 1, "name": "Row 1", "created_at": 1726300000 },
-      { "id": 2, "name": "Lab A", "created_at": 1726300100 }
+      { "id": "8f0c…", "tenant_id": "…", "name": "Lab A", "created_at": 1726300100 },
+      { "id": "1b2d…", "tenant_id": "…", "name": "Row 1", "created_at": 1726300000 }
     ]
   }
   ```
 
 #### `POST /api/groups`
+
 Creates a new named workstation group.
+
 - **Access:** School Admin (requires `workstations` permission)
-- **Request Body:** `{ "name": "Robotics Bay" }`
-- **Response `200 OK`:** `{ "status": "ok", "id": 3, "name": "Robotics Bay" }`
+- **Request Body:** `{ "name": "Robotics Bay" }` — 1 to 50 characters.
+- **Response `200 OK`:** `{ "status": "ok", "group": { "id": "…", "tenant_id": "…", "name": "Robotics Bay", "created_at": 1726300200 } }`
+- **Errors:** `400` empty or over-long name; `409` a group with that name already exists (compared
+  case-insensitively — membership is stored by name, so two groups sharing one would share members).
 
 #### `DELETE /api/groups/:id`
+
 Deletes a workstation group and resets member devices' `group_name` to `NULL`.
+
 - **Access:** School Admin (requires `workstations` permission)
-- **Response `200 OK`:** `{ "status": "ok" }`
+- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the group does not exist in this school.
 
 #### `POST /api/clients/group`
-Assigns multiple workstations to a designated group (or unassigns if `groupName` is empty).
+
+Assigns multiple workstations to a designated group (or unassigns if `groupName` is empty or `null`).
+
 - **Access:** School Admin (requires `workstations` permission)
 - **Request Body:**
+
   ```json
   {
     "clientIds": ["PC-01", "PC-02"],
     "groupName": "Row 1"
   }
   ```
-- **Response `200 OK`:** `{ "status": "ok" }`
+
+- **Response `200 OK`:** `{ "status": "ok", "count": 2 }`
+- **Errors:** `404` when `groupName` is not an existing group; `400` for more than 500 ids.
 
 #### `POST /api/clients/remove`
+
 Decommissions a client device and revokes its bearer token.
+
 - **Access:** School Admin
 - **Request Body:**
+
   ```json
   { "clientId": "PC-01" }
   ```
+
 - **Response `200 OK`:**
+
   ```json
   { "status": "ok", "remaining": 14 }
   ```
@@ -411,54 +494,89 @@ Decommissions a client device and revokes its bearer token.
 
 ### 5b. Teachers & Staff Delegation
 
-#### `GET /api/teachers`
+**Roles:** `school_admin` (Co-Administrator, full access), `sub_admin`, `teacher`, `lab_assistant`,
+`content_manager`. **Permissions:** `workstations`, `broadcast`, `portal`, `whitelist`, `teachers`,
+`settings`. The Apps & Web page opens with any of `broadcast`, `portal` or `whitelist`, and each of its
+three tabs calls routes guarded by that one permission. `*` is never stored; full access comes from
+owning the school or holding the `school_admin` role.
+
+**Delegation limits.** A staff member who holds `teachers` but is not a co-administrator may only grant
+permissions they hold themselves, may not appoint a `school_admin`, and may not change or remove their
+own account or a co-administrator's. Each of those answers `403`. Without these limits the staff
+permission was a path to full control of the school.
+
+#### `GET /api/tenant/teachers`
+
 Lists all authorized instructors, assistants, and sub-administrators delegated for this school tenant.
-- **Access:** School Admin (requires `teachers` permission)
+
+- **Access:** School Admin (requires `teachers` permission — the list carries every colleague's email)
 - **Response `200 OK`:**
+
   ```json
   {
+    "status": "ok",
     "teachers": [
       {
-        "id": 1,
+        "id": "5c1e…",
+        "tenant_id": "…",
+        "user_id": "…",
         "email": "sarah.smith@greenwood.edu",
         "name": "Sarah Smith",
-        "role": "Teacher",
-        "permissions": "workstations,apps-web",
-        "created_at": 1726300000,
-        "last_login": 1726310000
+        "role": "teacher",
+        "permissions": ["workstations", "broadcast"],
+        "created_at": 1726300000
       }
     ]
   }
   ```
 
-#### `POST /api/teachers`
-Invites or creates a delegated instructor account with specific role and granular permission flags.
-- **Access:** School Admin (requires `teachers` permission)
+#### `POST /api/tenant/teachers`
+
+Creates a delegated staff account with a role and granular permissions.
+
+- **Access:** School Admin (requires `teachers` permission, within the delegation limits above)
 - **Request Body:**
+
   ```json
   {
     "email": "john.doe@greenwood.edu",
     "password": "SecurePassword123!",
     "name": "John Doe",
-    "role": "Teacher",
-    "permissions": ["workstations", "apps-web"]
+    "role": "teacher",
+    "permissions": ["workstations", "broadcast"]
   }
   ```
-- **Response `200 OK`:** `{ "status": "ok", "id": 2 }`
 
-#### `DELETE /api/teachers/:id`
-Revokes an instructor's access and invalidates their active sessions.
-- **Access:** School Admin (requires `teachers` permission)
-- **Response `200 OK`:** `{ "status": "ok" }`
+- **Response `200 OK`:** `{ "status": "ok", "teacher": { "id": "…", "role": "teacher", "permissions": [...], ... } }`
+- **Errors:** `400` unknown role or permission, or a password under 12 characters or without both letters
+  and digits; `409` the email already belongs to an account (it is never linked into another school).
+
+#### `POST /api/tenant/teachers/update`
+
+Changes a staff account's role and/or permissions. Omitted fields are left as they are.
+
+- **Access:** School Admin (requires `teachers` permission, within the delegation limits above)
+- **Request Body:** `{ "id": "5c1e…", "role": "lab_assistant", "permissions": ["workstations"] }`
+- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the id is not a staff account of this school.
+
+#### `DELETE /api/tenant/teachers/:id`
+
+Removes a staff account from the school and ends every session it holds.
+
+- **Access:** School Admin (requires `teachers` permission, within the delegation limits above)
+- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the id is not a staff account of this school.
 
 ---
 
 ### 6. Settings & Customization
 
 #### `POST /api/settings/mode`
+
 Switches workstation launch behavior between the App Launcher Grid (`portal`) and Direct Single-Site Lockdown (`single_url`).
+
 - **Access:** School Admin
 - **Request Body:**
+
   ```json
   {
     "mode": "single_url",
@@ -467,9 +585,12 @@ Switches workstation launch behavior between the App Launcher Grid (`portal`) an
   ```
 
 #### `POST /api/settings/customization`
+
 Configures school-specific branding, hero headers, and screen lock defaults.
+
 - **Access:** School Admin
 - **Request Body:**
+
   ```json
   {
     "name": "Oakridge STEM Academy",
@@ -482,9 +603,12 @@ Configures school-specific branding, hero headers, and screen lock defaults.
   ```
 
 #### `POST /api/settings/enrollment-key`
+
 Rotates the school's workstation enrollment key. Existing workstations retain valid bearer tokens.
+
 - **Access:** School Admin
 - **Response `200 OK`:**
+
   ```json
   {
     "status": "ok",
@@ -497,9 +621,12 @@ Rotates the school's workstation enrollment key. Existing workstations retain va
 ### 7. Super Administrator Console (`/super`)
 
 #### `POST /api/super/tenants/approve`
+
 Approves a pending school tenant registration.
+
 - **Access:** Super Admin
 - **Request Body:**
+
   ```json
   {
     "tenantId": "tenant-uuid-1",
@@ -508,17 +635,23 @@ Approves a pending school tenant registration.
   ```
 
 #### `POST /api/super/tenants/suspend`
+
 Temporarily suspends an active school organization. Workstations for this tenant stop receiving telemetry and student portal access is blocked.
+
 - **Access:** Super Admin
 - **Request Body:**
+
   ```json
   { "tenantId": "tenant-uuid-1" }
   ```
 
 #### `POST /api/super/tenants/custom-domain/approve`
+
 Approves and activates a custom domain mapping for an institution.
+
 - **Access:** Super Admin
 - **Request Body:**
+
   ```json
   {
     "tenantId": "tenant-uuid-1",
@@ -533,6 +666,7 @@ Approves and activates a custom domain mapping for an institution.
 Served locally on the workstation by `agent.py`. Binds strictly to `127.0.0.1` and enforces loopback Host/Origin validation (`_is_expected_host()` and `_is_local_caller()`). The only non-loopback `Origin` accepted is the kiosk extension's own origin (`chrome-extension://hfjmbeplebjipenkfabncgkpadnjmmoe`, pinned by the `key` in `manifest.json`), which Chromium puts on the extension service worker's `POST` to `/api/admin/verify`.
 
 #### `GET /setup`
+
 Serves `wizard.html` for network configuration and disk installation/enrolment. The page is served
 on an enrolled workstation too, because it is where post-install network changes are made; the
 fragment selects the mode:
@@ -547,6 +681,7 @@ fragment selects the mode:
 Enrolment is still refused once configured: `POST /api/setup` answers `409`.
 
 #### `GET /api/status`
+
 Returns the workstation's local runtime state. `isOnline` is true when any of these hold: a
 heartbeat reached the control plane in the last 20 s, DNS resolves, a public resolver answers on
 TCP 53, or the configured proxy accepts connections.
@@ -555,7 +690,9 @@ TCP 53, or the configured proxy accepts connections.
 mounted at `/etc/labkiosk`. Such a machine can still be enrolled, and loses the enrolment at the
 next power-off, so the setup wizard shows a warning rather than a plain success. It is always true
 on live media, which keeps nothing by design.
+
 - **Response `200 OK`:**
+
   ```json
   {
     "clientId": "PC-01",
@@ -576,6 +713,7 @@ on live media, which keeps nothing by design.
   ```
 
 #### `GET /api/localization/options`
+
 Everything the Language & Region step offers, read from the workstation's own tables: continents
 and zones from tzdata's `zone1970.tab`, countries from `iso3166.tab`, locales from
 `/usr/share/i18n/SUPPORTED`, keyboard layouts from the X11 rules list. Also returns `uiLanguages`
@@ -583,6 +721,7 @@ and zones from tzdata's `zone1970.tab`, countries from `iso3166.tab`, locales fr
 (`/etc/labkiosk/localization.json`).
 
 #### `POST /api/localization/configure`
+
 Applies language, region, timezone, keyboard and clock. Body:
 `{ uiLanguage, timezone, locale, keymap, keymapVariant, syncTime, time }`. `ntpServer` accepts one to four host names or addresses and configures `systemd-timesyncd`
 through a drop-in; an empty value restores Debian's default pool. `time` is
@@ -592,23 +731,29 @@ workstation is installed, exactly like `/api/network/configure`. Every value is 
 `/usr/local/sbin/labkiosk-localization`, which is the only program the agent runs through sudo.
 
 #### `GET /i18n/<tag>.json`
+
 An interface catalog. `en-US` ships in the image; other languages are files placed in
 `/etc/labkiosk/i18n` on the data partition. The tag is matched against a pattern before it becomes
 a path, and an unknown one returns `404`.
 
 #### `GET /api/localization/languages`
+
 Asks the school's control plane which interface languages it offers, and marks the ones already
 installed. Needs the network and an enrolment, which is why it is separate from
 `/api/localization/options` — that one has to work on a workstation that has neither.
 
 #### `POST /api/localization/language/download`
+
 Body `{ tag }`. Fetches that catalog from the control plane, checks its size, shape and value types,
 and stores it in `/etc/labkiosk/i18n`. Administrator token required once the workstation is
 installed.
 
 #### `GET /api/network/status`
+
 Returns complete network addressing, active route, DNS, and proxy status.
+
 - **Response `200 OK`:**
+
   ```json
   {
     "online": true,
@@ -652,14 +797,18 @@ Returns complete network addressing, active route, DNS, and proxy status.
     }
   }
   ```
+
   `profile` is the saved NetworkManager profile, read back so the wizard can render the settings
   actually in force instead of its own defaults. `mode` is derived from the stored method:
   `manual`, `custom_dns` (automatic with `ignore-auto-dns`), `auto`, or `disabled`. It is `null`
   when the workstation has no kiosk profile yet.
 
 #### `GET /api/network/interfaces`
+
 Lists detected Ethernet and Wi-Fi adapters and link carrier status.
+
 - **Response `200 OK`:**
+
   ```json
   [
     { "device": "eth0", "type": "ethernet", "state": "connected", "connection": "Kiosk-Ethernet", "carrier": true },
@@ -668,9 +817,12 @@ Lists detected Ethernet and Wi-Fi adapters and link carrier status.
   ```
 
 #### `GET /api/network/wifi/scan`
+
 Returns nearby Wi-Fi SSIDs (strongest entry per SSID) sorted by signal strength. SSIDs are chosen by
 whoever runs the access point, so clients must render every field as text.
+
 - **Response `200 OK`:**
+
   ```json
   [
     { "ssid": "School-Students", "signal": 85, "bars": "▂▄▆█", "security": "WPA2", "inUse": false },
@@ -679,6 +831,7 @@ whoever runs the access point, so clients must render every field as text.
   ```
 
 #### `GET /api/log`
+
 The tail of `/tmp/lab-agent.log` (at most 64 KB), as `text/plain`. A workstation has no terminal, no
 getty, no SSH, and `file://` is blocked in its browser, so this is the only way to read the agent log
 on real hardware. The setup wizard shows it under **Agent Log & Diagnostics**, and opens it by itself
@@ -691,12 +844,15 @@ when enrolment fails unexpectedly.
 - **Note:** the log is in the RAM overlay and is gone at power-off. Read it before rebooting.
 
 #### `POST /api/network/configure`
+
 Validates the whole request, then replaces the `Kiosk-Ethernet` / `Kiosk-Wifi` NetworkManager
 profile in one `nmcli connection add`, activates it and checks connectivity. Nothing is changed when
 validation fails.
+
 - **Authentication:** on an installed workstation, the `X-LabKiosk-Admin` header must carry a token
   from `POST /api/admin/verify`; otherwise `401`. Live media is setup mode and needs none.
 - **Request Body:**
+
   ```json
   {
     "interfaceType": "wifi",
@@ -715,6 +871,7 @@ validation fails.
     }
   }
   ```
+
   - `ipv4.mode`: `auto`, `custom_dns` (needs `dns`), `manual` (needs `address` with a prefix, e.g.
     `192.168.1.50/24`; optional `gateway`, `dns`). `ipv6.mode` additionally accepts `disabled`.
   - `password` may be left empty for an SSID that already has a saved profile: the agent reuses the
@@ -726,6 +883,7 @@ validation fails.
   - The proxy is applied to the agent's own requests and to Chromium's `ProxySettings` policy;
     loopback is always exempt. A proxy change restarts the kiosk browser after the next heartbeat.
 - **Response `200 OK`:**
+
   ```json
   {
     "status": "ok",
@@ -733,41 +891,55 @@ validation fails.
     "connectivity": { "ok": true, "dns": true, "internet": true, "proxy": true, "controlPlane": false, "details": "..." }
   }
   ```
+
 - **Errors:** `400` invalid input, `401` missing/expired admin token, `500` NetworkManager refused
   the profile or it did not come up.
 
 #### `POST /api/network/test`
+
 Forces a fresh connectivity check. Same shape as `connectivity` above.
 
 #### `POST /api/admin/verify`
+
 Verifies the administrator (boot-menu) password against the PBKDF2 digest in
 `/etc/grub.d/01_labkiosk_password` and issues a 10-minute token for `/api/network/configure`.
 Attempts are serialised; after 5 failures the gate refuses all attempts for 60 s. When the
 installation has no password file (installed without one, after a warning), any password is
 accepted. A file that exists but cannot be parsed fails closed.
+
 - **Request Body:**
+
   ```json
   { "password": "AdminPassword123" }
   ```
+
 - **Response `200 OK`:**
+
   ```json
   { "verified": true, "token": "…", "expiresIn": 600 }
   ```
+
 - **Response `401` / `429` / `500`:**
+
   ```json
   { "verified": false, "error": "Invalid administrator password" }
   ```
 
 #### `POST /api/install`
+
 Triggers automated disk installation to the specified target drive.
+
 - **Request Body:**
+
   ```json
   {
     "targetDisk": "/dev/sda",
     "grubPasswordHash": "grub.pbkdf2.sha512.200000.abcd...1234..."
   }
   ```
+
 - **Response `200 OK`:**
+
   ```json
   { "status": "started", "targetDisk": "/dev/sda" }
   ```

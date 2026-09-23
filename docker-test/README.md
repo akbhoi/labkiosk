@@ -23,6 +23,7 @@ The simulator closely mirrors the production live Debian 12 kiosk environment (`
 ```
 
 ### Deliberate Differences vs. Physical Hardware
+
 1. **Gateway Binding:** `websockify` binds to `0.0.0.0:6080` *inside* the container so you can view the simulated display, but the port is published only on the host's `127.0.0.1`. In the physical ISO, `websockify` binds strictly to `127.0.0.1:6080` and is reachable only through a per-workstation Cloudflare Tunnel.
 2. **Sandboxing:** the same as the real image — Chromium runs sandboxed as the unprivileged `kiosk` user. `--no-sandbox` is used only if someone starts the container as root, and the entrypoint warns when that happens.
 3. **Loopback Preservation:** The agent's local API (`127.0.0.1:8888`) remains bound to loopback inside the container, exactly as on physical hardware. You drive the setup wizard from the simulated noVNC screen rather than your host browser.
@@ -78,11 +79,14 @@ acceptable.
 > removed. This directory holds the entrypoint and these docs.
 
 ### 1. Prerequisites
+
 - A rootful Docker-compatible engine with Docker Compose v2 (`docker compose`).
 - The Cloudflare Control Plane running locally (`pnpm dev` in `cloudflare-control/`) or deployed to Cloudflare Workers.
 
 ### 2. Start the Simulator
+
 From the repository root:
+
 ```bash
 docker compose up -d
 ```
@@ -104,10 +108,13 @@ docker compose up -d
 > [Interactive Development Workflows](#%EF%B8%8F-interactive-development-workflows) below.
 
 ### 3. Open the In-Browser Workstation Display
+
 Navigate to:
+
 ```text
 http://localhost:6080/vnc.html
 ```
+
 - **VNC Password:** random per container, printed in the startup log (`docker compose logs | grep "VNC password"`). Set `VNC_PASSWORD` to pin one.
 - You will see the simulated thin-client desktop rendering the **First-Boot Setup Wizard**.
 
@@ -137,28 +144,37 @@ http://localhost:6080/vnc.html
 The simulator mounts `./distro-builder/config/includes.chroot/opt/labkiosk` as a volume into `/opt/labkiosk`.
 
 ### 1. Testing Agent Updates
+
 If you modify `agent.py`:
+
 ```bash
 # Restart the agent daemon inside the container
 docker exec labkiosk-client-01 pkill -f agent.py
 ```
+
 The watchdog loop in `entrypoint.sh` will immediately relaunch `agent.py`.
 
 ### 2. Testing Browser Extension Changes
+
 Manifest V3 extensions are parsed by Chromium on browser launch. To test changes to `content.js` or `background.js`:
+
 ```bash
 # Restart Chromium
 docker exec labkiosk-client-01 pkill -f -- --user-data-dir=/tmp/chromium-profile
 ```
+
 The watchdog loop in `entrypoint.sh` will relaunch Chromium within one second with the updated extension.
 
 ### 3. Viewing Agent Logs
+
 ```bash
 docker exec labkiosk-client-01 tail -n 50 /tmp/lab-agent.log
 ```
 
 ### 4. Taking Headless Screenshots
+
 Always verify visual rendering directly on screen rather than relying solely on log outputs:
+
 ```bash
 # Capture virtual display :0 to a file inside the container
 docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
@@ -186,8 +202,10 @@ Configure these in `docker-compose.yml` or via shell exports:
 ## 🧹 Teardown & Resetting State
 
 To completely reset the simulator back to an un-enrolled, fresh first-boot state:
+
 ```bash
 docker compose down -v
 docker compose up -d
 ```
+
 All ephemeral state in `/tmp` (browser profile, session caches, VNC secrets) is wiped on container recreation.

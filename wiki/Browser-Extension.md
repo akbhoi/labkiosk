@@ -78,6 +78,7 @@ Controls: Home, Back, Forward, Reload, domain pill, and `.client-meta` housing t
 ## Network management & administrator modal
 
 In addition to navigation buttons, the top bar includes an interactive network indicator (`#btn-network`):
+
 - **Visual status:** SVG network icon renders with a green stroke (`#10b981`) when online and red (`#ef4444`) when offline.
 - **Discoverability:** the bar slides into view for 2.5 seconds on the first page of each session, then hides itself. A bar that only appears when the pointer reaches the top edge is otherwise invisible to anyone who has not been told about it. The service worker hands out the one-shot flag (`labkiosk:intro-peek`, stored in `chrome.storage.session`), so it happens once per boot rather than on every navigation.
 - **Admin Authentication Modal (`#admin-modal`):** Because students must not tamper with network routes or IPs during class or exams, clicking `#btn-network` renders an isolated password prompt inside the Shadow DOM.
@@ -113,6 +114,7 @@ setInterval(syncLoop, 1000);
 ```
 
 Once a second the content script asks the service worker for the agent's status and reconciles:
+
 - **Lock curtain:** curtain up or down, message text.
 - **Broadcast synchronization:** broadcast navigation when the epoch has advanced.
 - **Online/Offline status:** Updates `#kiosk-dot` and `#kiosk-net-icon`.

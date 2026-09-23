@@ -39,23 +39,29 @@ You will land on **Step 1: Network Setup** of the setup wizard.
 The setup wizard enforces a **Network First** workflow so that all dependencies and Cloudflare control plane connections are verifiable before attempting installation or enrollment.
 
 ### 1. Interface Selection
+
 - **Ethernet:** Automatically detects physical cable link status (`Connected (Cable plugged in)` vs. `Unplugged`).
 - **Wi-Fi:** Automatically lists detected wireless interfaces. Click **Scan / Refresh** to view live SSIDs sorted by signal strength with lock badges for encrypted networks. Supports WPA/WPA2/WPA3 Personal (PSK) and Open networks. Use **Join Hidden Network** to specify an unbroadcast SSID.
 
 ### 2. IP Addressing (IPv4 & IPv6)
+
 Under **IP Addressing & DNS Configuration (Optional)**:
+
 - **Automatic (DHCP / SLAAC):** Default standard dynamic addressing.
 - **DHCP with Custom DNS:** Obtains IP and default route automatically from DHCP, but overrides nameservers (e.g. Cloudflare `1.1.1.1` or Google `8.8.8.8`). Sets `ignore-auto-dns yes`.
 - **Manual (Static IP):** For institutional environments requiring fixed IPs. Specify IP Address with CIDR prefix (e.g., `192.168.1.50/24`), Gateway, and primary/secondary DNS servers.
 - **IPv6:** Configurable as Auto, Custom DNS, Manual, or Disabled.
 
 ### 3. Institutional HTTP/HTTPS Proxy
+
 For school districts that mandate content-filtering web proxies:
+
 - Toggle **Enable HTTP/HTTPS Proxy**.
 - Specify **Proxy Host** (e.g., `proxy.school.internal` or IP), **Port** (default `8080`), and comma-separated **Bypass List** (`localhost, 127.0.0.1, *.school.internal`).
 - Proxy parameters are automatically injected into the environment (`http_proxy`, `https_proxy`) and applied to Chromium managed policies (`ProxyMode: "fixed_servers"`).
 
 ### 4. Verification & Testing
+
 Click **Apply & Test Network**. The agent applies the NetworkManager configuration, issues a DNS resolution lookup, probes connectivity to `1.1.1.1:53` / `8.8.8.8:53`, and reports live routing status. Click **Proceed to Next Step**.
 
 ---
@@ -76,17 +82,21 @@ Once connected to the network, choose your desired operational mode:
 In the wizard, select the **Install to Hard Disk** tab.
 
 ### Choose the target disk
+
 The list shows candidate disks of at least 3 GB. **The USB stick you booted from is excluded** — the installer matches it through `/proc/mounts` and `/sys` and refuses it both when listing and again immediately before wiping.
 
 Removable drives are still shown and labelled `REMOVABLE DRIVE`, because internal eMMC on some thin clients reports as removable. They sort last, so the default selection is always an internal disk. Read the label before you continue.
 
 ### Set a boot-menu & admin password
+
 Use **Generate** for a random 20-character password, or type your own.
 
 **Record it before installing.** It is hashed in the browser with WebCrypto (PBKDF2 SHA-512) and only the digest is sent onward; the plaintext never reaches the agent and is never written to disk. It protects both the GRUB boot menu and post-installation network administration.
 
 ### Run installation
+
 Click **Install Lab Kiosk to Drive**. The installer:
+
 1. Partitions the disk as hybrid GPT — `bios_grub`, `ESP`, `ROOT`, `DATA`.
 2. Formats filesystems and `rsync`s the rootfs across.
 3. Copies NetworkManager profiles to `/etc/labkiosk/system-connections` on `LABKIOSK_DATA` and adds an `/etc/fstab` bind mount (`/etc/labkiosk/system-connections /etc/NetworkManager/system-connections none bind,nofail 0 0`).
@@ -96,6 +106,7 @@ Click **Install Lab Kiosk to Drive**. The installer:
 7. Installs dual GRUB variants (UEFI `x86_64-efi`, UEFI removable, and legacy BIOS `i386-pc`).
 
 ### Reboot
+
 Click **Reboot System**. On the way down the machine stops with:
 
 ```text
@@ -129,6 +140,7 @@ Within three seconds the workstation appears on the Teacher Dashboard with a liv
 ## Step 6 — Post-Installation Network Management
 
 On an installed workstation running with `overlayroot="tmpfs"`:
+
 1. **Top-Bar Network Icon:** Hover near the top edge to reveal the auto-hiding kiosk bar. Click the network icon next to the status dot.
 2. **Administrator Verification:** An authentication modal will appear inside the closed Shadow DOM. Enter the administrator / boot menu password configured during installation.
 3. **Network Configuration Modal:** On successful verification, the kiosk opens `http://127.0.0.1:8888/setup#network` where interfaces, Wi-Fi networks, IP addressing, and proxy settings can be reconfigured. The form shows the settings currently in force, and leaving the Wi-Fi password blank keeps the saved one. After installation this is the **only** route to the network page — the wizard itself opens on enrolment.

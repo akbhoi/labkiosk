@@ -79,8 +79,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/clients/group` | `POST` | Assign workstations to a group |
 | `/api/groups` | `GET` `POST` | List and create workstation groups |
 | `/api/groups/:id` | `DELETE` | Delete a workstation group |
-| `/api/teachers` | `GET` `POST` | List and invite delegated instructors and sub-admins |
-| `/api/teachers/:id` | `DELETE` | Revoke a delegated instructor account |
+| `/api/tenant/teachers` | `GET` `POST` | List and create delegated staff (requires `teachers`; see the delegation limits in `docs/API.md`) |
+| `/api/tenant/teachers/update` | `POST` | Change a staff account's role or permissions |
+| `/api/tenant/teachers/:id` | `DELETE` | Remove a staff account and end its sessions |
 | `/api/command` | `POST` | Dispatch a command to one, selected, or all workstations |
 | `/api/whitelist` | `GET` `POST` | Read and modify the permanent domain allowlist |
 | `/api/portal-sites` | `POST` | Add a student portal card |
@@ -253,10 +254,10 @@ Anything else is rejected with `400 Unsupported action`. There is no `broadcast`
 ```
 
 ```json
-{ "target": "all", "action": "reset" }
+{ "target": "all", "action": "navigate", "resetPortal": true }
 ```
 
-Targeting supports either `targets: string[]` (array of `clientId` strings) or `target: string` (`"all"` or a single `clientId`). When `action` is `lock` and no `message` is supplied, the tenant's `default_lock_message` is used.
+Targeting supports either `targets: string[]` (array of `clientId` strings) or `target: string` (`"all"` or a single `clientId`). Duplicates are dropped, `"all"` replaces named targets, and at most 500 targets are accepted. When `action` is `lock` and no `message` is supplied, the tenant's `default_lock_message` is used.
 
 **`200 OK`** → `{ "status": "ok", "commandId": "cmd-uuid-99" }`
 
@@ -453,4 +454,4 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 
 ## Known documentation drift
 
-The in-repo `docs/API.md` lists the supported command actions as `lock, unlock, navigate, reload, poweroff, reboot`. The implementation accepts **`lock, unlock, navigate, reload, reboot, shutdown, mute`** — `poweroff` is not a valid action and is rejected with `400`, while `shutdown` and `mute` are missing from that list. `ALLOWED_COMMANDS` in `src/index.ts:100` and `CommandAction` in `src/types.ts` are the authority.
+None currently tracked. `docs/API.md` was brought back in line with `ALLOWED_COMMANDS` in `src/index.ts` (`lock, unlock, navigate, reload, reboot, shutdown, mute`); `ALLOWED_COMMANDS` and `CommandAction` in `src/types.ts` remain the authority.

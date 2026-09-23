@@ -35,9 +35,11 @@ Lab Kiosk enables teachers to take interactive control of student thin clients d
    - Workstations **never** expose VNC or web sockets on the local area network (`0.0.0.0`), preventing student-to-student snooping or unauthorized LAN traversal.
 2. **Ephemeral Per-Boot Passwords:**
    - At every system startup, `/etc/openbox/autostart` generates a random, temporary VNC password:
+
      ```bash
      head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-8
      ```
+
    - Saved in RAM to `/tmp/labkiosk/vnc.secret` (permissions `0600`, owned by unprivileged `kiosk` user).
    - Passwords are never written to permanent disk and vanish upon power-off or reboot.
    - The session runs with `-noclipboard -nocmd`: without the first, the VNC clipboard is
@@ -64,6 +66,7 @@ Lab Kiosk enables teachers to take interactive control of student thin clients d
 Because Lab Kiosk runs as an immutable system whose writes all land in a RAM overlay (`overlayroot="tmpfs"`), individual workstation tunnel credentials cannot be baked into a generic base ISO.
 
 ### 1. Tunnel Prerequisites
+
 - A Cloudflare Zero Trust account with Cloudflare Tunnels enabled.
 - A public domain or subdomain (e.g. `*.labkiosk.institution.edu`).
 - The `cloudflared` binary pinned in the build (see `distro-builder/config/includes.chroot/usr/share/labkiosk/cloudflared.pin`).
@@ -87,6 +90,7 @@ compromise of the tunnel binary could reach. That is containment, not authentica
 a substitute for the Access policy.
 
 ### 3. Workstation Configuration File
+
 On the client, the `cloudflared-kiosk.service` automatically starts when `/etc/cloudflared/config.yml` is present:
 
 ```yaml
@@ -102,7 +106,9 @@ ingress:
 The Python agent inspects `/etc/cloudflared/config.yml`, parses the first `hostname:` under `ingress:`, and reports `pc-01.labkiosk.institution.edu` as its `remoteHost` in telemetry heartbeats.
 
 ### 4. Provisioning Strategies for Production Labs
+
 Since the live image boots from a read-only USB or network boot target:
+
 - **Strategy A: Per-Lab Site Overlay:** Build a site-specific ISO or USB drive with `/etc/cloudflared/` pre-populated for that lab's machines.
 - **Strategy B: Persistence Partition:** Create a second, small ext4 partition on the bootable USB drive labeled `labkiosk-data` to persist `/etc/cloudflared/`.
 - **Strategy C: Dynamic Tunnel Enrolment:** Script the first-boot onboarding to fetch tunnel tokens securely using an automated school deployment secret.
@@ -117,6 +123,7 @@ Since the live image boots from a read-only USB or network boot target:
 The local Docker simulator (`docker-test/`) simulates remote control without physical tunnels:
 
 1. **Start the simulator and control plane:**
+
    ```bash
    # Terminal 1: Cloudflare control plane
    cd cloudflare-control && pnpm dev
@@ -124,12 +131,15 @@ The local Docker simulator (`docker-test/`) simulates remote control without phy
    # Terminal 2: Docker simulator
    docker compose up -d
    ```
+
 2. **Configure Remote Host (Optional):**
    In `docker-compose.yml`, set:
+
    ```yaml
    environment:
      - LABKIOSK_REMOTE_HOST=localhost:6080
    ```
+
    Or access the display directly at `http://localhost:6080/vnc.html` using the default password `labkiosk`.
 
 ---

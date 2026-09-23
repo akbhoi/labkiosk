@@ -9,6 +9,7 @@ A step-by-step guide for deploying the Lab Kiosk multi-tenant edge control plane
 ## 📋 Prerequisites
 
 Before deploying to production, ensure you have:
+
 1. A **Cloudflare Account** with Workers and D1 enabled.
 2. An active **Domain/Zone** managed in Cloudflare (e.g. `yourdomain.com`).
 3. **Node.js v22+** and **pnpm** installed on your workstation.
@@ -21,11 +22,14 @@ Before deploying to production, ensure you have:
 The control plane requires Cloudflare D1 for durable multi-tenant persistence (schools, admin users, sessions, portal apps, client devices, audit logs, and command queues).
 
 ### Step 1: Create the Remote Database
+
 ```bash
 cd cloudflare-control
 npx wrangler d1 create labkiosk-db
 ```
+
 Wrangler will output the created database information:
+
 ```text
 ✅ Successfully created DB 'labkiosk-db'
 {
@@ -36,7 +40,9 @@ Wrangler will output the created database information:
 ```
 
 ### Step 2: Configure `wrangler.jsonc`
+
 Open `cloudflare-control/wrangler.jsonc` and paste your generated `database_id`:
+
 ```jsonc
 "d1_databases": [
   {
@@ -49,10 +55,13 @@ Open `cloudflare-control/wrangler.jsonc` and paste your generated `database_id`:
 ```
 
 ### Step 3: Apply Database Migrations
+
 Apply all schema migrations remotely to initialize the database tables:
+
 ```bash
 npx wrangler d1 migrations apply labkiosk-db --remote
 ```
+
 > [!IMPORTANT]
 > **Rule 7 (Fail Closed):** The worker refuses to serve a bound database whose migrations have not been applied (`assertSchemaCurrent()`). A deployed worker never creates tables dynamically at runtime, ensuring strict schema migration tracking.
 
@@ -63,7 +72,9 @@ npx wrangler d1 migrations apply labkiosk-db --remote
 Production deployments **fail closed** if super-admin secrets are unset. No default or fallback administrative credentials exist in production paths.
 
 ### Configure Required Secrets
+
 Run the following commands to securely set the initial platform super-admin credentials:
+
 ```bash
 npx wrangler secret put SUPER_ADMIN_EMAIL
 # Enter the platform administrator email (e.g., admin@yourdomain.com)
@@ -82,6 +93,7 @@ npx wrangler secret put SUPER_ADMIN_PASSWORD
 In accordance with production deployment standards, **never define a `vars` block in `wrangler.jsonc`**, because subsequent runs of `wrangler deploy` or GitHub Actions will overwrite environment variables configured in the Cloudflare dashboard.
 
 Configure production variables in the **Cloudflare Dashboard**:
+
 1. Go to **Workers & Pages** → Select `labkiosk-controller`.
 2. Navigate to **Settings** → **Variables and Secrets**.
 3. Under **Environment Variables**, configure:
@@ -96,7 +108,9 @@ Configure production variables in the **Cloudflare Dashboard**:
 Every registered school receives its own isolated subdomain (e.g. `greenwood.labkiosk.yourdomain.com`).
 
 ### 1. Update Routes in `wrangler.jsonc`
+
 Update the `routes` block in `cloudflare-control/wrangler.jsonc` to match your domain zone:
+
 ```jsonc
 "routes": [
   { "pattern": "labkiosk.yourdomain.com/*", "zone_name": "yourdomain.com" },
@@ -105,7 +119,9 @@ Update the `routes` block in `cloudflare-control/wrangler.jsonc` to match your d
 ```
 
 ### 2. Configure Cloudflare DNS
+
 In your Cloudflare Dashboard under your domain's **DNS Records**:
+
 1. **Apex / Host Record:** Add a `CNAME` or `A` record for `labkiosk.yourdomain.com` pointing to the Worker (Proxied: Orange Cloud).
 2. **Wildcard Subdomain Record:** Add a `CNAME` record with Name `*` or `*.labkiosk` targeting `labkiosk.yourdomain.com` (Proxied: Orange Cloud).
 3. **Custom Domain Support:** When schools request custom domains (e.g. `kiosk.institution.edu`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
@@ -115,18 +131,21 @@ In your Cloudflare Dashboard under your domain's **DNS Records**:
 ## 5. Deploying the Worker
 
 Run strict typechecks and the test suite locally first:
+
 ```bash
 pnpm --prefix cloudflare-control run typecheck
 pnpm --prefix cloudflare-control test
 ```
 
 Deploy the worker to the Cloudflare Edge network:
+
 ```bash
 cd cloudflare-control
 npx wrangler deploy
 ```
 
 Once deployed, visit your apex URL (e.g. `https://labkiosk.yourdomain.com/`):
+
 - The public SaaS landing page should load with HTTPS and hardened security headers.
 - Access `https://labkiosk.yourdomain.com/super` and sign in with your `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`.
 
@@ -135,12 +154,15 @@ Once deployed, visit your apex URL (e.g. `https://labkiosk.yourdomain.com/`):
 ## 6. Scheduled Background Housekeeping
 
 The worker defines an hourly cron trigger in `wrangler.jsonc`:
+
 ```jsonc
 "triggers": {
   "crons": ["0 * * * *"]
 }
 ```
+
 Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of every hour:
+
 - Purges expired user and admin sessions.
 - Deletes delivered and acknowledged commands from the command queue.
 - Cleans up stale rate-limiting and sign-in throttle rows.
@@ -152,12 +174,16 @@ Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of
 The repository includes a production deployment workflow in `.github/workflows/deploy-cloudflare.yml`.
 
 ### Required GitHub Repository Secrets
+
 Under **Settings** → **Secrets and variables** → **Actions**, configure:
+
 - `CLOUDFLARE_API_TOKEN`: Cloudflare API Token with `Workers Scripts: Edit`, `D1: Edit`, and `Account Settings: Read` permissions.
 - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID (visible on Cloudflare Dashboard sidebar).
 
 ### Workflow Pipeline
+
 On every push to `main` modifying `cloudflare-control/**`:
+
 1. Installs dependencies via `pnpm` with frozen lockfile.
 2. Executes strict TypeScript typechecks (`tsc --noEmit`).
 3. Executes automated multi-tenant and negative security test suite.
@@ -171,12 +197,15 @@ On every push to `main` modifying `cloudflare-control/**`:
 For workstations running Lab Kiosk OS to communicate reliably with the Cloudflare control plane:
 
 ### Outbound Firewall Rules (Egress)
+
 School firewalls should permit outbound connections for the following ports and hosts:
+
 - **HTTPS (`TCP 443`):** To `<school>.labkiosk.yourdomain.com` (telemetry, enrollment, and web lessons).
 - **DNS (`UDP/TCP 53`):** To school DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
 - **Cloudflare Tunnel (`TCP 7844` / `UDP 7844` QUIC):** Optional, required only if remote desktop assistance via `cloudflared` is deployed.
 
 ### Network Addressing & Proxy Architecture
+
 - **Ethernet & Wi-Fi:** Workstations support standard DHCP (IPv4 & IPv6), Custom DNS overrides (`ignore-auto-dns yes`), or fixed Static IPs configured via the setup wizard.
 - **HTTP / HTTPS Proxy:** School districts operating transparent or explicit proxy servers (e.g. Squid, Lightspeed, Smoothwall, Fortinet) can specify the proxy host and port during setup. Settings are stored in `/etc/labkiosk/proxy.json` (persisted on the data partition), applied to the agent's own requests, and enforced in Chromium managed policy (`ProxySettings` with `ProxyMode: "fixed_servers"`). Loopback is always exempt.
 - **Persistence:** All network configurations and Wi-Fi credentials are saved to the persistent `LABKIOSK_DATA` partition and bind-mounted on boot, surviving `overlayroot="tmpfs"` reboots.

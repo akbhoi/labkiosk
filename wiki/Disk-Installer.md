@@ -33,6 +33,7 @@ The installer writes a **hybrid GPT** layout so one disk image boots on legacy B
 `overlayroot="tmpfs"` is configured on the installed drive too, so every write on a running workstation lands in RAM and is discarded at power-off. That is the point — but it also means a workstation enrolled *after* installation would forget its device token on the next reboot, and any configured Wi-Fi credentials or static IP settings would be lost.
 
 `LABKIOSK_DATA` is the single deliberate exception. It holds:
+
 1. `/etc/labkiosk/config.json` — device bearer token, client ID, and worker URL.
 2. `/etc/labkiosk/proxy.json` — institutional proxy settings.
 3. `/etc/labkiosk/system-connections/` — NetworkManager connection profiles, bind-mounted to `/etc/NetworkManager/system-connections` on boot.

@@ -108,13 +108,17 @@ Every three seconds, `post_telemetry()` sends the workstation's state and receiv
 The agent incorporates a full network management subsystem communicating with NetworkManager via `nmcli` and system sockets.
 
 ### 1. Interface & Carrier Detection (`/api/network/interfaces`)
+
 `get_interfaces()` scans network hardware (`nmcli -t -f DEVICE,TYPE,STATE dev status`), categorising adapters as `ethernet` or `wifi`. For ethernet devices, it reads `/sys/class/net/<dev>/carrier` to provide real-time feedback on physical cable plug state (`Connected` vs. `Unplugged`).
 
 ### 2. Wi-Fi Scanning (`/api/network/wifi/scan`)
+
 `scan_wifi()` triggers `nmcli -t -f SSID,BSSID,SIGNAL,SECURITY,CHAN dev wifi list`, deduplicating BSSIDs by SSID name and sorting candidates by signal percentage. Networks report encryption types (e.g. WPA2/WPA3-PSK vs. Open). Hidden networks are supported via manual SSID input.
 
 ### 3. Connection Configuration (`/api/network/configure`)
+
 `configure_network()` orchestrates NetworkManager profiles:
+
 - **Ethernet:** Deletes stale profiles on the interface and creates `Wired Connection (<dev>)`.
 - **Wi-Fi:** Configures `Wi-Fi (<ssid>)` with `802-11-wireless-security.key-mgmt wpa-psk` and PSK passphrase.
 - **IPv4:**
@@ -125,19 +129,25 @@ The agent incorporates a full network management subsystem communicating with Ne
 - **Proxy:** Saves settings to `/etc/labkiosk/proxy.json`, applies proxy exports (`http_proxy`, `https_proxy`, `no_proxy`, loopback always exempt) to the agent's own environment, and regenerates `/etc/chromium/policies/managed/policies.json` with a `ProxySettings` dictionary (`ProxyMode: "fixed_servers"`, `ProxyServer: "<host>:<port>"`, `ProxyBypassList` as a comma-separated string). On installed systems the request needs the `X-LabKiosk-Admin` token from `/api/admin/verify`.
 
 ### 4. Connectivity Probing & Caching (`/api/network/test`)
+
 `test_connectivity()` validates the connection:
+
 - DNS resolution via `socket.getaddrinfo("cloudflare.com", 443)`.
 - Direct routing reachability via socket connection to `1.1.1.1:53` and `8.8.8.8:53` (2.5s timeout).
 - **5-Second TTL Cache:** Because `/api/status` is polled once a second by the browser extension, `test_connectivity(force=False)` returns cached results to avoid socket exhaustion.
 
 ### 5. Administrator Verification (`/api/admin/verify`)
+
 Post-installation network management is locked behind `verify_admin_password()`. When `/etc/grub.d/01_labkiosk_password` exists, the agent parses the GRUB PBKDF2 line:
+
 ```text
 password_pbkdf2 <user> grub.pbkdf2.sha512.<rounds>.<salt_hex>.<hash_hex>
 ```
+
 It computes `hashlib.pbkdf2_hmac("sha512", password, salt, rounds)` and checks equality in constant time.
 
 ### 6. Polkit Permissions
+
 The agent runs as unprivileged user `kiosk`. NetworkManager commands succeed because `/etc/polkit-1/rules.d/50-labkiosk-network.rules` explicitly authorizes `org.freedesktop.NetworkManager.*` for user `kiosk`.
 
 ---
