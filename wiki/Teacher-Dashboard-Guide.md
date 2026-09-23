@@ -50,6 +50,7 @@ The top toolbar provides multi-device classroom operations:
 - **Targeted Action Buttons**:
   - **Lock**: Freeze selected screens with a custom message.
   - **Unlock**: Drop the lock curtain on selected machines.
+  - **Clear Session**: Sign every student out without restarting. The browser restarts in a few seconds with all website sign-ins, cookies, history and cache removed, then reopens its assigned page. Unsaved work in open pages is lost.
   - **Reboot**: Safely restart selected thin clients.
   - **Shutdown**: Safely power off selected thin clients at the end of the day.
   - **Move to Group...**: Assign selected workstations to a named group.
@@ -160,6 +161,10 @@ Structured into 4 semantic, deep-linkable tab panes (`?tab=...`) with horizontal
 - **Regaining Class Attention**:
   1. Click **Lock** on the selection toolbar with a brief message (*"Eyes to the front please"*).
   2. Keystrokes, mouse clicks, and shortcuts are suppressed until unlocked.
+- **End of a Class Period** (before the next group sits down):
+  1. Click **Select All** on the Workstations toolbar (or select one group's checkbox).
+  2. Click **Clear Session** and confirm.
+  3. Within a few seconds every browser restarts signed out: no Google or school-portal login, history, cookies or cached pages from the previous class remain. The machines stay on, so the next class starts immediately.
 - **End of Day Lab Shutdown**:
   1. Click **Select All** on the Workstations toolbar.
   2. Click **Shutdown**.

@@ -454,4 +454,4 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 
 ## Known documentation drift
 
-None currently tracked. `docs/API.md` was brought back in line with `ALLOWED_COMMANDS` in `src/index.ts` (`lock, unlock, navigate, reload, reboot, shutdown, mute`); `ALLOWED_COMMANDS` and `CommandAction` in `src/types.ts` remain the authority.
+None currently tracked. `docs/API.md` was brought back in line with `ALLOWED_COMMANDS` in `src/index.ts` (`lock, unlock, navigate, reload, reboot, shutdown, clear-session, mute`); `ALLOWED_COMMANDS` and `CommandAction` in `src/types.ts` remain the authority.

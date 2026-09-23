@@ -366,7 +366,10 @@ Retrieves all currently registered workstations and their latest telemetry state
 Dispatches remote actions to one, selected subsets, or all workstations.
 
 - **Access:** School Admin. `navigate` requires the `broadcast` permission; every other action requires `workstations`.
-- **Supported Actions:** `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `mute`. Anything else answers `400`.
+- **Supported Actions:** `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`. Anything else answers `400`.
+- **`clear-session`** signs students out at the end of a period without a reboot: the workstation ends its
+  browser, and the kiosk watchdog deletes the Chromium profile (cookies, saved sign-ins, history, local
+  storage, IndexedDB, service workers) and disk cache before relaunching on the workstation's assigned page.
 - **Targeting:** Specify either `targets: string[]` (array of client IDs, e.g. `["PC-01", "PC-02"]`) or single `target: string` (`"all"` or `"PC-01"`).
   Duplicates are removed, `"all"` replaces any named targets rather than queueing a second command for each,
   and at most **500** targets are accepted per request (`400` otherwise).

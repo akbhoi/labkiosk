@@ -129,7 +129,7 @@ This is worth stating clearly, because the tunnel is the fiddliest part of a dep
 | Live three-second thumbnails | No |
 | Lock curtain | No |
 | Broadcast | No |
-| Reload, reboot, shutdown, mute | No |
+| Reload, reboot, shutdown, clear session, mute | No |
 | Allowlist and policy sync | No |
 | **Interactive remote control** | **Yes** |
 

@@ -95,7 +95,10 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   - `targetUrl`: Where the kiosk should point. Validated as `http(s)` by `safe_navigable_url()`
     before it is stored, because it ends up in `window.location`.
   - `commands`: Array of pending teacher commands. The agent implements `lock`, `unlock`,
-    `navigate`, `reload`, `reboot`, `shutdown` and `mute`; anything else is logged and ignored.
+    `navigate`, `reload`, `reboot`, `shutdown`, `clear-session` and `mute`; anything else is logged and ignored.
+    `clear-session` ends the kiosk browser without a reboot; the watchdog deletes the Chromium profile and
+    disk cache before every relaunch, so every sign-in, cookie and history entry is gone (see
+    `distro-builder/AGENTS.md`, Rule 5).
     (There is no `broadcast` action — a broadcast is `navigate` plus `broadcastEpoch`.)
     Teacher `reload` commands advance the agent's internal `reloadEpoch` (returned in `GET /api/status`),
     which `content.js` detects in `syncLoop()` to trigger a native `window.location.reload()`, caching
@@ -132,9 +135,9 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   - `POST /api/clients/group`: Assign devices to an **existing** group (`{ clientIds: string[], groupName: string | null }`; empty or `null` ungroups).
 - **Batch Command Dispatch (`POST /api/command`):**
   - Accepts `targets: string[]` (or legacy single `target: string`). Duplicates are dropped and `"all"` replaces named targets.
-  - Actions are exactly `ALLOWED_COMMANDS`: `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `mute`. There is no `reset` action: Reset to Portal is `navigate` with `resetPortal: true`, and `navigate` needs the `broadcast` permission.
+  - Actions are exactly `ALLOWED_COMMANDS`: `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`. There is no `reset` action: Reset to Portal is `navigate` with `resetPortal: true`, and `navigate` needs the `broadcast` permission.
   - Both routes accept at most 500 ids per request, and D1's 100-parameter limit means `IN (...)` lists are written in slices of 90.
-  - The teacher console features a "Select All" toggle, per-workstation and per-group selection checkboxes, dynamic selection count indicators, and targeted command buttons ("Lock", "Unlock", "Reboot", "Shutdown").
+  - The teacher console features a "Select All" toggle, per-workstation and per-group selection checkboxes, dynamic selection count indicators, and targeted command buttons ("Lock", "Unlock", "Clear Session", "Reboot", "Shutdown").
 
 ---
 
@@ -182,7 +185,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
   - **Workstations Module (`/admin/workstations`)**:
     - **Level 2 Subpanel**: Dedicated to Workstation Groups (`+ New Group`, live group member counts, group filtering, and group deletion). Removed redundant individual command buttons from sidebar.
-    - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted classroom actions (`Lock`, `Unlock`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
+    - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted classroom actions (`Lock`, `Unlock`, `Clear Session`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
     - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes; collapse states persist in `localStorage`.
   - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
     - Merges Lesson Broadcast, Student Portal Apps, and Domain Allowlist into a single, segmented module with 3 tab panes (`Lesson Broadcast`, `Student Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy routes (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
