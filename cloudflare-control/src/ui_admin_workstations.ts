@@ -115,11 +115,15 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
           Reset to Portal
         </button>
-        <button type="button" class="btn btn-danger" id="btn-reboot-all" title="Reboot selected workstations (or all if none selected)">
+        <button type="button" class="btn btn-warning" id="btn-clear-session-all" title="Sign students out: wipes browser logins, history, cookies and cache on the selected workstations, without a reboot">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          <span id="btn-clear-session-label">Clear Session</span>
+        </button>
+        <button type="button" class="btn btn-danger" id="btn-reboot-all" title="Reboot the selected workstations">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           <span id="btn-reboot-label">Reboot</span>
         </button>
-        <button type="button" class="btn btn-danger" id="btn-shutdown-all" title="Shutdown selected workstations (or all if none selected)">
+        <button type="button" class="btn btn-danger" id="btn-shutdown-all" title="Shut down the selected workstations">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
           <span id="btn-shutdown-label">Shutdown</span>
         </button>
@@ -381,6 +385,9 @@ function renderWorkstationsScripts(
 
         const unlockLabel = document.getElementById("btn-unlock-label");
         if (unlockLabel) unlockLabel.textContent = selCount ? "Unlock (" + selCount + ")" : "Unlock";
+
+        const clearLabel = document.getElementById("btn-clear-session-label");
+        if (clearLabel) clearLabel.textContent = selCount ? "Clear Session (" + selCount + ")" : "Clear Session";
 
         const rebootLabel = document.getElementById("btn-reboot-label");
         if (rebootLabel) rebootLabel.textContent = selCount ? "Reboot (" + selCount + ")" : "Reboot";
@@ -854,6 +861,19 @@ function renderWorkstationsScripts(
           tone: "danger"
         });
         if (agreed) sendCommand(targets, "shutdown");
+      });
+
+      // End of a class period: sign everyone out without restarting the machine.
+      document.getElementById("btn-clear-session-all").addEventListener("click", async () => {
+        const targets = getSelectedOrAll(false);
+        if (!targets) return;
+        const agreed = await lkConfirm({
+          title: "Clear the session on " + targets.length + " workstation(s)?",
+          message: "The browser restarts in a few seconds with nothing left behind: every website sign-in, cookie, history entry, cache and unsaved form is removed. Anything a student has not saved elsewhere is lost. The machines stay on and reopen their assigned page.",
+          confirmLabel: "Clear Session",
+          tone: "danger"
+        });
+        if (agreed) sendCommand(targets, "clear-session");
       });
 
       document.getElementById("btn-open-broadcast").addEventListener("click", () => {

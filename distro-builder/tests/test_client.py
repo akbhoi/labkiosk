@@ -313,6 +313,51 @@ class RemoteReloadCommand(unittest.TestCase):
         self.assertGreaterEqual(updated, initial)
 
 
+class RemoteClearSessionCommand(unittest.TestCase):
+    """clear-session ends the kiosk browser; the watchdog wipes its profile."""
+
+    def setUp(self):
+        self._run = agent.subprocess.run
+        self.calls = []
+
+        def fake_run(argv, **kwargs):
+            self.calls.append(list(argv))
+            return agent.subprocess.CompletedProcess(argv, 0)
+
+        agent.subprocess.run = fake_run
+
+    def tearDown(self):
+        agent.subprocess.run = self._run
+
+    def test_clear_session_ends_only_the_kiosk_browser(self):
+        agent.execute_command({"action": "clear-session"})
+        self.assertEqual(
+            self.calls,
+            [["pkill", "-f", "--", f"--user-data-dir={agent.BROWSER_PROFILE_DIR}"]],
+        )
+
+    def test_clear_session_neither_reboots_nor_deletes_files_itself(self):
+        agent.execute_command({"action": "clear-session"})
+        flat = [arg for call in self.calls for arg in call]
+        self.assertNotIn("systemctl", flat)
+        self.assertNotIn("rm", flat)
+
+    def test_the_profile_the_agent_ends_is_the_one_the_watchdogs_wipe(self):
+        # The agent relies on both launchers deleting this exact directory
+        # before every relaunch; if either stops, clear-session stops clearing.
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        launchers = [
+            os.path.join(CHROOT, "etc/openbox/autostart"),
+            os.path.join(root, "docker-test/entrypoint.sh"),
+        ]
+        for path in launchers:
+            with self.subTest(launcher=path):
+                with open(path, encoding="utf-8") as handle:
+                    script = handle.read()
+                self.assertIn(f"--user-data-dir={agent.BROWSER_PROFILE_DIR}", script)
+                self.assertRegex(script, r"rm -rf [^\n]*" + agent.BROWSER_PROFILE_DIR.replace("/", r"\/"))
+
+
 class AdminAuthenticationAndSession(unittest.TestCase):
     def setUp(self):
         agent._admin_sessions.clear()

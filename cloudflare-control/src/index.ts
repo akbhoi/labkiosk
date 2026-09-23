@@ -120,7 +120,7 @@ import { createLocalD1Database } from "./d1_adapter";
 const MAX_THUMBNAIL_BYTES = 256 * 1024;
 
 /** Commands a teacher console is allowed to dispatch. */
-const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "mute"]);
+const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "clear-session", "mute"]);
 
 /**
  * Most workstations one request may address. A classroom is tens of machines;

@@ -1,7 +1,7 @@
 export type UserRole = "super_admin" | "school_admin";
 export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
 export type KioskMode = "portal" | "single_url";
-export type CommandAction = "lock" | "unlock" | "navigate" | "reload" | "reboot" | "shutdown" | "mute";
+export type CommandAction = "lock" | "unlock" | "navigate" | "reload" | "reboot" | "shutdown" | "clear-session" | "mute";
 export type TenantUserRole = "school_admin" | "sub_admin" | "teacher" | "lab_assistant" | "content_manager";
 
 export interface TenantUser {

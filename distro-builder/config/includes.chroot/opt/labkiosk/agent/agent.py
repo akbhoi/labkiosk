@@ -2343,14 +2343,15 @@ def sync_chromium_policies(new_whitelist, force=False):
 # Screen capture & command execution
 # --------------------------------------------------------------------------
 
-def restart_browser():
+def restart_browser(reason="to apply the new policy"):
     """
     Ask the kiosk watchdog to relaunch Chromium.
 
     The watchdog loop in the Openbox autostart (and in the Docker simulator's
     entrypoint) relaunches the browser whenever it exits, re-reading the agent's
     current target URL, so terminating it is how the agent applies a new policy
-    or a new home page.
+    or a new home page. Before every launch it deletes BROWSER_PROFILE_DIR and
+    the disk cache, so every restart is also a fresh, signed-out session.
     """
     # Match on the kiosk profile directory rather than on the flags as written:
     # Debian's `chromium` wrapper re-orders arguments and re-execs
@@ -2361,7 +2362,7 @@ def restart_browser():
     try:
         result = subprocess.run(["pkill", "-f", "--", pattern], check=False)
         if result.returncode == 0:
-            log("Restarting the browser to apply the new policy")
+            log(f"Restarting the browser {reason}")
         else:
             log(f"No running kiosk browser matched {pattern}; nothing to restart")
     except OSError as err:
@@ -2440,6 +2441,16 @@ def execute_command(cmd_data):
         run_x11(["systemctl", "reboot"])
     elif action == "shutdown":
         run_x11(["systemctl", "poweroff"])
+    elif action == "clear-session":
+        # The end of a class period: sign every student out without a reboot.
+        # Ending Chromium is enough, because the kiosk watchdog deletes the
+        # profile (cookies, saved sign-ins, history, local storage, IndexedDB,
+        # service workers) and the disk cache before it relaunches, and the
+        # in-memory HTTP auth cache and X clipboard die with the process. The
+        # relaunch opens the page this workstation is assigned. The wipe stays
+        # in the watchdog on purpose: deleting the profile from here while
+        # Chromium still has it open would race its own writes.
+        restart_browser("to clear the session (profile and cache are wiped before relaunch)")
     elif action == "mute":
         # Plain ALSA: the image ships alsa-utils and no sound server.
         run_x11(["amixer", "-q", "set", "Master", "mute"])

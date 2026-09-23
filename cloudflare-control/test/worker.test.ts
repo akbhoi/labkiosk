@@ -2532,6 +2532,46 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.doesNotMatch(scripts, /\bescape(Html|Attr)\(/, `${page} calls a server-only helper in the browser`);
     }
   });
+
+  // ------------------------------------------------------------ clear session
+
+  test("Clear Session is queued for the selected workstations and delivered on their next heartbeat", async () => {
+    const { res, data } = await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: ["PC-01"], action: "clear-session" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.count, 1);
+
+    const { data: heartbeat } = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.ok(
+      heartbeat.commands.some((c: any) => c.action === "clear-session"),
+      "PC-01 must receive clear-session"
+    );
+  });
+
+  test("Clear Session requires the workstations permission and refuses anonymous callers", async () => {
+    const anonymous = await call("/api/command?tenant=greenwood", json({ targets: ["PC-01"], action: "clear-session" }));
+    assert.ok(anonymous.status === 401 || anonymous.status === 403);
+
+    const password = "BroadcastOnly123!";
+    await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Broadcast Only", email: "broadcaster@greenwood.edu", password, role: "teacher", permissions: ["broadcast"] }),
+      cookie: schoolSessionCookie
+    });
+    const loginRes = await call("/api/auth/login", json({ email: "broadcaster@greenwood.edu", password }));
+    const cookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const refused = await call("/api/command?tenant=greenwood", {
+      ...json({ targets: ["PC-01"], action: "clear-session" }),
+      cookie
+    });
+    assert.equal(refused.status, 403);
+
+    // The console offers the control, confirmed, next to Reboot and Shutdown.
+    const html = await (await call("/admin/workstations?tenant=greenwood", { cookie: schoolSessionCookie })).text();
+    assert.match(html, /id="btn-clear-session-all"/);
+    assert.match(html, /sendCommand\(targets, "clear-session"\)/);
+  });
 });
 
 /**
