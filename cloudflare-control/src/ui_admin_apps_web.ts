@@ -375,6 +375,13 @@ function renderAppsWebScripts(nonce: string): string {
 
         window.labkioskSwitchTab = switchTab;
 
+        /** Reload onto a tab, replacing ?tab= rather than appending another. */
+        function reloadOnTab(tabId) {
+          const url = new URL(window.location.href);
+          url.searchParams.set("tab", tabId);
+          window.location.assign(url.toString());
+        }
+
         // Initialize Tab from URL
         const initialTab = new URLSearchParams(window.location.search).get("tab") || "broadcast";
         switchTab(initialTab);
@@ -531,7 +538,7 @@ function renderAppsWebScripts(nonce: string): string {
               });
               const data = await res.json();
               if (data.status === "ok") {
-                window.location.search = (window.location.search ? window.location.search + "&" : "?") + "tab=portal";
+                reloadOnTab("portal");
               } else {
                 lkToast(data.error || "Failed to add application", "error");
               }
@@ -558,7 +565,7 @@ function renderAppsWebScripts(nonce: string): string {
               });
               const data = await res.json();
               if (data.status === "ok") {
-                window.location.search = (window.location.search ? window.location.search + "&" : "?") + "tab=portal";
+                reloadOnTab("portal");
               } else {
                 lkToast(data.error || "Failed to remove application", "error");
               }
@@ -586,7 +593,7 @@ function renderAppsWebScripts(nonce: string): string {
             });
             const data = await res.json();
             if (data.status === "ok") {
-              window.location.search = (window.location.search ? window.location.search + "&" : "?") + "tab=whitelist";
+              reloadOnTab("whitelist");
             } else {
               lkToast(data.error || "Failed to add domain", "error");
             }
@@ -621,7 +628,7 @@ function renderAppsWebScripts(nonce: string): string {
               });
               const data = await res.json();
               if (data.status === "ok") {
-                window.location.search = (window.location.search ? window.location.search + "&" : "?") + "tab=whitelist";
+                reloadOnTab("whitelist");
               } else {
                 lkToast(data.error || "Failed to remove domain", "error");
               }
@@ -643,14 +650,20 @@ function renderAppsWebScripts(nonce: string): string {
             });
             if (!agreed) return;
             try {
+              const failed = [];
               for (const domain of domains) {
-                await fetch(labkioskApi("/api/settings/whitelist"), {
+                const res = await fetch(labkioskApi("/api/settings/whitelist"), {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ domain })
                 });
+                if (!res.ok) failed.push(domain);
               }
-              window.location.search = (window.location.search ? window.location.search + "&" : "?") + "tab=whitelist";
+              if (failed.length) {
+                lkToast("Could not add: " + failed.join(", "), "error");
+                return;
+              }
+              reloadOnTab("whitelist");
             } catch (err) {
               lkToast("Network error: " + err.message, "error");
             }

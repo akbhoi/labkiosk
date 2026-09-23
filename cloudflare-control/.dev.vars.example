@@ -1,7 +1,19 @@
-# Local development environment variables & secrets for Wrangler dev
-# Copy this file to .dev.vars for local development:
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored) and edit:
 #   cp .dev.vars.example .dev.vars
+#
+# `pnpm dev` listens on 0.0.0.0 so the workstation simulator can reach it by LAN
+# address, which means anyone on that network can reach the sign-in page too.
+# Choose your own super admin password; never reuse the well-known local default.
+SUPER_ADMIN_EMAIL=admin@example.edu
+SUPER_ADMIN_PASSWORD=change-me-before-first-run-2026
+
+# Local development only: lets the worker create its own tables and seed the
+# super admin above. `pnpm dev` passes it already; a deployed worker must never
+# have it set, because it also switches off the production schema check.
 ALLOW_LOCAL_DB=1
-DEFAULT_DOMAIN=labkiosk.akbhoi.com
-SUPER_ADMIN_EMAIL=admin@akbhoi.com
-SUPER_ADMIN_PASSWORD=SuperAdmin2026!
+
+# Optional: apex domain used for subdomain routing (defaults to labkiosk.akbhoi.com).
+# DEFAULT_DOMAIN=labkiosk.akbhoi.com
+
+# Optional: public URL of a built ISO to link from the landing page.
+# ISO_DOWNLOAD_URL=https://example.org/labkiosk-debian12-amd64.iso

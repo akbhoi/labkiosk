@@ -876,6 +876,18 @@ export async function updateTenantUser(
     .run();
 }
 
+/** One staff row of this school by its own id, or null. */
+export async function findTenantUserById(
+  db: D1Database,
+  tenantId: string,
+  id: string
+): Promise<{ id: string; user_id: string; role: TenantUserRole } | null> {
+  return await db
+    .prepare("SELECT id, user_id, role FROM tenant_users WHERE id = ? AND tenant_id = ? LIMIT 1")
+    .bind(id, tenantId)
+    .first<{ id: string; user_id: string; role: TenantUserRole }>();
+}
+
 export async function deleteTenantUser(db: D1Database, tenantId: string, id: string): Promise<void> {
   await db
     .prepare("DELETE FROM tenant_users WHERE id = ? AND tenant_id = ?")
@@ -1190,23 +1202,22 @@ export async function deleteWorkstationGroup(
   db: D1Database,
   tenantId: string,
   groupId: string
-): Promise<void> {
+): Promise<boolean> {
   const group = await db
     .prepare("SELECT name FROM workstation_groups WHERE id = ? AND tenant_id = ?")
     .bind(groupId, tenantId)
     .first<{ name: string }>();
+  if (!group) return false;
 
-  if (group) {
-    await db
+  await db.batch([
+    db
       .prepare("UPDATE client_devices SET group_name = NULL WHERE tenant_id = ? AND group_name = ?")
-      .bind(tenantId, group.name)
-      .run();
-  }
-
-  await db
-    .prepare("DELETE FROM workstation_groups WHERE id = ? AND tenant_id = ?")
-    .bind(groupId, tenantId)
-    .run();
+      .bind(tenantId, group.name),
+    db
+      .prepare("DELETE FROM workstation_groups WHERE id = ? AND tenant_id = ?")
+      .bind(groupId, tenantId)
+  ]);
+  return true;
 }
 
 export async function assignClientsToGroup(

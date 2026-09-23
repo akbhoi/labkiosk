@@ -2337,6 +2337,201 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // 4. Recent Lab Activity table uses table-scrollable container
     assert.match(html, /class="table-container table-scrollable"/);
   });
+
+  // ------------------------------------------------ staff delegation limits
+
+  test("A delegate who manages staff cannot promote themselves or grant beyond their own permissions", async () => {
+    const password = "DelegatePassword123!";
+    const { res: createRes } = await callJson("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Dee Legate", email: "dee@greenwood.edu", password, role: "teacher", permissions: ["workstations", "teachers"] }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(createRes.status, 200);
+
+    const loginRes = await call("/api/auth/login", json({ email: "dee@greenwood.edu", password }));
+    assert.equal(loginRes.status, 200);
+    const delegateCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+
+    const { data: list } = await callJson("/api/tenant/teachers?tenant=greenwood", { cookie: delegateCookie });
+    const self = list.teachers.find((t: any) => t.email === "dee@greenwood.edu");
+    assert.ok(self);
+
+    // Self-promotion to co-administrator, whose permissions are "*".
+    const promote = await call("/api/tenant/teachers/update?tenant=greenwood", {
+      ...json({ id: self.id, role: "school_admin" }),
+      cookie: delegateCookie
+    });
+    assert.equal(promote.status, 403);
+
+    // Settings stay out of reach afterwards.
+    const settings = await call("/api/tenant/settings?tenant=greenwood", { ...json({}), cookie: delegateCookie });
+    assert.equal(settings.status, 403);
+
+    // Appointing a new co-administrator, or granting a permission not held.
+    const coAdmin = await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Mallory", email: "mallory@greenwood.edu", password, role: "school_admin" }),
+      cookie: delegateCookie
+    });
+    assert.equal(coAdmin.status, 403);
+    const beyond = await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Mallory", email: "mallory@greenwood.edu", password, role: "teacher", permissions: ["settings"] }),
+      cookie: delegateCookie
+    });
+    assert.equal(beyond.status, 403);
+
+    // Within their own permissions a delegate may still add staff.
+    const within = await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Lab Aide", email: "aide@greenwood.edu", password, role: "lab_assistant", permissions: ["workstations"] }),
+      cookie: delegateCookie
+    });
+    assert.equal(within.status, 200);
+  });
+
+  test("Staff permissions are validated, and a wildcard can never be stored", async () => {
+    const wildcard = await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Wild", email: "wild@greenwood.edu", password: "WildPassword123!", permissions: ["*"] }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(wildcard.status, 400);
+
+    const badRole = await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Wild", email: "wild@greenwood.edu", password: "WildPassword123!", role: "owner" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(badRole.status, 400);
+
+    const weak = await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Weak", email: "weak@greenwood.edu", password: "short" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(weak.status, 400);
+  });
+
+  test("Adding staff never links an account that already exists", async () => {
+    // Riverside's administrator must not become a member of Greenwood.
+    const res = await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Poached", email: "teacher@riverside.edu", password: "PoachedPassword123!" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(res.status, 409);
+  });
+
+  test("Removing a staff account ends the sessions it holds", async () => {
+    const password = "RemovedPassword123!";
+    await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Soon Gone", email: "gone@greenwood.edu", password, role: "teacher", permissions: ["workstations"] }),
+      cookie: schoolSessionCookie
+    });
+    const loginRes = await call("/api/auth/login", json({ email: "gone@greenwood.edu", password }));
+    const goneCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await call("/api/clients?tenant=greenwood", { cookie: goneCookie })).status, 200);
+
+    const { data: list } = await callJson("/api/tenant/teachers?tenant=greenwood", { cookie: schoolSessionCookie });
+    const gone = list.teachers.find((t: any) => t.email === "gone@greenwood.edu");
+    const del = await call(`/api/tenant/teachers/${gone.id}?tenant=greenwood`, { method: "DELETE", cookie: schoolSessionCookie });
+    assert.equal(del.status, 200);
+
+    // Refused whichever way: no session (401), or a named school it may not act on (403).
+    assert.ok([401, 403].includes((await call("/api/clients?tenant=greenwood", { cookie: goneCookie })).status));
+    const { data: me } = await callJson("/api/auth/me", { cookie: goneCookie });
+    assert.ok(!me.user);
+  });
+
+  test("The staff list is readable only with the staff permission", async () => {
+    const password = "ListPassword1234!";
+    await call("/api/tenant/teachers?tenant=greenwood", {
+      ...json({ name: "Only Screens", email: "screens@greenwood.edu", password, role: "lab_assistant", permissions: ["workstations"] }),
+      cookie: schoolSessionCookie
+    });
+    const loginRes = await call("/api/auth/login", json({ email: "screens@greenwood.edu", password }));
+    const cookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await call("/api/tenant/teachers?tenant=greenwood", { cookie })).status, 403);
+  });
+
+  // --------------------------------------------- groups and batch commands
+
+  test("Workstation group routes refuse anonymous, cross-school and cross-site callers", async () => {
+    // Anonymous: 401 without a school, 403 once a school is named on a production host.
+    const refused = (status: number) => status === 401 || status === 403;
+    assert.ok(refused((await call("/api/groups")).status));
+    assert.ok(refused((await call("/api/groups?tenant=greenwood")).status));
+    assert.ok(refused((await call("/api/groups?tenant=greenwood", json({ name: "Anon" }))).status));
+    assert.ok(refused((await call("/api/clients/group?tenant=greenwood", json({ clientIds: ["PC-01"], groupName: null }))).status));
+
+    // Riverside's administrator naming Greenwood.
+    assert.equal((await call("/api/groups?tenant=greenwood", { cookie: rivalSessionCookie })).status, 403);
+    assert.equal(
+      (await call("/api/groups?tenant=greenwood", { ...json({ name: "Rival" }), cookie: rivalSessionCookie })).status,
+      403
+    );
+
+    const crossSite = await call("/api/groups?tenant=greenwood", {
+      ...json({ name: "Forged" }),
+      cookie: schoolSessionCookie,
+      headers: { Origin: "https://evil.example" }
+    });
+    assert.equal(crossSite.status, 403);
+  });
+
+  test("Workstation groups have unique names and only existing groups can be assigned or deleted", async () => {
+    const first = await call("/api/groups?tenant=greenwood", { ...json({ name: "Lab B" }), cookie: schoolSessionCookie });
+    assert.equal(first.status, 200);
+    const duplicate = await call("/api/groups?tenant=greenwood", { ...json({ name: "lab b" }), cookie: schoolSessionCookie });
+    assert.equal(duplicate.status, 409);
+    const tooLong = await call("/api/groups?tenant=greenwood", { ...json({ name: "x".repeat(51) }), cookie: schoolSessionCookie });
+    assert.equal(tooLong.status, 400);
+
+    const phantom = await call("/api/clients/group?tenant=greenwood", {
+      ...json({ clientIds: ["PC-01"], groupName: "Nowhere" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(phantom.status, 404);
+
+    const missing = await call("/api/groups/no-such-group?tenant=greenwood", { method: "DELETE", cookie: schoolSessionCookie });
+    assert.equal(missing.status, 404);
+
+    // More ids than one D1 statement can bind are written in slices.
+    const many = Array.from({ length: 150 }, (_, i) => `PC-${i}`);
+    const bulk = await call("/api/clients/group?tenant=greenwood", {
+      ...json({ clientIds: many, groupName: "Lab B" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(bulk.status, 200);
+  });
+
+  test("Batch commands are capped, and a broadcast to all is queued once", async () => {
+    const tooMany = await call("/api/command?tenant=greenwood", {
+      ...json({ targets: Array.from({ length: 501 }, (_, i) => `PC-${i}`), action: "reload" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(tooMany.status, 400);
+
+    const { res, data } = await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: ["all", "PC-01", "PC-01"], action: "reload" }),
+      cookie: schoolSessionCookie
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.count, 1);
+  });
+
+  test("A localhost origin is not same-site for a production host", async () => {
+    const res = await call("/api/groups?tenant=greenwood", {
+      ...json({ name: "From Localhost" }),
+      cookie: schoolSessionCookie,
+      headers: { Origin: "http://localhost:3000" }
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test("Console client scripts call no server-side escaping helpers", async () => {
+    // escapeHtml/escapeAttr exist only on the server. A client script that
+    // calls them throws at runtime, as the workstation group list once did.
+    for (const page of ["workstations", "apps-web", "teachers", "settings"]) {
+      const html = await (await call(`/admin/${page}?tenant=greenwood`, { cookie: schoolSessionCookie })).text();
+      const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join("\n");
+      assert.doesNotMatch(scripts, /\bescape(Html|Attr)\(/, `${page} calls a server-only helper in the browser`);
+    }
+  });
 });
 
 /**

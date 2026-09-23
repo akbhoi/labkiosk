@@ -212,11 +212,47 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
           }
         });
 
-        // Pages other than the grid cannot filter anything; leave the buttons out
-        // of the tab order there rather than offering a control that cannot work.
-        if (activePage !== "workstations") {
-          var inert = panel.querySelectorAll("[data-filter], [data-density]");
+        // A page that installs no handler for a control cannot act on it; leave
+        // those buttons out of the tab order rather than offering a control that
+        // cannot work. The staff page filters by role, so this is decided by
+        // what the page provides, not by which page it is.
+        var inertSelectors = [];
+        if (typeof window.labkioskApplyFilter !== "function") inertSelectors.push("[data-filter]");
+        if (typeof window.labkioskApplyDensity !== "function") inertSelectors.push("[data-density]");
+        if (inertSelectors.length) {
+          var inert = panel.querySelectorAll(inertSelectors.join(", "));
           for (var j = 0; j < inert.length; j++) inert[j].setAttribute("disabled", "disabled");
+        }
+
+        // The header counters are rendered on every page but only the grid
+        // polls telemetry. Elsewhere, fill them from the same endpoint so they
+        // never claim an empty lab. A caller without the workstations
+        // permission is refused, and the counters are then hidden instead.
+        if (activePage !== "workstations" && document.getElementById("stat-online-count")) {
+          var refreshCounters = function () {
+            fetch(window.labkioskApi("/api/clients"))
+              .then(function (res) {
+                if (res.status === 401 || res.status === 403) {
+                  var bar = document.getElementById("stat-online-count").closest(".canvas-header-center");
+                  if (bar) bar.style.display = "none";
+                  window.clearInterval(counterTimer);
+                  return null;
+                }
+                return res.ok ? res.json() : null;
+              })
+              .then(function (data) {
+                if (!data || !data.clients) return;
+                var clients = Object.keys(data.clients).map(function (id) { return data.clients[id]; });
+                var online = clients.filter(function (c) { return c.online; });
+                document.getElementById("stat-online-count").textContent = String(online.length);
+                document.getElementById("stat-total-count").textContent = String(clients.length);
+                var locked = document.getElementById("stat-locked-count");
+                if (locked) locked.textContent = String(online.filter(function (c) { return c.isLocked; }).length);
+              })
+              .catch(function (err) { console.warn("header counters:", err); });
+          };
+          var counterTimer = window.setInterval(refreshCounters, 15000);
+          refreshCounters();
         }
       })();
     </script>

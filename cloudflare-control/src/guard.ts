@@ -40,6 +40,14 @@ export function hostname(request: Request): string {
   }
 }
 
+/**
+ * True when the request was addressed to a local development host.
+ *
+ * Loopback and RFC 1918 addresses count, because `pnpm dev` listens on
+ * 0.0.0.0 and the workstation simulator (or a phone on the school LAN) reaches
+ * it by the machine's LAN address. A deployed worker never sees such a Host:
+ * Cloudflare routes a request to it only by a configured hostname.
+ */
 export function isDevHost(request: Request): boolean {
   const host = hostname(request);
   if (DEV_HOSTS.has(host)) return true;
@@ -215,9 +223,12 @@ export function rejectCrossSiteMutation(
   } catch {
     return jsonError("Cross-site requests are not accepted", 403, headers);
   }
+  // A dev-host origin is same-site only for a request that is itself on a dev
+  // host. In production it would admit any page served from the teacher's own
+  // machine -- a local tool, or a malicious localhost server -- as this site.
   const sameSite =
     originHost === hostname(request) ||
-    DEV_HOSTS.has(originHost) ||
+    (DEV_HOSTS.has(originHost) && isDevHost(request)) ||
     isHostUnder(originHost, options.baseDomain);
   return sameSite ? null : jsonError("Cross-site requests are not accepted", 403, headers);
 }

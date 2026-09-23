@@ -882,44 +882,45 @@ function renderWorkstationsScripts(
         const list = document.getElementById("sub-group-list");
         if (!list) return;
 
-        let html = \`
-          <button type="button" class="sub-action-item\${activeFilter === "group:all" ? " active" : ""}" data-filter="group:all">
-            <span>All Groups</span>
-            <span class="sub-action-badge" id="sub-group-all-count">\${Object.keys(clientsData).length}</span>
-          </button>
-        \`;
-
-        for (const g of groupsList) {
-          const isAct = activeFilter === "group:" + g.name;
-          html += \`
-            <div class="sub-action-group-row">
-              <button type="button" class="sub-action-item\${isAct ? " active" : ""}" data-filter="group:\${escapeAttr(g.name)}" style="flex: 1;">
-                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">\${escapeHtml(g.name)}</span>
-                <span class="sub-action-badge" id="sub-group-\${escapeAttr(g.id)}-count">0</span>
-              </button>
-              <button type="button" class="btn btn-sm" data-action="delete-group" data-id="\${escapeAttr(g.id)}" data-name="\${escapeAttr(g.name)}" title="Delete group \${escapeAttr(g.name)}" style="padding: 4px 6px; font-size: 11px; background: transparent; border: none; color: var(--text-muted); cursor: pointer;">✕</button>
-            </div>
-          \`;
+        // Group names are typed by staff: built as nodes with textContent and
+        // dataset, never concatenated into markup (Rule 4).
+        function filterButton(filter, label, badgeId, count) {
+          const btn = el("button", "sub-action-item" + (activeFilter === filter ? " active" : ""));
+          btn.type = "button";
+          btn.dataset.filter = filter;
+          const name = el("span", null, label);
+          const badge = el("span", "sub-action-badge", count);
+          badge.id = badgeId;
+          btn.append(name, badge);
+          return btn;
         }
 
-        html += \`
-          <button type="button" class="sub-action-item\${activeFilter === "group:__ungrouped__" ? " active" : ""}" data-filter="group:__ungrouped__">
-            <span>Ungrouped</span>
-            <span class="sub-action-badge" id="sub-group-ungrouped-count">0</span>
-          </button>
-        \`;
-
-        list.innerHTML = html;
+        const nodes = [filterButton("group:all", "All Groups", "sub-group-all-count", Object.keys(clientsData).length)];
+        for (const g of groupsList) {
+          const row = el("div", "sub-action-group-row");
+          const btn = filterButton("group:" + g.name, g.name, "sub-group-" + g.id + "-count", 0);
+          btn.style.flex = "1";
+          btn.firstChild.style.cssText = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+          const del = el("button", "btn btn-sm", "✕");
+          del.type = "button";
+          del.dataset.action = "delete-group";
+          del.dataset.id = g.id;
+          del.dataset.name = g.name;
+          del.title = "Delete group " + g.name;
+          del.style.cssText = "padding: 4px 6px; font-size: 11px; background: transparent; border: none; color: var(--text-muted); cursor: pointer;";
+          row.append(btn, del);
+          nodes.push(row);
+        }
+        nodes.push(filterButton("group:__ungrouped__", "Ungrouped", "sub-group-ungrouped-count", 0));
+        list.replaceChildren(...nodes);
       }
 
       function updateMoveGroupSelect() {
         const sel = document.getElementById("move-group-select");
         if (!sel) return;
-        let html = '<option value="">-- Remove from Group (Ungrouped) --</option>';
-        for (const g of groupsList) {
-          html += '<option value="' + escapeAttr(g.name) + '">' + escapeHtml(g.name) + '</option>';
-        }
-        sel.innerHTML = html;
+        const options = [new Option("-- Remove from Group (Ungrouped) --", "")];
+        for (const g of groupsList) options.push(new Option(g.name, g.name));
+        sel.replaceChildren(...options);
       }
 
       window.labkioskOpenNewGroupDialog = function () {

@@ -6,7 +6,7 @@
  * No route in this file may resolve a tenant or render untrusted data without them.
  */
 
-import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole } from "./types";
+import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole, Session } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderSchoolHomeHtml } from "./ui_school_home";
@@ -84,7 +84,8 @@ import {
   updateTenantUser,
   deleteTenantUser,
   getTenantUser,
-  getTenantUserPermissions
+  getTenantUserPermissions,
+  findTenantUserById
 } from "./db";
 import {
   verifyPassword,
@@ -120,6 +121,66 @@ const MAX_THUMBNAIL_BYTES = 256 * 1024;
 
 /** Commands a teacher console is allowed to dispatch. */
 const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "mute"]);
+
+/**
+ * Most workstations one request may address. A classroom is tens of machines;
+ * the cap keeps one request from queueing an unbounded number of D1 writes.
+ */
+const MAX_BATCH_TARGETS = 500;
+
+/**
+ * D1 allows at most 100 bound parameters per statement, so an `IN (...)` list
+ * is written in slices that leave room for the statement's other parameters.
+ */
+const D1_IN_LIST_CHUNK = 90;
+
+/** Longest workstation group name, matching what the console accepts. */
+const MAX_GROUP_NAME_LENGTH = 50;
+
+/**
+ * The permissions a staff account may hold. `*` is never stored: full access
+ * comes only from owning the school or holding the `school_admin` role.
+ */
+const STAFF_PERMISSIONS = new Set(["workstations", "broadcast", "portal", "whitelist", "teachers", "settings"]);
+const STAFF_ROLES = new Set<TenantUserRole>(["school_admin", "sub_admin", "teacher", "lab_assistant", "content_manager"]);
+
+/** A permissions array from a request, or null when it holds anything unknown. */
+function parseStaffPermissions(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  const permissions = Array.from(new Set(raw.map((p) => String(p))));
+  return permissions.every((p) => STAFF_PERMISSIONS.has(p)) ? permissions : null;
+}
+
+/**
+ * Why the caller may not hand out this role and these permissions, or null.
+ *
+ * `teachers` is the permission to manage staff. Without this check a delegate
+ * holding it could create a `school_admin` -- whose permissions are `*` -- or
+ * promote their own account to one, and take over the school's settings and
+ * enrolment key. A delegate may only grant what they hold themselves, may not
+ * appoint a co-administrator, and may not edit their own account or a
+ * co-administrator's. The school's owner and its co-administrators may.
+ */
+async function staffDelegationProblem(
+  db: D1Database,
+  session: Session,
+  tenant: Tenant,
+  change: { role?: TenantUserRole; permissions?: string[]; target?: { user_id: string; role: TenantUserRole } }
+): Promise<string | null> {
+  const actorPermissions = session.role === "super_admin"
+    ? ["*"]
+    : await getTenantUserPermissions(db, tenant.id, session.user_id);
+  if (actorPermissions.includes("*")) return null;
+
+  if (change.target) {
+    if (change.target.user_id === session.user_id) return "You cannot change your own staff account";
+    if (change.target.role === "school_admin") return "Only a school administrator can change a co-administrator";
+  }
+  if (change.role === "school_admin") return "Only a school administrator can appoint a co-administrator";
+  const beyond = (change.permissions || []).filter((p) => !actorPermissions.includes(p));
+  if (beyond.length) return `You cannot grant permissions you do not hold: ${beyond.join(", ")}`;
+  return null;
+}
 
 /** Longest x11vnc password a workstation may report (x11vnc itself uses the first 8 characters). */
 const MAX_VNC_PASSWORD_LENGTH = 64;
@@ -1583,7 +1644,9 @@ export default {
 
     // GET /api/tenant/teachers: list staff accounts
     if (path === "/api/tenant/teachers" && method === "GET") {
-      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      // The staff list carries every colleague's email address; it belongs to
+      // the people who manage staff, not to everyone who can sign in.
+      const denied = await requireTenantPermission(db, session, currentTenant, "teachers", jsonHeaders);
       if (denied) return denied;
       const teachers = await listTenantUsers(db, currentTenant!.id);
       return new Response(JSON.stringify({ status: "ok", teachers }), { headers: jsonHeaders });
@@ -1609,9 +1672,27 @@ export default {
           return jsonError("Please enter a valid email address", 400, jsonHeaders);
         }
 
-        const validRoles: Set<string> = new Set(["school_admin", "sub_admin", "teacher", "lab_assistant", "content_manager"]);
-        const role: TenantUserRole = body.role && validRoles.has(body.role) ? body.role : "teacher";
-        const permissions = Array.isArray(body.permissions) ? body.permissions.map(String) : [];
+        if (body.role !== undefined && !STAFF_ROLES.has(body.role)) {
+          return jsonError("Unknown staff role", 400, jsonHeaders);
+        }
+        const role: TenantUserRole = body.role || "teacher";
+        const permissions = body.permissions === undefined ? [] : parseStaffPermissions(body.permissions);
+        if (!permissions) return jsonError("Unknown permission requested", 400, jsonHeaders);
+
+        const refused = await staffDelegationProblem(db, session!, currentTenant!, { role, permissions });
+        if (refused) return jsonError(refused, 403, jsonHeaders);
+
+        if (body.password !== undefined && body.password !== "") {
+          const passwordProblem = validatePasswordStrength(String(body.password));
+          if (passwordProblem) return jsonError(passwordProblem, 400, jsonHeaders);
+        }
+
+        // An address that already has an account is refused rather than linked:
+        // linking would let any school pull another school's administrator (or
+        // the platform's) into its own staff list and read back their name.
+        if (await findUserByEmail(db, String(body.email).toLowerCase().trim())) {
+          return jsonError("An account with this email address already exists", 409, jsonHeaders);
+        }
 
         const teacher = await createTenantUser(db, {
           tenantId: currentTenant!.id,
@@ -1643,10 +1724,21 @@ export default {
       try {
         const body = await request.json<{ id: string; role?: TenantUserRole; permissions?: string[] }>();
         if (!body.id) return jsonError("Staff ID is required", 400, jsonHeaders);
+        if (body.role !== undefined && !STAFF_ROLES.has(body.role)) {
+          return jsonError("Unknown staff role", 400, jsonHeaders);
+        }
+        const permissions = body.permissions === undefined ? undefined : parseStaffPermissions(body.permissions);
+        if (permissions === null) return jsonError("Unknown permission requested", 400, jsonHeaders);
 
-        await updateTenantUser(db, currentTenant!.id, body.id, {
+        const target = await findTenantUserById(db, currentTenant!.id, String(body.id));
+        if (!target) return jsonError("Staff account not found", 404, jsonHeaders);
+
+        const refused = await staffDelegationProblem(db, session!, currentTenant!, { role: body.role, permissions, target });
+        if (refused) return jsonError(refused, 403, jsonHeaders);
+
+        await updateTenantUser(db, currentTenant!.id, target.id, {
           role: body.role,
-          permissions: body.permissions
+          permissions
         });
 
         await writeAuditLog(db, {
@@ -1671,7 +1763,15 @@ export default {
         const teacherId = path.slice("/api/tenant/teachers/".length);
         if (!teacherId) return jsonError("Staff ID is required", 400, jsonHeaders);
 
+        const target = await findTenantUserById(db, currentTenant!.id, teacherId);
+        if (!target) return jsonError("Staff account not found", 404, jsonHeaders);
+        const refused = await staffDelegationProblem(db, session!, currentTenant!, { target });
+        if (refused) return jsonError(refused, 403, jsonHeaders);
+
         await deleteTenantUser(db, currentTenant!.id, teacherId);
+        // The console promises the removed account is signed out at once; a
+        // session left open would still pass every membership-only guard.
+        await deleteSessionsForUser(db, target.user_id);
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,
           userId: session!.user_id,
@@ -2117,10 +2217,21 @@ export default {
         if (!Array.isArray(body.clientIds) || !body.clientIds.length) {
           return jsonError("Client IDs array required", 400, jsonHeaders);
         }
-        const clientIds = body.clientIds.map((c) => String(c || "").trim()).filter(Boolean);
-        const groupName = body.groupName ? String(body.groupName).trim().slice(0, 50) : null;
+        const clientIds = Array.from(new Set(body.clientIds.map((c) => String(c || "").trim()).filter(Boolean)));
+        if (!clientIds.length) return jsonError("Client IDs array required", 400, jsonHeaders);
+        if (clientIds.length > MAX_BATCH_TARGETS) {
+          return jsonError(`At most ${MAX_BATCH_TARGETS} workstations can be moved at once`, 400, jsonHeaders);
+        }
+        const groupName = body.groupName ? String(body.groupName).trim() : null;
+        // Only a group that exists: a free-form name would put workstations in a
+        // group the console lists nowhere and cannot delete.
+        if (groupName && !(await listWorkstationGroups(db, currentTenant!.id)).some((g) => g.name === groupName)) {
+          return jsonError("Workstation group not found", 404, jsonHeaders);
+        }
 
-        await assignClientsToGroup(db, currentTenant!.id, clientIds, groupName);
+        for (let i = 0; i < clientIds.length; i += D1_IN_LIST_CHUNK) {
+          await assignClientsToGroup(db, currentTenant!.id, clientIds.slice(i, i + D1_IN_LIST_CHUNK), groupName);
+        }
 
         const cache = tenantTelemetryCache[currentTenant!.id] || {};
         for (const cid of clientIds) {
@@ -2157,8 +2268,17 @@ export default {
 
       try {
         const body = await request.json<{ name: string }>();
-        const name = String(body.name || "").trim().slice(0, 50);
+        const name = String(body.name || "").trim();
         if (!name) return jsonError("Group name is required", 400, jsonHeaders);
+        if (name.length > MAX_GROUP_NAME_LENGTH) {
+          return jsonError(`Group names are at most ${MAX_GROUP_NAME_LENGTH} characters`, 400, jsonHeaders);
+        }
+        // Membership is stored by name, so two groups with one name would share
+        // members, and deleting either would ungroup both.
+        const existing = await listWorkstationGroups(db, currentTenant!.id);
+        if (existing.some((g) => g.name.toLowerCase() === name.toLowerCase())) {
+          return jsonError("A group with this name already exists", 409, jsonHeaders);
+        }
 
         const group = await createWorkstationGroup(db, currentTenant!.id, name);
         await writeAuditLog(db, {
@@ -2183,7 +2303,9 @@ export default {
       const groupId = path.slice("/api/groups/".length).trim();
       if (!groupId) return jsonError("Group ID is required", 400, jsonHeaders);
 
-      await deleteWorkstationGroup(db, currentTenant!.id, groupId);
+      if (!(await deleteWorkstationGroup(db, currentTenant!.id, groupId))) {
+        return jsonError("Workstation group not found", 404, jsonHeaders);
+      }
       await writeAuditLog(db, {
         tenantId: currentTenant!.id,
         userId: session!.user_id,
@@ -2209,11 +2331,17 @@ export default {
           ? (body.targets as unknown[]).map((t) => String(t || "").trim()).filter(Boolean)
           : [];
         const singleTarget = String(body.target || "").trim();
-        const targets = rawTargets.length > 0 ? rawTargets : (singleTarget ? [singleTarget] : []);
+        // "all" already reaches every workstation, so it replaces any named ones
+        // rather than queueing a second command for each of them.
+        const named = Array.from(new Set(rawTargets.length > 0 ? rawTargets : (singleTarget ? [singleTarget] : [])));
+        const targets = named.includes("all") ? ["all"] : named;
 
         const action = String(body.action || "").trim();
         if (targets.length === 0 || !action) {
           return jsonError("Target and action required", 400, jsonHeaders);
+        }
+        if (targets.length > MAX_BATCH_TARGETS) {
+          return jsonError(`At most ${MAX_BATCH_TARGETS} workstations can be addressed at once`, 400, jsonHeaders);
         }
         if (!ALLOWED_COMMANDS.has(action)) {
           return jsonError(`Unsupported action: ${action}`, 400, jsonHeaders);

@@ -120,7 +120,8 @@ function renderTeachersPageHtml(teachers: TenantUser[] = []): string {
             </div>
             <div class="form-group">
               <label class="form-label" for="teacher-password">Temporary Password</label>
-              <input type="text" class="form-input" id="teacher-password" required value="TeacherPass2026!">
+              <input type="text" class="form-input" id="teacher-password" required minlength="12" autocomplete="off" spellcheck="false">
+              <p class="form-hint">A random password is suggested. Hand it to the teacher and ask them to change it after signing in.</p>
             </div>
             <div class="form-group">
               <label class="form-label" for="teacher-role">Role</label>
@@ -244,6 +245,20 @@ function renderTeachersScripts(nonce: string): string {
           });
         });
       }
+
+      // -------------------------------------------------------------
+      // Temporary password: random per page load, never a shared default
+      // -------------------------------------------------------------
+      (function suggestPassword() {
+        const field = document.getElementById("teacher-password");
+        if (!field) return;
+        const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        let value = "";
+        for (const b of bytes) value += alphabet[b % alphabet.length];
+        // Guarantee the letters-and-digits rule the server enforces.
+        field.value = value.slice(0, 14) + "a" + String(bytes[0] % 10);
+      })();
 
       // -------------------------------------------------------------
       // Create Teacher Form
