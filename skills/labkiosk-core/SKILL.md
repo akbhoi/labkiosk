@@ -30,6 +30,10 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
    - The school dashboard enforces a 4-module primary rail (`workstations`, `apps-web`, `teachers`, `settings`).
    - All rendered CSS classes MUST be declared in `src/ui_layout.ts` (e.g. `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`).
    - Scrollable tables must use `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned `th`.
+   - Client scripts build DOM nodes (`textContent`, `dataset`, `replaceChildren`). `escapeHtml()` and
+     `escapeAttr()` are server-only; calling them in the browser throws.
+   - Staff routes go through `staffDelegationProblem()`; batch routes cap and chunk their id lists.
+     See [`skills/labkiosk-control/SKILL.md`](../labkiosk-control/SKILL.md) §1A.
 4. State two requests must agree on goes in D1, never in a module-level variable: the active broadcast
    (`tenants.broadcast_url` / `broadcast_epoch`) and device remote-control credentials (`vnc_password` / `remote_host`).
 5. If altering the database schema:

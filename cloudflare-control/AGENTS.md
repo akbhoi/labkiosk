@@ -21,10 +21,10 @@ cloudflare-control/
 │   ├── d1_adapter.ts                   # Node 22+ native `node:sqlite` mock for local unit tests
 │   ├── ui.ts                           # School admin console: picks the page, fills the shell
 │   ├── ui_admin_shared.ts              # Tenant API scope + Level 2 context panel behaviour
-│   ├── ui_admin_workstations.ts        # One module per admin page: its markup, its context
-│   ├── ui_admin_apps_web.ts            #   panel and its client script together, unifying
-│   ├── ui_admin_teachers.ts            #   lesson broadcast, portal apps, and domain allowlist
-│   ├── ui_admin_settings.ts
+│   ├── ui_admin_workstations.ts        # One module per admin page (Rule 5f): its markup, its
+│   ├── ui_admin_apps_web.ts            #   context panel and its client script together.
+│   ├── ui_admin_teachers.ts            #   apps_web unifies lesson broadcast, portal apps and
+│   ├── ui_admin_settings.ts            #   the domain allowlist in three tabs
 │   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
 │   │                                   #   radii and easing, plus the legacy aliases the public
 │   │                                   #   pages were written against
@@ -35,7 +35,10 @@ cloudflare-control/
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms)
 │   └── types.ts                        # Strict TypeScript interfaces
-└── test/worker.test.ts                 # Multi-tenant automated integration & security test suite
+└── test/
+    ├── worker.test.ts                  # Multi-tenant automated integration & security test suite
+    ├── dump_admin_html.ts              # Renders the four console pages from fixed inputs (Rule 5f)
+    └── dev_server.ts                   # Runs the worker under Node on the in-memory database
 ```
 
 ---
@@ -43,6 +46,7 @@ cloudflare-control/
 ## 2. Invariant Rules for Control Plane & Edge Workers
 
 ### Rule 1: Zero NPM Dependencies in Cloudflare Worker
+
 - The Cloudflare Worker control plane uses **0 runtime npm dependencies**.
 - Hashing and session cryptography **must always use `crypto.subtle`** (Web Crypto API):
   - Algorithm: `PBKDF2-HMAC-SHA256`
@@ -52,12 +56,14 @@ cloudflare-control/
 - Never add external routing libraries, auth frameworks, or heavy database ORMs. Keep cold start under 10ms.
 
 ### Rule 2: Multi-Tenant Scoping, Privacy Isolation & Delegation
+
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
 - The in-memory telemetry cache is partitioned by tenant ID: `tenantTelemetryCache[tenantKey]`. It is a cache only; `client_devices` in D1 is the source of truth, because worker isolates are per-colo and short-lived.
 - **Nothing that two requests must agree on lives in module memory.** The active broadcast (`tenants.broadcast_url` / `broadcast_epoch`) and a workstation's remote-control details (`client_devices.vnc_password` / `remote_host`) are rows in D1.
 - **Subdomain Routing & Apex Redirection**: School admin dashboards are located at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`). Accessing `/admin` on the base apex domain redirects (302) to the authenticated school admin's subdomain `/admin` (or `/super` for super admins). When a super admin accesses a specific school admin sub-route (`/admin/workstations`, `/admin/broadcast`, etc.) on apex or dev without a query param, it routes to the `demo` school console (`?tenant=demo`) rather than bouncing to `/super`. Furthermore, whenever a console is rendered outside its dedicated subdomain (e.g. On apex or dev hosts), all internal navigation links preserve `?tenant=<subdomain>` to maintain session context.
 - **Super Admin Privacy Isolation**: Super admins are strictly restricted from accessing any school's admin console (`/admin`), workstation telemetry, or remote desktop/VNC channel *except* for the dedicated `demo` school tenant. Super admin privileges permit approving custom domains, managing interface catalogs, and system maintenance, but protect institutional privacy. Full access permissions (`*`) are guaranteed for super admins on the `demo` tenant.
-- **Granular Staff Delegation & Sub-admins**: School admins can delegate management functions by creating staff accounts (`tenant_users` table) with roles (`sub_admin`, `teacher`, `lab_assistant`, `content_manager`) and granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`).
+- **Granular Staff Delegation & Sub-admins**: School admins can delegate management functions by creating staff accounts (`tenant_users` table) with roles (`school_admin`, `sub_admin`, `teacher`, `lab_assistant`, `content_manager`) and granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`). Both are validated against those lists on the way in; `*` is never stored.
+- **Delegation Never Escalates**: a staff member holding `teachers` who is not a co-administrator may only grant permissions they hold, may not appoint a `school_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Adding staff refuses an email that already has an account (`409`) rather than linking another school's user, and removing staff ends that account's sessions.
 - **Customizable Subdomain & Lab Settings**: School admins can customize their subdomain (`POST /api/tenant/subdomain`), default home route (`home_route`: e.g. `/` vs `/home`), and tunnel domain (`tunnel_domain` for per-school Cloudflare Tunnels).
 - **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (restricted to `demo`), for a session that already owns that tenant, or on an explicitly public route.
 - **Never write a route without a guard.** Every endpoint that reads or changes a school's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry` calls `requireDevice()`. A route with no guard is a security vulnerability.
@@ -65,6 +71,7 @@ cloudflare-control/
 - Only the `Host` header says where a request arrived. Never read `X-Forwarded-Host` (or any other caller-supplied header) to build a URL that is handed back to a workstation.
 
 ### Rule 2b: Interface Catalogs Are Platform Assets, Not Tenant Data
+
 - `ui_catalogs` holds the translated interface text for the wizard and the kiosk top bar. It has no
   `tenant_id` and must not grow one: the product says the same thing to every school, and a
   workstation asks for its language **before** it is enrolled, so there is no tenant to scope by
@@ -80,28 +87,45 @@ cloudflare-control/
 - Nothing tenant-specific may be put in a catalog, precisely because it is served to everyone.
 
 ### Rule 2c: Workstation Groups & Batch Command Architecture
+
 - **Workstation Groups Table (`workstation_groups`)**: Tenants can organize client devices into named groups (e.g. "Row 1", "Lab A", "Physics"). Devices link via `client_devices.group_name`.
 - **Management Endpoints**:
   - `GET /api/groups`: List workstation groups for the tenant.
-  - `POST /api/groups`: Create a new group (`{ name }`).
-  - `DELETE /api/groups/:id`: Delete group; sets member devices' `group_name` to `NULL`.
-  - `POST /api/clients/group`: Assign devices to a group (`{ clientIds: string[], groupName: string }`).
+  - `POST /api/groups`: Create a new group (`{ name }`, 1–50 characters). Names are unique per
+    school, compared case-insensitively (`409` otherwise): membership is stored **by name**, so two
+    groups sharing one would share members and deleting either would ungroup both.
+  - `DELETE /api/groups/:id`: Delete group and set member devices' `group_name` to `NULL` in one
+    `db.batch()`; `404` for a group this school does not have.
+  - `POST /api/clients/group`: Assign devices to a group (`{ clientIds: string[], groupName: string | null }`).
+    `groupName` must be an existing group (`404`), or empty/`null` to ungroup.
 - **Batch Command Dispatch (`POST /api/command`)**:
-  - Accepts `targets: string[]` (or legacy single `target: string`).
+  - Accepts `targets: string[]` (or legacy single `target: string`). Duplicates are dropped and
+    `"all"` replaces any named targets, so a broadcast is queued once.
   - Iterates targets and enqueues commands for each device, returning `{ status: "ok", count, commandIds }`.
+- **Bounded batches**: at most `MAX_BATCH_TARGETS` (500) ids per request on both routes. D1 binds at
+  most **100 parameters per statement**, so any `IN (...)` list is written in slices of
+  `D1_IN_LIST_CHUNK` (90). An unbounded list is both a denial-of-service lever and a query that
+  fails outright past ~97 ids.
 
 ### Rule 3: The Schema Has Two Homes
+
 - `migrations/` is what a deployed D1 database has; `SCHEMA_SQL` in `db.ts` builds the in-memory database that tests and local development use. Both must be changed together.
 - Add a **new** numbered migration file (e.g. `0006_feature.sql`); **never** edit an applied migration.
 - `test/worker.test.ts` compares the two schemas and fails on drift.
 
 ### Rule 4: Escape Everything Rendered & Safe URLs
+
 - Tenant data is attacker-controlled: school names, admin emails, portal card titles, and URLs arrive through registration or the teacher console.
 - Server-side, every interpolation into a `ui*.ts` template goes through `escapeHtml()` / `escapeJson()` from `escape.ts`. `escapeJson()` is required for anything inlined into a `<script>` block.
 - Client-side, build DOM nodes and assign `textContent`. Never concatenate a value into `innerHTML`, and never place one inside an inline `onclick=` attribute — attach listeners and pass ids through `dataset`.
+- **`escapeHtml()` / `escapeAttr()` do not exist in the browser.** Inside a template's client script
+  (`\${...}` escaped in the TypeScript string) a call to them is a `ReferenceError` at runtime — the
+  workstation group list crashed on every refresh that way. Use `el()` / `textContent` / `dataset` /
+  `new Option()` and `replaceChildren()`. A test fails if any console script contains either name.
 - URLs that will be navigated to, redirected to, or rendered as `href` must pass `safeHttpUrl()` first.
 
 ### Rule 5: Nonce CSP, No Inline Event Handlers, Hardened Headers
+
 - Every HTML response is built with `buildHtmlHeaders(nonce, ...)` in `index.ts`:
   - Nonce-based `Content-Security-Policy`
   - HSTS (`Strict-Transport-Security`, HTTPS only)
@@ -113,6 +137,7 @@ cloudflare-control/
 - `test/worker.test.ts` renders every page and fails if any script lacks the nonce or any `on*=` attribute is detected.
 
 ### Rule 5b: Left-Side Multi-Level Panels Design & Seamless Transitions
+
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
   - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, exactly 4 primary module icons (Workstations, Apps & Web, Teachers & Staff, Lab Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
@@ -135,6 +160,7 @@ cloudflare-control/
   - **Transitions & Micro-Interactions**: Hardware-accelerated transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
 
 ### Rule 5c: One Design Language, Declared Once
+
 - **`src/ui_tokens.ts` is the only place a colour, radius, easing curve or panel
   width is defined.** Every surface renders its `:root` from `rootTokensCss()` and
   its typography from `FONT_LINKS`. Never open a second `:root` block in a `ui*.ts`
@@ -156,6 +182,7 @@ cloudflare-control/
   `--bg-card`. The WCAG 2.2 AA claim in Rule 5b is only true while it does.
 
 ### Rule 5d: The Context Panel Is Wired, Not Decorative
+
 - Every control the Level 2 panel renders does something. It shipped as markup
   only once: `data-filter`, `data-action`, `data-preset` and `data-quick-domain`
   were read by nothing, the three "Add ..." shortcuts pointed at element ids that
@@ -168,8 +195,15 @@ cloudflare-control/
 - A command the panel triggers delegates to the page's own button rather than
   re-implementing the call, so there is one code path per action. Where the page
   has no such button, the panel navigates to the page that does.
+- Whether a `data-filter` / `data-density` control is disabled is decided by **what the page
+  provides** (`window.labkioskApplyFilter` / `window.labkioskApplyDensity`), never by which page
+  it is. Keying it on "not the workstations page" silently disabled the Teachers role filter.
+- The header counters (`stat-online-count`, `stat-total-count`, `stat-locked-count`) are real on
+  every page: the workstations grid updates them from its own poll, and `renderSubPanelScripts()`
+  polls `/api/clients` every 15 s everywhere else, hiding them for a caller refused `workstations`.
 
 ### Rule 5e: The Tenant Rides Along on a Dev Host
+
 - Client-side calls go through `window.labkioskApi(path)`, never bare `fetch("/api/...")`.
 - In production the school is its own subdomain and the `Host` header resolves the
   tenant. On `localhost` / `127.0.0.1` there is no subdomain, the tenant travels as
@@ -178,8 +212,13 @@ cloudflare-control/
 - Whether this is a dev host is a property of the **request** (`isDevHost()` in
   `guard.ts`, passed to the renderer as `isDevHost`), never of the configured
   `DEFAULT_DOMAIN`: that is `labkiosk.akbhoi.com` in local development too.
+- Loopback and RFC 1918 addresses count as dev hosts, because `pnpm dev` listens on
+  `0.0.0.0` and the simulator reaches it by LAN address. A deployed worker never sees
+  such a `Host` (Cloudflare routes only configured hostnames), which is what keeps that
+  safe; do not widen it to anything a public request could carry.
 
 ### Rule 5f: One Module Per Admin Page
+
 - A page of the school console owns its markup, its context-panel contents and
   its client script in one `ui_admin_<page>.ts`, exported as a single
   `build<Page>Page(options): AdminPageParts`. `ui.ts` picks the builder and
@@ -189,11 +228,12 @@ cloudflare-control/
   and that distance is precisely why thirty dead controls sat there unnoticed.
 - `ui_admin_shared.ts` holds only what every page needs: `renderApiScopeScript`
   (Rule 5e) and `renderSubPanelScripts` (Rule 5d).
-- `test/dump_admin_html.ts` renders all six pages from fixed inputs. Diff its
+- `test/dump_admin_html.ts` renders all four pages from fixed inputs. Diff its
   output across a refactor of these modules; the split that created them was
   verified byte-for-byte that way.
 
 ### Rule 5g: Three Paths on a School Host, Each With One Job
+
 - `/` is the **school homepage**: a headline, an introduction and the content
   blocks the school publishes, rendered by `ui_school_home.ts`. It is the page
   a school puts its own name on, and the only one a visitor sees first.
@@ -212,11 +252,14 @@ cloudflare-control/
   and size-capped on the way in (`sanitizeHomepageBlocks`), escaped on the way
   out, and a block link goes through `safeHttpUrl()` on both sides -- neither
   side may assume the other did it.
+
 ### Rule 6: State-Changing Requests Prove Their Origin
-- Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host, the platform domain, or a dev host. Bearer-authenticated device routes are exempt.
+
+- Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host or the platform domain. A dev-host origin (`localhost`, ...) is accepted **only when the request itself is on a dev host**; in production it would admit any page served from the teacher's own machine. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.
 
 ### Rule 7: Fail Closed
+
 - Missing configuration is an error, not a reason to fall back to something weaker.
 - `getDatabase()` throws without a D1 binding unless `ALLOW_LOCAL_DB=1`.
 - With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`); it never creates tables in production.
@@ -227,25 +270,32 @@ cloudflare-control/
 ## 3. Verification & Testing Playbook
 
 ### 1. TypeScript Strict Typecheck
+
 Checks both `src/` (against Cloudflare Workers runtime) and `test/` (against Node types):
+
 ```bash
 pnpm --prefix cloudflare-control run typecheck
 ```
+
 *Expected result:* Exit code 0, zero errors.
 
 ### 2. Automated Multi-Tenant & Security Tests
+
 ```bash
 pnpm --prefix cloudflare-control test
 ```
+
 *Expected result:* All unit and integration tests passing. Uses Node 22 native `node:sqlite` in `d1_adapter.ts`.
 
 **Testing Rule**: Whenever you add an API route, you MUST add its matching negative tests:
+
 - Anonymous access rejection (`401`)
 - Cross-tenant tampering rejection (`403` / `404`)
 - Cross-site CSRF rejection
 - Input validation & escaping checks
 
 ### 3. Local Dev Server
+
 ```bash
 cd cloudflare-control
 cp .dev.vars.example .dev.vars   # Edit secrets for local test
@@ -272,3 +322,8 @@ pnpm dev                        # predev applies migrations/ to local D1
 | **Resetting Broadcast lands on SaaS landing page instead of school portal** | `resetBroadcastToPortal()` sent `origin + "/"` without tenant scoping. | Authoritatively resolve `portalUrlFor(tenant)` in `POST /api/command`. |
 | **Single-Site Lockdown URL rejected without scheme** | URL lacked `https://` prefix (e.g. `canvas.institution.edu`). | `safeHttpUrl()` in `escape.ts` automatically prepends `https://` for scheme-less domains. |
 | **Cloudflare Dashboard env vars overwritten on deploy** | Defining `vars` in `wrangler.jsonc` overrides Cloudflare dashboard variables. | Omit `vars` block from `wrangler.jsonc`. Manage production secrets via Cloudflare Dashboard / `wrangler secret`. |
+| **Creating a workstation group does nothing; console logs `escapeAttr is not defined`** | The client script rebuilt the group list by calling the server-only `escapeHtml`/`escapeAttr` inside an escaped `\${...}`. | Build nodes with `el()`/`textContent`/`dataset`/`new Option()`. A test rejects either name in any console script. |
+| **The Teachers role filter is greyed out** | `renderSubPanelScripts()` disabled every `data-filter` on pages other than Workstations. | Disable a panel control only when the page defines no handler for it (`window.labkioskApplyFilter`). |
+| **A teacher with the staff permission becomes a co-administrator** | Staff routes stored any role and any permission string, `*` included, and let a delegate edit their own row. | `STAFF_ROLES` / `STAFF_PERMISSIONS` validation plus `staffDelegationProblem()` on create, update and delete. |
+| **Moving ~100+ workstations to a group fails** | D1 binds at most 100 parameters per statement and the `IN (...)` list was built in one go. | Cap at `MAX_BATCH_TARGETS` and write in `D1_IN_LIST_CHUNK` slices. |
+| **Online / Total read 0 everywhere except the grid** | Only the Workstations page polled telemetry. | `renderSubPanelScripts()` polls `/api/clients` on the other pages. |

@@ -3,6 +3,7 @@
 > **Notice:** This repository was architected and co-developed through human-AI pair programming, initially with **Antigravity** (Google DeepMind) and later with Claude Code. Any AI agent (Antigravity, Claude, Copilot, Cursor, Codex, Gemini, etc.) working on this repository MUST strictly abide by the invariants, architectural patterns, and testing protocols defined across this codex.
 >
 > **Modular Subsystem Codices:**
+>
 > - 🐧 **Client Operating System & Distro Builder:** [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md)
 > - ☁️ **Cloudflare Workers SaaS Control Plane:** [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md)
 > - 🛠️ **Operating Skills & Procedures:** [`skills/labkiosk-core/SKILL.md`](skills/labkiosk-core/SKILL.md)
@@ -54,7 +55,8 @@ labkiosk/
 │   │   ├── ui_super.ts                 # Super Admin Master Console (/super)
 │   │   ├── ui_legal.ts                 # Legal compliance pages (/privacy, /terms)
 │   │   └── types.ts                    # Strict TypeScript interfaces
-│   └── test/worker.test.ts             # Multi-tenant automated integration tests
+│   └── test/                           # worker.test.ts (integration & security suite),
+│                                       #   dump_admin_html.ts, dev_server.ts
 │
 ├── Dockerfile                          # Workstation simulator image (ghcr.io/akbhoi/labkiosk)
 ├── docker-compose.yml                  # Runs the simulator; live-mounts the client source
@@ -71,6 +73,7 @@ labkiosk/
 The Client Operating System and Cloudflare Control Plane communicate over authenticated HTTPS REST channels.
 
 ### 1. Workstation Heartbeat & Telemetry (`POST /api/telemetry`)
+
 - **Caller:** `agent.py` on client workstation (every 3 seconds).
 - **Authentication:** `Authorization: Bearer <device_token>`.
 - **Payload** (exactly these keys; `post_telemetry()` in `agent.py` is the reference):
@@ -101,6 +104,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   - `broadcastUrl` / `broadcastEpoch`: Authoritative synchronized active lesson URL.
 
 ### 2. First-Boot Workstation Enrollment (`POST /api/setup`)
+
 - **Caller:** Local setup wizard (`wizard.html`) via loopback agent `POST /api/setup`.
 - **Target:** Control Plane `POST /api/devices/enroll`.
 - **Payload:** `{ subdomain, clientId, enrollmentKey, customDomain }`.
@@ -113,20 +117,23 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   without it `overlayroot="tmpfs"` would discard the token on the next reboot.
 
 ### 3. Remote Control & Observation Channel
+
 - **Loopback VNC:** `x11vnc` binds strictly to `127.0.0.1:5900` with an ephemeral per-boot password.
 - **WebSocket Bridge:** `websockify` binds to `127.0.0.1:6080`.
 - **Tunnel Egress:** Cloudflare Tunnel securely forwards loopback port 6080 to `<pc>.<TUNNEL_DOMAIN>` without exposing any listening port on the school's local LAN.
 - **Teacher Dashboard:** Embedded noVNC frame authenticates via the device's current `vnc_password` retrieved securely through `GET /api/clients`.
 
 ### 4. Workstation Groups & Batch Commands
+
 - **Group Management:** Workstations can be organized into arbitrary named groups (e.g. "Row 1", "Lab A", "Physics"):
   - `GET /api/groups`: List workstation groups for the tenant.
-  - `POST /api/groups`: Create a new group (`{ name }`).
-  - `DELETE /api/groups/:id`: Delete group; sets member devices' `group_name` to `NULL`.
-  - `POST /api/clients/group`: Assign devices to a group (`{ clientIds: string[], groupName: string }`).
+  - `POST /api/groups`: Create a new group (`{ name }`, 1–50 characters, unique per school case-insensitively — membership is stored by name).
+  - `DELETE /api/groups/:id`: Delete group; sets member devices' `group_name` to `NULL` (`404` for an unknown group).
+  - `POST /api/clients/group`: Assign devices to an **existing** group (`{ clientIds: string[], groupName: string | null }`; empty or `null` ungroups).
 - **Batch Command Dispatch (`POST /api/command`):**
-  - Accepts `targets: string[]` (or legacy single `target: string`).
-  - Allows targeting specific subsets of machines or selected workstations for commands (`lock`, `unlock`, `reboot`, `shutdown`, `reset`).
+  - Accepts `targets: string[]` (or legacy single `target: string`). Duplicates are dropped and `"all"` replaces named targets.
+  - Actions are exactly `ALLOWED_COMMANDS`: `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `mute`. There is no `reset` action: Reset to Portal is `navigate` with `resetPortal: true`, and `navigate` needs the `broadcast` permission.
+  - Both routes accept at most 500 ids per request, and D1's 100-parameter limit means `IN (...)` lists are written in slices of 90.
   - The teacher console features a "Select All" toggle, per-workstation and per-group selection checkboxes, dynamic selection count indicators, and targeted command buttons ("Lock", "Unlock", "Reboot", "Shutdown").
 
 ---
@@ -134,11 +141,13 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 ## 3. Global Invariant Rules (Zero Exceptions)
 
 ### Rule 1: Zero NPM Dependencies in Cloudflare Worker
+
 - The Cloudflare Worker control plane uses **0 runtime npm dependencies**.
 - Hashing and session cryptography **must always use `crypto.subtle`** (Web Crypto API): `PBKDF2-HMAC-SHA256`, 100,000 iterations, 32-byte salt, 256 derived bits.
 - Never introduce external routing libraries, auth frameworks, or heavy database ORMs. Keep worker cold starts under 10ms.
 
 ### Rule 2: 100% RAM Overlay Protection (`overlayroot="tmpfs"`)
+
 - The client OS runs as an **immutable system with all disk writes diverted to RAM**:
   - Live ISO: `overlayroot="tmpfs"` (plus an optional `toram` boot entry, which is **not** the
     default and must be chosen from the menu).
@@ -147,6 +156,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - Dynamic runtime files, browser profiles, logs, and downloads write to `/tmp` in `tmpfs` and reset completely upon reboot.
 
 ### Rule 3: Native Top-Level Navigation & Shadow DOM Extension
+
 - **Never load external educational websites inside an `<iframe>`**. Modern sites enforce `X-Frame-Options: SAMEORIGIN` and fail.
 - Chromium navigates top-level pages.
 - The Chrome extension (`content.js`) injects the navigation header into the top frame inside an isolated **Shadow DOM**.
@@ -157,13 +167,16 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - **Dynamic Directionality (RTL/LTR)**: The extension applies `dir="rtl"` or `dir="ltr"` to the host container, top bar, curtain, and modal based on the active catalog's `_meta.direction`.
 
 ### Rule 4: Multi-Tenant Scoping & Security Guards
+
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
 - Authoritative state (broadcasts, credentials, sessions) resides in D1, not isolate memory.
 - Every endpoint is strictly guarded via `guard.ts`: `resolveTenant()`, `requireTenantAdmin()`, `requireSuperAdmin()`, `requireDevice()`, and `rejectCrossSiteMutation()`.
 - Super admins are restricted from accessing any school's admin console, telemetry, or VNC remote desktop *except* for the dedicated `demo` school tenant to ensure school data privacy. Accessing school admin sub-routes (`/admin/workstations`, `/admin/apps-web`, etc.) as super admin routes directly to the `demo` school console (`?tenant=demo`) rather than bouncing to `/super`, and all internal console links preserve `?tenant=<subdomain>` when rendered outside the dedicated school subdomain. Full access permissions (`*`) are guaranteed for super admins on the `demo` tenant.
-- School admins can delegate functions to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `apps-web`, `teachers`, `settings`, with backward-compatible support for legacy `broadcast`, `portal`, `whitelist`).
+- School admins can delegate functions to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`). The Apps & Web page opens with any of `broadcast`, `portal` or `whitelist`, and each of its tabs calls routes guarded by that one permission. `*` is never stored: full access comes only from owning the school or the `school_admin` role.
+- A delegate holding `teachers` may grant only the permissions they hold, may not appoint a `school_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Without that, the staff permission was a one-request path to the school's settings and enrolment key.
 
 ### Rule 4b: Left-Side Multi-Level Panels Design & Seamless Transitions
+
 - The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) enforce a unified **Left-Side Multi-Level Panels Architecture**:
   - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, exactly 4 primary module icons (Workstations, Apps & Web, Teachers & Staff, Lab Settings), live counter pills, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel collapse toggle.
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
@@ -186,6 +199,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   - **Transitions & Micro-Interactions**: Hardware-accelerated CSS transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
 
 ### Rule 4c: One Design Language, Declared Once
+
 - `cloudflare-control/src/ui_tokens.ts` is the single declaration of the design
   language for every web surface: the two consoles, the public landing page, the
   student portal and the legal pages. Each renders its `:root` from
@@ -193,18 +207,22 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - A class a page renders must be a class the shell declares, and the test suite
   fails otherwise (including `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`). See Rule 5c in
   [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md).
+
 ### Rule 5: Zero Placeholders
+
 - ❌ No `// TODO: Implement later`
 - ❌ No empty `catch (e) {}` blocks.
 - ❌ No mock data stubs in production code.
 - ❌ No unverified constants. Cryptographic checksums and pins (`cloudflared.pin`, `grub.pin`) fail closed if unverified.
 
 ### Rule 6: Fail Closed
+
 - Missing configuration is an error, not a reason to fall back to an insecure default.
 - The agent binds its local API exclusively to `127.0.0.1`.
 - Production database requires schema migrations to be applied before serving requests.
 
 ### Rule 7b: The Simulator Container Is Untrusted Too
+
 - The workstation simulator (root `Dockerfile`, `docker-compose.yml`) runs as the unprivileged `kiosk`
   user with Chromium's sandbox enabled, a read-only root filesystem, `cap_drop: ALL` apart from the
   `SYS_CHROOT` that sandbox needs, `no-new-privileges`, and its noVNC port published on `127.0.0.1`
@@ -213,6 +231,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   warns when it takes it. Never make it unconditional again.
 
 ### Rule 7: Network Subsystem & State Persistence Guarantee
+
 - Network profiles (Ethernet and Wi-Fi) configured via the setup wizard or agent API are managed through NetworkManager.
 - To survive `overlayroot="tmpfs"` reboots on installed hardware, connection keyfiles are stored on the persistent `LABKIOSK_DATA` partition in `/etc/labkiosk/system-connections/` (mode `0700`, files mode `0600`, root:root) and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab`.
 - The unprivileged `kiosk` user is granted Polkit privileges for NetworkManager via `/etc/polkit-1/rules.d/50-labkiosk-network.rules` to allow the agent to manage network connections without running the agent as root.
