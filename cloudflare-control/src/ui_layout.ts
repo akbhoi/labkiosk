@@ -1230,6 +1230,33 @@ ${rootTokensCss()}
       background: var(--bg-surface);
       box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
     }
+    .table-scrollable {
+      max-height: 480px;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    .table-scrollable th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--bg-card);
+      box-shadow: 0 1px 0 var(--border);
+    }
+    .table-scrollable::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .table-scrollable::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .table-scrollable::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+    .table-scrollable::-webkit-scrollbar-thumb:hover {
+      background: var(--border-subtle);
+    }
     table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
     th {
       background: var(--bg-card);

@@ -293,7 +293,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
           <div class="card" id="section-activity">
             <h2 class="card-title">Recent Lab Activity</h2>
             <p class="card-sub">Privileged changes to this lab, including anything the platform did to it.</p>
-            <div class="table-container">
+            <div class="table-container table-scrollable">
               <table>
                 <thead>
                   <tr>

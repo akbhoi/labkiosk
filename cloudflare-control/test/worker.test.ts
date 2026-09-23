@@ -2333,6 +2333,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // 3. Script wires window.labkioskSwitchTab
     assert.match(html, /window\.labkioskSwitchTab = switchTab/);
+
+    // 4. Recent Lab Activity table uses table-scrollable container
+    assert.match(html, /class="table-container table-scrollable"/);
   });
 });
 
