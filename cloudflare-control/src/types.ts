@@ -1,8 +1,8 @@
-export type UserRole = "super_admin" | "school_admin";
+export type UserRole = "super_admin" | "org_admin";
 export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
 export type KioskMode = "portal" | "single_url";
 export type CommandAction = "lock" | "unlock" | "navigate" | "reload" | "reboot" | "shutdown" | "clear-session" | "mute";
-export type TenantUserRole = "school_admin" | "sub_admin" | "teacher" | "lab_assistant" | "content_manager";
+export type TenantUserRole = "org_admin" | "sub_admin" | "operator" | "assistant" | "content_manager";
 
 export interface TenantUser {
   id: string;
@@ -44,12 +44,12 @@ export interface Tenant {
   portal_subtitle?: string | null;
   portal_description?: string | null;
   portal_footer?: string | null;
-  /** Active broadcast lesson URL, or null when workstations should sit on their portal. */
+  /** Active broadcast page URL, or null when workstations should sit on their portal. */
   broadcast_url?: string | null;
   /** Monotonic marker workstations use to detect a new broadcast; 0 when none is active. */
   broadcast_epoch?: number;
   home_route?: string | null;
-  /** Headline on the school homepage. Falls back to the school name. */
+  /** Headline on the organization homepage. Falls back to the organization name. */
   homepage_headline?: string | null;
   /** One or two lines under the headline. */
   homepage_intro?: string | null;
@@ -105,6 +105,9 @@ export interface ClientDevice {
   /** Hostname the workstation's noVNC gateway is reachable on (Cloudflare Tunnel). */
   remote_host?: string | null;
   group_name?: string | null;
+  /** Last broadcast addressed to this workstation alone; NULL with an epoch is a reset. */
+  broadcast_url?: string | null;
+  broadcast_epoch?: number;
   created_at: number;
   updated_at: number;
 }
@@ -133,7 +136,7 @@ export interface WhitelistEntry {
   created_at: number;
 }
 
-/** One editable section of a school homepage. */
+/** One editable section of an organization homepage. */
 export interface HomepageBlock {
   title: string;
   body: string;
@@ -181,7 +184,7 @@ export interface LabConfig {
   defaultHomepage: string;
   tunnelDomain: string;
   homeRoute?: string;
-  /** Effective allowlist for this school: its own domains plus portal app hosts. */
+  /** Effective allowlist for this organization: its own domains plus portal app hosts. */
   whitelist: string[];
   scheduledShutdown: string;
 }
@@ -198,7 +201,7 @@ export interface Env {
   ALLOW_LOCAL_DB?: string;
   /** Public download URL for the built kiosk ISO, shown on the landing page. */
   ISO_DOWNLOAD_URL?: string;
-  /** Cloudflare Tunnel domain for remote management (VNC). Defaults to lab.myschool.edu. */
+  /** Cloudflare Tunnel domain for remote management (VNC). Defaults to lab.example.com. */
   TUNNEL_DOMAIN?: string;
   /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.akbhoi.com. */
   DEFAULT_HOMEPAGE?: string;

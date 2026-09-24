@@ -2,7 +2,7 @@
  * The single declaration of the platform's design language.
  *
  * Every surface -- the admin and super-admin consoles, the public landing page,
- * the student portal and the legal pages -- renders from the tokens below, so a
+ * the user portal and the legal pages -- renders from the tokens below, so a
  * colour, radius or easing curve is defined once and changes everywhere.
  *
  * Before this module each of those four surfaces carried its own `:root` with

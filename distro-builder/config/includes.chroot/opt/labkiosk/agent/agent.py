@@ -3,19 +3,19 @@
 Lab Kiosk Local Agent
 
 Responsibilities:
-  * First-boot enrolment against the school's Cloudflare Worker.
+  * First-boot enrolment against the organization's Cloudflare Worker.
   * Screen thumbnail telemetry and remote command execution.
-  * Synchronising the school's domain allowlist into Chromium managed policies.
+  * Synchronising the organization's domain allowlist into Chromium managed policies.
   * A loopback-only HTTP API for the setup wizard and the browser extension.
 
 Security notes:
   * The local API binds to 127.0.0.1 only. It used to listen on 0.0.0.0 with a
-    wildcard CORS header, which let any device on the school network re-point a
+    wildcard CORS header, which let any device on the organization network re-point a
     workstation at a different control plane or inject keystrokes into it.
   * Telemetry is authenticated with a per-device bearer token obtained by
-    exchanging the school's enrollment key once, at enrolment.
+    exchanging the organization's enrollment key once, at enrolment.
   * There is no built-in control-plane URL. An unconfigured workstation talks to
-    nobody until a teacher completes the setup wizard.
+    nobody until an operator completes the setup wizard.
 """
 
 import json
@@ -54,7 +54,7 @@ MAX_LOG_BYTES = 64 * 1024
 # The log lives on /tmp, which is a tmpfs -- so it is RAM, on machines with as
 # little as 2 GB of it. The agent is at its most talkative exactly when a
 # workstation is left running with something wrong (a pulled cable logs on every
-# probe), so an append-only file is a slow leak that ends in a classroom.
+# probe), so an append-only file is a slow leak that ends in a room.
 # Trimmed in place rather than rotated: the autostart owns the file through a
 # ">>" redirect, and renaming it would leave the shell writing to an inode
 # nobody can read any more.
@@ -72,7 +72,7 @@ LOCALIZATION_CONFIG_FILE = "/etc/labkiosk/localization.json"
 LOCALIZATION_HELPER = "/usr/local/sbin/labkiosk-localization"
 LOCALIZATION_TIMEOUT_SECONDS = 60
 # en-US ships in the image; every other catalog is dropped onto the data
-# partition, which is how a school adds its language without a new ISO.
+# partition, which is how an organization adds its language without a new ISO.
 UI_LANGUAGE_DIR = "/opt/labkiosk/i18n"
 UI_LANGUAGE_EXTRA_DIR = "/etc/labkiosk/i18n"
 UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}\Z")
@@ -104,7 +104,7 @@ DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.akbhoi.com")
 
 # Remote control. The Openbox autostart (and the simulator's entrypoint) writes
 # the plaintext x11vnc password it generated for this boot here, mode 600, so
-# the agent can hand it to the teacher console over the authenticated
+# the agent can hand it to the admin console over the authenticated
 # telemetry channel. The tunnel hostname comes from LABKIOSK_REMOTE_HOST or, on
 # the real image, from the first ingress hostname in cloudflared's config.
 VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
@@ -116,7 +116,7 @@ LOCAL_API_PORT = 8888
 HEARTBEAT_SECONDS = 3
 MAX_BACKOFF_SECONDS = 60
 # Upper bound on the base64 thumbnail in one heartbeat. At a 3-second cadence an
-# unbounded screenshot is a standing egress cost on a school's uplink, and the
+# unbounded screenshot is a standing egress cost on an organization's uplink, and the
 # control plane documents this ceiling; a frame over budget is dropped rather
 # than sent, so the heartbeat itself always gets through.
 MAX_THUMBNAIL_BYTES = 256 * 1024
@@ -167,7 +167,7 @@ LOOPBACK_NO_PROXY = ("localhost", "127.0.0.1", "::1")
 NMCLI_TIMEOUT_SECONDS = 15
 # A heartbeat that reached the control plane this recently proves the
 # workstation is online even where the generic probes below are firewalled
-# (schools that force all traffic through a proxy commonly block both).
+# (organizations that force all traffic through a proxy commonly block both).
 ONLINE_HEARTBEAT_WINDOW_SECONDS = 20
 
 state = {
@@ -179,7 +179,7 @@ state = {
     "customDomain": "",
     "isConfigured": False,
     "isLocked": False,
-    "lockMessage": "Screens locked by the instructor. Please look to the front.",
+    "lockMessage": "This screen has been locked by an administrator. Please wait.",
     "targetUrl": SETUP_URL,
     "broadcastUrl": "",
     "broadcastEpoch": 0,
@@ -252,8 +252,51 @@ def log(message):
 # Configuration
 # --------------------------------------------------------------------------
 
+def is_private_ip_literal(hostname):
+    """
+    True for a loopback or RFC 1918 address written as an IP literal.
+
+    This is the same set the control plane treats as a dev host (isDevHost() in
+    guard.ts): the machine running `pnpm dev`, reached from a test VM or the
+    simulator by its LAN or Hyper-V/WSL adapter address (e.g. 172.31.64.1). A
+    public address, a link-local one or a hostname never qualifies, so plain
+    http cannot be pointed at anything off the local network.
+    """
+    try:
+        address = ipaddress.ip_address(str(hostname or "").strip("[]"))
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    return address.version == 4 and any(
+        address in ipaddress.ip_network(block)
+        for block in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    )
+
+
+def organization_name(reply, fallback):
+    """
+    The organization's display name from an enrolment reply.
+
+    Workers older than the organization vocabulary send it as `schoolName`, so
+    that key is still read; `fallback` (the subdomain or custom domain the
+    operator typed) covers a reply with neither.
+    """
+    for key in ("organizationName", "schoolName"):
+        value = reply.get(key) if isinstance(reply, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
 def validate_worker_url(candidate):
-    """Accept only an https origin, or a loopback/container host for local testing."""
+    """
+    Accept only an https origin, or plain http to a local test server.
+
+    Plain http is for development only: a loopback or container host, or a
+    private IP literal (see is_private_ip_literal). An organization's real server is
+    always https, and the device token travels in every heartbeat.
+    """
     if not candidate:
         return None
     cand = candidate if candidate.startswith(("http://", "https://")) else f"https://{candidate}"
@@ -267,6 +310,7 @@ def validate_worker_url(candidate):
         parsed.hostname in LOCAL_WORKER_HOSTS
         or parsed.hostname.endswith(".internal")
         or parsed.hostname.endswith(".local")
+        or is_private_ip_literal(parsed.hostname)
     )
     if parsed.scheme == "https" or (parsed.scheme == "http" and is_local):
         return f"{parsed.scheme}://{parsed.netloc}"
@@ -279,7 +323,7 @@ def safe_navigable_url(candidate):
 
     Everything the control plane sends eventually reaches window.location in the
     browser, so a javascript: or data: value arriving as a targetUrl would run in
-    whatever page the student is on. navigate_to() already checked this for
+    whatever page the user is on. navigate_to() already checked this for
     broadcast commands; this makes the same check reusable for the values that
     arrive on the telemetry response and at enrolment.
     """
@@ -567,7 +611,7 @@ def save_config(payload):
     except OSError as err:
         raise RuntimeError(
             f"could not save the enrolment to {CONFIG_FILE} ({err.strerror}). "
-            f"{describe_config_dir()} The school has already registered this "
+            f"{describe_config_dir()} The organization has already registered this "
             "workstation, so enrol again once the permission is corrected."
         ) from err
 
@@ -648,7 +692,7 @@ def available_ui_languages():
     Interface languages this workstation can display.
 
     A catalog is <tag>.json; en-US is the source and ships in the image. The
-    rest are added by dropping files into /etc/labkiosk/i18n, so a school can
+    rest are added by dropping files into /etc/labkiosk/i18n, so an organization can
     add its own language without rebuilding the ISO.
     """
     languages = {}
@@ -711,7 +755,7 @@ def validate_catalog(document):
 
 def remote_languages():
     """
-    Interface languages the school's control plane offers.
+    Interface languages the organization's control plane offers.
 
     Only meaningful once the workstation is enrolled and online, which is why
     this is a separate call and not part of the options the wizard opens with.
@@ -853,8 +897,8 @@ def configure_localization(data):
         # out again -- the helper is root and may not even reach the display.
         relock_keyboard(keymap, keymap_variant)
 
-    # Accept-Language is what actually changes which version of a lesson site a
-    # school gets, so the browser is told as well as the system.
+    # Accept-Language is what actually changes which version of a page site a
+    # organization gets, so the browser is told as well as the system.
     sync_chromium_policies(cached_whitelist or [], force=True)
     os.environ.pop("TZ", None)
     time.tzset()
@@ -926,7 +970,7 @@ def apply_saved_localization():
 
 def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_domain=None):
     """
-    Exchange the school's enrollment key for this workstation's device token.
+    Exchange the organization's enrollment key for this workstation's device token.
 
     This is also what makes the wizard's "Verify & Connect" button honest: a
     wrong subdomain or key is reported here instead of being written to disk and
@@ -941,7 +985,7 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
 
     base_url = validate_worker_url(candidate)
     if not base_url:
-        raise ValueError("The school address is not a valid server URL.")
+        raise ValueError("The organization address is not a valid server URL.")
 
     base_url = probe_worker_url(base_url)
     payload = {
@@ -1024,7 +1068,7 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
             "so this enrolment lives in RAM and will be gone at the next reboot.")
     return {
         "status": "ok",
-        "schoolName": data.get("schoolName", subdomain or custom_domain),
+        "organizationName": organization_name(data, subdomain or custom_domain),
         "clientId": config["clientId"],
         "targetUrl": config["targetUrl"],
         # The wizard shows this instead of a plain success: the workstation is
@@ -1035,7 +1079,7 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
             + (f"a {mounted_fstype(os.path.dirname(CONFIG_FILE))} mount in RAM"
                if mounted_fstype(os.path.dirname(CONFIG_FILE))
                else "not the persistent data partition")
-            + ", so the school address and the device token are only in memory "
+            + ", so the organization address and the device token are only in memory "
               "and will be gone after the next reboot. Reinstall from a current "
               "Lab Kiosk ISO to fix it."
         ),
@@ -1234,7 +1278,7 @@ def apply_proxy_to_environment(cfg):
 
     open_url() builds its opener per request, so a change here applies to the
     very next heartbeat. Loopback is always exempt: the local worker used in
-    development must never be sent through a school proxy.
+    development must never be sent through an organization proxy.
     """
     names = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY")
     for name in names:
@@ -1855,7 +1899,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
     def _is_local_caller(self):
         """
-        Reject cross-origin calls from a page the student navigated to.
+        Reject cross-origin calls from a page the user navigated to.
 
         The socket already only accepts loopback connections, but the kiosk
         browser itself is a loopback client, so a hostile page could otherwise
@@ -1888,7 +1932,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         Binding to 127.0.0.1 stops packets from the network but not DNS
         rebinding: a page on an attacker's domain whose name briefly resolves to
-        127.0.0.1 reaches this server through the student's own browser with an
+        127.0.0.1 reaches this server through the user's own browser with an
         Origin the checks above never see on a GET. Such a request still carries
         the attacker's hostname in Host, so that is what is checked here.
         """
@@ -1963,7 +2007,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         if self.path.split("?", 1)[0] == "/api/log":
             # Same gate as changing the network: on an installed workstation a
-            # student must not be able to read it, but during setup, and on live
+            # user must not be able to read it, but during setup, and on live
             # media, it has to be reachable before anything is configured.
             if admin_auth_required() and not has_admin_session(self.headers.get(ADMIN_TOKEN_HEADER, "")):
                 self._send(401, {"error": "Administrator authentication is required"})
@@ -2088,7 +2132,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 self._send(
                     400,
                     {
-                        "error": "School subdomain or custom domain, workstation name, and enrollment key are all required."
+                        "error": "Organization subdomain or custom domain, workstation name, and enrollment key are all required."
                     },
                 )
                 return
@@ -2185,7 +2229,7 @@ class LocalApiServer(ThreadingHTTPServer):
     /api/install/disks shells out with a 10 s timeout. On the single-threaded
     HTTPServer this blocked every other request for that whole window, and the
     browser extension polls /api/status once a second to drive the lock curtain
-    -- so a teacher's "lock screens" could arrive up to ten seconds late with
+    -- so an operator's "lock screens" could arrive up to ten seconds late with
     nothing in the log to explain it.
     """
 
@@ -2236,7 +2280,7 @@ def load_policy_base():
 
 def sync_chromium_policies(new_whitelist, force=False):
     """
-    Write the school's allowlist into Chromium's managed enterprise policy.
+    Write the organization's allowlist into Chromium's managed enterprise policy.
 
     `force` rewrites the policy even when the allowlist is unchanged, which is
     how a proxy change made in the setup wizard reaches the browser.
@@ -2286,7 +2330,7 @@ def sync_chromium_policies(new_whitelist, force=False):
     policy_data = load_policy_base()
     if policy_data is None:
         # Fail closed: overwriting the managed policy with a partial document
-        # would drop URLBlocklist and hand the student an unfiltered browser.
+        # would drop URLBlocklist and hand the user an unfiltered browser.
         log(
             f"REFUSING to update Chromium policy: {CHROMIUM_POLICY_BASE_FILE} is "
             "unreadable, so the blocklist cannot be reproduced. The browser keeps "
@@ -2295,7 +2339,7 @@ def sync_chromium_policies(new_whitelist, force=False):
         return
 
     # The interface language the operator chose, and the locale's own language,
-    # are what a school website uses to decide which translation to serve.
+    # are what an organization website uses to decide which translation to serve.
     localization = load_localization_config()
     accept = []
     for tag in (str(localization.get("uiLanguage", "")), str(localization.get("locale", ""))):
@@ -2313,7 +2357,7 @@ def sync_chromium_policies(new_whitelist, force=False):
     policy_data["URLAllowlist"] = list(dict.fromkeys(allowlist))
 
     # Chromium bypasses loopback on its own, so the agent's API and the setup
-    # wizard stay reachable however the school proxy is configured.
+    # wizard stay reachable however the organization proxy is configured.
     proxy_cfg = load_proxy_config()
     if proxy_cfg["enabled"]:
         proxy_settings = {"ProxyMode": "fixed_servers", "ProxyServer": proxy_server_address(proxy_cfg)}
@@ -2442,7 +2486,7 @@ def execute_command(cmd_data):
     elif action == "shutdown":
         run_x11(["systemctl", "poweroff"])
     elif action == "clear-session":
-        # The end of a class period: sign every student out without a reboot.
+        # The end of a session: sign every user out without a reboot.
         # Ending Chromium is enough, because the kiosk watchdog deletes the
         # profile (cookies, saved sign-ins, history, local storage, IndexedDB,
         # service workers) and the disk cache before it relaunches, and the
@@ -2459,7 +2503,7 @@ def execute_command(cmd_data):
 
 
 def navigate_to(new_url, epoch=0):
-    """Point the kiosk browser at a teacher-supplied URL."""
+    """Point the kiosk browser at an operator-supplied URL."""
     if not new_url:
         return
     parsed = urlparse(str(new_url))
@@ -2474,8 +2518,8 @@ def navigate_to(new_url, epoch=0):
         state["broadcastEpoch"] = now_epoch
         state["isLocked"] = False
 
-    # Make sure the lesson's host is allowed right away, without dropping the
-    # rest of the school's allowlist until the next heartbeat replaces it.
+    # Make sure the page's host is allowed right away, without dropping the
+    # rest of the organization's allowlist until the next heartbeat replaces it.
     sync_chromium_policies(sorted(set(cached_whitelist or []) | {parsed.hostname.lower()}))
     log(f"Broadcast navigation set to {new_url} (epoch {now_epoch})")
 
@@ -2529,7 +2573,7 @@ def telemetry_loop():
             configured = state["isConfigured"]
 
         if not configured:
-            # Nothing to report until a teacher completes the wizard.
+            # Nothing to report until an operator completes the wizard.
             time.sleep(HEARTBEAT_SECONDS)
             continue
 

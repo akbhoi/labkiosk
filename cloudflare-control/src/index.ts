@@ -1,6 +1,6 @@
 /**
  * Multi-Tenant Lab Kiosk Cloudflare Controller & API
- * Manages Super Admin, School Tenant Admins, Subdomain Routing, Student Portals, and PC Telemetry.
+ * Manages Super Admin, Organization Tenant Admins, Subdomain Routing, User portals, and PC Telemetry.
  *
  * Authorization rules live in `guard.ts` and output escaping in `escape.ts`.
  * No route in this file may resolve a tenant or render untrusted data without them.
@@ -9,7 +9,7 @@
 import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole, Session } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
-import { renderSchoolHomeHtml } from "./ui_school_home";
+import { renderOrgHomeHtml } from "./ui_org_home";
 import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
 import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
@@ -40,6 +40,7 @@ import {
   createWorkstationGroup,
   deleteWorkstationGroup,
   assignClientsToGroup,
+  setClientsBroadcast,
   enqueueCommand,
   popCommandsForClient,
   purgeExpiredCommands,
@@ -119,11 +120,11 @@ import { createLocalD1Database } from "./d1_adapter";
 /** Largest screen thumbnail a workstation may upload (base64 data URL). */
 const MAX_THUMBNAIL_BYTES = 256 * 1024;
 
-/** Commands a teacher console is allowed to dispatch. */
+/** Commands an admin console is allowed to dispatch. */
 const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "clear-session", "mute"]);
 
 /**
- * Most workstations one request may address. A classroom is tens of machines;
+ * Most workstations one request may address. A room is tens of machines;
  * the cap keeps one request from queueing an unbounded number of D1 writes.
  */
 const MAX_BATCH_TARGETS = 500;
@@ -139,10 +140,10 @@ const MAX_GROUP_NAME_LENGTH = 50;
 
 /**
  * The permissions a staff account may hold. `*` is never stored: full access
- * comes only from owning the school or holding the `school_admin` role.
+ * comes only from owning the organization or holding the `org_admin` role.
  */
-const STAFF_PERMISSIONS = new Set(["workstations", "broadcast", "portal", "whitelist", "teachers", "settings"]);
-const STAFF_ROLES = new Set<TenantUserRole>(["school_admin", "sub_admin", "teacher", "lab_assistant", "content_manager"]);
+const STAFF_PERMISSIONS = new Set(["workstations", "broadcast", "portal", "whitelist", "staff", "settings"]);
+const STAFF_ROLES = new Set<TenantUserRole>(["org_admin", "sub_admin", "operator", "assistant", "content_manager"]);
 
 /** A permissions array from a request, or null when it holds anything unknown. */
 function parseStaffPermissions(raw: unknown): string[] | null {
@@ -154,12 +155,12 @@ function parseStaffPermissions(raw: unknown): string[] | null {
 /**
  * Why the caller may not hand out this role and these permissions, or null.
  *
- * `teachers` is the permission to manage staff. Without this check a delegate
- * holding it could create a `school_admin` -- whose permissions are `*` -- or
- * promote their own account to one, and take over the school's settings and
+ * `staff` is the permission to manage staff. Without this check a delegate
+ * holding it could create an `org_admin` -- whose permissions are `*` -- or
+ * promote their own account to one, and take over the organization's settings and
  * enrolment key. A delegate may only grant what they hold themselves, may not
  * appoint a co-administrator, and may not edit their own account or a
- * co-administrator's. The school's owner and its co-administrators may.
+ * co-administrator's. The organization's owner and its co-administrators may.
  */
 async function staffDelegationProblem(
   db: D1Database,
@@ -174,9 +175,9 @@ async function staffDelegationProblem(
 
   if (change.target) {
     if (change.target.user_id === session.user_id) return "You cannot change your own staff account";
-    if (change.target.role === "school_admin") return "Only a school administrator can change a co-administrator";
+    if (change.target.role === "org_admin") return "Only an organization administrator can change a co-administrator";
   }
-  if (change.role === "school_admin") return "Only a school administrator can appoint a co-administrator";
+  if (change.role === "org_admin") return "Only an organization administrator can appoint a co-administrator";
   const beyond = (change.permissions || []).filter((p) => !actorPermissions.includes(p));
   if (beyond.length) return `You cannot grant permissions you do not hold: ${beyond.join(", ")}`;
   return null;
@@ -185,7 +186,7 @@ async function staffDelegationProblem(
 /** Longest x11vnc password a workstation may report (x11vnc itself uses the first 8 characters). */
 const MAX_VNC_PASSWORD_LENGTH = 64;
 
-/** DNS label limit; a longer school slug can never resolve. */
+/** DNS label limit; a longer organization slug can never resolve. */
 const MAX_SUBDOMAIN_LENGTH = 63;
 
 /** Public registration: attempts allowed per source address per window. */
@@ -293,13 +294,13 @@ const DEFAULT_CONFIG: LabConfig = {
 const tenantTelemetryCache: Record<string, Record<string, ClientTelemetry>> = {};
 
 /**
- * The URL a workstation of this school should open.
+ * The URL a workstation of this organization should open.
  *
- * A workstation may reach the control plane on a host that is not its school's
+ * A workstation may reach the control plane on a host that is not its organization's
  * own subdomain: the Docker simulator talks to `host.docker.internal`, and a
- * worker deployed to `*.workers.dev` has no school subdomain at all. Returning a
+ * worker deployed to `*.workers.dev` has no organization subdomain at all. Returning a
  * bare `${origin}/` in those cases lands the kiosk on the public landing page
- * instead of the school's portal, so the school is named explicitly whenever the
+ * instead of the organization's portal, so the organization is named explicitly whenever the
  * host itself cannot carry it.
  */
 function effectiveOrigin(request: Request, url: URL): string {
@@ -321,7 +322,7 @@ function effectiveOrigin(request: Request, url: URL): string {
  * demo.<domain> to reach the demo console threw you to the platform console
  * instead, and there was no route back through the UI.
  *
- * A super admin signing in on a school subdomain lands on that school when it
+ * A super admin signing in on an organization subdomain lands on that organization when it
  * is one they may open (Rule 2 allows `demo` only) and on /super otherwise.
  */
 function postLoginRedirect(options: {
@@ -338,7 +339,7 @@ function postLoginRedirect(options: {
     isDev ? `/admin?tenant=${encodeURIComponent(slug)}` : `https://${slug}.${baseDomain}/admin`;
 
   if (role === "super_admin") {
-    // The school they were already looking at, if they are allowed in it.
+    // The organization they were already looking at, if they are allowed in it.
     const context = hostSlug || requestedSlug;
     if (context && SUPER_ADMIN_TENANT_SLUG === context) return consoleFor(context);
     return "/super";
@@ -368,7 +369,7 @@ function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): str
     return named;
   }
 
-  // Already on this school's own subdomain or custom domain:
+  // Already on this organization's own subdomain or custom domain:
   if (
     hostSubdomain(request, env.DEFAULT_DOMAIN) === tenant.subdomain ||
     (tenant.custom_domain && hostname(request) === tenant.custom_domain.toLowerCase())
@@ -376,12 +377,12 @@ function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): str
     return `${url.origin}${homePath}`;
   }
 
-  // If an active custom domain is configured, it is the canonical address for this school.
+  // If an active custom domain is configured, it is the canonical address for this organization.
   if (tenant.custom_domain) {
     return `https://${tenant.custom_domain}${homePath}`;
   }
 
-  // Talking to the production domain, so the school has a canonical address.
+  // Talking to the production domain, so the organization has a canonical address.
   if (env.DEFAULT_DOMAIN) {
     const base = env.DEFAULT_DOMAIN.replace(/^\./, "").toLowerCase();
     const host = hostname(request);
@@ -396,7 +397,7 @@ function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): str
 
 /**
  * Routes that may name a tenant without a session, either because they are
- * public and read-only (the student portal, the wizard status probe) or because
+ * public and read-only (the user portal, the wizard status probe) or because
  * they carry their own credential (`/api/telemetry` uses a device token, and
  * `/api/devices/enroll` proves possession of the enrollment key).
  */
@@ -415,7 +416,7 @@ const CATALOG_MAX_VALUE = 2000;
 /**
  * Reduce a submitted catalog to what a workstation will accept: a flat map of
  * string to string, plus an optional _meta block. Anything else is rejected
- * rather than stored, so a bad upload fails here and not in a classroom.
+ * rather than stored, so a bad upload fails here and not in a room.
  */
 function sanitizeCatalog(input: unknown): { body: string; entryCount: number } {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -460,7 +461,7 @@ function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
   // enrolled and holds no credential at that point, and the text is the same
-  // for every school, so these are readable without a session.
+  // for every organization, so these are readable without a session.
   if (path === "/api/i18n" && method === "GET") return true;
   if (path.startsWith("/i18n/") && method === "GET") return true;
   return false;
@@ -585,10 +586,10 @@ export default {
     });
     const currentTenant = resolution.tenant;
 
-    // A caller who explicitly named a school they may not act on is refused
+    // A caller who explicitly named an organization they may not act on is refused
     // once, here, rather than falling through to a route-specific message.
     if (resolution.denied && path.startsWith("/api/")) {
-      return jsonError("You do not have access to this school", 403, jsonHeaders);
+      return jsonError("You do not have access to this organization", 403, jsonHeaders);
     }
 
     const tenantKey = currentTenant ? currentTenant.id : defaultTenant.id;
@@ -600,7 +601,7 @@ export default {
     // AUTHENTICATION API ENDPOINTS
     // ==========================================
 
-    // POST /api/auth/register: School Admin Signup & Subdomain Claim
+    // POST /api/auth/register: Organization Admin Signup & Subdomain Claim
     if (path === "/api/auth/register" && method === "POST") {
       try {
         const body = await request.json<{
@@ -621,7 +622,7 @@ export default {
 
         const name = String(body.name).trim().slice(0, 120);
         if (!name) {
-          return jsonError("School name is required", 400, jsonHeaders);
+          return jsonError("Organization name is required", 400, jsonHeaders);
         }
 
         if (!isPlausibleEmail(body.email)) {
@@ -658,7 +659,7 @@ export default {
           email: body.email,
           password: body.password,
           name,
-          role: "school_admin"
+          role: "org_admin"
         });
 
         const tenant = await createTenant(db, {
@@ -673,7 +674,7 @@ export default {
           token,
           user_id: user.id,
           tenant_id: tenant.id,
-          role: "school_admin",
+          role: "org_admin",
           expires_at: Math.floor(Date.now() / 1000) + 7 * 24 * 3600
         });
 
@@ -685,7 +686,7 @@ export default {
         });
 
         return new Response(
-          JSON.stringify({ status: "ok", role: "school_admin", subdomain: tenant.subdomain }),
+          JSON.stringify({ status: "ok", role: "org_admin", subdomain: tenant.subdomain }),
           { headers: { ...jsonHeaders, "Set-Cookie": sessionCookie(token) } }
         );
       } catch (err: any) {
@@ -694,7 +695,7 @@ export default {
       }
     }
 
-    // POST /api/auth/login: Teacher or Super Admin Sign In
+    // POST /api/auth/login: Operator or Super Admin Sign In
     if (path === "/api/auth/login" && method === "POST") {
       try {
         const body = await request.json<{ email: string; password: string; tenant?: string }>();
@@ -727,7 +728,7 @@ export default {
         await clearLoginFailures(db, identifier);
         await deleteExpiredSessions(db, user.id);
 
-        const tenant = user.role === "school_admin" ? await findTenantByUserId(db, user.id) : null;
+        const tenant = user.role === "org_admin" ? await findTenantByUserId(db, user.id) : null;
         const token = generateSessionToken();
         await createSession(db, {
           token,
@@ -754,9 +755,9 @@ export default {
               ownSubdomain: tenant?.subdomain || null,
               hostSlug: hostSubdomain(request, env.DEFAULT_DOMAIN),
               // The sign-in POST has no query string of its own, so the page
-              // sends the school it was showing. It is a hint about where to go
-              // next: postLoginRedirect honours it only for the one school a
-              // super admin may open, a school admin is sent to their own
+              // sends the organization it was showing. It is a hint about where to go
+              // next: postLoginRedirect honours it only for the one organization a
+              // super admin may open, an organization admin is sent to their own
               // regardless, and the console guards on arrival either way.
               requestedSlug:
                 cleanSubdomain(url.searchParams.get("tenant") || body.tenant || "") || null,
@@ -773,7 +774,7 @@ export default {
     }
 
     // POST /api/auth/logout: Sign Out. GET is refused so a cross-site link or
-    // image cannot sign a teacher out; the consoles submit a same-site form.
+    // image cannot sign an operator out; the consoles submit a same-site form.
     if (path === "/api/auth/logout") {
       if (method !== "POST") {
         return new Response(JSON.stringify({ error: "Sign out with a POST request" }), {
@@ -861,6 +862,13 @@ export default {
     // SUPER ADMIN API & MASTER CONSOLE
     // ==========================================
 
+    // Renamed with the organization vocabulary; old bookmarks still land.
+    if (path === "/super/schools") {
+      const redirectUrl = new URL(request.url);
+      redirectUrl.pathname = "/super/organizations";
+      return Response.redirect(redirectUrl.toString(), 302);
+    }
+
     if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/")) {
       if (!session || session.role !== "super_admin") {
         return new Response(
@@ -876,7 +884,7 @@ export default {
         );
       }
 
-      let activeTab: "schools" | "approvals" | "catalogs" | "system" = "schools";
+      let activeTab: "organizations" | "approvals" | "catalogs" | "system" = "organizations";
       if (path === "/super/approvals") activeTab = "approvals";
       else if (path === "/super/catalogs") activeTab = "catalogs";
       else if (path === "/super/system") activeTab = "system";
@@ -896,8 +904,8 @@ export default {
       );
     }
 
-    // POST /api/super/tenants/suspend | /reactivate: pause or resume a whole school.
-    // A suspended school keeps its data and its console, but its portal, its
+    // POST /api/super/tenants/suspend | /reactivate: pause or resume a whole organization.
+    // A suspended organization keeps its data and its console, but its portal, its
     // workstations' telemetry and new enrolments are refused until reactivated.
     if ((path === "/api/super/tenants/suspend" || path === "/api/super/tenants/reactivate") && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
@@ -906,12 +914,12 @@ export default {
       try {
         const body = await request.json<{ tenantId?: string }>();
         const target = body.tenantId ? await findTenantById(db, body.tenantId) : null;
-        if (!target) return jsonError("School not found", 404, jsonHeaders);
+        if (!target) return jsonError("Organization not found", 404, jsonHeaders);
         if (suspend && target.status !== "active") {
-          return jsonError("Only an active school can be suspended", 400, jsonHeaders);
+          return jsonError("Only an active organization can be suspended", 400, jsonHeaders);
         }
         if (!suspend && target.status !== "suspended") {
-          return jsonError("Only a suspended school can be reactivated", 400, jsonHeaders);
+          return jsonError("Only a suspended organization can be reactivated", 400, jsonHeaders);
         }
         await updateTenant(db, target.id, { status: suspend ? "suspended" : "active" });
         await writeAuditLog(db, {
@@ -924,7 +932,7 @@ export default {
         });
       } catch (err: any) {
         console.error("[Worker] Tenant status change failed:", err);
-        return jsonError("Could not change this school's status", 400, jsonHeaders);
+        return jsonError("Could not change this organization's status", 400, jsonHeaders);
       }
     }
 
@@ -1040,7 +1048,7 @@ export default {
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
     // GET /api/super/audit-logs: what the platform has done -- catalog uploads
-    // and deletions, and every super-admin action taken on a school. Every one
+    // and deletions, and every super-admin action taken on an organization. Every one
     // of these was already being written and none of it could be read back:
     // `listAuditLogs` is scoped to a tenant, so the entries with no tenant were
     // invisible to everything.
@@ -1064,7 +1072,7 @@ export default {
 
         const existing = await findTenantBySubdomain(db, cleanSub);
         if (existing && existing.id !== body.tenantId) {
-          return jsonError("Subdomain already assigned to another school", 400, jsonHeaders);
+          return jsonError("Subdomain already assigned to another organization", 400, jsonHeaders);
         }
 
         await updateTenant(db, body.tenantId, {
@@ -1118,16 +1126,16 @@ export default {
         } else if (body.subdomain) {
           targetTenant = await findTenantBySubdomain(db, cleanSubdomain(body.subdomain));
         }
-        if (!targetTenant) return jsonError("School not found", 404, jsonHeaders);
+        if (!targetTenant) return jsonError("Organization not found", 404, jsonHeaders);
 
         const domain = cleanCustomDomain(body.customDomain || targetTenant.requested_custom_domain);
         if (!domain) {
-          return jsonError("Valid domain name required (e.g. kiosk.myschool.edu)", 400, jsonHeaders);
+          return jsonError("Valid domain name required (e.g. kiosk.example.com)", 400, jsonHeaders);
         }
 
         const existing = await findTenantByCustomDomain(db, domain);
         if (existing && existing.id !== targetTenant.id) {
-          return jsonError("This domain is already assigned to another school", 400, jsonHeaders);
+          return jsonError("This domain is already assigned to another organization", 400, jsonHeaders);
         }
 
         await approveCustomDomain(db, targetTenant.id, domain);
@@ -1157,7 +1165,7 @@ export default {
         } else if (body.subdomain) {
           targetTenant = await findTenantBySubdomain(db, cleanSubdomain(body.subdomain));
         }
-        if (!targetTenant) return jsonError("School not found", 404, jsonHeaders);
+        if (!targetTenant) return jsonError("Organization not found", 404, jsonHeaders);
 
         await rejectCustomDomain(db, targetTenant.id);
         await writeAuditLog(db, {
@@ -1184,7 +1192,7 @@ export default {
         } else if (body.subdomain) {
           targetTenant = await findTenantBySubdomain(db, cleanSubdomain(body.subdomain));
         }
-        if (!targetTenant) return jsonError("School not found", 404, jsonHeaders);
+        if (!targetTenant) return jsonError("Organization not found", 404, jsonHeaders);
 
         await removeCustomDomain(db, targetTenant.id);
         await writeAuditLog(db, {
@@ -1200,19 +1208,19 @@ export default {
     }
 
     // ==========================================
-    // PORTAL APPS & LAB SETTINGS API
+    // PORTAL APPS & Settings API
     // ==========================================
 
-    // GET /api/portal-sites: public -- student kiosks render this without a session
+    // GET /api/portal-sites: public -- user kiosks render this without a session
     if (path === "/api/portal-sites" && method === "GET") {
       if (!currentTenant) {
-        return jsonError("School not found", 404, jsonHeaders);
+        return jsonError("Organization not found", 404, jsonHeaders);
       }
       const sites = await listPortalSites(db, currentTenant.id);
       return new Response(JSON.stringify({ sites }), { headers: jsonHeaders });
     }
 
-    // POST /api/portal-sites: Add new app card to student launcher
+    // POST /api/portal-sites: Add new app card to user launcher
     if (path === "/api/portal-sites" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "portal", jsonHeaders);
       if (denied) return denied;
@@ -1341,7 +1349,7 @@ export default {
       }
     }
 
-    // POST /api/settings/subdomain: School requests new subdomain
+    // POST /api/settings/subdomain: Organization requests new subdomain
     if (path === "/api/settings/subdomain" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
@@ -1425,7 +1433,7 @@ export default {
           defaultUrl: currentTenant!.default_url,
           defaultLockMessage:
             currentTenant!.default_lock_message ||
-            "Screens locked by the instructor. Please look to the front.",
+            "This screen has been locked by an administrator. Please wait.",
           portalTitle: currentTenant!.portal_title || "",
           portalSubtitle: currentTenant!.portal_subtitle || "",
           portalDescription: currentTenant!.portal_description || "",
@@ -1486,7 +1494,7 @@ export default {
         const rawLockMsg = body.defaultLockMessage !== undefined ? body.defaultLockMessage : body.default_lock_message;
         if (rawLockMsg !== undefined) {
           const trimmedMsg = String(rawLockMsg).trim().slice(0, 280);
-          updates.default_lock_message = trimmedMsg || "Screens locked by the instructor. Please look to the front.";
+          updates.default_lock_message = trimmedMsg || "This screen has been locked by an administrator. Please wait.";
         }
 
         const rawTitle = body.portalTitle !== undefined ? body.portalTitle : body.portal_title;
@@ -1572,7 +1580,7 @@ export default {
         const body = await request.json<{ domain: string }>();
         const domain = cleanCustomDomain(body.domain);
         if (!domain) {
-          return jsonError("Please enter a valid domain name (e.g. kiosk.myschool.edu)", 400, jsonHeaders);
+          return jsonError("Please enter a valid domain name (e.g. kiosk.example.com)", 400, jsonHeaders);
         }
 
         // Prevent setting the platform apex or its subdomains as custom domain
@@ -1586,7 +1594,7 @@ export default {
         // Check collisions
         const existing = await findTenantByCustomDomain(db, domain);
         if (existing && existing.id !== currentTenant!.id) {
-          return jsonError("This domain is already assigned to another school", 400, jsonHeaders);
+          return jsonError("This domain is already assigned to another organization", 400, jsonHeaders);
         }
 
         await requestCustomDomain(db, currentTenant!.id, domain);
@@ -1629,7 +1637,7 @@ export default {
       }
     }
 
-    // GET /api/audit-logs: recent activity for this school
+    // GET /api/audit-logs: recent activity for this organization
     if (path === "/api/audit-logs" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
@@ -1639,22 +1647,22 @@ export default {
     }
 
     // ==========================================
-    // TENANT STAFF / TEACHER DELEGATION API
+    // TENANT STAFF / OPERATOR DELEGATION API
     // ==========================================
 
-    // GET /api/tenant/teachers: list staff accounts
-    if (path === "/api/tenant/teachers" && method === "GET") {
+    // GET /api/tenant/staff: list staff accounts
+    if (path === "/api/tenant/staff" && method === "GET") {
       // The staff list carries every colleague's email address; it belongs to
       // the people who manage staff, not to everyone who can sign in.
-      const denied = await requireTenantPermission(db, session, currentTenant, "teachers", jsonHeaders);
+      const denied = await requireTenantPermission(db, session, currentTenant, "staff", jsonHeaders);
       if (denied) return denied;
-      const teachers = await listTenantUsers(db, currentTenant!.id);
-      return new Response(JSON.stringify({ status: "ok", teachers }), { headers: jsonHeaders });
+      const staff = await listTenantUsers(db, currentTenant!.id);
+      return new Response(JSON.stringify({ status: "ok", staff }), { headers: jsonHeaders });
     }
 
-    // POST /api/tenant/teachers: create staff account
-    if (path === "/api/tenant/teachers" && method === "POST") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "teachers", jsonHeaders);
+    // POST /api/tenant/staff: create staff account
+    if (path === "/api/tenant/staff" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "staff", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{
@@ -1675,7 +1683,7 @@ export default {
         if (body.role !== undefined && !STAFF_ROLES.has(body.role)) {
           return jsonError("Unknown staff role", 400, jsonHeaders);
         }
-        const role: TenantUserRole = body.role || "teacher";
+        const role: TenantUserRole = body.role || "operator";
         const permissions = body.permissions === undefined ? [] : parseStaffPermissions(body.permissions);
         if (!permissions) return jsonError("Unknown permission requested", 400, jsonHeaders);
 
@@ -1688,13 +1696,13 @@ export default {
         }
 
         // An address that already has an account is refused rather than linked:
-        // linking would let any school pull another school's administrator (or
+        // linking would let any organization pull another organization's administrator (or
         // the platform's) into its own staff list and read back their name.
         if (await findUserByEmail(db, String(body.email).toLowerCase().trim())) {
           return jsonError("An account with this email address already exists", 409, jsonHeaders);
         }
 
-        const teacher = await createTenantUser(db, {
+        const operator = await createTenantUser(db, {
           tenantId: currentTenant!.id,
           email: body.email,
           name: body.name,
@@ -1707,19 +1715,19 @@ export default {
           tenantId: currentTenant!.id,
           userId: session!.user_id,
           action: "staff.create",
-          details: `email=${teacher.email} role=${role}`
+          details: `email=${operator.email} role=${role}`
         });
 
-        return new Response(JSON.stringify({ status: "ok", teacher }), { headers: jsonHeaders });
+        return new Response(JSON.stringify({ status: "ok", operator }), { headers: jsonHeaders });
       } catch (err: any) {
-        console.error("[Worker] Create teacher failed:", err);
-        return jsonError("Could not create teacher account", 400, jsonHeaders);
+        console.error("[Worker] Create operator failed:", err);
+        return jsonError("Could not create operator account", 400, jsonHeaders);
       }
     }
 
-    // POST /api/tenant/teachers/update: update role or permissions
-    if (path === "/api/tenant/teachers/update" && method === "POST") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "teachers", jsonHeaders);
+    // POST /api/tenant/staff/update: update role or permissions
+    if (path === "/api/tenant/staff/update" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "staff", jsonHeaders);
       if (denied) return denied;
       try {
         const body = await request.json<{ id: string; role?: TenantUserRole; permissions?: string[] }>();
@@ -1750,25 +1758,25 @@ export default {
 
         return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
       } catch (err: any) {
-        console.error("[Worker] Update teacher failed:", err);
+        console.error("[Worker] Update operator failed:", err);
         return jsonError("Could not update staff account", 400, jsonHeaders);
       }
     }
 
-    // DELETE /api/tenant/teachers/:id: remove staff account
-    if (path.startsWith("/api/tenant/teachers/") && method === "DELETE") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "teachers", jsonHeaders);
+    // DELETE /api/tenant/staff/:id: remove staff account
+    if (path.startsWith("/api/tenant/staff/") && method === "DELETE") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "staff", jsonHeaders);
       if (denied) return denied;
       try {
-        const teacherId = path.slice("/api/tenant/teachers/".length);
-        if (!teacherId) return jsonError("Staff ID is required", 400, jsonHeaders);
+        const operatorId = path.slice("/api/tenant/staff/".length);
+        if (!operatorId) return jsonError("Staff ID is required", 400, jsonHeaders);
 
-        const target = await findTenantUserById(db, currentTenant!.id, teacherId);
+        const target = await findTenantUserById(db, currentTenant!.id, operatorId);
         if (!target) return jsonError("Staff account not found", 404, jsonHeaders);
         const refused = await staffDelegationProblem(db, session!, currentTenant!, { target });
         if (refused) return jsonError(refused, 403, jsonHeaders);
 
-        await deleteTenantUser(db, currentTenant!.id, teacherId);
+        await deleteTenantUser(db, currentTenant!.id, operatorId);
         // The console promises the removed account is signed out at once; a
         // session left open would still pass every membership-only guard.
         await deleteSessionsForUser(db, target.user_id);
@@ -1776,17 +1784,17 @@ export default {
           tenantId: currentTenant!.id,
           userId: session!.user_id,
           action: "staff.delete",
-          details: `id=${teacherId}`
+          details: `id=${operatorId}`
         });
 
         return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
       } catch (err: any) {
-        console.error("[Worker] Delete teacher failed:", err);
+        console.error("[Worker] Delete operator failed:", err);
         return jsonError("Could not remove staff account", 400, jsonHeaders);
       }
     }
 
-    // POST /api/tenant/subdomain: update school subdomain
+    // POST /api/tenant/subdomain: update organization subdomain
     if (path === "/api/tenant/subdomain" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
@@ -1802,7 +1810,7 @@ export default {
 
         const existing = await findTenantBySubdomain(db, cleanSub);
         if (existing && existing.id !== currentTenant!.id) {
-          return jsonError("That subdomain is already claimed by another school", 400, jsonHeaders);
+          return jsonError("That subdomain is already claimed by another organization", 400, jsonHeaders);
         }
 
         await updateTenant(db, currentTenant!.id, { subdomain: cleanSub });
@@ -1826,11 +1834,11 @@ export default {
       }
     }
 
-    // POST /api/tenant/settings: update lab settings (mode, home_route, tunnel_domain, profile)
-    // POST /api/tenant/homepage: the school homepage served at the subdomain
+    // POST /api/tenant/settings: update Settings (mode, home_route, tunnel_domain, profile)
+    // POST /api/tenant/homepage: the organization homepage served at the subdomain
     // root. Guarded by the same `settings` permission as the rest of the lab
     // configuration, and every field is normalised here rather than trusted:
-    // this text is rendered on the page students land on.
+    // this text is rendered on the page users land on.
     if (path === "/api/tenant/homepage" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
@@ -1846,7 +1854,7 @@ export default {
         const blocks = sanitizeHomepageBlocks(body.blocks);
 
         await updateTenant(db, currentTenant!.id, {
-          // Empty means "use the default", which is the school name and the
+          // Empty means "use the default", which is the organization name and the
           // standard welcome line, so store null rather than an empty string.
           homepage_headline: headline || null,
           homepage_intro: intro || null,
@@ -1935,7 +1943,7 @@ export default {
         return new Response(JSON.stringify({ status: "ok", updates }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Settings update failed:", err);
-        return jsonError("Could not update lab settings", 400, jsonHeaders);
+        return jsonError("Could not update Settings", 400, jsonHeaders);
       }
     }
 
@@ -1943,7 +1951,7 @@ export default {
     // DEVICE ENROLMENT
     // ==========================================
 
-    // POST /api/devices/enroll: exchange the school enrollment key for a device token
+    // POST /api/devices/enroll: exchange the organization enrollment key for a device token
     if (path === "/api/devices/enroll" && method === "POST") {
       try {
         const body = await request.json<{
@@ -1984,7 +1992,7 @@ export default {
           );
         }
 
-        // A wrong school and a wrong key are reported identically so the endpoint
+        // A wrong organization and a wrong key are reported identically so the endpoint
         // cannot be used to enumerate which subdomains exist.
         const keyMatches =
           !!tenant && tenant.enrollment_key.length > 0 && timingSafeEqual(suppliedKey, tenant.enrollment_key);
@@ -1996,11 +2004,11 @@ export default {
             action: "device.enroll_denied",
             details: `client=${clientId} subdomain=${slug}`
           });
-          return jsonError("School subdomain or enrollment key is not correct", 401, jsonHeaders);
+          return jsonError("Organization subdomain or enrollment key is not correct", 401, jsonHeaders);
         }
 
         if (tenant.status !== "active") {
-          return jsonError("This school is not active yet. Ask your administrator to approve it.", 403, jsonHeaders);
+          return jsonError("This organization is not active yet. Ask your administrator to approve it.", 403, jsonHeaders);
         }
 
         const { token } = await createDeviceToken(db, { tenantId: tenant.id, clientId });
@@ -2016,6 +2024,10 @@ export default {
             deviceToken: token,
             clientId,
             subdomain: tenant.subdomain,
+            organizationName: tenant.name,
+            // Deprecated alias for workstations installed from an ISO older than
+            // the organization vocabulary; remove once every agent reads
+            // organizationName.
             schoolName: tenant.name,
             mode: tenant.mode,
             targetUrl: portalUrlFor(tenant, request, url, env)
@@ -2040,7 +2052,7 @@ export default {
 
       const tenant = await findTenantById(db, device.tenant_id);
       if (!tenant || tenant.status !== "active") {
-        return jsonError("This school is not active", 403, jsonHeaders);
+        return jsonError("This organization is not active", 403, jsonHeaders);
       }
 
       try {
@@ -2088,7 +2100,7 @@ export default {
         if (!tenantTelemetryCache[tenantId]) tenantTelemetryCache[tenantId] = {};
         tenantTelemetryCache[tenantId][clientId] = record;
 
-        await upsertClientDevice(db, {
+        const ownBroadcast = await upsertClientDevice(db, {
           tenantId,
           clientId,
           clientNum,
@@ -2102,11 +2114,17 @@ export default {
 
         const commandsForClient = await popCommandsForClient(db, tenantId, clientId);
         const activeWhitelist = await buildEffectiveWhitelist(db, tenantId);
-        // The active broadcast lives on the tenant row, so every colo and every
-        // isolate hands this workstation the same answer.
-        const validatedBroadcastUrl = tenant.broadcast_url ? safeHttpUrl(tenant.broadcast_url) : null;
+        // Broadcast state lives in D1 -- organization-wide on the tenant row, per
+        // workstation on its own row -- so every colo and every isolate hands this
+        // workstation the same answer. The newer of the two wins; a winner with no
+        // URL is a reset, and the workstation gets the portal.
+        const organizationEpoch = Number(tenant.broadcast_epoch) || 0;
+        const winner = ownBroadcast.broadcast_epoch > organizationEpoch
+          ? { url: ownBroadcast.broadcast_url, epoch: ownBroadcast.broadcast_epoch }
+          : { url: tenant.broadcast_url ?? null, epoch: organizationEpoch };
+        const validatedBroadcastUrl = winner.url ? safeHttpUrl(winner.url) : null;
         const activeBroadcast = validatedBroadcastUrl
-          ? { url: validatedBroadcastUrl, epoch: Number(tenant.broadcast_epoch) || 0 }
+          ? { url: validatedBroadcastUrl, epoch: winner.epoch }
           : null;
         if (activeBroadcast) {
           const bHost = new URL(activeBroadcast.url).hostname.toLowerCase();
@@ -2252,7 +2270,7 @@ export default {
       }
     }
 
-    // GET /api/groups: List groups for current school tenant
+    // GET /api/groups: List groups for current organization tenant
     if (path === "/api/groups" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
@@ -2359,20 +2377,28 @@ export default {
 
           if (isReset) {
             commandUrl = portalUrl;
-            commandEpoch = Date.now();
-            await updateTenant(db, currentTenant!.id, { broadcast_url: null, broadcast_epoch: 0 });
           } else {
             const validated = safeHttpUrl(body.url);
             if (!validated) {
               return jsonError("Navigate requires a valid http(s) URL", 400, jsonHeaders);
             }
             commandUrl = validated;
-            commandEpoch = Date.now();
+          }
+          commandEpoch = Date.now();
 
-            if (commandUrl === portalUrl) {
-              await updateTenant(db, currentTenant!.id, { broadcast_url: null, broadcast_epoch: 0 });
-            } else if (targets.includes("all")) {
-              await updateTenant(db, currentTenant!.id, { broadcast_url: commandUrl, broadcast_epoch: commandEpoch });
+          // The heartbeat re-sends every workstation its target every 3 seconds,
+          // so a broadcast has to be recorded where that answer comes from, or the
+          // next heartbeat sends the screen straight back to the portal. It is
+          // recorded where it was addressed: organization-wide for "all", on each
+          // workstation's own row otherwise. A reset is recorded too (URL null,
+          // with its epoch) rather than erased, so it outranks an older broadcast
+          // instead of letting it resurface.
+          const recordedUrl = commandUrl === portalUrl ? null : commandUrl;
+          if (targets.includes("all")) {
+            await updateTenant(db, currentTenant!.id, { broadcast_url: recordedUrl, broadcast_epoch: commandEpoch });
+          } else {
+            for (let i = 0; i < targets.length; i += D1_IN_LIST_CHUNK) {
+              await setClientsBroadcast(db, currentTenant!.id, targets.slice(i, i + D1_IN_LIST_CHUNK), recordedUrl, commandEpoch);
             }
           }
         }
@@ -2381,7 +2407,7 @@ export default {
         const lockMsg = body.message
           ? String(body.message).slice(0, 280)
           : action === "lock"
-          ? (currentTenant!.default_lock_message || "Screens locked by the instructor. Please look to the front.")
+          ? (currentTenant!.default_lock_message || "This screen has been locked by an administrator. Please wait.")
           : undefined;
 
         const cmdIds: string[] = [];
@@ -2426,7 +2452,7 @@ export default {
       }
     }
 
-    // GET & POST /api/whitelist: Allowed sites management (per school, persisted)
+    // GET & POST /api/whitelist: Allowed sites management (per organization, persisted)
     if (path === "/api/whitelist" && method === "GET") {
       const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
       if (denied) return denied;
@@ -2479,7 +2505,7 @@ export default {
 
     // GET /api/status: Lightweight connectivity check for the first-boot wizard.
     // Deliberately anonymous and CORS-open: it exposes nothing but whether a
-    // school subdomain exists and is active.
+    // organization subdomain exists and is active.
     if (path === "/api/status") {
       return new Response(
         JSON.stringify({
@@ -2489,6 +2515,8 @@ export default {
             hostSubdomain(request, env.DEFAULT_DOMAIN) ||
             cleanSubdomain(url.searchParams.get("tenant") || "") ||
             "root",
+          organizationName: currentTenant?.name || "Lab Kiosk Platform",
+          // Deprecated alias for agents older than the organization vocabulary.
           schoolName: currentTenant?.name || "Lab Kiosk Platform",
           mode: currentTenant?.mode || "portal",
           isActive: currentTenant ? currentTenant.status === "active" : true
@@ -2506,9 +2534,14 @@ export default {
       return new Response(renderTermsOfServiceHtml(), { headers: htmlHeaders });
     }
 
-    // 1. School Admin Dashboard (/admin and /admin/*)
+    // 1. Organization Admin Dashboard (/admin and /admin/*)
     if (path === "/admin" || path.startsWith("/admin/")) {
-      // Legacy redirects for consolidated pages
+      // Legacy redirects: consolidated pages, and the staff page's old name.
+      if (path === "/admin/teachers") {
+        const redirectUrl = new URL(request.url);
+        redirectUrl.pathname = "/admin/staff";
+        return Response.redirect(redirectUrl.toString(), 302);
+      }
       if (path === "/admin/broadcast" || path === "/admin/portal" || path === "/admin/whitelist") {
         const tab = path === "/admin/broadcast" ? "broadcast" : (path === "/admin/portal" ? "portal" : "whitelist");
         const redirectUrl = new URL(request.url);
@@ -2523,14 +2556,14 @@ export default {
         return Response.redirect(`${targetOrigin}/${suffix}`, 302);
       }
 
-      // A teacher who explicitly named another school is refused, not silently
+      // An operator who explicitly named another organization is refused, not silently
       // bounced to their own console. (A super admin never lands here: the
       // override in resolveTenant admits them, and requireTenantAdmin below is
       // what holds the `demo`-only line.)
       if (resolution.denied) {
         return new Response(
           renderLandingHtml({
-            error: "You do not have access to that school's console.",
+            error: "You do not have access to that organization's console.",
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
@@ -2546,8 +2579,8 @@ export default {
       const onApex = !isDev && env.DEFAULT_DOMAIN && hostname(request) === env.DEFAULT_DOMAIN.toLowerCase().replace(/^\./, "") && !explicitTenant;
       if (onApex) {
         if (session.role === "super_admin") {
-          // If the super admin requested a specific school admin sub-route (/admin/workstations, /admin/broadcast, etc.),
-          // they are accessing the demo school console (the only school console a platform admin may open).
+          // If the super admin requested a specific organization admin sub-route (/admin/workstations, /admin/broadcast, etc.),
+          // they are accessing the demo organization console (the only organization console a platform admin may open).
           // Redirect them to the demo console sub-route instead of bouncing them to /super.
           if (path !== "/admin") {
             return Response.redirect(
@@ -2565,7 +2598,7 @@ export default {
         }
       }
 
-      // Land a school admin on their own console when none was named.
+      // Land an organization admin on their own console when none was named.
       if (!currentTenant && session.tenant_id) {
         const userTenant = await findTenantById(db, session.tenant_id);
         if (userTenant) {
@@ -2584,7 +2617,7 @@ export default {
       }
 
 
-      // Land a super admin on the demo school console when visiting /admin/* without a tenant on dev.
+      // Land a super admin on the demo organization console when visiting /admin/* without a tenant on dev.
       if (!currentTenant && session.role === "super_admin" && path !== "/admin") {
         return Response.redirect(
           `${url.origin}${path}?tenant=${encodeURIComponent(SUPER_ADMIN_TENANT_SLUG)}`,
@@ -2595,11 +2628,11 @@ export default {
       const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
       if (denied) {
         // Say which refusal this is. A platform administrator is not locked
-        // out by accident: `demo` is the one school they may open, and the
+        // out by accident: `demo` is the one organization they may open, and the
         // console they actually want is /super.
         //
         // Only when the isolation is what actually refused them. A super admin
-        // naming a school that does not exist gets a 400 from the guard, and
+        // naming an organization that does not exist gets a 400 from the guard, and
         // telling them about privacy isolation would send them looking for the
         // wrong problem.
         const isPlatformIsolation =
@@ -2608,8 +2641,8 @@ export default {
           Boolean(currentTenant) &&
           currentTenant!.subdomain !== SUPER_ADMIN_TENANT_SLUG;
         const message = isPlatformIsolation
-          ? `Platform administrators cannot open a school console. This is the privacy isolation described in the Terms: only the ${SUPER_ADMIN_TENANT_SLUG} school is available for testing. Use the Super Admin console instead.`
-          : "You do not have access to that school's console.";
+          ? `Platform administrators cannot open an organization console. This is the privacy isolation described in the Terms: only the ${SUPER_ADMIN_TENANT_SLUG} organization is available for testing. Use the Super Admin console instead.`
+          : "You do not have access to that organization's console.";
         return new Response(
           renderLandingHtml({
             error: message,
@@ -2626,7 +2659,7 @@ export default {
       const tenant = currentTenant!;
       let activePage: AdminPageId = "workstations";
       if (path === "/admin/apps-web") activePage = "apps-web";
-      else if (path === "/admin/teachers") activePage = "teachers";
+      else if (path === "/admin/staff") activePage = "staff";
       else if (path === "/admin/settings") activePage = "settings";
 
       const userPerms = session.role === "super_admin"
@@ -2648,7 +2681,7 @@ export default {
       const hasAccess = checkPermission(activePage);
 
       if (!hasAccess) {
-        const pages: AdminPageId[] = ["workstations", "apps-web", "teachers", "settings"];
+        const pages: AdminPageId[] = ["workstations", "apps-web", "staff", "settings"];
         const allowedPage = pages.find(p => checkPermission(p));
         if (allowedPage) {
           const redirectPath = allowedPage === "workstations" ? "/admin" : `/admin/${allowedPage}`;
@@ -2670,7 +2703,7 @@ export default {
         );
       }
 
-      const [portalSites, broadcastPresets, whitelist, teachers, user, tenantUser, workstationGroups] = await Promise.all([
+      const [portalSites, broadcastPresets, whitelist, staff, user, tenantUser, workstationGroups] = await Promise.all([
         listPortalSites(db, tenant.id),
         listBroadcastPresets(db, tenant.id),
         buildEffectiveWhitelist(db, tenant.id),
@@ -2681,7 +2714,7 @@ export default {
       ]);
       const userRole = session.role === "super_admin"
         ? "super_admin"
-        : (tenant.user_id === session.user_id ? "school_admin" : (tenantUser?.role || "teacher"));
+        : (tenant.user_id === session.user_id ? "org_admin" : (tenantUser?.role || "operator"));
 
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
@@ -2704,7 +2737,7 @@ export default {
           sites: portalSites,
           baseDomain,
           presets: broadcastPresets,
-          teachers,
+          staff,
           groups: workstationGroups,
           activePage,
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
@@ -2717,30 +2750,30 @@ export default {
       );
     }
 
-    // 2. Student Learning Portal (root of a school subdomain or custom domain)
-    const wantsSchoolHome = path === "/";
+    // 2. User Portal (root of an organization subdomain or custom domain)
+    const wantsOrganizationHome = path === "/";
     const wantsPortal = path === "/home";
     // ?login=1 and ?register=1 are an explicit request for the sign-in page, and
     // they outrank the tenant on the URL. The redirect that sends a signed-out
-    // teacher here is `/?login=1&tenant=<school>`, and naming a school used to
-    // route it to that school’s page instead -- the portal before, the homepage
+    // operator here is `/?login=1&tenant=<organization>`, and naming an organization used to
+    // route it to that organization’s page instead -- the portal before, the homepage
     // after -- so the one link in the product that offers a sign-in form never
     // reached one.
     const wantsAuthPage = url.searchParams.has("login") || url.searchParams.has("register");
-    const wantsSchoolPage = (wantsSchoolHome || wantsPortal) && !wantsAuthPage;
+    const wantsOrganizationPage = (wantsOrganizationHome || wantsPortal) && !wantsAuthPage;
     const namedTenant = url.searchParams.has("tenant") || request.headers.has("x-tenant");
     const onSubdomain = hostSubdomain(request, env.DEFAULT_DOMAIN) !== null;
     const isCustomDomainHost = Boolean(
       currentTenant?.custom_domain && hostname(request) === currentTenant.custom_domain.toLowerCase()
     );
 
-    if (wantsSchoolPage && (namedTenant || onSubdomain || isCustomDomainHost)) {
+    if (wantsOrganizationPage && (namedTenant || onSubdomain || isCustomDomainHost)) {
       if (!currentTenant) {
         const requested = cleanSubdomain(url.searchParams.get("tenant") ?? hostSubdomain(request, env.DEFAULT_DOMAIN) ?? "");
         return new Response(
-          `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>School Not Found</title></head>
+          `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Organization Not Found</title></head>
            <body style="background:#090d16;color:#f8fafc;font-family:sans-serif;text-align:center;padding:80px 20px;">
-            <h1 style="font-size:36px;margin-bottom:12px;">School Subdomain Not Found</h1>
+            <h1 style="font-size:36px;margin-bottom:12px;">Organization Subdomain Not Found</h1>
             <p style="color:#94a3b8;font-size:16px;">The requested subdomain <code>${escapeHtml(requested)}</code> is not registered.</p>
             <a href="${escapeHtml(url.origin)}/" style="display:inline-block;margin-top:24px;background:#3b82f6;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;">Back to Homepage</a>
           </body></html>`,
@@ -2751,17 +2784,17 @@ export default {
       if (currentTenant.status !== "active") {
         const suspended = currentTenant.status === "suspended";
         return new Response(
-          `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${suspended ? "School Suspended" : "Pending Approval"}</title></head>
+          `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${suspended ? "Organization Suspended" : "Pending Approval"}</title></head>
            <body style="background:#090d16;color:#f8fafc;font-family:sans-serif;text-align:center;padding:80px 20px;">
-            <h1 style="font-size:36px;margin-bottom:12px;color:#fbbf24;">${suspended ? "School Suspended" : "Subdomain Pending Approval"}</h1>
-            <p style="color:#94a3b8;font-size:16px;">School <strong>${escapeHtml(currentTenant.name)}</strong> (<code>${escapeHtml(currentTenant.subdomain)}</code>) ${suspended ? "has been suspended by the platform super administrator." : "is awaiting activation by the platform super administrator."}</p>
+            <h1 style="font-size:36px;margin-bottom:12px;color:#fbbf24;">${suspended ? "Organization Suspended" : "Subdomain Pending Approval"}</h1>
+            <p style="color:#94a3b8;font-size:16px;">Organization <strong>${escapeHtml(currentTenant.name)}</strong> (<code>${escapeHtml(currentTenant.subdomain)}</code>) ${suspended ? "has been suspended by the platform super administrator." : "is awaiting activation by the platform super administrator."}</p>
             <a href="${escapeHtml(url.origin)}/" style="display:inline-block;margin-top:24px;background:#3b82f6;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;">Back to Homepage</a>
           </body></html>`,
           { status: 403, headers: htmlHeaders }
         );
       }
 
-      // Single-site lockdown outranks both pages: the school has chosen that
+      // Single-site lockdown outranks both pages: the organization has chosen that
       // its workstations only ever see one site.
       if (currentTenant.mode === "single_url") {
         const target = safeHttpUrl(currentTenant.default_url);
@@ -2769,13 +2802,13 @@ export default {
         console.warn(`[Worker] Tenant ${currentTenant.subdomain} has an invalid default_url; showing the portal instead.`);
       }
 
-      // The root is the school's own page; the grid lives at /home.
-      if (wantsSchoolHome) {
+      // The root is the organization's own page; the grid lives at /home.
+      if (wantsOrganizationHome) {
         const portalPath = namedTenant
           ? `/home?tenant=${encodeURIComponent(currentTenant.subdomain)}`
           : "/home";
         return new Response(
-          renderSchoolHomeHtml({
+          renderOrgHomeHtml({
             tenant: currentTenant,
             blocks: parseHomepageBlocks(currentTenant.homepage_blocks),
             portalPath

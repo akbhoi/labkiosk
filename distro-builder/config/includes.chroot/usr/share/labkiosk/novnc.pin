@@ -12,7 +12,7 @@
 #   curl -fsSLo novnc.tar.gz "https://github.com/novnc/noVNC/archive/refs/tags/v${VERSION}.tar.gz"
 #   sha256sum novnc.tar.gz
 #
-# The teacher console opens /vnc.html?autoconnect=true&resize=scale&password=...
+# The admin console opens /vnc.html?autoconnect=true&resize=scale&password=...
 # on the workstation, so check those query parameters still work after a bump.
 
 VERSION=1.7.0

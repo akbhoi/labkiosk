@@ -16,7 +16,7 @@ export interface AdminPageInput {
   tenant?: Tenant;
   sites: PortalSite[];
   presets: BroadcastPreset[];
-  teachers: TenantUser[];
+  staff: TenantUser[];
   groups?: WorkstationGroup[];
   baseDomain: string;
   /** `?tenant=<slug>` on a dev host, empty in production. See Rule 5e. */
@@ -42,7 +42,7 @@ export interface AdminPageParts {
 /**
  * Keeps the tenant on every dashboard API call.
  *
- * In production the school is its own subdomain, so the Host header carries it
+ * In production the organization is its own subdomain, so the Host header carries it
  * and a bare "/api/clients" resolves. On a dev host there is no subdomain, the
  * tenant travels as ?tenant=<slug>, and every one of these calls answered 400 --
  * which made the whole console untestable with `pnpm dev`.
@@ -191,7 +191,7 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
           }
           else if (action === "open-broadcast") runToolbarAction("btn-open-broadcast");
           else if (action === "open-lock-all") {
-            // The lock dialog carries the announcement students will read. The
+            // The lock dialog carries the announcement users will read. The
             // toolbar button locks immediately with the saved default; this is
             // the path for setting a message first.
             if (typeof window.labkioskOpenLockDialog === "function") window.labkioskOpenLockDialog();

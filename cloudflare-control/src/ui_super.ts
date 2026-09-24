@@ -1,7 +1,7 @@
 /**
  * Super Admin Master Console UI
- * Platform owner interface for managing schools, approving subdomains, and global analytics.
- * Strictly enforces privacy: Super admin cannot access school consoles except demo.
+ * Platform owner interface for managing organizations, approving subdomains, and global analytics.
+ * Strictly enforces privacy: Super admin cannot access organization consoles except demo.
  */
 
 import { Tenant } from "./types";
@@ -29,12 +29,12 @@ export interface SuperAdminOptions {
   tenants: SuperConsoleTenant[];
   catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
-  activeTab?: "schools" | "approvals" | "catalogs" | "system";
+  activeTab?: "organizations" | "approvals" | "catalogs" | "system";
   nonce: string;
 }
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
-  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com", activeTab = "schools", nonce } = data;
+  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com", activeTab = "organizations", nonce } = data;
 
   const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
@@ -172,9 +172,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
   const navItems: NavItem[] = [
     {
-      id: "schools",
-      label: "Schools Directory",
-      href: "/super/schools",
+      id: "organizations",
+      label: "Organizations Directory",
+      href: "/super/organizations",
       badge: tenants.length,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`
     },
@@ -202,7 +202,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   ];
 
   const stats: StatItem[] = [
-    { label: "Schools", value: tenants.length, color: "blue" },
+    { label: "Organizations", value: tenants.length, color: "blue" },
     { label: "Online", value: `${totalOnline} / ${totalClients}`, color: "green" },
     { label: "Approvals", value: pendingCount, color: pendingCount > 0 ? "yellow" : "blue" }
   ];
@@ -214,14 +214,14 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   let subPanelSubtitle = "Global tenant administration";
   let subPanelHtml = "";
 
-  if (activeTab === "schools") {
-    subPanelTitle = "Schools Directory";
+  if (activeTab === "organizations") {
+    subPanelTitle = "Organizations Directory";
     subPanelSubtitle = "Tenant overview & filters";
     subPanelHtml = `
       <div class="sub-section-title">Directory Overview</div>
       <div style="background: var(--bg-card); padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 8px; font-size: 13px;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="color: var(--text-muted);">Total Schools:</span>
+          <span style="color: var(--text-muted);">Total Organizations:</span>
           <span class="sub-action-badge">${tenants.length}</span>
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -240,7 +240,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
       <div class="sub-section-title" style="margin-top: 16px;">Privacy Invariant</div>
       <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); line-height: 1.5;">
-        Super Admins cannot access any school's internal console or telemetry except for <code>demo</code>. School data isolation is enforced at the edge D1 layer.
+        Super Admins cannot access any organization's internal console or telemetry except for <code>demo</code>. Organization data isolation is enforced at the edge D1 layer.
       </div>
     `;
   } else if (activeTab === "approvals") {
@@ -307,28 +307,28 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   }
 
   // Each console tab renders on its own. The four panes used to be emitted
-  // together and hidden with an inline `display`, except #pane-schools, which
-  // carried no display rule and no matching CSS -- so the whole schools
+  // together and hidden with an inline `display`, except #pane-organizations, which
+  // carried no display rule and no matching CSS -- so the whole organizations
   // directory, every tenant row included, rendered above the approvals,
   // catalogs and system pages as well.
   const bannerHtml = `    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: var(--radius); padding: 16px 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 14px; font-size: 13px; color: #bfdbfe;">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       <div>
-        <strong>Privacy Invariant Enforced:</strong> Platform Super Administrators cannot access individual school consoles or view student workstation telemetry. Consoles are accessible solely to authorized school instructors. The dedicated <code>demo</code> tenant is available for platform testing.
+        <strong>Privacy Invariant Enforced:</strong> Platform Super Administrators cannot access individual organization consoles or view user workstation telemetry. Consoles are accessible solely to authorized organization operators. The dedicated <code>demo</code> tenant is available for platform testing.
       </div>
     </div>
   `;
 
-  const schoolsPaneHtml = `
+  const organizationsPaneHtml = `
       <div class="card" style="padding: 0; overflow: hidden;">
         <div style="padding: 20px 24px; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
-          <h2 class="card-title" style="margin-bottom: 0;">Registered Schools &amp; Institutions (${tenants.length})</h2>
+          <h2 class="card-title" style="margin-bottom: 0;">Registered Organizations &amp; Organizations (${tenants.length})</h2>
         </div>
         <div class="table-container" style="border: none; border-radius: 0;">
           <table>
             <thead>
               <tr>
-                <th>School Name</th>
+                <th>Organization Name</th>
                 <th>Admin Contact</th>
                 <th>Subdomain</th>
                 <th>Custom Domain</th>
@@ -348,12 +348,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const approvalsPaneHtml = `
       <div class="card">
         <h2 class="card-title">Pending Subdomain Requests (${pendingList.length})</h2>
-        <p class="card-sub">Schools requesting initial activation or subdomain modifications.</p>
+        <p class="card-sub">Organizations requesting initial activation or subdomain modifications.</p>
         <div class="table-container">
           <table>
             <thead>
               <tr>
-                <th>School</th>
+                <th>Organization</th>
                 <th>Contact</th>
                 <th>Requested Subdomain</th>
                 <th>Registered Date</th>
@@ -369,12 +369,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
       <div class="card">
         <h2 class="card-title">Pending Custom Domain Requests (${pendingCustomList.length})</h2>
-        <p class="card-sub">Schools requesting custom institutional domains (e.g. <code>kiosk.myschool.edu</code>).</p>
+        <p class="card-sub">Organizations requesting their own custom domains (e.g. <code>kiosk.example.com</code>).</p>
         <div class="table-container">
           <table>
             <thead>
               <tr>
-                <th>School</th>
+                <th>Organization</th>
                 <th>Contact</th>
                 <th>Requested Domain</th>
                 <th>Actions</th>
@@ -414,7 +414,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <div class="form-group">
             <label class="form-label" for="catalog-json">Catalog JSON Content</label>
             <textarea id="catalog-json" rows="6" required placeholder='{"bar.home": "Home", ...}' class="form-textarea" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;"></textarea>
-            <p class="form-hint">A flat map of string to string. Uploaded catalogs are platform-wide: never put anything school-specific in one.</p>
+            <p class="form-hint">A flat map of string to string. Uploaded catalogs are platform-wide: never put anything organization-specific in one.</p>
           </div>
           <button type="submit" class="btn btn-primary">Upload Translation Catalog</button>
         </form>
@@ -445,7 +445,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const auditCardHtml = `
       <div class="card" id="platform-audit">
         <h2 class="card-title">Platform Action History</h2>
-        <p class="card-sub">Catalog changes, and every platform action taken on a school. A school\u2019s own activity is not shown here and is not readable from this console.</p>
+        <p class="card-sub">Catalog changes, and every platform action taken on an organization. An organization\u2019s own activity is not shown here and is not readable from this console.</p>
         <div class="table-container">
           <table>
             <thead>
@@ -489,14 +489,14 @@ ${auditCardHtml}
   `;
 
   const panesByTab: Record<typeof activeTab, string> = {
-    schools: schoolsPaneHtml,
+    organizations: organizationsPaneHtml,
     approvals: approvalsPaneHtml,
     catalogs: catalogsPaneHtml,
     system: systemPaneHtml
   };
 
   const contentHtml = `${bannerHtml}
-${panesByTab[activeTab] || schoolsPaneHtml}`;
+${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const scriptsHtml = `
     <script nonce="${escapeAttr(nonce)}">
@@ -506,7 +506,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const subdomain = btn.dataset.subdomain;
           const agreed = await lkConfirm({
             title: "Approve '" + subdomain + "'?",
-            message: "The console and student portal for this school go live on that address straight away, and its workstations can enrol against it.",
+            message: "The console and user portal for this organization go live on that address straight away, and its workstations can enrol against it.",
             confirmLabel: "Approve"
           });
           if (!agreed) return;
@@ -533,7 +533,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
             title: "Reject this request?",
-            message: "The school stays pending and cannot enrol workstations. Nothing is deleted, so you can approve it later.",
+            message: "The organization stays pending and cannot enrol workstations. Nothing is deleted, so you can approve it later.",
             confirmLabel: "Reject",
             tone: "danger"
           });
@@ -562,7 +562,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const customDomain = btn.dataset.domain;
           const agreed = await lkConfirm({
             title: "Approve " + customDomain + "?",
-            message: "Traffic on that hostname will route to this school. Their DNS has to point at the worker before it resolves.",
+            message: "Traffic on that hostname will route to this organization. Their DNS has to point at the worker before it resolves.",
             confirmLabel: "Approve domain"
           });
           if (!agreed) return;
@@ -589,7 +589,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
             title: "Reject this domain request?",
-            message: "The school keeps its subdomain address and can request a different domain later.",
+            message: "The organization keeps its subdomain address and can request a different domain later.",
             confirmLabel: "Reject",
             tone: "danger"
           });
@@ -617,7 +617,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const newSub = await lkPrompt({
             title: "Assign a subdomain",
-            message: "The school reaches its console and portal at this address. Changing it breaks the old one immediately.",
+            message: "The organization reaches its console and portal at this address. Changing it breaks the old one immediately.",
             label: "Subdomain",
             placeholder: "greenwood",
             hint: "Lowercase letters, digits and hyphens. Reserved slugs are refused.",
@@ -647,9 +647,9 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const customDomain = await lkPrompt({
             title: "Assign a custom domain",
-            message: "The hostname the school owns. Their DNS has to point at this worker before it will resolve.",
+            message: "The hostname the organization owns. Their DNS has to point at this worker before it will resolve.",
             label: "Domain",
-            placeholder: "kiosk.myschool.edu",
+            placeholder: "kiosk.example.com",
             hint: "A hostname only: no scheme, no path, no port.",
             confirmLabel: "Assign"
           });
@@ -677,7 +677,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
             title: "Disconnect this custom domain?",
-            message: "The school falls back to its subdomain. Workstations enrolled against the custom domain will need reconfiguring.",
+            message: "The organization falls back to its subdomain. Workstations enrolled against the custom domain will need reconfiguring.",
             confirmLabel: "Disconnect",
             tone: "danger"
           });
@@ -704,9 +704,9 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
-            title: "Suspend this school?",
-            message: "Its student portal stops serving, its workstations stop reporting and no new one can enrol. Nothing is deleted and you can reactivate at any time.",
-            confirmLabel: "Suspend school",
+            title: "Suspend this organization?",
+            message: "Its user portal stops serving, its workstations stop reporting and no new one can enrol. Nothing is deleted and you can reactivate at any time.",
+            confirmLabel: "Suspend organization",
             tone: "danger"
           });
           if (!agreed) return;
@@ -720,7 +720,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              lkToast(data.error || "Failed to suspend school", "error");
+              lkToast(data.error || "Failed to suspend organization", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
@@ -732,7 +732,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
-            title: "Reactivate this school?",
+            title: "Reactivate this organization?",
             message: "Its portal, console and workstation telemetry all resume.",
             confirmLabel: "Reactivate"
           });
@@ -747,7 +747,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              lkToast(data.error || "Failed to reactivate school", "error");
+              lkToast(data.error || "Failed to reactivate organization", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
@@ -792,7 +792,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
               const grants = /approve|reactivate|upload/.test(entry.action);
               badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
               // textContent: an action string is data, and details carries a
-              // school-supplied subdomain or domain.
+              // organization-supplied subdomain or domain.
               badge.textContent = entry.action;
               action.appendChild(badge);
               row.appendChild(action);
@@ -853,7 +853,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           if (!tag) return;
           const agreed = await lkConfirm({
             title: "Delete the '" + tag + "' catalog?",
-            message: "Workstations set to that language fall back to English at their next start. The catalogs are platform-wide, so this affects every school.",
+            message: "Workstations set to that language fall back to English at their next start. The catalogs are platform-wide, so this affects every organization.",
             confirmLabel: "Delete",
             tone: "danger"
           });

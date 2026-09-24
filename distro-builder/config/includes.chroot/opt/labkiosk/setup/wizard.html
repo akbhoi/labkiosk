@@ -173,7 +173,7 @@
       </div>
       <div>
         <h1 class="wizard-title" data-i18n="ui.lab-kiosk-os">Lab Kiosk OS</h1>
-        <div class="wizard-badge" id="wizard-badge" data-i18n="ui.classroom-workstation-setup">CLASSROOM WORKSTATION SETUP</div>
+        <div class="wizard-badge" id="wizard-badge" data-i18n="ui.classroom-workstation-setup">WORKSTATION SETUP</div>
       </div>
     </div>
 
@@ -201,8 +201,8 @@
     <!--
       First, and deliberately before the network: an NTP server is only
       reachable once the network exists, so a workstation being installed in a
-      school with no DHCP yet would otherwise sit at the wrong date for its
-      whole first session -- and TLS, enrolment and the lesson site all care.
+      organization with no DHCP yet would otherwise sit at the wrong date for its
+      whole first session -- and TLS, enrolment and every site all care.
       Everything offered here is read from the workstation's own tzdata, locale
       and X11 keyboard tables; nothing is hardcoded in this page.
     -->
@@ -216,13 +216,13 @@
         <label class="form-label" for="locale-ui-language" data-i18n="locale.uiLanguage">Interface language</label>
         <select id="locale-ui-language" class="input-field"></select>
         <div class="hint-text" data-i18n="locale.uiLanguageHint">
-          The language of this wizard and of the kiosk bar. More can be downloaded from your school
+          The language of this wizard and of the kiosk bar. More can be downloaded from your organization
           server once this workstation is enrolled and online, or added by placing a catalog in
           /etc/labkiosk/i18n.
         </div>
         <button type="button" class="btn-secondary" id="btn-locale-languages"
                 style="display: none; margin-top: 10px; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 12px;">
-          <span data-i18n="locale.checkLanguages">Check the school server for more languages</span>
+          <span data-i18n="locale.checkLanguages">Check the organization server for more languages</span>
         </button>
         <div id="locale-remote-languages" style="margin-top: 10px;"></div>
       </div>
@@ -284,12 +284,12 @@
         <div class="form-group" id="locale-ntp-group">
           <label class="form-label" for="locale-ntp-server" data-i18n="locale.ntpServer">Time server</label>
           <input type="text" id="locale-ntp-server" class="input-field"
-                 placeholder="e.g. ntp.school.edu or 10.0.0.1"
+                 placeholder="e.g. ntp.example.com or 10.0.0.1"
                  data-i18n-placeholder="locale.ntpServerPlaceholder"
                  style="font-family: var(--font-mono);">
           <div class="hint-text" data-i18n="locale.ntpServerHint">
             Where this workstation asks for the time once it is online. Leave empty to use Debian's
-            public pool; a school that blocks outbound NTP should name its own server here.
+            public pool; an organization that blocks outbound NTP should name its own server here.
           </div>
         </div>
         <div class="hint-text" id="locale-clock-preview"></div>
@@ -464,7 +464,7 @@
       <!-- Optional HTTP/HTTPS Proxy -->
       <div class="section-box">
         <div class="section-title accordion-toggle" id="toggle-proxy">
-          <span data-i18n="ui.school-http-https-proxy-optional">🛡️ School HTTP/HTTPS Proxy (Optional)</span>
+          <span data-i18n="ui.school-http-https-proxy-optional">🛡️ Organization HTTP/HTTPS Proxy (Optional)</span>
           <span id="proxy-chevron">&#9662;</span>
         </div>
         <div id="proxy-body" style="display: none;">
@@ -478,7 +478,7 @@
             <div class="grid-2">
               <div class="form-group">
                 <label class="form-label" data-i18n="ui.proxy-host">Proxy Host</label>
-                <input type="text" id="proxy-host" class="input-field" placeholder="proxy.institution.edu" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-proxy-institution-edu">
+                <input type="text" id="proxy-host" class="input-field" placeholder="proxy.example.com" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-proxy-institution-edu">
               </div>
               <div class="form-group">
                 <label class="form-label" data-i18n="ui.proxy-port">Proxy Port</label>
@@ -545,7 +545,7 @@
         <div class="info-card">
           <strong style="color: #34d399;" data-i18n="ui.100-ram-overlay-protection">🛡️ 100% RAM Overlay Protection:</strong>
           <p style="margin-top: 4px; color: var(--muted); font-size: 12px;">
-            Even when installed permanently, all student sessions, browser downloads, and caches write strictly to RAM (<code style="color: #60a5fa;">tmpfs</code>), guaranteeing zero flash wear and instant reset on reboot.
+            Even when installed permanently, all user sessions, browser downloads, and caches write strictly to RAM (<code style="color: #60a5fa;">tmpfs</code>), guaranteeing zero flash wear and instant reset on reboot.
           </p>
         </div>
 
@@ -596,29 +596,29 @@
       <!-- ENROLLMENT VIEW -->
       <div id="view-enroll" style="display: none;">
         <p class="wizard-desc" id="enroll-desc">
-          Link this live session to your school lab account. The workstation will connect to your dashboard immediately in live kiosk mode.
+          Link this live session to your organization's account. The workstation will connect to your dashboard immediately in live kiosk mode.
         </p>
 
         <div class="status-box status-warn" id="storage-warning" role="alert">
           <strong data-i18n="ui.this-workstation-cannot-remember-an-enrolment">This workstation cannot remember an enrolment.</strong>
           What is at <code>/etc/labkiosk</code> is not the persistent data partition — it is
-          either nothing at all or a RAM overlay — so the school address and the device token
+          either nothing at all or a RAM overlay — so the organization address and the device token
           would live only in memory and be gone at the next reboot. Reinstall from a current
           Lab Kiosk ISO. The agent log names what it found.
         </div>
 
         <form id="setup-form">
           <div class="form-group" id="subdomain-group">
-            <label class="form-label" data-i18n="ui.institution-subdomain">Institution Subdomain</label>
+            <label class="form-label" data-i18n="ui.institution-subdomain">Organization Subdomain</label>
             <div class="subdomain-wrap">
-              <input type="text" id="school-subdomain" class="input-field" required placeholder="e.g. campus-lab" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-campus-lab">
+              <input type="text" id="organization-subdomain" class="input-field" required placeholder="e.g. acme" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-campus-lab">
               <span class="subdomain-suffix" id="subdomain-suffix">.labkiosk.akbhoi.com</span>
             </div>
           </div>
 
           <div class="form-group" id="custom-domain-group" style="display: none;">
             <label class="form-label" data-i18n="ui.custom-domain-or-server-address">Custom Domain or Server Address</label>
-            <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.institution.edu or http://host.docker.internal:8787" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-kiosk-institution-edu">
+            <input type="text" id="custom-domain" class="input-field" placeholder="e.g. kiosk.example.com or http://host.docker.internal:8787" style="font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-kiosk-institution-edu">
           </div>
 
           <div class="form-group" style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 10px; padding: 10px 14px; margin-bottom: 18px;">
@@ -654,7 +654,7 @@
           <!-- Shown only when the enrolment could not be stored: leaving this
                page is what would hide that warning, so it takes a click. -->
           <button type="button" class="btn-submit btn-secondary" id="continue-anyway-btn" style="display: none;">
-            <span data-i18n="ui.i-understand-continue-to-the-lesson">I understand — continue to the lesson</span>
+            <span data-i18n="ui.i-understand-continue-to-the-lesson">I understand — continue to the page</span>
           </button>
         </form>
       </div>
@@ -688,7 +688,7 @@
       <div style="text-align: center; margin-bottom: 24px;">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" style="margin: 0 auto 12px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         <h2 style="font-size: 20px; font-weight: 800;" data-i18n="ui.administrator-authentication">Administrator Authentication</h2>
-        <p id="admin-auth-offline" style="display: none; font-size: 13px; color: #f87171; margin-top: 10px; line-height: 1.5;" data-i18n="ui.this-workstation-lost-its-network-connection">This workstation lost its network connection. It returns to the lesson automatically once the connection is back.</p>
+        <p id="admin-auth-offline" style="display: none; font-size: 13px; color: #f87171; margin-top: 10px; line-height: 1.5;" data-i18n="ui.this-workstation-lost-its-network-connection">This workstation lost its network connection. It returns to the page automatically once the connection is back.</p>
         <p id="admin-auth-prompt" style="font-size: 13px; color: var(--muted); margin-top: 6px;" data-i18n="admin.prompt">Enter the administrator or boot password to configure network settings.</p>
       </div>
       <div class="form-group">
@@ -809,7 +809,7 @@
     const toggleCustomDomain = document.getElementById('toggle-custom-domain');
     const subdomainGroup = document.getElementById('subdomain-group');
     const customDomainGroup = document.getElementById('custom-domain-group');
-    const schoolSubdomainInput = document.getElementById('school-subdomain');
+    const organizationSubdomainInput = document.getElementById('organization-subdomain');
     const customDomainInput = document.getElementById('custom-domain');
     const clientIdInput = document.getElementById('client-id');
     const subdomainSuffix = document.getElementById('subdomain-suffix');
@@ -1023,6 +1023,14 @@
       zonesForContinent(continent).forEach(z => (z.countries || []).forEach(c => codes.add(c)));
       const countries = localeOptions.countries.filter(c => codes.has(c.code));
       localeCountry.replaceChildren();
+      // Until a continent is chosen there is nothing to narrow, so the country
+      // list only asks the operator to choose.
+      localeCountry.disabled = !continent;
+      if (!continent) {
+        localeCountry.appendChild(optionEl('', t('locale.select', 'Select…')));
+        refreshZones();
+        return;
+      }
       localeCountry.appendChild(optionEl('', t('locale.anyCountry', 'All countries in this region')));
       countries.forEach(c => localeCountry.appendChild(optionEl(c.code, c.name)));
       if (preferredCode && countries.some(c => c.code === preferredCode)) {
@@ -1037,12 +1045,20 @@
       let zones = zonesForContinent(continent);
       if (country) zones = zones.filter(z => (z.countries || []).includes(country));
       localeTimezone.replaceChildren();
+      // No zone is pre-picked: a guessed one is how a lab ends up on the wrong
+      // clock without anyone noticing. The operator chooses, or Continue refuses.
+      localeTimezone.appendChild(optionEl('', t('locale.select', 'Select…')));
+      localeTimezone.disabled = !continent;
       zones.forEach(z => {
         const label = z.comment ? z.zone + ' \u2014 ' + z.comment : z.zone;
         localeTimezone.appendChild(optionEl(z.zone, label));
       });
       if (preferredZone && zones.some(z => z.zone === preferredZone)) {
         localeTimezone.value = preferredZone;
+      } else if (country && zones.length === 1) {
+        // Picking a country with a single zone (India, most of Europe) is
+        // already the operator's choice; asking again would only add a click.
+        localeTimezone.value = zones[0].zone;
       }
       renderClockPreview();
     }
@@ -1096,11 +1112,15 @@
 
       const continents = [...new Set((localeOptions.zones || []).map(z => z.zone.split('/')[0]))].sort();
       localeContinent.replaceChildren();
+      localeContinent.appendChild(optionEl('', t('locale.select', 'Select…')));
       continents.forEach(c => localeContinent.appendChild(optionEl(c, c.replace('_', ' '))));
 
       const saved = localeOptions.saved || {};
       const current = localeOptions.current || {};
-      const zone = saved.timezone || current.timezone || '';
+      // Only a zone someone actually chose is shown. The image's build default
+      // (current.timezone) is not a choice, so an unconfigured workstation opens
+      // on "Select..." rather than on a region it merely inherited.
+      const zone = saved.timezone || '';
       if (zone && zone.includes('/')) localeContinent.value = zone.split('/')[0];
       refreshCountries('');
       refreshZones(zone);
@@ -1167,6 +1187,11 @@
     setInterval(renderClockPreview, 1000);
 
     btnProceedNetwork.addEventListener('click', async () => {
+      if (!localeTimezone.value) {
+        showStatus(t('locale.chooseZone', 'Choose the continent and time zone this workstation is in.'), 'error');
+        (localeContinent.value ? localeTimezone : localeContinent).focus();
+        return;
+      }
       btnProceedNetwork.disabled = true;
       try {
         await applyLocalization();
@@ -1187,7 +1212,7 @@
       }
     });
 
-    // ---- Languages from the school server ------------------------------
+    // ---- Languages from the organization server ------------------------------
     //
     // Deliberately on demand rather than on load: this needs the network and an
     // enrolment, and the step it lives in runs before either exists.
@@ -1196,7 +1221,7 @@
       if (!languages.length) {
         const empty = document.createElement('div');
         empty.className = 'hint-text';
-        empty.textContent = t('locale.noLanguages', 'The school server offers no additional languages yet.');
+        empty.textContent = t('locale.noLanguages', 'The organization server offers no additional languages yet.');
         localeRemoteLanguages.appendChild(empty);
         return;
       }
@@ -1249,11 +1274,11 @@
       try {
         const res = await fetch('/api/localization/languages', { cache: 'no-store' });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'The school server could not be reached.');
+        if (!res.ok) throw new Error(data.error || 'The organization server could not be reached.');
         renderRemoteLanguages(data.languages || []);
         hideStatus();
       } catch (err) {
-        showStatus((err && err.message) || 'Could not ask the school server.', 'error');
+        showStatus((err && err.message) || 'Could not ask the organization server.', 'error');
       } finally {
         btnLocaleLanguages.disabled = false;
       }
@@ -1319,7 +1344,7 @@
             document.getElementById('tabs-nav').style.display = 'none';
             viewInstall.style.display = 'none';
             viewEnroll.style.display = 'block';
-            enrollDesc.textContent = t('ui.js.link-this-installed-workstation-to-your', 'Link this installed workstation to your school lab account.');
+            enrollDesc.textContent = t('ui.js.link-this-installed-workstation-to-your', "Link this installed workstation to your organization's account.");
             // An enrolled installed workstation has nothing left to set up here
             // except its network, and that is behind the administrator password.
             if (isConfigured) isStandaloneNetwork = true;
@@ -1355,7 +1380,7 @@
           }
           if (isOfflineRedirect) {
             document.getElementById('admin-auth-offline').style.display = 'block';
-            showStatus(t('ui.js.this-workstation-lost-its-network-connection', 'This workstation lost its network connection. It returns to the lesson automatically once the connection is back.'), 'error');
+            showStatus(t('ui.js.this-workstation-lost-its-network-connection', 'This workstation lost its network connection. It returns to the page automatically once the connection is back.'), 'error');
             setInterval(checkBackOnline, 3000);
           }
         }
@@ -1993,7 +2018,7 @@
     toggleCustomDomain.addEventListener('change', () => {
       if (toggleCustomDomain.checked) {
         subdomainGroup.style.display = 'none';
-        schoolSubdomainInput.required = false;
+        organizationSubdomainInput.required = false;
         customDomainGroup.style.display = 'block';
         customDomainInput.required = true;
         customDomainInput.focus();
@@ -2001,15 +2026,15 @@
         customDomainGroup.style.display = 'none';
         customDomainInput.required = false;
         subdomainGroup.style.display = 'block';
-        schoolSubdomainInput.required = true;
-        schoolSubdomainInput.focus();
+        organizationSubdomainInput.required = true;
+        organizationSubdomainInput.focus();
       }
     });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const isCustom = toggleCustomDomain.checked;
-      const subdomain = isCustom ? '' : schoolSubdomainInput.value.trim().toLowerCase();
+      const subdomain = isCustom ? '' : organizationSubdomainInput.value.trim().toLowerCase();
       const customDomain = isCustom ? customDomainInput.value.trim() : '';
       const clientId = clientIdInput.value.trim().toUpperCase();
       // Normalised again rather than trusted: the field may have been filled by
@@ -2045,9 +2070,9 @@
           const lasting = data.persistent !== false;
           showStatus(
             lasting
-              ? 'Successfully connected to ' + (data.schoolName || subdomain || customDomain) +
-                ' as ' + (data.clientId || clientId) + '. Entering locked student kiosk mode...'
-              : 'Connected to ' + (data.schoolName || subdomain || customDomain) + ' as ' +
+              ? 'Successfully connected to ' + (data.organizationName || subdomain || customDomain) +
+                ' as ' + (data.clientId || clientId) + '. Entering locked user kiosk mode...'
+              : 'Connected to ' + (data.organizationName || subdomain || customDomain) + ' as ' +
                 (data.clientId || clientId) + ', but it was not saved. ' + (data.warning || ''),
             lasting ? 'success' : 'warn'
           );
@@ -2067,10 +2092,10 @@
             continueAnywayBtn.onclick = () => { window.location.href = safeTarget; };
             submitBtn.style.display = 'none';
           } else {
-            fail('The school returned an address this workstation cannot open.');
+            fail('The organization returned an address this workstation cannot open.');
           }
         } else {
-          fail(data.error || 'Could not connect to the school.', res.status >= 500);
+          fail(data.error || 'Could not connect to the organization.', res.status >= 500);
         }
       } catch {
         fail('Could not communicate with the local agent service.', true);

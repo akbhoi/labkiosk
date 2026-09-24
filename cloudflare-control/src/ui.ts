@@ -1,5 +1,5 @@
 /**
- * The School Admin console: which page to build, and the shell to put it in.
+ * The Organization Admin console: which page to build, and the shell to put it in.
  *
  * This module used to be all of it -- six page renderers, six script
  * renderers, every context panel and both shared script helpers in 2,450
@@ -17,13 +17,13 @@ import {
 } from "./ui_admin_shared";
 import { buildWorkstationsPage } from "./ui_admin_workstations";
 import { buildAppsWebPage } from "./ui_admin_apps_web";
-import { buildTeachersPage } from "./ui_admin_teachers";
+import { buildStaffPage } from "./ui_admin_staff";
 import { buildSettingsPage } from "./ui_admin_settings";
 
 export type AdminPageId =
   | "workstations"
   | "apps-web"
-  | "teachers"
+  | "staff"
   | "settings";
 
 export interface DashboardOptions {
@@ -32,14 +32,14 @@ export interface DashboardOptions {
   sites?: PortalSite[];
   baseDomain?: string;
   presets?: BroadcastPreset[];
-  teachers?: TenantUser[];
+  staff?: TenantUser[];
   groups?: WorkstationGroup[];
   activePage?: AdminPageId;
   currentUser?: { name: string; email?: string; role: string; permissions?: string[] };
   userPermissions?: string[];
   /**
    * True when the request arrived on a dev host (localhost, 127.0.0.1, ...).
-   * There is no school subdomain there, so the tenant has to travel as
+   * There is no organization subdomain there, so the tenant has to travel as
    * ?tenant=<slug> on every link and every API call. Only the request knows
    * this; it used to be guessed from the configured base domain, which is
    * "labkiosk.akbhoi.com" in local development too -- so the guess said
@@ -58,7 +58,7 @@ export interface DashboardOptions {
 const PAGE_BUILDERS: Record<AdminPageId, (input: AdminPageInput) => AdminPageParts> = {
   workstations: buildWorkstationsPage,
   "apps-web": buildAppsWebPage,
-  teachers: buildTeachersPage,
+  staff: buildStaffPage,
   settings: buildSettingsPage
 };
 
@@ -69,13 +69,13 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     sites = [],
     baseDomain = "labkiosk.akbhoi.com",
     presets = [],
-    teachers = [],
+    staff = [],
     activePage = "workstations",
     currentUser,
     nonce
   } = options;
 
-  const labName = tenant?.name || "School Computer Lab";
+  const labName = tenant?.name || "Your Organization";
   const subdomain = tenant?.subdomain || "demo";
   const isDev = options.isDevHost === true || !baseDomain;
   const needsTenantParam = options.needsTenantParam !== undefined ? options.needsTenantParam : isDev;
@@ -98,15 +98,15 @@ export function renderDashboardHtml(options: DashboardOptions): string {
       badge: sites.length
     },
     {
-      id: "teachers",
-      label: "Teachers & Staff",
-      href: `/admin/teachers${tenantParam}`,
+      id: "staff",
+      label: "Staff",
+      href: `/admin/staff${tenantParam}`,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
-      badge: teachers.length
+      badge: staff.length
     },
     {
       id: "settings",
-      label: "Lab Settings",
+      label: "Settings",
       href: `/admin/settings${tenantParam}`,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`
     }
@@ -138,7 +138,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     tenant,
     sites,
     presets,
-    teachers,
+    staff,
     groups: options.groups || [],
     baseDomain,
     tenantParam,

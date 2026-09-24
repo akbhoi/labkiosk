@@ -5,7 +5,7 @@
  * in a content script, which runs in the page's origin -- so its fetches to the
  * local agent (http://127.0.0.1:8888) are cross-origin and would need the agent
  * to answer with `Access-Control-Allow-Origin: *`. The agent used to do exactly
- * that, which meant any site a student visited could talk to it.
+ * that, which meant any site a user visited could talk to it.
  *
  * A service-worker fetch is governed by the extension's host_permissions instead
  * of the page's CORS, so the agent can refuse cross-origin callers entirely
@@ -13,7 +13,7 @@
  *
  * It also owns the active broadcast marker (`labkiosk:broadcast-get` /
  * `labkiosk:broadcast-set`). That used to live in the visited page's own
- * sessionStorage, which meant the page could rewrite it to sit out a teacher's
+ * sessionStorage, which meant the page could rewrite it to sit out an operator's
  * broadcast or re-enable Back at the broadcast root. chrome.storage.session
  * keeps it in the extension's partition -- unreachable from page script, still
  * wiped at every boot -- and surviving both page navigation and this service
@@ -65,7 +65,7 @@ const BAR_INTRO_KEY = "labkiosk_bar_intro";
 /**
  * True exactly once per browser session, for the first page that asks.
  *
- * The navigation bar auto-hides, so a student who has never seen it has no way
+ * The navigation bar auto-hides, so a user who has never seen it has no way
  * to discover it. It is shown briefly at the start of a session; the flag lives
  * here rather than in the content script because that runs afresh on every
  * page, and in chrome.storage.session so it resets when the kiosk reboots.
@@ -84,7 +84,7 @@ const I18N_KEY = "labkiosk_catalog";
  * The interface catalog for the language chosen in the setup wizard.
  *
  * Cached in chrome.storage.session because content.js runs again on every page
- * a student opens, and the bar must not fetch a catalog each time. The cache
+ * a user opens, and the bar must not fetch a catalog each time. The cache
  * lasts exactly as long as the boot does, which is also how long the chosen
  * language can change without a restart.
  */

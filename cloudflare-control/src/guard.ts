@@ -1,7 +1,7 @@
 /**
  * Authorization & Tenant Resolution
  *
- * Single source of truth for "who is asking" and "which school are they allowed
+ * Single source of truth for "who is asking" and "which organization are they allowed
  * to ask about". No route may derive a tenant or an identity on its own.
  */
 
@@ -44,7 +44,7 @@ export function hostname(request: Request): string {
  * True when the request was addressed to a local development host.
  *
  * Loopback and RFC 1918 addresses count, because `pnpm dev` listens on
- * 0.0.0.0 and the workstation simulator (or a phone on the school LAN) reaches
+ * 0.0.0.0 and the workstation simulator (or a phone on the organization LAN) reaches
  * it by the machine's LAN address. A deployed worker never sees such a Host:
  * Cloudflare routes a request to it only by a configured hostname.
  */
@@ -67,7 +67,7 @@ function isIpLiteral(host: string): boolean {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":") || host.startsWith("[");
 }
 
-/** Reserved subdomains that cannot be claimed or resolved as a school tenant. */
+/** Reserved subdomains that cannot be claimed or resolved as an organization tenant. */
 const RESERVED_SLUGS = new Set([
   "www",
   "super",
@@ -96,12 +96,12 @@ export function isHostUnder(host: string, base: string | undefined): boolean {
 }
 
 /**
- * The school slug carried by the Host header, or null when the host carries none.
+ * The organization slug carried by the Host header, or null when the host carries none.
  *
  * When `baseDomain` is configured the host must be exactly `<slug>.<baseDomain>`.
- * Without that anchor any multi-label host gets its first label read as a school:
- * `host.docker.internal` becomes the school "host", and a worker deployed to
- * `my-worker.someone.workers.dev` serves its own root as the school "my-worker".
+ * Without that anchor any multi-label host gets its first label read as an organization:
+ * `host.docker.internal` becomes the organization "host", and a worker deployed to
+ * `my-worker.someone.workers.dev` serves its own root as the organization "my-worker".
  * An IP literal has dot-separated parts but no subdomain either.
  */
 export function hostSubdomain(request: Request, baseDomain?: string): string | null {
@@ -113,7 +113,7 @@ export function hostSubdomain(request: Request, baseDomain?: string): string | n
     const suffix = "." + baseDomain.replace(/^\./, "").toLowerCase();
     if (!host.endsWith(suffix)) return null;
     const prefix = host.slice(0, -suffix.length);
-    // Only a single label counts; `a.b.labkiosk.akbhoi.com` is not the school "a".
+    // Only a single label counts; `a.b.labkiosk.akbhoi.com` is not the organization "a".
     if (!prefix || prefix.includes(".")) return null;
     slug = cleanSubdomain(prefix);
   } else {
@@ -135,11 +135,11 @@ export function hostSubdomain(request: Request, baseDomain?: string): string | n
  *   - the caller is the platform super admin, or
  *   - the caller's own session already belongs to that tenant, or
  *   - the route is a public, read-only one (`allowAnonymousOverride`) such as
- *     the student portal and the setup-wizard status probe, which must work
+ *     the user portal and the setup-wizard status probe, which must work
  *     before any session exists.
  *
  * A named tenant the caller may not act on resolves to `denied`, so the route
- * can answer 403 rather than a misleading "no school selected".
+ * can answer 403 rather than a misleading "no organization selected".
  */
 export interface TenantResolution {
   tenant: Tenant | null;
@@ -224,7 +224,7 @@ export function rejectCrossSiteMutation(
     return jsonError("Cross-site requests are not accepted", 403, headers);
   }
   // A dev-host origin is same-site only for a request that is itself on a dev
-  // host. In production it would admit any page served from the teacher's own
+  // host. In production it would admit any page served from the operator's own
   // machine -- a local tool, or a malicious localhost server -- as this site.
   const sameSite =
     originHost === hostname(request) ||
@@ -242,9 +242,9 @@ export function requireSuperAdmin(session: Session | null, headers: Record<strin
 
 /** 403 unless the session administers this tenant (super admin restricted to demo tenant only). */
 /**
- * The only school a platform super admin may open, per Rule 2. It exists so
+ * The only organization a platform super admin may open, per Rule 2. It exists so
  * the platform can be demonstrated and tested without reaching into a real
- * school's data.
+ * organization's data.
  */
 export const SUPER_ADMIN_TENANT_SLUG = "demo";
 
@@ -254,16 +254,16 @@ export function requireTenantAdmin(
   headers: Record<string, string>
 ): Response | null {
   if (!session) return jsonError("Authentication required", 401, headers);
-  if (!tenant) return jsonError("No school selected for this request", 400, headers);
+  if (!tenant) return jsonError("No organization selected for this request", 400, headers);
 
   if (session.role === "super_admin") {
     // Super admin can ONLY access the demo tenant for testing/preview!
     if (tenant.subdomain === SUPER_ADMIN_TENANT_SLUG) return null;
-    return jsonError("Platform administrators cannot access individual school consoles for privacy and security", 403, headers);
+    return jsonError("Platform administrators cannot access individual organization consoles for privacy and security", 403, headers);
   }
 
   if (session.tenant_id !== tenant.id) {
-    return jsonError("You do not have access to this school", 403, headers);
+    return jsonError("You do not have access to this organization", 403, headers);
   }
   return null;
 }
@@ -285,7 +285,7 @@ export async function requireTenantPermission(
   // Primary owner of the tenant has all permissions
   if (tenant!.user_id === session!.user_id) return null;
 
-  // Check granular permissions for delegated sub-admins / teachers
+  // Check granular permissions for delegated sub-admins / operators
   const perms = await getTenantUserPermissions(db, tenant!.id, session!.user_id);
   if (!perms.includes(permission) && !perms.includes("*")) {
     return jsonError(`You do not have permission to access ${permission}`, 403, headers);

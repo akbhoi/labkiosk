@@ -11,7 +11,7 @@ import { escapeHtml, escapeAttr, escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 
 export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
-  const { tenant, config, sites, presets, teachers, groups = [], tenantParam, baseDomain, nonce } = options;
+  const { tenant, config, sites, presets, staff, groups = [], tenantParam, baseDomain, nonce } = options;
   return {
     title: "Workstation Grid & Control",
     contentHtml: renderWorkstationsPageHtml(tenantParam),
@@ -91,7 +91,7 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
     <div class="page-head">
       <div>
         <h1 class="page-title">Workstation Grid &amp; Remote Control</h1>
-        <p class="page-desc">Real-time classroom telemetry, live screen monitoring, and remote command execution.</p>
+        <p class="page-desc">Real-time workstation telemetry, live screen monitoring, and remote command execution.</p>
       </div>
       <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
         <button type="button" class="btn btn-secondary" id="btn-select-all" title="Select or deselect all visible workstations">
@@ -115,7 +115,7 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
           Reset to Portal
         </button>
-        <button type="button" class="btn btn-warning" id="btn-clear-session-all" title="Sign students out: wipes browser logins, history, cookies and cache on the selected workstations, without a reboot">
+        <button type="button" class="btn btn-warning" id="btn-clear-session-all" title="Sign users out: wipes browser logins, history, cookies and cache on the selected workstations, without a reboot">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
           <span id="btn-clear-session-label">Clear Session</span>
         </button>
@@ -136,7 +136,7 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
 
     <div class="kiosk-grid" id="kiosk-grid">
       <div class="empty-lab-state">
-        <p class="empty-lab-title">Connecting to classroom telemetry...</p>
+        <p class="empty-lab-title">Connecting to workstation telemetry...</p>
         <p>Workstations will appear here automatically once enrolled.</p>
       </div>
     </div>
@@ -168,7 +168,7 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
           <button type="button" class="modal-close" id="btn-cancel-broadcast" aria-label="Close dialog">✕</button>
         </div>
         <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;" id="url-modal-desc">
-          Enter an educational website URL to immediately navigate student workstations.
+          Enter an approved website URL to immediately navigate user workstations.
         </p>
         <div style="margin-bottom: 14px;">
           <input type="url" id="target-url-input" class="form-input" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}" style="width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 13px;">
@@ -201,11 +201,11 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
           <button type="button" class="modal-close" id="btn-cancel-lock" aria-label="Close dialog">✕</button>
         </div>
         <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;" id="lock-modal-desc">
-          Freeze student screens with an announcement message. Keystrokes and shortcuts are locked.
+          Freeze user screens with an announcement message. Keystrokes and shortcuts are locked.
         </p>
         <div style="margin-bottom: 16px;">
           <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Announcement Message</label>
-          <input type="text" id="lock-msg-input" class="form-input" value="${escapeHtml(tenant?.default_lock_message || "Screens locked by the instructor. Please look to the front.")}" maxlength="280" style="width: 100%;">
+          <input type="text" id="lock-msg-input" class="form-input" value="${escapeHtml(tenant?.default_lock_message || "This screen has been locked by an administrator. Please wait.")}" maxlength="280" style="width: 100%;">
         </div>
         <div style="display: flex; justify-content: flex-end; gap: 8px;">
           <button type="button" class="btn btn-secondary" id="btn-cancel-lock-action">Cancel</button>
@@ -621,7 +621,7 @@ function renderWorkstationsScripts(
           const ids = Object.keys(clientsData).sort();
 
           if (!ids.length) {
-            grid.innerHTML = '<div class="empty-lab-state"><p class="empty-lab-title">No Thin Clients Connected</p><p>Workstations appear here once enrolled with the school key.</p></div>';
+            grid.innerHTML = '<div class="empty-lab-state"><p class="empty-lab-title">No Thin Clients Connected</p><p>Workstations appear here once enrolled with the organization key.</p></div>';
             document.getElementById("stat-online-count").textContent = "0";
             document.getElementById("stat-total-count").textContent = "0";
             document.getElementById("stat-locked-count").textContent = "0";
@@ -718,12 +718,12 @@ function renderWorkstationsScripts(
           base = "http://" + host + ":6080";
         } else if (IS_DEMO) {
           base = "https://" + encodeURIComponent(id.toLowerCase()) + "." + TUNNEL_DOMAIN;
-        } else if (TUNNEL_DOMAIN && TUNNEL_DOMAIN !== "lab.myschool.edu") {
+        } else if (TUNNEL_DOMAIN && TUNNEL_DOMAIN !== "lab.example.com") {
           base = "https://" + encodeURIComponent(id.toLowerCase()) + "." + TUNNEL_DOMAIN;
         } else {
           base = "http://localhost:6080";
           const notice = document.getElementById("vnc-notice");
-          notice.textContent = "Notice: Cloudflare Tunnel domain is not configured for this school. Remote control is accessible via local simulator (port 6080) or after configuring a tunnel in Lab Settings.";
+          notice.textContent = "Notice: Cloudflare Tunnel domain is not configured for this organization. Remote control is accessible via local simulator (port 6080) or after configuring a tunnel in Settings.";
           notice.style.display = "block";
         }
 
@@ -763,7 +763,7 @@ function renderWorkstationsScripts(
       async function removeClient(clientId) {
         var agreed = await lkConfirm({
           title: "Decommission " + clientId + "?",
-          message: "Its device token is revoked immediately. The workstation has to be re-enrolled with the school key before it can reconnect.",
+          message: "Its device token is revoked immediately. The workstation has to be re-enrolled with the organization key before it can reconnect.",
           confirmLabel: "Decommission",
           tone: "danger"
         });
@@ -844,7 +844,7 @@ function renderWorkstationsScripts(
         if (!targets) return;
         const agreed = await lkConfirm({
           title: "Reboot " + targets.length + " workstation(s)?",
-          message: "Selected student machines restart now. Anything on screen is lost, and each one returns to the portal after reboot.",
+          message: "Selected user machines restart now. Anything on screen is lost, and each one returns to the portal after reboot.",
           confirmLabel: "Reboot",
           tone: "danger"
         });
@@ -856,20 +856,20 @@ function renderWorkstationsScripts(
         if (!targets) return;
         const agreed = await lkConfirm({
           title: "Shutdown " + targets.length + " workstation(s)?",
-          message: "Selected student machines will power off completely. All transient data in the RAM overlay will reset, and machines must be powered back on physically.",
+          message: "Selected user machines will power off completely. All transient data in the RAM overlay will reset, and machines must be powered back on physically.",
           confirmLabel: "Shutdown",
           tone: "danger"
         });
         if (agreed) sendCommand(targets, "shutdown");
       });
 
-      // End of a class period: sign everyone out without restarting the machine.
+      // End of a session: sign everyone out without restarting the machine.
       document.getElementById("btn-clear-session-all").addEventListener("click", async () => {
         const targets = getSelectedOrAll(false);
         if (!targets) return;
         const agreed = await lkConfirm({
           title: "Clear the session on " + targets.length + " workstation(s)?",
-          message: "The browser restarts in a few seconds with nothing left behind: every website sign-in, cookie, history entry, cache and unsaved form is removed. Anything a student has not saved elsewhere is lost. The machines stay on and reopen their assigned page.",
+          message: "The browser restarts in a few seconds with nothing left behind: every website sign-in, cookie, history entry, cache and unsaved form is removed. Anything a user has not saved elsewhere is lost. The machines stay on and reopen their assigned page.",
           confirmLabel: "Clear Session",
           tone: "danger"
         });

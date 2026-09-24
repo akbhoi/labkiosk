@@ -1,6 +1,6 @@
 /**
- * Student Educational Portal / App Launcher UI
- * Configurable card grid for approved educational websites.
+ * User Educational Portal / App Launcher UI
+ * Configurable card grid for approved approved websites.
  */
 
 import { Tenant, PortalSite } from "./types";
@@ -10,7 +10,7 @@ import { FONT_LINKS, rootTokensCss, LEGACY_PORTAL_ALIASES } from "./ui_tokens";
 export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string): string {
   const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
 
-  // Card content is teacher-supplied. Cards are anchors rather than divs with an
+  // Card content is operator-supplied. Cards are anchors rather than divs with an
   // inline navigation handler, so a hostile URL cannot become executable markup,
   // and a non-http(s) URL is dropped entirely rather than rendered.
   const cardsHtml = sites
@@ -43,8 +43,8 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
   const emptyState = `
     <div class="portal-empty">
       <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-      <div>No learning applications have been added yet.</div>
-      <div class="portal-empty-hint">Your teacher can add them from the lab console.</div>
+      <div>No applications have been added yet.</div>
+      <div class="portal-empty-hint">An administrator can add them from the admin console.</div>
     </div>`;
 
   return `<!DOCTYPE html>
@@ -52,7 +52,7 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(tenant.name)} - ${escapeHtml(tenant.portal_title || "Student Learning Portal")}</title>
+  <title>${escapeHtml(tenant.name)} - ${escapeHtml(tenant.portal_title || "User Portal")}</title>
 ${FONT_LINKS}
   <style>
 ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
@@ -362,7 +362,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
       </div>
       <div>
         <div class="brand-name">${escapeHtml(tenant.name)}</div>
-        <div class="brand-sub">${escapeHtml(tenant.portal_subtitle || "Computer Lab Learning Portal")}</div>
+        <div class="brand-sub">${escapeHtml(tenant.portal_subtitle || "User Portal")}</div>
       </div>
     </div>
     <div class="header-meta">
@@ -376,8 +376,8 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
 
   <main>
     <div class="portal-hero">
-      <h1 class="portal-title">${escapeHtml(tenant.portal_title || "Select an Educational Resource")}</h1>
-      <p class="portal-desc">${escapeHtml(tenant.portal_description || "Click any approved application below to begin your lesson. All external access is filtered and managed by your teacher.")}</p>
+      <h1 class="portal-title">${escapeHtml(tenant.portal_title || "Select an Approved Resource")}</h1>
+      <p class="portal-desc">${escapeHtml(tenant.portal_description || "Click any approved application below to begin your page. All external access is filtered and managed by your operator.")}</p>
     </div>
 
     <div class="grid">

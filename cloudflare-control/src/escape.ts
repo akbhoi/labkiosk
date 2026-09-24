@@ -1,7 +1,7 @@
 /**
  * HTML / attribute / JSON escaping helpers.
  *
- * Every template in ui*.ts renders untrusted, tenant-supplied strings (school
+ * Every template in ui*.ts renders untrusted, tenant-supplied strings (organization
  * names, admin emails, portal card titles and URLs). Nothing may be
  * interpolated into markup without passing through one of these.
  */
@@ -52,7 +52,7 @@ export function cleanSubdomain(raw: unknown): string {
 
 /**
  * Return the URL only when it is a syntactically valid http(s) URL.
- * If no scheme is specified (e.g. canvas.institution.edu or 192.168.1.50:8080),
+ * If no scheme is specified (e.g. canvas.example.com or 192.168.1.50:8080),
  * defaults to https:// for user convenience while strictly rejecting
  * non-http(s) schemes like javascript:, data:, file:, etc.
  */
@@ -85,7 +85,7 @@ export function cleanCustomDomain(raw: unknown): string | null {
     .replace(/\/.*$/, "")
     .replace(/:\d+$/, "");
   if (!str || str.length > 253) return null;
-  // Must be valid domain labels separated by dots, e.g. kiosk.myschool.edu
+  // Must be valid domain labels separated by dots, e.g. kiosk.example.com
   const domainPattern = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
   if (!domainPattern.test(str)) return null;
   return str;

@@ -3,7 +3,7 @@
 # WHY THIS MATTERS
 # Everything else in this image -- masked TTYs, disabled VT switching, locked
 # accounts, Chromium policy -- is enforced by software that GRUB starts. A
-# student who can edit the boot entry can append `init=/bin/sh` and get a root
+# user who can edit the boot entry can append `init=/bin/sh` and get a root
 # shell before any of it runs. A GRUB password is what closes that door.
 #
 # READ THIS BEFORE PUTTING A HASH HERE

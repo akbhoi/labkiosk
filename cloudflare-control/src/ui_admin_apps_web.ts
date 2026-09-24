@@ -1,6 +1,6 @@
 /**
- * The Apps & Web management console: unified control for Lesson Broadcast,
- * Student Learning Portal application cards, and the Chromium Domain Allowlist firewall.
+ * The Apps & Web management console: unified control for Broadcast,
+ * User Portal application cards, and the Chromium Domain Allowlist firewall.
  *
  * Consolidates the previously separate /admin/broadcast, /admin/portal, and
  * /admin/whitelist modules into a cohesive tabbed experience.
@@ -17,7 +17,7 @@ export function buildAppsWebPage(options: AdminPageInput): AdminPageParts {
     contentHtml: renderAppsWebContentHtml(tenant, config, sites, presets, tenantParam),
     scriptsHtml: renderAppsWebScripts(nonce),
     subPanelTitle: "Apps & Web",
-    subPanelSubtitle: "Curriculum & domain control",
+    subPanelSubtitle: "Apps & domain control",
     subPanelHtml: renderAppsWebSubPanelHtml(tenant, config, sites, presets, tenantParam)
   };
 }
@@ -36,13 +36,13 @@ function renderAppsWebSubPanelHtml(
       <button type="button" class="sub-action-item active" data-action="tab-broadcast">
         <span style="display: flex; align-items: center; gap: 8px;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
-          Lesson Broadcast
+          Broadcast
         </span>
       </button>
       <button type="button" class="sub-action-item" data-action="tab-portal">
         <span style="display: flex; align-items: center; gap: 8px;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-          Student Portal
+          User Portal
         </span>
         <span class="sub-action-badge">${sites.length}</span>
       </button>
@@ -60,7 +60,7 @@ function renderAppsWebSubPanelHtml(
       <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
         <span style="display: flex; align-items: center; gap: 8px;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-          Preview Student Portal
+          Preview User Portal
         </span>
       </a>
     </div>
@@ -154,12 +154,12 @@ function renderAppsWebContentHtml(
     <div class="page-head" style="margin-bottom: 20px;">
       <div>
         <h1 class="page-title">Apps &amp; Web Control</h1>
-        <p class="page-desc">Manage curriculum applications, synchronize live broadcast lessons, and configure allowed web domains.</p>
+        <p class="page-desc">Manage portal applications, broadcast pages live, and configure allowed web domains.</p>
       </div>
     </div>
 
     <!-- ============================================================== -->
-    <!-- TAB 1: LESSON BROADCAST                                       -->
+    <!-- TAB 1: Broadcast                                       -->
     <!-- ============================================================== -->
     <div class="tab-pane active" id="pane-broadcast">
       <div class="grid-2col">
@@ -167,19 +167,19 @@ function renderAppsWebContentHtml(
           <div class="card">
             <h2 class="card-title">
               <span class="stat-dot ${isBroadcasting ? "dot-green" : "dot-yellow"}"></span>
-              ${isBroadcasting ? "Active Lesson Broadcast" : "No Broadcast Active"}
+              ${isBroadcasting ? "Active Broadcast" : "No Broadcast Active"}
             </h2>
             <p class="card-sub">
               ${
                 isBroadcasting
                   ? `Workstations are currently synchronized to: <br><code style="font-size: 14px; margin-top: 6px; display: inline-block;">${escapeHtml(activeUrl!)}</code>`
-                  : "Workstations are displaying their standard Student Learning Portal."
+                  : "Workstations are showing the standard User Portal."
               }
             </p>
 
             <form id="broadcast-form" style="margin-top: 20px;">
               <div class="form-group">
-                <label class="form-label" for="broadcast-url">New Lesson or Resource URL</label>
+                <label class="form-label" for="broadcast-url">New Page or Resource URL</label>
                 <input type="url" class="form-input" id="broadcast-url" required placeholder="https://scratch.mit.edu or https://phet.colorado.edu">
                 <div class="form-hint">Workstations navigate instantly via top-level window. External iframes are never used.</div>
               </div>
@@ -199,7 +199,7 @@ function renderAppsWebContentHtml(
 
           <div class="card" style="margin-top: 20px;">
             <h2 class="card-title">1-Click Broadcast from Portal Apps</h2>
-            <p class="card-sub">Quickly launch an approved educational app across all student screens.</p>
+            <p class="card-sub">Open an approved app on every screen in one click.</p>
             <div style="display: flex; flex-wrap: wrap;">
               ${appShortcutsHtml || `<p style="color: var(--text-muted); font-size: 13px;">No portal apps configured yet.</p>`}
             </div>
@@ -208,8 +208,8 @@ function renderAppsWebContentHtml(
 
         <div>
           <div class="card">
-            <h2 class="card-title">Custom Lesson Presets &amp; Shortcuts</h2>
-            <p class="card-sub">Saved bookmarks for recurring classroom activities and exams.</p>
+            <h2 class="card-title">Custom Page Presets &amp; Shortcuts</h2>
+            <p class="card-sub">Saved bookmarks for recurring sessions and assessments.</p>
 
             <form id="add-preset-form" style="margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border);">
               <div class="form-group">
@@ -218,7 +218,7 @@ function renderAppsWebContentHtml(
               </div>
               <div class="form-group">
                 <label class="form-label" for="preset-url">Target URL</label>
-                <input type="url" class="form-input" id="preset-url" required placeholder="https://replit.com/@classroom/demo">
+                <input type="url" class="form-input" id="preset-url" required placeholder="https://intranet.example.com/handbook">
               </div>
               <button type="submit" class="btn btn-secondary">Save Shortcut</button>
             </form>
@@ -232,7 +232,7 @@ function renderAppsWebContentHtml(
     </div>
 
     <!-- ============================================================== -->
-    <!-- TAB 2: STUDENT PORTAL APPS                                    -->
+    <!-- TAB 2: USER PORTAL APPS                                    -->
     <!-- ============================================================== -->
     <div class="tab-pane" id="pane-portal">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
@@ -240,15 +240,15 @@ function renderAppsWebContentHtml(
           <span style="font-size: 14px; color: var(--text-muted);">Current Mode:</span>
           <span class="badge ${tenant?.mode === "single_url" ? "badge-yellow" : "badge-green"}">${tenant?.mode === "single_url" ? "Single URL Lockdown" : "App Grid Launcher"}</span>
         </div>
-        <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Preview Student Portal">
-          Preview Student Portal &rarr;
+        <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Preview User Portal">
+          Preview User Portal &rarr;
         </a>
       </div>
 
       <div class="grid-2col">
         <div>
           <div class="card">
-            <h2 class="card-title">Add Educational Application</h2>
+            <h2 class="card-title">Add Approved Application</h2>
             <p class="card-sub">Applications are automatically permitted through the kiosk domain filter.</p>
 
             <form id="add-app-form">
@@ -268,7 +268,7 @@ function renderAppsWebContentHtml(
                   <option value="Sciences &amp; Physics">Sciences &amp; Physics</option>
                   <option value="Languages &amp; Literacy">Languages &amp; Literacy</option>
                   <option value="General Reference">General Reference</option>
-                  <option value="Assessment &amp; Exams">Assessment &amp; Exams</option>
+                  <option value="Assessments">Assessments</option>
                 </select>
               </div>
               <div class="form-group">
@@ -300,7 +300,7 @@ function renderAppsWebContentHtml(
         <div>
           <div class="card">
             <h2 class="card-title">Add Allowed Domain</h2>
-            <p class="card-sub">Student Chromium browsers enforce this policy at the OS layer.</p>
+            <p class="card-sub">Workstation browsers enforce this policy at the OS layer.</p>
 
             <form id="add-domain-form" style="margin-bottom: 24px;">
               <div class="form-group">
@@ -326,7 +326,7 @@ function renderAppsWebContentHtml(
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
               <h2 class="card-title" style="margin-bottom: 0;">Currently Allowed Domains (${config.whitelist.length})</h2>
             </div>
-            <p class="card-sub">These domains are merged into the Chromium URLAllowlist across all lab workstations.</p>
+            <p class="card-sub">These domains are merged into the Chromium URLAllowlist across all workstations.</p>
 
             <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px;" id="whitelist-tags-container">
               ${domainTagsHtml || `<p style="color: var(--text-muted); font-size: 13px;">No domains currently whitelisted.</p>`}
@@ -441,7 +441,7 @@ function renderAppsWebScripts(nonce: string): string {
             if (!url) return;
             const agreed = await lkConfirm({
               title: "Broadcast to all workstations?",
-              message: "Synchronize all student displays to " + url + " immediately?",
+              message: "Send every workstation to " + url + " now?",
               confirmLabel: "Broadcast Now",
               tone: "primary"
             });
@@ -554,7 +554,7 @@ function renderAppsWebScripts(nonce: string): string {
             if (!id) return;
             const agreed = await lkConfirm({
               title: "Remove Portal Application?",
-              message: "Students will no longer see this application on their learning portal launcher.",
+              message: "Users will no longer see this application on their portal launcher.",
               confirmLabel: "Remove Application",
               tone: "danger"
             });
@@ -617,7 +617,7 @@ function renderAppsWebScripts(nonce: string): string {
             if (!domain) return;
             const agreed = await lkConfirm({
               title: "Remove " + domain + " from allowlist?",
-              message: "Student thin clients will no longer be permitted to load pages or assets from this domain.",
+              message: "Workstations will no longer be permitted to load pages or assets from this domain.",
               confirmLabel: "Remove Domain",
               tone: "danger"
             });

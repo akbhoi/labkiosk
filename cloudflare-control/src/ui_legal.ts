@@ -98,7 +98,7 @@ ${rootTokensCss(LEGACY_LEGAL_ALIASES)}
     <nav class="nav-links">
       <a href="/">Home</a>
       <a href="${escapeHtml(siblingHref)}">${escapeHtml(siblingLabel)}</a>
-      <a href="/login">Teacher Sign In</a>
+      <a href="/login">Operator Sign In</a>
     </nav>
   </header>
 
@@ -129,34 +129,34 @@ export function renderPrivacyPolicyHtml(): string {
 
       <div class="highlight-box">
         <strong>100% In-Memory RAM Overlay Guarantee</strong>
-        Lab Kiosk OS runs on an immutable read-only root filesystem with <code>overlayroot="tmpfs:recurse=0"</code>. No student personal data, browsing history, downloaded files, or session cookies are ever written to physical disk storage. All transient data is instantly and permanently destroyed upon power-off or reboot.
+        Lab Kiosk OS runs on an immutable read-only root filesystem with <code>overlayroot="tmpfs:recurse=0"</code>. No user personal data, browsing history, downloaded files, or session cookies are ever written to physical disk storage. All transient data is instantly and permanently destroyed upon power-off or reboot.
       </div>
 
       <h2>1. Introduction &amp; Educational Commitment</h2>
-      <p>Lab Kiosk OS ("Platform", "we", "us") is architected specifically for schools, universities, and educational training laboratories. We strictly adhere to student data privacy standards, including the Family Educational Rights and Privacy Act (FERPA) and the Children's Online Privacy Protection Act (COPPA).</p>
+      <p>Lab Kiosk OS ("Platform", "we", "us") is architected specifically for organizations, universities, and educational training laboratories. We strictly adhere to user data privacy standards, including the Family Educational Rights and Privacy Act (FERPA) and the Children's Online Privacy Protection Act (COPPA).</p>
 
       <h2>2. What We Do NOT Collect</h2>
-      <p>We believe computer labs should be safe, distraction-free educational spaces. Specifically:</p>
+      <p>We believe workstation fleets should be safe, distraction-free educational spaces. Specifically:</p>
       <ul>
-        <li><strong>No Student Accounts:</strong> Students do not create accounts, enter email addresses, or log into Lab Kiosk OS.</li>
+        <li><strong>No User Accounts:</strong> Users do not create accounts, enter email addresses, or log into Lab Kiosk OS.</li>
         <li><strong>No Persistent Browsing Profiles:</strong> Browser cookies, local storage, history, and cache exist solely in volatile RAM and are erased upon reboot.</li>
-        <li><strong>No Keystroke Logging:</strong> We do not log student keystrokes, personal communications, or search queries.</li>
-        <li><strong>No Commercial Profiling:</strong> Student activity is never tracked for advertising, profiling, or behavioral analytics.</li>
+        <li><strong>No Keystroke Logging:</strong> We do not log user keystrokes, personal communications, or search queries.</li>
+        <li><strong>No Commercial Profiling:</strong> User activity is never tracked for advertising, profiling, or behavioral analytics.</li>
       </ul>
 
       <h2>3. Information Collected for Lab Management</h2>
-      <p>To enable teachers and lab administrators to oversee classroom learning, the platform ingests minimal operational telemetry:</p>
+      <p>To enable operators and lab administrators to oversee room learning, the platform ingests minimal operational telemetry:</p>
       <ul>
         <li><strong>Workstation Identifiers:</strong> Workstation hostname (e.g. <code>PC-01</code>), internal IP address, and connection timestamp.</li>
-        <li><strong>Live Screen Thumbnails:</strong> Low-resolution preview frames captured at 3-second intervals solely for real-time classroom monitoring by the teacher. These frames are held in memory during the active session and are never saved to long-term storage or shared.</li>
-        <li><strong>Active Navigation Target:</strong> The current active lesson URL to reflect whether students are on the designated educational assignment.</li>
+        <li><strong>Live Screen Thumbnails:</strong> Low-resolution preview frames captured at 3-second intervals solely for real-time room monitoring by the operator. These frames are held in memory during the active session and are never saved to long-term storage or shared.</li>
+        <li><strong>Active Navigation Target:</strong> The current active page URL to reflect whether users are on the designated educational assignment.</li>
       </ul>
 
-      <h2>4. School Administrator Accounts</h2>
-      <p>School administrators and teachers provide an email address, institution name, and password for administrative access. Passwords are cryptographically hashed using PBKDF2-HMAC-SHA256 (100,000 iterations). Administrative account details are stored securely in Cloudflare D1 and are never sold or shared.</p>
+      <h2>4. Organization Administrator Accounts</h2>
+      <p>Organization administrators and operators provide an email address, organization name, and password for administrative access. Passwords are cryptographically hashed using PBKDF2-HMAC-SHA256 (100,000 iterations). Administrative account details are stored securely in Cloudflare D1 and are never sold or shared.</p>
 
       <h2>5. Super Administrator Privacy Restriction</h2>
-      <p>Platform Super Administrators are architecturally restricted from accessing individual school consoles, student portal configurations, or live workstation telemetry. Super administrator privileges are restricted strictly to tenant approval, status management, and the dedicated <code>demo</code> testing environment.</p>
+      <p>Platform Super Administrators are architecturally restricted from accessing individual organization consoles, user portal configurations, or live workstation telemetry. Super administrator privileges are restricted strictly to tenant approval, status management, and the dedicated <code>demo</code> testing environment.</p>
 
       <h2>6. Contact Us</h2>
       <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@akbhoi.com" style="color: var(--accent);">privacy@akbhoi.com</a>.</p>
@@ -178,19 +178,19 @@ export function renderTermsOfServiceHtml(): string {
       <div class="updated-date">Last updated: September 20, 2026 • Effective immediately</div>
 
       <h2>1. Acceptance of Terms</h2>
-      <p>By registering a school computer lab, enrolling workstations, or accessing the Lab Kiosk OS platform, you agree to be bound by these Terms of Service. If you are entering into this agreement on behalf of an educational institution, you represent that you have the authority to bind such institution.</p>
+      <p>By registering an organization workstation fleet, enrolling workstations, or accessing the Lab Kiosk OS platform, you agree to be bound by these Terms of Service. If you are entering into this agreement on behalf of an educational organization, you represent that you have the authority to bind such organization.</p>
 
       <h2>2. Educational Use, 45-Computer Threshold &amp; Subscriber Licensing</h2>
       <p>Lab Kiosk OS is source-available software licensed under the LabKiosk Software License. The software is provided free of charge strictly for accredited, non-profit K-12 schools, colleges, and educational institutions for internal classroom instruction up to a maximum limit of <strong>45 computers</strong>.</p>
       <p><strong>45-Computer Commercial Threshold:</strong> Any deployment by any party (including educational or non-profit organizations) utilizing more than forty-five (45) computers is legally viewed and classified as commercial use, requiring a separate paid Commercial License or active Subscription License.</p>
       <p><strong>Software License vs. Subscriber License:</strong> The LabKiosk Software License governs the underlying source code and self-hosted software. Subscribers utilizing the hosted Cloudflare Worker control plane and priority support are supported in accordance with the <strong>Subscriber License</strong> available within this control plane.</p>
 
-      <h2>3. Institution Responsibilities</h2>
-      <p>As a school administrator or teacher using the platform, you agree to:</p>
+      <h2>3. Organization Responsibilities</h2>
+      <p>As an organization administrator or operator using the platform, you agree to:</p>
       <ul>
-        <li>Maintain the confidentiality of your school enrollment key and administrative credentials.</li>
-        <li>Curate and maintain the approved educational domain allowlist in accordance with school policies and local regulations.</li>
-        <li>Supervise student workstation use responsibly during lab sessions.</li>
+        <li>Maintain the confidentiality of your organization enrollment key and administrative credentials.</li>
+        <li>Curate and maintain the approved approved domain allowlist in accordance with organization policies and local regulations.</li>
+        <li>Supervise user workstation use responsibly during lab sessions.</li>
         <li>Notify the platform immediately if any unauthorized access or credential compromise is detected.</li>
       </ul>
 
@@ -198,8 +198,8 @@ export function renderTermsOfServiceHtml(): string {
       <p>You may not use the platform to:</p>
       <ul>
         <li>Circumvent security controls, launch denial-of-service attacks, or scan platform infrastructure.</li>
-        <li>Distribute malicious software or configure domain allowlists to direct students to harmful or illegal material.</li>
-        <li>Impersonate another educational institution or claim subdomains without authorization.</li>
+        <li>Distribute malicious software or configure domain allowlists to direct users to harmful or illegal material.</li>
+        <li>Impersonate another educational organization or claim subdomains without authorization.</li>
       </ul>
 
       <h2>5. Disclaimer &amp; Service Availability</h2>

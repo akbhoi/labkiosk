@@ -1,13 +1,13 @@
 /**
- * Public SaaS Landing Page & Global Educational Portal UI
+ * Public SaaS Landing Page
  * Hosted at labkiosk.akbhoi.com
  *
  * Dedicated experiences for:
- *   - Students & Parents
- *   - Teachers & Lab Instructors
- *   - Universities & Higher Education
- *   - School Management Committees (SMC) & Trustees
- *   - Companies, EdTech & CSR Donors
+ *   - IT & operations teams who run the workstations
+ *   - The people who use them
+ *   - Schools, colleges & universities
+ *   - Leadership & finance
+ *   - CSR & hardware partners
  *
  * Architectural & Security Invariants:
  *   - 0 runtime npm dependencies
@@ -27,7 +27,7 @@ export interface LandingOptions {
   openModal?: "login" | "register" | "iso" | "contact";
   /** Public download URL for the built ISO, if configured. */
   isoDownloadUrl?: string;
-  /** Apex / base domain for school subdomains (defaults to labkiosk.akbhoi.com). */
+  /** Apex / base domain for organization subdomains (defaults to labkiosk.akbhoi.com). */
   baseDomain?: string;
   /** Primary contact email (defaults to contact@akbhoi.com). */
   contactEmail?: string;
@@ -61,8 +61,8 @@ export function renderLandingHtml(data: LandingOptions): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lab Kiosk OS - Centralized School & University Computer Lab Management</title>
-  <meta name="description" content="Centralized Computer Lab Kiosk Operating System for schools, universities, and training labs. 100% RAM overlay, Eyes-Front screen lock, zero SSD wear, and global Cloudflare Edge management.">
+  <title>Lab Kiosk OS - Secure Browser Workstations for Any Organization</title>
+  <meta name="description" content="Turn any computer into a secure browser workstation. Central management for companies, public services, libraries and schools: 100% RAM overlay, one-click screen lock, allowlist-only browsing, zero SSD wear, on Cloudflare's edge.">
   <meta name="theme-color" content="#090d16">
 ${FONT_LINKS}
   <style>
@@ -465,7 +465,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <span>Edge Active</span>
       </div>
       <button class="btn btn-ghost nav-signin-btn" data-action="open-modal" data-modal="login">Sign In</button>
-      <button class="btn btn-primary nav-register-btn" data-action="open-modal" data-modal="register">Register School Lab</button>
+      <button class="btn btn-primary nav-register-btn" data-action="open-modal" data-modal="register">Get Started</button>
       <button class="mobile-menu-btn" id="mobile-toggle" aria-label="Toggle navigation menu" aria-expanded="false" data-action="toggle-drawer">
         <svg class="icon-menu" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         <svg class="icon-close" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="display: none;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -516,8 +516,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       </a>
     </nav>
     <div class="mobile-drawer-actions">
-      <button class="btn btn-primary btn-block" data-action="drawer-open-modal" data-modal="register">Register School Lab</button>
-      <button class="btn btn-ghost btn-block" data-action="drawer-open-modal" data-modal="login">Teacher Sign In</button>
+      <button class="btn btn-primary btn-block" data-action="drawer-open-modal" data-modal="register">Register Organization</button>
+      <button class="btn btn-ghost btn-block" data-action="drawer-open-modal" data-modal="login">Operator Sign In</button>
     </div>
   </div>
 
@@ -527,16 +527,16 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <!-- Hero Section -->
     <section class="hero">
       <div class="hero-badge-container">
-        <span class="badge badge-blue">100% Free &amp; Open Source Platform</span>
+        <span class="badge badge-blue">Source-Available &bull; Free for Education up to 45 PCs</span>
         <span class="badge badge-green">Production Ready (Debian 12 + Cloudflare Edge)</span>
       </div>
-      <h1 class="hero-title">Centralized School Computer Lab <span>Kiosk Operating System</span></h1>
+      <h1 class="hero-title">Turn Any Computer Into a <span>Secure Browser Workstation</span></h1>
       <p class="hero-desc">
-        Empower teachers, universities, and school management with 100% remote lab management, 1-click Eyes-Front screen lock, zero SSD wear, and instant educational website deployment. Designed to resurrect any PC or thin client into an unhackable terminal.
+        For companies, public services, retail, libraries, schools and anyone who puts shared computers in front of people: manage every screen remotely, lock them in one click, allow only the sites you approve, and wipe every session clean. Runs on any PC or thin client, with zero SSD wear.
       </p>
       <div class="hero-ctas">
         <button class="btn btn-primary" style="padding: 12px 28px; font-size: 16px;" data-action="open-modal" data-modal="register">
-          Register School Lab
+          Register Your Organization
         </button>
         <button class="btn btn-ghost" style="padding: 12px 28px; font-size: 16px;" data-action="open-modal" data-modal="iso">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -559,11 +559,11 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         </div>
         <div class="metric-item">
           <div class="metric-value">1-Click</div>
-          <div class="metric-label">Classroom Eyes-Front Lockout</div>
+          <div class="metric-label">Lock Every Screen</div>
         </div>
         <div class="metric-item">
-          <div class="metric-value">$0 / Free</div>
-          <div class="metric-label">No OS or Per-Seat Licensing Fees</div>
+          <div class="metric-value">Any PC</div>
+          <div class="metric-label">Old Desktops, Thin Clients &amp; New Hardware</div>
         </div>
       </div>
     </section>
@@ -571,58 +571,58 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <!-- Stakeholder Solutions Matrix -->
     <section class="section-wrap" id="audiences">
       <div class="section-header">
-        <h2 class="section-title">Built for Every Lab Stakeholder</h2>
-        <p class="section-sub">From students and teachers to principals, universities, and CSR donors, Lab Kiosk solves the modern digital lab challenge.</p>
+        <h2 class="section-title">Built for Everyone Who Runs Shared Computers</h2>
+        <p class="section-sub">From the IT team and the people at the screens to leadership, educators and hardware partners.</p>
       </div>
 
       <div class="tabs-nav" role="tablist">
-        <button class="tab-btn active" data-action="audience-tab" data-tab="tab-teachers" role="tab">For Teachers</button>
-        <button class="tab-btn" data-action="audience-tab" data-tab="tab-students" role="tab">For Students</button>
-        <button class="tab-btn" data-action="audience-tab" data-tab="tab-universities" role="tab">For Universities</button>
-        <button class="tab-btn" data-action="audience-tab" data-tab="tab-smc" role="tab">For School Boards (SMC)</button>
+        <button class="tab-btn active" data-action="audience-tab" data-tab="tab-operators" role="tab">For IT &amp; Operations</button>
+        <button class="tab-btn" data-action="audience-tab" data-tab="tab-users" role="tab">For End Users</button>
+        <button class="tab-btn" data-action="audience-tab" data-tab="tab-universities" role="tab">For Education</button>
+        <button class="tab-btn" data-action="audience-tab" data-tab="tab-smc" role="tab">For Leadership &amp; Finance</button>
         <button class="tab-btn" data-action="audience-tab" data-tab="tab-corporate" role="tab">For CSR &amp; Partners</button>
       </div>
 
-      <!-- Teachers Tab -->
-      <div class="tab-content active" id="tab-teachers">
+      <!-- Operators Tab -->
+      <div class="tab-content active" id="tab-operators">
         <div class="audience-card">
           <div class="audience-info">
-            <span class="badge badge-blue" style="margin-bottom: 12px;">Instant Classroom Control</span>
-            <h3>Teach Without Distractions</h3>
-            <p>Managing 40 students on computer screens used to be exhausting. With Lab Kiosk, you command the entire room from your laptop, tablet, or phone with zero installation required.</p>
+            <span class="badge badge-blue" style="margin-bottom: 12px;">One Console for Every Screen</span>
+            <h3>Run Every Workstation From One Place</h3>
+            <p>Looking after dozens of shared computers across a floor, a branch or a campus used to mean walking from desk to desk. With Lab Kiosk you manage all of them from a laptop, tablet or phone, with nothing to install.</p>
             <ul class="audience-bullets">
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Instant Eyes-Front Curtain:</strong> Freeze all workstation screens with a single tap so students listen to your instructions.</span>
+                <span><strong>One-Click Screen Lock:</strong> Cover every selected screen with a message, for a briefing, a maintenance window or the end of a shift.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Live Screen Thumbnails:</strong> Live screen previews update every 3 seconds, spotting off-task students instantly.</span>
+                <span><strong>Live Screen Thumbnails:</strong> Previews refresh every 3 seconds, so you can see at a glance what every workstation is showing.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Embedded noVNC Remote Assist:</strong> Take over keyboard and mouse on any desk to unblock stuck students without leaving your chair.</span>
+                <span><strong>Remote Assist:</strong> Take over the keyboard and mouse of any workstation to help someone without leaving your desk.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Broadcast URLs:</strong> Open educational resources (e.g. Khan Academy, Scratch) simultaneously on all PCs.</span>
+                <span><strong>Broadcast Pages:</strong> Open the same approved page on every selected workstation at once.</span>
               </li>
             </ul>
           </div>
           <div class="audience-preview">
             <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
-              <span style="font-weight: 700; font-size: 14px;">Teacher Console • Active Lab</span>
+              <span style="font-weight: 700; font-size: 14px;">Admin Console • Front Office</span>
               <span class="badge badge-green">38 Workstations Online</span>
             </div>
             <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
               <div style="background: #1e293b; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 11px; color: var(--muted);">PC-01</div>
-                <div style="height: 48px; background: #0f172a; border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #60a5fa;">Khan Academy</div>
+                <div style="height: 48px; background: #0f172a; border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #60a5fa;">Intranet</div>
                 <div style="font-size: 10px; color: var(--green);">● Active</div>
               </div>
               <div style="background: #1e293b; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 11px; color: var(--muted);">PC-02</div>
-                <div style="height: 48px; background: #0f172a; border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #a78bfa;">Scratch 3.0</div>
+                <div style="height: 48px; background: #0f172a; border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #a78bfa;">Service Portal</div>
                 <div style="font-size: 10px; color: var(--green);">● Active</div>
               </div>
               <div style="background: #1e293b; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid #ef4444;">
@@ -631,22 +631,22 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
                 <div style="font-size: 10px; color: #ef4444;">● Intercepted</div>
               </div>
             </div>
-            <button class="btn btn-primary btn-block" style="margin-top: 8px;" data-action="open-modal" data-modal="register">Open Free Teacher Account</button>
+            <button class="btn btn-primary btn-block" style="margin-top: 8px;" data-action="open-modal" data-modal="register">Register Your Organization</button>
           </div>
         </div>
       </div>
 
-      <!-- Students Tab -->
-      <div class="tab-content" id="tab-students">
+      <!-- Users Tab -->
+      <div class="tab-content" id="tab-users">
         <div class="audience-card">
           <div class="audience-info">
             <span class="badge badge-green" style="margin-bottom: 12px;">Safe &amp; Distraction-Free</span>
-            <h3>Focused, High-Speed Learning</h3>
-            <p>Students enjoy a smooth, lag-free terminal designed for curiosity and creation, free from malware, pop-up ads, or social media rabbit holes.</p>
+            <h3>A Fast, Focused Browser Station</h3>
+            <p>People get a smooth, full-screen browser with only the sites they need: no malware, no pop-ups, no leftover sign-ins from the person before them.</p>
             <ul class="audience-bullets">
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Visual App Launcher:</strong> Easily launch curated learning tools (Python, Scratch, CK-12, GeoGebra, Wikipedia) with single-click cards.</span>
+                <span><strong>Visual App Launcher:</strong> One-click cards for the approved apps and sites your organization chooses.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
@@ -654,25 +654,25 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>100% Privacy Guarantee:</strong> No student browsing history, cookies, or files are kept. Everything evaporates on restart.</span>
+                <span><strong>Clean Sessions:</strong> No browsing history, cookies, sign-ins or files are kept. Clear Session wipes them on demand; a restart wipes everything.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Auto-Hiding Navigation Bar:</strong> Top bar glides off-screen automatically, maximizing coding canvases and reading space.</span>
+                <span><strong>Auto-Hiding Navigation Bar:</strong> The top bar glides off-screen, leaving the whole display to the page.</span>
               </li>
             </ul>
           </div>
           <div class="audience-preview">
             <div style="background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
-              <h4 style="font-size: 14px; margin-bottom: 10px; color: #93c5fd;">Student Portal Launcher</h4>
+              <h4 style="font-size: 14px; margin-bottom: 10px; color: #93c5fd;">User Portal Launcher</h4>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                 <div style="background: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid var(--border); text-align: center;">
-                  <div style="font-size: 20px; margin-bottom: 4px;">🐍</div>
-                  <div style="font-weight: 700; font-size: 12px;">Python Playground</div>
+                  <div style="font-size: 20px; margin-bottom: 4px;">🗂️</div>
+                  <div style="font-weight: 700; font-size: 12px;">Document Library</div>
                 </div>
                 <div style="background: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid var(--border); text-align: center;">
-                  <div style="font-size: 20px; margin-bottom: 4px;">📐</div>
-                  <div style="font-weight: 700; font-size: 12px;">GeoGebra Geometry</div>
+                  <div style="font-size: 20px; margin-bottom: 4px;">🧾</div>
+                  <div style="font-weight: 700; font-size: 12px;">Self-Service Forms</div>
                 </div>
               </div>
             </div>
@@ -685,9 +685,9 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <div class="tab-content" id="tab-universities">
         <div class="audience-card">
           <div class="audience-info">
-            <span class="badge badge-blue" style="margin-bottom: 12px;">Higher Education &amp; Exams</span>
-            <h3>Scalable Infrastructure for Higher Ed</h3>
-            <p>Deploy secure coding labs, computer science practicals, and invigilated university entrance exams across hundreds of campus workstations.</p>
+            <span class="badge badge-blue" style="margin-bottom: 12px;">Schools, Colleges &amp; Universities</span>
+            <h3>Computer Labs and Secure Assessments</h3>
+            <p>Run school computer labs, coding practicals and invigilated assessments on the same locked-down image, across one room or hundreds of campus workstations. Free for accredited educational institutions up to 45 computers.</p>
             <ul class="audience-bullets">
               <li>
                 <span class="bullet-icon">✓</span>
@@ -712,21 +712,21 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <div style="background: #1e293b; border-radius: 8px; padding: 16px; border: 1px solid var(--border); font-size: 13px; line-height: 1.6;">
               <p><strong>Status:</strong> Strict Examination Lockdown Active</p>
               <p><strong>DevTools &amp; Extensions:</strong> Disabled</p>
-              <p><strong>Domain Allowlist:</strong> <code>exams.university.edu</code> only</p>
+              <p><strong>Domain Allowlist:</strong> <code>assessments.university.edu</code> only</p>
               <p><strong>External USB / TTY:</strong> Blocked</p>
             </div>
-            <a href="mailto:${escapeHtml(contactEmail)}?subject=University%20Campus%20Deployment" class="btn btn-primary btn-block">Inquire for University Deployments</a>
+            <a href="mailto:${escapeHtml(contactEmail)}?subject=Education%20Deployment" class="btn btn-primary btn-block">Inquire About Education Deployments</a>
           </div>
         </div>
       </div>
 
-      <!-- SMC / School Board Tab -->
+      <!-- SMC / Organization Board Tab -->
       <div class="tab-content" id="tab-smc">
         <div class="audience-card">
           <div class="audience-info">
             <span class="badge badge-green" style="margin-bottom: 12px;">Budget &amp; TCO Optimization</span>
-            <h3>90% Cost Savings &amp; Zero SSD Wear</h3>
-            <p>School management committees and trustees can eliminate costly annual Windows and antivirus licenses while tripling the lifespan of existing school hardware.</p>
+            <h3>Lower Running Costs &amp; Zero SSD Wear</h3>
+            <p>Leadership and finance teams can retire per-seat desktop OS and antivirus licenses on shared machines and keep existing hardware in service for years longer.</p>
             <ul class="audience-bullets">
               <li>
                 <span class="bullet-icon">✓</span>
@@ -738,16 +738,16 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Zero Licensing Fees:</strong> 100% open-source software stack saves thousands of dollars per lab annually.</span>
+                <span><strong>No Desktop OS Licenses:</strong> A Debian-based, source-available stack replaces Windows and antivirus licenses on every shared seat.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>CIPA / COPPA Compliant:</strong> Granular domain whitelisting blocks adult material, gambling, and unapproved web domains at kernel and browser level.</span>
+                <span><strong>Allowlist-Only Browsing:</strong> Every site is blocked unless you approve its domain, enforced by the browser's managed policy.</span>
               </li>
             </ul>
           </div>
           <div class="audience-preview">
-            <h4 style="font-size: 15px; margin-bottom: 12px;">School Lab Cost Comparison</h4>
+            <h4 style="font-size: 15px; margin-bottom: 12px;">Per-Site Cost Comparison</h4>
             <table style="width: 100%; font-size: 13px; border-collapse: collapse; margin-bottom: 16px;">
               <tr style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 8px 0; color: var(--muted);">OS &amp; Antivirus Licenses</td>
@@ -758,11 +758,11 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
                 <td style="padding: 8px 0; text-align: right; color: #ef4444; text-decoration: line-through;">$800/yr</td>
               </tr>
               <tr style="border-bottom: 1px solid var(--border);">
-                <td style="padding: 8px 0; font-weight: 700; color: #fff;">Lab Kiosk Total Cost</td>
-                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--green); font-size: 16px;">$0.00</td>
+                <td style="padding: 8px 0; font-weight: 700; color: #fff;">Lab Kiosk</td>
+                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--green); font-size: 13px;">Free for education &le; 45 PCs; commercial license otherwise</td>
               </tr>
             </table>
-            <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="register">Register School Lab Today</button>
+            <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="register">Register Your Organization</button>
           </div>
         </div>
       </div>
@@ -772,24 +772,24 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <div class="audience-card">
           <div class="audience-info">
             <span class="badge badge-blue" style="margin-bottom: 12px;">Corporate CSR &amp; EdTech</span>
-            <h3>Turn Corporate E-Waste into Schools Labs</h3>
-            <p>Corporates and donors can partner with Lab Kiosk to refurbish off-lease enterprise computers into turnkey educational computer labs for underserved rural schools.</p>
+            <h3>Turn Corporate E-Waste into Community Workstations</h3>
+            <p>Companies and donors can partner with Lab Kiosk to refurbish off-lease computers into turnkey, secure workstations for schools, libraries and community centers in underserved areas.</p>
             <ul class="audience-bullets">
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Circular Economy &amp; ESG:</strong> Divert tons of functional e-waste from landfills and directly empower students in high-need districts.</span>
+                <span><strong>Circular Economy &amp; ESG:</strong> Divert functional e-waste from landfill and put it to work in high-need communities.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Turnkey Flash-and-Go:</strong> Write the Lab Kiosk ISO onto a batch of USB keys. Labs boot into an enrollment screen in seconds.</span>
+                <span><strong>Turnkey Flash-and-Go:</strong> Write the Lab Kiosk ISO onto a batch of USB keys. Each computer boots into an enrollment screen in seconds.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>EdTech Integration:</strong> Pre-configure educational platforms and curriculum tools directly into the student launcher.</span>
+                <span><strong>Ready-Made Launchers:</strong> Pre-configure the approved platforms each site needs directly into the user launcher.</span>
               </li>
               <li>
                 <span class="bullet-icon">✓</span>
-                <span><strong>Verifiable Impact:</strong> Real-time telemetry lets donors track student lab engagement and uptime metrics transparently.</span>
+                <span><strong>Verifiable Impact:</strong> Real-time telemetry lets donors see workstation usage and uptime transparently.</span>
               </li>
             </ul>
           </div>
@@ -808,7 +808,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <section class="section-wrap" id="simulator">
       <div class="section-header">
         <h2 class="section-title">Experience the Platform Live</h2>
-        <p class="section-sub">Try the student portal, test teacher screen controls, or see how the Eyes-Front lock grabs student attention.</p>
+        <p class="section-sub">Try the user portal, the admin console, and the screen lock.</p>
       </div>
 
       <div class="simulator-wrap">
@@ -820,88 +820,88 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <span style="font-size: 12px; color: var(--muted); font-family: monospace; margin-left: 8px;">https://demo.${escapeHtml(baseDomain)}</span>
           </div>
           <div class="sim-controls">
-            <button class="sim-tab-btn active" id="sim-btn-portal" data-action="sim-view" data-view="portal">Student Portal</button>
-            <button class="sim-tab-btn" id="sim-btn-teacher" data-action="sim-view" data-view="teacher">Teacher Console</button>
-            <button class="sim-tab-btn" id="sim-btn-curtain" data-action="sim-view" data-view="curtain">Eyes-Front Curtain</button>
+            <button class="sim-tab-btn active" id="sim-btn-portal" data-action="sim-view" data-view="portal">User Portal</button>
+            <button class="sim-tab-btn" id="sim-btn-operator" data-action="sim-view" data-view="operator">Admin Console</button>
+            <button class="sim-tab-btn" id="sim-btn-curtain" data-action="sim-view" data-view="curtain">Screen Lock</button>
           </div>
         </div>
 
         <div class="simulator-body" id="sim-body">
-          <!-- Student Portal Simulation -->
+          <!-- User Portal Simulation -->
           <div id="sim-view-portal" style="display: block;">
             <div style="text-align: center; margin-bottom: 24px;">
-              <h3 style="font-size: 22px; font-weight: 800; color: #fff;">Select an Educational Resource</h3>
-              <p style="font-size: 14px; color: var(--muted);">Click any approved application below to open your learning session.</p>
+              <h3 style="font-size: 22px; font-weight: 800; color: #fff;">Select an Approved Resource</h3>
+              <p style="font-size: 14px; color: var(--muted);">Click any approved application below to open it.</p>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; max-width: 800px; margin: 0 auto;">
-              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Student Portal Demo: Opening Khan Academy in top-level native viewport!">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="User Portal demo: opening the Company Intranet as a full, native page.">
+                <div style="font-size: 32px; margin-bottom: 8px;">🏢</div>
+                <div style="font-weight: 700; font-size: 14px;">Company Intranet</div>
+                <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">News &amp; Policies</div>
+              </div>
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="User Portal demo: opening the Service Desk.">
+                <div style="font-size: 32px; margin-bottom: 8px;">🎧</div>
+                <div style="font-weight: 700; font-size: 14px;">Service Desk</div>
+                <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Tickets &amp; Requests</div>
+              </div>
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="User Portal demo: opening the Training Portal.">
                 <div style="font-size: 32px; margin-bottom: 8px;">📚</div>
-                <div style="font-weight: 700; font-size: 14px;">Khan Academy</div>
-                <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Mathematics &amp; Science</div>
+                <div style="font-weight: 700; font-size: 14px;">Training Portal</div>
+                <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Courses &amp; Guides</div>
               </div>
-              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Student Portal Demo: Launching Scratch 3.0 visual block coding!">
-                <div style="font-size: 32px; margin-bottom: 8px;">🐱</div>
-                <div style="font-weight: 700; font-size: 14px;">Scratch 3.0</div>
-                <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Creative Coding</div>
-              </div>
-              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Student Portal Demo: Launching GeoGebra interactive math graphing!">
-                <div style="font-size: 32px; margin-bottom: 8px;">📐</div>
-                <div style="font-weight: 700; font-size: 14px;">GeoGebra</div>
-                <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Geometry &amp; Algebra</div>
-              </div>
-              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Student Portal Demo: Launching Python browser sandbox!">
-                <div style="font-size: 32px; margin-bottom: 8px;">🐍</div>
-                <div style="font-weight: 700; font-size: 14px;">Python Lab</div>
-                <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Programming Practice</div>
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="User Portal demo: opening Self-Service Forms.">
+                <div style="font-size: 32px; margin-bottom: 8px;">🧾</div>
+                <div style="font-weight: 700; font-size: 14px;">Self-Service Forms</div>
+                <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Applications &amp; Requests</div>
               </div>
             </div>
           </div>
 
-          <!-- Teacher Console Simulation -->
-          <div id="sim-view-teacher" style="display: none;">
+          <!-- Admin Console Simulation -->
+          <div id="sim-view-operator" style="display: none;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px;">
               <div>
-                <h4 style="font-size: 18px; font-weight: 700;">Classroom Grid • Room 104</h4>
-                <p style="font-size: 13px; color: var(--muted);">Click 'Eyes Front Lock' to pause all screens or broadcast a URL.</p>
+                <h4 style="font-size: 18px; font-weight: 700;">Workstation Grid • Front Office</h4>
+                <p style="font-size: 13px; color: var(--muted);">Click 'Lock Screens' to pause every screen, or broadcast a URL.</p>
               </div>
               <div style="display: flex; gap: 10px;">
                 <button class="btn btn-ghost" style="font-size: 13px; padding: 8px 14px;" data-action="sim-broadcast">Broadcast URL</button>
-                <button class="btn btn-primary" style="font-size: 13px; padding: 8px 14px; background: #ef4444;" data-action="sim-view" data-view="curtain">Eyes Front Lock 🔒</button>
+                <button class="btn btn-primary" style="font-size: 13px; padding: 8px 14px; background: #ef4444;" data-action="sim-view" data-view="curtain">Lock Screens 🔒</button>
               </div>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px;">
               <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 12px; font-weight: 700;">PC-01</div>
-                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Scratch</div>
+                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Intranet</div>
                 <span style="font-size: 10px; color: var(--green);">● Online</span>
               </div>
               <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 12px; font-weight: 700;">PC-02</div>
-                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Khan Academy</div>
+                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Service Desk</div>
                 <span style="font-size: 10px; color: var(--green);">● Online</span>
               </div>
               <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 12px; font-weight: 700;">PC-03</div>
-                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Python Lab</div>
+                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Training Portal</div>
                 <span style="font-size: 10px; color: var(--green);">● Online</span>
               </div>
               <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 12px; font-weight: 700;">PC-04</div>
-                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">CK-12 Science</div>
+                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Self-Service Forms</div>
                 <span style="font-size: 10px; color: var(--green);">● Online</span>
               </div>
             </div>
           </div>
 
-          <!-- Eyes-Front Lock Curtain Simulation -->
+          <!-- Screen Lock Simulation -->
           <div id="sim-view-curtain" style="display: none; background: #090d16; border: 2px dashed #ef4444; border-radius: 12px; padding: 48px 24px; text-align: center;">
             <div style="font-size: 48px; margin-bottom: 16px;">🔒</div>
-            <h3 style="font-size: 26px; font-weight: 800; color: #f87171; margin-bottom: 8px;">Class Attention, Please!</h3>
+            <h3 style="font-size: 26px; font-weight: 800; color: #f87171; margin-bottom: 8px;">Screens Paused</h3>
             <p style="font-size: 16px; color: #cbd5e1; max-width: 500px; margin: 0 auto 24px;">
-              "Eyes to the front of the classroom. The teacher has paused workstation interactions."
+              "This workstation has been paused by an administrator. Please wait."
             </p>
-            <div style="font-size: 12px; color: var(--muted); margin-bottom: 20px;">All keyboard inputs and clicks are swallowed until teacher unlocks.</div>
-            <button class="btn btn-primary" data-action="sim-view" data-view="teacher">Resume Teaching (Unlock Screens)</button>
+            <div style="font-size: 12px; color: var(--muted); margin-bottom: 20px;">All keyboard input and clicks are blocked until an administrator unlocks.</div>
+            <button class="btn btn-primary" data-action="sim-view" data-view="operator">Unlock Screens</button>
           </div>
         </div>
       </div>
@@ -910,8 +910,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <!-- Detailed Features Grid -->
     <section class="section-wrap" id="features">
       <div class="section-header">
-        <h2 class="section-title">Engineered for School Computer Labs</h2>
-        <p class="section-sub">Zero maintenance, total teacher command, and foolproof tamper prevention.</p>
+        <h2 class="section-title">Engineered for Shared Workstations</h2>
+        <p class="section-sub">Zero maintenance, central control, and tamper-proof by design.</p>
       </div>
 
       <div class="features-grid">
@@ -920,15 +920,15 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           </div>
           <h3 class="feature-title">Zero SSD Wear (RAM Overlay)</h3>
-          <p class="feature-desc">All disk writes are strictly directed to volatile RAM via <code>overlayroot="tmpfs:recurse=0"</code>. Protects thin-client SSDs from wearing out and erases student files on every reboot.</p>
+          <p class="feature-desc">All disk writes are strictly directed to volatile RAM via <code>overlayroot="tmpfs:recurse=0"</code>. Protects thin-client SSDs from wearing out and erases user files on every reboot.</p>
         </div>
 
         <div class="feature-card">
           <div class="feature-icon" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           </div>
-          <h3 class="feature-title">Instant Eyes-Front Lock</h3>
-          <p class="feature-desc">One click covers all classroom screens with a fullscreen curtain requiring student attention. Unlocks instantly when you are ready to resume teaching.</p>
+          <h3 class="feature-title">Instant Screen Lock</h3>
+          <p class="feature-desc">One click covers the selected screens with a fullscreen message. Unlocks instantly when you are ready.</p>
         </div>
 
         <div class="feature-card">
@@ -943,16 +943,16 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <div class="feature-icon" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
           </div>
-          <h3 class="feature-title">Custom School Subdomains</h3>
-          <p class="feature-desc">Every school gets its own custom subdomain (e.g. <code>greenwood.${escapeHtml(baseDomain)}</code>). Thin clients connect separately and remain 100% isolated to your school's private dashboard.</p>
+          <h3 class="feature-title">Custom Organization Subdomains</h3>
+          <p class="feature-desc">Every organization gets its own custom subdomain (e.g. <code>greenwood.${escapeHtml(baseDomain)}</code>). Thin clients connect separately and remain 100% isolated to your organization's private dashboard.</p>
         </div>
 
         <div class="feature-card">
           <div class="feature-icon" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
           </div>
-          <h3 class="feature-title">Visual Student App Launcher</h3>
-          <p class="feature-desc">Admins configure cards with custom thumbnails for allowed educational websites (Khan Academy, Scratch, CK-12, GeoGebra). Students easily launch approved apps.</p>
+          <h3 class="feature-title">Visual User App Launcher</h3>
+          <p class="feature-desc">Admins configure cards with custom thumbnails for the websites they approve. Users launch them in one click.</p>
         </div>
 
         <div class="feature-card">
@@ -976,7 +976,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
           </div>
           <h3 class="feature-title">A Record of Every Change</h3>
-          <p class="feature-desc">Subdomain changes, staff accounts, allowlist edits and key rotations are recorded and readable from your console, including anything the platform did to your school.</p>
+          <p class="feature-desc">Subdomain changes, staff accounts, allowlist edits and key rotations are recorded and readable from your console, including anything the platform did to your organization.</p>
         </div>
       </div>
     </section>
@@ -985,7 +985,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <section class="section-wrap" id="specs">
       <div class="section-header">
         <h2 class="section-title">Hardware Specs &amp; Compatibility</h2>
-        <p class="section-sub">Resurrect your legacy lab machines or run on modern thin clients without hardware upgrades.</p>
+        <p class="section-sub">Bring older desktops back into service or run on modern thin clients, without hardware upgrades.</p>
       </div>
 
       <div class="specs-table-container">
@@ -1050,7 +1050,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <div>
             <h4 style="font-size: 16px; font-weight: 700; color: #93c5fd; margin-bottom: 8px;">2. Managed Enterprise Chromium</h4>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
-              <code>URLBlocklist: ["*"]</code> denies all internet browsing by default. The local Python agent dynamically reconciles the school's approved whitelist on every heartbeat.
+              <code>URLBlocklist: ["*"]</code> denies all internet browsing by default. The local Python agent dynamically reconciles the organization's approved whitelist on every heartbeat.
             </p>
           </div>
           <div>
@@ -1067,27 +1067,27 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <section class="section-wrap" id="faq">
       <div class="section-header">
         <h2 class="section-title">Frequently Asked Questions</h2>
-        <p class="section-sub">Common questions from school IT coordinators, principals, and university administrators.</p>
+        <p class="section-sub">Common questions from IT administrators, operations managers and education leads.</p>
       </div>
 
       <div class="faq-list">
         <div class="faq-item">
           <div class="faq-question" data-action="toggle-faq">
-            <span>Does Lab Kiosk work in schools with weak or intermittent internet?</span>
+            <span>Does Lab Kiosk work with weak or intermittent internet?</span>
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Yes! Unlike streaming thin-client OS solutions that download their rootfs over the internet, the entire Lab Kiosk operating system resides in the computer's local RAM. Once booted, thin clients only transmit lightweight JSON telemetry heartbeats (&lt; 2 KB). If the internet drops temporarily, running educational tools and local web pages continue to function.
+            Yes! Unlike streaming thin-client OS solutions that download their rootfs over the internet, the entire Lab Kiosk operating system resides in the computer's local RAM. Once booted, thin clients only transmit lightweight JSON telemetry heartbeats (&lt; 2 KB). If the internet drops temporarily, running approved tools and local web pages continue to function.
           </div>
         </div>
 
         <div class="faq-item">
           <div class="faq-question" data-action="toggle-faq">
-            <span>What happens if a student attempts to open other websites or download games?</span>
+            <span>What happens if a user tries to open other websites or download software?</span>
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            All unauthorized browsing is immediately denied by Chromium's enterprise managed policy (<code>URLBlocklist: ["*"]</code>). Downloads, print menus, bookmarks, extension installations, and DevTools (<code>F12</code>) are permanently disabled. In addition, USB thumb drive automounting is blocked, preventing students from running unauthorized scripts.
+            All unauthorized browsing is immediately denied by Chromium's enterprise managed policy (<code>URLBlocklist: ["*"]</code>). Downloads, print menus, bookmarks, extension installations, and DevTools (<code>F12</code>) are permanently disabled. In addition, USB thumb drive automounting is blocked, preventing users from running unauthorized scripts.
           </div>
         </div>
 
@@ -1097,7 +1097,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Thin clients typically ship with small eMMC or flash SSDs (16 GB–32 GB) that burn through limited write endurance cycles under Windows logging and pagefiles. Lab Kiosk mounts the root filesystem as read-only and redirects all file creation and browser caches to volatile system RAM (<code>tmpfs</code>). Flash storage is never written to during student sessions, prolonging hardware life by 5 to 10 years.
+            Thin clients typically ship with small eMMC or flash SSDs (16 GB–32 GB) that burn through limited write endurance cycles under Windows logging and pagefiles. Lab Kiosk mounts the root filesystem as read-only and redirects all file creation and browser caches to volatile system RAM (<code>tmpfs</code>). Flash storage is never written to during user sessions, prolonging hardware life by 5 to 10 years.
           </div>
         </div>
 
@@ -1113,11 +1113,11 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
 
         <div class="faq-item">
           <div class="faq-question" data-action="toggle-faq">
-            <span>How do we deploy this across an entire district or campus?</span>
+            <span>How do we deploy this across many sites?</span>
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Registration takes less than 60 seconds on this website. You receive your school subdomain (e.g. <code>yourschool.${escapeHtml(baseDomain)}</code>) and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
+            Registration takes less than 60 seconds on this website. You receive your organization subdomain (e.g. <code>yourorganization.${escapeHtml(baseDomain)}</code>) and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
           </div>
         </div>
       </div>
@@ -1127,7 +1127,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <section class="section-wrap" id="contact">
       <div class="section-header">
         <h2 class="section-title">Global Contact &amp; Support</h2>
-        <p class="section-sub">Have questions about school onboarding, university campus deployments, or corporate CSR hardware donations? Get in touch with our team.</p>
+        <p class="section-sub">Questions about onboarding, large deployments, education licensing or CSR hardware donations? Get in touch with our team.</p>
       </div>
 
       <div class="contact-grid">
@@ -1135,8 +1135,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <div class="feature-icon" aria-hidden="true" style="margin-bottom: 12px;">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
           </div>
-          <h4>General Inquiries &amp; School Boards</h4>
-          <p>For school principals, management committees, and general questions about Lab Kiosk.</p>
+          <h4>General &amp; Sales Inquiries</h4>
+          <p>For organizations evaluating Lab Kiosk, commercial licensing, and general questions.</p>
           <a href="mailto:${escapeHtml(contactEmail)}" class="contact-link">${escapeHtml(contactEmail)}</a>
         </div>
 
@@ -1153,8 +1153,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <div class="feature-icon" aria-hidden="true" style="margin-bottom: 12px;">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           </div>
-          <h4>Universities, CSR &amp; Partners</h4>
-          <p>Hardware donation partnerships, EdTech platform whitelisting, and campus exam licensing.</p>
+          <h4>Education, CSR &amp; Partners</h4>
+          <p>Education deployments, hardware donation partnerships, and platform allowlisting.</p>
           <a href="mailto:partners@akbhoi.com" class="contact-link">partners@akbhoi.com</a>
         </div>
       </div>
@@ -1172,22 +1172,22 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
   <div class="modal-overlay" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
     <div class="modal-box">
       <button class="modal-close" data-action="close-modal" data-modal="login" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="login-modal-title">Teacher &amp; Admin Sign In</h2>
-      <p class="modal-sub">Log in to manage your school computer lab.</p>
+      <h2 class="modal-title" id="login-modal-title">Admin &amp; Staff Sign In</h2>
+      <p class="modal-sub">Sign in to manage your organization's workstations.</p>
       <div class="alert-box" id="login-alert" role="alert"></div>
       <form id="login-form">
         <div class="form-group">
           <label class="form-label" for="login-email">Email Address</label>
-          <input type="email" class="form-input" id="login-email" required placeholder="teacher@school.edu" autocomplete="email">
+          <input type="email" class="form-input" id="login-email" required placeholder="you@example.com" autocomplete="email">
         </div>
         <div class="form-group">
           <label class="form-label" for="login-password">Password</label>
           <input type="password" class="form-input" id="login-password" required placeholder="••••••••" autocomplete="current-password">
         </div>
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Lab Console</button>
+        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Admin Console</button>
       </form>
       <div class="modal-switch">
-        New school? <a href="/register" data-action="switch-modal" data-close="login" data-modal="register">Register your lab</a>
+        New organization? <a href="/register" data-action="switch-modal" data-close="login" data-modal="register">Register your organization</a>
       </div>
     </div>
   </div>
@@ -1196,17 +1196,17 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
   <div class="modal-overlay" id="register-modal" role="dialog" aria-modal="true" aria-labelledby="reg-modal-title">
     <div class="modal-box">
       <button class="modal-close" data-action="close-modal" data-modal="register" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="reg-modal-title">Register School Lab</h2>
-      <p class="modal-sub">Claim your free custom subdomain and cloud console.</p>
+      <h2 class="modal-title" id="reg-modal-title">Register Your Organization</h2>
+      <p class="modal-sub">Claim your custom subdomain and cloud console.</p>
       <div class="alert-box" id="register-alert" role="alert"></div>
       <form id="register-form">
         <div class="form-group">
-          <label class="form-label" for="reg-name">School / Organization Name</label>
-          <input type="text" class="form-input" id="reg-name" required placeholder="Greenwood High School">
+          <label class="form-label" for="reg-name">Organization Name</label>
+          <input type="text" class="form-input" id="reg-name" required placeholder="Greenwood Holdings">
         </div>
         <div class="form-group">
-          <label class="form-label" for="reg-email">Teacher / Admin Email</label>
-          <input type="email" class="form-input" id="reg-email" required placeholder="teacher@greenwood.edu" autocomplete="email">
+          <label class="form-label" for="reg-email">Admin Email</label>
+          <input type="email" class="form-input" id="reg-email" required placeholder="admin@greenwood.example" autocomplete="email">
         </div>
         <div class="form-group">
           <label class="form-label" for="reg-password">Password</label>
@@ -1219,9 +1219,9 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\-]+" style="font-family: monospace;">
             <span style="font-family: monospace; font-size: 13px; color: var(--muted); white-space: nowrap;">.${escapeHtml(baseDomain)}</span>
           </div>
-          <div class="input-hint">Lowercase letters, numbers, hyphens only. Your lab is active as soon as you register.</div>
+          <div class="input-hint">Lowercase letters, numbers, hyphens only. Your organization is active as soon as you register.</div>
         </div>
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Register Lab &amp; Claim Subdomain</button>
+        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Register &amp; Claim Subdomain</button>
       </form>
       <div class="modal-switch">
         Already registered? <a href="/login" data-action="switch-modal" data-close="register" data-modal="login">Sign in</a>
@@ -1242,7 +1242,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         </p>
         <h4 style="font-size: 14px; margin-bottom: 8px; color: #60a5fa;">Step 2: Boot Client &amp; First-Boot Wizard</h4>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5;">
-          Boot your PC from USB. On first boot, the setup wizard prompts for your <strong>School Subdomain</strong>, <strong>PC Identifier (e.g. PC-01)</strong>, and <strong>Enrollment Key</strong>. Once verified, the workstation permanently links to your cloud dashboard!
+          Boot your PC from USB. On first boot, the setup wizard prompts for your <strong>Organization Subdomain</strong>, <strong>PC Identifier (e.g. PC-01)</strong>, and <strong>Enrollment Key</strong>. Once verified, the workstation permanently links to your cloud dashboard!
         </p>
       </div>
       ${isoAction}
@@ -1254,15 +1254,15 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <div class="modal-box" style="max-width: 500px;">
       <button class="modal-close" data-action="close-modal" data-modal="contact" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="contact-modal-title">Send Deployment Inquiry</h2>
-      <p class="modal-sub">Our global team responds to schools, universities, and partners within 24 hours.</p>
+      <p class="modal-sub">Our team responds to organizations and partners within 24 hours.</p>
       <form id="contact-form">
         <div class="form-group">
           <label class="form-label" for="contact-name">Your Full Name</label>
           <input type="text" class="form-input" id="contact-name" required placeholder="Dr. Jane Smith">
         </div>
         <div class="form-group">
-          <label class="form-label" for="contact-org">School, University or Company</label>
-          <input type="text" class="form-input" id="contact-org" required placeholder="Lincoln High School / State University">
+          <label class="form-label" for="contact-org">Organization</label>
+          <input type="text" class="form-input" id="contact-org" required placeholder="Acme Corp / City Library / State University">
         </div>
         <div class="form-group">
           <label class="form-label" for="contact-sender-email">Email Address</label>
@@ -1271,8 +1271,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <div class="form-group">
           <label class="form-label" for="contact-type">Inquiry Type</label>
           <select class="form-input" id="contact-type" style="background:#1e293b; color:#fff;">
-            <option value="School Computer Lab Deployment">School Computer Lab Deployment</option>
-            <option value="University Campus / Exam Lab">University Campus / Exam Lab</option>
+            <option value="Organization Deployment">Organization Deployment</option>
+            <option value="Education Deployment / Assessments">Education Deployment / Assessments</option>
             <option value="Corporate CSR Hardware Donation">Corporate CSR Hardware Donation</option>
             <option value="Technical Support Inquiry">Technical Support Inquiry</option>
           </select>
@@ -1296,7 +1296,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <span style="font-weight: 800; font-size: 16px; color: #fff;">Lab Kiosk OS</span>
         </div>
         <p style="font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
-          The Centralized School &amp; University Computer Lab Kiosk Operating System. 100% RAM Overlay, zero SSD degradation, and instant classroom command from Cloudflare's serverless edge.
+          Secure browser workstations for any organization. 100% RAM overlay, zero SSD degradation, and central control from Cloudflare's serverless edge.
         </p>
         <p style="font-size: 12px; color: #64748b;">
           Hosted globally at <code>${escapeHtml(baseDomain)}</code>
@@ -1306,10 +1306,10 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <div class="footer-col">
         <h5>Stakeholders</h5>
         <ul>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-teachers">For Teachers</a></li>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-students">For Students</a></li>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-universities">For Universities</a></li>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-smc">For School Boards (SMC)</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-operators">For IT &amp; Operations</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-users">For End Users</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-universities">For Education</a></li>
+          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-smc">For Leadership &amp; Finance</a></li>
           <li><a href="#audiences" data-action="audience-tab" data-tab="tab-corporate">For CSR Donors</a></li>
         </ul>
       </div>
@@ -1338,10 +1338,10 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     </div>
 
     <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Akbhoi Innovations • Free for accredited schools, commercial license required for resale</div>
+      <div>&copy; 2026 Lab Kiosk OS • Akbhoi Innovations • Free for accredited schools up to 45 PCs • Commercial license for businesses &amp; resale</div>
       <div style="display: flex; gap: 16px; flex-wrap: wrap;">
         <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
-        <a href="/register" data-action="open-modal" data-modal="register">Register School</a>
+        <a href="/register" data-action="open-modal" data-modal="register">Register Organization</a>
         <a href="/privacy">Privacy Policy</a>
         <a href="/terms">Terms of Service</a>
         <a href="#security">Security</a>
@@ -1446,8 +1446,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       if (activeContent) activeContent.classList.add('active');
       const buttons = document.querySelectorAll('.tab-btn');
       const tabMap = {
-        'tab-teachers': 0,
-        'tab-students': 1,
+        'tab-operators': 0,
+        'tab-users': 1,
         'tab-universities': 2,
         'tab-smc': 3,
         'tab-corporate': 4
@@ -1458,23 +1458,23 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     // Simulator view switcher
     function setSimView(view) {
       const p = document.getElementById('sim-view-portal');
-      const t = document.getElementById('sim-view-teacher');
+      const t = document.getElementById('sim-view-operator');
       const c = document.getElementById('sim-view-curtain');
       const bp = document.getElementById('sim-btn-portal');
-      const bt = document.getElementById('sim-btn-teacher');
+      const bt = document.getElementById('sim-btn-operator');
       const bc = document.getElementById('sim-btn-curtain');
       
       p.style.display = view === 'portal' ? 'block' : 'none';
-      t.style.display = view === 'teacher' ? 'block' : 'none';
+      t.style.display = view === 'operator' ? 'block' : 'none';
       c.style.display = view === 'curtain' ? 'block' : 'none';
 
       bp.classList.toggle('active', view === 'portal');
-      bt.classList.toggle('active', view === 'teacher');
+      bt.classList.toggle('active', view === 'operator');
       bc.classList.toggle('active', view === 'curtain');
     }
 
     function simulateBroadcast() {
-      const url = prompt('Enter URL to broadcast to all lab workstation screens:', 'https://scratch.mit.edu');
+      const url = prompt('Enter a URL to broadcast to every workstation screen:', 'https://intranet.example.com');
       if (url) {
         alert('Broadcast Sent! All thin client screens are navigating to: ' + url);
       }
@@ -1512,7 +1512,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     const BASE_DOMAIN = ${escapeJson(baseDomain)};
 
     /**
-     * Which school this page is showing, if any.
+     * Which organization this page is showing, if any.
      *
      * The sign-in POST goes to /api/auth/login with no query string, so the
      * server cannot see the ?tenant= that put this page on screen. On a real

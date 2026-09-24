@@ -12,12 +12,12 @@ import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser } from "../s
 
 const tenant = {
   id: "tenant-fixed",
-  name: "Greenwood High School",
+  name: "Greenwood Holdings",
   subdomain: "greenwood",
   status: "active",
   mode: "portal",
   default_url: "https://www.khanacademy.org",
-  default_lock_message: "Screens locked by the instructor.",
+  default_lock_message: "Screens locked by the operator.",
   enrollment_key: "KEY123",
   created_at: 1700000000,
   home_route: "/",
@@ -41,11 +41,11 @@ const presets = [
   { id: "p1", tenant_id: "tenant-fixed", title: "Chapter 4 Recap", url: "https://example.edu/ch4", created_at: 1700000000 }
 ] as unknown as BroadcastPreset[];
 
-const teachers = [
-  { id: "t1", tenant_id: "tenant-fixed", user_id: "u1", name: "R. Mehta", email: "r.mehta@greenwood.edu", role: "teacher", permissions: ["workstations", "broadcast"], created_at: 1700000000 }
+const staff = [
+  { id: "t1", tenant_id: "tenant-fixed", user_id: "u1", name: "R. Mehta", email: "r.mehta@greenwood.example", role: "operator", permissions: ["workstations", "broadcast"], created_at: 1700000000 }
 ] as unknown as TenantUser[];
 
-const pages = ["workstations", "apps-web", "teachers", "settings"] as const;
+const pages = ["workstations", "apps-web", "staff", "settings"] as const;
 
 for (const page of pages) {
   const html = renderDashboardHtml({
@@ -53,10 +53,10 @@ for (const page of pages) {
     tenant,
     sites,
     presets,
-    teachers,
+    staff,
     baseDomain: "labkiosk.akbhoi.com",
     activePage: page,
-    currentUser: { name: "Head Teacher", email: "head@greenwood.edu", role: "school_admin" },
+    currentUser: { name: "Head Operator", email: "head@greenwood.example", role: "org_admin" },
     userPermissions: ["*"],
     isDevHost: false,
     nonce: "FIXED-NONCE"

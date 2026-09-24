@@ -1,12 +1,12 @@
 /**
- * The school homepage, served at the root of a school's subdomain.
+ * The organization homepage, served at the root of an organization's subdomain.
  *
- * The subdomain root used to render the student app grid, the same page as
- * /home. This is the page a school puts its own name on: a headline, a short
+ * The subdomain root used to render the user app grid, the same page as
+ * /home. This is the page an organization puts its own name on: a headline, a short
  * introduction, whatever notices and links it wants to publish, and a way
  * through to the lab itself.
  *
- * Everything on it is school-supplied and everything is escaped. A block's
+ * Everything on it is organization-supplied and everything is escaped. A block's
  * link has already been through safeHttpUrl on the way into the database and
  * goes through it again here, because neither side may assume the other did.
  */
@@ -15,20 +15,20 @@ import { Tenant, HomepageBlock } from "./types";
 import { escapeHtml, escapeAttr, safeHttpUrl } from "./escape";
 import { FONT_LINKS, rootTokensCss, LEGACY_PORTAL_ALIASES } from "./ui_tokens";
 
-export interface SchoolHomeOptions {
+export interface OrgHomeOptions {
   tenant: Tenant;
   blocks: HomepageBlock[];
   /** Where the app grid lives. Always /home; passed so the route owns the path. */
   portalPath: string;
 }
 
-export function renderSchoolHomeHtml(options: SchoolHomeOptions): string {
+export function renderOrgHomeHtml(options: OrgHomeOptions): string {
   const { tenant, blocks, portalPath } = options;
 
   const headline = tenant.homepage_headline || tenant.name;
   const intro =
     tenant.homepage_intro ||
-    "Welcome to the school computer lab. Everything here is chosen and managed by your teachers.";
+    "Welcome. Everything on this workstation is chosen and managed by your organization's administrators.";
 
   const blocksHtml = blocks
     .map((block) => {
@@ -161,7 +161,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
       <div class="brand-mark">${escapeHtml((tenant.name || "S").slice(0, 1).toUpperCase())}</div>
       <div>
         <div class="brand-name">${escapeHtml(tenant.name)}</div>
-        <div class="brand-sub">${escapeHtml(tenant.portal_subtitle || "Computer Lab")}</div>
+        <div class="brand-sub">${escapeHtml(tenant.portal_subtitle || "Workstations")}</div>
       </div>
     </div>
     <a class="header-link" href="${escapeAttr(portalPath)}">Enter the Lab &rarr;</a>

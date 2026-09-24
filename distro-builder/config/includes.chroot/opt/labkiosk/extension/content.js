@@ -21,7 +21,7 @@
  * And deliberately permissive about one more: the clipboard, *only* on the
  * setup wizard. The enrolment key is a 20-character string an administrator
  * pastes from the dashboard, and taking Ctrl+V away there would make the one
- * screen that needs it unusable. Students never see that origin.
+ * screen that needs it unusable. Users never see that origin.
  */
 (function lockInput() {
   const AGENT_ORIGIN = "http://127.0.0.1:8888";
@@ -127,7 +127,7 @@
   let offlineSince = null;
   const OFFLINE_REDIRECT_MS = 6000;
   // Long enough to notice the bar and read the workstation name, short enough
-  // that it is out of the way before anyone starts a lesson.
+  // that it is out of the way before anyone starts a page.
   let barCatalog = {};
 
   /**
@@ -198,9 +198,9 @@ const BAR_INTRO_MS = 2500;
     }
   }
 
-  // While the teacher's curtain is up, stop the page underneath from seeing any
+  // While the operator's curtain is up, stop the page underneath from seeing any
   // input. This is a DOM-level block, not an X11 input grab: it prevents the
-  // student interacting with the page, while Chromium's kiosk switches and the
+  // user interacting with the page, while Chromium's kiosk switches and the
   // stripped Openbox keybindings cover browser- and window-level shortcuts.
   const SWALLOWED_WHILE_LOCKED = [
     "click", "dblclick", "mousedown", "mouseup", "wheel",
@@ -300,7 +300,7 @@ const BAR_INTRO_MS = 2500;
 
     // "closed" so the host page cannot reach this subtree through
     // document.getElementById("labkiosk-root").shadowRoot and delete the lock
-    // curtain out from under the teacher. The content script keeps its own
+    // curtain out from under the operator. The content script keeps its own
     // reference below, which is unaffected.
     const shadow = host.attachShadow({ mode: "closed" });
     shadow.innerHTML = `
@@ -629,7 +629,7 @@ const BAR_INTRO_MS = 2500;
 
       <div id="kiosk-bar">
         <div class="nav-cluster">
-          <button class="kiosk-btn" id="btn-home" title="Lesson Home" data-i18n-title="bar.homeTitle">
+          <button class="kiosk-btn" id="btn-home" title="Home" data-i18n-title="bar.homeTitle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
             <span data-i18n="bar.home">Home</span>
           </button>
@@ -664,7 +664,7 @@ const BAR_INTRO_MS = 2500;
           <!--
             The clock sits right after the network icon and opens the same wizard
             page the network icon does, on its Language & Region step: it is the
-            one place a teacher can see the time is wrong, so it is also where
+            one place an operator can see the time is wrong, so it is also where
             they should be able to put it right. Behind the same password.
           -->
           <button class="kiosk-clock" id="btn-clock" title="Date, time and language"
@@ -686,7 +686,7 @@ const BAR_INTRO_MS = 2500;
             <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
           </svg>
           <h1 class="lock-title">Attention Please</h1>
-          <p class="lock-msg" id="lock-text">Screens locked by the instructor. Please look to the front.</p>
+          <p class="lock-msg" id="lock-text">This screen has been locked by an administrator. Please wait.</p>
         </div>
       </div>
 
@@ -716,7 +716,7 @@ const BAR_INTRO_MS = 2500;
 
     const domainLabel = shadow.getElementById("kiosk-domain");
     if (domainLabel) {
-      domainLabel.textContent = window.location.hostname || "Educational Resource";
+      domainLabel.textContent = window.location.hostname || "Approved Resource";
     }
 
     // Ensure zero body margin so the page gets 100% full viewport height without overflow
@@ -775,7 +775,7 @@ const BAR_INTRO_MS = 2500;
 
     // Show the bar once at the start of each session, then let it hide itself.
     // It is invisible until the pointer reaches the top edge, which nobody
-    // discovers by accident; this is how a student learns it is there at all.
+    // discovers by accident; this is how a user learns it is there at all.
     // The service worker hands out the "first page of this session" flag, so
     // this happens once per boot rather than on every navigation.
     askAgent({ type: "labkiosk:intro-peek" })
@@ -961,7 +961,7 @@ const BAR_INTRO_MS = 2500;
       btnBack.classList.add("disabled");
       btnBack.style.opacity = "0.35";
       btnBack.style.cursor = "not-allowed";
-      btnBack.title = t("bar.back-is-disabled-at-the-start", "Back is disabled at the start of the broadcast lesson");
+      btnBack.title = t("bar.back-is-disabled-at-the-start", "Back is disabled at the start of the broadcast page");
     } else {
       btnBack.classList.remove("disabled");
       btnBack.style.opacity = "1";
@@ -1066,11 +1066,11 @@ const BAR_INTRO_MS = 2500;
             }
           }
         } else if (srvEpoch === "0" && storedEpoch !== "0") {
-          // Broadcast session ended / reset by teacher.
+          // Broadcast session ended / reset by operator.
           await clearBroadcastState();
           // The same protocol check as the branches above: targetUrl comes from
           // the control plane and ends up in location.replace(), so a
-          // javascript: value here would run in whatever page the student is on.
+          // javascript: value here would run in whatever page the user is on.
           const safeTarget = httpUrlOrNull(data.targetUrl);
           if (safeTarget && normalizeUrl(window.location.href) !== normalizeUrl(safeTarget)) {
             window.location.replace(safeTarget);

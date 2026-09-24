@@ -20,10 +20,10 @@ labkiosk-lock-keys >>/tmp/lab-agent.log 2>&1 || true
 # 3. Hide mouse cursor after 5 seconds of inactivity
 which unclutter >/dev/null 2>&1 && unclutter -idle 5 -root &
 
-# 4. Remote classroom management: x11vnc behind a per-boot password.
+# 4. Remote room management: x11vnc behind a per-boot password.
 #    The VNC gateway is deliberately NOT published on the LAN. It listens on
 #    loopback only and is reached through the Cloudflare Tunnel, because an
-#    open noVNC port gives anyone on the school Wi-Fi full keyboard and mouse
+#    open noVNC port gives anyone on the organization Wi-Fi full keyboard and mouse
 #    control of the workstation.
 VNC_SECRET_DIR=/tmp/labkiosk
 mkdir -p "$VNC_SECRET_DIR"
@@ -35,7 +35,7 @@ VNC_SECRET_FILE="$VNC_SECRET_DIR/vnc.secret"
 if [ ! -f "$VNC_PASSWD_FILE" ]; then
   # A fresh random password each boot; nothing persists across reboots because
   # the root filesystem is a RAM overlay anyway. The plaintext is kept in RAM,
-  # readable only by the kiosk user, so the agent can report it to the teacher
+  # readable only by the kiosk user, so the agent can report it to the operator
   # console over the authenticated telemetry channel: without that the
   # console had no way to open a remote-control session at all.
   VNC_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-8)"
@@ -46,7 +46,7 @@ if [ ! -f "$VNC_PASSWD_FILE" ]; then
 fi
 
 # -noclipboard: the VNC clipboard is bidirectional, so without it anything a
-#   student copies on the workstation is readable by whoever holds a session,
+#   user copies on the workstation is readable by whoever holds a session,
 #   and anything in the viewer's clipboard can be pasted into the kiosk.
 # -nocmd: disables x11vnc's own remote control channel, which is not used here.
 # The VNC protocol truncates passwords to 8 characters, so the secret below is
@@ -64,9 +64,9 @@ fi
 #    Logs go to /tmp (RAM) so nothing is written to the read-only rootfs.
 #
 #    The loop is the point. The agent is the only thing that reports telemetry,
-#    applies the teacher's lock curtain, syncs the Chromium allowlist and
+#    applies the operator's lock curtain, syncs the Chromium allowlist and
 #    carries out remote commands. Started bare with `&`, a single crash left the
-#    workstation looking fine to the student and invisible to the teacher until
+#    workstation looking fine to the user and invisible to the operator until
 #    someone physically power-cycled it. Restarting costs nothing: the agent is
 #    stateless apart from /etc/labkiosk/config.json, which it re-reads at start.
 (
@@ -78,11 +78,11 @@ fi
 ) &
 
 # 7. Wait for the agent's local API, then open whatever it says the target is:
-#    the first-boot setup wizard when unconfigured, the school portal once
+#    the first-boot setup wizard when unconfigured, the organization portal once
 #    enrolled. Without this the browser would race ahead to a default homepage
 #    and the setup wizard would never be seen.
 #    It is re-read on every relaunch, so when the agent restarts the browser
-#    after enrolment the new session lands on the school's page under the
+#    after enrolment the new session lands on the organization's page under the
 #    freshly written Chromium policy.
 read_kiosk_url() {
   for _ in $(seq 1 50); do
@@ -104,7 +104,7 @@ while true; do
   KIOSK_URL="$(read_kiosk_url)"
 
   # NOTE: --disable-web-security is deliberately absent. It was previously set
-  # here, which disabled the same-origin policy for every site a student
+  # here, which disabled the same-origin policy for every site a user
   # visited. Nothing in this project needs it; the kiosk browses top-level
   # pages rather than framing them.
   chromium \

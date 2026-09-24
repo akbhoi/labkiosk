@@ -34,7 +34,7 @@ COUNTRY_TAB = os.path.join(ZONEINFO_DIR, "iso3166.tab")
 SUPPORTED_LOCALES = "/usr/share/i18n/SUPPORTED"
 XKB_RULES = "/usr/share/X11/xkb/rules/evdev.lst"
 # A drop-in rather than timesyncd.conf itself: the package owns that file, and a
-# school that sets its own NTP server should not have to win a conffile prompt
+# organization that sets its own NTP server should not have to win a conffile prompt
 # on the next update.
 TIMESYNCD_DROPIN = "/etc/systemd/timesyncd.conf.d/labkiosk.conf"
 
@@ -46,6 +46,10 @@ TIMEZONE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_.-]+){1,
 # while locale -a reports the generated result as "en_IN.utf8". Three
 # spellings of one locale, so everything is normalised before comparison.
 LOCALE_PATTERN = re.compile(r"^[a-z]{2,3}(?:_[A-Z]{2})?(?:\.[A-Za-z0-9-]{1,16})?(?:@[A-Za-z0-9]{1,16})?\Z")
+# The interface language, a BCP 47 tag such as "en-US". It is written into
+# /etc/default/locale as LANGUAGE=, so it is as strict as the rest. Keep it in
+# step with UI_LANGUAGE_PATTERN in the agent, which offers these tags.
+UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}\Z")
 KEYMAP_PATTERN = re.compile(r"^[a-z0-9]{1,16}\Z")
 KEYMAP_VARIANT_PATTERN = re.compile(r"^[a-z0-9_-]{0,32}\Z")
 # A hostname or an address, which is all systemd-timesyncd accepts here. Kept
@@ -260,7 +264,7 @@ def validate_ntp_servers(value):
     One to four time servers, space or comma separated.
 
     An empty value is meaningful: it removes the drop-in and hands the
-    workstation back to Debian's pool, which is the right default for a school
+    workstation back to Debian's pool, which is the right default for an organization
     with no time server of its own.
     """
     if not value.strip():
@@ -399,7 +403,7 @@ def apply_keymap(root, layout, variant):
 
 
 def apply_ntp_servers(root, servers):
-    """Point systemd-timesyncd at the school's own time server, or let it go."""
+    """Point systemd-timesyncd at the organization's own time server, or let it go."""
     path = os.path.join(root, TIMESYNCD_DROPIN.lstrip("/")) if root != "/" else TIMESYNCD_DROPIN
     if not servers:
         try:
@@ -556,7 +560,7 @@ def main():
         print(json.dumps({"error": str(err)}))
         return 2
 
-    if args.ui_language and not re.match(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\\Z", args.ui_language):
+    if args.ui_language and not UI_LANGUAGE_PATTERN.match(args.ui_language):
         print(json.dumps({"error": f"{args.ui_language!r} is not a language tag"}))
         return 2
 

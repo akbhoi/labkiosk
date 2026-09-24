@@ -1,5 +1,5 @@
 /**
- * Lab settings: identity, routing, custom domain, enrollment key, the audit
+ * Settings: identity, routing, custom domain, enrollment key, the audit
  * trail and the administrator password.
  *
  * The page markup, its context-panel contents and its client script live
@@ -14,9 +14,9 @@ import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
-  const { tenant, config, sites, presets, teachers, tenantParam, baseDomain, nonce } = options;
+  const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
   return {
-    title: "Lab Settings & Configuration",
+    title: "Settings & Configuration",
     contentHtml: renderSettingsPageHtml(tenant, config, baseDomain, tenantParam),
     scriptsHtml: renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)),
     subPanelTitle: "Lab Configuration",
@@ -39,7 +39,7 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
         <button type="button" class="sub-action-item" data-action="tab-homepage">
           <span style="display: flex; align-items: center; gap: 8px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-            School Homepage
+            Organization Homepage
           </span>
         </button>
         <button type="button" class="sub-action-item" data-action="tab-security">
@@ -55,7 +55,7 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
         <a href="/${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
           <span style="display: flex; align-items: center; gap: 8px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            Preview School Homepage
+            Preview Organization Homepage
           </span>
         </a>
       </div>
@@ -78,8 +78,8 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
   return `
     <div class="page-head" style="margin-bottom: 20px;">
       <div>
-        <h1 class="page-title">Lab Settings &amp; Configuration</h1>
-        <p class="page-desc">Manage institution profile, subdomain customization, custom domain, VNC tunnel, and enrollment keys.</p>
+        <h1 class="page-title">Settings &amp; Configuration</h1>
+        <p class="page-desc">Manage organization profile, subdomain customization, custom domain, VNC tunnel, and enrollment keys.</p>
       </div>
     </div>
 
@@ -90,18 +90,18 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
       <div class="grid-2col">
         <!-- Card 1: Lab Profile & Kiosk Mode -->
         <div class="card" id="section-general">
-          <h2 class="card-title">Institution &amp; Kiosk Profile</h2>
-          <p class="card-sub">General settings for this computer lab environment.</p>
+          <h2 class="card-title">Organization &amp; Kiosk Profile</h2>
+          <p class="card-sub">General settings for this organization's workstations.</p>
 
           <form id="form-profile-settings">
             <div class="form-group">
-              <label class="form-label" for="setting-school-name">School / Lab Name</label>
-              <input type="text" class="form-input" id="setting-school-name" value="${escapeAttr(tenant?.name || "")}" required>
+              <label class="form-label" for="setting-organization-name">Organization Name</label>
+              <input type="text" class="form-input" id="setting-organization-name" value="${escapeAttr(tenant?.name || "")}" required>
             </div>
             <div class="form-group">
               <label class="form-label" for="setting-kiosk-mode">Kiosk Display Mode</label>
               <select class="form-select" id="setting-kiosk-mode">
-                <option value="portal" ${tenant?.mode === "portal" ? "selected" : ""}>Student Educational Portal (Card Grid)</option>
+                <option value="portal" ${tenant?.mode === "portal" ? "selected" : ""}>User Portal (Card Grid)</option>
                 <option value="single_url" ${tenant?.mode === "single_url" ? "selected" : ""}>Direct Single-Site Lockdown</option>
               </select>
             </div>
@@ -111,7 +111,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
             </div>
             <div class="form-group">
               <label class="form-label" for="setting-lock-msg">Default Lock Screen Message</label>
-              <input type="text" class="form-input" id="setting-lock-msg" value="${escapeAttr(tenant?.default_lock_message || "Screens locked by the instructor. Please look to the front.")}">
+              <input type="text" class="form-input" id="setting-lock-msg" value="${escapeAttr(tenant?.default_lock_message || "This screen has been locked by an administrator. Please wait.")}">
             </div>
             <button type="submit" class="btn btn-primary">Save Profile Settings</button>
           </form>
@@ -126,10 +126,10 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
             <div class="form-group">
               <label class="form-label" for="setting-home-route">Default Landing Path</label>
               <select class="form-select" id="setting-home-route">
-                <option value="/" ${homeRoute === "/" ? "selected" : ""}>/ &mdash; the school homepage</option>
+                <option value="/" ${homeRoute === "/" ? "selected" : ""}>/ &mdash; the organization homepage</option>
                 <option value="/home" ${homeRoute === "/home" ? "selected" : ""}>/home &mdash; straight to the app grid</option>
               </select>
-              <div class="form-hint">Where a workstation lands on start-up and on Reset to Portal. The homepage is a page your school writes; the app grid is the launcher students pick a site from.</div>
+              <div class="form-hint">Where a workstation lands on start-up and on Reset to Portal. The homepage is a page your organization writes; the app grid is the launcher users pick a site from.</div>
             </div>
             <button type="submit" class="btn btn-secondary">Save Routing</button>
           </form>
@@ -145,8 +145,8 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
         <div style="display: flex; flex-direction: column; gap: 20px;">
           <!-- Card 2: Subdomain Customization -->
           <div class="card" id="section-subdomain">
-            <h2 class="card-title">School Subdomain Customization</h2>
-            <p class="card-sub">Customize your school's unique address on <code>${escapeHtml(baseDomain)}</code>.</p>
+            <h2 class="card-title">Organization Subdomain Customization</h2>
+            <p class="card-sub">Customize your organization's unique address on <code>${escapeHtml(baseDomain)}</code>.</p>
 
             <form id="form-subdomain-settings">
               <div class="form-group">
@@ -164,12 +164,12 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
           <!-- Card 5: VNC & Remote Control Tunnel -->
           <div class="card" id="section-vnc">
             <h2 class="card-title">Remote Control &amp; VNC Tunnel</h2>
-            <p class="card-sub">Cloudflare Tunnel hostname for live classroom screen control.</p>
+            <p class="card-sub">Cloudflare Tunnel hostname for live remote screen control.</p>
 
             <form id="form-tunnel-settings">
               <div class="form-group">
                 <label class="form-label" for="setting-tunnel-domain">Tunnel Domain</label>
-                <input type="text" class="form-input" id="setting-tunnel-domain" value="${escapeAttr(tunnelDomain)}" placeholder="e.g. lab.myschool.edu or demo.labkiosk.akbhoi.com">
+                <input type="text" class="form-input" id="setting-tunnel-domain" value="${escapeAttr(tunnelDomain)}" placeholder="e.g. lab.example.com or demo.labkiosk.akbhoi.com">
                 <div class="form-hint">Thin clients forward loopback noVNC port 6080 to this tunnel egress domain.</div>
               </div>
               <button type="submit" class="btn btn-secondary">Update Tunnel Domain</button>
@@ -181,7 +181,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
           <!-- Card 3: Custom Domain -->
           <div class="card" id="section-custom-domain">
             <h2 class="card-title">White-Label Custom Domain</h2>
-            <p class="card-sub">Point your own institutional domain (e.g. <code>kiosk.myschool.edu</code>) to this lab.</p>
+            <p class="card-sub">Point your own domain (e.g. <code>kiosk.example.com</code>) at this organization's console.</p>
 
             ${
               customDomain && customDomainStatus === "approved"
@@ -204,7 +204,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
                 <form id="form-custom-domain">
                   <div class="form-group">
                     <label class="form-label" for="setting-custom-domain">Domain Name</label>
-                    <input type="text" class="form-input" id="setting-custom-domain" placeholder="e.g. lab.myschool.edu" required>
+                    <input type="text" class="form-input" id="setting-custom-domain" placeholder="e.g. lab.example.com" required>
                     <div class="form-hint">Create a CNAME record in your DNS pointing to <code>${escapeHtml(baseDomain)}</code>, then submit below.</div>
                   </div>
                   <button type="submit" class="btn btn-secondary">Request Custom Domain</button>
@@ -217,7 +217,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
     </div>
 
     <!-- ============================================================== -->
-    <!-- TAB 3: SCHOOL HOMEPAGE                                         -->
+    <!-- TAB 3: ORGANIZATION HOMEPAGE                                         -->
     <!-- ============================================================== -->
     <div class="tab-pane" id="pane-homepage">
       <form id="form-homepage">
@@ -228,7 +228,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
 
             <div class="form-group">
               <label class="form-label" for="homepage-headline">Headline</label>
-              <input type="text" class="form-input" id="homepage-headline" maxlength="120" placeholder="${escapeAttr(tenant?.name || "Your school")}" value="${escapeAttr(tenant?.homepage_headline || "")}">
+              <input type="text" class="form-input" id="homepage-headline" maxlength="120" placeholder="${escapeAttr(tenant?.name || "Your organization")}" value="${escapeAttr(tenant?.homepage_headline || "")}">
             </div>
             <div class="form-group">
               <label class="form-label" for="homepage-intro">Introduction</label>
@@ -243,7 +243,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
 
           <div class="card">
             <h2 class="card-title">Content Blocks</h2>
-            <p class="card-sub">Notices, links to your own school site, or student guidelines. Up to 12.</p>
+            <p class="card-sub">Notices, links to your own organization site, or user guidelines. Up to 12.</p>
             <div id="homepage-blocks" style="margin-top: 12px;"></div>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-add-block" style="margin-top: 12px;">Add a block</button>
           </div>
@@ -260,7 +260,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
           <!-- Card 6: Workstation Enrollment Key -->
           <div class="card" id="section-enrollment">
             <h2 class="card-title">Workstation Enrollment Key</h2>
-            <p class="card-sub">Secret key used to securely pair thin clients to this school.</p>
+            <p class="card-sub">Secret key used to securely pair thin clients to this organization.</p>
 
             <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
               <code id="enrollment-key-display" style="font-size: 16px; font-weight: 700; color: #93c5fd; letter-spacing: 1px;">••••••••••••</code>
@@ -292,7 +292,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
           <!-- Card 8: Recent Lab Activity -->
           <div class="card" id="section-activity">
             <h2 class="card-title">Recent Lab Activity</h2>
-            <p class="card-sub">Privileged changes to this lab, including anything the platform did to it.</p>
+            <p class="card-sub">Privileged changes to this organization, including anything the platform did to it.</p>
             <div class="table-container table-scrollable">
               <table>
                 <thead>
@@ -365,7 +365,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       switchTab(initialTab);
       document.getElementById("form-profile-settings").addEventListener("submit", async (e) => {
         e.preventDefault();
-        const name = document.getElementById("setting-school-name").value.trim();
+        const name = document.getElementById("setting-organization-name").value.trim();
         const mode = document.getElementById("setting-kiosk-mode").value;
         const defaultUrl = document.getElementById("setting-default-url").value.trim();
         const defaultLockMessage = document.getElementById("setting-lock-msg").value.trim();
@@ -392,7 +392,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         e.preventDefault();
         const subdomain = document.getElementById("setting-subdomain").value.trim().toLowerCase();
         const agreed = await lkConfirm({
-          title: "Move the lab to '" + subdomain + "'?",
+          title: "Move the organization to '" + subdomain + "'?",
           message: "The current address stops working once this is approved, and every enrolled workstation needs its configuration updated to the new one.",
           confirmLabel: "Request change"
         });
@@ -445,7 +445,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         disconnectBtn.addEventListener("click", async () => {
           const agreed = await lkConfirm({
             title: "Disconnect the custom domain?",
-            message: "The lab goes back to its subdomain address. Workstations enrolled against the custom domain will need reconfiguring.",
+            message: "The organization goes back to its subdomain address. Workstations enrolled against the custom domain will need reconfiguring.",
             confirmLabel: "Disconnect",
             tone: "danger"
           });
@@ -561,10 +561,10 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         }
       });
 
-      // ------------------------------------------------------ school homepage
+      // ------------------------------------------------------ organization homepage
       // The block list is seeded from the server and edited entirely in the DOM;
       // it is posted back whole. escapeJson, because a block carries whatever
-      // text the school typed.
+      // text the organization typed.
       const homepageBlocks = ${escapeJson(blocks)};
       const blocksHost = document.getElementById("homepage-blocks");
 
@@ -671,7 +671,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             const logs = Array.isArray(data.logs) ? data.logs : [];
             labAuditRows.replaceChildren();
             if (!logs.length) {
-              labAuditRows.appendChild(placeholder("Nothing recorded for this lab yet."));
+              labAuditRows.appendChild(placeholder("Nothing recorded for this organization yet."));
               return;
             }
             for (const entry of logs) {
@@ -688,7 +688,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               const removes = /suspend|reject|delete|remove|revoke|rotate/.test(entry.action);
               const grants = /approve|reactivate|create|add/.test(entry.action);
               badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
-              // textContent throughout: details carries teacher names, domains
+              // textContent throughout: details carries operator names, domains
               // and URLs that arrived from the console.
               badge.textContent = entry.action;
               action.appendChild(badge);

@@ -65,7 +65,7 @@ def handler_with(headers):
 class LoopbackBoundary(unittest.TestCase):
     """Who is allowed to reach the agent's API at all."""
 
-    def test_a_page_the_student_visited_is_refused(self):
+    def test_a_page_the_user_visited_is_refused(self):
         for origin in ("https://evil.example", "http://attacker.test:8080",
                        "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"):
             with self.subTest(origin=origin):
@@ -95,15 +95,75 @@ class WorkerUrls(unittest.TestCase):
                 self.assertFalse(agent.safe_navigable_url(url))
 
     def test_plain_http_is_refused_for_a_public_host(self):
-        self.assertFalse(agent.validate_worker_url("http://school.example"))
+        self.assertFalse(agent.validate_worker_url("http://organization.example"))
 
     def test_https_is_accepted(self):
-        self.assertTrue(agent.validate_worker_url("https://school.labkiosk.akbhoi.com"))
+        self.assertTrue(agent.validate_worker_url("https://organization.labkiosk.akbhoi.com"))
 
     def test_http_is_accepted_only_for_loopback_and_the_container_gateway(self):
         for url in ("http://127.0.0.1:8787", "http://host.docker.internal:8787"):
             with self.subTest(url=url):
                 self.assertTrue(agent.validate_worker_url(url))
+
+    def test_http_is_accepted_for_a_dev_server_on_a_private_address(self):
+        # `pnpm dev` on the host, reached from a Hyper-V/WSL VM or the LAN.
+        for url in ("http://172.31.64.1:8787/", "http://192.168.1.20:8787", "http://10.0.0.5:8787"):
+            with self.subTest(url=url):
+                self.assertEqual(agent.validate_worker_url(url), url.rstrip("/"))
+
+    def test_http_is_refused_for_public_link_local_and_lookalike_hosts(self):
+        for url in (
+            "http://8.8.8.8:8787",          # public address
+            "http://172.32.0.1:8787",       # just outside 172.16.0.0/12
+            "http://169.254.169.254",       # link-local (cloud metadata)
+            "http://0.0.0.0:8787",          # unspecified
+            "http://192.168.1.20.evil.com", # a hostname, not an address
+            "http://[fd00::1]:8787",        # IPv6 ULA: not a dev host on the control plane
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(agent.validate_worker_url(url))
+
+
+class CatalogKeysResolve(unittest.TestCase):
+    """Every string key the wizard and kiosk bar use must exist in the en-US catalog.
+
+    A key renamed in the markup but not in the catalog still shows its English
+    fallback, so nothing looks broken -- but every translation of it is silently
+    orphaned, in the image and on every workstation that downloaded one.
+    """
+
+    def test_every_referenced_key_is_in_the_catalog(self):
+        import json
+        import re
+        with open(os.path.join(CHROOT, "opt/labkiosk/i18n/en-US.json"), encoding="utf-8") as handle:
+            catalog = json.load(handle)
+        for rel in ("opt/labkiosk/setup/wizard.html", "opt/labkiosk/extension/content.js"):
+            with open(os.path.join(CHROOT, rel), encoding="utf-8") as handle:
+                source = handle.read()
+            keys = set(re.findall(r'data-i18n(?:-[a-z]+)?="([a-z][A-Za-z0-9_.-]*)"', source))
+            keys |= set(re.findall(r"""\bt\(\s*['"]([a-z][A-Za-z0-9_.-]*)['"]""", source))
+            with self.subTest(file=rel):
+                self.assertGreater(len(keys), 10)
+                self.assertEqual(sorted(k for k in keys if k not in catalog), [])
+
+
+class OrganizationNameFromEnrolment(unittest.TestCase):
+    """The Worker renamed schoolName to organizationName; both must be understood."""
+
+    def test_the_new_key_is_read(self):
+        self.assertEqual(agent.organization_name({"organizationName": "Acme"}, "acme"), "Acme")
+
+    def test_an_older_worker_still_names_the_organization(self):
+        self.assertEqual(agent.organization_name({"schoolName": "Greenwood"}, "greenwood"), "Greenwood")
+
+    def test_the_new_key_wins_when_both_are_sent(self):
+        reply = {"organizationName": "Acme Corp", "schoolName": "Acme Corp (old)"}
+        self.assertEqual(agent.organization_name(reply, "acme"), "Acme Corp")
+
+    def test_the_typed_address_is_the_last_resort(self):
+        for reply in ({}, {"organizationName": "  "}, None):
+            with self.subTest(reply=reply):
+                self.assertEqual(agent.organization_name(reply, "acme"), "acme")
 
 
 class InterfaceCatalogs(unittest.TestCase):
@@ -184,17 +244,53 @@ class LocaleSpellings(unittest.TestCase):
         self.assertEqual(localization.locale_key("sr_RS.UTF-8@latin"), "sr_RS.utf8@latin")
 
 
+class InterfaceLanguageTags(unittest.TestCase):
+    """The helper once rejected every tag, en-US included, and broke installs."""
+
+    GOOD = ("en-US", "en", "hi-IN", "zh-Hant-TW", "fil")
+    BAD = ("", "en_US", "e", "en-", "en-US\n", "../en", "en US")
+
+    def test_the_helper_accepts_the_tags_the_agent_offers(self):
+        for good in self.GOOD:
+            with self.subTest(tag=good):
+                self.assertIsNotNone(localization.UI_LANGUAGE_PATTERN.match(good))
+                self.assertIsNotNone(agent.UI_LANGUAGE_PATTERN.match(good))
+
+    def test_both_reject_malformed_tags_and_trailing_newlines(self):
+        for bad in self.BAD:
+            with self.subTest(tag=bad):
+                self.assertIsNone(localization.UI_LANGUAGE_PATTERN.match(bad))
+                self.assertIsNone(agent.UI_LANGUAGE_PATTERN.match(bad))
+
+    def test_the_two_patterns_are_the_same(self):
+        self.assertEqual(localization.UI_LANGUAGE_PATTERN.pattern, agent.UI_LANGUAGE_PATTERN.pattern)
+
+    def test_no_client_script_double_escapes_an_anchor(self):
+        # In a raw string, \\Z means a literal backslash followed by Z, so the
+        # pattern can never match. That is how en-US came to be refused.
+        scripts = [
+            "opt/labkiosk/agent/agent.py",
+            "usr/local/bin/labkiosk-install",
+            "usr/local/sbin/labkiosk-localization",
+        ]
+        for rel in scripts:
+            with self.subTest(script=rel):
+                with open(os.path.join(CHROOT, rel), encoding="utf-8") as handle:
+                    source = handle.read()
+                self.assertNotRegex(source, r"""r["'][^"'\n]*\\\\Z""")
+
+
 class TimeServers(unittest.TestCase):
     def test_a_shell_fragment_is_refused(self):
-        for bad in ("ntp.school.edu; rm -rf /", "ntp.school.edu\nNTP=evil", "a b c d e"):
+        for bad in ("ntp.example.com; rm -rf /", "ntp.example.com\nNTP=evil", "a b c d e"):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     localization.validate_ntp_servers(bad)
 
     def test_hosts_and_addresses_are_accepted(self):
         self.assertEqual(
-            localization.validate_ntp_servers("ntp.school.edu, 10.0.0.1"),
-            ["ntp.school.edu", "10.0.0.1"],
+            localization.validate_ntp_servers("ntp.example.com, 10.0.0.1"),
+            ["ntp.example.com", "10.0.0.1"],
         )
 
     def test_empty_means_the_default_pool(self):

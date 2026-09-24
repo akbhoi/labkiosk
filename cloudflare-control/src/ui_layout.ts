@@ -709,7 +709,7 @@ ${rootTokensCss()}
       gap: 8px;
       font-size: 14px;
     }
-    .breadcrumb-school { font-weight: 700; color: var(--text-main); }
+    .breadcrumb-organization { font-weight: 700; color: var(--text-main); }
     .breadcrumb-sep { color: var(--text-subtle); }
     .breadcrumb-page { color: var(--text-muted); font-weight: 500; }
     /* The console's own address. Passed in as brandSubtitle since the shell
@@ -897,7 +897,7 @@ ${rootTokensCss()}
     .kc-ip { font-family: 'JetBrains Mono', monospace; }
 
     /* Compact density. A 40-workstation lab is four rows of scrolling and 40
-       JPEG decodes every three seconds before a teacher finds PC-37; this is
+       JPEG decodes every three seconds before an operator finds PC-37; this is
        one line per machine and no thumbnails at all. */
     .kiosk-grid.compact { grid-template-columns: 1fr; gap: 8px; }
     .kiosk-grid.compact .kiosk-card {
@@ -1201,7 +1201,7 @@ ${rootTokensCss()}
       color: #fff;
     }
 
-    /* One editable block on the school homepage: title, body, optional link,
+    /* One editable block on the organization homepage: title, body, optional link,
        and the button that removes it. */
     .homepage-block-row {
       display: grid;
@@ -1295,7 +1295,7 @@ ${rootTokensCss()}
     /* The consoles used to speak through window.alert/confirm/prompt: 77
        native boxes that cannot be styled, that stop the 3-second telemetry
        poll dead while they are up, and that made the platform console feel
-       like a different product from the school one. These are the shell
+       like a different product from the organization one. These are the shell
        replacements, available on every page that uses this layout. */
     .lk-toast-stack {
       position: fixed;
@@ -1526,7 +1526,7 @@ ${rootTokensCss()}
           </button>
           <div class="canvas-breadcrumb">
             <div class="breadcrumb-trail">
-              <span class="breadcrumb-school">${escapeHtml(brandTitle)}</span>
+              <span class="breadcrumb-organization">${escapeHtml(brandTitle)}</span>
               <span class="breadcrumb-sep">/</span>
               <span class="breadcrumb-page">${escapeHtml(activeNavLabel)}</span>
             </div>
@@ -1574,7 +1574,7 @@ ${rootTokensCss()}
 
         var text = document.createElement("div");
         text.className = "lk-toast-text";
-        // textContent, never innerHTML: these carry school names, domains and
+        // textContent, never innerHTML: these carry organization names, domains and
         // error strings that came back from the server.
         text.textContent = String(message);
         toast.appendChild(text);

@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   salt TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('super_admin', 'school_admin')),
+  role TEXT NOT NULL CHECK (role IN ('super_admin', 'org_admin')),
   name TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   custom_domain TEXT UNIQUE,
   requested_custom_domain TEXT,
   custom_domain_status TEXT NOT NULL DEFAULT 'none',
-  default_lock_message TEXT NOT NULL DEFAULT 'Screens locked by the instructor. Please look to the front.',
+  default_lock_message TEXT NOT NULL DEFAULT 'This screen has been locked by an administrator. Please wait.',
   portal_title TEXT,
   portal_subtitle TEXT,
   portal_description TEXT,
@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS client_devices (
   vnc_password TEXT,
   remote_host TEXT,
   group_name TEXT,
+  broadcast_url TEXT,
+  broadcast_epoch INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -181,7 +183,7 @@ CREATE TABLE IF NOT EXISTS tenant_users (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role TEXT NOT NULL DEFAULT 'teacher' CHECK (role IN ('school_admin', 'sub_admin', 'teacher', 'lab_assistant', 'content_manager')),
+  role TEXT NOT NULL DEFAULT 'operator' CHECK (role IN ('org_admin', 'sub_admin', 'operator', 'assistant', 'content_manager')),
   permissions TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   UNIQUE (tenant_id, user_id)
@@ -196,7 +198,7 @@ CREATE TABLE IF NOT EXISTS workstation_groups (
 
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
-CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
 CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain_status ON tenants(custom_domain_status);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
@@ -215,7 +217,7 @@ CREATE INDEX IF NOT EXISTS idx_workstation_groups_tenant ON workstation_groups(t
 `;
 
 /**
- * Domains every new school starts with. Schools edit their own copy from the
+ * Domains every new organization starts with. Organizations edit their own copy from the
  * dashboard; nothing here is shared mutable state between tenants.
  */
 export const DEFAULT_WHITELIST_DOMAINS = [
@@ -335,6 +337,15 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT role FROM tenant_users LIMIT 1").run();
     await db.prepare("SELECT group_name FROM client_devices LIMIT 1").run();
     await db.prepare("SELECT name FROM workstation_groups LIMIT 1").run();
+    await db.prepare("SELECT broadcast_epoch FROM client_devices LIMIT 1").run();
+    // 0011 renamed the stored roles. A CHECK change is invisible to a column
+    // probe, so read the table definition itself.
+    const users = await db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+      .first<{ sql: string }>();
+    if (!users?.sql?.includes("'org_admin'")) {
+      throw new Error("users.role still uses the pre-0011 role names");
+    }
   } catch (err: any) {
     throw new Error(
       "The D1 database is missing the current schema. Run `wrangler d1 migrations apply labkiosk-db --remote` (or `--local` for `wrangler dev`) before starting the worker. " +
@@ -344,7 +355,7 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
 }
 
 /**
- * Ensures a default Demonstration School tenant exists for local dev and testing
+ * Ensures a default Demonstration Organization tenant exists for local dev and testing
  */
 export async function ensureDefaultTenant(
   db: D1Database,
@@ -364,7 +375,7 @@ export async function ensureDefaultTenant(
 
   const tenant = await createTenant(db, {
     userId: superAdminId,
-    name: "Demonstration High School",
+    name: "Demonstration Organization",
     subdomain: "demo",
     status: "active",
     mode: "portal",
@@ -389,12 +400,12 @@ export async function findUserById(db: D1Database, id: string): Promise<User | n
 
 export async function createUser(
   db: D1Database,
-  data: { email: string; password: string; name: string; role?: "super_admin" | "school_admin" }
+  data: { email: string; password: string; name: string; role?: "super_admin" | "org_admin" }
 ): Promise<User> {
   const { hashHex, saltHex } = await hashPassword(data.password);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  const role = data.role || "school_admin";
+  const role = data.role || "org_admin";
 
   await db
     .prepare(
@@ -475,7 +486,7 @@ export async function createTenant(
   const mode = data.mode || "portal";
   const defaultUrl = data.defaultUrl || "https://www.khanacademy.org";
   const defaultLockMessage =
-    data.defaultLockMessage || "Screens locked by the instructor. Please look to the front.";
+    data.defaultLockMessage || "This screen has been locked by an administrator. Please wait.";
   const enrollmentKey = generateEnrollmentKey();
 
   await db
@@ -502,7 +513,7 @@ export async function createTenant(
     )
     .run();
 
-  // Populate default educational portal cards and the school's own allowlist
+  // Populate default educational portal cards and the organization's own allowlist
   await seedDefaultPortalSites(db, id);
   await seedDefaultWhitelist(db, id);
 
@@ -632,15 +643,15 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "homepage_blocks"
 ]);
 
-/** How many blocks a school may publish, and how long each part may be. */
+/** How many blocks an organization may publish, and how long each part may be. */
 export const HOMEPAGE_LIMITS = { blocks: 12, title: 120, body: 600, intro: 400, headline: 120 } as const;
 
 /**
  * Parse the stored block list.
  *
  * Anything malformed reads as an empty list rather than throwing: this is
- * rendered on the page students land on, and a homepage with no notices is a
- * far better failure than a school whose site will not load.
+ * rendered on the page users land on, and a homepage with no notices is a
+ * far better failure than an organization whose site will not load.
  */
 export function parseHomepageBlocks(raw: unknown): HomepageBlock[] {
   if (typeof raw !== "string" || !raw.trim()) return [];
@@ -741,7 +752,7 @@ export async function requestCustomDomain(
   });
 }
 
-/** Approve and assign a custom domain to a school. */
+/** Approve and assign a custom domain to an organization. */
 export async function approveCustomDomain(
   db: D1Database,
   tenantId: string,
@@ -766,7 +777,7 @@ export async function rejectCustomDomain(db: D1Database, tenantId: string): Prom
   });
 }
 
-/** Remove an active custom domain from a school. */
+/** Remove an active custom domain from an organization. */
 export async function removeCustomDomain(db: D1Database, tenantId: string): Promise<void> {
   await updateTenant(db, tenantId, {
     custom_domain: null,
@@ -817,13 +828,13 @@ export async function createTenantUser(
       email,
       name: data.name.trim(),
       password: data.password || crypto.randomUUID().slice(0, 16) + "Aa1!",
-      role: "school_admin"
+      role: "org_admin"
     });
   }
 
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  const role: TenantUserRole = data.role || "teacher";
+  const role: TenantUserRole = data.role || "operator";
   const permissions = data.permissions || [];
   const permissionsJson = JSON.stringify(permissions);
 
@@ -876,7 +887,7 @@ export async function updateTenantUser(
     .run();
 }
 
-/** One staff row of this school by its own id, or null. */
+/** One staff row of this organization by its own id, or null. */
 export async function findTenantUserById(
   db: D1Database,
   tenantId: string,
@@ -940,7 +951,7 @@ export async function getTenantUserPermissions(
     .first<{ role?: string; permissions: string }>();
 
   if (!row) return [];
-  if (row.role === "school_admin") {
+  if (row.role === "org_admin") {
     return ["*"];
   }
   try {
@@ -1109,13 +1120,15 @@ export async function upsertClientDevice(
     vncPassword?: string;
     remoteHost?: string;
   }
-): Promise<void> {
+): Promise<{ broadcast_url: string | null; broadcast_epoch: number }> {
   const compositeId = `${data.tenantId}:${data.clientId}`;
   const now = Math.floor(Date.now() / 1000);
   const isLockedVal = data.isLocked ? 1 : 0;
   const clientNum = data.clientNum || 1;
 
-  await db
+  // RETURNING hands back this workstation's own broadcast in the same round trip,
+  // so the heartbeat that runs every 3 seconds costs no extra query.
+  const row = await db
     .prepare(
       `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, thumbnail, vnc_password, remote_host, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1128,7 +1141,8 @@ export async function upsertClientDevice(
          thumbnail = COALESCE(excluded.thumbnail, client_devices.thumbnail),
          vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
          remote_host = COALESCE(excluded.remote_host, client_devices.remote_host),
-         updated_at = excluded.updated_at`
+         updated_at = excluded.updated_at
+       RETURNING broadcast_url, broadcast_epoch`
     )
     .bind(
       compositeId,
@@ -1145,6 +1159,33 @@ export async function upsertClientDevice(
       now,
       now
     )
+    .first<{ broadcast_url: string | null; broadcast_epoch: number }>();
+
+  return {
+    broadcast_url: row?.broadcast_url ?? null,
+    broadcast_epoch: Number(row?.broadcast_epoch) || 0
+  };
+}
+
+/**
+ * Record a broadcast, or a reset to the portal (`url` null), for these
+ * workstations. The epoch orders it against the organization-wide broadcast: the
+ * heartbeat hands a workstation whichever of the two is newer.
+ */
+export async function setClientsBroadcast(
+  db: D1Database,
+  tenantId: string,
+  clientIds: string[],
+  url: string | null,
+  epoch: number
+): Promise<void> {
+  if (!clientIds.length) return;
+  const placeholders = clientIds.map(() => "?").join(",");
+  await db
+    .prepare(
+      `UPDATE client_devices SET broadcast_url = ?, broadcast_epoch = ? WHERE tenant_id = ? AND client_id IN (${placeholders})`
+    )
+    .bind(url, epoch, tenantId, ...clientIds)
     .run();
 }
 
@@ -1479,8 +1520,8 @@ export async function removeWhitelistDomain(
 }
 
 /**
- * The complete set of domains a workstation may reach: the school's own
- * allowlist plus the hostnames of every app card on its student portal, plus
+ * The complete set of domains a workstation may reach: the organization's own
+ * allowlist plus the hostnames of every app card on its user portal, plus
  * any configured single-site lockdown domain, plus custom broadcast shortcuts.
  */
 export async function buildEffectiveWhitelist(db: D1Database, tenantId: string): Promise<string[]> {
@@ -1521,7 +1562,7 @@ export async function buildEffectiveWhitelist(db: D1Database, tenantId: string):
  * Interface catalogs.
  *
  * Platform assets rather than tenant data: the wizard and the kiosk bar say the
- * same thing to every school, so there is no tenant_id to scope by and nothing
+ * same thing to every organization, so there is no tenant_id to scope by and nothing
  * tenant-specific may be stored here. Only a super admin writes them; every
  * workstation reads them, including before it is enrolled.
  */
@@ -1650,14 +1691,14 @@ export async function writeAuditLog(
  * The platform action history, for the super admin console.
  *
  * Two kinds of entry qualify, and both were unreadable before this: rows with
- * no tenant at all (a catalog upload is not any school's business, and
+ * no tenant at all (a catalog upload is not any organization's business, and
  * `listAuditLogs` filters `tenant_id = ?`, so nothing could ever list them),
- * and rows a super admin wrote against a school -- approving a subdomain,
+ * and rows a super admin wrote against an organization -- approving a subdomain,
  * suspending a lab.
  *
- * It deliberately cannot reach a school's own activity. Rule 2 keeps super
- * admins out of school data, so the second clause matches on who acted, never
- * on which school was acted upon.
+ * It deliberately cannot reach an organization's own activity. Rule 2 keeps super
+ * admins out of organization data, so the second clause matches on who acted, never
+ * on which organization was acted upon.
  */
 export async function listPlatformAuditLogs(db: D1Database, limit = 100): Promise<AuditLogEntry[]> {
   const res = await db
