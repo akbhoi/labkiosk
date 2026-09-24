@@ -29,7 +29,7 @@ OUT = ROOT / "config/includes.chroot/etc/chromium/policies/managed/policies.json
 # Kept in step with SETUP_URL in opt/labkiosk/agent/agent.py.
 SETUP_URL = "http://127.0.0.1:8888/setup"
 
-# Deliberately minimal. The school's real allowlist arrives with the first
+# Deliberately minimal. The organization's real allowlist arrives with the first
 # telemetry response. Broad entries such as workers.dev were removed: anyone can
 # deploy a proxy on a free *.workers.dev subdomain, which turned the filter into
 # a formality.

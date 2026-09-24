@@ -8,7 +8,7 @@
 # THIS IS THE ONLY SIMULATOR IMAGE. docker-compose.yml and
 # .github/workflows/docker-publish.yml both build this file. There used to be a
 # near-identical copy at docker-test/Dockerfile; it drifted (it lost alsa-utils,
-# so the teacher's "mute" command failed in that variant alone) and was removed.
+# so the operator's "mute" command failed in that variant alone) and was removed.
 # docker-test/ keeps the entrypoint and the documentation, not a second image.
 # ==============================================================================
 # ------------------------------------------------------------------------------
@@ -41,7 +41,7 @@ LABEL org.opencontainers.image.source="https://github.com/akbhoi/labkiosk" \
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Asia/Kolkata (IST) everywhere, so container logs and anything the browser
-# renders read in the same clock as the school running it. tzdata is already in
+# renders read in the same clock as the organization running it. tzdata is already in
 # the base image; only the link and the name have to be set, and TZ covers the
 # libraries that read the variable instead of /etc/localtime.
 ENV TZ=Asia/Kolkata
@@ -49,7 +49,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Set to 0 to build without the Noto fonts (~55 MB smaller). Latin text still
 # renders through fonts-liberation, but non-Latin scripts and emoji do not, so
-# leave it on for anything a school will look at:
+# leave it on for anything an organization will look at:
 #   docker build --build-arg WITH_INTL_FONTS=0 -t labkiosk:slim .
 ARG WITH_INTL_FONTS=1
 

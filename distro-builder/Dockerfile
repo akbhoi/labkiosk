@@ -23,7 +23,7 @@ LABEL org.opencontainers.image.source="https://github.com/akbhoi/labkiosk" \
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Asia/Kolkata (IST) everywhere, so container logs and anything the browser
-# renders read in the same clock as the school running it. tzdata is already in
+# renders read in the same clock as the organization running it. tzdata is already in
 # the base image; only the link and the name have to be set, and TZ covers the
 # libraries that read the variable instead of /etc/localtime.
 ENV TZ=Asia/Kolkata

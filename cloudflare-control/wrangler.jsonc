@@ -5,7 +5,7 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  // Multi-tenant routing: every school is a subdomain of the zone, and the
+  // Multi-tenant routing: every organization is a subdomain of the zone, and the
   // apex serves the public landing page and the /super console.
   // Replace `labkiosk.akbhoi.com` with your own zone before deploying, and make sure a
   // wildcard DNS record (CNAME *) points at the worker.
