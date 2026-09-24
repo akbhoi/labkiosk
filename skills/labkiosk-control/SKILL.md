@@ -1,6 +1,6 @@
 ---
 name: labkiosk-control
-description: Engineering, debugging, and verification procedures for the LabKiosk Cloudflare Workers Control Plane (Edge SaaS), Cloudflare D1 SQL database, native Web Crypto PBKDF2 authentication, multi-tenant authorization guards, nonce CSP, and automated unit/integration test suite. Use when modifying worker routes, database migrations, security guards, teacher dashboard UI, student portal, or super admin console.
+description: Engineering, debugging, and verification procedures for the LabKiosk Cloudflare Workers Control Plane (Edge SaaS), Cloudflare D1 SQL database, native Web Crypto PBKDF2 authentication, multi-tenant authorization guards, nonce CSP, and automated unit/integration test suite. Use when modifying worker routes, database migrations, security guards, admin console UI, user portal, or super admin console.
 ---
 
 # Lab Kiosk Cloudflare Control Plane Engineering Skill
@@ -18,7 +18,7 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
 2. **Mandatory Guarding:**
    - Every route that accesses tenant data MUST call `resolveTenant()` and `requireTenantAdmin()` from `src/guard.ts`,
      or `requireTenantPermission()` with the module's permission (`workstations`, `broadcast`, `portal`,
-     `whitelist`, `teachers`, `settings`). Anything that exposes staff emails needs `teachers`.
+     `whitelist`, `staff`, `settings`). Anything that exposes staff emails needs `staff`.
    - Every platform administrative route MUST call `requireSuperAdmin()`.
    - Device routes (`/api/telemetry`) MUST call `requireDevice()`.
    - Cookie-authenticated mutations (`POST`/`DELETE`) MUST pass `rejectCrossSiteMutation()`. A dev-host
@@ -26,9 +26,9 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
 3. **Staff Delegation Never Escalates:**
    - Validate roles against `STAFF_ROLES` and permissions against `STAFF_PERMISSIONS`; never store `*`.
    - Any route that creates, changes or removes staff calls `staffDelegationProblem()`: a non-co-admin
-     delegate grants only what they hold, never appoints a `school_admin`, and never edits their own
+     delegate grants only what they hold, never appoints an `org_admin`, and never edits their own
      account or a co-administrator's.
-   - Never link an existing account into a school (`409`), and end a removed account's sessions.
+   - Never link an existing account into an organization (`409`), and end a removed account's sessions.
 4. **Bound Every Batch:**
    - Cap id lists (`MAX_BATCH_TARGETS`, 500) and dedupe them. D1 binds at most 100 parameters per
      statement, so write `IN (...)` lists in `D1_IN_LIST_CHUNK` (90) slices.
@@ -53,7 +53,7 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
      (an escaped `\${...}` inside the template) is a runtime `ReferenceError`; the test suite rejects it.
    - URLs: Validate and sanitize via `safeHttpUrl()`.
 4. **Primary Rail & Multi-Level Layout Architecture:**
-   - Level 1 Rail (72px) has exactly 4 modules: Workstations, Apps & Web, Teachers & Staff, Lab Settings.
+   - Level 1 Rail (72px) has exactly 4 modules: Workstations, Apps & Web, Staff, Settings.
    - Level 2 Action Panel (272px) provides module-specific tools without duplicating navigation.
    - **Declared CSS Classes Only:** Every class rendered in markup MUST be declared in `ui_layout.ts` (e.g. `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`).
    - Use `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky `th` for long tables to prevent awkward vertical growth.
@@ -85,7 +85,7 @@ pnpm --prefix cloudflare-control test
 
 **Testing Mandatory Rule:** When adding any route, you MUST add corresponding negative tests (unauthenticated access, cross-tenant tampering, cross-site `Origin`, invalid input, and — for anything touching staff — a delegate trying to exceed their own permissions).
 
-On a production host a request naming a school it may not act on (`?tenant=`) is refused with
+On a production host a request naming an organization it may not act on (`?tenant=`) is refused with
 `403` before the route's own `401` runs, so an anonymous negative test asserts "refused" (`401` or
 `403`) rather than one exact status.
 

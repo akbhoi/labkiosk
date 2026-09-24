@@ -2,7 +2,7 @@
 
 `distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py` — a single-file Python 3 daemon, standard library only, that is the workstation's entire relationship with the control plane.
 
-It has three jobs: serve the local setup wizard, run the telemetry heartbeat, and execute teacher commands.
+It has three jobs: serve the local setup wizard, run the telemetry heartbeat, and execute operator commands.
 
 ---
 
@@ -79,7 +79,7 @@ Every three seconds, `post_telemetry()` sends the workstation's state and receiv
 
 **Failure handling.** A failed heartbeat backs off exponentially up to `MAX_BACKOFF_SECONDS` (60), so a lab that loses its uplink does not hammer the edge, and recovers promptly when the link returns.
 
-**Thumbnails.** Captured with `scrot -t 20 -q 35` — there is **no PIL/Pillow dependency**; the agent is standard library plus `scrot`. A frame whose base64 payload exceeds `MAX_THUMBNAIL_BYTES` (256 KB) is dropped rather than sent, so an oversized capture never costs the school's uplink or delays the loop. The heartbeat still lands; only that one frame is missing.
+**Thumbnails.** Captured with `scrot -t 20 -q 35` — there is **no PIL/Pillow dependency**; the agent is standard library plus `scrot`. A frame whose base64 payload exceeds `MAX_THUMBNAIL_BYTES` (256 KB) is dropped rather than sent, so an oversized capture never costs the organization's uplink or delays the loop. The heartbeat still lands; only that one frame is missing.
 
 ---
 
@@ -154,7 +154,7 @@ The agent runs as unprivileged user `kiosk`. NetworkManager commands succeed bec
 
 ## Chromium policy synchronisation
 
-`sync_chromium_policies(new_whitelist)` merges the school's effective allowlist into `/etc/chromium/policies/managed/policies.json`.
+`sync_chromium_policies(new_whitelist)` merges the organization's effective allowlist into `/etc/chromium/policies/managed/policies.json`.
 
 The static half of that policy is declared exactly once, in `/usr/share/labkiosk/chromium-policy-base.json`. Two consumers read it and **neither may carry its own copy of those keys**:
 
@@ -237,7 +237,9 @@ It also reports **`persistentStorage`**. That is false when `/etc/labkiosk` is n
 
 `enroll()` posts to `POST /api/devices/enroll` on the control plane and, on success, writes the config file, syncs the Chromium policy, and flags a browser restart. `validate_worker_url()` and `probe_worker_url()` check the target before anything is stored, so a typo in the subdomain fails loudly at the wizard instead of producing a workstation that silently never checks in.
 
-Re-enrolment is refused with `409` while a token is present. To move a workstation to another school, decommission it from the teacher dashboard (`POST /api/clients/remove`) and reboot — on live media the config is gone with the RAM overlay; on an installed disk, clear `/etc/labkiosk/config.json`.
+The server must be `https`. Plain `http` is accepted only for a local test server: `localhost`, a loopback address, the container gateways (`host.docker.internal`, `host.containers.internal`, `*.internal`, `*.local`), or a private IPv4 literal in `10.0.0.0/8`, `172.16.0.0/12` or `192.168.0.0/16` (the set the control plane treats as a dev host). That covers a test VM reaching `pnpm dev` on its host, e.g. `http://172.31.64.1:8787` over the Hyper-V Default Switch. Public, link-local (`169.254.x.x`) and IPv6 addresses, and any hostname, still need `https`, because the device token travels in every heartbeat.
+
+Re-enrolment is refused with `409` while a token is present. To move a workstation to another organization, decommission it from the admin console (`POST /api/clients/remove`) and reboot — on live media the config is gone with the RAM overlay; on an installed disk, clear `/etc/labkiosk/config.json`.
 
 ---
 

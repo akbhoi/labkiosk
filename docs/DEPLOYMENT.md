@@ -19,7 +19,7 @@ Before deploying to production, ensure you have:
 
 ## 1. Cloudflare D1 Database Provisioning
 
-The control plane requires Cloudflare D1 for durable multi-tenant persistence (schools, admin users, sessions, portal apps, client devices, audit logs, and command queues).
+The control plane requires Cloudflare D1 for durable multi-tenant persistence (organizations, admin users, sessions, portal apps, client devices, audit logs, and command queues).
 
 ### Step 1: Create the Remote Database
 
@@ -65,6 +65,28 @@ npx wrangler d1 migrations apply labkiosk-db --remote
 > [!IMPORTANT]
 > **Rule 7 (Fail Closed):** The worker refuses to serve a bound database whose migrations have not been applied (`assertSchemaCurrent()`). A deployed worker never creates tables dynamically at runtime, ensuring strict schema migration tracking.
 
+### Upgrading an existing deployment
+
+Pending migrations are applied the same way. Two of them change existing data:
+
+- **`0010_workstation_broadcast.sql`** adds per-workstation broadcast state. Deploy the Worker in the
+  same release: the new Worker reads these columns on every heartbeat.
+- **`0011_organization_vocabulary.sql`** renames the stored roles (`school_admin` → `org_admin`,
+  `teacher` → `operator`, `lab_assistant` → `assistant`) and the staff permission (`teachers` →
+  `staff`) by rebuilding every table that references `users`. It is written to be cascade-safe and
+  is applied as one unit, but it rewrites your core tables, so **export the database first**:
+
+```bash
+npx wrangler d1 export labkiosk-db --remote --output labkiosk-backup.sql
+npx wrangler d1 migrations apply labkiosk-db --remote
+npx wrangler deploy
+```
+
+D1 Time Travel is a second safety net (`wrangler d1 time-travel restore labkiosk-db --timestamp=<before>`).
+Admin sessions survive the migration; anyone with a console tab open should reload it. Workstations
+installed from an older ISO keep working: the Worker still sends `schoolName` alongside
+`organizationName`.
+
 ---
 
 ## 2. Secrets & Administrative Authentication
@@ -105,7 +127,7 @@ Configure production variables in the **Cloudflare Dashboard**:
 
 ## 4. Wildcard DNS & Route Configuration
 
-Every registered school receives its own isolated subdomain (e.g. `greenwood.labkiosk.yourdomain.com`).
+Every registered organization receives its own isolated subdomain (e.g. `greenwood.labkiosk.yourdomain.com`).
 
 ### 1. Update Routes in `wrangler.jsonc`
 
@@ -124,7 +146,7 @@ In your Cloudflare Dashboard under your domain's **DNS Records**:
 
 1. **Apex / Host Record:** Add a `CNAME` or `A` record for `labkiosk.yourdomain.com` pointing to the Worker (Proxied: Orange Cloud).
 2. **Wildcard Subdomain Record:** Add a `CNAME` record with Name `*` or `*.labkiosk` targeting `labkiosk.yourdomain.com` (Proxied: Orange Cloud).
-3. **Custom Domain Support:** When schools request custom domains (e.g. `kiosk.institution.edu`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
+3. **Custom Domain Support:** When organizations request custom domains (e.g. `kiosk.example.com`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
 
 ---
 
@@ -192,20 +214,20 @@ On every push to `main` modifying `cloudflare-control/**`:
 
 ---
 
-## 8. School Lab Network & Firewall Deployment Requirements
+## 8. Workstation fleet Network & Firewall Deployment Requirements
 
 For workstations running Lab Kiosk OS to communicate reliably with the Cloudflare control plane:
 
 ### Outbound Firewall Rules (Egress)
 
-School firewalls should permit outbound connections for the following ports and hosts:
+Organization firewalls should permit outbound connections for the following ports and hosts:
 
-- **HTTPS (`TCP 443`):** To `<school>.labkiosk.yourdomain.com` (telemetry, enrollment, and web lessons).
-- **DNS (`UDP/TCP 53`):** To school DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
+- **HTTPS (`TCP 443`):** To `<organization>.labkiosk.yourdomain.com` (telemetry, enrollment, and web pages).
+- **DNS (`UDP/TCP 53`):** To organization DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
 - **Cloudflare Tunnel (`TCP 7844` / `UDP 7844` QUIC):** Optional, required only if remote desktop assistance via `cloudflared` is deployed.
 
 ### Network Addressing & Proxy Architecture
 
 - **Ethernet & Wi-Fi:** Workstations support standard DHCP (IPv4 & IPv6), Custom DNS overrides (`ignore-auto-dns yes`), or fixed Static IPs configured via the setup wizard.
-- **HTTP / HTTPS Proxy:** School districts operating transparent or explicit proxy servers (e.g. Squid, Lightspeed, Smoothwall, Fortinet) can specify the proxy host and port during setup. Settings are stored in `/etc/labkiosk/proxy.json` (persisted on the data partition), applied to the agent's own requests, and enforced in Chromium managed policy (`ProxySettings` with `ProxyMode: "fixed_servers"`). Loopback is always exempt.
+- **HTTP / HTTPS Proxy:** Organization districts operating transparent or explicit proxy servers (e.g. Squid, Lightspeed, Smoothwall, Fortinet) can specify the proxy host and port during setup. Settings are stored in `/etc/labkiosk/proxy.json` (persisted on the data partition), applied to the agent's own requests, and enforced in Chromium managed policy (`ProxySettings` with `ProxyMode: "fixed_servers"`). Loopback is always exempt.
 - **Persistence:** All network configurations and Wi-Fi credentials are saved to the persistent `LABKIOSK_DATA` partition and bind-mounted on boot, surviving `overlayroot="tmpfs"` reboots.

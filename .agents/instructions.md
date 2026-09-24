@@ -27,11 +27,11 @@ The repository is partitioned into two independent subsystems plus a workstation
 
 2. **Cloudflare SaaS Control Plane (`cloudflare-control/`)**:
    - Cloudflare Workers edge control plane (`src/index.ts`).
-   - Cloudflare D1 SQL database with numbered migrations (`migrations/0001..0009`) mirrored in `SCHEMA_SQL`.
+   - Cloudflare D1 SQL database with numbered migrations (`migrations/0001..0011`) mirrored in `SCHEMA_SQL`.
    - Pure Web Crypto `PBKDF2-HMAC-SHA256` authentication (0 runtime npm dependencies).
    - Strict multi-tenant authorization guards (`src/guard.ts`).
    - Nonce-based Content Security Policy (CSP) and output escaping (`src/escape.ts`).
-   - School console: 4-module rail (Workstations, Apps & Web, Teachers & Staff, Lab Settings), one `ui_admin_<page>.ts` per page, design tokens declared once in `ui_tokens.ts`.
+   - Organization console: 4-module rail (Workstations, Apps & Web, Staff, Settings), one `ui_admin_<page>.ts` per page, design tokens declared once in `ui_tokens.ts`.
    - Detailed specification: [`cloudflare-control/AGENTS.md`](../cloudflare-control/AGENTS.md)
    - Specialized skill: [`skills/labkiosk-control/SKILL.md`](../skills/labkiosk-control/SKILL.md)
 
@@ -51,7 +51,7 @@ The repository is partitioned into two independent subsystems plus a workstation
 
 - **100% RAM Overlay**: all runtime writes divert to RAM `tmpfs`; the root filesystem stays read-only.
 - **Unattended Boot**: a workstation must boot straight into the kiosk. Never add a password prompt to the normal boot path (`--unrestricted` stays unconditional).
-- **Top-Level Navigation Only**: never embed external educational web apps in `<iframe>` tags.
+- **Top-Level Navigation Only**: never embed external approved web apps in `<iframe>` tags.
 - **Loopback Only**: the agent binds `127.0.0.1`; mutating endpoints accept only loopback origins and the extension's pinned origin.
 - **Anchor validation regexes with `\Z`**, never `$` (which also matches before a trailing newline).
 - **Chromium policy is generated**: edit `usr/share/labkiosk/chromium-policy-base.json`, never the generated `policies.json`.
@@ -64,6 +64,8 @@ The repository is partitioned into two independent subsystems plus a workstation
 - **Staff delegation never escalates**: roles and permissions are validated against fixed lists, `*` is never stored, and staff routes go through `staffDelegationProblem()`.
 - **Bounded batches**: id lists are capped at 500 and chunked under D1's 100-parameter limit.
 - **The Schema Has Two Homes**: a new file in `migrations/` AND the mirror in `SCHEMA_SQL` (`src/db.ts`).
+- **Cascade-safe rebuilds**: a CHECK change on `users`/`tenants` follows `0011_organization_vocabulary.sql` (hold, drop leaves-first, recreate, copy back); a plain `DROP TABLE` cascade-deletes every organization.
+- **Organization vocabulary**: organization, operator/staff, user, User Portal — never school, teacher, student or lesson (tested). License statements must match `LICENSE`: free only for accredited educational institutions up to 45 computers.
 - **Escape Everything**: server-side via `escapeHtml()`/`escapeJson()`; client-side build DOM nodes with `textContent` (`escapeHtml`/`escapeAttr` do not exist in the browser); URLs pass `safeHttpUrl()`.
 - **Nonce CSP, Zero Inline Event Handlers**: every `<script>` carries the response nonce; use `data-action` attributes and delegated listeners.
 - **Client API calls go through `labkioskApi(path)`**, never a bare `fetch("/api/...")`.

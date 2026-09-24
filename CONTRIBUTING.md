@@ -1,6 +1,6 @@
 # Contributing to Lab Kiosk
 
-Thank you for your interest in contributing to **Lab Kiosk**! Whether you are a teacher, developer, systems engineer, or AI agent, your help makes digital education more accessible, secure, and cost-effective for schools globally.
+Thank you for your interest in contributing to **Lab Kiosk**! Whether you are an operator, developer, systems engineer, or AI agent, your help makes digital education more accessible, secure, and cost-effective for organizations globally.
 
 ---
 
@@ -62,7 +62,7 @@ docker compose up -d
 ```
 Open `http://localhost:6080/vnc.html` (VNC password `labkiosk`) to see the workstation screen. It
 boots into the first-boot setup wizard; enrol it the way a real workstation is enrolled, with the
-school subdomain, a workstation name, and the school's **enrollment key** from the teacher dashboard
+organization subdomain, a workstation name, and the organization's **enrollment key** from the admin console
 under **Settings -> Workstation Enrollment Key**.
 
 The agent's API binds to `127.0.0.1` inside the container, exactly as on a real workstation, so drive
@@ -87,7 +87,7 @@ Here is the quick summary of non-negotiable standards:
    - Do not pull in heavy third-party routing or auth frameworks; maintain cold-start times under 10ms.
 
 2. **Authorization Is Not Optional:**
-   - Every route that reads or changes a school's data calls `requireTenantAdmin()` from `src/guard.ts`.
+   - Every route that reads or changes an organization's data calls `requireTenantAdmin()` from `src/guard.ts`.
      Platform routes call `requireSuperAdmin()`; `/api/telemetry` calls `requireDevice()`.
    - Never resolve a tenant by hand. Call `resolveTenant()`: the `Host` header is authoritative, and a
      `?tenant=` override is honoured only for local dev, a super admin, a session that already owns
@@ -97,7 +97,7 @@ Here is the quick summary of non-negotiable standards:
      allowed this project to ship with no authorization at all.
 
 3. **Escape Everything Rendered:**
-   - School names, admin emails and portal card titles are attacker-controlled — they arrive through
+   - Organization names, admin emails and portal card titles are attacker-controlled — they arrive through
      public registration. Server-side, interpolate through `escapeHtml()` / `escapeJson()` from
      `src/escape.ts`; `escapeJson()` is required inside a `<script>` block.
    - Client-side, build DOM nodes and set `textContent`. No `innerHTML` concatenation, no values in
@@ -107,7 +107,7 @@ Here is the quick summary of non-negotiable standards:
      and no template uses an inline event handler attribute (`onclick=`, `onsubmit=`, ...). Use
      `data-action` attributes with one delegated listener, as the landing page and super console do.
      A test renders every page and fails on a script without the nonce or on any `on*=` attribute.
-   - Per-isolate memory is a cache, never the source of truth. State a workstation or a teacher
+   - Per-isolate memory is a cache, never the source of truth. State a workstation or an operator
      must agree on (the active broadcast, device details) lives in D1.
 
 4. **Fail Closed:**
@@ -125,7 +125,7 @@ Here is the quick summary of non-negotiable standards:
 
 6. **Multi-Tenant Scoping:**
    - Every database query touching devices, portal apps, or sessions must be explicitly scoped by `tenant_id`.
-   - Never leak telemetry or settings across school boundaries.
+   - Never leak telemetry or settings across organization boundaries.
    - The in-memory telemetry cache is a cache; `client_devices` in D1 is the source of truth.
 
 7. **Zero-Margin Floating Viewport:**
@@ -133,7 +133,7 @@ Here is the quick summary of non-negotiable standards:
    - Navigation controls must remain auto-hiding and dismiss completely when the screen is locked.
    - The content script talks to the agent only through the MV3 service worker (`background.js`).
      Moving that `fetch` into the content script would force the agent to send
-     `Access-Control-Allow-Origin: *` to every site a student visits.
+     `Access-Control-Allow-Origin: *` to every site a user visits.
 
 8. **Dynamic Workstation Collection:**
    - Never hardcode fixed workstation arrays or limits (e.g. 40 PCs).
@@ -149,7 +149,7 @@ Here is the quick summary of non-negotiable standards:
 ## 🔐 Reporting a Security Issue
 
 Do **not** open a public issue for a vulnerability. Follow the private disclosure process in
-[SECURITY.md](SECURITY.md). This project runs in classrooms and handles live images of students'
+[SECURITY.md](SECURITY.md). This project runs in rooms and handles live images of users'
 screens, so we would rather hear about a suspected problem early than late.
 
 ## 🔄 Pull Request Guidelines
@@ -177,5 +177,5 @@ screens, so we would rather hear about a suspected problem early than late.
      (`docker exec labkiosk-client-01 pkill -f -- --user-data-dir=/tmp/chromium-profile`; the watchdog
      relaunches it within a second).
    - **Attach the screenshot, not the log line.** The agent logging a command as executed says nothing
-     about what the student saw; a broken lock curtain looked perfectly healthy in the logs for an
+     about what the user saw; a broken lock curtain looked perfectly healthy in the logs for an
      entire debugging session.

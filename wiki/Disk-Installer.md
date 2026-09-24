@@ -35,7 +35,7 @@ The installer writes a **hybrid GPT** layout so one disk image boots on legacy B
 `LABKIOSK_DATA` is the single deliberate exception. It holds:
 
 1. `/etc/labkiosk/config.json` — device bearer token, client ID, and worker URL.
-2. `/etc/labkiosk/proxy.json` — institutional proxy settings.
+2. `/etc/labkiosk/proxy.json` — organization proxy settings.
 3. `/etc/labkiosk/system-connections/` — NetworkManager connection profiles, bind-mounted to `/etc/NetworkManager/system-connections` on boot.
 
 Everything else on an installed machine, `/etc/machine-id` and browser cache included, is regenerated or reset on every boot.

@@ -19,9 +19,9 @@ There is no default super admin in a production path. Changing `SUPER_ADMIN_EMAI
 
 | Variable | Example | Purpose |
 | :--- | :--- | :--- |
-| `DEFAULT_DOMAIN` | `labkiosk.yourdomain.com` | Platform apex. Only a host *under* this is treated as a school subdomain. |
+| `DEFAULT_DOMAIN` | `labkiosk.yourdomain.com` | Platform apex. Only a host *under* this is treated as an organization subdomain. |
 | `ISO_DOWNLOAD_URL` | a GitHub Releases asset URL | Target of `/download` and `/iso` |
-| `TUNNEL_DOMAIN` | `labkiosk.yourdomain.com` | Base domain for remote-assistance tunnels. Defaults to `lab.myschool.edu`. |
+| `TUNNEL_DOMAIN` | `labkiosk.yourdomain.com` | Base domain for remote-assistance tunnels. Defaults to `lab.example.com`. |
 | `DEFAULT_HOMEPAGE` | `https://labkiosk.yourdomain.com` | Fallback for non-enrolled clients |
 | `ALLOW_LOCAL_DB` | `1` | **Tests and local dev only.** Permits the in-memory database when no D1 binding exists. |
 
@@ -43,7 +43,7 @@ There is no default super admin in a production path. Changing `SUPER_ADMIN_EMAI
 }
 ```
 
-Both routes are needed: the apex for the landing page and `/super`, the wildcard for every school.
+Both routes are needed: the apex for the landing page and `/super`, the wildcard for every organization.
 
 ### `.dev.vars` — local only
 
@@ -62,7 +62,7 @@ Copied from `.dev.vars.example`. Not read in production, and not committed.
 www  super  labkiosk  api  admin  portal  status  mail  app  kiosk  root
 ```
 
-These can be neither registered nor resolved as a school. Add to the set **before** you start using a hostname for platform purposes, not after.
+These can be neither registered nor resolved as an organization. Add to the set **before** you start using a hostname for platform purposes, not after.
 
 ### Recognised development hosts
 
@@ -72,9 +72,9 @@ On these hosts only, `?tenant=` and `X-Tenant` override the `Host` header.
 
 ---
 
-## Per-school settings
+## Per-organization settings
 
-Configured by a teacher admin in the dashboard; stored on the `tenants` row.
+Configured by an organization admin in the dashboard; stored on the `tenants` row.
 
 | Setting | Column | Notes |
 | :--- | :--- | :--- |
@@ -82,7 +82,7 @@ Configured by a teacher admin in the dashboard; stored on the `tenants` row.
 | Single-site URL | `default_url` | Used in `single_url` mode |
 | Enrollment key | `enrollment_key` | **Empty by default** — generate one before enrolling anything |
 | Default lock message | `default_lock_message` | Used when a lock command carries no message |
-| Portal title / subtitle / description / footer | `portal_*` | Student Portal copy |
+| Portal title / subtitle / description / footer | `portal_*` | User Portal copy |
 | Custom domain | `custom_domain` | Requires super-admin approval; unique across the platform |
 | Allowlist | `tenant_whitelist` rows | Unioned with every portal app's host |
 | Broadcast presets | `broadcast_presets` rows | One-click shortcuts |
@@ -112,9 +112,9 @@ Written at enrolment. On live media it lives in the RAM overlay and is lost at p
 ```json
 {
   "enabled": true,
-  "host": "proxy.school.internal",
+  "host": "proxy.organization.internal",
   "port": 8080,
-  "bypass": "localhost, 127.0.0.1, *.school.internal"
+  "bypass": "localhost, 127.0.0.1, *.organization.internal"
 }
 ```
 
@@ -228,7 +228,7 @@ Changing this defeats the project's core guarantee. Do not.
 tunnel: <TUNNEL_UUID>
 credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
 ingress:
-  - hostname: pc-01.labkiosk.institution.edu
+  - hostname: pc-01.labkiosk.example.com
     service: http://127.0.0.1:6080
   - service: http_status:404
 ```

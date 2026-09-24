@@ -8,11 +8,11 @@ What Lab Kiosk defends, how, and what it explicitly does not defend. A security 
 
 | Adversary | Goal | Primary defence |
 | :--- | :--- | :--- |
-| **A curious student at the keyboard** | Escape the kiosk into a shell or an unapproved site | Layered lockdown → [Kiosk Hardening](Kiosk-Hardening) |
-| **A hostile website the student visits** | Reach the local agent, remove the nav bar, or evade the lock curtain | Extension architecture, closed Shadow DOM, loopback origin checks |
-| **Another school's administrator** | Read or control this school's fleet | Tenant scoping on every query and every route |
+| **A curious user at the keyboard** | Escape the kiosk into a shell or an unapproved site | Layered lockdown → [Kiosk Hardening](Kiosk-Hardening) |
+| **A hostile website the user visits** | Reach the local agent, remove the nav bar, or evade the lock curtain | Extension architecture, closed Shadow DOM, loopback origin checks |
+| **Another organization's administrator** | Read or control this organization's fleet | Tenant scoping on every query and every route |
 | **An unauthenticated internet caller** | Post telemetry, drain a command queue, read an allowlist | Device bearer tokens, guards on every route |
-| **A cross-site attacker** | Make a signed-in teacher's browser act on their behalf | Origin guard on cookie-authenticated mutations |
+| **A cross-site attacker** | Make a signed-in operator's browser act on their behalf | Origin guard on cookie-authenticated mutations |
 | **Someone with physical access to a workstation** | Boot something else, or edit the kernel command line | Boot-menu password, firmware password. → [limits](#what-is-not-defended) |
 
 ---
@@ -44,8 +44,8 @@ Two rules, both asserted by the test suite:
 
 | Guard | Enforces |
 | :--- | :--- |
-| `resolveTenant()` | The school comes from the `Host` header, authoritatively |
-| `requireTenantAdmin()` | The session owns *this* tenant — `401` anonymous, `403` wrong school |
+| `resolveTenant()` | The organization comes from the `Host` header, authoritatively |
+| `requireTenantAdmin()` | The session owns *this* tenant — `401` anonymous, `403` wrong organization |
 | `requireSuperAdmin()` | Platform-level routes |
 | `requireDevice()` | A valid, unrevoked device token |
 | `rejectCrossSiteMutation()` | Cookie-authenticated `POST`/`DELETE` prove their origin |
@@ -58,11 +58,11 @@ Two rules, both asserted by the test suite:
 
 A workstation's identity comes from its bearer token and nothing else. `/api/telemetry` **ignores any `clientId` or tenant the payload claims**.
 
-Tokens are issued by exchanging the school's enrollment key, stored only as SHA-256 hashes, and revoked instantly by decommissioning. Before device tokens existed (migration 0002), anyone who guessed a subdomain could post screenshots and drain that school's command queue.
+Tokens are issued by exchanging the organization's enrollment key, stored only as SHA-256 hashes, and revoked instantly by decommissioning. Before device tokens existed (migration 0002), anyone who guessed a subdomain could post screenshots and drain that organization's command queue.
 
 ### Output escaping
 
-Tenant data is attacker-controlled from the platform's perspective: school names, admin emails, portal card titles, and URLs all arrive through registration or the teacher console.
+Tenant data is attacker-controlled from the platform's perspective: organization names, admin emails, portal card titles, and URLs all arrive through registration or the admin console.
 
 | Context | Required |
 | :--- | :--- |
@@ -128,7 +128,7 @@ Missing configuration is an error, never a reason to fall back to something weak
 
 The agent binds **only** to `127.0.0.1:8888` and every request must satisfy both a loopback `Host` check and a loopback `Origin` check. The single exception is the kiosk extension's own origin (`chrome-extension://hfjmbeplebjipenkfabncgkpadnjmmoe`, pinned by the `key` in `manifest.json`): Chromium attaches it to the service worker's `POST` to `/api/admin/verify`. A web page cannot set `Origin`, and no other extension can hold that id.
 
-The extension's service worker owns the `host_permissions` grant for that origin, so `content.js` never fetches the agent directly. This is why the agent can refuse cross-origin callers outright — it used to answer `Access-Control-Allow-Origin: *`, which meant **any site a student visited could talk to it**.
+The extension's service worker owns the `host_permissions` grant for that origin, so `content.js` never fetches the agent directly. This is why the agent can refuse cross-origin callers outright — it used to answer `Access-Control-Allow-Origin: *`, which meant **any site a user visited could talk to it**.
 
 Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate their inputs inside the agent *and* inside the installer, because the sudoers rule lets `kiosk` invoke the installer directly. The agent is not a trust boundary.
 
@@ -142,11 +142,11 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 
 **A compromised control plane.** The client trusts its control plane by design. `safe_navigable_url()` restricts navigation to `http(s)`, so a hostile response cannot inject `javascript:` or `file:` — but a compromised control plane can point a lab at anything the allowlist permits.
 
-**An unprotected tunnel.** `websockify` serves the full noVNC UI on the tunnel hostname. Without a Cloudflare Access policy, an 8-character RFB secret — about 32 bits, capped by the RFB protocol — is all that stands between the internet and a live classroom desktop. → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
+**An unprotected tunnel.** `websockify` serves the full noVNC UI on the tunnel hostname. Without a Cloudflare Access policy, an 8-character RFB secret — about 32 bits, capped by the RFB protocol — is all that stands between the internet and a live room desktop. → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
 
-**Screen content in transit and at rest.** Thumbnails are base64 JPEGs stored in D1 and served to authenticated teachers over HTTPS. They are not end-to-end encrypted. Anyone with database access can see the latest frame from every workstation.
+**Screen content in transit and at rest.** Thumbnails are base64 JPEGs stored in D1 and served to authenticated operators over HTTPS. They are not end-to-end encrypted. Anyone with database access can see the latest frame from every workstation.
 
-**A malicious teacher.** A school admin can broadcast anything, read every screen, and take remote control. That is the product working as intended; the audit log records it, it does not prevent it.
+**A malicious operator.** An organization admin can broadcast anything, read every screen, and take remote control. That is the product working as intended; the audit log records it, it does not prevent it.
 
 ### Deliberate choices that look like gaps
 
@@ -154,7 +154,7 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 | :--- | :--- |
 | `kiosk` has an **empty**, not locked, password | A locked account deadlocked nodm's PAM stack into a black screen. No login path exists to use it — every getty is masked and no SSH server is installed. |
 | No blanket `ExtensionInstallBlocklist` | It makes Chromium refuse `--load-extension` entirely, silently removing the kiosk's own nav bar and lock curtain. |
-| Camera and microphone are **not** blocked | Language labs and video lessons need them. |
+| Camera and microphone are **not** blocked | Language labs and video pages need them. |
 | `grub.pin` is empty in the repository | A committed hash is one password shared by every customer, unrotatable and permanent in git history. |
 | `--unrestricted` on every GRUB entry, unconditionally | Otherwise an installed disk gets `set superusers` with no unrestricted entry, and every workstation stops at a password prompt on every boot. |
 
@@ -167,7 +167,7 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 Particularly wanted:
 
 - **Kiosk breakout** — escaping the locked Chromium session into a shell or the Openbox desktop.
-- **Tenant isolation bypass** — reading or writing across school boundaries in D1 or the telemetry cache.
+- **Tenant isolation bypass** — reading or writing across organization boundaries in D1 or the telemetry cache.
 - **Authentication bypass** — flaws in the PBKDF2 implementation, session token generation, or cookie handling.
 - **Remote code execution** in `agent.py` or its loopback API.
 - **Device impersonation** — posting telemetry, draining a command queue, or reading an allowlist without a token issued through enrolment.
@@ -177,12 +177,12 @@ Particularly wanted:
 
 ---
 
-## Hardening recommendations for schools
+## Hardening recommendations for organizations
 
 1. **Firmware password** on every workstation, with USB and network booting disabled.
 2. **Boot-menu password** set at install time, unique per site.
 3. **Cloudflare Access** in front of every tunnel hostname, before the first tunnel goes live.
-4. **Student VLAN** isolated from administrative networks.
+4. **User VLAN** isolated from administrative networks.
 5. **Rotate the enrollment key** when it has been shared outside IT staff, and when a technician leaves.
 6. **Review the audit log** periodically — it records every command and settings change with the acting user.
 7. **Decommission promptly.** A retired workstation with a live token is a valid telemetry source until it is revoked.

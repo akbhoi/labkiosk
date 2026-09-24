@@ -81,7 +81,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=tag
-            # A release tag also publishes 1.4.2, 1.4 and 1, so a school can pin
+            # A release tag also publishes 1.4.2, 1.4 and 1, so an organization can pin
             # a line that receives fixes instead of following :latest.
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

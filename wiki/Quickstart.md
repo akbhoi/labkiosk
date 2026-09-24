@@ -1,6 +1,6 @@
 # Quickstart
 
-Run the whole platform — control plane and a simulated student workstation — on one machine in about five minutes. No thin clients, no Cloudflare account, no ISO build.
+Run the whole platform — control plane and a simulated user workstation — on one machine in about five minutes. No thin clients, no Cloudflare account, no ISO build.
 
 ## Prerequisites
 
@@ -41,21 +41,21 @@ The platform is now on `http://localhost:8787`:
 | Surface | URL |
 | :--- | :--- |
 | Public landing page | `http://localhost:8787/` |
-| Student Learning Portal | `http://localhost:8787/?tenant=demo` |
-| Teacher Lab Dashboard | `http://localhost:8787/admin?tenant=demo` |
+| User Portal | `http://localhost:8787/?tenant=demo` |
+| Operator Lab Dashboard | `http://localhost:8787/admin?tenant=demo` |
 | Super Admin console | `http://localhost:8787/super` |
 
 The `?tenant=` override works here only because `localhost` is a recognised development host. In production the `Host` header is the sole authority — see [Architecture Overview](Architecture-Overview#tenant-resolution).
 
 ---
 
-## 2. Create a school
+## 2. Create an organization
 
-1. Open `http://localhost:8787/` and register a school. Pick subdomain `demo` so the URLs above resolve.
+1. Open `http://localhost:8787/` and register an organization. Pick subdomain `demo` so the URLs above resolve.
 2. Sign in to `http://localhost:8787/super` with the credentials from `.dev.vars`.
-3. **Approve** the pending registration. A school stays `pending` — and its workstations cannot enrol — until a super admin approves it.
-4. Sign in to the Teacher Lab Dashboard at `http://localhost:8787/admin?tenant=demo`.
-5. Go to **Settings → Workstation Enrollment Key** and generate one. Schools start with an empty key, and an empty key authenticates nothing.
+3. **Approve** the pending registration. An organization stays `pending` — and its workstations cannot enrol — until a super admin approves it.
+4. Sign in to the Operator Lab Dashboard at `http://localhost:8787/admin?tenant=demo`.
+5. Go to **Settings → Workstation Enrollment Key** and generate one. Organizations start with an empty key, and an empty key authenticates nothing.
 
 ---
 
@@ -91,32 +91,32 @@ In the noVNC window — not your host browser; the agent's API is loopback-only 
 
 | Field | Value |
 | :--- | :--- |
-| School subdomain | `demo` |
+| Organization subdomain | `demo` |
 | Workstation identifier | `PC-01` |
 | Enrollment key | the key from step 2 |
 
 Click **Connect & Register Workstation**. Under the hood:
 
 1. The agent posts to `http://host.docker.internal:8787/api/devices/enroll`.
-2. The worker validates the key and returns a persistent device bearer token plus the school's portal URL.
+2. The worker validates the key and returns a persistent device bearer token plus the organization's portal URL.
 3. The agent writes `/etc/labkiosk/config.json` (mode `0600`) with the token, the worker URL, and the target URL.
-4. The agent writes the school's allowlist into `/etc/chromium/policies/managed/policies.json`.
+4. The agent writes the organization's allowlist into `/etc/chromium/policies/managed/policies.json`.
 5. Because Chromium reads managed policy only at startup, the agent sets `pendingBrowserRestart` and the watchdog relaunches the browser once — otherwise the freshly enrolled kiosk would sit on a "This page is blocked" screen.
 
-Within three seconds `PC-01` appears on the Teacher Dashboard with a live thumbnail.
+Within three seconds `PC-01` appears on the Admin console with a live thumbnail.
 
 ---
 
-## 5. Try the teacher controls
+## 5. Try the operator controls
 
 From `http://localhost:8787/admin?tenant=demo`:
 
 - **Lock all screens** — a full-screen curtain appears in the simulator with your message.
 - **Broadcast a URL** — every workstation navigates there at once and stays there.
 - **Reset to portal** — clears the broadcast and returns the lab to the launcher.
-- **Add a portal app** — the card shows up on the student portal, and its host is added to the effective allowlist automatically.
+- **Add a portal app** — the card shows up on the user portal, and its host is added to the effective allowlist automatically.
 
-→ [Teacher Dashboard Guide](Teacher-Dashboard-Guide) for what each control actually does.
+→ [Admin Console Guide](Admin-Console-Guide) for what each control actually does.
 
 ---
 

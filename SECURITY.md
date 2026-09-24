@@ -1,6 +1,6 @@
 # Security Policy
 
-The Lab Kiosk maintainers and contributors are committed to protecting schools, teachers, and students. We take all security vulnerabilities seriously.
+The Lab Kiosk maintainers and contributors are committed to protecting organizations, operators, and users. We take all security vulnerabilities seriously.
 
 ---
 
@@ -12,19 +12,19 @@ Only the latest release and the current `main` branch receive security updates:
 | :--- | :--- | :--- |
 | Cloudflare Control Plane | `v2.x` / `main` | :white_check_mark: Actively Supported |
 | Debian 12 Kiosk Distro | `v2.x` / `main` | :white_check_mark: Actively Supported |
-| Legacy Single-School Controller | `v1.x` | :x: End-of-Life (Upgrade Recommended) |
+| Legacy Single-Organization Controller | `v1.x` | :x: End-of-Life (Upgrade Recommended) |
 
 ---
 
 ## Reporting a Vulnerability
 
 If you discover a potential vulnerability in Lab Kiosk—such as:
-- **Kiosk Breakout:** A method allowing a student to escape the locked Chromium session into an interactive bash shell or Openbox desktop.
-- **Tenant Isolation Bypass:** An unauthorized read or write across school tenant boundaries in Cloudflare D1 or the telemetry cache.
+- **Kiosk Breakout:** A method allowing a user to escape the locked Chromium session into an interactive bash shell or Openbox desktop.
+- **Tenant Isolation Bypass:** An unauthorized read or write across organization tenant boundaries in Cloudflare D1 or the telemetry cache.
 - **Authentication Bypass:** Flaws in the PBKDF2 Web Crypto implementation, session token generation, or cookie security.
 - **Remote Code Execution:** Vulnerabilities in the client Python agent (`agent.py`) or its local
   loopback API.
-- **Device Impersonation:** Any way to post telemetry, drain a command queue, or read a school's
+- **Device Impersonation:** Any way to post telemetry, drain a command queue, or read an organization's
   allowlist without a valid device token issued through enrolment.
 - **Supervision Suppression:** A way for a visited page to remove or disable the injected navigation
   bar or lock curtain, or to keep a locked workstation usable.
@@ -44,19 +44,19 @@ Instead, please submit your findings privately via GitHub Security Advisories:
 
 ---
 
-## Hardening Recommendations for Schools
+## Hardening Recommendations for Organizations
 
 1. **BIOS / UEFI Password:** Always set an administrative password in the Thin Client BIOS/UEFI and disable booting from unauthorized USB drives after installation.
-2. **Network Isolation:** Where possible, place student thin clients on a dedicated student VLAN isolated from administrative school networks.
+2. **Network Isolation:** Where possible, place user thin clients on a dedicated user VLAN isolated from administrative organization networks.
 3. **Cloudflare Tunnel Secrets:** Store Cloudflare Tunnel tokens securely in environment variables; never commit raw credentials into public configuration files.
 4. **Change the Super Admin Credentials:** Set `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` as
    Wrangler secrets before your first deploy; the worker will not serve a bound database without
    them (see item 9).
 5. **Protect the Enrollment Key:** It is the only thing standing between a stranger and your
-   students' screens. Rotate it from **Settings -> Workstation Enrollment Key** if a workstation or
+   users' screens. Rotate it from **Settings -> Workstation Enrollment Key** if a workstation or
    USB drive goes missing; workstations already enrolled keep working.
 6. **Set a GRUB Password Before Building:** Record a `grub-mkpasswd-pbkdf2` hash in
-   `distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin`. Without it a student can edit
+   `distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin`. Without it a user can edit
    the kernel command line at boot and obtain a root shell, which defeats every protection above it.
    The build warns when no password is pinned.
 7. **Pin cloudflared:** The build installs the Cloudflare Tunnel binary only from a version and
@@ -65,10 +65,10 @@ Instead, please submit your findings privately via GitHub Security Advisories:
 8. **Keep the Remote Control Ports Off the LAN:** On the real image `x11vnc` runs behind a per-boot
    random password and `websockify` binds to `127.0.0.1`, so remote control is reachable only through
    the Cloudflare Tunnel. Publishing port 6080 — or the agent's port 8888 — on `0.0.0.0` hands anyone
-   on the school Wi-Fi keyboard and mouse control of a student workstation. The Docker simulator
+   on the organization Wi-Fi keyboard and mouse control of a user workstation. The Docker simulator
    publishes 6080 deliberately and is not a deployment target. The VNC password is reported to the
    control plane over the workstation's authenticated telemetry and stored per device; it is shown
-   only to that school's teachers, carries the same sensitivity as the live screen thumbnails, and
+   only to that organization's operators, carries the same sensitivity as the live screen thumbnails, and
    changes on every reboot.
 9. **Set the Super Admin Secrets Before the First Deploy:** with a D1 database bound, the worker
    refuses to start until `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are both set. There is no
@@ -82,4 +82,4 @@ Instead, please submit your findings privately via GitHub Security Advisories:
    managed policy looks like a tightening and is in fact a supervision outage: Chromium then refuses
    `--load-extension` and the workstation loses its navigation bar and lock curtain while continuing
    to report healthy telemetry. The policy file carries a comment explaining this; please read it
-   before editing. Students cannot install extensions in any case.
+   before editing. Users cannot install extensions in any case.

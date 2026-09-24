@@ -32,7 +32,7 @@ labkiosk/
 │   └── build-iso.sh                    # Native Debian/WSL2 build script
 │
 ├── cloudflare-control/                 # Cloudflare Workers Control Plane (Edge SaaS)
-│   ├── migrations/                     # Cloudflare D1 SQL migrations (0001..0009)
+│   ├── migrations/                     # Cloudflare D1 SQL migrations (0001..0011)
 │   ├── wrangler.jsonc                  # Routes, D1 binding, hourly cron trigger
 │   ├── src/
 │   │   ├── index.ts                    # Edge router, REST APIs, telemetry cache, scheduled()
@@ -41,7 +41,7 @@ labkiosk/
 │   │   ├── db.ts                       # D1 Database queries, SCHEMA_SQL & tenant seeding
 │   │   ├── auth.ts                     # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   │   ├── d1_adapter.ts               # Node 22+ native `node:sqlite` mock for local unit tests
-│   │   ├── ui.ts                       # School admin console: picks the page, fills the shell
+│   │   ├── ui.ts                       # Organization admin console: picks the page, fills the shell
 │   │   ├── ui_admin_shared.ts          # Tenant API scope + Level 2 context panel behaviour
 │   │   ├── ui_admin_*.ts               # One module per admin page: its markup, its context
 │   │   │                               #   panel and its client script together
@@ -50,8 +50,8 @@ labkiosk/
 │   │   │                               #   pages were written against
 │   │   ├── ui_layout.ts                # Shared shell: 72px rail, 272px context panel, primitives
 │   │   ├── ui_landing.ts               # Public SaaS Landing Page
-│   │   ├── ui_school_home.ts           # The school homepage at the subdomain root (/)
-│   │   ├── ui_portal.ts                # Student Learning Portal at /home (cards grid)
+│   │   ├── ui_org_home.ts           # The organization homepage at the subdomain root (/)
+│   │   ├── ui_portal.ts                # User Portal at /home (cards grid)
 │   │   ├── ui_super.ts                 # Super Admin Master Console (/super)
 │   │   ├── ui_legal.ts                 # Legal compliance pages (/privacy, /terms)
 │   │   └── types.ts                    # Strict TypeScript interfaces
@@ -94,17 +94,20 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
   - `whitelist`: Approved domain list, merged into the Chromium managed policy.
   - `targetUrl`: Where the kiosk should point. Validated as `http(s)` by `safe_navigable_url()`
     before it is stored, because it ends up in `window.location`.
-  - `commands`: Array of pending teacher commands. The agent implements `lock`, `unlock`,
+  - `commands`: Array of pending operator commands. The agent implements `lock`, `unlock`,
     `navigate`, `reload`, `reboot`, `shutdown`, `clear-session` and `mute`; anything else is logged and ignored.
     `clear-session` ends the kiosk browser without a reboot; the watchdog deletes the Chromium profile and
     disk cache before every relaunch, so every sign-in, cookie and history entry is gone (see
     `distro-builder/AGENTS.md`, Rule 5).
     (There is no `broadcast` action — a broadcast is `navigate` plus `broadcastEpoch`.)
-    Teacher `reload` commands advance the agent's internal `reloadEpoch` (returned in `GET /api/status`),
+    Operator `reload` commands advance the agent's internal `reloadEpoch` (returned in `GET /api/status`),
     which `content.js` detects in `syncLoop()` to trigger a native `window.location.reload()`, caching
     `lastReloadEpoch` in `sessionStorage` to prevent infinite reload loops. Synthetic X11 key injection
     (`xdotool key F5`) is strictly forbidden.
-  - `broadcastUrl` / `broadcastEpoch`: Authoritative synchronized active lesson URL.
+  - `broadcastUrl` / `broadcastEpoch`: Authoritative synchronized active page URL — the newer of
+    the organization-wide broadcast (`tenants`) and this workstation's own (`client_devices`, set when a
+    broadcast or reset is sent to selected workstations). `targetUrl` follows it, so the heartbeat
+    never undoes a broadcast. Epoch `0` means none: the workstation is on the portal.
 
 ### 2. First-Boot Workstation Enrollment (`POST /api/setup`)
 
@@ -123,21 +126,21 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 
 - **Loopback VNC:** `x11vnc` binds strictly to `127.0.0.1:5900` with an ephemeral per-boot password.
 - **WebSocket Bridge:** `websockify` binds to `127.0.0.1:6080`.
-- **Tunnel Egress:** Cloudflare Tunnel securely forwards loopback port 6080 to `<pc>.<TUNNEL_DOMAIN>` without exposing any listening port on the school's local LAN.
-- **Teacher Dashboard:** Embedded noVNC frame authenticates via the device's current `vnc_password` retrieved securely through `GET /api/clients`.
+- **Tunnel Egress:** Cloudflare Tunnel securely forwards loopback port 6080 to `<pc>.<TUNNEL_DOMAIN>` without exposing any listening port on the organization's local LAN.
+- **Admin console:** Embedded noVNC frame authenticates via the device's current `vnc_password` retrieved securely through `GET /api/clients`.
 
 ### 4. Workstation Groups & Batch Commands
 
 - **Group Management:** Workstations can be organized into arbitrary named groups (e.g. "Row 1", "Lab A", "Physics"):
   - `GET /api/groups`: List workstation groups for the tenant.
-  - `POST /api/groups`: Create a new group (`{ name }`, 1–50 characters, unique per school case-insensitively — membership is stored by name).
+  - `POST /api/groups`: Create a new group (`{ name }`, 1–50 characters, unique per organization case-insensitively — membership is stored by name).
   - `DELETE /api/groups/:id`: Delete group; sets member devices' `group_name` to `NULL` (`404` for an unknown group).
   - `POST /api/clients/group`: Assign devices to an **existing** group (`{ clientIds: string[], groupName: string | null }`; empty or `null` ungroups).
 - **Batch Command Dispatch (`POST /api/command`):**
   - Accepts `targets: string[]` (or legacy single `target: string`). Duplicates are dropped and `"all"` replaces named targets.
   - Actions are exactly `ALLOWED_COMMANDS`: `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`. There is no `reset` action: Reset to Portal is `navigate` with `resetPortal: true`, and `navigate` needs the `broadcast` permission.
   - Both routes accept at most 500 ids per request, and D1's 100-parameter limit means `IN (...)` lists are written in slices of 90.
-  - The teacher console features a "Select All" toggle, per-workstation and per-group selection checkboxes, dynamic selection count indicators, and targeted command buttons ("Lock", "Unlock", "Clear Session", "Reboot", "Shutdown").
+  - The admin console features a "Select All" toggle, per-workstation and per-group selection checkboxes, dynamic selection count indicators, and targeted command buttons ("Lock", "Unlock", "Clear Session", "Reboot", "Shutdown").
 
 ---
 
@@ -160,13 +163,13 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 
 ### Rule 3: Native Top-Level Navigation & Shadow DOM Extension
 
-- **Never load external educational websites inside an `<iframe>`**. Modern sites enforce `X-Frame-Options: SAMEORIGIN` and fail.
+- **Never load external approved websites inside an `<iframe>`**. Modern sites enforce `X-Frame-Options: SAMEORIGIN` and fail.
 - Chromium navigates top-level pages.
 - The Chrome extension (`content.js`) injects the navigation header into the top frame inside an isolated **Shadow DOM**.
 - The content script **never** communicates with the agent directly (which would require unsafe wildcard CORS). It communicates through `background.js` (MV3 service worker), which owns `host_permissions` for `http://127.0.0.1:8888/*`.
 - The navigation bar **auto-hides** (`transform: translateY(-100%)`) and appears only when `mouseY <= 12px`. Viewport occupies 100% height with 0px scroll offset.
 - **International Keyboard Input**: `content.js` intercepts unauthorized keystrokes in all frames but MUST explicitly allow `event.getModifierState("AltGraph")` for printable characters and allow `event.key === "Dead"` for dead keys. International keyboards rely on `AltGr` for symbols (e.g. `@`, `€`, `\`) and diacritics; blocking them breaks non-US layouts.
-- **Query Parameter Preservation**: URL normalization in `content.js` must preserve `u.search` query parameters so educational applications with query parameters (e.g. `?room=101&user=demo`) are retained and not falsely identified as root broadcast URLs.
+- **Query Parameter Preservation**: URL normalization in `content.js` must preserve `u.search` query parameters so approved applications with query parameters (e.g. `?room=101&user=demo`) are retained and not falsely identified as root broadcast URLs.
 - **Dynamic Directionality (RTL/LTR)**: The extension applies `dir="rtl"` or `dir="ltr"` to the host container, top bar, curtain, and modal based on the active catalog's `_meta.direction`.
 
 ### Rule 4: Multi-Tenant Scoping & Security Guards
@@ -174,29 +177,29 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
 - Authoritative state (broadcasts, credentials, sessions) resides in D1, not isolate memory.
 - Every endpoint is strictly guarded via `guard.ts`: `resolveTenant()`, `requireTenantAdmin()`, `requireSuperAdmin()`, `requireDevice()`, and `rejectCrossSiteMutation()`.
-- Super admins are restricted from accessing any school's admin console, telemetry, or VNC remote desktop *except* for the dedicated `demo` school tenant to ensure school data privacy. Accessing school admin sub-routes (`/admin/workstations`, `/admin/apps-web`, etc.) as super admin routes directly to the `demo` school console (`?tenant=demo`) rather than bouncing to `/super`, and all internal console links preserve `?tenant=<subdomain>` when rendered outside the dedicated school subdomain. Full access permissions (`*`) are guaranteed for super admins on the `demo` tenant.
-- School admins can delegate functions to sub-admins and teachers via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`). The Apps & Web page opens with any of `broadcast`, `portal` or `whitelist`, and each of its tabs calls routes guarded by that one permission. `*` is never stored: full access comes only from owning the school or the `school_admin` role.
-- A delegate holding `teachers` may grant only the permissions they hold, may not appoint a `school_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Without that, the staff permission was a one-request path to the school's settings and enrolment key.
+- Super admins are restricted from accessing any organization's admin console, telemetry, or VNC remote desktop *except* for the dedicated `demo` organization tenant to ensure organization data privacy. Accessing organization admin sub-routes (`/admin/workstations`, `/admin/apps-web`, etc.) as super admin routes directly to the `demo` organization console (`?tenant=demo`) rather than bouncing to `/super`, and all internal console links preserve `?tenant=<subdomain>` when rendered outside the dedicated organization subdomain. Full access permissions (`*`) are guaranteed for super admins on the `demo` tenant.
+- Organization admins can delegate functions to sub-admins and operators via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`). The Apps & Web page opens with any of `broadcast`, `portal` or `whitelist`, and each of its tabs calls routes guarded by that one permission. `*` is never stored: full access comes only from owning the organization or the `org_admin` role.
+- A delegate holding `staff` may grant only the permissions they hold, may not appoint an `org_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Without that, the staff permission was a one-request path to the organization's settings and enrolment key.
 
 ### Rule 4b: Left-Side Multi-Level Panels Design & Seamless Transitions
 
-- The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) enforce a unified **Left-Side Multi-Level Panels Architecture**:
-  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, exactly 4 primary module icons (Workstations, Apps & Web, Teachers & Staff, Lab Settings), live counter pills, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel collapse toggle.
+- The dashboard control planes (both Organization Admin `/admin/*` and Super Admin `/super/*`) enforce a unified **Left-Side Multi-Level Panels Architecture**:
+  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, exactly 4 primary module icons (Workstations, Apps & Web, Staff, Settings), live counter pills, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel collapse toggle.
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
   - **Workstations Module (`/admin/workstations`)**:
     - **Level 2 Subpanel**: Dedicated to Workstation Groups (`+ New Group`, live group member counts, group filtering, and group deletion). Removed redundant individual command buttons from sidebar.
-    - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted classroom actions (`Lock`, `Unlock`, `Clear Session`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
+    - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted batch actions (`Lock`, `Unlock`, `Clear Session`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
     - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes; collapse states persist in `localStorage`.
   - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
-    - Merges Lesson Broadcast, Student Portal Apps, and Domain Allowlist into a single, segmented module with 3 tab panes (`Lesson Broadcast`, `Student Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy routes (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
-    - **Stabilized Sidebar Subpanel**: Fixed, non-shifting Level 2 subpanel featuring static tab view switchers (`📶 Lesson Broadcast`, `⊞ Student Portal`, `🛡️ Domain Allowlist`), a `Preview Student Portal &rarr;` shortcut opening `/home` in a new tab, and a static Module Overview card (total apps, allowed domains, live broadcast status). Eliminates dynamic layout shift.
-    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant "Standard Educational Presets" from Lesson Broadcast to prevent duplicate lists.
-  - **Teachers & Staff Module (`/admin/teachers`)**:
-    - **Level 2 Subpanel**: Interactive **"Role"** filter section (`All Roles`, `Teacher`, `Lab Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with live count badges that filter the authorized instructors table instantly without page reload.
+    - Merges Broadcast, User Portal Apps, and Domain Allowlist into a single, segmented module with 3 tab panes (`Broadcast`, `User Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy routes (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
+    - **Stabilized Sidebar Subpanel**: Fixed, non-shifting Level 2 subpanel featuring static tab view switchers (`📶 Broadcast`, `⊞ User Portal`, `🛡️ Domain Allowlist`), a `Preview User Portal &rarr;` shortcut opening `/home` in a new tab, and a static Module Overview card (total apps, allowed domains, live broadcast status). Eliminates dynamic layout shift.
+    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant "Standard Educational Presets" from Broadcast to prevent duplicate lists.
+  - **Staff Module (`/admin/staff`)**:
+    - **Level 2 Subpanel**: Interactive **"Role"** filter section (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with live count badges that filter the authorized operators table instantly without page reload.
     - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
-  - **Lab Settings Module (`/admin/settings`)**:
-    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 4 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `School Homepage`, `Security & Audit`) with instant client-side switching and deep linking (`?tab=...`).
-    - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Institution Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain & VNC Tunnel \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Lab Activity).
+  - **Settings Module (`/admin/settings`)**:
+    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 4 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`) with instant client-side switching and deep linking (`?tab=...`).
+    - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain & VNC Tunnel \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Lab Activity).
     - **Scrollable Activity Table (`.table-scrollable`)**: Recent Lab Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
   - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
   - **Transitions & Micro-Interactions**: Hardware-accelerated CSS transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
@@ -205,11 +208,26 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 
 - `cloudflare-control/src/ui_tokens.ts` is the single declaration of the design
   language for every web surface: the two consoles, the public landing page, the
-  student portal and the legal pages. Each renders its `:root` from
+  user portal and the legal pages. Each renders its `:root` from
   `rootTokensCss()` and its fonts from `FONT_LINKS`; none opens a `:root` of its own.
 - A class a page renders must be a class the shell declares, and the test suite
   fails otherwise (including `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`). See Rule 5c in
   [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md).
+
+### Rule 4d: Organizations, Not Schools
+
+- Lab Kiosk is for any organization: companies, public services, libraries and schools. Say
+  **organization** (never "school"), **operator / staff** (never "teacher"), **user** (never
+  "student"), **User Portal**, and **page / broadcast** (never "lesson"). Stored roles are
+  `org_admin`, `sub_admin`, `operator`, `assistant`, `content_manager`; the staff permission is
+  `staff`. A test fails if a console, the User Portal or an organization homepage says otherwise.
+- Education stays a named audience on the landing page, and **statements about the license keep
+  describing the license**: free only for accredited educational institutions and non-commercial
+  evaluation up to 45 computers, commercial or subscriber license for everyone else.
+- Kept on purpose, with reasons in `cloudflare-control/AGENTS.md` Rule 3c: applied migrations
+  `0001`–`0010`, six interface-catalog keys, and the `schoolName` compatibility field.
+- Changing a CHECK on a parent table (`users`, `tenants`) needs the cascade-safe rebuild in
+  `cloudflare-control/AGENTS.md` Rule 3b; a naive rebuild deletes every organization.
 
 ### Rule 5: Zero Placeholders
 
@@ -239,7 +257,7 @@ The Client Operating System and Cloudflare Control Plane communicate over authen
 - To survive `overlayroot="tmpfs"` reboots on installed hardware, connection keyfiles are stored on the persistent `LABKIOSK_DATA` partition in `/etc/labkiosk/system-connections/` (mode `0700`, files mode `0600`, root:root) and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab`.
 - The unprivileged `kiosk` user is granted Polkit privileges for NetworkManager via `/etc/polkit-1/rules.d/50-labkiosk-network.rules` to allow the agent to manage network connections without running the agent as root.
 - Post-installation network changes and workstation reboots are gated behind administrator authentication (PBKDF2 verification against `/etc/grub.d/01_labkiosk_password`). The gate is enforced by the agent, not only the UI: `/api/admin/verify` issues a 10-minute token (throttled after 5 failures) and `/api/network/configure` as well as `POST /api/reboot` refuse an installed workstation's request without it (`X-LabKiosk-Admin`).
-- The browser extension (`content.js`) monitors network connectivity via `/api/status`, displays live online/offline state in the kiosk top bar, and redirects to `/setup#offline` if the workstation is offline for more than 6 seconds on an external, unlocked page. That page returns to the lesson by itself once the connection is back.
+- The browser extension (`content.js`) monitors network connectivity via `/api/status`, displays live online/offline state in the kiosk top bar, and redirects to `/setup#offline` if the workstation is offline for more than 6 seconds on an external, unlocked page. That page returns to the page by itself once the connection is back.
 - Wi-Fi scan results (SSIDs) are attacker-chosen and are rendered with `textContent` only: the wizard's origin can drive the disk installer.
 
 ---

@@ -8,7 +8,7 @@ How `cloudflare-control/` is put together, and the rules for changing it.
 
 ```text
 cloudflare-control/
-├── migrations/             D1 SQL migrations 0001..0009
+├── migrations/             D1 SQL migrations 0001..0011
 ├── src/
 │   ├── index.ts            Router, REST endpoints, telemetry cache, scheduled()
 │   ├── guard.ts            Tenant resolution, authorization, CSRF origin guard
@@ -16,17 +16,17 @@ cloudflare-control/
 │   ├── db.ts               D1 queries, SCHEMA_SQL, tenant seeding
 │   ├── auth.ts             Web Crypto PBKDF2, tokens, nonces, password policy
 │   ├── d1_adapter.ts       node:sqlite mock for local tests
-│   ├── ui.ts               School admin console router: selects page, wraps shell
+│   ├── ui.ts               Organization admin console router: selects page, wraps shell
 │   ├── ui_admin_shared.ts  Shared context panel actions & client scripts
 │   ├── ui_admin_workstations.ts Workstations fleet, groups & commands
 │   ├── ui_admin_apps_web.ts     Apps & Web: broadcast, portal & allowlist
-│   ├── ui_admin_teachers.ts     Teachers & staff accounts, roles & permissions
-│   ├── ui_admin_settings.ts     Lab settings: 4 tab panes & scrollable audit
+│   ├── ui_admin_staff.ts     Staff accounts, roles & permissions
+│   ├── ui_admin_settings.ts     Settings: 4 tab panes & scrollable audit
 │   ├── ui_tokens.ts        Design system tokens (colors, radii, easing)
 │   ├── ui_layout.ts        Shared multi-level shell, headers & styles
 │   ├── ui_landing.ts       Public SaaS landing page
-│   ├── ui_school_home.ts   School homepage at subdomain root (/)
-│   ├── ui_portal.ts        Student Learning Portal at /home
+│   ├── ui_org_home.ts   Organization homepage at subdomain root (/)
+│   ├── ui_portal.ts        User Portal at /home
 │   ├── ui_super.ts         Super Admin console (/super)
 │   ├── ui_legal.ts         Legal compliance pages (/privacy, /terms)
 │   └── types.ts            Strict TypeScript interfaces
@@ -58,7 +58,7 @@ No framework, no middleware stack, no decorators. Adding a route means adding a 
 ### Order of operations
 
 1. `bootstrap(env)` — fail-closed checks on secrets and schema.
-2. `resolveTenant()` — the school, from `Host`.
+2. `resolveTenant()` — the organization, from `Host`.
 3. `rejectCrossSiteMutation()` — for cookie-authenticated mutations under `/api/`.
 4. The route's guard.
 5. The handler.
@@ -111,7 +111,7 @@ Invoked hourly by the cron in `wrangler.jsonc`. Purges expired sessions, deliver
 | `escapeJson(value)` | **Required** for anything inlined into a `<script>` block. Also escapes U+2028 / U+2029, which are valid JSON but terminate a JS line |
 | `cleanSubdomain(raw)` | Normalises a requested slug |
 | `cleanCustomDomain(raw)` | Validates an FQDN; also used for `remoteHost` from telemetry |
-| `safeHttpUrl(raw)` | `http(s)` only; prepends `https://` to a scheme-less domain, so `canvas.school.edu` is accepted |
+| `safeHttpUrl(raw)` | `http(s)` only; prepends `https://` to a scheme-less domain, so `canvas.example.com` is accepted |
 
 ---
 
@@ -129,7 +129,7 @@ const KEY_LENGTH = 256;
 | `timingSafeEqual(a, b)` | |
 | `sha256Hex(input)` | Session and device token hashing |
 | `generateSessionToken()` / `generateDeviceToken()` | 32 random bytes, hex |
-| `generateEnrollmentKey()` | The school's `KEY-XXXX-…` |
+| `generateEnrollmentKey()` | The organization's `KEY-XXXX-…` |
 | `generateNonce()` | Per-response CSP nonce |
 | `validatePasswordStrength(password)` | Returns a message, or `null` if acceptable |
 | `isPlausibleEmail(value)` | |

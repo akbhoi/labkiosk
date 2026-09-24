@@ -4,19 +4,19 @@
 
 ### Agent
 
-`agent.py`, the Python 3 daemon on each workstation. Serves the loopback setup API, runs the three-second telemetry heartbeat, syncs the Chromium policy, and executes teacher commands. Started from the Openbox autostart under a supervisor loop, not as a systemd service — it needs the kiosk user's X session. → [Client Agent](Client-Agent)
+`agent.py`, the Python 3 daemon on each workstation. Serves the loopback setup API, runs the three-second telemetry heartbeat, syncs the Chromium policy, and executes operator commands. Started from the Openbox autostart under a supervisor loop, not as a systemd service — it needs the kiosk user's X session. → [Client Agent](Client-Agent)
 
 ### Allowlist
 
-The set of domains a workstation's Chromium may load. Chromium blocks everything by default (`URLBlocklist` deny-all) and `URLAllowlist` re-permits. The **effective** allowlist is the school's permanent list unioned with every portal app's host and the active broadcast's host, computed per heartbeat by `buildEffectiveWhitelist()`.
+The set of domains a workstation's Chromium may load. Chromium blocks everything by default (`URLBlocklist` deny-all) and `URLAllowlist` re-permits. The **effective** allowlist is the organization's permanent list unioned with every portal app's host and the active broadcast's host, computed per heartbeat by `buildEffectiveWhitelist()`.
 
 ### Broadcast
 
-A lesson URL pushed to a whole lab at once, persisted on the tenant row so it survives reboots and colo differences. Not its own command action: it is `navigate` to `target: "all"` plus a `broadcastEpoch`. → [Teacher Dashboard Guide](Teacher-Dashboard-Guide#broadcast--push-a-lesson-to-the-whole-lab)
+A page URL pushed to a whole lab at once, persisted on the tenant row so it survives reboots and colo differences. Not its own command action: it is `navigate` to `target: "all"` plus a `broadcastEpoch`. → [Admin Console Guide](Admin-Console-Guide#broadcast--push-a-page-to-the-whole-lab)
 
 ### Broadcast epoch
 
-A monotonic marker (`tenants.broadcast_epoch`) that lets a workstation tell a *new* broadcast from one it already obeyed, so it navigates exactly once rather than every three seconds. `0` means no broadcast is active.
+A monotonic marker (`tenants.broadcast_epoch` for the whole organization, `client_devices.broadcast_epoch` for a broadcast sent to selected workstations) that lets a workstation tell a *new* broadcast from one it already obeyed, so it navigates exactly once rather than every three seconds. The heartbeat serves whichever of the two is newer; a reset to the portal is recorded with an epoch too, so it outranks an older broadcast. `0` means no broadcast is active.
 
 ### Client ID
 
@@ -28,7 +28,7 @@ A row in `command_deliveries` (`command_id`, `client_id`) recording that a works
 
 ### Control plane
 
-The Cloudflare Worker and its D1 database. One deployment serves every school. → [Control Plane Internals](Control-Plane-Internals)
+The Cloudflare Worker and its D1 database. One deployment serves every organization. → [Control Plane Internals](Control-Plane-Internals)
 
 ### Curtain
 
@@ -44,7 +44,7 @@ A 32-byte random hex bearer token issued to a workstation at enrolment. Only its
 
 ### Enrollment key
 
-A per-school shared secret a new workstation exchanges once for its own device token. **Empty by default**, and an empty key authenticates nothing. Rotating it does not affect already-enrolled workstations.
+A per-organization shared secret a new workstation exchanges once for its own device token. **Empty by default**, and an empty key authenticates nothing. Rotating it does not affect already-enrolled workstations.
 
 ### ESP
 
@@ -84,7 +84,7 @@ Debian's ISO construction toolchain. Driven by `auto/config`, `auto/build`, and 
 
 ### Lock curtain
 
-A full-screen overlay the extension raises on every tab when a teacher sends `lock`. Swallows mouse, keyboard, and touch events in the capture phase. A DOM-level block, not an X11 input grab. → [Browser Extension](Browser-Extension#the-lock-curtain)
+A full-screen overlay the extension raises on every tab when an operator sends `lock`. Swallows mouse, keyboard, and touch events in the capture phase. A DOM-level block, not an X11 input grab. → [Browser Extension](Browser-Extension#the-lock-curtain)
 
 ### Loopback API
 
@@ -108,7 +108,7 @@ A random per-response value stamped on every `<script>` and named in the Content
 
 ### noVNC
 
-The HTML5 VNC client `websockify` serves, embedded in the teacher dashboard for remote control.
+The HTML5 VNC client `websockify` serves, embedded in the admin console for remote control.
 
 ### Openbox
 
@@ -124,11 +124,11 @@ The password hashing function, run through `crypto.subtle`: HMAC-SHA256, 100 000
 
 ### Portal site / portal card
 
-An application card on the Student Learning Portal. Adding one implicitly authorises its domain. → [Student Portal](Student-Portal)
+An application card on the User Portal. Adding one implicitly authorises its domain. → [User Portal](User-Portal)
 
 ### Reserved slug
 
-A subdomain the platform keeps for itself: `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`. Neither registerable nor resolvable as a school.
+A subdomain the platform keeps for itself: `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`. Neither registerable nor resolvable as an organization.
 
 ### Shadow DOM
 
@@ -144,7 +144,7 @@ The Docker container that behaves like an enrolled thin client, viewable through
 
 ### Super admin
 
-The platform operator, distinct from a school's teacher admin. Approves and suspends schools, and binds custom domains. → [Super Admin Guide](Super-Admin-Guide)
+The platform operator, distinct from an organization's organization admin. Approves and suspends organizations, and binds custom domains. → [Super Admin Guide](Super-Admin-Guide)
 
 ### Telemetry
 
@@ -152,7 +152,7 @@ The three-second heartbeat carrying the whole client–server relationship: stat
 
 ### Tenant
 
-One school. Every query touching devices, commands, sessions, or portal apps filters by `tenant_id`.
+One organization. Every query touching devices, commands, sessions, or portal apps filters by `tenant_id`.
 
 ### Thumbnail
 
@@ -164,7 +164,7 @@ An **opt-in** boot menu entry copying the whole image into RAM before starting, 
 
 ### Tunnel
 
-A Cloudflare Tunnel giving a workstation's loopback noVNC gateway a public hostname without any inbound port on the school network. Optional; only interactive remote control needs one.
+A Cloudflare Tunnel giving a workstation's loopback noVNC gateway a public hostname without any inbound port on the organization network. Optional; only interactive remote control needs one.
 
 ### websockify
 

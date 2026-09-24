@@ -36,5 +36,10 @@ The operating procedures live in the specialized skills under `skills/`. Both ar
 - Every staff route: `staffDelegationProblem()` in `src/index.ts` — a delegate never grants beyond
   their own permissions. Every id-list route: capped at 500 and chunked under D1's 100-parameter limit.
 - Every schema change: a new file in `migrations/` **and** the mirror in `SCHEMA_SQL` (`src/db.ts`).
+  A CHECK change on `users`/`tenants` needs the cascade-safe rebuild (`cloudflare-control/AGENTS.md` Rule 3b):
+  a plain `DROP TABLE` there cascade-deletes every organization.
+- Vocabulary: organization / operator / staff / user / User Portal — never school, teacher, student or
+  lesson (a test enforces it). License statements keep saying what `LICENSE` says: free only for
+  accredited educational institutions up to 45 computers.
 - Verify UI changes on a screenshot from the simulator, not on a log line. For the consoles, drive
   the page in a browser and read its console: the test suite checks markup, not whether scripts run.

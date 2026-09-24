@@ -18,14 +18,14 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 
 | Scheme | Mechanism | Used By |
 | :--- | :--- | :--- |
-| **Session Cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Web Consoles: Teacher Lab Dashboard, Super Admin Console |
+| **Session Cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Web Consoles: Operator Lab Dashboard, Super Admin Console |
 | **Device Bearer Token** | `Authorization: Bearer <hex32>` | Workstation Client Agent (`agent.py`) for `/api/telemetry` |
-| **Public / Key-Exchanged** | No auth or one-time verification (`enrollmentKey`) | Setup wizard, sign-in, signup, student portal sites, health probe |
+| **Public / Key-Exchanged** | No auth or one-time verification (`enrollmentKey`) | Setup wizard, sign-in, signup, user portal sites, health probe |
 
 ### 3. Tenant Scoping & Resolution Rules
 
-- The target school tenant is resolved authoritatively from the HTTP `Host` header via `resolveTenant()` in `src/guard.ts`.
-- Subdomain format: `<school>.labkiosk.institution.edu` or an approved custom FQDN (e.g. `kiosk.institution.edu`).
+- The target organization tenant is resolved authoritatively from the HTTP `Host` header via `resolveTenant()` in `src/guard.ts`.
+- Subdomain format: `<organization>.labkiosk.example.com` or an approved custom FQDN (e.g. `kiosk.example.com`).
 - Query overrides (`?tenant=<subdomain>`) and `X-Tenant` headers are accepted **only** on local development hosts (`localhost`, `127.0.0.1`) or for requests carrying an active `super_admin` session.
 - A caller attempting to act upon a tenant they do not administer is rejected with `403 Forbidden`.
 
@@ -47,46 +47,46 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | Endpoint | Method | Auth Scheme | Description |
 | :--- | :--- | :--- | :--- |
 | `/api/status` | `GET` | Public | System status and active kiosk target URL probe |
-| `/api/auth/register` | `POST` | Public | Register school admin and claim subdomain |
-| `/api/auth/login` | `POST` | Public | Sign in to Teacher Dashboard or Super Admin Console |
+| `/api/auth/register` | `POST` | Public | Register organization admin and claim subdomain |
+| `/api/auth/login` | `POST` | Public | Sign in to Admin console or Super Admin Console |
 | `/api/auth/me` | `GET` | Session | Retrieve current authenticated user profile & tenant |
 | `/api/auth/logout` | `POST` | Session | Invalidate session token and clear cookies |
 | `/api/auth/change-password` | `POST` | Session | Rotate user password and revoke other active sessions |
-| `/api/portal-sites` | `GET` | Public | List approved applications for student learning portal |
-| `/api/portal-sites` | `POST` | Teacher Admin | Add a new application card to student portal |
-| `/api/portal-sites/:id` | `DELETE` | Teacher Admin | Delete an application card from student portal |
-| `/api/broadcast-presets` | `GET` | Teacher Admin | List quick-launch broadcast shortcuts |
-| `/api/broadcast-presets` | `POST` | Teacher Admin | Add a custom broadcast shortcut |
-| `/api/broadcast-presets/:id` | `DELETE` | Teacher Admin | Remove a broadcast shortcut |
-| `/api/settings/mode` | `POST` | Teacher Admin | Toggle between `portal` launcher and `single_url` mode |
-| `/api/settings/customization` | `GET` | Teacher Admin | Read custom branding and lock message configurations |
-| `/api/settings/customization` | `POST` | Teacher Admin | Update custom branding, hero titles, and lock messages |
-| `/api/settings/subdomain` | `POST` | Teacher Admin | Request change of school subdomain |
-| `/api/settings/enrollment-key` | `GET` | Teacher Admin | View current workstation enrollment key |
-| `/api/settings/enrollment-key` | `POST` | Teacher Admin | Regenerate/rotate workstation enrollment key |
-| `/api/settings/custom-domain` | `POST` | Teacher Admin | Request custom domain binding (e.g. `kiosk.school.edu`) |
-| `/api/settings/custom-domain` | `DELETE` | Teacher Admin | Disconnect custom domain binding |
-| `/api/whitelist` | `GET` | Teacher Admin | List effective allowed domains for student workstations |
-| `/api/whitelist` | `POST` | Teacher Admin | Add or remove a domain from the permanent allowlist |
-| `/api/clients` | `GET` | Teacher Admin | List active workstation fleet with live thumbnails |
-| `/api/clients/remove` | `POST` | Teacher Admin | Decommission workstation and revoke its device token |
-| `/api/clients/group` | `POST` | Teacher Admin | Assign multiple workstations to a named group |
-| `/api/groups` | `GET` | Teacher Admin | List workstation groups for the school tenant |
-| `/api/groups` | `POST` | Teacher Admin | Create a new workstation group |
-| `/api/groups/:id` | `DELETE` | Teacher Admin | Delete a workstation group |
-| `/api/tenant/teachers` | `GET` | Teacher Admin (`teachers`) | List delegated instructors, staff, and sub-admins |
-| `/api/tenant/teachers` | `POST` | Teacher Admin (`teachers`) | Create a staff account with role and permissions |
-| `/api/tenant/teachers/update` | `POST` | Teacher Admin (`teachers`) | Change a staff account's role or permissions |
-| `/api/tenant/teachers/:id` | `DELETE` | Teacher Admin (`teachers`) | Remove a staff account and end its sessions |
-| `/api/command` | `POST` | Teacher Admin | Dispatch remote command to targets (lock, unlock, reboot, shutdown, etc.) |
-| `/api/audit-logs` | `GET` | Teacher Admin | Retrieve paginated institutional security audit log |
-| `/api/devices/enroll` | `POST` | Public / Key | Exchange school enrollment key for persistent device token |
+| `/api/portal-sites` | `GET` | Public | List approved applications for user portal |
+| `/api/portal-sites` | `POST` | Organization Admin | Add a new application card to user portal |
+| `/api/portal-sites/:id` | `DELETE` | Organization Admin | Delete an application card from user portal |
+| `/api/broadcast-presets` | `GET` | Organization Admin | List quick-launch broadcast shortcuts |
+| `/api/broadcast-presets` | `POST` | Organization Admin | Add a custom broadcast shortcut |
+| `/api/broadcast-presets/:id` | `DELETE` | Organization Admin | Remove a broadcast shortcut |
+| `/api/settings/mode` | `POST` | Organization Admin | Toggle between `portal` launcher and `single_url` mode |
+| `/api/settings/customization` | `GET` | Organization Admin | Read custom branding and lock message configurations |
+| `/api/settings/customization` | `POST` | Organization Admin | Update custom branding, hero titles, and lock messages |
+| `/api/settings/subdomain` | `POST` | Organization Admin | Request change of organization subdomain |
+| `/api/settings/enrollment-key` | `GET` | Organization Admin | View current workstation enrollment key |
+| `/api/settings/enrollment-key` | `POST` | Organization Admin | Regenerate/rotate workstation enrollment key |
+| `/api/settings/custom-domain` | `POST` | Organization Admin | Request custom domain binding (e.g. `kiosk.example.com`) |
+| `/api/settings/custom-domain` | `DELETE` | Organization Admin | Disconnect custom domain binding |
+| `/api/whitelist` | `GET` | Organization Admin | List effective allowed domains for user workstations |
+| `/api/whitelist` | `POST` | Organization Admin | Add or remove a domain from the permanent allowlist |
+| `/api/clients` | `GET` | Organization Admin | List active workstation fleet with live thumbnails |
+| `/api/clients/remove` | `POST` | Organization Admin | Decommission workstation and revoke its device token |
+| `/api/clients/group` | `POST` | Organization Admin | Assign multiple workstations to a named group |
+| `/api/groups` | `GET` | Organization Admin | List workstation groups for the organization tenant |
+| `/api/groups` | `POST` | Organization Admin | Create a new workstation group |
+| `/api/groups/:id` | `DELETE` | Organization Admin | Delete a workstation group |
+| `/api/tenant/staff` | `GET` | Organization Admin (`staff`) | List delegated operators, staff, and sub-admins |
+| `/api/tenant/staff` | `POST` | Organization Admin (`staff`) | Create a staff account with role and permissions |
+| `/api/tenant/staff/update` | `POST` | Organization Admin (`staff`) | Change a staff account's role or permissions |
+| `/api/tenant/staff/:id` | `DELETE` | Organization Admin (`staff`) | Remove a staff account and end its sessions |
+| `/api/command` | `POST` | Organization Admin | Dispatch remote command to targets (lock, unlock, reboot, shutdown, etc.) |
+| `/api/audit-logs` | `GET` | Organization Admin | Retrieve paginated organization security audit log |
+| `/api/devices/enroll` | `POST` | Public / Key | Exchange organization enrollment key for persistent device token |
 | `/api/telemetry` | `POST` | Device Token | 3-second heartbeat, thumbnail ingest, command retrieval |
-| `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending school subdomain registration |
-| `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending school registration |
-| `/api/super/tenants/suspend` | `POST` | Super Admin | Suspend active school tenant |
-| `/api/super/tenants/reactivate` | `POST` | Super Admin | Reactivate suspended school tenant |
-| `/api/super/tenants/custom-domain/approve` | `POST` | Super Admin | Approve and bind custom domain for a school |
+| `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending organization subdomain registration |
+| `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending organization registration |
+| `/api/super/tenants/suspend` | `POST` | Super Admin | Suspend active organization tenant |
+| `/api/super/tenants/reactivate` | `POST` | Super Admin | Reactivate suspended organization tenant |
+| `/api/super/tenants/custom-domain/approve` | `POST` | Super Admin | Approve and bind custom domain for an organization |
 | `/api/super/tenants/custom-domain/reject` | `POST` | Super Admin | Reject requested custom domain |
 | `/api/super/tenants/custom-domain/remove` | `POST` | Super Admin | Remove assigned custom domain |
 
@@ -118,14 +118,14 @@ Returns the operational mode and current landing target. Used by the first-boot 
 
 #### `POST /api/auth/register`
 
-Creates a new school organization and initializes an administrator account.
+Creates a new organization and initializes an administrator account.
 
 - **Access:** Public (rate-limited per IP)
 - **Request Body:**
 
   ```json
   {
-    "name": "Oakridge High School",
+    "name": "Oakridge Holdings",
     "email": "principal@oakridge.edu",
     "password": "StrongPassword123!",
     "subdomain": "oakridge"
@@ -137,21 +137,21 @@ Creates a new school organization and initializes an administrator account.
   ```json
   {
     "status": "ok",
-    "message": "School registered successfully. Pending approval.",
+    "message": "Organization registered successfully. Pending approval.",
     "subdomain": "oakridge"
   }
   ```
 
 #### `POST /api/auth/login`
 
-Authenticates a teacher or platform super administrator.
+Authenticates an operator or platform super administrator.
 
 - **Access:** Public (exponential back-off after repeated failures)
 - **Request Body:**
 
   ```json
   {
-    "email": "teacher@oakridge.edu",
+    "email": "operator@oakridge.edu",
     "password": "StrongPassword123!"
   }
   ```
@@ -161,7 +161,7 @@ Authenticates a teacher or platform super administrator.
   ```json
   {
     "status": "ok",
-    "role": "school_admin",
+    "role": "org_admin",
     "subdomain": "oakridge"
   }
   ```
@@ -176,13 +176,13 @@ Fetches profile details of the current signed-in user.
   ```json
   {
     "user": {
-      "email": "teacher@oakridge.edu",
+      "email": "operator@oakridge.edu",
       "name": "Jane Doe",
-      "role": "school_admin"
+      "role": "org_admin"
     },
     "tenant": {
       "id": "tenant-uuid",
-      "name": "Oakridge High School",
+      "name": "Oakridge Holdings",
       "subdomain": "oakridge",
       "mode": "portal"
     }
@@ -211,11 +211,11 @@ Rotates password for the authenticated user and terminates all other concurrent 
 
 ---
 
-### 3. Student Learning Portal & Apps
+### 3. User Portal & Apps
 
 #### `GET /api/portal-sites`
 
-Fetches educational application cards displayed on the student launcher.
+Fetches approved application cards displayed on the user launcher.
 
 - **Access:** Public (scoped to host tenant)
 - **Response `200 OK`:**
@@ -237,9 +237,9 @@ Fetches educational application cards displayed on the student launcher.
 
 #### `POST /api/portal-sites`
 
-Adds a new application card to the student launcher.
+Adds a new application card to the user launcher.
 
-- **Access:** School Admin
+- **Access:** Organization Admin
 - **Request Body:**
 
   ```json
@@ -267,7 +267,7 @@ Adds a new application card to the student launcher.
 
 #### `POST /api/devices/enroll`
 
-Exchanges the school's enrollment key for a persistent workstation device token.
+Exchanges the organization's enrollment key for a persistent workstation device token.
 
 - **Access:** Public / Enrollment Key holder (throttled on failure)
 - **Request Body:**
@@ -288,11 +288,16 @@ Exchanges the school's enrollment key for a persistent workstation device token.
     "deviceToken": "32_byte_hex_bearer_token",
     "clientId": "PC-01",
     "subdomain": "oakridge",
-    "schoolName": "Oakridge High School",
+    "organizationName": "Oakridge Holdings",
+    "schoolName": "Oakridge Holdings",
     "mode": "portal",
-    "targetUrl": "https://oakridge.labkiosk.institution.edu"
+    "targetUrl": "https://oakridge.labkiosk.example.com"
   }
   ```
+
+`schoolName` is also sent, with the same value, for agents installed from an ISO older than the
+organization vocabulary. It is deprecated: new code reads `organizationName`, and the field will be
+removed once no workstation in the field depends on it.
 
 #### `POST /api/telemetry`
 
@@ -308,7 +313,7 @@ Transmits 3-second heartbeat, active URL, screen screenshot thumbnail, and retri
     "isLocked": false,
     "thumbnail": "data:image/jpeg;base64,...",
     "vncPassword": "randomBootPassword12",
-    "remoteHost": "pc-01.labkiosk.institution.edu"
+    "remoteHost": "pc-01.labkiosk.example.com"
   }
   ```
 
@@ -324,9 +329,9 @@ Transmits 3-second heartbeat, active URL, screen screenshot thumbnail, and retri
         "message": "Eyes to the board please!"
       }
     ],
-    "whitelist": ["scratch.mit.edu", "khanacademy.org", "oakridge.labkiosk.institution.edu"],
+    "whitelist": ["scratch.mit.edu", "khanacademy.org", "oakridge.labkiosk.example.com"],
     "mode": "portal",
-    "targetUrl": "https://oakridge.labkiosk.institution.edu",
+    "targetUrl": "https://oakridge.labkiosk.example.com",
     "broadcastUrl": "",
     "broadcastEpoch": 0
   }
@@ -334,13 +339,13 @@ Transmits 3-second heartbeat, active URL, screen screenshot thumbnail, and retri
 
 ---
 
-### 5. Teacher Lab Console: Fleet & Commands
+### 5. Operator Lab Console: Fleet & Commands
 
 #### `GET /api/clients`
 
 Retrieves all currently registered workstations and their latest telemetry state.
 
-- **Access:** School Admin
+- **Access:** Organization Admin
 - **Response `200 OK`:**
 
   ```json
@@ -355,7 +360,7 @@ Retrieves all currently registered workstations and their latest telemetry state
         "timestamp": 1726300000,
         "online": true,
         "vncPassword": "randomBootPassword12",
-        "remoteHost": "pc-01.labkiosk.institution.edu"
+        "remoteHost": "pc-01.labkiosk.example.com"
       }
     }
   }
@@ -365,16 +370,20 @@ Retrieves all currently registered workstations and their latest telemetry state
 
 Dispatches remote actions to one, selected subsets, or all workstations.
 
-- **Access:** School Admin. `navigate` requires the `broadcast` permission; every other action requires `workstations`.
+- **Access:** Organization Admin. `navigate` requires the `broadcast` permission; every other action requires `workstations`.
 - **Supported Actions:** `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`. Anything else answers `400`.
-- **`clear-session`** signs students out at the end of a period without a reboot: the workstation ends its
+- **`clear-session`** signs users out at the end of a period without a reboot: the workstation ends its
   browser, and the kiosk watchdog deletes the Chromium profile (cookies, saved sign-ins, history, local
   storage, IndexedDB, service workers) and disk cache before relaunching on the workstation's assigned page.
 - **Targeting:** Specify either `targets: string[]` (array of client IDs, e.g. `["PC-01", "PC-02"]`) or single `target: string` (`"all"` or `"PC-01"`).
   Duplicates are removed, `"all"` replaces any named targets rather than queueing a second command for each,
   and at most **500** targets are accepted per request (`400` otherwise).
+- **Broadcasts stick.** A `navigate` (or `resetPortal`) is recorded where it was addressed: `"all"`
+  organization-wide, a list of ids on each of those workstations. Every heartbeat answers with the newer of
+  the two as `targetUrl` / `broadcastUrl` / `broadcastEpoch`, so a broadcast to selected screens is not
+  undone by the next heartbeat, and a reset of some screens does not stop the others' broadcast.
 - **`message`** (optional, `lock` only): shown on the lock curtain, truncated to 280 characters. Without it the
-  school's default lock message is used.
+  organization's default lock message is used.
 - **Request Body Examples:**
   - **Batch lock selected workstations with custom message:**
 
@@ -405,7 +414,7 @@ Dispatches remote actions to one, selected subsets, or all workstations.
     }
     ```
 
-  - **Reset broadcast to student portal** (there is no `reset` action; it is `navigate` with `resetPortal`):
+  - **Reset broadcast to user portal** (there is no `reset` action; it is `navigate` with `resetPortal`):
 
     ```json
     {
@@ -428,9 +437,9 @@ Dispatches remote actions to one, selected subsets, or all workstations.
 
 #### `GET /api/groups`
 
-Retrieves all defined workstation groups for the school tenant.
+Retrieves all defined workstation groups for the organization tenant.
 
-- **Access:** School Admin (requires `workstations` permission)
+- **Access:** Organization Admin (requires `workstations` permission)
 - **Response `200 OK`:**
 
   ```json
@@ -446,7 +455,7 @@ Retrieves all defined workstation groups for the school tenant.
 
 Creates a new named workstation group.
 
-- **Access:** School Admin (requires `workstations` permission)
+- **Access:** Organization Admin (requires `workstations` permission)
 - **Request Body:** `{ "name": "Robotics Bay" }` — 1 to 50 characters.
 - **Response `200 OK`:** `{ "status": "ok", "group": { "id": "…", "tenant_id": "…", "name": "Robotics Bay", "created_at": 1726300200 } }`
 - **Errors:** `400` empty or over-long name; `409` a group with that name already exists (compared
@@ -456,14 +465,14 @@ Creates a new named workstation group.
 
 Deletes a workstation group and resets member devices' `group_name` to `NULL`.
 
-- **Access:** School Admin (requires `workstations` permission)
-- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the group does not exist in this school.
+- **Access:** Organization Admin (requires `workstations` permission)
+- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the group does not exist in this organization.
 
 #### `POST /api/clients/group`
 
 Assigns multiple workstations to a designated group (or unassigns if `groupName` is empty or `null`).
 
-- **Access:** School Admin (requires `workstations` permission)
+- **Access:** Organization Admin (requires `workstations` permission)
 - **Request Body:**
 
   ```json
@@ -480,7 +489,7 @@ Assigns multiple workstations to a designated group (or unassigns if `groupName`
 
 Decommissions a client device and revokes its bearer token.
 
-- **Access:** School Admin
+- **Access:** Organization Admin
 - **Request Body:**
 
   ```json
@@ -495,37 +504,37 @@ Decommissions a client device and revokes its bearer token.
 
 ---
 
-### 5b. Teachers & Staff Delegation
+### 5b. Staff Delegation
 
-**Roles:** `school_admin` (Co-Administrator, full access), `sub_admin`, `teacher`, `lab_assistant`,
-`content_manager`. **Permissions:** `workstations`, `broadcast`, `portal`, `whitelist`, `teachers`,
+**Roles:** `org_admin` (Co-Administrator, full access), `sub_admin`, `operator`, `assistant`,
+`content_manager`. **Permissions:** `workstations`, `broadcast`, `portal`, `whitelist`, `staff`,
 `settings`. The Apps & Web page opens with any of `broadcast`, `portal` or `whitelist`, and each of its
 three tabs calls routes guarded by that one permission. `*` is never stored; full access comes from
-owning the school or holding the `school_admin` role.
+owning the organization or holding the `org_admin` role.
 
-**Delegation limits.** A staff member who holds `teachers` but is not a co-administrator may only grant
-permissions they hold themselves, may not appoint a `school_admin`, and may not change or remove their
+**Delegation limits.** A staff member who holds `staff` but is not a co-administrator may only grant
+permissions they hold themselves, may not appoint an `org_admin`, and may not change or remove their
 own account or a co-administrator's. Each of those answers `403`. Without these limits the staff
-permission was a path to full control of the school.
+permission was a path to full control of the organization.
 
-#### `GET /api/tenant/teachers`
+#### `GET /api/tenant/staff`
 
-Lists all authorized instructors, assistants, and sub-administrators delegated for this school tenant.
+Lists all authorized operators, assistants, and sub-administrators delegated for this organization tenant.
 
-- **Access:** School Admin (requires `teachers` permission — the list carries every colleague's email)
+- **Access:** Organization Admin (requires `staff` permission — the list carries every colleague's email)
 - **Response `200 OK`:**
 
   ```json
   {
     "status": "ok",
-    "teachers": [
+    "staff": [
       {
         "id": "5c1e…",
         "tenant_id": "…",
         "user_id": "…",
-        "email": "sarah.smith@greenwood.edu",
+        "email": "sarah.smith@greenwood.example",
         "name": "Sarah Smith",
-        "role": "teacher",
+        "role": "operator",
         "permissions": ["workstations", "broadcast"],
         "created_at": 1726300000
       }
@@ -533,41 +542,41 @@ Lists all authorized instructors, assistants, and sub-administrators delegated f
   }
   ```
 
-#### `POST /api/tenant/teachers`
+#### `POST /api/tenant/staff`
 
 Creates a delegated staff account with a role and granular permissions.
 
-- **Access:** School Admin (requires `teachers` permission, within the delegation limits above)
+- **Access:** Organization Admin (requires `staff` permission, within the delegation limits above)
 - **Request Body:**
 
   ```json
   {
-    "email": "john.doe@greenwood.edu",
+    "email": "john.doe@greenwood.example",
     "password": "SecurePassword123!",
     "name": "John Doe",
-    "role": "teacher",
+    "role": "operator",
     "permissions": ["workstations", "broadcast"]
   }
   ```
 
-- **Response `200 OK`:** `{ "status": "ok", "teacher": { "id": "…", "role": "teacher", "permissions": [...], ... } }`
+- **Response `200 OK`:** `{ "status": "ok", "operator": { "id": "…", "role": "operator", "permissions": [...], ... } }`
 - **Errors:** `400` unknown role or permission, or a password under 12 characters or without both letters
-  and digits; `409` the email already belongs to an account (it is never linked into another school).
+  and digits; `409` the email already belongs to an account (it is never linked into another organization).
 
-#### `POST /api/tenant/teachers/update`
+#### `POST /api/tenant/staff/update`
 
 Changes a staff account's role and/or permissions. Omitted fields are left as they are.
 
-- **Access:** School Admin (requires `teachers` permission, within the delegation limits above)
-- **Request Body:** `{ "id": "5c1e…", "role": "lab_assistant", "permissions": ["workstations"] }`
-- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the id is not a staff account of this school.
+- **Access:** Organization Admin (requires `staff` permission, within the delegation limits above)
+- **Request Body:** `{ "id": "5c1e…", "role": "assistant", "permissions": ["workstations"] }`
+- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the id is not a staff account of this organization.
 
-#### `DELETE /api/tenant/teachers/:id`
+#### `DELETE /api/tenant/staff/:id`
 
-Removes a staff account from the school and ends every session it holds.
+Removes a staff account from the organization and ends every session it holds.
 
-- **Access:** School Admin (requires `teachers` permission, within the delegation limits above)
-- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the id is not a staff account of this school.
+- **Access:** Organization Admin (requires `staff` permission, within the delegation limits above)
+- **Response `200 OK`:** `{ "status": "ok" }`; `404` when the id is not a staff account of this organization.
 
 ---
 
@@ -577,21 +586,21 @@ Removes a staff account from the school and ends every session it holds.
 
 Switches workstation launch behavior between the App Launcher Grid (`portal`) and Direct Single-Site Lockdown (`single_url`).
 
-- **Access:** School Admin
+- **Access:** Organization Admin
 - **Request Body:**
 
   ```json
   {
     "mode": "single_url",
-    "defaultUrl": "https://canvas.institution.edu"
+    "defaultUrl": "https://canvas.example.com"
   }
   ```
 
 #### `POST /api/settings/customization`
 
-Configures school-specific branding, hero headers, and screen lock defaults.
+Configures organization-specific branding, hero headers, and screen lock defaults.
 
-- **Access:** School Admin
+- **Access:** Organization Admin
 - **Request Body:**
 
   ```json
@@ -599,7 +608,7 @@ Configures school-specific branding, hero headers, and screen lock defaults.
     "name": "Oakridge STEM Academy",
     "defaultLockMessage": "Examination active. No talking.",
     "portalTitle": "Digital Learning Lab",
-    "portalSubtitle": "Select an approved lesson to begin",
+    "portalSubtitle": "Select an approved page to begin",
     "portalDescription": "Computer Science Lab 304",
     "portalFooter": "For technical assistance, raise your hand."
   }
@@ -607,9 +616,9 @@ Configures school-specific branding, hero headers, and screen lock defaults.
 
 #### `POST /api/settings/enrollment-key`
 
-Rotates the school's workstation enrollment key. Existing workstations retain valid bearer tokens.
+Rotates the organization's workstation enrollment key. Existing workstations retain valid bearer tokens.
 
-- **Access:** School Admin
+- **Access:** Organization Admin
 - **Response `200 OK`:**
 
   ```json
@@ -625,7 +634,7 @@ Rotates the school's workstation enrollment key. Existing workstations retain va
 
 #### `POST /api/super/tenants/approve`
 
-Approves a pending school tenant registration.
+Approves a pending organization tenant registration.
 
 - **Access:** Super Admin
 - **Request Body:**
@@ -639,7 +648,7 @@ Approves a pending school tenant registration.
 
 #### `POST /api/super/tenants/suspend`
 
-Temporarily suspends an active school organization. Workstations for this tenant stop receiving telemetry and student portal access is blocked.
+Temporarily suspends an active organization. Workstations for this tenant stop receiving telemetry and user portal access is blocked.
 
 - **Access:** Super Admin
 - **Request Body:**
@@ -650,7 +659,7 @@ Temporarily suspends an active school organization. Workstations for this tenant
 
 #### `POST /api/super/tenants/custom-domain/approve`
 
-Approves and activates a custom domain mapping for an institution.
+Approves and activates a custom domain mapping for an organization.
 
 - **Access:** Super Admin
 - **Request Body:**
@@ -679,7 +688,7 @@ fragment selects the mode:
 | *(none)* | Normal setup flow. On an enrolled, installed workstation this is treated as `#network`. |
 | `#network` | Network settings only. On an installed workstation the administrator modal opens first. |
 | `#network&admin=<token>` | Same, already unlocked by the top-bar modal. The wizard keeps the token in memory and removes it from the address bar. |
-| `#offline` | The extension redirected here after the workstation was offline for more than 6 s. The page returns to the lesson by itself once `/api/status` reports `isOnline` again. |
+| `#offline` | The extension redirected here after the workstation was offline for more than 6 s. The page returns to the page by itself once `/api/status` reports `isOnline` again. |
 
 Enrolment is still refused once configured: `POST /api/setup` answers `409`.
 
@@ -701,8 +710,8 @@ on live media, which keeps nothing by design.
     "clientId": "PC-01",
     "clientNum": 1,
     "isLocked": false,
-    "lockMessage": "Screens locked by instructor",
-    "targetUrl": "https://oakridge.labkiosk.institution.edu",
+    "lockMessage": "Screens locked by operator",
+    "targetUrl": "https://oakridge.labkiosk.example.com",
     "broadcastUrl": "",
     "broadcastEpoch": 0,
     "isConfigured": true,
@@ -741,7 +750,7 @@ a path, and an unknown one returns `404`.
 
 #### `GET /api/localization/languages`
 
-Asks the school's control plane which interface languages it offers, and marks the ones already
+Asks the organization's control plane which interface languages it offers, and marks the ones already
 installed. Needs the network and an enrolment, which is why it is separate from
 `/api/localization/options` — that one has to work on a workstation that has neither.
 
@@ -828,8 +837,8 @@ whoever runs the access point, so clients must render every field as text.
 
   ```json
   [
-    { "ssid": "School-Students", "signal": 85, "bars": "▂▄▆█", "security": "WPA2", "inUse": false },
-    { "ssid": "School-Guest", "signal": 60, "bars": "▂▄▆_", "security": "Open", "inUse": true }
+    { "ssid": "Organization-Users", "signal": 85, "bars": "▂▄▆█", "security": "WPA2", "inUse": false },
+    { "ssid": "Organization-Guest", "signal": 60, "bars": "▂▄▆_", "security": "Open", "inUse": true }
   ]
   ```
 
@@ -860,7 +869,7 @@ validation fails.
   {
     "interfaceType": "wifi",
     "device": "",
-    "ssid": "School-Students",
+    "ssid": "Organization-Users",
     "password": "SecretPassword123",
     "security": "WPA2",
     "hidden": false,
@@ -868,9 +877,9 @@ validation fails.
     "ipv6": { "mode": "auto" },
     "proxy": {
       "enabled": true,
-      "host": "proxy.school.internal",
+      "host": "proxy.organization.internal",
       "port": 8080,
-      "bypass": "*.school.internal, 10.0.0.0/8"
+      "bypass": "*.organization.internal, 10.0.0.0/8"
     }
   }
   ```

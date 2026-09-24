@@ -27,7 +27,7 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
 3. **Before touching a `ui*.ts` template**:
    - Every `<script>` carries `nonce="${escapeAttr(nonce)}"`.
    - Zero inline `on*=` handlers, only `data-action` attributes with a delegated listener in `ui_admin_shared.ts` (or `addEventListener`).
-   - The school dashboard enforces a 4-module primary rail (`workstations`, `apps-web`, `teachers`, `settings`).
+   - The organization dashboard enforces a 4-module primary rail (`workstations`, `apps-web`, `staff`, `settings`).
    - All rendered CSS classes MUST be declared in `src/ui_layout.ts` (e.g. `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`).
    - Scrollable tables must use `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned `th`.
    - Client scripts build DOM nodes (`textContent`, `dataset`, `replaceChildren`). `escapeHtml()` and
@@ -35,7 +35,7 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
    - Staff routes go through `staffDelegationProblem()`; batch routes cap and chunk their id lists.
      See [`skills/labkiosk-control/SKILL.md`](../labkiosk-control/SKILL.md) §1A.
 4. State two requests must agree on goes in D1, never in a module-level variable: the active broadcast
-   (`tenants.broadcast_url` / `broadcast_epoch`) and device remote-control credentials (`vnc_password` / `remote_host`).
+   (`tenants.broadcast_url` / `broadcast_epoch`, and per workstation on `client_devices`) and device remote-control credentials (`vnc_password` / `remote_host`).
 5. If altering the database schema:
    - Add a **new** numbered migration under `cloudflare-control/migrations/` (never edit an applied one).
    - Mirror the table/index definition in `SCHEMA_SQL` inside `cloudflare-control/src/db.ts`, which is
@@ -90,7 +90,7 @@ This skill guides AI coding assistants through authoring, modifying, testing, an
 
 ### C. Capturing Visual Screen Verification
 Never claim a UI change is complete without inspecting a visual capture. The agent logging a command
-as executed proves only that the agent ran; it does not prove the student saw anything:
+as executed proves only that the agent ran; it does not prove the user saw anything:
 ```bash
 # Capture display 0 inside the container
 docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/verify.png
@@ -104,7 +104,7 @@ docker cp labkiosk-client-01:/tmp/verify.png .
 ### 1. `X-Frame-Options` and `Content-Security-Policy` Blocks
 - **Symptom:** Webpage displays "www.khanacademy.org refused to connect" or blank white frame.
 - **Root Cause:** Loading modern web applications inside `<iframe>` tags is blocked by modern security headers.
-- **Remedy:** Always load educational applications in top-level native browser frames. Rely on the injected Chrome extension (`content.js`) for the top navigation bar and fullscreen lock curtain.
+- **Remedy:** Always load approved applications in top-level native browser frames. Rely on the injected Chrome extension (`content.js`) for the top navigation bar and fullscreen lock curtain.
 
 ### 2. `rsync: rmdir(boot/efi) failed: Device or resource busy (16)`
 - **Root Cause:** Submount `/boot/efi` was mounted before `rsync --delete` ran.
@@ -148,7 +148,7 @@ docker cp labkiosk-client-01:/tmp/verify.png .
 - **Symptom:** No navigation bar, no lock curtain. Chromium logs *"Loading of unpacked extensions is
   disabled by the administrator"*.
 - **Cause:** A blanket extension block in the managed policy (`ExtensionInstallBlocklist: ["*"]`).
-- **Remedy:** Do not add a blanket block. Students cannot install extensions anyway (`chrome://` blocked, kiosk mode, no Web Store in allowlist, profile wiped on launch).
+- **Remedy:** Do not add a blanket block. Users cannot install extensions anyway (`chrome://` blocked, kiosk mode, no Web Store in allowlist, profile wiped on launch).
 
 ### 9. Freshly Enrolled Workstation Shows "This page is blocked"
 - **Symptom:** Enrolment succeeds, the dashboard shows the workstation, but its screen is a Chromium block page.
@@ -158,7 +158,7 @@ docker cp labkiosk-client-01:/tmp/verify.png .
 ### 10. Workstation Not Appearing on the Dashboard
 - **Symptom:** The agent logs `401` responses, or the grid stays empty after boot.
 - **Cause:** The workstation is not enrolled, or its device token was revoked.
-- **Remedy:** Re-run the setup wizard with the school's current enrollment key (**Settings -> Workstation Enrollment Key** on the teacher dashboard).
+- **Remedy:** Re-run the setup wizard with the organization's current enrollment key (**Settings -> Workstation Enrollment Key** on the admin console).
 
 ### 11. A Console Button Does Nothing, Console Shows a CSP Error
 - **Symptom:** "Refused to execute inline event handler" or "Refused to execute inline script".

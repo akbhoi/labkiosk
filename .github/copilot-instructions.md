@@ -4,7 +4,7 @@ These instructions guide GitHub Copilot when assisting contributors on the Lab K
 
 ## Subsystem Architecture
 - **Client OS & Distro (`distro-builder/`)**: Debian 12 Live ISO, Openbox, Python agent (`agent.py`, standard library only, loopback `127.0.0.1:8888`), disk installer (`labkiosk-install`), Manifest V3 extension (`content.js` in Shadow DOM, `background.js` as the only loopback caller). Read `distro-builder/AGENTS.md`.
-- **Control Plane (`cloudflare-control/`)**: Cloudflare Workers edge SaaS, D1 database (`migrations/0001..0009` mirrored in `SCHEMA_SQL`), native Web Crypto PBKDF2 authentication, nonce-based CSP. The school console has four modules (Workstations, Apps & Web, Teachers & Staff, Lab Settings), one `ui_admin_<page>.ts` per page. Read `cloudflare-control/AGENTS.md`.
+- **Control Plane (`cloudflare-control/`)**: Cloudflare Workers edge SaaS, D1 database (`migrations/0001..0011` mirrored in `SCHEMA_SQL`), native Web Crypto PBKDF2 authentication, nonce-based CSP. The organization console has four modules (Workstations, Apps & Web, Staff, Settings), one `ui_admin_<page>.ts` per page. Read `cloudflare-control/AGENTS.md`.
 
 ## Mandatory Coding Invariants
 
@@ -15,6 +15,8 @@ These instructions guide GitHub Copilot when assisting contributors on the Lab K
 4. **Staff delegation never escalates**: validate roles/permissions against `STAFF_ROLES` / `STAFF_PERMISSIONS`, never store `*`, and call `staffDelegationProblem()` on every staff create/update/delete.
 5. **Bound batches**: cap id lists at `MAX_BATCH_TARGETS` (500) and write `IN (...)` lists in `D1_IN_LIST_CHUNK` (90) slices — D1 binds at most 100 parameters.
 6. **Two Homes for Database Schema**: a new migration in `cloudflare-control/migrations/` AND the mirror in `SCHEMA_SQL`. Never edit an applied migration.
+   A CHECK change on `users`/`tenants` must use the cascade-safe rebuild in `0011_organization_vocabulary.sql`; a plain `DROP TABLE` cascade-deletes every organization.
+   Vocabulary is organization / operator / staff / user / User Portal (roles `org_admin`, `operator`, `assistant`; permission `staff`); license statements must match `LICENSE`.
 7. **Escape everything**: server-side `escapeHtml()` / `escapeJson()`; client-side DOM nodes with `textContent` — `escapeHtml`/`escapeAttr` are server-only and throw in the browser. URLs go through `safeHttpUrl()`.
 8. **No Inline Event Handlers**: CSP disallows `onclick=`, `onsubmit=`, etc. Every `<script>` carries the response nonce; use `data-action` attributes and listeners.
 9. **Console API calls use `labkioskApi(path)`**, never bare `fetch("/api/...")`. CSS classes a page renders must be declared in `ui_layout.ts`; colours and radii come from `ui_tokens.ts`.

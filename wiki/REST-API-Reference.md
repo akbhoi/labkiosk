@@ -17,9 +17,9 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
-| **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Teacher Lab Dashboard, Super Admin console |
+| **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Operator Lab Dashboard, Super Admin console |
 | **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/telemetry` |
-| **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, sign-in, registration, student portal, enrolment, health probe |
+| **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, sign-in, registration, user portal, enrolment, health probe |
 
 Session tokens are random 32-byte hex strings; only their SHA-256 hash is stored in D1. Device tokens are handled the same way — the plaintext token exists only on the workstation that was issued it.
 
@@ -57,9 +57,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/status` | `GET` | Platform health and the tenant's current kiosk target |
-| `/api/auth/register` | `POST` | Register a school and claim a subdomain |
-| `/api/auth/login` | `POST` | Sign in as teacher or super admin |
-| `/api/portal-sites` | `GET` | List the host tenant's student portal cards |
+| `/api/auth/register` | `POST` | Register an organization and claim a subdomain |
+| `/api/auth/login` | `POST` | Sign in as operator or super admin |
+| `/api/portal-sites` | `GET` | List the host tenant's user portal cards |
 | `/api/devices/enroll` | `POST` | Exchange an enrollment key for a device token |
 
 ### Session-authenticated
@@ -70,7 +70,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/auth/logout` | `POST` | Invalidate this session and clear the cookie |
 | `/api/auth/change-password` | `POST` | Rotate password, revoking the account's other sessions |
 
-### Teacher admin
+### Operator admin
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
@@ -79,21 +79,21 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/clients/group` | `POST` | Assign workstations to a group |
 | `/api/groups` | `GET` `POST` | List and create workstation groups |
 | `/api/groups/:id` | `DELETE` | Delete a workstation group |
-| `/api/tenant/teachers` | `GET` `POST` | List and create delegated staff (requires `teachers`; see the delegation limits in `docs/API.md`) |
-| `/api/tenant/teachers/update` | `POST` | Change a staff account's role or permissions |
-| `/api/tenant/teachers/:id` | `DELETE` | Remove a staff account and end its sessions |
+| `/api/tenant/staff` | `GET` `POST` | List and create delegated staff (requires `staff`; see the delegation limits in `docs/API.md`) |
+| `/api/tenant/staff/update` | `POST` | Change a staff account's role or permissions |
+| `/api/tenant/staff/:id` | `DELETE` | Remove a staff account and end its sessions |
 | `/api/command` | `POST` | Dispatch a command to one, selected, or all workstations |
 | `/api/whitelist` | `GET` `POST` | Read and modify the permanent domain allowlist |
-| `/api/portal-sites` | `POST` | Add a student portal card |
-| `/api/portal-sites/:id` | `DELETE` | Remove a student portal card |
+| `/api/portal-sites` | `POST` | Add a user portal card |
+| `/api/portal-sites/:id` | `DELETE` | Remove a user portal card |
 | `/api/broadcast-presets` | `GET` `POST` | List and add quick-launch broadcast shortcuts |
 | `/api/broadcast-presets/:id` | `DELETE` | Remove a broadcast shortcut |
 | `/api/settings/mode` | `POST` | Switch between `portal` and `single_url` |
-| `/api/settings/customization` | `GET` `POST` | School branding, portal copy, default lock message |
+| `/api/settings/customization` | `GET` `POST` | Organization branding, portal copy, default lock message |
 | `/api/settings/subdomain` | `POST` | Request a subdomain change |
 | `/api/settings/enrollment-key` | `GET` `POST` | View or rotate the enrollment key |
 | `/api/settings/custom-domain` | `POST` `DELETE` | Request or disconnect a custom domain |
-| `/api/audit-logs` | `GET` | Paginated institutional audit log |
+| `/api/audit-logs` | `GET` | Paginated organization audit log |
 
 ### Device
 
@@ -105,10 +105,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/super/tenants/approve` | `POST` | Approve a pending school |
-| `/api/super/tenants/reject` | `POST` | Reject a pending school |
-| `/api/super/tenants/suspend` | `POST` | Suspend an active school |
-| `/api/super/tenants/reactivate` | `POST` | Reactivate a suspended school |
+| `/api/super/tenants/approve` | `POST` | Approve a pending organization |
+| `/api/super/tenants/reject` | `POST` | Reject a pending organization |
+| `/api/super/tenants/suspend` | `POST` | Suspend an active organization |
+| `/api/super/tenants/reactivate` | `POST` | Reactivate a suspended organization |
 | `/api/super/tenants/custom-domain/approve` | `POST` | Approve and bind a custom domain |
 | `/api/super/tenants/custom-domain/reject` | `POST` | Reject a requested custom domain |
 | `/api/super/tenants/custom-domain/remove` | `POST` | Unbind an assigned custom domain |
@@ -117,10 +117,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 
 | Path | Serves |
 | :--- | :--- |
-| `/` | Landing page on the platform apex; Student Portal on a tenant host |
-| `/` | School homepage (school-authored headline, intro and content blocks) |
-| `/home` | Student Learning Portal (educational app grid) |
-| `/admin` | Teacher Lab Dashboard |
+| `/` | Landing page on the platform apex; User Portal on a tenant host |
+| `/` | Organization homepage (organization-authored headline, intro and content blocks) |
+| `/home` | User Portal (approved app grid) |
+| `/admin` | Operator Lab Dashboard |
 | `/super` | Super Admin Master Console |
 | `/login`, `/register`, `/contact` | Landing-page sections |
 | `/download`, `/iso` | Redirect to `ISO_DOWNLOAD_URL` |
@@ -131,7 +131,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 
 ### `POST /api/devices/enroll`
 
-Exchanges a school's enrollment key for a persistent device bearer token. This is the only moment a workstation proves who it is with a shared secret; afterwards it holds its own token.
+Exchanges an organization's enrollment key for a persistent device bearer token. This is the only moment a workstation proves who it is with a shared secret; afterwards it holds its own token.
 
 **Access:** public, throttled per source address on failure.
 
@@ -154,15 +154,20 @@ Exchanges a school's enrollment key for a persistent device bearer token. This i
   "deviceToken": "32_byte_hex_bearer_token",
   "clientId": "PC-01",
   "subdomain": "oakridge",
-  "schoolName": "Oakridge High School",
+  "organizationName": "Oakridge Holdings",
+  "schoolName": "Oakridge Holdings",
   "mode": "portal",
-  "targetUrl": "https://oakridge.labkiosk.example.edu"
+  "targetUrl": "https://oakridge.labkiosk.example.com"
 }
 ```
 
+`schoolName` is also sent, with the same value, for agents installed from an ISO older than the
+organization vocabulary. It is deprecated: new code reads `organizationName`, and the field will be
+removed once no workstation in the field depends on it.
+
 The agent writes the token to `/etc/labkiosk/config.json` with mode `0600`. On live media that file lives in the RAM overlay and is lost at power-off, which is intended — the workstation is meant to be installed. On an installed disk, `/etc/labkiosk` is a mount point for the `LABKIOSK_DATA` partition, which is what makes a post-install enrolment persist.
 
-**Failure modes:** an empty or wrong key, an unapproved or suspended school, or a `clientId` failing `CLIENT_ID_PATTERN` are all rejected. Schools begin with an empty enrollment key, which authenticates nothing until a teacher generates one.
+**Failure modes:** an empty or wrong key, an unapproved or suspended organization, or a `clientId` failing `CLIENT_ID_PATTERN` are all rejected. Organizations begin with an empty enrollment key, which authenticates nothing until an operator generates one.
 
 ---
 
@@ -206,9 +211,9 @@ There is **no `currentUrl` key and no `metrics` object.** The agent collects no 
   "commands": [
     { "id": "cmd-123", "action": "lock", "message": "Eyes to the board please." }
   ],
-  "whitelist": ["scratch.mit.edu", "khanacademy.org", "oakridge.labkiosk.example.edu"],
+  "whitelist": ["scratch.mit.edu", "khanacademy.org", "oakridge.labkiosk.example.com"],
   "mode": "portal",
-  "targetUrl": "https://oakridge.labkiosk.example.edu",
+  "targetUrl": "https://oakridge.labkiosk.example.com",
   "broadcastUrl": "",
   "broadcastEpoch": 0
 }
@@ -217,11 +222,11 @@ There is **no `currentUrl` key and no `metrics` object.** The agent collects no 
 | Field | Notes |
 | :--- | :--- |
 | `commands` | Pending commands for *this* workstation. Delivery is recorded in `command_deliveries`, so each command executes exactly once rather than on every heartbeat. |
-| `whitelist` | Effective allowlist: the school's own domains plus every portal app host, plus the active broadcast host if it is not already present. Merged into the Chromium managed policy. |
+| `whitelist` | Effective allowlist: the organization's own domains plus every portal app host, plus the active broadcast host if it is not already present. Merged into the Chromium managed policy. |
 | `targetUrl` | Where the kiosk should point. Validated as `http(s)` by `safe_navigable_url()` before the agent stores it, because it ends up in `window.location`. |
-| `broadcastUrl` / `broadcastEpoch` | The authoritative synchronised lesson. The epoch is a monotonic marker letting a workstation distinguish a new broadcast from a replayed one. |
+| `broadcastUrl` / `broadcastEpoch` | The authoritative synchronised page. The epoch is a monotonic marker letting a workstation distinguish a new broadcast from a replayed one. |
 
-**`403`** if the school is not `active` — a suspended school's workstations stop receiving commands and policy.
+**`403`** if the organization is not `active` — a suspended organization's workstations stop receiving commands and policy.
 
 ---
 
@@ -229,7 +234,7 @@ There is **no `currentUrl` key and no `metrics` object.** The agent collects no 
 
 Dispatches a remote action to one workstation or the whole lab.
 
-**Access:** teacher admin.
+**Access:** organization admin.
 
 **Supported actions** (`ALLOWED_COMMANDS` in `index.ts`, mirrored by `execute_command()` in `agent.py`):
 
@@ -237,7 +242,7 @@ Dispatches a remote action to one workstation or the whole lab.
 | :--- | :--- |
 | `lock` | Raises the full-screen lock curtain across every tab, with the message. |
 | `unlock` | Drops the curtain. |
-| `navigate` | Navigates top-level to `url`. With `resetPortal: true`, returns to the school portal and clears the broadcast. |
+| `navigate` | Navigates top-level to `url`. With `resetPortal: true`, returns to the organization portal and clears the broadcast. |
 | `reload` | Reloads the current page. |
 | `reboot` | Reboots the workstation through logind. |
 | `shutdown` | Powers the workstation off. |
@@ -267,9 +272,9 @@ Lock and unlock additionally update the telemetry cache immediately, so the cons
 
 ### `GET /api/clients`
 
-Returns the school's fleet and its latest telemetry.
+Returns the organization's fleet and its latest telemetry.
 
-**Access:** teacher admin.
+**Access:** organization admin.
 
 ```json
 {
@@ -290,7 +295,7 @@ Returns the school's fleet and its latest telemetry.
 }
 ```
 
-`vncPassword` and `remoteHost` are what make one-click remote control work without a teacher typing anything. They are readable only by an authenticated admin of that specific school.
+`vncPassword` and `remoteHost` are what make one-click remote control work without an operator typing anything. They are readable only by an authenticated admin of that specific organization.
 
 ---
 
@@ -308,18 +313,18 @@ Decommissions a workstation and revokes its device token. The machine's next hea
 
 ### `POST /api/auth/register`
 
-Creates a school and its first administrator. The school starts `pending` and cannot enrol workstations until a super admin approves it.
+Creates an organization and its first administrator. The organization starts `pending` and cannot enrol workstations until a super admin approves it.
 
 ```json
 {
-  "name": "Oakridge High School",
+  "name": "Oakridge Holdings",
   "email": "principal@oakridge.edu",
   "password": "StrongPassword123!",
   "subdomain": "oakridge"
 }
 ```
 
-→ `{ "status": "ok", "message": "School registered successfully. Pending approval.", "subdomain": "oakridge" }`
+→ `{ "status": "ok", "message": "Organization registered successfully. Pending approval.", "subdomain": "oakridge" }`
 
 Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()` and stored as PBKDF2-HMAC-SHA256, 100 000 iterations, 32-byte random salt, 256 derived bits.
 
@@ -328,10 +333,10 @@ Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()
 ### `POST /api/auth/login`
 
 ```json
-{ "email": "teacher@oakridge.edu", "password": "StrongPassword123!" }
+{ "email": "operator@oakridge.edu", "password": "StrongPassword123!" }
 ```
 
-→ `{ "status": "ok", "role": "school_admin", "subdomain": "oakridge" }`, plus a `labkiosk_session` cookie.
+→ `{ "status": "ok", "role": "org_admin", "subdomain": "oakridge" }`, plus a `labkiosk_session` cookie.
 
 Repeated failures back off exponentially per identifier, tracked in `login_attempts`.
 
@@ -349,7 +354,7 @@ Rotates the password and revokes the account's **other** sessions, so a stolen c
 
 ### `GET` / `POST` `/api/portal-sites`
 
-`GET` is public and scoped to the host tenant; it is what the Student Portal renders from. `POST` requires teacher admin.
+`GET` is public and scoped to the host tenant; it is what the User Portal renders from. `POST` requires organization admin.
 
 ```json
 {
@@ -361,7 +366,7 @@ Rotates the password and revokes the account's **other** sessions, so a stolen c
 }
 ```
 
-Adding a card implicitly authorises its host: `buildEffectiveWhitelist()` unions the permanent allowlist with every portal app domain, so a teacher never has to add a site in two places.
+Adding a card implicitly authorises its host: `buildEffectiveWhitelist()` unions the permanent allowlist with every portal app domain, so an operator never has to add a site in two places.
 
 ---
 
@@ -382,7 +387,7 @@ Adding a card implicitly authorises its host: `buildEffectiveWhitelist()` unions
   "name": "Oakridge STEM Academy",
   "defaultLockMessage": "Examination active. No talking.",
   "portalTitle": "Digital Learning Lab",
-  "portalSubtitle": "Select an approved lesson to begin",
+  "portalSubtitle": "Select an approved page to begin",
   "portalDescription": "Computer Science Lab 304",
   "portalFooter": "For technical assistance, raise your hand."
 }
@@ -408,7 +413,7 @@ All take a `tenantId` and require a `super_admin` session.
 { "tenantId": "tenant-uuid-1", "subdomain": "oakridge" }
 ```
 
-Suspension is the platform's kill switch: a suspended school's workstations receive `403` on telemetry, stop getting commands and policy, and its portal stops serving.
+Suspension is the platform's kill switch: a suspended organization's workstations receive `403` on telemetry, stop getting commands and policy, and its portal stops serving.
 
 Custom domain approval binds an FQDN to a tenant. Once bound, Cloudflare routes it to the worker and `resolveTenant()` recognises it from the `Host` header. → [Super Admin Guide](Super-Admin-Guide)
 
@@ -416,7 +421,7 @@ Custom domain approval binds an FQDN to a tenant. Once bound, Cloudflare routes 
 
 ## The client agent's loopback API
 
-`agent.py` also serves a small HTTP API on **`127.0.0.1:8888`**, used only by the local setup wizard. It is not reachable from the network, from the school LAN, or from a visited web page.
+`agent.py` also serves a small HTTP API on **`127.0.0.1:8888`**, used only by the local setup wizard. It is not reachable from the network, from the organization LAN, or from a visited web page.
 
 Every request must satisfy both `_is_expected_host()` (the `Host` header is loopback) and `_is_local_caller()` (the `Origin`, when present, is `127.0.0.1` or `localhost`). Either check failing returns `403`.
 
@@ -427,7 +432,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | `/setup` | `GET` | Serves `wizard.html`. Returns `403` once the workstation is enrolled unless accessed via `#network` with admin authentication. |
 | `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
 | `/api/localization/options` | `GET` | Continents, countries, timezones, locales, keyboard layouts and interface catalogs, all read from the workstation's own tzdata, locale and X11 tables. |
-| `/api/localization/languages` | `GET` | Interface languages the school's control plane offers, with the installed ones marked. |
+| `/api/localization/languages` | `GET` | Interface languages the organization's control plane offers, with the installed ones marked. |
 | `/api/localization/language/download` | `POST` | Downloads one catalog from the control plane into `/etc/labkiosk/i18n`. Administrator token required once installed. |
 | `/api/localization/configure` | `POST` | Applies language, region, timezone, keyboard and (when `syncTime` is false) the clock by hand. Administrator token required once installed. |
 | `/i18n/<tag>.json` | `GET` | An interface catalog. `en-US` is bundled; others come from `/etc/labkiosk/i18n`. |

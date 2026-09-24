@@ -18,15 +18,17 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 
 ---
 
-## Teacher console UI
+## Admin console UI
 
 | Symptom | Root cause | Fix |
 | :--- | :--- | :--- |
 | A button does nothing; console says *"Refused to execute inline event handler"* | A template gained an `on*=` attribute; the nonce CSP blocks it | `data-action` + a delegated listener, or `addEventListener` |
 | A script block silently does not run | The `<script>` lacks `nonce="${escapeAttr(nonce)}"` | Pass the response nonce to the renderer and stamp it |
-| Resetting Broadcast lands on the SaaS landing page instead of the school portal | `resetBroadcastToPortal()` sent `origin + "/"` without tenant scoping | `POST /api/command` resolves `portalUrlFor(tenant)` authoritatively |
+| Resetting Broadcast lands on the SaaS landing page instead of the organization portal | `resetBroadcastToPortal()` sent `origin + "/"` without tenant scoping | `POST /api/command` resolves `portalUrlFor(tenant)` authoritatively |
 | Workstations disagree about the active broadcast | Broadcast state was in isolate memory, which differs per colo | It lives in `tenants.broadcast_url` / `broadcast_epoch` in D1 |
-| A Single-Site Lockdown URL is rejected | No scheme, e.g. `canvas.school.edu` | None needed — `safeHttpUrl()` prepends `https://`. If it is still rejected the host itself is malformed |
+| A Single-Site Lockdown URL is rejected | No scheme, e.g. `canvas.example.com` | None needed — `safeHttpUrl()` prepends `https://`. If it is still rejected the host itself is malformed |
+| A broadcast to selected workstations reverts to the portal after 2–3 seconds | Only a broadcast to `"all"` was stored; the next heartbeat's `targetUrl` sent the screens back | Fixed by per-workstation broadcast state (migration `0010`); apply it and deploy the Worker together |
+| `/admin/teachers` or `/super/schools` bookmarks | Renamed to `/admin/staff` and `/super/organizations` | Both old paths redirect; update the bookmark |
 
 ---
 
@@ -34,12 +36,13 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 
 | Symptom | Root cause | Fix |
 | :--- | :--- | :--- |
-| Enrolment rejected with a valid-looking key | The school's key is empty, or the school is `pending`/`suspended` | Generate a key in Settings; have a super admin approve the school |
+| Enrolment rejected with a valid-looking key | The organization's key is empty, or the organization is `pending`/`suspended` | Generate a key in Settings; have a super admin approve the organization |
 | Enrolment rejected after several tries | Failed attempts from that address are throttled | Wait, then retry with the correct key |
 | Workstation never appears on the dashboard | Not enrolled, or its token was revoked | Re-run the wizard with the current key. Check `/tmp/lab-agent.log` for `401` |
 | Freshly enrolled kiosk shows "This page is blocked" | Chromium reads managed policy only at startup | The agent sets `pendingBrowserRestart` and restarts the browser after the next sync — wait for it |
 | Enrolment forgotten after a reboot | `overlayroot="tmpfs"` sends every write to RAM, including `/etc/labkiosk/config.json` | The installer creates `LABKIOSK_DATA` and mounts it at `/etc/labkiosk`. On an older image, enrol from the live session **before** installing |
 | Wizard shows the installer tab on an installed machine | `/api/status` returns `"isLive": True` as a literal instead of the computed value | Cosmetic — `POST /api/install` still refuses with `400`. → [Client Agent](Client-Agent#session-awareness) |
+| `The school address is not a valid server URL` (or `organization address`) for `http://<private IP>:8787` | Plain `http` was accepted only for `localhost` and the container gateways | A private IPv4 (`10/8`, `172.16/12`, `192.168/16`) is now accepted for a local test server; anything public still needs `https` |
 
 ---
 
@@ -69,6 +72,7 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 | Legacy BIOS will not boot the installed GPT disk | No BIOS Boot Partition for GRUB to embed `core.img` | Partition 1: `bios_grub`, 1–2 MiB, `set 1 bios_grub on` |
 | UEFI boot entry missing after a reboot | Firmware lost NVRAM boot variables | `grub-install --target=x86_64-efi --removable` also runs, creating `/boot/efi/EFI/BOOT/BOOTX64.EFI` |
 | Every installed machine shares a machine ID | `/etc/machine-id` was truncated to a newline, not to empty | It must be a genuinely **empty** file — that is the marker systemd replaces |
+| Installing fails with `'en-US' is not a language tag` | `labkiosk-localization` anchored its language-tag check with `\\Z` in a raw string, which no tag can match | Fixed; rebuild the ISO |
 
 ---
 
@@ -79,8 +83,8 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 | noVNC asks for a password | No heartbeat since boot, or `/tmp/labkiosk/vnc.secret` missing | Confirm enrolment; wait one telemetry cycle |
 | "Enrolment failed unexpectedly" in the wizard | The agent hit an error that is not a network or input problem — most often it could not write `/etc/labkiosk/config.json` | The message now names the exception, and the wizard opens **Agent Log & Diagnostics** by itself. Read it before rebooting: the log is in RAM |
 | Need the agent log on a real workstation | It has no terminal, and `file://` is blocked | Setup wizard → **Agent Log & Diagnostics** (administrator password once installed) |
-| The school address and enrollment key are gone after a reboot, and the wizard shows no warning | `/etc/labkiosk` was an **overlay** on RAM rather than the data partition: `overlayroot` was configured with an `overlayroot_options=` line it never reads, so it defaulted to `recurse=1` and overlaid every fstab entry. It is mounted and writable, which is why nothing complained | Reinstall from an ISO built with `overlayroot="tmpfs:recurse=0"`. The agent now reports the filesystem type, so this state shows up as `persistentStorage: false` and an amber warning |
-| The school address and enrollment key are gone after a reboot | `/etc/labkiosk` is a directory in the RAM overlay rather than the `LABKIOSK_DATA` partition, so the enrolment was never on disk. The wizard now says so in amber before you type anything, and `persistentStorage` in `GET /api/status` reports it | Reinstall from a current ISO. The boot-time repair mounts the partition when the boot has not, and refuses to fabricate a directory that would lose the next enrolment too |
+| The organization address and enrollment key are gone after a reboot, and the wizard shows no warning | `/etc/labkiosk` was an **overlay** on RAM rather than the data partition: `overlayroot` was configured with an `overlayroot_options=` line it never reads, so it defaulted to `recurse=1` and overlaid every fstab entry. It is mounted and writable, which is why nothing complained | Reinstall from an ISO built with `overlayroot="tmpfs:recurse=0"`. The agent now reports the filesystem type, so this state shows up as `persistentStorage: false` and an amber warning |
+| The organization address and enrollment key are gone after a reboot | `/etc/labkiosk` is a directory in the RAM overlay rather than the `LABKIOSK_DATA` partition, so the enrolment was never on disk. The wizard now says so in amber before you type anything, and `persistentStorage` in `GET /api/status` reports it | Reinstall from a current ISO. The boot-time repair mounts the partition when the boot has not, and refuses to fabricate a directory that would lose the next enrolment too |
 | `PermissionError: [Errno 13] ... /etc/labkiosk/config.json.tmp` when enrolling | The data partition at `/etc/labkiosk` is owned by root, so the unprivileged agent cannot write there. Disks written by an older installer show this | Reinstall from a current ISO: the installer verifies the kiosk user can write to the partition, and `labkiosk-data-permissions.service` corrects the ownership at every boot. The error text names the owner, mode and the agent's uid |
 | "Failed to connect to server" | Tunnel not running, or DNS not pointing at Cloudflare | `systemctl status cloudflared-kiosk`; confirm `/etc/cloudflared/config.yml` |
 | **Remote Control** disabled | No `remote_host` reported and no `TUNNEL_DOMAIN` set | Set `TUNNEL_DOMAIN` in the dashboard, or provision a tunnel |
@@ -146,8 +150,8 @@ cat /etc/chromium/policies/managed/policies.json
 ## Still stuck
 
 1. Read the agent log — it is the single most informative artefact on the client side.
-2. Take a screenshot. A log line proving the agent ran does not prove the student saw anything.
-3. Check the school's audit log for what actually changed and who changed it.
+2. Take a screenshot. A log line proving the agent ran does not prove the user saw anything.
+3. Check the organization's audit log for what actually changed and who changed it.
 4. Search existing [issues](https://github.com/akbhoi/labkiosk/issues), then open one with the ISO or worker version, the platform, and the exact error.
 
 **Do not open a public issue for a security vulnerability.** → [Security Model](Security-Model#reporting-a-vulnerability)

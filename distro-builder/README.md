@@ -2,7 +2,7 @@
 
 [← Back to Documentation Hub](../README.md#documentation-hub)
 
-A minimal, security-hardened Debian 12 (Bookworm) live kiosk operating system designed for educational computer labs and thin-client workstations.
+A minimal, security-hardened Debian 12 (Bookworm) live kiosk operating system designed for educational workstation fleets and thin-client workstations.
 
 ---
 
@@ -18,9 +18,9 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
   the medium as it goes. The boot menu additionally offers **Lab Kiosk OS (Load into RAM - toram)**,
   which copies the whole image into RAM first: pick it when the USB stick should be removable after
   boot, and expect it to need RAM greater than the image size.
-- Dynamic runtime file system writes (browser cache, agent logs, temporary downloads, student session state) are diverted to a `tmpfs` RAM disk via `overlayroot`.
+- Dynamic runtime file system writes (browser cache, agent logs, temporary downloads, user session state) are diverted to a `tmpfs` RAM disk via `overlayroot`.
 - **Zero SSD Wear Guarantee:** Thin-client flash storage is never written to during operation, eliminating drive exhaustion and wear cycles.
-- On reboot or power-off, all student session state, cached files, and temporary artifacts vanish instantly.
+- On reboot or power-off, all user session state, cached files, and temporary artifacts vanish instantly.
 
 ### 2. Hardened Operating System Lockdown
 
@@ -34,23 +34,23 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
   (`/etc/sudoers.d/50-labkiosk-install`), which is what lets the setup wizard run the guided disk
   installer. There is no general sudo access.
 - **Polkit Power Policy:** `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants the `kiosk` user
-  reboot and power-off through logind, and nothing else. That grant is what makes the teacher's
+  reboot and power-off through logind, and nothing else. That grant is what makes the operator's
   remote shutdown command work — the agent runs as `kiosk`, so without it the command would be
   accepted and then silently do nothing.
 
 ### 3. Chromium Enterprise Kiosk & Manifest V3 Extension
 
-- **Top-Level Native Browsing:** External educational platforms (Khan Academy, YouTube, Scratch) enforce strict `X-Frame-Options` and `frame-ancestors` headers. Lab Kiosk loads all web destinations as native top-level pages, avoiding iframe embedding limitations.
+- **Top-Level Native Browsing:** External approved platforms (Khan Academy, YouTube, Scratch) enforce strict `X-Frame-Options` and `frame-ancestors` headers. Lab Kiosk loads all web destinations as native top-level pages, avoiding iframe embedding limitations.
 - **Auto-Hiding Navigation Bar:** An unpacked Manifest V3 Chromium extension injects an auto-hiding 44px navigation bar into top-level pages inside a Shadow DOM.
   - Controls: Home, Back, Forward, Reload, and Status Shield.
   - Behavior: Auto-hides via `transform: translateY(-100%)` and smoothly transitions into view only when the mouse cursor enters the top 12 pixels (`mouseY <= 12px`).
   - Viewport: Occupies 100% of the viewport with `0px` vertical scroll overflow without mutating `document.body.style.marginTop`.
-- **Lock Curtain ("Eyes to the Front"):** Full-screen DOM overlay displayed across all open tabs upon teacher command. Swallows keyboard and mouse input events and displays customized teacher announcements.
+- **Lock Curtain ("Eyes to the Front"):** Full-screen DOM overlay displayed across all open tabs upon operator command. Swallows keyboard and mouse input events and displays customized operator announcements.
 - **Extension Communication Architecture:**
   - `content.js` runs in the page context inside an isolated Shadow DOM. It **never** fetches from the local agent directly (which would require unsafe wildcard CORS).
   - `content.js` messages `background.js` (MV3 service worker) via `chrome.runtime.sendMessage`.
   - `background.js` owns the `host_permissions` grant for `http://127.0.0.1:8888/*` and communicates with the local agent daemon.
-- **No Blanket Extension Block:** The enterprise policy deliberately avoids `ExtensionInstallBlocklist: ["*"]`, which would prevent loading unpacked extensions via `--load-extension`. Student extensions remain blocked because `chrome://` is blocked, Chrome Web Store is not allowlisted, and browser profiles are wiped on launch.
+- **No Blanket Extension Block:** The enterprise policy deliberately avoids `ExtensionInstallBlocklist: ["*"]`, which would prevent loading unpacked extensions via `--load-extension`. User extensions remain blocked because `chrome://` is blocked, Chrome Web Store is not allowlisted, and browser profiles are wiped on launch.
 
 ### 4. Local Python 3 Daemon (`agent.py`)
 
@@ -59,11 +59,11 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
   inside a `while true` supervisor loop that restarts it within ~2 s if it ever exits. Restart
   lines are written to `/tmp/lab-agent.log`.
 - **Telemetry Loop (Every 3s):** Authenticates to the Cloudflare control plane with a stored bearer
-  device token, transmits a screen thumbnail, receives pending teacher commands, and checks
+  device token, transmits a screen thumbnail, receives pending operator commands, and checks
   broadcast status. The thumbnail is produced by `scrot -t 20 -q 35` — pure Python standard
   library plus `scrot`, with **no PIL/Pillow dependency** — and a frame whose base64 payload
   exceeds 256 KB (`MAX_THUMBNAIL_BYTES`) is dropped rather than sent, so an oversized capture
-  never costs the school's uplink or delays the heartbeat.
+  never costs the organization's uplink or delays the heartbeat.
 - **Local API:** threaded (`ThreadingHTTPServer`), so a slow call such as the disk scan cannot
   stall the once-a-second status poll that drives the lock curtain.
 - **Dynamic Policy Synchronization:** Writes the tenant's approved domain allowlist into `/etc/chromium/policies/managed/policies.json`.

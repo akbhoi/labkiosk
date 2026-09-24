@@ -75,7 +75,7 @@ acceptable.
 > [!NOTE]
 > The simulator image is defined by the **repository-root `Dockerfile`**, not by anything in this
 > directory. There used to be a near-identical `docker-test/Dockerfile`; it drifted out of step
-> (it lost `alsa-utils`, so the teacher's "mute" command failed in that variant alone) and was
+> (it lost `alsa-utils`, so the operator's "mute" command failed in that variant alone) and was
 > removed. This directory holds the entrypoint and these docs.
 
 ### 1. Prerequisites
@@ -122,20 +122,20 @@ http://localhost:6080/vnc.html
 
 ## 🎓 Simulating First-Boot Enrolment
 
-1. Open the Teacher Lab Dashboard in your host browser:
+1. Open the Operator Lab Dashboard in your host browser:
    `http://localhost:8787/admin?tenant=demo`
 2. Go to **Settings → Workstation Enrollment Key** and copy the active key.
 3. In the simulated noVNC window (`http://localhost:6080/vnc.html`):
-   - **School Subdomain:** `demo`
+   - **Organization Subdomain:** `demo`
    - **Workstation Identifier:** `PC-01`
-   - **Enrollment Key:** Paste or type the key copied from the teacher dashboard.
+   - **Enrollment Key:** Paste or type the key copied from the admin console.
 4. Click **Connect & Register Workstation**.
 5. **What happens under the hood:**
    - The agent verifies credentials with `POST http://host.docker.internal:8787/api/devices/enroll`.
-   - The worker validates the key and returns a persistent device bearer token and the school's portal URL.
+   - The worker validates the key and returns a persistent device bearer token and the organization's portal URL.
    - The agent writes the initial Chromium enterprise policy (`/etc/chromium/policies/managed/policies.json`).
-   - The browser watchdog restarts Chromium once so it lands on the student learning portal under the newly written policy.
-   - The workstation appears live on the Teacher Dashboard with sub-second thumbnail telemetry!
+   - The browser watchdog restarts Chromium once so it lands on the user portal under the newly written policy.
+   - The workstation appears live on the Admin console with sub-second thumbnail telemetry!
 
 ---
 
@@ -195,7 +195,7 @@ Configure these in `docker-compose.yml` or via shell exports:
 | `WORKER_URL` | `http://host.docker.internal:8787` | Target Cloudflare Worker control plane. Set to your production URL (e.g. `https://labkiosk.akbhoi.com`) to test remote staging. |
 | `LABKIOSK_DOMAIN` | `labkiosk.akbhoi.com` | Base platform domain. |
 | `VNC_PASSWORD` | random per container | Password for the local noVNC session; printed in the startup log when generated. |
-| `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional public hostname (e.g. Cloudflare Tunnel) that routes to port 6080. If set, reported to the teacher console for remote assistance. |
+| `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional public hostname (e.g. Cloudflare Tunnel) that routes to port 6080. If set, reported to the admin console for remote assistance. |
 
 ---
 

@@ -69,7 +69,7 @@ distro-builder/
 - **A directory at `/etc/labkiosk` is not a substitute for the partition, and nothing may pretend
   otherwise.** The fstab entry is `nofail`, which means systemd does not order the boot behind it,
   so that path can still be unmounted when the repair service runs. Creating a writable directory
-  there is the worst available outcome: the agent enrols into the RAM overlay and the school's
+  there is the worst available outcome: the agent enrols into the RAM overlay and the organization's
   workstation forgets everything at the next power-off, with nothing on screen to say so. The
   service therefore mounts the partition (`After=…etc-labkiosk.mount`, then `mount /etc/labkiosk`)
   and, when it cannot, leaves the path exactly as it found it. `enrolment_is_persistent()` in the
@@ -78,8 +78,8 @@ distro-builder/
   silent success.
 - Thin-client SSDs and flash storage (as small as 12 GB, with limited write cycles) are protected from flash degradation.
 - The underlying root filesystem **must remain mounted read-only (`ro`)**.
-- All dynamic filesystem writes (browser cache, agent logs, temporary downloads, student sessions) divert strictly to `tmpfs` in RAM.
-- On reboot or power loss, 100% of runtime changes and student artifacts vanish instantly.
+- All dynamic filesystem writes (browser cache, agent logs, temporary downloads, user sessions) divert strictly to `tmpfs` in RAM.
+- On reboot or power loss, 100% of runtime changes and user artifacts vanish instantly.
 
 ### Rule 1a: `recurse=0` Belongs Inside the `overlayroot` Value
 
@@ -101,7 +101,7 @@ distro-builder/
 ### Rule 1d: The Timezone Is Set Twice, On Purpose
 
 - **`Asia/Kolkata` (IST) is the build default, not the only answer.** The wizard's Language &
-  Region step is what a school actually uses, and it writes the chosen zone at installation time;
+  Region step is what an organization actually uses, and it writes the chosen zone at installation time;
   the build default is only what an unconfigured image comes up with.
 - Everything runs on that default until then: the live session, an installed workstation, the
   workstation simulator and the ISO builder image.
@@ -141,14 +141,14 @@ distro-builder/
   had just been installed rebooted straight back into the installer ISO. `eject` goes with it.
 - `01-lockdown.hook.chroot` adds `/lib/systemd/system-shutdown/labkiosk-medium.shutdown` for the one
   case `live-tools` skips: a USB stick, which it refuses to eject because that needs a cold reboot.
-  Both scripts exit immediately unless `boot=live` is on the command line, so a teacher's remote
+  Both scripts exit immediately unless `boot=live` is on the command line, so an operator's remote
   reboot of an installed workstation never waits for a keypress.
 
 ### Rule 1e: Language & Region Comes Before the Network, and Owns One Privileged Program
 
 - The wizard's **first** step is Language & Region, ahead of the network on purpose: NTP is only
-  reachable once the network exists, so a workstation installed in a school with no DHCP would
-  otherwise spend its first session at the wrong date — and TLS, enrolment and every lesson site
+  reachable once the network exists, so a workstation installed in an organization with no DHCP would
+  otherwise spend its first session at the wrong date — and TLS, enrolment and every page site
   care about that. The step therefore also offers the clock by hand.
 - **Nothing in that step is a list this project maintains.** Continents, countries and zones come
   from tzdata's own `zone1970.tab` and `iso3166.tab`, locales from `/usr/share/i18n/SUPPORTED`
@@ -164,6 +164,10 @@ distro-builder/
   locale there too keeps it off the RAM overlay, where it would be rebuilt at every boot.
 - The choice itself is persisted in `/etc/labkiosk/localization.json`, and `apply_saved_localization()`
   re-applies it at every agent start.
+- **No zone is pre-picked.** Continent, country and time zone open on "Select…" until the operator
+  chooses; only a *saved* choice (`saved.timezone`) is shown, never the image's build default, and
+  Continue refuses while the zone is empty. A country with exactly one zone selects it. The build
+  default is what the machine runs on until then, not an answer on the operator's behalf.
 
 ### Rule 1f: Interface Text Is Translatable, and English Is in the Markup
 
@@ -174,7 +178,7 @@ distro-builder/
   are `<tag>.json` files dropped into `/etc/labkiosk/i18n` on the data partition — no new ISO
   needed. The agent serves them from `GET /i18n/<tag>.json`, matching the tag against a pattern
   before it ever becomes a path.
-- The catalog is applied with `textContent`, never `innerHTML`: a translation is data, and a school
+- The catalog is applied with `textContent`, never `innerHTML`: a translation is data, and an organization
   that pastes one in must not be able to inject markup into the wizard.
 - **Strings set from script go through `t(key, english)`**, not a bare literal — status messages,
   errors and tooltips included. They are exactly the strings a person reads when something has
@@ -188,7 +192,7 @@ distro-builder/
 - **Catalogs can also come from the control plane.** `GET /api/i18n` lists what the platform has
   and `GET /i18n/<tag>.json` serves one; both are public, because a workstation fetches its
   interface language before it is enrolled and holds no credential at that point, and the text is
-  the same for every school. Only a super admin writes them (`POST /api/super/i18n`), the upload is
+  the same for every organization. Only a super admin writes them (`POST /api/super/i18n`), the upload is
   sanitised on the way in, and the agent re-checks size, shape and types on the way out — neither
   side may assume the other did.
 - The agent stores a downloaded catalog in `/etc/labkiosk/i18n`, so it survives the reboot and
@@ -197,11 +201,11 @@ distro-builder/
 ### Rule 1g: The Clock in the Bar Is the Way Back to These Settings
 
 - The kiosk top bar shows the workstation's own date and time immediately after the network icon.
-  That is deliberate: the clock is the one place a teacher can *see* that the time is wrong, so it
+  That is deliberate: the clock is the one place an operator can *see* that the time is wrong, so it
   is also where they can put it right.
 - Clicking it opens the same administrator modal the network icon opens, with wording that names
   what is about to change, and lands on `/setup#locale` — the Language & Region step, on an
-  installed workstation, behind the boot password. A student cannot reach it, and a teacher does
+  installed workstation, behind the boot password. A user cannot reach it, and an operator does
   not need a manual to find it.
 - The time server belongs to that step: `systemd-timesyncd` is configured through a drop-in at
   `/etc/systemd/timesyncd.conf.d/labkiosk.conf` rather than by editing the package's own file, an
@@ -240,7 +244,7 @@ distro-builder/
   keys, ensuring multilingual input works without loosening the lockdown on Ctrl/Alt/Meta shortcuts.
 - **One deliberate exception, and only one:** Ctrl+A/C/V/X/Z/Y on the setup wizard's own origin
   (`http://127.0.0.1:8888`). The enrolment key is a 20-character string an administrator pastes
-  from the dashboard, and a kiosk that cannot paste it is a kiosk nobody can enrol. Students never
+  from the dashboard, and a kiosk that cannot paste it is a kiosk nobody can enrol. Users never
   see that origin.
 
 ### Rule 1i: Anchor Validation Patterns With `\Z`, Never `$`
@@ -251,13 +255,17 @@ distro-builder/
   `\n`. That digest is written into `/etc/grub.d/01_labkiosk_password` as
   `password_pbkdf2 labkiosk <digest>`, so a trailing newline would have carried whatever followed
   it into that file as a second GRUB directive.
-- All fifteen are now anchored with `\Z`. `REMOTE_HOST_PATTERN` keeps `$` on purpose: it is a
+- All fifteen are now anchored with `\Z` — written `\Z` inside a raw string, **never `\\Z`**: in
+  `r"..."` that is a literal backslash followed by `Z`, a pattern nothing can match. That exact slip
+  in `labkiosk-localization` refused every interface language, `en-US` included, and broke
+  installation. `test_client.py` now scans the three client scripts for it.
+- `REMOTE_HOST_PATTERN` keeps `$` on purpose: it is a
   `MULTILINE` search over a configuration file, where matching at a line end is the point.
 - `distro-builder/tests/test_client.py` pins this behaviour.
 
 ### Rule 2: Universal Dual Bootloader Compatibility (BIOS + UEFI)
 
-- Workstations in school environments range from legacy BIOS machines to modern UEFI-only hardware (e.g. Hyper-V Gen 2, modern laptops/NUCs).
+- Workstations in organization environments range from legacy BIOS machines to modern UEFI-only hardware (e.g. Hyper-V Gen 2, modern laptops/NUCs).
 - **ISO Boot:**
   - BIOS boots via **ISOLINUX** (`distro-builder/config/bootloaders/isolinux/`).
   - UEFI boots via **GRUB EFI** (`distro-builder/config/bootloaders/grub-pc/`).
@@ -296,7 +304,7 @@ distro-builder/
 
 ### Rule 5: Native Top-Level Navigation & Auto-Hiding Viewport
 
-- **Never load external educational websites inside an `<iframe>`**. Platforms like Khan Academy and YouTube enforce `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'` and will fail with `ERR_BLOCKED_BY_RESPONSE`.
+- **Never load external approved websites inside an `<iframe>`**. Platforms like Khan Academy and YouTube enforce `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'` and will fail with `ERR_BLOCKED_BY_RESPONSE`.
 - Chromium must load URLs as top-level native pages.
 - The Chrome extension (`content.js`) injects the navigation header into the top frame inside a **Shadow DOM** so host pages cannot alter or query it.
 - **The content script never calls the agent directly.** It posts messages to `background.js` (the MV3 service worker), which owns the `host_permissions` grant for `http://127.0.0.1:8888/*`.
@@ -304,13 +312,13 @@ distro-builder/
 - Never modify `document.body.style.marginTop`; the webpage must occupy 100% of the viewport with zero vertical scroll overflow.
 - **Event-Driven Workstation Reload (`reloadEpoch`)**: Synthetic key injection (`xdotool key F5`) is
   forbidden in `agent.py` — in production, `xdotool` is uninstalled, fails silently, and cannot
-  target unmapped or background windows. Instead, teacher `reload` commands advance `reloadEpoch`
+  target unmapped or background windows. Instead, operator `reload` commands advance `reloadEpoch`
   in the agent's state (served via `GET /api/status`). The browser extension (`content.js`) monitors
   `reloadEpoch` during its 1-second `syncLoop()` and triggers native `window.location.reload()`.
   To prevent infinite reload loops across page reloads, `content.js` caches `lastReloadEpoch` in
   `sessionStorage`.
-- **Clear Session Without a Reboot (`clear-session`)**: at the end of a class period the teacher
-  signs every student out while the workstation stays up. The agent only ends Chromium
+- **Clear Session Without a Reboot (`clear-session`)**: at the end of a session the operator
+  signs every user out while the workstation stays up. The agent only ends Chromium
   (`restart_browser()`, matched on `--user-data-dir=/tmp/chromium-profile`); the watchdog in the
   Openbox autostart and in `docker-test/entrypoint.sh` runs `rm -rf /tmp/chromium-cache
   /tmp/chromium-profile` before **every** relaunch, which removes cookies, saved sign-ins, history,
@@ -350,6 +358,12 @@ distro-builder/
   `file://`, so without it a failure in the field is unreadable. Keep it: "check the agent log" is
   not advice anyone can act on otherwise. The wizard shows it and opens it on an unexpected failure.
 - Telemetry transmitted upstream to Cloudflare is authenticated with the workstation's device token.
+- **The organization server is `https`, except a local test server.** `validate_worker_url()` accepts
+  plain `http` only for loopback, the container gateways, and a private IPv4 literal
+  (`is_private_ip_literal()`: `10/8`, `172.16/12`, `192.168/16`) — the same set as `isDevHost()`
+  on the control plane, so a test VM can enrol against `pnpm dev` by its host's address
+  (`http://172.31.64.1:8787` on the Hyper-V Default Switch). Never widen it to a hostname or a
+  public address: the device token rides in every heartbeat.
 
 ### Rule 7: Network Configuration Persistence on `LABKIOSK_DATA`
 
@@ -362,7 +376,7 @@ distro-builder/
 - Post-install network administration via `/setup#network` requires authentication against the GRUB PBKDF2 hash stored in `/etc/grub.d/01_labkiosk_password`. The agent enforces it: `/api/admin/verify` returns a short-lived token, and `/api/network/configure` rejects an installed workstation's request that lacks it. An installation made without a password is deliberately left unlocked (the wizard warns); a password file that cannot be parsed fails closed.
 - `configure_network()` validates every field (addresses via `ipaddress`, adapter names against `nmcli`, proxy host/port/bypass) **before** touching NetworkManager, then creates the profile in a single `nmcli connection add`, so a typo never leaves the workstation without a profile.
 - The proxy lives only in `/etc/labkiosk/proxy.json` (persisted on `LABKIOSK_DATA`). The agent applies it to its own requests and to Chromium's `ProxySettings` policy at every start; nothing is written to `/etc/environment`.
-- The extension (`content.js`) monitors network connectivity, updating top-bar icon state and redirecting to `/setup#offline` when offline for more than 6 s (never from a locked screen). The wizard returns to the lesson once the connection is back.
+- The extension (`content.js`) monitors network connectivity, updating top-bar icon state and redirecting to `/setup#offline` when offline for more than 6 s (never from a locked screen). The wizard returns to the page once the connection is back.
 - `GET /api/network/status` returns a `profile` object (mode, address, gateway, DNS per family, Wi-Fi SSID, adapter) read back from the saved NetworkManager profile, and the wizard renders the form from it. Without it the page always showed its defaults and looked as though nothing had ever been configured.
 - An empty Wi-Fi password field means *keep the saved passphrase*: `configure_network()` replaces the profile outright, and the passphrase is never sent back to the page, so changing a DNS server would otherwise force retyping the Wi-Fi key.
 
@@ -511,4 +525,5 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 | **Black screen on boot (Plymouth/NODM deadlock)** | `quiet loglevel=3` suppressed boot logs and PAM autologin was locked. | Pass `consoleblank=0` (remove `quiet loglevel=3`), unlock kiosk password (`passwd -d kiosk`), and pre-seed live-config markers. |
 | **Enrolment fails with `PermissionError ... /etc/labkiosk/config.json.tmp`** | The `LABKIOSK_DATA` partition mounted at `/etc/labkiosk` is owned by root, so the unprivileged agent cannot write its enrolment. Seen on disks written by an older installer. | `labkiosk-data-permissions.service` now corrects the ownership at every boot, and the installer verifies it before declaring success. The agent's error names the owner, the mode and its own uid. |
 | **The admin modal in the top bar answers "Cross-origin requests are not accepted"** | The modal's POST is issued by the extension's service worker, so Chromium sets `Origin: chrome-extension://<id>`; `_is_local_caller()` only accepted loopback origins. The wizard's own page was unaffected, which is why only the in-page modal failed. | `_is_local_caller()` also accepts `KIOSK_EXTENSION_ORIGIN`, the extension's pinned id. |
+| **Installing fails with `'en-US' is not a language tag`** | `labkiosk-localization` checked `--ui-language` with an inline `r"...\\Z"`, which demands a literal backslash, so every tag failed — the wizard's Continue and the installer's copy onto the disk alike. | `UI_LANGUAGE_PATTERN` (same as the agent's) anchored with `\Z`; tests pin both patterns and forbid `\\Z` in raw strings. |
 | **A just-installed machine reboots back into the installer** | The "remove the medium, press ENTER" prompt comes from `live-tools`, a *Recommends* of `live-boot` that vanished when the build stopped installing recommends. | Keep `live-tools` (and `eject`) in `kiosk.list.chroot`. USB sticks, which `live-tools` skips, are covered by `labkiosk-medium.shutdown` from the lockdown hook. |

@@ -1,6 +1,6 @@
 # Browser Extension
 
-`distro-builder/config/includes.chroot/opt/labkiosk/extension/` — an unpacked Manifest V3 Chromium extension supplying the kiosk's navigation bar, its status indicator, and the teacher's lock curtain.
+`distro-builder/config/includes.chroot/opt/labkiosk/extension/` — an unpacked Manifest V3 Chromium extension supplying the kiosk's navigation bar, its status indicator, and the operator's lock curtain.
 
 It is loaded with `--load-extension` at browser launch. Its ID is fixed to `hfjmbeplebjipenkfabncgkpadnjmmoe` by the public `key` in the manifest, which keeps storage and identity stable across rebuilds and is a prerequisite for ever force-installing it as a packed `.crx`.
 
@@ -8,7 +8,7 @@ It is loaded with `--load-extension` at browser launch. Its ID is fixed to `hfjm
 
 ## Why an extension at all
 
-Educational platforms — Khan Academy, YouTube, Scratch — enforce `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'`. Any kiosk that renders lessons inside an `<iframe>` fails with `ERR_BLOCKED_BY_RESPONSE` on the sites teachers most want to use.
+Approved platforms — Khan Academy, YouTube, Scratch — enforce `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'`. Any kiosk that renders pages inside an `<iframe>` fails with `ERR_BLOCKED_BY_RESPONSE` on the sites operators most want to use.
 
 So Lab Kiosk navigates **top-level, natively**, and injects its own chrome into the page instead. That gets full hardware acceleration and zero embedding failures, at the cost of needing an extension to put a nav bar on top.
 
@@ -33,7 +33,7 @@ So Lab Kiosk navigates **top-level, natively**, and injects its own chrome into 
 
 ### The CORS boundary is the whole point
 
-`content.js` runs in the visited page's origin. A `fetch()` from there to `http://127.0.0.1:8888` is cross-origin, and would require the agent to answer with `Access-Control-Allow-Origin: *`. The agent used to do exactly that — which meant **any site a student visited could talk to the local agent**.
+`content.js` runs in the visited page's origin. A `fetch()` from there to `http://127.0.0.1:8888` is cross-origin, and would require the agent to answer with `Access-Control-Allow-Origin: *`. The agent used to do exactly that — which meant **any site a user visited could talk to the local agent**.
 
 A service-worker fetch is governed by the extension's `host_permissions` instead of the page's CORS. So `background.js` owns the loopback grant, `content.js` reaches it only through `chrome.runtime.sendMessage`, and the agent refuses cross-origin callers outright.
 
@@ -51,7 +51,7 @@ names any other rejected origin in its log.
 
 The active broadcast epoch and URL are held in `chrome.storage.session` under `labkiosk_broadcast`, owned by the service worker.
 
-They used to live in the visited page's own `sessionStorage`, where that page's scripts could rewrite them — to sit out a teacher's broadcast, or to re-enable Back at the broadcast root. Extension storage is in the extension's partition, unreachable from page script, and `session` keeps the per-boot lifetime the kiosk wants while surviving both page navigation and the service worker being torn down when idle.
+They used to live in the visited page's own `sessionStorage`, where that page's scripts could rewrite them — to sit out an operator's broadcast, or to re-enable Back at the broadcast root. Extension storage is in the extension's partition, unreachable from page script, and `session` keeps the per-boot lifetime the kiosk wants while surviving both page navigation and the service worker being torn down when idle.
 
 `writeBroadcast()` stores only an `http(s)` URL, because that value is handed back to the content script and becomes a `location.replace()` target.
 
@@ -65,7 +65,7 @@ A 44 px header injected into the top frame at `document_start`, inside a **close
 const shadow = host.attachShadow({ mode: "closed" });
 ```
 
-Closed matters: a closed shadow root is not reachable from the host element, so page script cannot query, restyle, or tear the kiosk UI out from under the teacher. The only handles are the two the content script keeps privately.
+Closed matters: a closed shadow root is not reachable from the host element, so page script cannot query, restyle, or tear the kiosk UI out from under the operator. The only handles are the two the content script keeps privately.
 
 **Auto-hide.** The bar sits at `transform: translateY(-100%)` and slides to `translateY(0)` only when the pointer enters the top 12 pixels (`e.clientY <= 12`). The page therefore occupies 100 % of the viewport with zero vertical scroll overflow.
 
@@ -81,7 +81,7 @@ In addition to navigation buttons, the top bar includes an interactive network i
 
 - **Visual status:** SVG network icon renders with a green stroke (`#10b981`) when online and red (`#ef4444`) when offline.
 - **Discoverability:** the bar slides into view for 2.5 seconds on the first page of each session, then hides itself. A bar that only appears when the pointer reaches the top edge is otherwise invisible to anyone who has not been told about it. The service worker hands out the one-shot flag (`labkiosk:intro-peek`, stored in `chrome.storage.session`), so it happens once per boot rather than on every navigation.
-- **Admin Authentication Modal (`#admin-modal`):** Because students must not tamper with network routes or IPs during class or exams, clicking `#btn-network` renders an isolated password prompt inside the Shadow DOM.
+- **Admin Authentication Modal (`#admin-modal`):** Because users must not tamper with network routes or IPs during class or assessments, clicking `#btn-network` renders an isolated password prompt inside the Shadow DOM.
 - **Verification Bridge:** Entering the boot/admin password dispatches `askAgent({ type: "labkiosk:verify-admin", password })` to `background.js`, which invokes the agent's `/api/admin/verify`.
 - **Navigation:** Upon successful verification, the browser navigates to `http://127.0.0.1:8888/setup#network&admin=<token>`. The wizard keeps the short-lived token in memory and strips it from the address bar, so the password is asked only once.
 
@@ -89,7 +89,7 @@ In addition to navigation buttons, the top bar includes an interactive network i
 
 ## The lock curtain
 
-When the teacher sends `lock`, the agent records it and `content.js` — polling `/api/status` through the service worker once a second — raises a full-screen overlay with the teacher's message.
+When the operator sends `lock`, the agent records it and `content.js` — polling `/api/status` through the service worker once a second — raises a full-screen overlay with the operator's message.
 
 While the curtain is up, these events are swallowed at the window level in the capture phase:
 
@@ -101,9 +101,9 @@ touchstart  touchmove  touchend
 
 Events whose `composedPath()` includes `#labkiosk-root` are let through, so the curtain itself and the admin verification modal keep working; everything else is discarded with `preventDefault()` and `stopImmediatePropagation()`.
 
-> This is a **DOM-level block, not an X11 input grab.** It stops the student interacting with the page. Browser- and window-level shortcuts are covered by different layers: Chromium's `--kiosk` switches, the blocked `chrome://` scheme, and Openbox's emptied keybinding table. → [Kiosk Hardening](Kiosk-Hardening)
+> This is a **DOM-level block, not an X11 input grab.** It stops the user interacting with the page. Browser- and window-level shortcuts are covered by different layers: Chromium's `--kiosk` switches, the blocked `chrome://` scheme, and Openbox's emptied keybinding table. → [Kiosk Hardening](Kiosk-Hardening)
 
-Independently of the curtain, the content script suppresses `F12`, `Ctrl+Shift+I/J/C`, `Ctrl+U`, `F11`, right-click, and — at the broadcast root only — `Alt+Left` and `Backspace`, so a student cannot reverse out of the lesson the teacher pushed.
+Independently of the curtain, the content script suppresses `F12`, `Ctrl+Shift+I/J/C`, `Ctrl+U`, `F11`, right-click, and — at the broadcast root only — `Alt+Left` and `Backspace`, so a user cannot reverse out of the page the operator pushed.
 
 ---
 
@@ -118,7 +118,7 @@ Once a second the content script asks the service worker for the agent's status 
 - **Lock curtain:** curtain up or down, message text.
 - **Broadcast synchronization:** broadcast navigation when the epoch has advanced.
 - **Online/Offline status:** Updates `#kiosk-dot` and `#kiosk-net-icon`.
-- **Offline Auto-Fallback:** If `data.isOnline` stays false for more than 6 seconds (measured in time, not polls) on a non-loopback, unlocked page, the content script redirects the browser to `http://127.0.0.1:8888/setup#offline`, which returns to the lesson by itself once the connection is back. This allows lab technicians to remediate Wi-Fi/Ethernet disconnects immediately without rebooting or opening a terminal.
+- **Offline Auto-Fallback:** If `data.isOnline` stays false for more than 6 seconds (measured in time, not polls) on a non-loopback, unlocked page, the content script redirects the browser to `http://127.0.0.1:8888/setup#offline`, which returns to the page by itself once the connection is back. This allows lab technicians to remediate Wi-Fi/Ethernet disconnects immediately without rebooting or opening a terminal.
 
 Failures are handled deliberately rather than swallowed — an early version let a transient error leave the status dot green while the lock curtain never appeared again.
 
@@ -128,7 +128,7 @@ Failures are handled deliberately rather than swallowed — an early version let
 
 The managed Chromium policy deliberately contains **no** `ExtensionInstallBlocklist: ["*"]` and no `*` entry in `ExtensionSettings`. With one, Chromium refuses `--load-extension` entirely and logs *"Loading of unpacked extensions is disabled by the administrator"* — silently removing the kiosk's own navigation bar and lock curtain. An `ExtensionInstallAllowlist` entry does **not** override it; this was tried and verified.
 
-Students cannot install extensions regardless:
+Users cannot install extensions regardless:
 
 - `chrome://*` is blocklisted, so the extensions page is unreachable;
 - the browser runs in `--kiosk` with no UI;
@@ -163,6 +163,6 @@ node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/conten
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 ```
 
-**Never claim a UI change is complete without looking at a screenshot.** The agent logging a command as executed proves only that the agent ran; it does not prove the student saw anything.
+**Never claim a UI change is complete without looking at a screenshot.** The agent logging a command as executed proves only that the agent ran; it does not prove the user saw anything.
 
 → [Client Agent](Client-Agent) · [Kiosk Hardening](Kiosk-Hardening) · [Workstation Simulator](Workstation-Simulator)

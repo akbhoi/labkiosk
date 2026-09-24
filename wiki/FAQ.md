@@ -5,13 +5,13 @@
 ## General
 
 **What problem does Lab Kiosk actually solve?**
-School computer labs need locked-down workstations with teacher oversight. Commercial kiosk software is expensive per seat, and thin clients with 4 GB RAM and 12 GB SSDs are not what it targets. Lab Kiosk gives you an immutable RAM-only OS, a live teacher console, and per-school isolation on infrastructure that costs almost nothing to run.
+Organization workstation fleets need locked-down workstations with operator oversight. Commercial kiosk software is expensive per seat, and thin clients with 4 GB RAM and 12 GB SSDs are not what it targets. Lab Kiosk gives you an immutable RAM-only OS, a live admin console, and per-organization isolation on infrastructure that costs almost nothing to run.
 
 **Is it free?**
 Free and unrestricted for accredited public and private schools, colleges, universities, teachers, educational foundations, and personal non-commercial evaluation on up to 45 computers. Any deployment exceeding 45 computers is viewed as commercial scale and requires a commercial or subscriber license. Subscribers utilizing the Cloudflare Worker platform are supported per the Subscriber License.
 
 **How much does the infrastructure cost?**
-A Cloudflare Worker plus D1 is inexpensive at classroom scale, and the free tier covers evaluation comfortably. There is no per-seat cost, and no server to run on-site.
+A Cloudflare Worker plus D1 is inexpensive at room scale, and the free tier covers evaluation comfortably. There is no per-seat cost, and no server to run on-site.
 
 **Can I self-host without Cloudflare?**
 Not as written. The control plane targets Cloudflare Workers and D1 specifically, and uses runtime primitives — `crypto.subtle`, the D1 binding, the cron trigger — that a generic Node host does not provide identically. Porting it is a real project, not a config change.
@@ -42,17 +42,17 @@ No. `HardwareAccelerationModeEnabled` is on so Chromium uses whatever is availab
 
 ## Deployment
 
-**How many workstations can one school have?**
+**How many workstations can one organization have?**
 There is no hard limit. Each workstation is one row in `client_devices` and one heartbeat every three seconds. Storage is dominated by thumbnails — budget roughly 256 KB per workstation for the latest frame.
 
-**Can a school use its own domain?**
+**Can an organization use its own domain?**
 Yes. Request it in Settings, create a `CNAME` to the platform apex, and a super admin approves it. → [Super Admin Guide](Super-Admin-Guide#custom-domains)
 
 **Do I need Cloudflare Tunnels?**
 Only for interactive remote control. Thumbnails, lock, broadcast, reload, reboot, shutdown, and mute all work without one.
 
-**How do I move a workstation to a different school?**
-Decommission it from the dashboard, clear `/etc/labkiosk/config.json`, reboot, and run the wizard with the new school's subdomain and key.
+**How do I move a workstation to a different organization?**
+Decommission it from the dashboard, clear `/etc/labkiosk/config.json`, reboot, and run the wizard with the new organization's subdomain and key.
 
 **What happens if I rotate the enrollment key?**
 Nothing to enrolled workstations — they hold their own device tokens. Rotation only stops *new* enrolments with the old key.
@@ -61,10 +61,10 @@ Nothing to enrolled workstations — they hold their own device tokens. Rotation
 
 ## Security
 
-**How do I stop students booting from their own USB?**
+**How do I stop users booting from their own USB?**
 Set a firmware password and disable USB and network booting in the BIOS/UEFI. Software cannot defend against someone who simply boots something else.
 
-**What if a student edits the GRUB command line?**
+**What if a user edits the GRUB command line?**
 Set a boot-menu password at install time. Every entry is marked `--unrestricted`, so normal boot never prompts; the password is asked for only for `e` (edit) or `c` (GRUB shell).
 
 **Why isn't the boot password baked into the ISO?**
@@ -76,8 +76,8 @@ The layers are: Chromium's deny-all allowlist, `chrome://` blocked, DevTools dis
 **Is the screen thumbnail encrypted?**
 In transit, by HTTPS. At rest in D1, no. Anyone with database access can see the latest frame from every workstation. → [Security Model](Security-Model#known-limits)
 
-**Can one school see another school's workstations?**
-No. Every query filters by `tenant_id` and every route carries a guard; the test suite asserts a teacher at one school gets `403` for another's console, clients, and commands.
+**Can one organization see another organization's workstations?**
+No. Every query filters by `tenant_id` and every route carries a guard; the test suite asserts an operator at one organization gets `403` for another's console, clients, and commands.
 
 **Is the 8-character VNC password a problem?**
 Yes, if it is your only control. The RFB protocol truncates passwords to 8 characters, so it is about 32 bits however you generate it. **Put a Cloudflare Access policy in front of every tunnel hostname.** → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
@@ -86,23 +86,23 @@ Yes, if it is your only control. The RFB protocol truncates passwords to 8 chara
 
 ## Operation
 
-**What happens when a student saves a file?**
+**What happens when a user saves a file?**
 It goes to `/tmp` in the RAM overlay and is gone at reboot. Downloads are blocked outright by policy (`DownloadRestrictions: 3`), and there is no file picker (`AllowFileSelectionDialogs: false`).
 
-**Can students use the camera or microphone?**
-Yes, deliberately. Language labs and video lessons need them. Geolocation and notifications are denied without prompting, because a kiosk has nobody to answer a permission prompt and a modal would sit above the lock curtain.
+**Can users use the camera or microphone?**
+Yes, deliberately. Language labs and video pages need them. Geolocation and notifications are denied without prompting, because a kiosk has nobody to answer a permission prompt and a modal would sit above the lock curtain.
 
-**Can students print?**
+**Can users print?**
 No. `PrintingEnabled: false`.
 
-**How quickly does a teacher command take effect?**
-Within one heartbeat — at most three seconds. Lock and unlock update the console's view immediately on dispatch, so the grid does not lag behind the classroom.
+**How quickly does an operator command take effect?**
+Within one heartbeat — at most three seconds. Lock and unlock update the console's view immediately on dispatch, so the grid does not lag behind the room.
 
 **What if a workstation stops responding?**
 The agent runs under a supervisor loop that restarts it within about two seconds of any exit, and a Chromium watchdog relaunches the browser within a second. If a machine is genuinely stuck, `reboot` from the dashboard, or power-cycle it — nothing is lost.
 
 **Where are the logs?**
-`/tmp/lab-agent.log` on each workstation, in the RAM overlay. Administrative actions are in the school's audit log in D1, which survives the tenant.
+`/tmp/lab-agent.log` on each workstation, in the RAM overlay. Administrative actions are in the organization's audit log in D1, which survives the tenant.
 
 ---
 
@@ -121,7 +121,7 @@ The test suite uses native `node:sqlite` in `d1_adapter.ts`, which earlier versi
 Yes, for the agent, extension, telemetry, wizard, and everything on the control plane. Bootloaders, `overlayroot`, and the installer need a VM. → [Workstation Simulator](Workstation-Simulator)
 
 **Why can't the content script call the agent directly?**
-CORS. A content-script fetch runs in the page's origin and would need the agent to answer `Access-Control-Allow-Origin: *` — which it used to, meaning any site a student visited could talk to it. A service-worker fetch is governed by the extension's `host_permissions` instead, so the agent can refuse cross-origin callers outright.
+CORS. A content-script fetch runs in the page's origin and would need the agent to answer `Access-Control-Allow-Origin: *` — which it used to, meaning any site a user visited could talk to it. A service-worker fetch is governed by the extension's `host_permissions` instead, so the agent can refuse cross-origin callers outright.
 
 **Is AI-authored code welcome?**
 Yes, under three conditions: zero placeholders, a clean typecheck and full test run, and transparent disclosure of the model in the PR description. The project is openly co-developed with AI assistants. → [Development Workflow](Development-Workflow#ai-contributions)

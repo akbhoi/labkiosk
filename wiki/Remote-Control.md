@@ -1,30 +1,30 @@
 # Remote Control
 
-One-click interactive remote desktop from the teacher dashboard, with **no inbound port on the school's network**.
+One-click interactive remote desktop from the admin console, with **no inbound port on the organization's network**.
 
 ---
 
 ## How it works
 
 ```text
-[ Teacher browser ]
+[ Operator browser ]
        |  1. Clicks "Remote Control" on PC-01
        v
-[ Teacher Lab Dashboard /admin ]
+[ Operator Lab Dashboard /admin ]
        |  2. Reads vncPassword + remoteHost from GET /api/clients
        |  3. Opens a modal embedding the noVNC viewer
        v
 [ Cloudflare Tunnel edge: pc-01.labkiosk.example.edu ]
        |  4. Outbound-only tunnel (HTTPS / WSS)
        v
-[ Student workstation ]
+[ User workstation ]
        |-- cloudflared        forwards to 127.0.0.1:6080
        |-- websockify         bridges 127.0.0.1:6080 -> localhost:5900
        |-- x11vnc             display :0, auth from /tmp/labkiosk/vnc.pass
        `-- agent.py           reports the secret + tunnel host over telemetry
 ```
 
-The workstation makes an **outbound** connection to Cloudflare. Nothing listens on the school LAN, and no firewall rule is needed.
+The workstation makes an **outbound** connection to Cloudflare. Nothing listens on the organization LAN, and no firewall rule is needed.
 
 ---
 
@@ -44,7 +44,7 @@ chmod 600 "$VNC_PASSWD_FILE"
 
 Both live in `/tmp` on the RAM overlay. Nothing is written to persistent storage and everything vanishes at power-off.
 
-The session runs with `-noclipboard -nocmd`. Without the first, the VNC clipboard is bidirectional: everything a student copies is readable by whoever holds a session, and anything in the viewer's clipboard can be pasted into the kiosk. `-nocmd` disables x11vnc's own remote-control channel, which is not used here.
+The session runs with `-noclipboard -nocmd`. Without the first, the VNC clipboard is bidirectional: everything a user copies is readable by whoever holds a session, and anything in the viewer's clipboard can be pasted into the kiosk. `-nocmd` disables x11vnc's own remote-control channel, which is not used here.
 
 ### Why eight characters
 
@@ -56,11 +56,11 @@ It is a guard against an *accidental* connection, **not** against someone who wa
 
 ## Cloudflare Access is mandatory
 
-`websockify` serves the **complete noVNC web UI** on the tunnel hostname. That makes `https://pc-01.<domain>` a public, internet-reachable remote-control endpoint for a classroom machine. The only thing between the open internet and a student's live desktop is the 8-character RFB secret above.
+`websockify` serves the **complete noVNC web UI** on the tunnel hostname. That makes `https://pc-01.<domain>` a public, internet-reachable remote-control endpoint for a room machine. The only thing between the open internet and a user's live desktop is the 8-character RFB secret above.
 
 **Put a Cloudflare Access policy in front of every workstation hostname before the first tunnel goes live.**
 
-In Cloudflare Zero Trust, add a self-hosted application covering `*.labkiosk.<your-domain>` and scope the policy to your teaching staff's identity provider group or email domain. Cloudflare then authenticates the teacher at the edge and the tunnel never carries an unauthenticated request.
+In Cloudflare Zero Trust, add a self-hosted application covering `*.labkiosk.<your-domain>` and scope the policy to your administrators' identity provider group or email domain. Cloudflare then authenticates the operator at the edge and the tunnel never carries an unauthenticated request.
 
 Without it, the RFB secret is the entire access-control story, and it is not strong enough to be one.
 
@@ -70,12 +70,12 @@ Without it, the RFB secret is the entire access-control story, and it is not str
 
 ## Key exchange
 
-The teacher never types a password. Here is how the secret gets from the workstation to the browser:
+The operator never types a password. Here is how the secret gets from the workstation to the browser:
 
 1. `agent.py` reads `/tmp/labkiosk/vnc.secret` and `/etc/cloudflared/config.yml`.
 2. It sends both in the three-second heartbeat, **authenticated with the workstation's own device bearer token**.
-3. The control plane stores `vnc_password` and `remote_host` on `client_devices`, scoped to the school's `tenant_id`.
-4. Only an authenticated admin of *that* school can read them back from `GET /api/clients`.
+3. The control plane stores `vnc_password` and `remote_host` on `client_devices`, scoped to the organization's `tenant_id`.
+4. Only an authenticated admin of *that* organization can read them back from `GET /api/clients`.
 5. The dashboard embeds a noVNC frame and passes the credentials to it directly.
 
 Both fields are sent **only when present**, so the control plane keeps what it already knows rather than clearing it on a heartbeat where the file was momentarily unreadable.
@@ -89,7 +89,7 @@ Because the client is an immutable RAM-overlay system, per-workstation tunnel cr
 ### Prerequisites
 
 - A Cloudflare Zero Trust account with Tunnels enabled.
-- A domain or subdomain, e.g. `*.labkiosk.institution.edu`.
+- A domain or subdomain, e.g. `*.labkiosk.example.com`.
 - The `cloudflared` binary, pinned in `distro-builder/config/includes.chroot/usr/share/labkiosk/cloudflared.pin`. An unset checksum builds without the binary; a wrong one **fails the build**.
 
 ### The workstation config
@@ -101,7 +101,7 @@ tunnel: <TUNNEL_UUID>
 credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
 
 ingress:
-  - hostname: pc-01.labkiosk.institution.edu
+  - hostname: pc-01.labkiosk.example.com
     service: http://127.0.0.1:6080
   - service: http_status:404
 ```
@@ -154,7 +154,7 @@ environment:
   - LABKIOSK_REMOTE_HOST=localhost:6080
 ```
 
-> In the container `websockify` binds `0.0.0.0:6080` so you can see the simulated display from your host. **On the real image it binds strictly to `127.0.0.1:6080`** and is reachable only through the tunnel. An open noVNC port gives anyone on the school Wi-Fi full keyboard and mouse control of the workstation.
+> In the container `websockify` binds `0.0.0.0:6080` so you can see the simulated display from your host. **On the real image it binds strictly to `127.0.0.1:6080`** and is reachable only through the tunnel. An open noVNC port gives anyone on the organization Wi-Fi full keyboard and mouse control of the workstation.
 
 → [Workstation Simulator](Workstation-Simulator)
 

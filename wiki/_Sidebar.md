@@ -9,8 +9,8 @@
 
 **Using Lab Kiosk**
 
-- [Teacher Dashboard Guide](Teacher-Dashboard-Guide)
-- [Student Portal](Student-Portal)
+- [Admin Console Guide](Admin-Console-Guide)
+- [User Portal](User-Portal)
 - [Super Admin Guide](Super-Admin-Guide)
 - [Remote Control](Remote-Control)
 
