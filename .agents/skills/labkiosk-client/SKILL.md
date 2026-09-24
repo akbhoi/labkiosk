@@ -17,8 +17,9 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
 - **Admin gate** on installed disks: `/api/admin/verify` checks the GRUB PBKDF2 hash and issues a
   10-minute token (`X-LabKiosk-Admin`; 5 failures → 60 s lock); network, reboot and `/api/log`
   require it. A password file that cannot be parsed fails closed.
-- Endpoints: `/setup`, `/api/status` (`isLive`, `isInstalled`, `isOnline`, `persistentStorage`,
-  `reloadEpoch`…), `/api/setup`, `/api/install/disks`, `/api/install`, `/api/install/status`,
+- Endpoints: `/setup`, `/blocked`, `/api/status` (`isLive`, `isInstalled`, `isOnline`,
+  `persistentStorage`, `reloadEpoch`, `enrolmentRejected`, `organization`…), `/api/setup` (on an
+  enrolled workstation: admin token required), `/api/install/disks`, `/api/install`, `/api/install/status`,
   `/api/reboot`, `/api/network/{status,interfaces,wifi/scan,configure,test}` (`test_connectivity()`
   caches 5 s; interfaces from `nmcli dev status`), `/api/admin/verify`, `/api/log`,
   `/api/localization/{options,configure,languages,language/download}`, `/i18n/<tag>.json`.
@@ -69,6 +70,13 @@ auto-selects, Continue refuses an empty zone.
   existing translation silently — change English values, not keys (six legacy keys keep old names).
 
 ## Extension (`opt/labkiosk/extension/`)
+
+**Never strand a workstation** (`distro-builder/AGENTS.md` Rule 6b): a 401/403 heartbeat calls
+`mark_enrolment_rejected()` (screen → `/setup#reenrol`, browser restarted once); an enrolled
+workstation re-enrols through `/api/setup` with the admin token; `background.js` replaces
+`chrome-error://` pages — where no extension runs — with `/blocked` (one automatic retry) or
+`/setup#offline` (only when the agent says offline, or a dead site would loop). Before telling
+anyone affected workstations "just re-enrol", see that flow work in the simulator.
 
 Top-level navigation only (never iframes). `content.js` builds the bar (incl. `#btn-network`),
 curtain and admin modal in a Shadow DOM and never calls the agent — only `background.js` does

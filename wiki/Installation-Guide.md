@@ -185,9 +185,12 @@ Interactive remote desktop needs a per-workstation Cloudflare Tunnel, which is n
 
 ## Re-enrolling or moving a workstation
 
-1. On the admin console, decommission it (`/api/clients/remove`). This revokes its device token; its next heartbeat gets `401`.
-2. On the workstation, clear `/etc/labkiosk/config.json` and reboot. On live media the RAM overlay does this for you at power-off.
-3. Run the wizard again with the new organization's subdomain and key.
+1. On the admin console, remove it (`/api/clients/remove`). This revokes its device token; its next heartbeat gets `401`.
+2. Within one heartbeat the workstation shows the wizard's **Register this workstation again** form, with the top bar still available.
+   (A workstation that is still enrolled gets the same form from the network page: **Register with Another Organization…**.)
+3. Enter the administrator (boot) password when asked, then the new organization's subdomain and enrollment key.
+
+The same happens by itself if the organization is deleted. Nothing needs clearing by hand: the new enrolment replaces the old one.
 
 Rotating the enrollment key does **not** affect already-enrolled workstations — they hold their own tokens. Rotation only stops *new* enrolments with the old key.
 
@@ -200,6 +203,7 @@ Rotating the enrollment key does **not** affect already-enrolled workstations �
 | No candidate drives listed | Disk under 3 GB, or the only disk is the live medium | Check the disk size; install to a different machine |
 | Enrolment rejected | Empty or stale key, or the organization is `pending`/`suspended` | Generate a key; have a super admin approve the organization |
 | "This page is blocked" after enrolling | Chromium has not reloaded policy | Wait for the automatic restart; if it persists, check `/tmp/lab-agent.log` |
+| "This site isn't allowed on this workstation" (with the top bar) | The site is not on the allowlist, or a broadcast arrived before Chromium reloaded its policy | It retries once by itself after a few seconds; otherwise add the domain to the allowlist |
 | Workstation never appears | Wrong subdomain, no network, or a revoked token | `docker exec`-equivalent: read `/tmp/lab-agent.log` on the machine |
 | Boots to a password prompt | An installed disk got `set superusers` without `--unrestricted` | Rebuild; `--unrestricted` must stay unconditional |
 

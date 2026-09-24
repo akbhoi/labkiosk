@@ -78,7 +78,9 @@ websockify → Cloudflare Tunnel. Full contracts: `labkiosk-core`.
    extension's pinned origin only; installed-disk admin actions need the boot-password token.
    Validation regexes anchor with `\Z` (never `$`, never `\\Z` in a raw string).
 9. **Unattended boot.** A workstation boots straight into the kiosk; never add a prompt to the normal
-   boot path.
+   boot path. **And it is never stranded:** a refused device token sends the screen to the
+   password-gated re-enrolment form, and blocked or failed pages are replaced by local pages that
+   keep the top bar (`distro-builder/AGENTS.md` Rule 6b).
 10. **Fail closed; zero placeholders.** Missing config is an error; no TODO stubs, no empty
     `catch`/`except`, no invented checksums or pins.
 11. **The simulator is hardened too.** Unprivileged `kiosk` user, Chromium sandbox on, read-only root,

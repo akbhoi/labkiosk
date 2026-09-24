@@ -137,13 +137,15 @@ class CatalogKeysResolve(unittest.TestCase):
         import re
         with open(os.path.join(CHROOT, "opt/labkiosk/i18n/en-US.json"), encoding="utf-8") as handle:
             catalog = json.load(handle)
-        for rel in ("opt/labkiosk/setup/wizard.html", "opt/labkiosk/extension/content.js"):
+        for rel in ("opt/labkiosk/setup/wizard.html", "opt/labkiosk/extension/content.js", "opt/labkiosk/setup/blocked.html"):
             with open(os.path.join(CHROOT, rel), encoding="utf-8") as handle:
                 source = handle.read()
             keys = set(re.findall(r'data-i18n(?:-[a-z]+)?="([a-z][A-Za-z0-9_.-]*)"', source))
             keys |= set(re.findall(r"""\bt\(\s*['"]([a-z][A-Za-z0-9_.-]*)['"]""", source))
+            # Keys assigned from script (el.dataset.i18n = '...') are translated too.
+            keys |= set(re.findall(r"""dataset\.i18n\s*=\s*['"]([a-z][A-Za-z0-9_.-]*)['"]""", source))
             with self.subTest(file=rel):
-                self.assertGreater(len(keys), 10)
+                self.assertGreater(len(keys), 5)
                 self.assertEqual(sorted(k for k in keys if k not in catalog), [])
 
 
@@ -557,6 +559,149 @@ class AgentLogTrimming(unittest.TestCase):
                 os.unlink(tf_path)
             except OSError:
                 pass
+
+
+class RejectedEnrolment(unittest.TestCase):
+    """A workstation whose token the control plane refuses must not be stranded.
+
+    It used to only log it, stay on its old home page with no allowlist, and --
+    after a reboot -- sit on Chromium's "This page is blocked", where the kiosk
+    bar cannot appear and nothing leads back to setup.
+    """
+
+    KEYS = ("enrolmentRejected", "targetUrl", "broadcastUrl", "broadcastEpoch", "isLocked", "subdomain", "customDomain")
+
+    def setUp(self):
+        self.saved = {key: agent.state[key] for key in self.KEYS}
+        self.restarts = []
+        self.orig_restart = agent.restart_browser
+        agent.restart_browser = lambda reason="": self.restarts.append(reason)
+        agent.state.update({
+            "enrolmentRejected": False, "targetUrl": "http://10.0.0.5:8787/?tenant=demo",
+            "broadcastUrl": "https://example.com/", "broadcastEpoch": 7, "isLocked": True,
+            "subdomain": "demo", "customDomain": "",
+        })
+
+    def tearDown(self):
+        agent.restart_browser = self.orig_restart
+        agent.state.update(self.saved)
+
+    def test_the_screen_goes_to_re_enrolment_once(self):
+        self.assertTrue(agent.mark_enrolment_rejected())
+        self.assertFalse(agent.mark_enrolment_rejected(), "a second refusal changes nothing")
+        self.assertEqual(len(self.restarts), 1, "the browser is restarted exactly once")
+        self.assertTrue(agent.state["enrolmentRejected"])
+        self.assertEqual(agent.state["targetUrl"], agent.REENROL_URL)
+        self.assertTrue(agent.REENROL_URL.startswith("http://127.0.0.1:8888/setup"),
+                        "somewhere the boot-time policy always allows")
+        # Nothing from the dead organization may pull the screen away again.
+        self.assertEqual((agent.state["broadcastUrl"], agent.state["broadcastEpoch"], agent.state["isLocked"]), ("", 0, False))
+
+    def test_an_accepted_heartbeat_clears_it(self):
+        agent.mark_enrolment_rejected()
+        agent.clear_enrolment_rejected()
+        self.assertFalse(agent.state["enrolmentRejected"])
+
+    def test_the_heartbeat_reacts_to_a_refused_token(self):
+        import inspect
+        source = inspect.getsource(agent.telemetry_loop)
+        self.assertIn("if err.code in (401, 403):", source)
+        self.assertIn("mark_enrolment_rejected()", source)
+        self.assertIn("clear_enrolment_rejected()", source)
+        # An enrolment must not wait out a minute of back-off for its allowlist.
+        self.assertIn("heartbeat_wakeup.wait(backoff)", source)
+        self.assertIn("heartbeat_wakeup.set()", inspect.getsource(agent.enroll))
+
+
+class ReenrolmentGating(unittest.TestCase):
+    """Registering an enrolled workstation again replaces its enrolment, so it takes
+    the administrator password on an installed workstation -- and is possible at
+    all, where it used to be refused outright with 409."""
+
+    def setUp(self):
+        agent._admin_sessions.clear()
+        self.orig_live = agent.is_live_session
+        self.orig_configured = agent.state["isConfigured"]
+
+    def tearDown(self):
+        agent.is_live_session = self.orig_live
+        agent.state["isConfigured"] = self.orig_configured
+        agent._admin_sessions.clear()
+
+    def post_setup(self, live, configured, token=None):
+        agent.is_live_session = lambda: live
+        agent.state["isConfigured"] = configured
+        headers = {"Host": "127.0.0.1:8888"}
+        if token:
+            headers[agent.ADMIN_TOKEN_HEADER] = token
+        handler = object.__new__(agent.LocalApiHandler)
+        handler.path = "/api/setup"
+        handler.headers = FakeHeaders(headers)
+        handler.sent = None
+        handler._send = lambda status, payload, content_type="application/json": setattr(handler, "sent", (status, payload))
+        handler.do_POST()
+        return handler.sent
+
+    def test_an_enrolled_installed_workstation_needs_the_password(self):
+        status, payload = self.post_setup(live=False, configured=True)
+        self.assertEqual(status, 401)
+        self.assertIn("Administrator authentication", payload["error"])
+
+    def test_with_the_password_it_may_register_again(self):
+        agent._admin_sessions["valid"] = 9999999999.0
+        status, payload = self.post_setup(live=False, configured=True, token="valid")
+        # Past the gate: what is refused now is the empty request itself.
+        self.assertEqual((status, payload.get("error")), (400, "A JSON body is required"))
+
+    def test_first_enrolment_and_live_media_are_unchanged(self):
+        self.assertEqual(self.post_setup(live=False, configured=False)[0], 400)
+        self.assertEqual(self.post_setup(live=True, configured=True)[0], 400)
+
+
+class NoPageWithoutTheBar(unittest.TestCase):
+    """Chromium's block and network-error pages are chrome-error://, where no
+    extension runs; the extension sends those failures to pages that have the bar."""
+
+    def read(self, rel):
+        with open(os.path.join(CHROOT, rel), encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_the_extension_may_see_navigation_errors(self):
+        import json
+        manifest = json.loads(self.read("opt/labkiosk/extension/manifest.json"))
+        self.assertIn("webNavigation", manifest["permissions"])
+
+    def test_only_top_level_failures_away_from_the_agent_are_redirected(self):
+        source = self.read("opt/labkiosk/extension/background.js")
+        self.assertIn("chrome.webNavigation.onErrorOccurred.addListener", source)
+        self.assertIn("details.frameId !== 0", source)
+        self.assertIn("failed.origin === AGENT_ORIGIN", source, "a failure on the agent's own page must not loop")
+        self.assertIn('"net::ERR_BLOCKED_BY_ADMINISTRATOR"', source)
+        self.assertIn("${BLOCKED_PAGE_URL}?host=", source)
+
+    def test_the_blocked_page_is_safe_markup(self):
+        import re
+        page = self.read("opt/labkiosk/setup/blocked.html")
+        self.assertIsNone(re.search(r"<[a-z][^>]*\son[a-z]+=", page, re.I), "no inline event handlers")
+        self.assertNotIn("innerHTML", page, "the blocked host is attacker-chosen: textContent only")
+        # The retry navigates to an address from the query string: http(s) only,
+        # and once, so a site that really is blocked cannot loop.
+        self.assertIn("parsed.protocol === 'http:' || parsed.protocol === 'https:'", page)
+        self.assertIn("sessionStorage.getItem(marker) === '1'", page)
+
+    def test_the_agent_serves_it(self):
+        orig = agent.BLOCKED_HTML_FILE
+        agent.BLOCKED_HTML_FILE = os.path.join(CHROOT, "opt/labkiosk/setup/blocked.html")
+        try:
+            handler = object.__new__(agent.LocalApiHandler)
+            handler.path = "/blocked?host=example.com"
+            handler.headers = FakeHeaders({"Host": "127.0.0.1:8888"})
+            handler.sent = None
+            handler._send = lambda status, payload, content_type="application/json": setattr(handler, "sent", (status, content_type))
+            handler.do_GET()
+            self.assertEqual(handler.sent, (200, "text/html; charset=utf-8"))
+        finally:
+            agent.BLOCKED_HTML_FILE = orig
 
 
 if __name__ == "__main__":

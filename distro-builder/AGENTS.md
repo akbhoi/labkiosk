@@ -365,6 +365,31 @@ distro-builder/
   (`http://172.31.64.1:8787` on the Hyper-V Default Switch). Never widen it to a hostname or a
   public address: the device token rides in every heartbeat.
 
+### Rule 6b: A Workstation Is Never Stranded
+
+- **A refused device token sends the screen to re-enrolment.** When `/api/telemetry` answers
+  401/403 (the organization was deleted, or the workstation removed), `mark_enrolment_rejected()`
+  sets `enrolmentRejected`, points `targetUrl` at `http://127.0.0.1:8888/setup#reenrol` — which
+  the boot-time policy always allows — and restarts the browser once. It used to only log it:
+  the kiosk kept its old home page with no allowlist, and after a reboot sat on Chromium's "This
+  page is blocked" with no bar and no way back but a reinstall. The enrolment on disk is kept; a
+  mistaken refusal on the server must not wipe a healthy workstation.
+- **Registering again is possible, and password-gated.** `/api/setup` on an enrolled workstation
+  needs the administrator token (`X-LabKiosk-Admin`) wherever `admin_auth_required()`, like the
+  network page and reboot; it used to answer 409 outright. A re-enrolment clears the old
+  organization's broadcast and lock, and wakes the heartbeat (`heartbeat_wakeup`) so the new
+  allowlist arrives at once instead of after up to a minute of back-off. The wizard's `#reenrol`
+  mode shows why it is there, and a healthy workstation reaches it from the network page
+  ("Register with Another Organization…").
+- **No page without the bar.** Chromium's block and network-error pages are `chrome-error://`,
+  where no extension runs. `background.js` (`webNavigation.onErrorOccurred`, top frame only,
+  never for the agent's own origin) sends a policy block to `/blocked`, a network error to
+  `/setup#offline` when the agent says the workstation is offline, and to
+  `/blocked?reason=unreachable` when it is online (the offline page would bounce back to the dead
+  site and loop). `/blocked` retries the original `http(s)` address once after 7 s — a broadcast
+  allowlists its site in the same heartbeat that sends the screen there, and Chromium rereads a
+  changed policy only after a few seconds — then stays, with Try again, Back and Home.
+
 ### Rule 7: Network Configuration Persistence on `LABKIOSK_DATA`
 
 - Network profiles configured during setup (Ethernet or Wi-Fi) are created via NetworkManager.
@@ -517,6 +542,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 | **Alt+Tab, Alt+F4 or a right-click desktop menu works on an installed workstation** | The stripped `rc.xml` was shipped to `/etc/openbox/rc.xml`, which `openbox-session` never reads; it looks in `~/.config/openbox` and `/etc/xdg/openbox`, and fell back to Debian's defaults. The simulator hid it by passing `--config-file`. | Install `rc.xml` to both paths Openbox reads (see Rule 1h), and strip the keymap with `labkiosk-lock-keys` so the keys do not exist in the first place. |
 | **Kiosk nav bar and lock curtain vanish** | Blanket extension block `ExtensionInstallBlocklist: ["*"]` prevents loading unpacked extensions. | Do not add blanket extension blocks. Chromium is already locked down via `--kiosk`, blocked `chrome://`, and wiped user profile. |
 | **Freshly enrolled kiosk shows "This page is blocked"** | Chromium reads its managed policy once at startup. | Agent sets `pendingBrowserRestart` and restarts the browser after the next policy sync. |
+| **A workstation shows "This page is blocked" with no top bar and no way back** | Its organization was deleted (or it was removed), the agent only logged the 401, and Chromium's block page is `chrome-error://`, where the extension never runs. | See Rule 6b: the agent retargets to `/setup#reenrol`, `/api/setup` re-enrols behind the admin password, and the extension replaces error pages with `/blocked` or `/setup#offline`. |
 | **A shell hook dies with `$'\r': command not found`** | The file was checked out or written with CRLF line endings. Windows git defaults to `core.autocrlf=true`, and Python's `Path.write_text` translates newlines on Windows. | `.gitattributes` pins every build and image file to `eol=lf`. Never write these files with a tool that rewrites newlines. |
 | **The Language & Region step is missing, or its lists are empty** | The `locales` package or tzdata's tables are absent, so `labkiosk-localization --list-options` has nothing to report. The wizard hides the step rather than showing empty menus. | Keep `locales`, `tzdata` and `xkb-data` in `kiosk.list.chroot` (and in the simulator's Dockerfile, which is where the step gets exercised). |
 | **An enrolment is accepted and then forgotten at the next reboot, with no error anywhere** | `/etc/overlayroot.conf` set `overlayroot_options="recurse=0"`, a variable overlayroot never reads. At its default `recurse=1` it overlays every fstab entry, so `/etc/labkiosk` was an overlay on RAM rather than the data partition — mounted, writable, and empty again after a reboot. | `overlayroot="tmpfs:recurse=0"` (see Rule 1a), in the image, in what the installer writes, and on every boot command line. |

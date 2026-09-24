@@ -11,7 +11,8 @@
   "host_permissions": ["http://127.0.0.1:8888/*"],
 
   "_storage_comment": "chrome.storage.session holds the active broadcast epoch and URL. These used to live in the visited page's own sessionStorage, where that page's scripts could rewrite them to sit out an operator's broadcast or re-enable Back at the broadcast root. Extension storage is in the extension's partition, so page script cannot reach it, and 'session' keeps the per-boot lifetime the kiosk wants.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "webNavigation"],
+  "_webNavigation_comment": "For webNavigation.onErrorOccurred only. A page the managed policy blocks, or one that fails to load, is a chrome-error:// page no extension runs on, so the bar (network status, clock, the way back to setup) could never appear there. background.js sends such a top-level failure to the agent's /blocked or /setup#offline page instead. chrome.tabs.update needs no permission of its own.",
 
   "background": {
     "service_worker": "background.js"

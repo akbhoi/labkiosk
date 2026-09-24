@@ -84,6 +84,7 @@ CATALOG_MAX_KEYS = 2000
 CATALOG_MAX_VALUE = 2000
 GRUB_PASSWORD_FILE = "/etc/grub.d/01_labkiosk_password"
 WIZARD_HTML_FILE = "/opt/labkiosk/setup/wizard.html"
+BLOCKED_HTML_FILE = "/opt/labkiosk/setup/blocked.html"
 CHROMIUM_POLICY_FILE = "/etc/chromium/policies/managed/policies.json"
 # The single declaration of the static Chromium policy. The ISO build generates
 # the boot-time policies.json from this same file (01-lockdown.hook.chroot), so
@@ -193,7 +194,17 @@ state = {
     "pendingBrowserRestart": False,
     # time.monotonic() of the last heartbeat the control plane accepted.
     "lastHeartbeatOk": 0.0,
+    # The control plane refused this workstation's device token (the
+    # organization was deleted, or the workstation removed). The screen is sent
+    # to the wizard's re-enrolment form rather than left on a page Chromium
+    # blocks, which is a page the kiosk bar cannot appear on.
+    "enrolmentRejected": False,
 }
+REENROL_URL = "http://127.0.0.1:8888/setup#reenrol"
+# Set by an enrolment so the heartbeat runs at once instead of finishing a
+# back-off (up to MAX_BACKOFF_SECONDS after a rejected token): until that
+# heartbeat brings the new allowlist, the new home page is itself blocked.
+heartbeat_wakeup = threading.Event()
 state_lock = threading.Lock()
 
 
@@ -1057,8 +1068,15 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
         state["deviceToken"] = token
         state["targetUrl"] = config["targetUrl"]
         state["isConfigured"] = True
+        # A re-enrolment starts clean: the previous organization's broadcast or
+        # lock does not carry over.
+        state["enrolmentRejected"] = False
+        state["broadcastUrl"] = ""
+        state["broadcastEpoch"] = 0
+        state["isLocked"] = False
 
         state["pendingBrowserRestart"] = True
+    heartbeat_wakeup.set()
 
     log(f"Enrolled {config['clientId']} with {config['subdomain'] or config['customDomain']}")
     persistent = enrolment_is_persistent()
@@ -1971,6 +1989,20 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 self._send(500, b"<h1>Setup wizard unavailable</h1>", "text/html; charset=utf-8")
             return
 
+        if self.path.split("?", 1)[0] == "/blocked":
+            # Where the extension sends a page the managed policy blocked.
+            # Chromium's own block page is chrome-error://, which no extension
+            # runs on, so the kiosk bar -- and with it the network status and
+            # the way back -- could never appear there. This page is on the
+            # agent's origin, where the bar does.
+            try:
+                with open(BLOCKED_HTML_FILE, "rb") as handle:
+                    self._send(200, handle.read(), "text/html; charset=utf-8")
+            except OSError as err:
+                log(f"Blocked-page notice missing at {BLOCKED_HTML_FILE}: {err}")
+                self._send(500, b"<h1>This site is not allowed on this workstation</h1>", "text/html; charset=utf-8")
+            return
+
         if self.path == "/api/status":
             live = is_live_session()
             online = test_connectivity()["ok"]
@@ -1987,6 +2019,10 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "broadcastEpoch": state.get("broadcastEpoch", 0),
                         "reloadEpoch": state.get("reloadEpoch", 0),
                         "isConfigured": state["isConfigured"],
+                        # True once the control plane refuses this workstation's
+                        # device token; the wizard then offers to register again.
+                        "enrolmentRejected": state["enrolmentRejected"],
+                        "organization": state["subdomain"] or state["customDomain"],
                         "baseDomain": DEFAULT_BASE_DOMAIN,
                         "isLive": live,
                         "isInstalled": not live,
@@ -2113,8 +2149,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/setup":
             with state_lock:
                 already = state["isConfigured"]
-            if already:
-                self._send(409, {"error": "This workstation is already enrolled."})
+            # Registering again replaces the enrolment, so on an installed
+            # workstation it takes the administrator password, like changing its
+            # network. It used to be refused outright, which left a workstation
+            # whose organization was deleted with no way back but a reinstall.
+            if already and admin_auth_required() and not has_admin_session(self.headers.get(ADMIN_TOKEN_HEADER, "")):
+                self._send(401, {"error": "Administrator authentication is required to register this workstation again"})
                 return
 
             data = self._read_json()
@@ -2564,6 +2604,44 @@ def post_telemetry():
         return json.loads(response.read().decode("utf-8"))
 
 
+def mark_enrolment_rejected():
+    """
+    React, once, to the control plane refusing this workstation's device token.
+
+    Logging it was all this did, which left the kiosk on its old home page with
+    no allowlist -- after a reboot Chromium blocks that page outright, and a
+    blocked page is one the kiosk bar can never appear on. So the screen goes to
+    the wizard's re-enrolment form instead, which the boot-time policy always
+    allows. The enrolment on disk is kept: the token needs replacing either way,
+    and a mistaken refusal on the server must not wipe a healthy workstation.
+    """
+    with state_lock:
+        if state["enrolmentRejected"]:
+            return False
+        state["enrolmentRejected"] = True
+        state["targetUrl"] = REENROL_URL
+        state["broadcastUrl"] = ""
+        state["broadcastEpoch"] = 0
+        state["isLocked"] = False
+        organization = state["subdomain"] or state["customDomain"]
+    log(
+        f"The control plane rejected this workstation's device token for {organization or 'its organization'} "
+        "(the organization or this workstation may have been removed). "
+        "Showing the re-enrolment form; registering again needs the administrator password."
+    )
+    restart_browser("to show the re-enrolment form")
+    return True
+
+
+def clear_enrolment_rejected():
+    """A heartbeat was accepted again (typically right after re-enrolling)."""
+    with state_lock:
+        was = state["enrolmentRejected"]
+        state["enrolmentRejected"] = False
+    if was:
+        log("The control plane accepts this workstation's device token again.")
+
+
 def telemetry_loop():
     backoff = HEARTBEAT_SECONDS
     revoked_notified = False
@@ -2581,6 +2659,7 @@ def telemetry_loop():
             data = post_telemetry()
             backoff = HEARTBEAT_SECONDS
             revoked_notified = False
+            clear_enrolment_rejected()
             with state_lock:
                 state["lastHeartbeatOk"] = time.monotonic()
 
@@ -2630,10 +2709,7 @@ def telemetry_loop():
         except HTTPError as err:
             if err.code in (401, 403):
                 if not revoked_notified:
-                    log(
-                        "The control plane rejected this workstation's device token "
-                        "(it may have been decommissioned). Re-enrolment is required."
-                    )
+                    mark_enrolment_rejected()
                     revoked_notified = True
                 backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
             else:
@@ -2643,7 +2719,9 @@ def telemetry_loop():
             log(f"Telemetry error: {err}")
             backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
 
-        time.sleep(backoff)
+        if heartbeat_wakeup.wait(backoff):
+            heartbeat_wakeup.clear()
+            backoff = HEARTBEAT_SECONDS
 
 
 def main():

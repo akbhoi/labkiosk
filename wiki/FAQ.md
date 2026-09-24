@@ -52,7 +52,7 @@ Yes. Request it in Settings, create a `CNAME` to the platform apex, and a super 
 Only for interactive remote control. Thumbnails, lock, broadcast, reload, reboot, shutdown, and mute all work without one.
 
 **How do I move a workstation to a different organization?**
-Decommission it from the dashboard, clear `/etc/labkiosk/config.json`, reboot, and run the wizard with the new organization's subdomain and key.
+Remove it from the dashboard: within one heartbeat it shows the **Register this workstation again** form. Or, on the workstation, open the network page from the top bar and choose **Register with Another Organization…**. Either way, enter the administrator (boot) password, then the new organization's subdomain and key.
 
 **What happens if I rotate the enrollment key?**
 Nothing to enrolled workstations — they hold their own device tokens. Rotation only stops *new* enrolments with the old key.

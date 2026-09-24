@@ -37,9 +37,12 @@ config/hooks/live/0050-disable-sysvinit-tmpfs.hook.chroot
 config/hooks/normal/
 
 # Python bytecode. Debian 12 ships CPython 3.11; any .pyc built on the host is
-# for the wrong interpreter and would be dead weight inside the image.
-__pycache__/
-*.py[cod]
+# for the wrong interpreter and would be dead weight inside the image. `**/` is
+# what makes these match below the root of the context: a bare `__pycache__/`
+# only ever matched one at the top, so the caches beside agent.py and
+# labkiosk-install under config/includes.chroot were copied into every ISO.
+**/__pycache__/
+**/*.py[cod]
 
 # Documentation and editor noise: not needed to build an ISO.
 *.md

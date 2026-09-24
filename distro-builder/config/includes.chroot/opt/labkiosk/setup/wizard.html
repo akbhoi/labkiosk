@@ -508,6 +508,10 @@
         <span data-i18n="locale.open">Language, Region &amp; Time Zone</span>
       </button>
 
+      <button type="button" class="btn-submit btn-secondary" id="btn-open-reenrol" style="display: none; margin-top: 12px;">
+        <span data-i18n="reenrol.open">Register with Another Organization&hellip;</span>
+      </button>
+
       <button type="button" class="btn-submit btn-secondary" id="btn-return-kiosk" style="display: none; margin-top: 12px;">
         <span data-i18n="ui.done-mdash-return-to-kiosk">Done &mdash; Return to Kiosk</span>
       </button>
@@ -598,6 +602,11 @@
         <p class="wizard-desc" id="enroll-desc">
           Link this live session to your organization's account. The workstation will connect to your dashboard immediately in live kiosk mode.
         </p>
+
+        <div class="status-box status-warn" id="reenrol-notice" role="alert" style="display: none;">
+          <strong data-i18n="reenrol.title">Register this workstation again</strong>
+          <span id="reenrol-detail"></span>
+        </div>
 
         <div class="status-box status-warn" id="storage-warning" role="alert">
           <strong data-i18n="ui.this-workstation-cannot-remember-an-enrolment">This workstation cannot remember an enrolment.</strong>
@@ -710,6 +719,9 @@
     let currentTargetUrl = 'http://127.0.0.1:8888/setup';
     let isLive = true;
     let isConfigured = false;
+    // Set from /api/status: registering again was asked for (#reenrol), or the
+    // control plane no longer accepts this workstation's token.
+    let wantsReenrol = false;
     let selectedWifiSsid = '';
     let selectedWifiSecurity = '';
 
@@ -722,11 +734,17 @@
     // #locale / #locale&admin=... -- the same page opened straight on Language
     // & Region, which is how an installed workstation changes its timezone.
     let isStandaloneLocale = hashParams.has('locale');
+    // #reenrol -- register an enrolled workstation with an organization again:
+    // where the agent sends the screen once the control plane refuses this
+    // workstation's token (its organization was deleted), and where an
+    // administrator moves it to another organization. Behind the admin password.
+    const isReenrol = hashParams.has('reenrol');
     // Short-lived token from /api/admin/verify. Kept in memory only, and taken
     // out of the address bar straight away.
     let adminToken = hashParams.get('admin') || '';
     if (adminToken) {
-      history.replaceState(null, '', window.location.pathname + (isStandaloneLocale ? '#locale' : '#network'));
+      const keep = isReenrol ? '#reenrol' : (isStandaloneLocale ? '#locale' : '#network');
+      history.replaceState(null, '', window.location.pathname + keep);
     }
     // A top-bar click while this page is already open changes only the hash.
     window.addEventListener('hashchange', () => window.location.reload());
@@ -787,6 +805,7 @@
     const btnProceedStep2 = document.getElementById('btn-proceed-step2');
     const btnBackStep1 = document.getElementById('btn-back-step1');
     const btnReturnKiosk = document.getElementById('btn-return-kiosk');
+    const btnOpenReenrol = document.getElementById('btn-open-reenrol');
 
     const tabBtnInstall = document.getElementById('tab-btn-install');
     const tabBtnEnroll = document.getElementById('tab-btn-enroll');
@@ -897,6 +916,36 @@
       }
     }
     btnReturnKiosk.addEventListener('click', returnToKiosk);
+
+    // Show the enrolment form on an already-enrolled workstation, saying why.
+    function showReenrol(status) {
+      isStandaloneNetwork = false;
+      stepLocale.style.display = 'none';
+      step1.style.display = 'none';
+      step2.style.display = 'block';
+      document.getElementById('wizard-stepper').style.display = 'none';
+      document.getElementById('btn-back-step1').style.display = 'none';
+      document.getElementById('tabs-nav').style.display = 'none';
+      viewInstall.style.display = 'none';
+      viewEnroll.style.display = 'block';
+      const organization = (status && status.organization) || '';
+      const detail = document.getElementById('reenrol-detail');
+      detail.textContent = status && status.enrolmentRejected
+        ? (organization
+            ? t('ui.js.reenrol-was-registered', 'This workstation was registered with') + ' ' + organization + '. ' +
+              t('ui.js.reenrol-rejected', 'That organization no longer recognises it — it may have been removed.')
+            : t('ui.js.reenrol-rejected-unnamed', "This workstation's organization no longer recognises it — it may have been removed.")) +
+          ' ' + t('ui.js.reenrol-enter-new', 'Enter an organization subdomain and its enrollment key to register it again.')
+        : t('ui.js.reenrol-voluntary', 'This workstation is registered with') + ' ' + (organization || '—') + '. ' +
+          t('ui.js.reenrol-replaces', 'Registering it with another organization replaces that registration.');
+      document.getElementById('reenrol-notice').style.display = 'block';
+      if (!isLive && !adminToken) openAdminModal();
+    }
+
+    btnOpenReenrol.addEventListener('click', () => {
+      // Carries the token already granted for this page, as the kiosk bar does.
+      window.location.replace('/setup#reenrol' + (adminToken ? '&admin=' + encodeURIComponent(adminToken) : ''));
+    });
 
     // Accordions
     document.getElementById('toggle-addressing').addEventListener('click', () => {
@@ -1313,6 +1362,7 @@
           const data = await res.json();
           isLive = !!data.isLive;
           isConfigured = !!data.isConfigured;
+          wantsReenrol = isReenrol || !!data.enrolmentRejected;
           if (btnLocaleLanguages) {
             btnLocaleLanguages.style.display = isConfigured ? '' : 'none';
           }
@@ -1346,8 +1396,9 @@
             viewEnroll.style.display = 'block';
             enrollDesc.textContent = t('ui.js.link-this-installed-workstation-to-your', "Link this installed workstation to your organization's account.");
             // An enrolled installed workstation has nothing left to set up here
-            // except its network, and that is behind the administrator password.
-            if (isConfigured) isStandaloneNetwork = true;
+            // except its network -- or registering again -- and both are behind
+            // the administrator password.
+            if (isConfigured && !wantsReenrol) isStandaloneNetwork = true;
             if (!isStandaloneNetwork && !isStandaloneLocale) {
               // The network was configured before the installation and came back
               // with it, so a freshly installed workstation opens straight on
@@ -1365,8 +1416,11 @@
             document.getElementById('wizard-stepper').style.display = 'none';
             btnReturnKiosk.style.display = 'flex';
             btnProceedStep2.style.display = 'none';
+            if (isConfigured) btnOpenReenrol.style.display = 'flex';
             if (!isLive && !adminToken) openAdminModal();
           }
+
+          if (wantsReenrol && isConfigured) showReenrol(data);
 
           if (isStandaloneLocale) {
             // Opened on its own to change the timezone or the language, so it
@@ -1757,10 +1811,15 @@
       adminAuthError.style.display = 'none';
       const promptEl = document.getElementById('admin-auth-prompt');
       if (promptEl) {
-        promptEl.dataset.i18n = isStandaloneLocale ? 'admin.promptLocale' : 'admin.prompt';
-        promptEl.textContent = isStandaloneLocale
-          ? t('admin.promptLocale', 'Enter the administrator or boot password to change the date, time and language.')
-          : t('admin.prompt', 'Enter the administrator or boot password to configure network settings.');
+        if (wantsReenrol) {
+          promptEl.dataset.i18n = 'admin.promptReenrol';
+          promptEl.textContent = t('admin.promptReenrol', 'Enter the administrator or boot password to register this workstation with an organization again.');
+        } else {
+          promptEl.dataset.i18n = isStandaloneLocale ? 'admin.promptLocale' : 'admin.prompt';
+          promptEl.textContent = isStandaloneLocale
+            ? t('admin.promptLocale', 'Enter the administrator or boot password to change the date, time and language.')
+            : t('admin.prompt', 'Enter the administrator or boot password to configure network settings.');
+        }
       }
       modalAdminAuth.style.display = 'flex';
       adminAuthPass.focus();
@@ -2059,12 +2118,23 @@
         if (isCustom) payload.customDomain = customDomain;
         else payload.subdomain = subdomain;
 
+        const headers = { 'Content-Type': 'application/json' };
+        if (adminToken) headers['X-LabKiosk-Admin'] = adminToken;
         const res = await fetch('http://127.0.0.1:8888/api/setup', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(payload)
         });
         const data = await res.json();
+
+        if (res.status === 401) {
+          // Already enrolled: registering again replaces that, so it takes the
+          // administrator password (the token may also simply have expired).
+          adminToken = '';
+          fail(data.error || t('ui.js.reenrol-needs-password', 'Registering this workstation again requires the administrator password.'));
+          openAdminModal();
+          return;
+        }
 
         if (res.ok && data.status === 'ok') {
           const lasting = data.persistent !== false;

@@ -53,7 +53,9 @@ changed. To call agent functions in place, load the module in a separate interpr
   its ports on `127.0.0.1` to drive the consoles from the host; attach sessions server-side in the
   harness rather than typing passwords. Enrol through the agent API
   (`curl -H 'Origin: http://127.0.0.1:8888' -d '{clientId,enrollmentKey,subdomain}' …/api/setup`);
-  to re-enrol, delete `/etc/labkiosk/config.json` and restart the agent.
+  to re-enrol, POST `/api/setup` again with an admin token from `/api/admin/verify` (the simulator
+  has no boot password, so any value verifies), or delete `/etc/labkiosk/config.json` and restart
+  the agent. Remove the workstation on the control plane to see the `#reenrol` flow.
 - Headless Chromium **inside** the simulator cannot take screenshots: the kiosk's managed policy
   applies to every Chromium there. Screenshot web pages with headless Edge/Chrome on the host.
 - Podman copies an image's files into a tmpfs mounted over them (Docker mounts it empty), so a
