@@ -680,6 +680,12 @@ ${rootTokensCss()}
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
     }
 
+    /* A #section-... link (the profile menu's Change Password) lands below the
+       sticky header rather than under it; the header wraps to ~100px when narrow. */
+    [id^="section-"] {
+      scroll-margin-top: 120px;
+    }
+
     .canvas-header-left {
       display: flex;
       align-items: center;

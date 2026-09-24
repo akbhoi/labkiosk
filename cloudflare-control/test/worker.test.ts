@@ -2465,6 +2465,23 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(!me.user);
   });
 
+  test("The organization's owner can appoint a co-administrator", async () => {
+    // The owner has no tenant_users row of their own; getTenantUserPermissions()
+    // must still answer "*" for them, or they could not delegate at all.
+    const res = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Co Admin", email: "coadmin@greenwood.example", password: "CoAdminPassword123!", role: "org_admin" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test("Workstation groups are rendered on the Workstations page", async () => {
+    const name = "Rendered Group";
+    assert.equal((await call("/api/groups?tenant=greenwood", { ...json({ name }), cookie: orgSessionCookie })).status, 200);
+    const html = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(html.includes(name), "a group the organization created appears on the page");
+  });
+
   test("The staff list is readable only with the staff permission", async () => {
     const password = "ListPassword1234!";
     await call("/api/tenant/staff?tenant=greenwood", {
