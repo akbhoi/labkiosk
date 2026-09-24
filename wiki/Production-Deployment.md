@@ -65,6 +65,13 @@ Pending migrations are applied the same way. Two of them change existing data:
 - **`0012_unique_workstation_group_names.sql`** makes group names unique per organization in the
   database (case-insensitively). If an organization already has two groups spelled the same way,
   they are merged into the oldest one and its member workstations keep their group.
+- **`0013_retire_demo_tenant.sql`** **deletes the old `demo` organization and everything in it** —
+  its workstations, device tokens, apps, allowlist, presets, groups, staff links and audit history.
+  It is replaced by three demo organizations the worker creates at startup: `web-demo` (the hosted
+  site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator). Re-enrol any demo
+  workstations into `web-demo` afterwards. Before deploying, check nobody already holds one of the
+  new names — a row there not owned by the super admin is left alone and is not a demo:
+  `npx wrangler d1 execute labkiosk-db --remote --command "SELECT subdomain, user_id FROM tenants WHERE subdomain IN ('web-demo','local-demo','docker-demo')"`
 
 Back up, apply, then deploy:
 

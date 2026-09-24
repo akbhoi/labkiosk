@@ -826,7 +826,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <div style="width: 10px; height: 10px; border-radius: 50%; background: #ef4444;"></div>
             <div style="width: 10px; height: 10px; border-radius: 50%; background: #f59e0b;"></div>
             <div style="width: 10px; height: 10px; border-radius: 50%; background: #10b981;"></div>
-            <span style="font-size: 12px; color: var(--muted); font-family: monospace; margin-left: 8px;">https://demo.${escapeHtml(baseDomain)}</span>
+            <span style="font-size: 12px; color: var(--muted); font-family: monospace; margin-left: 8px;">https://web-demo.${escapeHtml(baseDomain)}</span>
           </div>
           <div class="sim-controls">
             <button class="sim-tab-btn active" id="sim-btn-portal" data-action="sim-view" data-view="portal">User Portal</button>

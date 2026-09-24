@@ -76,10 +76,10 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   } = options;
 
   const labName = tenant?.name || "Your Organization";
-  const subdomain = tenant?.subdomain || "demo";
+  const subdomain = tenant?.subdomain || "";
   const isDev = options.isDevHost === true || !baseDomain;
   const needsTenantParam = options.needsTenantParam !== undefined ? options.needsTenantParam : isDev;
-  const tenantParam = needsTenantParam ? `?tenant=${encodeURIComponent(subdomain)}` : "";
+  const tenantParam = needsTenantParam && subdomain ? `?tenant=${encodeURIComponent(subdomain)}` : "";
 
   const userPermissions = options.userPermissions || currentUser?.permissions || ["*"];
 

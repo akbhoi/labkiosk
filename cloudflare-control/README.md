@@ -25,9 +25,9 @@ The control plane handles tenant routing, operator management dashboards, user p
 
 3. **Multi-Tenant Scoping, Privacy Isolation & Delegation:**
    - Organization tenants are authoritatively resolved from the incoming `Host` header via `resolveTenant()` in `src/guard.ts`.
-   - Query overrides (`?tenant=demo`) and `X-Tenant` headers are permitted **only** on local development hosts (`localhost`, `127.0.0.1`, `*.local`) or for authenticated platform super-admins (restricted to `demo`).
+   - Query overrides (`?tenant=local-demo`) and `X-Tenant` headers are permitted **only** on local development hosts (`localhost`, `127.0.0.1`, `*.local`) or for authenticated platform super-admins (restricted to `demo`).
    - Organization admin consoles reside at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`); apex domain `/admin` redirects to the organization's subdomain.
-   - Super admins are restricted from accessing any organization's admin console, telemetry, or VNC remote-control *except* for the dedicated `demo` organization tenant, preserving each organization's privacy.
+   - Super admins are restricted from accessing any organization's admin console, telemetry, or VNC remote-control *except* for the platform's own demo organizations (`web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator)), preserving each organization's privacy.
    - Organization admins can delegate management tasks to sub-admins and operators via `tenant_users` with granular permissions (`workstations`, `apps-web`, `staff`, `settings`, with backward-compatible support for legacy `broadcast`, `portal`, `whitelist`).
    - Every database query in `src/db.ts` filters explicitly by `tenant_id`.
    - Telemetry cache (`tenantTelemetryCache`) is partitioned by tenant ID and serves as an ephemeral cache only; D1 `client_devices` is the single source of truth across worker isolates.
@@ -46,7 +46,7 @@ The control plane handles tenant routing, operator management dashboards, user p
 
 ```text
 cloudflare-control/
-├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0012)
+├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0013)
 ├── src/
 │   ├── index.ts               # Worker router, REST endpoints, telemetry cache, scheduled()
 │   ├── guard.ts               # Tenant resolution, authorization guards, CSRF origin checks
@@ -113,16 +113,16 @@ page or drive it from a browser:
 ```bash
 pnpm --prefix cloudflare-control exec tsx test/dev_server.ts
 ```
-It seeds the `demo` organization and a super admin (`admin@akbhoi.com` /
+It seeds the three demo organizations (`web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator)) and a super admin (`admin@akbhoi.com` /
 `SuperAdminPassword2026!`, set at the top of that file). Use `pnpm dev` instead
 whenever the change touches D1 itself, migrations or Workers runtime behaviour.
 
 ### 6. Local Endpoints
 Once running on `http://localhost:8787`:
 - **Public SaaS Landing Page:** `http://localhost:8787/`
-- **Organization Homepage:** `http://localhost:8787/?tenant=demo`
-- **User Portal:** `http://localhost:8787/home?tenant=demo`
-- **Operator Lab Dashboard:** `http://localhost:8787/admin?tenant=demo` (Sign in with operator account)
+- **Organization Homepage:** `http://localhost:8787/?tenant=local-demo`
+- **User Portal:** `http://localhost:8787/home?tenant=local-demo`
+- **Operator Console:** `http://localhost:8787/admin?tenant=local-demo` (the super admin may open `web-demo`, `local-demo` and `docker-demo`; any other organization signs in with its own account)
 - **Super Admin Platform Console:** `http://localhost:8787/super` (Sign in with credentials from `.dev.vars`)
 
 > [!NOTE]

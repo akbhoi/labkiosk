@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import worker from "../src/index";
 import * as workerModule from "../src/index";
-import { SCHEMA_SQL, initSchema, assertSchemaCurrent } from "../src/db";
+import { SCHEMA_SQL, initSchema, assertSchemaCurrent, ensureDemoTenants, createUser, createTenant, findTenantBySubdomain } from "../src/db";
+import { DEMO_SLUGS } from "../src/demo";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl } from "../src/escape";
@@ -1730,7 +1731,69 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------ modern admin & privacy isolation
 
-  test("Super admin is restricted from organization consoles but allowed on demo tenant", async () => {
+  test("The platform has three demos, the super admin opens each, and the old demo is gone", async () => {
+    for (const slug of DEMO_SLUGS) {
+      const res = await call(`/admin/workstations?tenant=${slug}`, { cookie: superSessionCookie });
+      assert.equal(res.status, 200, `the super admin opens ${slug}`);
+    }
+    const retired = await call("/admin/workstations?tenant=demo", { cookie: superSessionCookie });
+    assert.notEqual(retired.status, 200, "there is no `demo` organization any more");
+
+    const directory = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+    for (const slug of DEMO_SLUGS) assert.match(directory, new RegExp(`${slug}\\.labkiosk\\.akbhoi\\.com`));
+    assert.equal((directory.match(/>Open Console</g) || []).length, 3, "one Open Console per demo");
+    assert.doesNotMatch(directory, />demo\.labkiosk\.akbhoi\.com/);
+  });
+
+  test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
+    for (const subdomain of ["demo", ...DEMO_SLUGS]) {
+      const res = await call("/api/auth/register", json({
+        name: "Squatter", email: `squatter-${subdomain}@example.com`, password: "SquatterPassword123!", subdomain
+      }));
+      assert.equal(res.status, 400, `${subdomain} is reserved`);
+      const rename = await call("/api/tenant/subdomain?tenant=greenwood", {
+        ...json({ subdomain }), cookie: orgSessionCookie
+      });
+      assert.equal(rename.status, 400, `an organization cannot rename itself to ${subdomain}`);
+    }
+
+    const renameDemo = await call("/api/tenant/subdomain?tenant=web-demo", {
+      ...json({ subdomain: "web-demo-2" }), cookie: superSessionCookie
+    });
+    assert.equal(renameDemo.status, 400);
+
+    const directory = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+    const row = directory.slice(directory.indexOf("web-demo.labkiosk.akbhoi.com"));
+    const demoId = row.match(/data-tenant="([^"]+)"/)![1];
+    const suspend = await call("/api/super/tenants/suspend", { ...json({ tenantId: demoId }), cookie: superSessionCookie });
+    assert.equal(suspend.status, 400);
+    const reject = await call("/api/super/tenants/reject", { ...json({ tenantId: demoId }), cookie: superSessionCookie });
+    assert.equal(reject.status, 400);
+    const reassign = await call("/api/super/tenants/approve", {
+      ...json({ tenantId: demoId, subdomain: "renamed-demo" }), cookie: superSessionCookie
+    });
+    assert.equal(reassign.status, 400);
+  });
+
+  test("Startup never adopts a demo name another organization already holds", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const platform = await createUser(db, { email: "platform@example.com", password: "PlatformPassword123!", name: "Platform", role: "super_admin" });
+    const earlierPlatform = await createUser(db, { email: "old-platform@example.com", password: "PlatformPassword123!", name: "Old", role: "super_admin" });
+    const stranger = await createUser(db, { email: "stranger@example.com", password: "StrangerPassword123!", name: "Stranger" });
+    await createTenant(db, { userId: stranger.id, name: "Someone Else", subdomain: "web-demo", status: "active" });
+    await createTenant(db, { userId: earlierPlatform.id, name: "Local VM Demo", subdomain: "local-demo", status: "active" });
+
+    const demos = await ensureDemoTenants(db, platform.id);
+    assert.deepEqual(demos.map((t) => t.subdomain).sort(), ["docker-demo", "local-demo"], "web-demo is not the platform's");
+    assert.equal((await findTenantBySubdomain(db, "web-demo"))!.user_id, stranger.id, "left exactly as it was");
+    assert.equal((await findTenantBySubdomain(db, "local-demo"))!.user_id, platform.id, "an earlier super admin's demo moves over");
+    const docker = (await findTenantBySubdomain(db, "docker-demo"))!;
+    assert.equal(docker.user_id, platform.id);
+    assert.equal(docker.status, "active");
+  });
+
+  test("Super admin is restricted from organization consoles but allowed on the demo organizations", async () => {
     // 1. Super admin attempts to access greenwood organization console -> 403 Forbidden
     const deniedRes = await call("/admin?tenant=greenwood", { cookie: superSessionCookie });
     assert.equal(deniedRes.status, 403);
@@ -1739,13 +1802,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // "you do not have access" reads like a broken account rather than the
     // privacy isolation it actually is, and gives no route onward.
     assert.match(deniedHtml, /Platform administrators cannot open an organization console/);
-    assert.match(deniedHtml, /only the demo organization is available for testing/);
+    assert.match(deniedHtml, /only the demo organizations \(web-demo, local-demo, docker-demo\) are available for testing/);
     assert.match(deniedHtml, /Super Admin console/);
     // And it must not claim the account lacks access.
     assert.doesNotMatch(deniedHtml, /You do not have access to that organization(?:'|&#39;)s console/);
 
     // 2. Super admin accesses demo tenant console -> 200 OK
-    const demoRes = await call("/admin?tenant=demo", { cookie: superSessionCookie });
+    const demoRes = await call("/admin?tenant=web-demo", { cookie: superSessionCookie });
     assert.equal(demoRes.status, 200);
     const demoHtml = await demoRes.text();
     assert.match(demoHtml, /Workstation Grid &amp; Remote Control/);
@@ -1771,10 +1834,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((onApex as { redirect: string }).redirect, "/super");
 
     // On the demo subdomain, they belong in the console they were looking at.
-    const onDemo = await (await login(superCreds, { host: "demo.labkiosk.akbhoi.com" })).json();
+    const onDemo = await (await login(superCreds, { host: "web-demo.labkiosk.akbhoi.com" })).json();
     assert.equal(
       (onDemo as { redirect: string }).redirect,
-      "https://demo.labkiosk.akbhoi.com/admin",
+      "https://web-demo.labkiosk.akbhoi.com/admin",
       "a super admin signing in on demo must land on the demo console"
     );
 
@@ -1797,7 +1860,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Sign-in honours the organization the page was showing, not just the host", async () => {
     // The first version of this fix only read the Host header, and the sign-in
     // POST goes to /api/auth/login with no query string. So on a dev host, and
-    // on the apex with ?tenant=demo, the server still saw no organization and sent a
+    // on the apex with ?tenant=web-demo, the server still saw no organization and sent a
     // super admin to /super -- which is the whole complaint, unfixed. The page
     // now sends the organization it was showing.
     const login = (body: object) =>
@@ -1809,10 +1872,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const creds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
 
-    const viaBody = await (await login({ ...creds, tenant: "demo" })).json();
+    const viaBody = await (await login({ ...creds, tenant: "web-demo" })).json();
     assert.equal(
       (viaBody as { redirect: string }).redirect,
-      "https://demo.labkiosk.akbhoi.com/admin",
+      "https://web-demo.labkiosk.akbhoi.com/admin",
       "the page said it was showing demo, so that is where the sign-in belongs"
     );
 
@@ -1828,7 +1891,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const operator = await (await login({
       email: "operator@greenwood.example",
       password: "OrganizationPassword123!",
-      tenant: "demo"
+      tenant: "web-demo"
     })).json();
     assert.equal(
       (operator as { redirect: string }).redirect,
@@ -1842,11 +1905,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // each one on its own looked fine.
 
     // 1. /admin while signed out redirects to the sign-in page, naming the organization.
-    const bounced = await call("/admin", { headers: { host: "demo.labkiosk.akbhoi.com" } });
+    const bounced = await call("/admin", { headers: { host: "web-demo.labkiosk.akbhoi.com" } });
     assert.equal(bounced.status, 302);
     const target = bounced.headers.get("Location")!;
     assert.match(target, /login=1/);
-    assert.match(target, /tenant=demo/);
+    assert.match(target, /tenant=web-demo/);
 
     // 2. That target must actually render a sign-in form. Naming an organization used
     //    to route it to that organization's own page -- the portal before the
@@ -1879,32 +1942,32 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // without tenant query param -> 302 to demo organization console (NOT to /super)
     const superWorkstationsRes = await call("/admin/workstations", { cookie: superSessionCookie });
     assert.equal(superWorkstationsRes.status, 302);
-    assert.equal(superWorkstationsRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/workstations?tenant=demo");
+    assert.equal(superWorkstationsRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/workstations?tenant=web-demo");
 
     const superAppsWebRes = await call("/admin/apps-web", { cookie: superSessionCookie });
     assert.equal(superAppsWebRes.status, 302);
-    assert.equal(superAppsWebRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tenant=demo");
+    assert.equal(superAppsWebRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tenant=web-demo");
 
     const superLegacyBroadcastRes = await call("/admin/broadcast", { cookie: superSessionCookie });
     assert.equal(superLegacyBroadcastRes.status, 302);
     assert.equal(superLegacyBroadcastRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tab=broadcast");
 
-    // Super admin on dev host visiting /admin/workstations without tenant param -> 302 to ?tenant=demo
+    // Super admin on dev host visiting /admin/workstations without tenant param -> 302 to ?tenant=web-demo
     const devReq = new Request("http://localhost:8787/admin/workstations", {
       headers: { Cookie: superSessionCookie, Host: "localhost:8787" }
     });
     const devRes = await worker.fetch(devReq, mockEnv);
     assert.equal(devRes.status, 302);
-    assert.equal(devRes.headers.get("Location"), "http://localhost:8787/admin/workstations?tenant=demo");
+    assert.equal(devRes.headers.get("Location"), "http://localhost:8787/admin/workstations?tenant=local-demo");
 
-    // Super admin in demo console on apex domain preserves ?tenant=demo across all navigation links
-    const demoApexRes = await call("/admin?tenant=demo", { cookie: superSessionCookie });
+    // Super admin in demo console on apex domain preserves ?tenant=web-demo across all navigation links
+    const demoApexRes = await call("/admin?tenant=web-demo", { cookie: superSessionCookie });
     assert.equal(demoApexRes.status, 200);
     const demoApexHtml = await demoApexRes.text();
-    assert.match(demoApexHtml, /href="\/admin\/workstations\?tenant=demo"/);
-    assert.match(demoApexHtml, /href="\/admin\/apps-web\?tenant=demo"/);
-    assert.match(demoApexHtml, /href="\/admin\/staff\?tenant=demo"/);
-    assert.match(demoApexHtml, /href="\/admin\/settings\?tenant=demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/workstations\?tenant=web-demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/apps-web\?tenant=web-demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/staff\?tenant=web-demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/settings\?tenant=web-demo"/);
   });
 
   test("Renders all dedicated multi-page organization admin sub-routes with CSP nonces", async () => {
@@ -2921,6 +2984,54 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0011"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0012"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
+  });
+
+  test("0013 removes the old demo and everything in it, and nothing else", async () => {
+    const db = migratedDb("0013");
+    const seed = (t: string, owner: string) => `
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('${t}', '${owner}', '${t}', '${t === "t-demo" ? "demo" : "acme"}', 'active', 1, 1);
+      INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES ('s-${t}', '${owner}', '${t}', 'org_admin', 99999999999);
+      INSERT INTO portal_sites (id, tenant_id, title, url, domain, created_at) VALUES ('p-${t}', '${t}', 'Docs', 'https://docs.example', 'docs.example', 1);
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, created_at, updated_at) VALUES ('${t}:PC', '${t}', 'PC', 1, 1, 1);
+      INSERT INTO commands (id, tenant_id, target, action, created_at, expires_at) VALUES ('c-${t}', '${t}', 'PC', 'lock', 1, 99);
+      INSERT INTO command_deliveries (command_id, client_id, delivered_at) VALUES ('c-${t}', 'PC', 1);
+      INSERT INTO audit_logs (id, tenant_id, user_id, action, created_at) VALUES ('a-${t}', '${t}', '${owner}', 'auth.login', 1);
+      INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at) VALUES ('d-${t}', 'h-${t}', '${t}', 'PC', 1, 1);
+      INSERT INTO tenant_whitelist (id, tenant_id, domain, created_at) VALUES ('w-${t}', '${t}', 'docs.example', 1);
+      INSERT INTO broadcast_presets (id, tenant_id, title, url, created_at) VALUES ('b-${t}', '${t}', 'Handbook', 'https://docs.example/h', 1);
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g-${t}', '${t}', 'Floor 1', 1);
+    `;
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES
+        ('u-super', 'root@example.com', 'h', 's', 'super_admin', 'Root', 1),
+        ('u-acme', 'owner@acme.example', 'h', 's', 'org_admin', 'Owner', 1);
+      ${seed("t-demo", "u-super")}
+      ${seed("t-acme", "u-acme")}
+    `);
+    await assert.rejects(assertSchemaCurrent(asD1(db)), /missing the current schema/, "a database still holding demo is refused");
+
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0013_retire_demo_tenant.sql"), "utf8"));
+    db.exec("COMMIT;");
+
+    const tables: [string, string][] = [
+      ["tenants", "id"], ["sessions", "tenant_id"], ["portal_sites", "tenant_id"], ["client_devices", "tenant_id"],
+      ["commands", "tenant_id"], ["audit_logs", "tenant_id"], ["device_tokens", "tenant_id"],
+      ["tenant_whitelist", "tenant_id"], ["broadcast_presets", "tenant_id"], ["workstation_groups", "tenant_id"]
+    ];
+    for (const [table, column] of tables) {
+      const count = (t: string) => (db.prepare(`SELECT count(*) AS n FROM ${table} WHERE ${column} = ?`).get(t) as any).n;
+      assert.equal(count("t-demo"), 0, `${table} still holds the demo's rows`);
+      assert.equal(count("t-acme"), 1, `${table} lost another organization's row`);
+    }
+    const deliveries = (id: string) => (db.prepare("SELECT count(*) AS n FROM command_deliveries WHERE command_id = ?").get(id) as any).n;
+    assert.equal(deliveries("c-t-demo"), 0, "the demo's delivery receipts are gone");
+    assert.equal(deliveries("c-t-acme"), 1);
+    assert.equal((db.prepare("SELECT count(*) AS n FROM audit_logs WHERE tenant_id IS NULL").get() as any).n, 0,
+      "no demo history is left behind as platform history");
+    assert.equal((db.prepare("SELECT count(*) AS n FROM users").get() as any).n, 2, "user accounts are kept");
+    assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+    await assertSchemaCurrent(asD1(db));
   });
 
   test("0012 folds duplicate group names into one group and keeps every member grouped", () => {

@@ -64,9 +64,9 @@ The container also mounts `./distro-builder/config/includes.chroot/opt/labkiosk`
 
 ## Enrolling the simulated workstation
 
-1. With the control plane running (`cd cloudflare-control && pnpm dev`), open `http://localhost:8787/admin?tenant=demo`.
+1. With the control plane running (`cd cloudflare-control && pnpm dev`), sign in as the super admin and open `http://localhost:8787/admin?tenant=docker-demo`.
 2. **Settings → Workstation Enrollment Key** → copy the key.
-3. In the noVNC window: subdomain `demo`, identifier `PC-01`, and that key.
+3. In the noVNC window: subdomain `docker-demo`, identifier `PC-01`, and that key.
 4. **Connect & Register Workstation.**
 
 What happens:

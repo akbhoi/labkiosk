@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 3, 3b, 3c; reference:
 
 - `migrations/NNNN_name.sql` is what a deployed D1 has; `SCHEMA_SQL` in `src/db.ts` builds the
   in-memory database for tests and `pnpm dev`. **Change both.**
-- Add a **new** numbered file (next: `0013_…`). **Never edit or rename an applied migration** —
+- Add a **new** numbered file (next: `0014_…`). **Never edit or rename an applied migration** —
   wrangler tracks them by file name, so a rename re-runs it (that is why `0008_school_homepage.sql`
   keeps its name).
 - Every query that touches tenant data filters by `tenant_id`; index what you query on.

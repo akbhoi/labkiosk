@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2c, 6–7). This
 
 1. Read `src/types.ts`, `src/guard.ts`, `src/escape.ts`.
 2. **Resolve the tenant with `resolveTenant()`** — never by hand. `Host` is authoritative;
-   `?tenant=` / `X-Tenant` count only on a dev host, for a super admin (restricted to `demo`), for
+   `?tenant=` / `X-Tenant` count only on a dev host, for a super admin (who may then open only the platform-owned demos, `src/demo.ts`), for
    a session that owns that tenant, or on a public route in `isPublicTenantRoute()`.
 3. **Guard it**: `requireTenantPermission(db, session, tenant, "<perm>", …)` (or
    `requireTenantAdmin()` for membership-only reads), `requireSuperAdmin()` for platform routes,

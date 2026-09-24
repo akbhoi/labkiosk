@@ -122,11 +122,11 @@ http://localhost:6080/vnc.html
 
 ## 🎓 Simulating First-Boot Enrolment
 
-1. Open the Operator Lab Dashboard in your host browser:
-   `http://localhost:8787/admin?tenant=demo`
+1. Sign in as the super admin and open the Docker demo's console in your host browser:
+   `http://localhost:8787/admin?tenant=docker-demo`
 2. Go to **Settings → Workstation Enrollment Key** and copy the active key.
 3. In the simulated noVNC window (`http://localhost:6080/vnc.html`):
-   - **Organization Subdomain:** `demo`
+   - **Organization Subdomain:** `docker-demo`
    - **Workstation Identifier:** `PC-01`
    - **Enrollment Key:** Paste or type the key copied from the admin console.
 4. Click **Connect & Register Workstation**.

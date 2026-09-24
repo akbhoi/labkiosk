@@ -15,6 +15,7 @@ import {
   getTenantUserPermissions
 } from "./db";
 import { cleanSubdomain } from "./escape";
+import { DEMO_SLUGS, isDemoTenant } from "./demo";
 
 /** Hostnames where the ?tenant= / X-Tenant override is trusted (local dev & tests). */
 const DEV_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "host.docker.internal", "host.containers.internal"]);
@@ -82,9 +83,16 @@ const RESERVED_SLUGS = new Set([
   "root"
 ]);
 
-/** True for slugs the platform keeps for itself; they can be neither registered nor resolved. */
+/**
+ * Names no organization may claim, though they still resolve: the three demos,
+ * and `demo`, retired by migration 0013 and kept so nobody can register it and
+ * pass as the platform's demonstration.
+ */
+const PLATFORM_SLUGS = new Set<string>(["demo", ...DEMO_SLUGS]);
+
+/** True for slugs no organization may register or be given. */
 export function isReservedSlug(slug: string): boolean {
-  return RESERVED_SLUGS.has(slug);
+  return RESERVED_SLUGS.has(slug) || PLATFORM_SLUGS.has(slug);
 }
 
 /** True when `host` is `base` itself or a subdomain of it (dot-anchored, unlike endsWith). */
@@ -240,14 +248,11 @@ export function requireSuperAdmin(session: Session | null, headers: Record<strin
   return null;
 }
 
-/** 403 unless the session administers this tenant (super admin restricted to demo tenant only). */
 /**
- * The only organization a platform super admin may open, per Rule 2. It exists so
- * the platform can be demonstrated and tested without reaching into a real
- * organization's data.
+ * 403 unless the session administers this tenant. A platform super admin may open
+ * only the demo organizations it owns (Rule 2), so the platform can be tested
+ * without reaching into a real organization's data.
  */
-export const SUPER_ADMIN_TENANT_SLUG = "demo";
-
 export function requireTenantAdmin(
   session: Session | null,
   tenant: Tenant | null,
@@ -257,8 +262,7 @@ export function requireTenantAdmin(
   if (!tenant) return jsonError("No organization selected for this request", 400, headers);
 
   if (session.role === "super_admin") {
-    // Super admin can ONLY access the demo tenant for testing/preview!
-    if (tenant.subdomain === SUPER_ADMIN_TENANT_SLUG) return null;
+    if (isDemoTenant(tenant, session.user_id)) return null;
     return jsonError("Platform administrators cannot access individual organization consoles for privacy and security", 403, headers);
   }
 
@@ -279,7 +283,7 @@ export async function requireTenantPermission(
   const adminDenied = requireTenantAdmin(session, tenant, headers);
   if (adminDenied) return adminDenied;
 
-  // Super admin on demo has full permission
+  // A super admin who got past requireTenantAdmin is in one of its own demos.
   if (session!.role === "super_admin") return null;
 
   // Primary owner of the tenant has all permissions

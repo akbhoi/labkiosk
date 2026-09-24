@@ -125,8 +125,8 @@ pnpm dev
 ```
 The local control plane will be live on `http://localhost:8787`:
 - **Public Landing Page:** `http://localhost:8787/`
-- **User Portal:** `http://localhost:8787/?tenant=demo`
-- **Operator Lab Dashboard:** `http://localhost:8787/admin?tenant=demo`
+- **User Portal:** `http://localhost:8787/home?tenant=docker-demo`
+- **Operator Console:** `http://localhost:8787/admin?tenant=docker-demo` (as the super admin, who may open the three demo organizations)
 - **Super Admin Console:** `http://localhost:8787/super`
 
 ### 2. Launch the Workstation Simulator
@@ -138,8 +138,8 @@ docker compose up -d
 # ...or pull the published image instead of building
 docker compose pull && docker compose up -d
 ```
-- Open [http://localhost:6080/vnc.html](http://localhost:6080/vnc.html) (VNC password: `labkiosk`).
-- Complete the onboarding wizard using subdomain `demo` and the enrollment key from **Admin console → Settings → Workstation Enrollment Key**.
+- Open [http://localhost:6080/vnc.html](http://localhost:6080/vnc.html) (the VNC password is generated per container and printed in `docker compose logs`).
+- Complete the onboarding wizard using subdomain `docker-demo` and the enrollment key from **docker-demo's console → Settings → Workstation Enrollment Key**.
 - See [`docker-test/README.md`](docker-test/README.md) for full simulation details.
 
 ---

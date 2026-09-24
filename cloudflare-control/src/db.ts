@@ -27,6 +27,7 @@ import {
   generateDeviceToken,
   generateEnrollmentKey
 } from "./auth";
+import { DEMO_SLUGS, DEMO_TENANTS, WEB_DEMO_TUNNEL_DOMAIN } from "./demo";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -354,6 +355,13 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     if (!groupNames) {
       throw new Error("workstation group names are not unique yet (0012)");
     }
+    // 0013 is data only: the retired `demo` organization must be gone.
+    const retiredDemo = await db
+      .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
+      .first<{ id: string }>();
+    if (retiredDemo) {
+      throw new Error("the retired `demo` organization is still present (0013)");
+    }
   } catch (err: any) {
     throw new Error(
       "The D1 database is missing the current schema. Run `wrangler d1 migrations apply labkiosk-db --remote` (or `--local` for `wrangler dev`) before starting the worker. " +
@@ -363,36 +371,50 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
 }
 
 /**
- * Ensures a default Demonstration Organization tenant exists for local dev and testing
+ * Make sure each demo organization exists and belongs to the platform.
+ *
+ * A demo slug held by an organization that is not the platform's -- registered
+ * before the name was reserved -- is left exactly as it is and is not a demo:
+ * adopting it would open a real organization to the platform administrator.
+ * One owned by an earlier super admin account (the configured email changed)
+ * is still the platform's, and moves to the current one.
  */
-export async function ensureDefaultTenant(
-  db: D1Database,
-  superAdminId: string
-): Promise<Tenant> {
-  const existing = await db
-    .prepare("SELECT * FROM tenants WHERE subdomain = 'demo' LIMIT 1")
-    .first<Tenant>();
-
-  if (existing) {
-    if (!existing.tunnel_domain) {
-      await updateTenant(db, existing.id, { tunnel_domain: "demo.labkiosk.akbhoi.com" });
-      existing.tunnel_domain = "demo.labkiosk.akbhoi.com";
+export async function ensureDemoTenants(db: D1Database, superAdminId: string): Promise<Tenant[]> {
+  const demos: Tenant[] = [];
+  for (const slug of DEMO_SLUGS) {
+    const existing = await findTenantBySubdomain(db, slug);
+    if (!existing) {
+      const tenant = await createTenant(db, {
+        userId: superAdminId,
+        name: DEMO_TENANTS[slug].name,
+        subdomain: slug,
+        status: "active",
+        mode: "portal"
+      });
+      const seeded: Partial<Tenant> = { homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}` };
+      if (slug === "web-demo") seeded.tunnel_domain = WEB_DEMO_TUNNEL_DOMAIN;
+      await updateTenant(db, tenant.id, seeded);
+      demos.push({ ...tenant, ...seeded });
+      continue;
     }
-    return existing;
+    if (existing.user_id === superAdminId) {
+      demos.push(existing);
+      continue;
+    }
+    const owner = await findUserById(db, existing.user_id);
+    if (owner?.role === "super_admin") {
+      await db.prepare("UPDATE tenants SET user_id = ?, updated_at = ? WHERE id = ?")
+        .bind(superAdminId, Math.floor(Date.now() / 1000), existing.id)
+        .run();
+      demos.push({ ...existing, user_id: superAdminId });
+      continue;
+    }
+    console.error(
+      `[DB] "${slug}" belongs to an organization the platform does not own (tenant ${existing.id}); ` +
+        "it is left alone and is not a demo. Resolve it before relying on this demo."
+    );
   }
-
-  const tenant = await createTenant(db, {
-    userId: superAdminId,
-    name: "Demonstration Organization",
-    subdomain: "demo",
-    status: "active",
-    mode: "portal",
-    defaultUrl: "https://www.khanacademy.org"
-  });
-
-  await updateTenant(db, tenant.id, { tunnel_domain: "demo.labkiosk.akbhoi.com" });
-  tenant.tunnel_domain = "demo.labkiosk.akbhoi.com";
-  return tenant;
+  return demos;
 }
 
 export async function findUserByEmail(db: D1Database, email: string): Promise<User | null> {

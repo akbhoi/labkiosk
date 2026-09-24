@@ -8,7 +8,7 @@ How `cloudflare-control/` is put together, and the rules for changing it.
 
 ```text
 cloudflare-control/
-├── migrations/             D1 SQL migrations 0001..0012
+├── migrations/             D1 SQL migrations 0001..0013
 ├── src/
 │   ├── index.ts            Router, REST endpoints, telemetry cache, scheduled()
 │   ├── guard.ts            Tenant resolution, authorization, CSRF origin guard

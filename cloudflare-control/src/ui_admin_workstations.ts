@@ -270,12 +270,10 @@ function renderWorkstationsScripts(
   initialGroups: WorkstationGroup[] = []
 ): string {
   const tunnelDomain = tenant?.tunnel_domain || config?.tunnelDomain || "";
-  const isDemo = tenant?.subdomain === "demo";
 
   return `
     <script nonce="${escapeAttr(nonce)}">
       const TUNNEL_DOMAIN = ${escapeJson(tunnelDomain)};
-      const IS_DEMO = ${isDemo ? "true" : "false"};
       let clientsData = {};
       let groupsList = ${escapeJson(initialGroups.map((g) => ({ id: g.id, name: g.name })))};
       let selectedClientIds = new Set();
@@ -716,9 +714,7 @@ function renderWorkstationsScripts(
           base = "https://" + client.remoteHost;
         } else if (host === "localhost" || host === "127.0.0.1" || host.includes("docker")) {
           base = "http://" + host + ":6080";
-        } else if (IS_DEMO) {
-          base = "https://" + encodeURIComponent(id.toLowerCase()) + "." + TUNNEL_DOMAIN;
-        } else if (TUNNEL_DOMAIN && TUNNEL_DOMAIN !== "lab.example.com") {
+        } else if (TUNNEL_DOMAIN) {
           base = "https://" + encodeURIComponent(id.toLowerCase()) + "." + TUNNEL_DOMAIN;
         } else {
           base = "http://localhost:6080";

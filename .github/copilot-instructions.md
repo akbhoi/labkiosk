@@ -4,7 +4,7 @@ These instructions guide GitHub Copilot when assisting contributors on the Lab K
 
 ## Subsystem Architecture
 - **Client OS & Distro (`distro-builder/`)**: Debian 12 Live ISO, Openbox, Python agent (`agent.py`, standard library only, loopback `127.0.0.1:8888`), disk installer (`labkiosk-install`), Manifest V3 extension (`content.js` in Shadow DOM, `background.js` as the only loopback caller). Read `distro-builder/AGENTS.md`.
-- **Control Plane (`cloudflare-control/`)**: Cloudflare Workers edge SaaS, D1 database (`migrations/0001..0012` mirrored in `SCHEMA_SQL`), native Web Crypto PBKDF2 authentication, nonce-based CSP. The organization console has four modules (Workstations, Apps & Web, Staff, Settings), one `ui_admin_<page>.ts` per page. Read `cloudflare-control/AGENTS.md`.
+- **Control Plane (`cloudflare-control/`)**: Cloudflare Workers edge SaaS, D1 database (`migrations/0001..0013` mirrored in `SCHEMA_SQL`), native Web Crypto PBKDF2 authentication, nonce-based CSP. The organization console has four modules (Workstations, Apps & Web, Staff, Settings), one `ui_admin_<page>.ts` per page. Read `cloudflare-control/AGENTS.md`.
 
 ## Task procedures (read the matching one)
 - `.agents/skills/labkiosk-core/SKILL.md` — client ↔ Worker contracts: telemetry, enrolment, commands, broadcast state, remote control

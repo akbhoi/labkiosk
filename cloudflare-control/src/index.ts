@@ -16,7 +16,7 @@ import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import {
   initSchema,
   ensureSuperAdmin,
-  ensureDefaultTenant,
+  ensureDemoTenants,
   findUserByEmail,
   findUserById,
   createUser,
@@ -102,7 +102,6 @@ import {
 import {
   resolveTenant,
   requireSuperAdmin,
-  SUPER_ADMIN_TENANT_SLUG,
   requireTenantAdmin,
   requireTenantPermission,
   requireDevice,
@@ -116,6 +115,7 @@ import {
 } from "./guard";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { createLocalD1Database } from "./d1_adapter";
+import { DEMO_SLUGS, WEB_DEMO_TUNNEL_DOMAIN, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
 
 /** Largest screen thumbnail a workstation may upload (base64 data URL). */
 const MAX_THUMBNAIL_BYTES = 256 * 1024;
@@ -183,6 +183,12 @@ async function staffDelegationProblem(
   return null;
 }
 
+/**
+ * A demo keeps its name and stays active: the simulators, VMs and tests that use it
+ * are enrolled against that name, and renaming one would also stop it being a demo.
+ */
+const DEMO_LOCKED_MESSAGE = "The platform's demo organizations keep their names and cannot be suspended or rejected";
+
 /** Longest x11vnc password a workstation may report (x11vnc itself uses the first 8 characters). */
 const MAX_VNC_PASSWORD_LENGTH = 64;
 
@@ -218,7 +224,7 @@ function getDatabase(env: Env): D1Database {
  * Previously this ran on every request, costing ~10 D1 round-trips before the
  * router even looked at the path.
  */
-type Bootstrapped = { superAdmin: User; defaultTenant: Tenant };
+type Bootstrapped = { superAdmin: User; demos: Tenant[] };
 let bootstrapCache: {
   db: D1Database;
   email?: string;
@@ -265,8 +271,8 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
         db,
         email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN
       );
-      const defaultTenant = await ensureDefaultTenant(db, superAdmin.id);
-      return { superAdmin, defaultTenant };
+      const demos = await ensureDemoTenants(db, superAdmin.id);
+      return { superAdmin, demos };
     })().catch((err) => {
       // Never cache a failed bootstrap, or the isolate stays broken forever.
       if (bootstrapCache?.promise === promise) bootstrapCache = null;
@@ -281,7 +287,7 @@ const DEFAULT_CONFIG: LabConfig = {
   version: 3,
   updatedAt: new Date().toISOString(),
   defaultHomepage: "https://labkiosk.akbhoi.com",
-  tunnelDomain: "demo.labkiosk.akbhoi.com",
+  tunnelDomain: "",
   whitelist: [],
   scheduledShutdown: "17:00"
 };
@@ -341,7 +347,7 @@ function postLoginRedirect(options: {
   if (role === "super_admin") {
     // The organization they were already looking at, if they are allowed in it.
     const context = hostSlug || requestedSlug;
-    if (context && SUPER_ADMIN_TENANT_SLUG === context) return consoleFor(context);
+    if (isDemoSlug(context)) return consoleFor(context);
     return "/super";
   }
 
@@ -522,7 +528,7 @@ export default {
     const method = request.method;
 
     const db = getDatabase(env);
-    const { defaultTenant } = await bootstrap(db, env);
+    await bootstrap(db, env);
 
     // Same-origin JSON API: no cross-origin credentials are ever needed, so no
     // Access-Control-Allow-Origin is emitted. `/api/status` opts in explicitly
@@ -592,9 +598,8 @@ export default {
       return jsonError("You do not have access to this organization", 403, jsonHeaders);
     }
 
-    const tenantKey = currentTenant ? currentTenant.id : defaultTenant.id;
-    if (!tenantTelemetryCache[tenantKey]) {
-      tenantTelemetryCache[tenantKey] = {};
+    if (currentTenant && !tenantTelemetryCache[currentTenant.id]) {
+      tenantTelemetryCache[currentTenant.id] = {};
     }
 
     // ==========================================
@@ -894,6 +899,7 @@ export default {
       return new Response(
         renderSuperAdminHtml({
           superAdminEmail: (await findUserById(db, session.user_id))?.email || "admin@akbhoi.com",
+          superAdminId: session.user_id,
           tenants: allTenants,
           catalogs,
           baseDomain,
@@ -915,6 +921,7 @@ export default {
         const body = await request.json<{ tenantId?: string }>();
         const target = body.tenantId ? await findTenantById(db, body.tenantId) : null;
         if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+        if (suspend && isDemoTenant(target, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
         if (suspend && target.status !== "active") {
           return jsonError("Only an active organization can be suspended", 400, jsonHeaders);
         }
@@ -1070,6 +1077,9 @@ export default {
           return jsonError(`Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens) and not a reserved name`, 400, jsonHeaders);
         }
 
+        if (isDemoTenant(await findTenantById(db, body.tenantId), session!.user_id)) {
+          return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
+        }
         const existing = await findTenantBySubdomain(db, cleanSub);
         if (existing && existing.id !== body.tenantId) {
           return jsonError("Subdomain already assigned to another organization", 400, jsonHeaders);
@@ -1101,6 +1111,9 @@ export default {
       if (denied) return denied;
       try {
         const body = await request.json<{ tenantId: string }>();
+        if (isDemoTenant(await findTenantById(db, body.tenantId), session!.user_id)) {
+          return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
+        }
         await updateTenant(db, body.tenantId, { status: "rejected", requested_subdomain: null });
         await writeAuditLog(db, {
           tenantId: body.tenantId,
@@ -1354,6 +1367,7 @@ export default {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       try {
+        if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
         const body = await request.json<{ requestedSubdomain: string }>();
         const cleanSub = cleanSubdomain(body.requestedSubdomain);
         if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH || isReservedSlug(cleanSub)) {
@@ -1799,6 +1813,7 @@ export default {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       try {
+        if (isDemoTenant(currentTenant, session!.user_id)) return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
         const body = await request.json<{ subdomain: string }>();
         const cleanSub = cleanSubdomain(body.subdomain);
         if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH) {
@@ -2593,12 +2608,12 @@ export default {
       const onApex = !isDev && env.DEFAULT_DOMAIN && hostname(request) === env.DEFAULT_DOMAIN.toLowerCase().replace(/^\./, "") && !explicitTenant;
       if (onApex) {
         if (session.role === "super_admin") {
-          // If the super admin requested a specific organization admin sub-route (/admin/workstations, /admin/broadcast, etc.),
-          // they are accessing the demo organization console (the only organization console a platform admin may open).
-          // Redirect them to the demo console sub-route instead of bouncing them to /super.
+          // A named console page (/admin/workstations, ...) on the apex can only be
+          // a demo console, the only kind a platform admin may open: land in the
+          // hosted site's demo rather than bouncing to /super.
           if (path !== "/admin") {
             return Response.redirect(
-              `${url.origin}${path}?tenant=${encodeURIComponent(SUPER_ADMIN_TENANT_SLUG)}`,
+              `${url.origin}${path}?tenant=${encodeURIComponent(defaultDemoSlug(false))}`,
               302
             );
           }
@@ -2631,10 +2646,11 @@ export default {
       }
 
 
-      // Land a super admin on the demo organization console when visiting /admin/* without a tenant on dev.
+      // Land a super admin in a demo console when visiting /admin/* with no organization named:
+      // local-demo on a dev host, web-demo otherwise.
       if (!currentTenant && session.role === "super_admin" && path !== "/admin") {
         return Response.redirect(
-          `${url.origin}${path}?tenant=${encodeURIComponent(SUPER_ADMIN_TENANT_SLUG)}`,
+          `${url.origin}${path}?tenant=${encodeURIComponent(defaultDemoSlug(isDev))}`,
           302
         );
       }
@@ -2642,8 +2658,8 @@ export default {
       const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
       if (denied) {
         // Say which refusal this is. A platform administrator is not locked
-        // out by accident: `demo` is the one organization they may open, and the
-        // console they actually want is /super.
+        // out by accident: the demo organizations are the only ones they may open,
+        // and the console they actually want is /super.
         //
         // Only when the isolation is what actually refused them. A super admin
         // naming an organization that does not exist gets a 400 from the guard, and
@@ -2653,9 +2669,9 @@ export default {
           session.role === "super_admin" &&
           denied.status === 403 &&
           Boolean(currentTenant) &&
-          currentTenant!.subdomain !== SUPER_ADMIN_TENANT_SLUG;
+          !isDemoTenant(currentTenant, session.user_id);
         const message = isPlatformIsolation
-          ? `Platform administrators cannot open an organization console. This is the privacy isolation described in the Terms: only the ${SUPER_ADMIN_TENANT_SLUG} organization is available for testing. Use the Super Admin console instead.`
+          ? `Platform administrators cannot open an organization console. This is the privacy isolation described in the Terms: only the demo organizations (${DEMO_SLUGS.join(", ")}) are available for testing. Use the Super Admin console instead.`
           : "You do not have access to that organization's console.";
         return new Response(
           renderLandingHtml({
@@ -2732,11 +2748,11 @@ export default {
 
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
-        // The platform's demo tunnel belongs to the demo organization only. Handed
-        // to anyone else it sent their Remote Control -- VNC password included --
-        // to <pc>.demo.<domain>, a host in another organization's namespace.
+        // The hosted demo's tunnel belongs to web-demo only. Handed to anyone
+        // else it sent their Remote Control -- VNC password included -- to
+        // <pc>.demo.<domain>, a host in another organization's namespace.
         tunnelDomain: tenant.tunnel_domain || env.TUNNEL_DOMAIN ||
-          (tenant.subdomain === SUPER_ADMIN_TENANT_SLUG ? DEFAULT_CONFIG.tunnelDomain : ""),
+          (tenant.subdomain === "web-demo" && isDemoTenant(tenant, session.user_id) ? WEB_DEMO_TUNNEL_DOMAIN : ""),
         defaultHomepage: env.DEFAULT_HOMEPAGE || DEFAULT_CONFIG.defaultHomepage,
         homeRoute: tenant.home_route || "/",
         whitelist
@@ -2746,7 +2762,8 @@ export default {
       const isTenantHost =
         host === `${tenant.subdomain}.${baseDomain}`.toLowerCase() ||
         (tenant.custom_domain && host === tenant.custom_domain.toLowerCase());
-      const needsTenantParam = isDev || (tenant.subdomain === SUPER_ADMIN_TENANT_SLUG && !isTenantHost);
+      // A super admin can only be here in a demo; off its own host the tenant rides along.
+      const needsTenantParam = isDev || (session.role === "super_admin" && !isTenantHost);
 
       return new Response(
         renderDashboardHtml({

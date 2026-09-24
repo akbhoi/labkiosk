@@ -41,8 +41,8 @@ The platform is now on `http://localhost:8787`:
 | Surface | URL |
 | :--- | :--- |
 | Public landing page | `http://localhost:8787/` |
-| User Portal | `http://localhost:8787/?tenant=demo` |
-| Operator Lab Dashboard | `http://localhost:8787/admin?tenant=demo` |
+| User Portal | `http://localhost:8787/home?tenant=docker-demo` |
+| Operator Console | `http://localhost:8787/admin?tenant=docker-demo` |
 | Super Admin console | `http://localhost:8787/super` |
 
 The `?tenant=` override works here only because `localhost` is a recognised development host. In production the `Host` header is the sole authority — see [Architecture Overview](Architecture-Overview#tenant-resolution).
@@ -51,11 +51,13 @@ The `?tenant=` override works here only because `localhost` is a recognised deve
 
 ## 2. Create an organization
 
-1. Open `http://localhost:8787/` and register an organization. Pick subdomain `demo` so the URLs above resolve.
-2. Sign in to `http://localhost:8787/super` with the credentials from `.dev.vars`.
-3. **Approve** the pending registration. An organization stays `pending` — and its workstations cannot enrol — until a super admin approves it.
-4. Sign in to the Operator Lab Dashboard at `http://localhost:8787/admin?tenant=demo`.
-5. Go to **Settings → Workstation Enrollment Key** and generate one. Organizations start with an empty key, and an empty key authenticates nothing.
+The worker creates three demo organizations at startup, one per way of testing: `web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator). They are the only organizations the super admin may open.
+
+1. Sign in to `http://localhost:8787/super` with the credentials from `.dev.vars`.
+2. **Open Console** on `docker-demo` (this guide uses the Docker simulator; a local VM uses `local-demo`).
+3. Go to **Settings → Workstation Enrollment Key** and copy the key.
+
+To try an ordinary organization instead, register one at `http://localhost:8787/` — it is active as soon as it registers. The demo names and `demo` itself are reserved.
 
 ---
 
@@ -91,7 +93,7 @@ In the noVNC window — not your host browser; the agent's API is loopback-only 
 
 | Field | Value |
 | :--- | :--- |
-| Organization subdomain | `demo` |
+| Organization subdomain | `docker-demo` |
 | Workstation identifier | `PC-01` |
 | Enrollment key | the key from step 2 |
 
@@ -109,7 +111,7 @@ Within three seconds `PC-01` appears on the Admin console with a live thumbnail.
 
 ## 5. Try the operator controls
 
-From `http://localhost:8787/admin?tenant=demo`:
+From `http://localhost:8787/admin?tenant=docker-demo`:
 
 - **Lock all screens** — a full-screen curtain appears in the simulator with your message.
 - **Broadcast a URL** — every workstation navigates there at once and stays there.

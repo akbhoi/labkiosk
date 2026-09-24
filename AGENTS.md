@@ -38,8 +38,8 @@ labkiosk/
 │       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
 │       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0012 (never edit an applied one)
-│   ├── src/                 index.ts (router), guard.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts,
+│   ├── migrations/          0001..0013 (never edit an applied one)
+│   ├── src/                 index.ts (router), guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts,
 │   │                        ui_*.ts (one module per page), ui_tokens.ts, ui_layout.ts
 │   └── test/                worker.test.ts, dump_admin_html.ts, dev_server.ts
 ├── Dockerfile, docker-compose.yml, docker-test/   workstation simulator
@@ -64,8 +64,8 @@ websockify → Cloudflare Tunnel. Full contracts: `labkiosk-core`.
 4. **Tenant isolation.** Every query touching tenant data filters by `tenant_id`; state two requests
    must agree on lives in D1, never module memory. Every route resolves its tenant with
    `resolveTenant()` and is guarded (`requireTenantPermission` / `requireTenantAdmin` /
-   `requireSuperAdmin` / `requireDevice`) **and** has negative tests. Super admins see only the
-   `demo` organization.
+   `requireSuperAdmin` / `requireDevice`) **and** has negative tests. Super admins open only the
+   platform-owned demos `web-demo`, `local-demo` and `docker-demo` (`src/demo.ts`).
 5. **Staff delegation never escalates.** Roles `org_admin`, `sub_admin`, `operator`, `assistant`,
    `content_manager`; permissions `workstations`, `broadcast`, `portal`, `whitelist`, `staff`,
    `settings`; `*` is never stored; `staffDelegationProblem()` guards every staff change.

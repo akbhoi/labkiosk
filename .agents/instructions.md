@@ -42,7 +42,7 @@ The repository is partitioned into two independent subsystems plus a workstation
 
 2. **Cloudflare SaaS Control Plane (`cloudflare-control/`)**:
    - Cloudflare Workers edge control plane (`src/index.ts`).
-   - Cloudflare D1 SQL database with numbered migrations (`migrations/0001..0012`) mirrored in `SCHEMA_SQL`.
+   - Cloudflare D1 SQL database with numbered migrations (`migrations/0001..0013`) mirrored in `SCHEMA_SQL`.
    - Pure Web Crypto `PBKDF2-HMAC-SHA256` authentication (0 runtime npm dependencies).
    - Strict multi-tenant authorization guards (`src/guard.ts`).
    - Nonce-based Content Security Policy (CSP) and output escaping (`src/escape.ts`).

@@ -1,12 +1,14 @@
 /**
  * Super Admin Master Console UI
  * Platform owner interface for managing organizations, approving subdomains, and global analytics.
- * Strictly enforces privacy: Super admin cannot access organization consoles except demo.
+ * Strictly enforces privacy: Super admin cannot access organization consoles except the
+ * platform's own demo organizations (web-demo, local-demo, docker-demo).
  */
 
 import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
+import { DEMO_TENANTS, isDemoTenant } from "./demo";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
 export interface SuperConsoleTenant extends Tenant {
@@ -26,6 +28,8 @@ export interface SuperConsoleCatalog {
 
 export interface SuperAdminOptions {
   superAdminEmail: string;
+  /** Whose demos these are: a demo row is a demo slug this account owns. */
+  superAdminId: string;
   tenants: SuperConsoleTenant[];
   catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
@@ -34,7 +38,7 @@ export interface SuperAdminOptions {
 }
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
-  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com", activeTab = "organizations", nonce } = data;
+  const { superAdminEmail, superAdminId, tenants, baseDomain = "labkiosk.akbhoi.com", activeTab = "organizations", nonce } = data;
 
   const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
@@ -114,15 +118,18 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     )
     .join("");
 
-  const allRows = tenants
+  // The demos first: they are the rows a platform administrator actually opens.
+  const allRows = [...tenants]
+    .sort((a, b) => Number(isDemoTenant(b, superAdminId)) - Number(isDemoTenant(a, superAdminId)))
     .map((t) => {
-      const isDemo = t.subdomain === "demo";
+      const isDemo = isDemoTenant(t, superAdminId);
+      const purpose = isDemo ? DEMO_TENANTS[t.subdomain as keyof typeof DEMO_TENANTS].purpose : "";
       const href = `/admin/workstations?tenant=${encodeURIComponent(t.subdomain)}`;
       return `
     <tr>
       <td>
         <strong>${escapeHtml(t.name)}</strong>
-        ${isDemo ? `<span class="badge badge-blue" style="margin-left: 6px;">DEMO TENANT</span>` : ""}
+        ${isDemo ? `<span class="badge badge-blue" style="margin-left: 6px;">DEMO</span><div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">${escapeHtml(purpose)}</div>` : ""}
       </td>
       <td>${escapeHtml(t.admin_name)} <div style="font-size: 12px; color: var(--text-muted);">${escapeHtml(t.admin_email)}</div></td>
       <td>
@@ -150,14 +157,16 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         <div style="display: flex; gap: 6px; flex-wrap: wrap;">
           ${
             isDemo
-              ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">Open Test Console (Demo)</a>`
+              ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">Open Console</a>`
               : `<span class="badge" style="background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid var(--border);">Console Restricted (Privacy)</span>`
           }
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>
+          ${isDemo ? "" : `<button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>`}
           <button class="btn btn-sm btn-secondary btn-assign-custom" data-tenant="${escapeAttr(t.id)}">Custom Domain</button>
           ${t.custom_domain ? `<button class="btn btn-sm btn-danger btn-remove-custom" data-tenant="${escapeAttr(t.id)}">Disconnect</button>` : ""}
           ${
-            t.status === "active"
+            isDemo
+              ? ""
+              : t.status === "active"
               ? `<button class="btn btn-sm btn-danger btn-suspend" data-tenant="${escapeAttr(t.id)}">Suspend</button>`
               : t.status === "suspended"
                 ? `<button class="btn btn-sm btn-success btn-reactivate" data-tenant="${escapeAttr(t.id)}">Reactivate</button>`
@@ -240,7 +249,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
       <div class="sub-section-title" style="margin-top: 16px;">Privacy Invariant</div>
       <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); line-height: 1.5;">
-        Super Admins cannot access any organization's internal console or telemetry except for <code>demo</code>. Organization data isolation is enforced at the edge D1 layer.
+        Super Admins cannot access any organization's internal console or telemetry except the platform's demo organizations. Organization data isolation is enforced at the edge D1 layer.
       </div>
     `;
   } else if (activeTab === "approvals") {
@@ -314,7 +323,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const bannerHtml = `    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: var(--radius); padding: 16px 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 14px; font-size: 13px; color: #bfdbfe;">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       <div>
-        <strong>Privacy Invariant Enforced:</strong> Platform Super Administrators cannot access individual organization consoles or view user workstation telemetry. Consoles are accessible solely to authorized organization operators. The dedicated <code>demo</code> tenant is available for platform testing.
+        <strong>Privacy Invariant Enforced:</strong> Platform Super Administrators cannot access individual organization consoles or view user workstation telemetry. Consoles are accessible solely to authorized organization operators. The platform's own demo organizations (<code>web-demo</code>, <code>local-demo</code> and <code>docker-demo</code>) are available for testing.
       </div>
     </div>
   `;
