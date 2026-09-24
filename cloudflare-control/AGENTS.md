@@ -1,7 +1,7 @@
 # LabKiosk Cloudflare Control Plane — AI Agent Codex
 
 > **Scope:** This document is the authoritative architectural specification and coding standard for the **Cloudflare Workers Control Plane**, Cloudflare D1 database, Web Crypto authentication, edge routing, multi-tenant scoping, and HTML/UI generation.
-> For the client Debian 12 operating system and installer, refer to [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md). For the global invariants, see the root [`AGENTS.md`](../AGENTS.md); the client ↔ Worker contracts (telemetry, enrolment, commands, broadcast state, remote control) are in [`.claude/skills/labkiosk-core/SKILL.md`](../.claude/skills/labkiosk-core/SKILL.md).
+> For the client Debian 12 operating system and installer, refer to [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md). For the global invariants, see the root [`AGENTS.md`](../AGENTS.md); the client ↔ Worker contracts (telemetry, enrolment, commands, broadcast state, remote control) are in [`.agents/skills/labkiosk-core/SKILL.md`](../.agents/skills/labkiosk-core/SKILL.md).
 
 ---
 

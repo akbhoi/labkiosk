@@ -56,6 +56,6 @@ These are invariants, not preferences. Every one of them is enforced by the test
 
 Lab Kiosk is licensed under the **LabKiosk Software License (Source-Available)**: free and unrestricted for accredited schools, colleges, universities, teachers, and non-profits up to 45 computers; deployments with more than 45 computers are treated as commercial scale. A commercial license is required for for-profit resale, SaaS hosting, or MSP use. Subscribers utilizing the Cloudflare Worker platform are supported per the Subscriber License.
 
-The project is openly co-developed with AI coding assistants — first Antigravity (Google DeepMind), later Claude Code. The rules those agents follow are checked into the repository as `AGENTS.md`, `CLAUDE.md`, and the skills under `.claude/skills/`.
+The project is openly co-developed with AI coding assistants — first Antigravity (Google DeepMind), later Claude Code. The rules those agents follow are checked into the repository as `AGENTS.md` and the skills under `.agents/skills/`.
 
 → [Development Workflow](Development-Workflow) · [Security Model](Security-Model) · [FAQ](FAQ) · [Glossary](Glossary)

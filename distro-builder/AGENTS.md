@@ -1,7 +1,7 @@
 # LabKiosk Distro Builder & Client OS — AI Agent Codex
 
 > **Scope:** This document is the authoritative architectural specification and coding standard for the **Debian 12 Live Kiosk Operating System**, containerized ISO build pipeline, local Python agent daemon, automated hard disk installer, and Chromium Manifest V3 extension.
-> For the Cloudflare edge SaaS control plane, refer to [`cloudflare-control/AGENTS.md`](../cloudflare-control/AGENTS.md). For the global invariants, see the root [`AGENTS.md`](../AGENTS.md); the client ↔ Worker contracts (telemetry, enrolment, commands, broadcast state, remote control) are in [`.claude/skills/labkiosk-core/SKILL.md`](../.claude/skills/labkiosk-core/SKILL.md).
+> For the Cloudflare edge SaaS control plane, refer to [`cloudflare-control/AGENTS.md`](../cloudflare-control/AGENTS.md). For the global invariants, see the root [`AGENTS.md`](../AGENTS.md); the client ↔ Worker contracts (telemetry, enrolment, commands, broadcast state, remote control) are in [`.agents/skills/labkiosk-core/SKILL.md`](../.agents/skills/labkiosk-core/SKILL.md).
 
 ---
 

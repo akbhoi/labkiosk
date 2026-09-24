@@ -77,7 +77,7 @@ When writing code for Lab Kiosk, you MUST preserve these architectural decisions
 - **Master Architecture Codex:** [`AGENTS.md`](AGENTS.md)
 - **Client OS & Distro Builder:** [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md)
 - **Cloudflare Control Plane:** [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md)
-- **Core Engineering Skills:** [`.claude/skills/`](.claude/skills/)
+- **Core Engineering Skills:** [`.agents/skills/`](.agents/skills/)
 
 Here is the quick summary of non-negotiable standards:
 

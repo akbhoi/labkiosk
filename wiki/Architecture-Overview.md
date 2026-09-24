@@ -162,7 +162,7 @@ labkiosk/
 ├── distro-builder/          live-build ISO pipeline, client source, installer
 ├── docker-test/             Workstation simulator entrypoint + docs
 ├── docs/                    In-repo deployment, remote control, API specs
-├── .claude/skills/          AI agent procedures (loaded on demand)
+├── .agents/skills/          AI agent procedures (loaded on demand)
 ├── wiki/                    This wiki's source
 ├── AGENTS.md                Master engineering codex
 └── Dockerfile               The simulator image

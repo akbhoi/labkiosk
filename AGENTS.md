@@ -11,21 +11,23 @@ This file is deliberately short: the rules every change must respect, and where 
 |---|---|
 | Client OS, agent, extension, wizard, installer, ISO build | [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) (authoritative) |
 | Cloudflare Worker, D1, consoles, security | [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md) (authoritative) |
-| Task procedures, loaded on demand | [`.claude/skills/`](.claude/skills/) — see the table below |
+| Task procedures, loaded on demand | [`.agents/skills/`](.agents/skills/) — see the table below |
 
 ## Skills — open the one that matches the task
 
 | Task | Skill file |
 |---|---|
-| Client ↔ Worker contracts: telemetry, enrolment, commands, broadcast state, remote control | [`.claude/skills/labkiosk-core/SKILL.md`](.claude/skills/labkiosk-core/SKILL.md) |
-| Worker routes, guards, tenancy, staff delegation, batch commands, tests | [`.claude/skills/labkiosk-control/SKILL.md`](.claude/skills/labkiosk-control/SKILL.md) |
-| Consoles, landing, User Portal, organization homepage, legal pages | [`.claude/skills/labkiosk-console-ui/SKILL.md`](.claude/skills/labkiosk-console-ui/SKILL.md) |
-| Database schema and migrations | [`.claude/skills/labkiosk-d1-schema/SKILL.md`](.claude/skills/labkiosk-d1-schema/SKILL.md) |
-| Agent, extension, wizard, i18n, localization, keyboard lockdown | [`.claude/skills/labkiosk-client/SKILL.md`](.claude/skills/labkiosk-client/SKILL.md) |
-| ISO build, packages, overlay, bootloaders, installer | [`.claude/skills/labkiosk-distro/SKILL.md`](.claude/skills/labkiosk-distro/SKILL.md) |
-| Seeing a client change work in the Docker simulator | [`.claude/skills/labkiosk-simulator/SKILL.md`](.claude/skills/labkiosk-simulator/SKILL.md) |
+| Client ↔ Worker contracts: telemetry, enrolment, commands, broadcast state, remote control | [`.agents/skills/labkiosk-core/SKILL.md`](.agents/skills/labkiosk-core/SKILL.md) |
+| Worker routes, guards, tenancy, staff delegation, batch commands, tests | [`.agents/skills/labkiosk-control/SKILL.md`](.agents/skills/labkiosk-control/SKILL.md) |
+| Consoles, landing, User Portal, organization homepage, legal pages | [`.agents/skills/labkiosk-console-ui/SKILL.md`](.agents/skills/labkiosk-console-ui/SKILL.md) |
+| Database schema and migrations | [`.agents/skills/labkiosk-d1-schema/SKILL.md`](.agents/skills/labkiosk-d1-schema/SKILL.md) |
+| Agent, extension, wizard, i18n, localization, keyboard lockdown | [`.agents/skills/labkiosk-client/SKILL.md`](.agents/skills/labkiosk-client/SKILL.md) |
+| ISO build, packages, overlay, bootloaders, installer | [`.agents/skills/labkiosk-distro/SKILL.md`](.agents/skills/labkiosk-distro/SKILL.md) |
+| Seeing a client change work in the Docker simulator | [`.agents/skills/labkiosk-simulator/SKILL.md`](.agents/skills/labkiosk-simulator/SKILL.md) |
 
-Claude Code discovers these automatically and loads one only when a task needs it.
+This file is the one entry point for every tool; there is no `CLAUDE.md`. Nothing below is loaded up
+front: open the skill that matches the task, and the matching codex section when a skill points to
+it or you need the rationale.
 
 ## 1. Architecture
 
@@ -42,7 +44,7 @@ labkiosk/
 │   └── test/                worker.test.ts, dump_admin_html.ts, dev_server.ts
 ├── Dockerfile, docker-compose.yml, docker-test/   workstation simulator
 ├── docs/, wiki/             deployment, API and user documentation
-└── .claude/skills/          on-demand procedures (above)
+└── .agents/skills/          on-demand procedures (above)
 ```
 
 The workstation agent sends a heartbeat every 3 s (`POST /api/telemetry`, device bearer token);
@@ -106,3 +108,16 @@ python3 distro-builder/tools/generate-chromium-policy.py --check
 `PYTHONPYCACHEPREFIX` keeps `__pycache__` out of the image overlay. Tests check markup and contracts,
 not behaviour: verify UI changes by driving the page in a browser, and kiosk changes with a screenshot
 from the simulator.
+
+## 4. Quick reference
+
+- Dev server: `cd cloudflare-control && cp .dev.vars.example .dev.vars && pnpm dev`
+- Every new route: a guard **and** a negative test. Every staff route: `staffDelegationProblem()`.
+  Every id list: ≤ 500, chunked under D1's 100-parameter limit.
+- Every template or script block: the nonce, no inline handlers, no `escapeHtml`/`escapeAttr` in
+  client code.
+- Every schema change: a new migration **and** `SCHEMA_SQL`; parent-table CHECK changes use the
+  cascade-safe rebuild (`labkiosk-d1-schema`).
+- On Windows, `python3` may be the Microsoft Store stub — run `python`. Never write build files with
+  a newline-translating tool (Python's `Path.write_text` on Windows), and shell heredocs can mangle
+  backslashes — write scripts with a file tool.
