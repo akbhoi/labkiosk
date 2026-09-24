@@ -377,7 +377,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
   <main>
     <div class="portal-hero">
       <h1 class="portal-title">${escapeHtml(tenant.portal_title || "Select an Approved Resource")}</h1>
-      <p class="portal-desc">${escapeHtml(tenant.portal_description || "Click any approved application below to begin your page. All external access is filtered and managed by your operator.")}</p>
+      <p class="portal-desc">${escapeHtml(tenant.portal_description || "Choose an approved application below to get started. Access to every other site is filtered and managed by your organization.")}</p>
     </div>
 
     <div class="grid">
@@ -386,7 +386,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
   </main>
 
   <footer>
-    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Educational Environment Restricted")} • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy</a> • <a href="/terms" style="color: var(--text-muted); text-decoration: underline;">Terms</a>
+    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Managed Workstation")} • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy</a> • <a href="/terms" style="color: var(--text-muted); text-decoration: underline;">Terms</a>
   </footer>
 
   <script nonce="${escapeAttr(nonce)}">

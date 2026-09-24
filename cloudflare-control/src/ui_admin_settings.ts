@@ -19,7 +19,7 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
     title: "Settings & Configuration",
     contentHtml: renderSettingsPageHtml(tenant, config, baseDomain, tenantParam),
     scriptsHtml: renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)),
-    subPanelTitle: "Lab Configuration",
+    subPanelTitle: "Organization Settings",
     subPanelSubtitle: "Settings & preferences",
     subPanelHtml: `
       <div class="sub-section-title">Settings Views</div>
@@ -169,7 +169,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
             <form id="form-tunnel-settings">
               <div class="form-group">
                 <label class="form-label" for="setting-tunnel-domain">Tunnel Domain</label>
-                <input type="text" class="form-input" id="setting-tunnel-domain" value="${escapeAttr(tunnelDomain)}" placeholder="e.g. lab.example.com or demo.labkiosk.akbhoi.com">
+                <input type="text" class="form-input" id="setting-tunnel-domain" value="${escapeAttr(tunnelDomain)}" placeholder="e.g. remote.example.com">
                 <div class="form-hint">Thin clients forward loopback noVNC port 6080 to this tunnel egress domain.</div>
               </div>
               <button type="submit" class="btn btn-secondary">Update Tunnel Domain</button>
@@ -289,9 +289,9 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
         </div>
 
         <div>
-          <!-- Card 8: Recent Lab Activity -->
+          <!-- Card 8: Recent Activity -->
           <div class="card" id="section-activity">
-            <h2 class="card-title">Recent Lab Activity</h2>
+            <h2 class="card-title">Recent Activity</h2>
             <p class="card-sub">Privileged changes to this organization, including anything the platform did to it.</p>
             <div class="table-container table-scrollable">
               <table>
@@ -680,7 +680,16 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               const when = document.createElement("td");
               when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
               const date = new Date(entry.created_at * 1000);
-              when.textContent = isNaN(date.getTime()) ? "\u2014" : date.toISOString().slice(0, 16).replace("T", " ");
+              // The viewer's own clock, not UTC: an administrator in IST reading
+              // "13:44" for something done at 19:14 has been misled.
+              const pad = (n) => String(n).padStart(2, "0");
+              if (isNaN(date.getTime())) {
+                when.textContent = "\u2014";
+              } else {
+                when.textContent = date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+                  " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+                when.title = date.toISOString();
+              }
               row.appendChild(when);
 
               const action = document.createElement("td");

@@ -690,6 +690,11 @@ ${rootTokensCss()}
       display: flex;
       align-items: center;
       gap: 14px;
+      /* Lets the breadcrumb shrink so the host line ellipsizes; without it that
+         nowrap line set the header's minimum width and a phone rendered every
+         console page zoomed out. */
+      min-width: 0;
+      max-width: 100%;
     }
 
     .btn-mobile-menu {
@@ -1110,9 +1115,13 @@ ${rootTokensCss()}
 
     .grid-2col {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      /* min(): a plain 380px floor was wider than a phone's content area, so every
+         two-column page rendered zoomed out on one. */
+      grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
       gap: 20px;
     }
+    /* A wide table scrolls inside its card instead of widening the column. */
+    .grid-2col > * { min-width: 0; }
 
     /* Buttons */
     .btn {
@@ -1552,9 +1561,9 @@ ${rootTokensCss()}
 
       <!-- Canvas Footer -->
       <footer class="canvas-footer">
-        <div>&copy; 2026 Lab Kiosk OS • Educational Environment Restricted • 100% In-Memory RAM Overlay</div>
+        <div>&copy; 2026 Lab Kiosk OS • Managed Browser Workstations • 100% In-Memory RAM Overlay</div>
         <div style="display: flex; gap: 16px;">
-          <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy (FERPA/COPPA)</a>
+          <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>
         </div>
       </footer>

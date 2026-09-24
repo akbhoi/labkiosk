@@ -331,10 +331,19 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .mobile-drawer {
       position: fixed; top: 0; right: 0; bottom: 0; width: 300px; max-width: 85vw;
       background: #0f172a; border-left: 1px solid var(--border); z-index: 999;
-      transform: translateX(100%); transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      transform: translateX(100%);
+      /* Hidden, not just off-screen, while closed: its links would otherwise sit
+         in the Tab order and be read out by screen readers. Visibility flips
+         after the slide-out and before the slide-in. */
+      visibility: hidden;
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.25s;
       display: flex; flex-direction: column; box-shadow: -10px 0 30px rgba(0, 0, 0, 0.5);
     }
-    .mobile-drawer.active { transform: translateX(0); }
+    .mobile-drawer.active {
+      transform: translateX(0);
+      visibility: visible;
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s;
+    }
     .mobile-drawer-header {
       padding: 16px 20px; display: flex; align-items: center; justify-content: space-between;
       border-bottom: 1px solid var(--border);

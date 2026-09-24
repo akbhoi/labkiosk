@@ -1302,13 +1302,19 @@ export async function enqueueCommands(
     url?: string;
     message?: string;
     epoch?: number;
+    portal?: boolean;
   }
 ): Promise<string[]> {
   if (data.targets.length === 0) return [];
   const rows = data.targets.map((target) => ({ id: crypto.randomUUID(), target }));
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + 60; // 60s command TTL
-  const payloadJson = JSON.stringify({ url: data.url, message: data.message, epoch: data.epoch });
+  const payloadJson = JSON.stringify({
+    url: data.url,
+    message: data.message,
+    epoch: data.epoch,
+    ...(data.portal ? { portal: true } : {})
+  });
 
   await db
     .prepare(
@@ -1355,7 +1361,7 @@ export async function popCommandsForClient(
   const commands: RemoteCommand[] = [];
 
   for (const row of rows.results || []) {
-    let payload: { url?: string; message?: string } = {};
+    let payload: { url?: string; message?: string; epoch?: number; portal?: boolean } = {};
     if (row.payload_json) {
       try {
         payload = JSON.parse(row.payload_json);
@@ -1370,7 +1376,8 @@ export async function popCommandsForClient(
       action: row.action as CommandAction,
       url: payload.url,
       message: payload.message,
-      epoch: (payload as any).epoch,
+      epoch: payload.epoch,
+      ...(payload.portal === true ? { portal: true } : {}),
       timestamp: row.created_at
     });
 

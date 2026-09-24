@@ -52,14 +52,18 @@ must be declared in `ui_layout.ts`** (a test fails otherwise): use `.form-input/
 ## Wording
 
 - Say **organization, operator/staff, user, User Portal, page/broadcast**; never school, teacher,
-  student, lesson, classroom or instructor. A test renders every console page, the User Portal and
-  the organization homepage and fails on those words. The landing page (with an Education audience)
-  and legal pages are exempt.
+  student, lesson, classroom or instructor — nor "educational", FERPA/COPPA, "Enter the Lab" or
+  "Lab Activity/Configuration". A test renders every console page (all four super tabs), the User
+  Portal and the organization homepage and fails on those, and on a doubled noun ("Organizations &
+  Organizations"). The landing page (with an Education audience) and legal pages are exempt.
 - **License statements must match `LICENSE`**: free only for accredited educational institutions and
   non-commercial evaluation up to 45 computers; commercial or subscriber license for everyone else.
   Never write "free for organizations", "$0" or "open source".
 - Mechanical find-and-replace across prose produces nonsense ("approved approved", "Organization
-  organization", "a `org_admin`"); read the rendered result.
+  organization", "a `org_admin`", "begin your page"); read the rendered result.
+- Phone width: a grid column floor must be `minmax(min(Npx, 100%), 1fr)` and a `nowrap` line needs a
+  shrinkable (`min-width: 0`) parent, or the page renders zoomed out. Check `innerWidth === 375` under
+  mobile emulation — a page that overflows widens the layout viewport instead of scrolling.
 
 ## Verify in a browser — tests check markup, not behaviour
 

@@ -115,9 +115,16 @@ COPY --chmod=0755 distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-
 # bind-mounts and outside the directory a read-only container mounts a tmpfs
 # over. The entrypoint restores it from here when the policy directory is empty,
 # so the browser never starts with no blocklist at all.
+#
+# The policy file itself is handed to the kiosk user too, not just its directory.
+# Podman copies an image's files into a tmpfs mounted over them, so this copy
+# is what the running container starts with; left root-owned, the agent can
+# never rename its update over it (the tmpfs is sticky, mode 1777) and every
+# allowlist change fails with "Operation not permitted".
 RUN cp /etc/chromium/policies/managed/policies.json /usr/local/share/labkiosk-boot-policy.json \
     && mkdir -p /etc/labkiosk \
-    && chown kiosk:kiosk /etc/labkiosk /etc/chromium/policies/managed \
+    && chown kiosk:kiosk /etc/labkiosk /etc/chromium/policies/managed /etc/chromium/policies/managed/policies.json \
+    && chmod 0644 /etc/chromium/policies/managed/policies.json \
     && chmod 0700 /etc/labkiosk
 
 USER kiosk

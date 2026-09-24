@@ -45,8 +45,20 @@ changed. To call agent functions in place, load the module in a separate interpr
 - Heredocs through the Bash tool can drop or alter backslashes (`\\`, `\b`, `\'`); write scripts
   with a file tool, then run them.
 - `python3` is the Microsoft Store stub; use `python` on the host.
-- The simulator container here **cannot reach the host** (not even `host.docker.internal`), so it
-  cannot stand in for a VM talking to a local `pnpm dev`; test that from Hyper-V instead.
+- The simulator container here **cannot reach the host** (not even `host.docker.internal`). For an
+  end-to-end run, put the control plane in a container on the simulator's network instead: a
+  compose override with a fixed subnet, a `node:24` service running the Worker under `tsx` on the
+  in-memory D1 (mount `cloudflare-control/src` read-only), and `WORKER_URL=http://<its private IP>:8787`
+  for the simulator — a private IPv4 literal is both an allowed worker URL and a dev host. Publish
+  its ports on `127.0.0.1` to drive the consoles from the host; attach sessions server-side in the
+  harness rather than typing passwords. Enrol through the agent API
+  (`curl -H 'Origin: http://127.0.0.1:8888' -d '{clientId,enrollmentKey,subdomain}' …/api/setup`);
+  to re-enrol, delete `/etc/labkiosk/config.json` and restart the agent.
+- Headless Chromium **inside** the simulator cannot take screenshots: the kiosk's managed policy
+  applies to every Chromium there. Screenshot web pages with headless Edge/Chrome on the host.
+- Podman copies an image's files into a tmpfs mounted over them (Docker mounts it empty), so a
+  root-owned file baked under a tmpfs path is what the container starts with. Hand such files to
+  `kiosk` in the Dockerfile — that is why `policies.json` is chowned.
 
 ## Hardening (never loosen)
 

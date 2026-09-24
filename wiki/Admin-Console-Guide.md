@@ -145,7 +145,7 @@ Structured into 4 semantic, deep-linkable tab panes (`?tab=...`) with horizontal
 
 - **Workstation Enrollment Key**: View, reveal, or rotate the enrollment key used to pair new thin clients.
 - **Account Security & Password**: Change admin password; revokes all other active sessions upon completion.
-- **Recent Lab Activity (`.table-scrollable`)**:
+- **Recent Activity (`.table-scrollable`)**:
   - Administrative audit log of privileged actions, timestamps, and actors.
   - Capped with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) and sticky table headers (`th` pinned with `position: sticky; top: 0; z-index: 2;`).
   - Stays compact and neatly aligned with the left column cards.

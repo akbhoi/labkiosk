@@ -2133,12 +2133,17 @@ export default {
             activeWhitelist.sort();
           }
         }
-        const targetUrl = activeBroadcast?.url || portalUrlFor(tenant, request, url, env);
+        const portalUrl = portalUrlFor(tenant, request, url, env);
+        const targetUrl = activeBroadcast?.url || portalUrl;
+        // A "Reset to Portal" gets this workstation's portal, from this request.
+        const commands = commandsForClient.map(({ portal, ...command }) =>
+          portal ? { ...command, url: portalUrl } : command
+        );
 
         return new Response(
           JSON.stringify({
             status: "ok",
-            commands: commandsForClient,
+            commands,
             whitelist: activeWhitelist,
             mode: tenant.mode,
             targetUrl,
@@ -2375,12 +2380,17 @@ export default {
 
         let commandUrl: string | undefined;
         let commandEpoch: number | undefined;
+        // A reset carries no URL: each workstation is handed its portal when the
+        // command is delivered, built from its own request. Built from this one,
+        // it would be the operator's host -- `localhost` for a local console, the
+        // apex for a super admin -- which a workstation may not be able to reach.
+        let toPortal = false;
         if (action === "navigate") {
           const isReset = Boolean((body as any).resetPortal);
           const portalUrl = portalUrlFor(currentTenant!, request, url, env);
 
           if (isReset) {
-            commandUrl = portalUrl;
+            toPortal = true;
           } else {
             const validated = safeHttpUrl(body.url);
             if (!validated) {
@@ -2397,7 +2407,7 @@ export default {
           // workstation's own row otherwise. A reset is recorded too (URL null,
           // with its epoch) rather than erased, so it outranks an older broadcast
           // instead of letting it resurface.
-          const recordedUrl = commandUrl === portalUrl ? null : commandUrl;
+          const recordedUrl = toPortal || commandUrl === portalUrl ? null : commandUrl ?? null;
           if (targets.includes("all")) {
             await updateTenant(db, currentTenant!.id, { broadcast_url: recordedUrl, broadcast_epoch: commandEpoch });
           } else {
@@ -2425,7 +2435,8 @@ export default {
           action: action as any,
           url: commandUrl,
           epoch: commandEpoch,
-          message: lockMsg
+          message: lockMsg,
+          portal: toPortal
         });
 
         for (const target of targets) {
@@ -2442,7 +2453,7 @@ export default {
           tenantId,
           userId: session!.user_id,
           action: `command.${action}`,
-          details: `targets=${targets.join(",")}${commandUrl ? ` url=${commandUrl}` : ""}`
+          details: `targets=${targets.join(",")}${toPortal ? " url=portal" : commandUrl ? ` url=${commandUrl}` : ""}`
         });
 
         // Opportunistic housekeeping; command rows are short-lived by design.
@@ -2721,7 +2732,11 @@ export default {
 
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
-        tunnelDomain: tenant.tunnel_domain || env.TUNNEL_DOMAIN || DEFAULT_CONFIG.tunnelDomain,
+        // The platform's demo tunnel belongs to the demo organization only. Handed
+        // to anyone else it sent their Remote Control -- VNC password included --
+        // to <pc>.demo.<domain>, a host in another organization's namespace.
+        tunnelDomain: tenant.tunnel_domain || env.TUNNEL_DOMAIN ||
+          (tenant.subdomain === SUPER_ADMIN_TENANT_SLUG ? DEFAULT_CONFIG.tunnelDomain : ""),
         defaultHomepage: env.DEFAULT_HOMEPAGE || DEFAULT_CONFIG.defaultHomepage,
         homeRoute: tenant.home_route || "/",
         whitelist

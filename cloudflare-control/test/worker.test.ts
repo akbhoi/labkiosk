@@ -250,7 +250,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(home.status, 200);
     const html = await home.text();
     assert.match(html, /Greenwood Holdings/);
-    assert.match(html, /Enter the Lab/);
+    assert.match(html, /Open User Portal/);
     // It is not the app grid.
     assert.doesNotMatch(html, /Select an Approved Resource/);
     // And it links to where the grid actually is.
@@ -874,6 +874,24 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(telemAfter.res.status, 200);
     assert.equal(telemAfter.data.targetUrl, "https://greenwood.labkiosk.akbhoi.com/");
     assert.equal(telemAfter.data.broadcastUrl, "");
+    // The reset command sends the workstation to its own portal, not to wherever
+    // the operator reached the console: a console on http://localhost once sent
+    // every workstation to http://localhost, which on a workstation is itself.
+    const fromLocalConsole = await worker.fetch(
+      new Request("http://localhost:8787/api/command?tenant=greenwood", {
+        method: "POST",
+        headers: { Cookie: orgSessionCookie, "Content-Type": "application/json", Origin: "http://localhost:8787" },
+        body: JSON.stringify({ target: "all", action: "navigate", resetPortal: true })
+      }),
+      mockEnv
+    );
+    assert.equal(fromLocalConsole.status, 200);
+    const delivered = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    const reset = delivered.data.commands.find((c: any) => c.action === "navigate");
+    assert.ok(reset, "the reset is delivered as a navigate command");
+    assert.equal(reset.url, "https://greenwood.labkiosk.akbhoi.com/");
+    assert.equal(reset.url, delivered.data.targetUrl);
+    assert.equal(reset.portal, undefined, "the internal marker is not sent to the agent");
   });
 
   test("Drops an oversized screen thumbnail instead of storing it", async () => {
@@ -980,7 +998,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     );
     assert.equal(organization.status, 200);
     // The root is the organization homepage now; the app grid is at /home.
-    assert.match(await organization.text(), /Enter the Lab/);
+    assert.match(await organization.text(), /Open User Portal/);
   });
 
   // ---------------------------------------------------------- custom domains
@@ -1021,7 +1039,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(portal.status, 200);
     const html = await portal.text();
     // The custom domain root is the organization homepage, same as the subdomain root.
-    assert.match(html, /Enter the Lab/);
+    assert.match(html, /Open User Portal/);
     assert.match(html, /Greenwood Holdings/);
     assert.ok(!html.includes("Secure Browser Workstations for Any Organization"), "custom domain must not render landing page");
 
@@ -1691,7 +1709,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // except the organizations directory, which had neither a display rule nor any
     // matching CSS -- so every tenant row rendered on the approvals, catalogs
     // and system pages too.
-    const directoryHeading = "Registered Organizations &amp; Organizations";
+    const directoryHeading = "Registered Organizations (";
 
     const organizations = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
     assert.ok(organizations.includes(directoryHeading), "organizations tab shows the directory");
@@ -1837,7 +1855,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.match(html, /id="login-form"/, "the sign-in redirect must reach a sign-in form");
-    assert.doesNotMatch(html, /Enter the Lab/, "it must not be the organization homepage");
+    assert.doesNotMatch(html, /Open User Portal/, "it must not be the organization homepage");
     // Not asserting the absence of the app grid text here: the landing page's
     // own live simulator mimics the portal and legitimately contains it.
 
@@ -2475,6 +2493,16 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
   });
 
+  test("Remote Control never borrows the demo tunnel or puts the VNC password in a query string", async () => {
+    // An organization without a tunnel of its own used to fall back to the demo
+    // organization's, sending its VNC password to <pc>.demo.<domain>.
+    const ws = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(ws, /TUNNEL_DOMAIN = "demo\./, "another organization's tunnel is never the default");
+    assert.doesNotMatch(ws, /params\.set\("password"/, "the password goes in the fragment, never the query");
+    const settings = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /id="setting-tunnel-domain" value=""/, "no tunnel domain is pre-filled");
+  });
+
   test("Workstation groups are rendered on the Workstations page", async () => {
     const name = "Rendered Group";
     assert.equal((await call("/api/groups?tenant=greenwood", { ...json({ name }), cookie: orgSessionCookie })).status, 200);
@@ -2721,15 +2749,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
       ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie],
       ["/home?tenant=greenwood"],
       ["/?tenant=greenwood"]
     ];
+    // Also the leftovers a word-for-word rename produces: an education footer,
+    // "Enter the Lab", and a noun doubled where "Schools & Organizations" was.
+    const wrong = new RegExp(
+      [
+        String.raw`\b(schools?|teachers?|students?|lessons?|classrooms?|instructors?)\b`,
+        String.raw`\beducational\b`,
+        String.raw`\b(FERPA|COPPA)\b`,
+        String.raw`\b(enter the lab|lab (activity|configuration))\b`,
+        String.raw`\b(?<noun>\w{4,}) (?:&amp;|&|and) \k<noun>\b`
+      ].join("|"),
+      "i"
+    );
     for (const [path, cookie] of pages) {
       const res = await call(path, cookie ? { cookie } : {});
       assert.equal(res.status, 200, `${path} did not render`);
       const html = await res.text();
-      const hit = html.match(/\b(schools?|teachers?|students?|lessons?|classrooms?|instructors?)\b/i);
+      const hit = html.match(wrong);
       assert.equal(hit, null, `${path} still says "${hit?.[0]}" near: ${hit ? html.slice(Math.max(0, hit.index! - 80), hit.index! + 40) : ""}`);
     }
   });

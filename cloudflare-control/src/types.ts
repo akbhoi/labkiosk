@@ -175,6 +175,12 @@ export interface RemoteCommand {
   url?: string;
   message?: string;
   epoch?: number;
+  /**
+   * A "Reset to Portal": the URL is filled in when the command is delivered,
+   * from the workstation's own request, because the operator who queued it may
+   * have reached the console under a different host.
+   */
+  portal?: boolean;
   timestamp: number;
 }
 

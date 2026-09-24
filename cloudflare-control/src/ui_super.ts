@@ -53,7 +53,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <td>${Number(c.entry_count) || 0}</td>
       <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${
         c.updated_at && Number.isFinite(c.updated_at)
-          ? escapeHtml(new Date(c.updated_at * 1000).toISOString().slice(0, 16).replace("T", " "))
+          ? escapeHtml(new Date(c.updated_at * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC")
           : "-"
       }</td>
       <td>
@@ -83,7 +83,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <td>
         <div style="display: flex; gap: 6px;">
           <button class="btn btn-sm btn-success btn-approve-sub" data-tenant="${escapeAttr(t.id)}" data-subdomain="${escapeAttr(t.requested_subdomain || t.subdomain)}">Approve</button>
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Assign Custom</button>
+          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>
           <button class="btn btn-sm btn-danger btn-reject-sub" data-tenant="${escapeAttr(t.id)}">Reject</button>
         </div>
       </td>
@@ -154,7 +154,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
               : `<span class="badge" style="background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid var(--border);">Console Restricted (Privacy)</span>`
           }
           <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>
-          <button class="btn btn-sm btn-secondary btn-assign-custom" data-tenant="${escapeAttr(t.id)}">Assign Custom</button>
+          <button class="btn btn-sm btn-secondary btn-assign-custom" data-tenant="${escapeAttr(t.id)}">Custom Domain</button>
           ${t.custom_domain ? `<button class="btn btn-sm btn-danger btn-remove-custom" data-tenant="${escapeAttr(t.id)}">Disconnect</button>` : ""}
           ${
             t.status === "active"
@@ -322,7 +322,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const organizationsPaneHtml = `
       <div class="card" style="padding: 0; overflow: hidden;">
         <div style="padding: 20px 24px; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
-          <h2 class="card-title" style="margin-bottom: 0;">Registered Organizations &amp; Organizations (${tenants.length})</h2>
+          <h2 class="card-title" style="margin-bottom: 0;">Registered Organizations (${tenants.length})</h2>
         </div>
         <div class="table-container" style="border: none; border-radius: 0;">
           <table>
@@ -782,7 +782,15 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
               const when = document.createElement("td");
               when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
               const date = new Date(entry.created_at * 1000);
-              when.textContent = isNaN(date.getTime()) ? "\u2014" : date.toISOString().slice(0, 16).replace("T", " ");
+              // The viewer's own clock, not UTC; the exact UTC instant is the tooltip.
+              const pad = (n) => String(n).padStart(2, "0");
+              if (isNaN(date.getTime())) {
+                when.textContent = "\u2014";
+              } else {
+                when.textContent = date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+                  " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+                when.title = date.toISOString();
+              }
               row.appendChild(when);
 
               const action = document.createElement("td");

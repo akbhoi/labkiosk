@@ -209,12 +209,12 @@ function renderAppsWebContentHtml(
         <div>
           <div class="card">
             <h2 class="card-title">Custom Page Presets &amp; Shortcuts</h2>
-            <p class="card-sub">Saved bookmarks for recurring sessions and assessments.</p>
+            <p class="card-sub">Saved bookmarks for pages you broadcast often.</p>
 
             <form id="add-preset-form" style="margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border);">
               <div class="form-group">
                 <label class="form-label" for="preset-title">Shortcut Name</label>
-                <input type="text" class="form-input" id="preset-title" required placeholder="e.g. Class 10 Python Practical">
+                <input type="text" class="form-input" id="preset-title" required placeholder="e.g. Monday Safety Briefing">
               </div>
               <div class="form-group">
                 <label class="form-label" for="preset-url">Target URL</label>
@@ -311,7 +311,7 @@ function renderAppsWebContentHtml(
               <button type="submit" class="btn btn-primary">Add to Allowlist</button>
             </form>
 
-            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px;">Quick-Add Educational Preset Packs</h3>
+            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px;">Quick-Add Preset Packs</h3>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
               <button type="button" class="btn btn-secondary btn-sm btn-pack" data-domains="khanacademy.org,kastatic.org,kasandbox.org">Khan Academy Pack</button>
               <button type="button" class="btn btn-secondary btn-sm btn-pack" data-domains="scratch.mit.edu,replit.com,github.com">Coding &amp; STEM Pack</button>

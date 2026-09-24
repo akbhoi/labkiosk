@@ -158,13 +158,13 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
 <body>
   <header>
     <div class="brand">
-      <div class="brand-mark">${escapeHtml((tenant.name || "S").slice(0, 1).toUpperCase())}</div>
+      <div class="brand-mark">${escapeHtml((tenant.name || "O").slice(0, 1).toUpperCase())}</div>
       <div>
         <div class="brand-name">${escapeHtml(tenant.name)}</div>
         <div class="brand-sub">${escapeHtml(tenant.portal_subtitle || "Workstations")}</div>
       </div>
     </div>
-    <a class="header-link" href="${escapeAttr(portalPath)}">Enter the Lab &rarr;</a>
+    <a class="header-link" href="${escapeAttr(portalPath)}">Open User Portal &rarr;</a>
   </header>
 
   <main>
@@ -172,7 +172,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
       <h1 class="hero-title">${escapeHtml(headline)}</h1>
       <p class="hero-intro">${escapeHtml(intro)}</p>
       <a class="hero-cta" href="${escapeAttr(portalPath)}">
-        <span>Enter the Lab</span>
+        <span>Open User Portal</span>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
       </a>
     </section>
@@ -181,7 +181,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
   </main>
 
   <footer>
-    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Educational Environment Restricted")}
+    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Managed Workstation")}
     • <a href="/privacy">Privacy</a>
     • <a href="/terms">Terms</a>
   </footer>

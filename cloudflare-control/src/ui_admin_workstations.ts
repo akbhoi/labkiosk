@@ -269,7 +269,7 @@ function renderWorkstationsScripts(
   sites: PortalSite[] = [],
   initialGroups: WorkstationGroup[] = []
 ): string {
-  const tunnelDomain = tenant?.tunnel_domain || config?.tunnelDomain || "demo.labkiosk.akbhoi.com";
+  const tunnelDomain = tenant?.tunnel_domain || config?.tunnelDomain || "";
   const isDemo = tenant?.subdomain === "demo";
 
   return `
@@ -728,8 +728,12 @@ function renderWorkstationsScripts(
         }
 
         const params = new URLSearchParams({ autoconnect: "true", resize: "scale" });
-        if (client.vncPassword) params.set("password", client.vncPassword);
-        document.getElementById("vnc-frame").src = base + "/vnc.html?" + params.toString();
+        // The password rides in the fragment, which noVNC reads first and a
+        // browser never sends, so it stays out of tunnel and server logs.
+        const secret = client.vncPassword
+          ? "#" + new URLSearchParams({ password: client.vncPassword }).toString()
+          : "";
+        document.getElementById("vnc-frame").src = base + "/vnc.html?" + params.toString() + secret;
         document.getElementById("vnc-modal").classList.add("active");
       }
 
