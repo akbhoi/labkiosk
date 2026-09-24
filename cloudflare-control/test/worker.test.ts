@@ -2557,7 +2557,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // calls them throws at runtime, as the workstation group list once did.
     for (const page of ["workstations", "apps-web", "staff", "settings"]) {
       const html = await (await call(`/admin/${page}?tenant=greenwood`, { cookie: orgSessionCookie })).text();
-      const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join("\n");
+      // Case-insensitive, and tolerant of `</script >`, as an HTML parser is: a
+      // block spelt any other way would slip past this check.
+      const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi)].map((m) => m[1]).join("\n");
       assert.doesNotMatch(scripts, /\bescape(Html|Attr)\(/, `${page} calls a server-only helper in the browser`);
     }
   });
