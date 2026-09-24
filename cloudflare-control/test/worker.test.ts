@@ -37,6 +37,15 @@ function json(body: unknown): RequestInit {
   return { method: "POST", body: JSON.stringify(body) };
 }
 
+/**
+ * Exact membership of a domain in an allowlist the API returned. `list.includes()`
+ * would silently turn into a substring test if the list ever came back as a string.
+ */
+function allowlistHas(list: unknown, domain: string): boolean {
+  assert.ok(Array.isArray(list), "the allowlist is an array of domains");
+  return new Set(list).has(domain);
+}
+
 async function call(path: string, init: RequestInit & { cookie?: string; bearer?: string } = {}) {
   const res = await worker.fetch(request(path, init), mockEnv);
   return res;
@@ -813,7 +822,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
     assert.ok(Array.isArray(data.whitelist));
-    assert.ok(data.whitelist.includes("khanacademy.org"));
+    assert.ok(allowlistHas(data.whitelist, "khanacademy.org"));
 
     const { data: clients } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
     assert.ok(clients.clients["PC-01"], "telemetry must be recorded against the enrolled client id");
@@ -899,12 +908,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const { data: greenwood } = await callJson("/api/whitelist?tenant=greenwood", {
       cookie: orgSessionCookie
     });
-    assert.ok(greenwood.whitelist.includes("nasa.gov"), "the domain should be normalized to a bare hostname");
+    assert.ok(allowlistHas(greenwood.whitelist, "nasa.gov"), "the domain should be normalized to a bare hostname");
 
     const { data: riverside } = await callJson("/api/whitelist?tenant=riverside", {
       cookie: rivalSessionCookie
     });
-    assert.ok(!riverside.whitelist.includes("nasa.gov"), "one organization's allowlist must not leak into another's");
+    assert.ok(!allowlistHas(riverside.whitelist, "nasa.gov"), "one organization's allowlist must not leak into another's");
   });
 
   test("Records privileged actions in the audit log", async () => {
@@ -1042,7 +1051,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Verify custom domain is automatically included in client whitelist
     const telem = await callJson("/api/telemetry", { ...json({}), bearer: data.deviceToken });
     assert.equal(telem.res.status, 200);
-    assert.ok(telem.data.whitelist.includes("kiosk.greenwood.example"), "custom domain must be included in client whitelist");
+    assert.ok(allowlistHas(telem.data.whitelist, "kiosk.greenwood.example"), "custom domain must be included in client whitelist");
   });
 
   test("Enrols a workstation using custom server URL or IP via enrollment key", async () => {
@@ -1097,7 +1106,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const telem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     assert.equal(telem.res.status, 200);
     assert.equal(telem.data.targetUrl, "https://canvas.example.com/");
-    assert.ok(telem.data.whitelist.includes("canvas.example.com"), "target domain must be automatically whitelisted");
+    assert.ok(allowlistHas(telem.data.whitelist, "canvas.example.com"), "target domain must be automatically whitelisted");
 
     // 4. Switching back to portal mode restores portal targetUrl
     const { res: portalRes, data: portalData } = await callJson("/api/settings/mode?tenant=greenwood", {
@@ -1184,7 +1193,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // 2b. Broadcast preset domain is automatically whitelisted in workstation telemetry
     const presetTelem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
-    assert.ok(presetTelem.data.whitelist.includes("room.github.com"), "broadcast preset domain must be automatically whitelisted");
+    assert.ok(allowlistHas(presetTelem.data.whitelist, "room.github.com"), "broadcast preset domain must be automatically whitelisted");
 
     // 2c. Active broadcast URL is dynamically whitelisted in telemetry during broadcast
     await callJson("/api/command?tenant=greenwood", {
@@ -1192,7 +1201,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       cookie: orgSessionCookie
     });
     const broadcastTelem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
-    assert.ok(broadcastTelem.data.whitelist.includes("custom-demo.org"), "active broadcast domain must be dynamically whitelisted in telemetry");
+    assert.ok(allowlistHas(broadcastTelem.data.whitelist, "custom-demo.org"), "active broadcast domain must be dynamically whitelisted in telemetry");
 
     // 2d. Resetting broadcast restores authoritative portal target
     await callJson("/api/command?tenant=greenwood", {
@@ -1257,7 +1266,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.ok(res.headers.get("Permissions-Policy"));
 
       const html = await res.text();
-      const scripts = html.match(/<script\b[^>]*>/g) || [];
+      const scripts = html.match(/<script\b[^>]*>/gi) || [];
       if (expectsScript) {
         assert.ok(scripts.length > 0, `${path} renders at least one script block`);
       }
