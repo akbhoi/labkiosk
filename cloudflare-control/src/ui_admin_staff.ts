@@ -211,7 +211,11 @@ function renderStaffScripts(nonce: string): string {
           if (!emptyRow) {
             emptyRow = document.createElement("tr");
             emptyRow.id = "empty-filter-row";
-            emptyRow.innerHTML = '<td colspan="4" style="text-align: center; color: var(--text-muted); padding: 32px;">No staff members found with this role.</td>';
+            const cell = document.createElement("td");
+            cell.colSpan = 4;
+            cell.style.cssText = "text-align: center; color: var(--text-muted); padding: 32px;";
+            cell.textContent = "No staff members found with this role.";
+            emptyRow.appendChild(cell);
             const tbody = document.getElementById("staff-tbody");
             if (tbody) tbody.appendChild(emptyRow);
           }

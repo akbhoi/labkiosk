@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0011)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0012)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1 binding, hourly cron trigger
 ├── src/
@@ -93,7 +93,8 @@ cloudflare-control/
   - `GET /api/groups`: List workstation groups for the tenant.
   - `POST /api/groups`: Create a new group (`{ name }`, 1–50 characters). Names are unique per
     organization, compared case-insensitively (`409` otherwise): membership is stored **by name**, so two
-    groups sharing one would share members and deleting either would ungroup both.
+    groups sharing one would share members and deleting either would ungroup both. A unique index
+    (`0012`) enforces it too, so two requests at once cannot both create the same name.
   - `DELETE /api/groups/:id`: Delete group and set member devices' `group_name` to `NULL` in one
     `db.batch()`; `404` for a group this organization does not have.
   - `POST /api/clients/group`: Assign devices to a group (`{ clientIds: string[], groupName: string | null }`).

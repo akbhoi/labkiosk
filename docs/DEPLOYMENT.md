@@ -74,7 +74,12 @@ Pending migrations are applied the same way. Two of them change existing data:
 - **`0011_organization_vocabulary.sql`** renames the stored roles (`school_admin` → `org_admin`,
   `teacher` → `operator`, `lab_assistant` → `assistant`) and the staff permission (`teachers` →
   `staff`) by rebuilding every table that references `users`. It is written to be cascade-safe and
-  is applied as one unit, but it rewrites your core tables, so **export the database first**:
+  is applied as one unit, but it rewrites your core tables, so **export the database first**.
+- **`0012_unique_workstation_group_names.sql`** makes group names unique per organization in the
+  database (case-insensitively). If an organization already has two groups spelled the same way,
+  they are merged into the oldest one and its member workstations keep their group.
+
+Back up, apply, then deploy:
 
 ```bash
 npx wrangler d1 export labkiosk-db --remote --output labkiosk-backup.sql

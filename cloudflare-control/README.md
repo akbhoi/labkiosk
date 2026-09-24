@@ -46,7 +46,7 @@ The control plane handles tenant routing, operator management dashboards, user p
 
 ```text
 cloudflare-control/
-├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0011)
+├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0012)
 ├── src/
 │   ├── index.ts               # Worker router, REST endpoints, telemetry cache, scheduled()
 │   ├── guard.ts               # Tenant resolution, authorization guards, CSRF origin checks
@@ -164,7 +164,7 @@ Cloudflare D1 schema migrations are tracked in two places:
 2. `src/db.ts` (`SCHEMA_SQL`): Synchronized schema used by the in-memory test adapter and `assertSchemaCurrent()`.
 
 ### Creating a New Migration
-1. Create the next numbered file, `migrations/0008_<description>.sql` (0001..0007 are applied; never edit one of those).
+1. Create the next numbered file in `migrations/` (never edit or rename one that has been applied).
 2. Add the corresponding `CREATE TABLE` or `ALTER TABLE` statement into `SCHEMA_SQL` in `src/db.ts`.
 3. Run `pnpm test` — the schema drift test will assert that both definitions match.
 

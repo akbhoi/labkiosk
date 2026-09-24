@@ -479,6 +479,24 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Every API path a page script calls is a route the worker serves", () => {
+    // The allowlist tab called /api/settings/whitelist, which never existed: add,
+    // remove and every preset pack answered 404, and the markup tests were happy.
+    const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+    const router = fs.readFileSync(path.join(srcDir, "index.ts"), "utf8");
+    const routes = [...router.matchAll(/path (?:===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
+    const called = new Set<string>();
+    for (const f of fs.readdirSync(srcDir).filter((f) => /^ui.*\.ts$/.test(f))) {
+      const source = fs.readFileSync(path.join(srcDir, f), "utf8");
+      for (const m of source.matchAll(/(?:labkioskApi|fetch)\(\s*"(\/api\/[^"?]*)/g)) called.add(m[1]);
+    }
+    assert.ok(called.size > 10, "the scan found the console's API calls");
+    const missing = [...called].filter(
+      (p) => !routes.some((r) => r === p || r === p.replace(/\/$/, "") || (r.endsWith("/") && p.startsWith(r)))
+    );
+    assert.deepEqual(missing, [], "page scripts call paths no route serves");
+  });
+
   test("Every inline script on every page actually parses", async () => {
     // A stray brace in the user portal clock made its whole <script> block a
     // syntax error, so the clock never started. Nothing caught it: the block
@@ -2513,6 +2531,16 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 200);
     assert.equal(data.count, 1);
+
+    // A full batch is queued by one statement, one command per workstation.
+    const full = Array.from({ length: 500 }, (_, i) => `BATCH-${i}`);
+    const batch = await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: full, action: "reload" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(batch.res.status, 200);
+    assert.equal(batch.data.count, 500);
+    assert.equal(new Set(batch.data.commandIds).size, 500);
   });
 
   test("A localhost origin is not same-site for a production host", async () => {
@@ -2818,9 +2846,37 @@ describe("Schema sources agree", () => {
     return { prepare: statement } as unknown as D1Database;
   }
 
-  test("A worker refuses a database that has not had 0011 applied, and accepts one that has", async () => {
+  test("A worker refuses a database that has not had 0011 or 0012 applied, and accepts one that has", async () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0011"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0012"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
+  });
+
+  test("0012 folds duplicate group names into one group and keeps every member grouped", () => {
+    const db = migratedDb("0012");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'owner@example.com', 'h', 's', 'org_admin', 'Owner', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('t1', 'u1', 'Acme', 'acme', 'active', 1, 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('t2', 'u1', 'Other', 'other', 'active', 1, 1);
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g-old', 't1', 'Floor 1', 10);
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g-new', 't1', 'floor 1', 20);
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g-t2', 't2', 'Floor 1', 5);
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, group_name, created_at, updated_at) VALUES ('t1:A', 't1', 'A', 1, 'Floor 1', 1, 1);
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, group_name, created_at, updated_at) VALUES ('t1:B', 't1', 'B', 1, 'floor 1', 1, 1);
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, group_name, created_at, updated_at) VALUES ('t2:C', 't2', 'C', 1, 'Floor 1', 1, 1);
+    `);
+
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0012_unique_workstation_group_names.sql"), "utf8"));
+    db.exec("COMMIT;");
+
+    const groups = db.prepare("SELECT id FROM workstation_groups ORDER BY id").all().map((r: any) => r.id);
+    assert.deepEqual(groups, ["g-old", "g-t2"], "the oldest group of each name survives, per organization");
+    const members = db.prepare("SELECT id, group_name FROM client_devices ORDER BY id").all().map((r: any) => `${r.id}=${r.group_name}`);
+    assert.deepEqual(members, ["t1:A=Floor 1", "t1:B=Floor 1", "t2:C=Floor 1"]);
+
+    assert.throws(() => db.exec("INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('dup', 't1', 'FLOOR 1', 30)"));
+    db.exec("INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('ok', 't1', 'Floor 2', 30)");
   });
 
   // @vocab-keep-start: this test seeds the pre-0011 values on purpose.

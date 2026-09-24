@@ -41,7 +41,7 @@ import {
   deleteWorkstationGroup,
   assignClientsToGroup,
   setClientsBroadcast,
-  enqueueCommand,
+  enqueueCommands,
   popCommandsForClient,
   purgeExpiredCommands,
   createDeviceToken,
@@ -2308,6 +2308,10 @@ export default {
 
         return new Response(JSON.stringify({ status: "ok", group }), { headers: jsonHeaders });
       } catch (err: any) {
+        // Two requests can both pass the check above; the unique index settles it.
+        if (/UNIQUE constraint failed/i.test(String(err?.message))) {
+          return jsonError("A group with this name already exists", 409, jsonHeaders);
+        }
         console.error("[Worker] Create group failed:", err);
         return jsonError("Could not create workstation group", 400, jsonHeaders);
       }
@@ -2410,22 +2414,21 @@ export default {
           ? (currentTenant!.default_lock_message || "This screen has been locked by an administrator. Please wait.")
           : undefined;
 
-        const cmdIds: string[] = [];
         const cache = tenantTelemetryCache[tenantId] || {};
         const isLock = action === "lock";
         const isUnlock = action === "unlock";
 
-        for (const target of targets) {
-          const cmdId = await enqueueCommand(db, {
-            tenantId,
-            target,
-            action: action as any,
-            url: commandUrl,
-            epoch: commandEpoch,
-            message: lockMsg
-          });
-          cmdIds.push(cmdId);
+        // One statement for every target, not one round trip each.
+        const cmdIds = await enqueueCommands(db, {
+          tenantId,
+          targets,
+          action: action as any,
+          url: commandUrl,
+          epoch: commandEpoch,
+          message: lockMsg
+        });
 
+        for (const target of targets) {
           if (isLock || isUnlock) {
             if (target === "all") {
               for (const c of Object.values(cache)) c.isLocked = isLock;

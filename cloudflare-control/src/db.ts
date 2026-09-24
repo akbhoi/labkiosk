@@ -214,6 +214,7 @@ CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_user ON tenant_users(user_id);
 CREATE INDEX IF NOT EXISTS idx_workstation_groups_tenant ON workstation_groups(tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workstation_groups_tenant_name ON workstation_groups(tenant_id, name COLLATE NOCASE);
 `;
 
 /**
@@ -345,6 +346,13 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
       .first<{ sql: string }>();
     if (!users?.sql?.includes("'org_admin'")) {
       throw new Error("users.role still uses the pre-0011 role names");
+    }
+    // 0012 only adds an index, which no column probe can see.
+    const groupNames = await db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_workstation_groups_tenant_name'")
+      .first<{ name: string }>();
+    if (!groupNames) {
+      throw new Error("workstation group names are not unique yet (0012)");
     }
   } catch (err: any) {
     throw new Error(
@@ -1278,18 +1286,26 @@ export async function assignClientsToGroup(
     .run();
 }
 
-export async function enqueueCommand(
+/**
+ * Queue one command per target, returning the command ids in target order.
+ *
+ * All rows go in with a single statement: the (id, target) pairs travel as one
+ * JSON parameter and `json_each` expands them, so a 500-workstation batch is one
+ * database round trip and stays far below D1's 100-parameter limit.
+ */
+export async function enqueueCommands(
   db: D1Database,
   data: {
     tenantId: string;
-    target: string;
+    targets: string[];
     action: CommandAction;
     url?: string;
     message?: string;
     epoch?: number;
   }
-): Promise<string> {
-  const id = crypto.randomUUID();
+): Promise<string[]> {
+  if (data.targets.length === 0) return [];
+  const rows = data.targets.map((target) => ({ id: crypto.randomUUID(), target }));
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + 60; // 60s command TTL
   const payloadJson = JSON.stringify({ url: data.url, message: data.message, epoch: data.epoch });
@@ -1297,12 +1313,13 @@ export async function enqueueCommand(
   await db
     .prepare(
       `INSERT INTO commands (id, tenant_id, target, action, payload_json, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+       SELECT json_extract(value, '$.id'), ?, json_extract(value, '$.target'), ?, ?, ?, ?
+       FROM json_each(?)`
     )
-    .bind(id, data.tenantId, data.target, data.action, payloadJson, now, expiresAt)
+    .bind(data.tenantId, data.action, payloadJson, now, expiresAt, JSON.stringify(rows))
     .run();
 
-  return id;
+  return rows.map((r) => r.id);
 }
 
 /**

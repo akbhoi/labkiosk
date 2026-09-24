@@ -41,7 +41,8 @@ Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2c, 6–7). This
 - Id lists: dedupe, cap at `MAX_BATCH_TARGETS` (500), and write `IN (…)` in `D1_IN_LIST_CHUNK` (90)
   slices — D1 binds at most 100 parameters.
 - A name other rows reference (`workstation_groups.name` ← `client_devices.group_name`) is unique
-  per tenant case-insensitively and must exist before it is assigned (`404`).
+  per tenant case-insensitively — checked by the route (`409`) and enforced by a unique index — and
+  must exist before it is assigned (`404`).
 - `POST /api/command`: `"all"` replaces named targets; `navigate`/`resetPortal` records broadcast
   state organization-wide for `"all"`, per workstation (`setClientsBroadcast()`) otherwise.
   Commands and payloads: see `labkiosk-core`.

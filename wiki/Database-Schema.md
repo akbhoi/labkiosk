@@ -44,6 +44,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0009_workstation_groups.sql` | `workstation_groups`; `client_devices.group_name` |
 | `0010_workstation_broadcast.sql` | `client_devices.broadcast_url`, `broadcast_epoch` (a broadcast or reset addressed to selected workstations) |
 | `0011_organization_vocabulary.sql` | Renames the stored roles and staff permission (`school_admin`→`org_admin`, `teacher`→`operator`, `lab_assistant`→`assistant`, `teachers`→`staff`); rebuilds the 12 tables that reference `users` cascade-safely |
+| `0012_unique_workstation_group_names.sql` | Unique index on `workstation_groups(tenant_id, name COLLATE NOCASE)`; merges existing duplicates into the oldest group first |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -222,7 +223,7 @@ An `org_admin` row, or owning the organization (`tenants.user_id`), means full a
 | :--- | :--- | :--- |
 | `id` | TEXT PK | |
 | `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
-| `name` | TEXT | 1–50 characters, unique per organization case-insensitively (membership is by name) |
+| `name` | TEXT | 1–50 characters, unique per organization case-insensitively (index `idx_workstation_groups_tenant_name`; membership is by name) |
 | `created_at` | INTEGER | |
 
 ### `audit_logs`

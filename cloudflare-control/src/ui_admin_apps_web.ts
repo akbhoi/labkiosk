@@ -586,10 +586,10 @@ function renderAppsWebScripts(nonce: string): string {
           if (slashIdx !== -1) domain = domain.slice(0, slashIdx);
           if (!domain) return;
           try {
-            const res = await fetch(labkioskApi("/api/settings/whitelist"), {
+            const res = await fetch(labkioskApi("/api/whitelist"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ domain })
+              body: JSON.stringify({ action: "add", domain })
             });
             const data = await res.json();
             if (data.status === "ok") {
@@ -623,8 +623,10 @@ function renderAppsWebScripts(nonce: string): string {
             });
             if (!agreed) return;
             try {
-              const res = await fetch(labkioskApi("/api/settings/whitelist/" + encodeURIComponent(domain)), {
-                method: "DELETE"
+              const res = await fetch(labkioskApi("/api/whitelist"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "remove", domain })
               });
               const data = await res.json();
               if (data.status === "ok") {
@@ -652,15 +654,17 @@ function renderAppsWebScripts(nonce: string): string {
             try {
               const failed = [];
               for (const domain of domains) {
-                const res = await fetch(labkioskApi("/api/settings/whitelist"), {
+                const res = await fetch(labkioskApi("/api/whitelist"), {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ domain })
+                  body: JSON.stringify({ action: "add", domain })
                 });
                 if (!res.ok) failed.push(domain);
               }
               if (failed.length) {
                 lkToast("Could not add: " + failed.join(", "), "error");
+                // The rest were added; show them once the message has been read.
+                if (failed.length < domains.length) setTimeout(() => reloadOnTab("whitelist"), 2000);
                 return;
               }
               reloadOnTab("whitelist");
