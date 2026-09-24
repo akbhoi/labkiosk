@@ -32,6 +32,17 @@ export const DEMO_SLUGS = Object.keys(DEMO_TENANTS) as DemoSlug[];
 /** The Cloudflare Tunnel domain the hosted demo's workstations have always used. */
 export const WEB_DEMO_TUNNEL_DOMAIN = "demo.labkiosk.akbhoi.com";
 
+/**
+ * The tunnel domain a demo falls back to when it has none of its own. Only the
+ * hosted demo has one. The local ones stay blank on purpose -- no custom domain and
+ * no tunnel, not even the deployment's TUNNEL_DOMAIN: a VM's noVNC listens on its
+ * own loopback and the simulator's is reached at localhost:6080, so a hosted
+ * tunnel would only send Remote Control somewhere they are not.
+ */
+export function demoTunnelFallback(slug: DemoSlug, deploymentDefault: string | undefined): string {
+  return slug === "web-demo" ? deploymentDefault || WEB_DEMO_TUNNEL_DOMAIN : "";
+}
+
 /** The demo a super admin lands in when no organization is named. */
 export function defaultDemoSlug(onDevHost: boolean): DemoSlug {
   return onDevHost ? "local-demo" : "web-demo";

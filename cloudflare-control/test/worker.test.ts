@@ -1745,6 +1745,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.doesNotMatch(directory, />demo\.labkiosk\.akbhoi\.com/);
   });
 
+  test("The local demos have no domain and no tunnel, even when the deployment sets one", async () => {
+    const withTunnel = { ...mockEnv, TUNNEL_DOMAIN: "tunnels.example.com" } as Env;
+    const settings = async (tenant: string, cookie: string) =>
+      (await worker.fetch(request(`/admin/settings?tenant=${tenant}&tab=domains`, { cookie }), withTunnel)).text();
+    const tunnelOf = (html: string) => html.match(/id="setting-tunnel-domain" value="([^"]*)"/)![1];
+
+    for (const slug of ["local-demo", "docker-demo"]) {
+      const html = await settings(slug, superSessionCookie);
+      assert.equal(tunnelOf(html), "", `${slug} has no tunnel domain`);
+      assert.match(html, /<input type="text" class="form-input" id="setting-custom-domain" placeholder=/, `${slug} has no custom domain`);
+    }
+    assert.equal(tunnelOf(await settings("web-demo", superSessionCookie)), "demo.labkiosk.akbhoi.com", "the hosted demo keeps its own tunnel");
+    assert.equal(tunnelOf(await settings("greenwood", orgSessionCookie)), "tunnels.example.com", "an ordinary organization still inherits it");
+  });
+
   test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
     for (const subdomain of ["demo", ...DEMO_SLUGS]) {
       const res = await call("/api/auth/register", json({

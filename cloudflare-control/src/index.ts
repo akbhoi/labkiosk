@@ -115,7 +115,7 @@ import {
 } from "./guard";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { createLocalD1Database } from "./d1_adapter";
-import { DEMO_SLUGS, WEB_DEMO_TUNNEL_DOMAIN, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
+import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, demoTunnelFallback, isDemoSlug, isDemoTenant } from "./demo";
 
 /** Largest screen thumbnail a workstation may upload (base64 data URL). */
 const MAX_THUMBNAIL_BYTES = 256 * 1024;
@@ -2750,9 +2750,12 @@ export default {
         ...DEFAULT_CONFIG,
         // The hosted demo's tunnel belongs to web-demo only. Handed to anyone
         // else it sent their Remote Control -- VNC password included -- to
-        // <pc>.demo.<domain>, a host in another organization's namespace.
-        tunnelDomain: tenant.tunnel_domain || env.TUNNEL_DOMAIN ||
-          (tenant.subdomain === "web-demo" && isDemoTenant(tenant, session.user_id) ? WEB_DEMO_TUNNEL_DOMAIN : ""),
+        // <pc>.demo.<domain>, a host in another organization's namespace. The
+        // local demos take no fallback at all (demoTunnelFallback).
+        tunnelDomain: tenant.tunnel_domain ||
+          (isDemoTenant(tenant, session.user_id)
+            ? demoTunnelFallback(tenant.subdomain as DemoSlug, env.TUNNEL_DOMAIN)
+            : env.TUNNEL_DOMAIN || ""),
         defaultHomepage: env.DEFAULT_HOMEPAGE || DEFAULT_CONFIG.defaultHomepage,
         homeRoute: tenant.home_route || "/",
         whitelist
