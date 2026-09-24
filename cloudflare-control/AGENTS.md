@@ -1,7 +1,7 @@
 # LabKiosk Cloudflare Control Plane — AI Agent Codex
 
 > **Scope:** This document is the authoritative architectural specification and coding standard for the **Cloudflare Workers Control Plane**, Cloudflare D1 database, Web Crypto authentication, edge routing, multi-tenant scoping, and HTML/UI generation.
-> For the client Debian 12 operating system and installer, refer to [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md). For master cross-cutting contracts, refer to the root [`AGENTS.md`](../AGENTS.md).
+> For the client Debian 12 operating system and installer, refer to [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md). For the global invariants, see the root [`AGENTS.md`](../AGENTS.md); the client ↔ Worker contracts (telemetry, enrolment, commands, broadcast state, remote control) are in [`.claude/skills/labkiosk-core/SKILL.md`](../.claude/skills/labkiosk-core/SKILL.md).
 
 ---
 
@@ -23,14 +23,14 @@ cloudflare-control/
 │   ├── ui_admin_shared.ts              # Tenant API scope + Level 2 context panel behaviour
 │   ├── ui_admin_workstations.ts        # One module per admin page (Rule 5f): its markup, its
 │   ├── ui_admin_apps_web.ts            #   context panel and its client script together.
-│   ├── ui_admin_staff.ts            #   apps_web unifies Broadcast, portal apps and
+│   ├── ui_admin_staff.ts               #   apps_web unifies broadcasts, portal apps and
 │   ├── ui_admin_settings.ts            #   the domain allowlist in three tabs
 │   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
 │   │                                   #   radii and easing, plus the legacy aliases the public
 │   │                                   #   pages were written against
 │   ├── ui_layout.ts                    # Shared shell: 72px rail, 272px context panel, primitives
 │   ├── ui_landing.ts                   # Public SaaS Landing Page
-│   ├── ui_org_home.ts               # The organization homepage at the subdomain root (/)
+│   ├── ui_org_home.ts                  # The organization homepage at the subdomain root (/)
 │   ├── ui_portal.ts                    # User Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms)

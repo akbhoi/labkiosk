@@ -7,7 +7,22 @@ To ensure consistency, security, and architectural integrity, all AI agents and 
 - Master codex: [`AGENTS.md`](../AGENTS.md)
 - Client OS & installer: [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md)
 - Control plane: [`cloudflare-control/AGENTS.md`](../cloudflare-control/AGENTS.md)
-- Operating procedures: [`skills/labkiosk-core/SKILL.md`](../skills/labkiosk-core/SKILL.md)
+- Operating procedures: [`.claude/skills/labkiosk-core/SKILL.md`](../.claude/skills/labkiosk-core/SKILL.md)
+
+
+## 🧩 Skills (open the one that matches the task)
+
+| Skill | Use it for |
+|---|---|
+| [`labkiosk-core`](../.claude/skills/labkiosk-core/SKILL.md) | client ↔ Worker contracts: telemetry, enrolment, commands, broadcast state, remote control |
+| [`labkiosk-control`](../.claude/skills/labkiosk-control/SKILL.md) | Worker routes, guards, tenancy, staff delegation, batch commands, route tests |
+| [`labkiosk-console-ui`](../.claude/skills/labkiosk-console-ui/SKILL.md) | consoles, landing, User Portal, organization homepage, legal pages; browser verification |
+| [`labkiosk-d1-schema`](../.claude/skills/labkiosk-d1-schema/SKILL.md) | schema changes, migrations, cascade-safe table rebuilds, production migration |
+| [`labkiosk-client`](../.claude/skills/labkiosk-client/SKILL.md) | agent.py, extension, wizard, i18n, localization, keyboard lockdown |
+| [`labkiosk-distro`](../.claude/skills/labkiosk-distro/SKILL.md) | ISO build, packages, RAM overlay, bootloaders, disk installer |
+| [`labkiosk-simulator`](../.claude/skills/labkiosk-simulator/SKILL.md) | seeing a client change work in the Docker simulator |
+
+Each skill is a short procedure; the codices stay authoritative. Claude Code loads them on demand from `.claude/skills/`; other tools can open them by path.
 
 ---
 
@@ -23,7 +38,7 @@ The repository is partitioned into two independent subsystems plus a workstation
    - Python 3 agent (`agent.py`), standard library only, binding strictly to loopback `127.0.0.1:8888`.
    - Chromium Manifest V3 extension: `content.js` (top bar & lock curtain in Shadow DOM) talks only to `background.js`, the sole loopback caller.
    - Detailed specification: [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md)
-   - Specialized skill: [`skills/labkiosk-distro/SKILL.md`](../skills/labkiosk-distro/SKILL.md)
+   - Specialized skill: [`.claude/skills/labkiosk-distro/SKILL.md`](../.claude/skills/labkiosk-distro/SKILL.md)
 
 2. **Cloudflare SaaS Control Plane (`cloudflare-control/`)**:
    - Cloudflare Workers edge control plane (`src/index.ts`).
@@ -33,7 +48,7 @@ The repository is partitioned into two independent subsystems plus a workstation
    - Nonce-based Content Security Policy (CSP) and output escaping (`src/escape.ts`).
    - Organization console: 4-module rail (Workstations, Apps & Web, Staff, Settings), one `ui_admin_<page>.ts` per page, design tokens declared once in `ui_tokens.ts`.
    - Detailed specification: [`cloudflare-control/AGENTS.md`](../cloudflare-control/AGENTS.md)
-   - Specialized skill: [`skills/labkiosk-control/SKILL.md`](../skills/labkiosk-control/SKILL.md)
+   - Specialized skill: [`.claude/skills/labkiosk-control/SKILL.md`](../.claude/skills/labkiosk-control/SKILL.md)
 
 3. **Workstation Simulator** (root `Dockerfile`, `docker-compose.yml`, `docker-test/`): an unprivileged, sandboxed Chromium kiosk used to verify client changes visually.
 

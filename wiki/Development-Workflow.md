@@ -122,7 +122,7 @@ Architectural rules are tool-agnostic and live in the repository:
 | `distro-builder/AGENTS.md` | Client OS, installer, extension, ISO pipeline |
 | `cloudflare-control/AGENTS.md` | Worker, D1, auth, UI templates |
 | `CLAUDE.md` | Claude Code entry point; imports the above |
-| `skills/labkiosk-*/SKILL.md` | Operating procedures for AI assistants |
+| `.claude/skills/labkiosk-*/SKILL.md` | Task procedures for AI assistants (core, control, console-ui, d1-schema, client, distro, simulator), loaded on demand |
 
 Read the relevant codex before an architectural change. They record not just the rule but the failure that produced it.
 

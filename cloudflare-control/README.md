@@ -60,7 +60,7 @@ cloudflare-control/
 │   ├── ui_tokens.ts           # The one declaration of the design language (colours, radii, easing)
 │   ├── ui_layout.ts           # Shared shell: 72px rail, 272px context panel, primitives
 │   ├── ui_landing.ts          # Public SaaS landing page and registration
-│   ├── ui_org_home.ts      # The organization homepage served at the subdomain root
+│   ├── ui_org_home.ts         # The organization homepage served at the subdomain root
 │   ├── ui_portal.ts           # User Portal (Approved Apps Grid)
 │   ├── ui_super.ts            # Super Admin Master Console (/super)
 │   ├── ui_legal.ts            # Legal compliance pages (/privacy, /terms)

@@ -6,6 +6,15 @@ These instructions guide GitHub Copilot when assisting contributors on the Lab K
 - **Client OS & Distro (`distro-builder/`)**: Debian 12 Live ISO, Openbox, Python agent (`agent.py`, standard library only, loopback `127.0.0.1:8888`), disk installer (`labkiosk-install`), Manifest V3 extension (`content.js` in Shadow DOM, `background.js` as the only loopback caller). Read `distro-builder/AGENTS.md`.
 - **Control Plane (`cloudflare-control/`)**: Cloudflare Workers edge SaaS, D1 database (`migrations/0001..0011` mirrored in `SCHEMA_SQL`), native Web Crypto PBKDF2 authentication, nonce-based CSP. The organization console has four modules (Workstations, Apps & Web, Staff, Settings), one `ui_admin_<page>.ts` per page. Read `cloudflare-control/AGENTS.md`.
 
+## Task procedures (read the matching one)
+- `.claude/skills/labkiosk-core/SKILL.md` — client ↔ Worker contracts: telemetry, enrolment, commands, broadcast state, remote control
+- `.claude/skills/labkiosk-control/SKILL.md` — Worker routes, guards, tenancy, staff delegation, batch commands, route tests
+- `.claude/skills/labkiosk-console-ui/SKILL.md` — consoles, landing, User Portal, organization homepage, legal pages; browser verification
+- `.claude/skills/labkiosk-d1-schema/SKILL.md` — schema changes, migrations, cascade-safe table rebuilds, production migration
+- `.claude/skills/labkiosk-client/SKILL.md` — agent.py, extension, wizard, i18n, localization, keyboard lockdown
+- `.claude/skills/labkiosk-distro/SKILL.md` — ISO build, packages, RAM overlay, bootloaders, disk installer
+- `.claude/skills/labkiosk-simulator/SKILL.md` — seeing a client change work in the Docker simulator
+
 ## Mandatory Coding Invariants
 
 ### Control plane

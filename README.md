@@ -43,7 +43,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 | **Remote Control & Tunnels** | Zero-exposure remote desktop architecture via loopback `websockify`, per-boot ephemeral passwords, and Cloudflare Tunnels. | [`docs/REMOTE_CONTROL.md`](docs/REMOTE_CONTROL.md) |
 | **REST API Specification** | Complete REST endpoint catalog, authentication schemes, tenant scoping rules, request/response schemas, and rate limits. | [`docs/API.md`](docs/API.md) |
 | **AI Architecture Codices** | Modular architectural specifications and code invariants for AI coding assistants: [Master (`AGENTS.md`)](AGENTS.md) • [Distro Builder (`distro-builder/AGENTS.md`)](distro-builder/AGENTS.md) • [Control Plane (`cloudflare-control/AGENTS.md`)](cloudflare-control/AGENTS.md). | [`AGENTS.md`](AGENTS.md) |
-| **AI Skills & Automation** | Standardized AI engineering skills for full-stack, distro, and edge control plane workflows. | [`skills/`](skills/) |
+| **AI Skills & Automation** | Standardized AI engineering skills for full-stack, distro, and edge control plane workflows. | [`.claude/skills/`](.claude/skills/) |
 | **Security Policy** | Vulnerability reporting procedures, cryptographic standards, and threat model. | [`SECURITY.md`](SECURITY.md) |
 | **Contribution Guidelines** | Community guidelines, coding standards, and pull request checklist. | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
@@ -176,7 +176,7 @@ pnpm --prefix cloudflare-control test
 
 This project is proudly and transparently **co-developed with Artificial Intelligence**.
 
-The entire software architecture, custom Debian live-build hooks, high-performance Cloudflare Worker router, serverless D1 schema, native Web Crypto implementation, and enterprise client extensions were iteratively designed, coded, and tested through pair-programming between the human maintainer and AI coding assistants, initially **Antigravity** (Google DeepMind) and subsequently Claude Code. The rules those agents follow live in [`AGENTS.md`](AGENTS.md), [`CLAUDE.md`](CLAUDE.md), and [`skills/labkiosk-core/SKILL.md`](skills/labkiosk-core/SKILL.md).
+The entire software architecture, custom Debian live-build hooks, high-performance Cloudflare Worker router, serverless D1 schema, native Web Crypto implementation, and enterprise client extensions were iteratively designed, coded, and tested through pair-programming between the human maintainer and AI coding assistants, initially **Antigravity** (Google DeepMind) and subsequently Claude Code. The rules those agents follow live in [`AGENTS.md`](AGENTS.md), [`CLAUDE.md`](CLAUDE.md), and [`.claude/skills/labkiosk-core/SKILL.md`](.claude/skills/labkiosk-core/SKILL.md).
 
 We believe in open collaboration, transparent AI authorship, and leveraging artificial intelligence to build robust, secure, and accessible technology for rooms around the world.
 

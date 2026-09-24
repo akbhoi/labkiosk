@@ -1,316 +1,108 @@
-# AI Agent Codex & Master Architecture Playbook
+# AI Agent Codex — Lab Kiosk
 
-> **Notice:** This repository was architected and co-developed through human-AI pair programming, initially with **Antigravity** (Google DeepMind) and later with Claude Code. Any AI agent (Antigravity, Claude, Copilot, Cursor, Codex, Gemini, etc.) working on this repository MUST strictly abide by the invariants, architectural patterns, and testing protocols defined across this codex.
->
-> **Modular Subsystem Codices:**
->
-> - 🐧 **Client Operating System & Distro Builder:** [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md)
-> - ☁️ **Cloudflare Workers SaaS Control Plane:** [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md)
-> - 🛠️ **Operating Skills & Procedures:** [`skills/labkiosk-core/SKILL.md`](skills/labkiosk-core/SKILL.md)
+> Lab Kiosk turns any computer into a locked-down, centrally managed browser workstation for an
+> **organization** — a company, public body, library or school. It was co-developed through
+> human-AI pair programming (Antigravity, then Claude Code). Every AI agent working here (Claude,
+> Codex, Copilot, Cursor, Gemini, Antigravity…) follows this codex and the subsystem codices.
 
----
+This file is deliberately short: the rules every change must respect, and where the detail lives.
 
-## 1. Master System Architecture Map
+| Detail | Where |
+|---|---|
+| Client OS, agent, extension, wizard, installer, ISO build | [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) (authoritative) |
+| Cloudflare Worker, D1, consoles, security | [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md) (authoritative) |
+| Task procedures, loaded on demand | [`.claude/skills/`](.claude/skills/) — see the table below |
+
+## Skills — open the one that matches the task
+
+| Task | Skill file |
+|---|---|
+| Client ↔ Worker contracts: telemetry, enrolment, commands, broadcast state, remote control | [`.claude/skills/labkiosk-core/SKILL.md`](.claude/skills/labkiosk-core/SKILL.md) |
+| Worker routes, guards, tenancy, staff delegation, batch commands, tests | [`.claude/skills/labkiosk-control/SKILL.md`](.claude/skills/labkiosk-control/SKILL.md) |
+| Consoles, landing, User Portal, organization homepage, legal pages | [`.claude/skills/labkiosk-console-ui/SKILL.md`](.claude/skills/labkiosk-console-ui/SKILL.md) |
+| Database schema and migrations | [`.claude/skills/labkiosk-d1-schema/SKILL.md`](.claude/skills/labkiosk-d1-schema/SKILL.md) |
+| Agent, extension, wizard, i18n, localization, keyboard lockdown | [`.claude/skills/labkiosk-client/SKILL.md`](.claude/skills/labkiosk-client/SKILL.md) |
+| ISO build, packages, overlay, bootloaders, installer | [`.claude/skills/labkiosk-distro/SKILL.md`](.claude/skills/labkiosk-distro/SKILL.md) |
+| Seeing a client change work in the Docker simulator | [`.claude/skills/labkiosk-simulator/SKILL.md`](.claude/skills/labkiosk-simulator/SKILL.md) |
+
+Claude Code discovers these automatically and loads one only when a task needs it.
+
+## 1. Architecture
 
 ```text
 labkiosk/
-├── distro-builder/                     # Debian 12 Live-Build ISO & Hard Disk OS Pipeline
-│   ├── config/bootloaders/             # ISOLINUX (BIOS) + GRUB EFI (UEFI) boot menus
-│   ├── config/package-lists/           # Minimal OS packages (Openbox, Chromium, rsync, parted, efibootmgr)
-│   ├── config/hooks/live/              # Lockdown & security hooks (users, polkit, Xorg, sysctl, GRUB pin)
-│   ├── config/includes.chroot/         # Rootfs overlay injected into the live & installed image
-│   │   ├── etc/chromium/policies/      # Managed enterprise policies (URLAllowlist, Blocklist)
-│   │   ├── etc/openbox/rc.xml          # Window manager keybindings (stripped of escape keys)
-│   │   ├── etc/overlayroot.conf        # RAM overlay (overlayroot="tmpfs", zero SSD wear)
-│   │   ├── opt/labkiosk/
-│   │   │   ├── setup/wizard.html       # Setup & Enrollment Wizard GUI (HTML/JS)
-│   │   │   ├── extension/              # Manifest V3: content.js (top bar & curtain) + background.js
-│   │   │   └── agent/agent.py          # Python 3 telemetry daemon & loopback API
-│   │   └── usr/local/bin/
-│   │       └── labkiosk-install        # Automated disk installer (GPT, ESP, ext4, dual GRUB)
-│   ├── Dockerfile                      # Containerized cross-platform ISO builder
-│   └── build-iso.sh                    # Native Debian/WSL2 build script
-│
-├── cloudflare-control/                 # Cloudflare Workers Control Plane (Edge SaaS)
-│   ├── migrations/                     # Cloudflare D1 SQL migrations (0001..0011)
-│   ├── wrangler.jsonc                  # Routes, D1 binding, hourly cron trigger
-│   ├── src/
-│   │   ├── index.ts                    # Edge router, REST APIs, telemetry cache, scheduled()
-│   │   ├── guard.ts                    # Tenant resolution + authorization + CSRF origin guard
-│   │   ├── escape.ts                   # HTML / attribute / JSON escaping & safe URLs
-│   │   ├── db.ts                       # D1 Database queries, SCHEMA_SQL & tenant seeding
-│   │   ├── auth.ts                     # Native Web Crypto PBKDF2 authentication, CSP nonces
-│   │   ├── d1_adapter.ts               # Node 22+ native `node:sqlite` mock for local unit tests
-│   │   ├── ui.ts                       # Organization admin console: picks the page, fills the shell
-│   │   ├── ui_admin_shared.ts          # Tenant API scope + Level 2 context panel behaviour
-│   │   ├── ui_admin_*.ts               # One module per admin page: its markup, its context
-│   │   │                               #   panel and its client script together
-│   │   ├── ui_tokens.ts                # The one declaration of the design language: colours,
-│   │   │                               #   radii and easing, plus the legacy aliases the public
-│   │   │                               #   pages were written against
-│   │   ├── ui_layout.ts                # Shared shell: 72px rail, 272px context panel, primitives
-│   │   ├── ui_landing.ts               # Public SaaS Landing Page
-│   │   ├── ui_org_home.ts           # The organization homepage at the subdomain root (/)
-│   │   ├── ui_portal.ts                # User Portal at /home (cards grid)
-│   │   ├── ui_super.ts                 # Super Admin Master Console (/super)
-│   │   ├── ui_legal.ts                 # Legal compliance pages (/privacy, /terms)
-│   │   └── types.ts                    # Strict TypeScript interfaces
-│   └── test/                           # worker.test.ts (integration & security suite),
-│                                       #   dump_admin_html.ts, dev_server.ts
-│
-├── Dockerfile                          # Workstation simulator image (ghcr.io/akbhoi/labkiosk)
-├── docker-compose.yml                  # Runs the simulator; live-mounts the client source
-├── docker-test/                        # Simulator entrypoint + docs (no Dockerfile: the
-│                                       #   root one is the single simulator image)
-├── docs/                               # Production deployment, remote control, and API specs
-└── skills/                             # Automated AI skill definitions (labkiosk-core, distro, control)
+├── distro-builder/          Debian 12 live-build image, installer, hooks, Chromium policy
+│   └── config/includes.chroot/
+│       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
+│       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization
+├── cloudflare-control/      Cloudflare Worker + D1
+│   ├── migrations/          0001..0011 (never edit an applied one)
+│   ├── src/                 index.ts (router), guard.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts,
+│   │                        ui_*.ts (one module per page), ui_tokens.ts, ui_layout.ts
+│   └── test/                worker.test.ts, dump_admin_html.ts, dev_server.ts
+├── Dockerfile, docker-compose.yml, docker-test/   workstation simulator
+├── docs/, wiki/             deployment, API and user documentation
+└── .claude/skills/          on-demand procedures (above)
 ```
 
----
+The workstation agent sends a heartbeat every 3 s (`POST /api/telemetry`, device bearer token);
+the reply carries the allowlist, the target URL, broadcast state and queued commands (`lock`,
+`unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`). Enrolment exchanges
+an organization's enrollment key for the device token. Remote control is loopback VNC →
+websockify → Cloudflare Tunnel. Full contracts: `labkiosk-core`.
 
-## 2. Cross-Cutting Client-Server API Contracts
+## 2. Invariants (zero exceptions)
 
-The Client Operating System and Cloudflare Control Plane communicate over authenticated HTTPS REST channels.
+1. **Zero runtime npm dependencies in the Worker.** Crypto is `crypto.subtle` only (PBKDF2-HMAC-SHA256,
+   100 000 iterations, 32-byte salt). No routers, auth frameworks or ORMs.
+2. **RAM overlay on the client.** `overlayroot="tmpfs:recurse=0"`; the root filesystem is read-only;
+   only the `LABKIOSK_DATA` partition at `/etc/labkiosk` persists on an installed disk.
+3. **Top-level navigation only.** Never load external sites in an `<iframe>`; the extension's bar and
+   curtain live in a Shadow DOM; only `background.js` talks to the agent.
+4. **Tenant isolation.** Every query touching tenant data filters by `tenant_id`; state two requests
+   must agree on lives in D1, never module memory. Every route resolves its tenant with
+   `resolveTenant()` and is guarded (`requireTenantPermission` / `requireTenantAdmin` /
+   `requireSuperAdmin` / `requireDevice`) **and** has negative tests. Super admins see only the
+   `demo` organization.
+5. **Staff delegation never escalates.** Roles `org_admin`, `sub_admin`, `operator`, `assistant`,
+   `content_manager`; permissions `workstations`, `broadcast`, `portal`, `whitelist`, `staff`,
+   `settings`; `*` is never stored; `staffDelegationProblem()` guards every staff change.
+6. **Escape everything; no inline handlers.** Server: `escapeHtml`/`escapeJson`/`safeHttpUrl`.
+   Client: DOM nodes and `textContent` (escape helpers are server-only). Every `<script>` carries the
+   CSP nonce. Classes must be declared in `ui_layout.ts`; tokens only in `ui_tokens.ts`.
+7. **The schema has two homes** — a new migration **and** `SCHEMA_SQL`. A CHECK change on a parent
+   table uses the cascade-safe rebuild: a plain `DROP TABLE users` cascade-deletes every organization.
+8. **Loopback-only agent.** `127.0.0.1:8888`; mutating endpoints accept loopback origins and the
+   extension's pinned origin only; installed-disk admin actions need the boot-password token.
+   Validation regexes anchor with `\Z` (never `$`, never `\\Z` in a raw string).
+9. **Unattended boot.** A workstation boots straight into the kiosk; never add a prompt to the normal
+   boot path.
+10. **Fail closed; zero placeholders.** Missing config is an error; no TODO stubs, no empty
+    `catch`/`except`, no invented checksums or pins.
+11. **The simulator is hardened too.** Unprivileged `kiosk` user, Chromium sandbox on, read-only root,
+    `cap_drop: ALL` + `SYS_CHROOT`, noVNC on `127.0.0.1`; `--no-sandbox` only as the warned root fallback.
+12. **LF line endings** everywhere (`.gitattributes`); never write files with a newline-translating tool.
+13. **Organizations, not schools.** Say organization, operator/staff, user, User Portal, page/broadcast —
+    never school, teacher, student, lesson or classroom (a test enforces it on the consoles, portal and
+    organization homepage). **Statements about the license describe `LICENSE`**: free only for
+    accredited educational institutions and non-commercial evaluation up to 45 computers; everyone else
+    needs a commercial or subscriber license.
 
-### 1. Workstation Heartbeat & Telemetry (`POST /api/telemetry`)
-
-- **Caller:** `agent.py` on client workstation (every 3 seconds).
-- **Authentication:** `Authorization: Bearer <device_token>`.
-- **Payload** (exactly these keys; `post_telemetry()` in `agent.py` is the reference):
-  - `clientNum`: Integer workstation number.
-  - `activeUrl`: The URL the agent is currently pointing the kiosk at.
-  - `isLocked`: Whether the lock curtain is currently up.
-  - `thumbnail`: Base64 JPEG data URL from `scrot -t 20 -q 35`. **Omitted** when the encoded
-    payload would exceed 256 KB (`MAX_THUMBNAIL_BYTES`), so an oversized frame is dropped rather
-    than allowed to bloat a 3-second loop. No PIL/Pillow is involved: the agent is standard
-    library only.
-  - `vncPassword`: Per-boot ephemeral VNC secret from `/tmp/labkiosk/vnc.secret`. Sent only when
-    present, so the control plane keeps what it already knows otherwise.
-  - `remoteHost`: Cloudflare Tunnel hostname from `/etc/cloudflared/config.yml` or
-    `LABKIOSK_REMOTE_HOST`. Sent only when present.
-- **Not sent:** there is no `currentUrl` key and no `metrics` object. The agent collects no CPU,
-  RAM or storage statistics; do not write a dashboard against fields that do not exist.
-- **Response:**
-  - `whitelist`: Approved domain list, merged into the Chromium managed policy.
-  - `targetUrl`: Where the kiosk should point. Validated as `http(s)` by `safe_navigable_url()`
-    before it is stored, because it ends up in `window.location`.
-  - `commands`: Array of pending operator commands. The agent implements `lock`, `unlock`,
-    `navigate`, `reload`, `reboot`, `shutdown`, `clear-session` and `mute`; anything else is logged and ignored.
-    `clear-session` ends the kiosk browser without a reboot; the watchdog deletes the Chromium profile and
-    disk cache before every relaunch, so every sign-in, cookie and history entry is gone (see
-    `distro-builder/AGENTS.md`, Rule 5).
-    (There is no `broadcast` action — a broadcast is `navigate` plus `broadcastEpoch`.)
-    Operator `reload` commands advance the agent's internal `reloadEpoch` (returned in `GET /api/status`),
-    which `content.js` detects in `syncLoop()` to trigger a native `window.location.reload()`, caching
-    `lastReloadEpoch` in `sessionStorage` to prevent infinite reload loops. Synthetic X11 key injection
-    (`xdotool key F5`) is strictly forbidden.
-  - `broadcastUrl` / `broadcastEpoch`: Authoritative synchronized active page URL — the newer of
-    the organization-wide broadcast (`tenants`) and this workstation's own (`client_devices`, set when a
-    broadcast or reset is sent to selected workstations). `targetUrl` follows it, so the heartbeat
-    never undoes a broadcast. Epoch `0` means none: the workstation is on the portal.
-
-### 2. First-Boot Workstation Enrollment (`POST /api/setup`)
-
-- **Caller:** Local setup wizard (`wizard.html`) via loopback agent `POST /api/setup`.
-- **Target:** Control Plane `POST /api/devices/enroll`.
-- **Payload:** `{ subdomain, clientId, enrollmentKey, customDomain }`.
-- **Response:** A device bearer token, which the agent writes to **`/etc/labkiosk/config.json`**
-  (mode 0600) together with the resolved `workerUrl` and `targetUrl`.
-- **Where that file actually lives:** on live media it is in the RAM overlay and is gone at
-  power-off, which is correct — the workstation is meant to be installed, not run from USB
-  permanently. On an **installed** disk, `/etc/labkiosk` is a mount point for the `LABKIOSK_DATA`
-  partition created by `labkiosk-install`, which is what makes a post-install enrolment persist;
-  without it `overlayroot="tmpfs"` would discard the token on the next reboot.
-
-### 3. Remote Control & Observation Channel
-
-- **Loopback VNC:** `x11vnc` binds strictly to `127.0.0.1:5900` with an ephemeral per-boot password.
-- **WebSocket Bridge:** `websockify` binds to `127.0.0.1:6080`.
-- **Tunnel Egress:** Cloudflare Tunnel securely forwards loopback port 6080 to `<pc>.<TUNNEL_DOMAIN>` without exposing any listening port on the organization's local LAN.
-- **Admin console:** Embedded noVNC frame authenticates via the device's current `vnc_password` retrieved securely through `GET /api/clients`.
-
-### 4. Workstation Groups & Batch Commands
-
-- **Group Management:** Workstations can be organized into arbitrary named groups (e.g. "Row 1", "Lab A", "Physics"):
-  - `GET /api/groups`: List workstation groups for the tenant.
-  - `POST /api/groups`: Create a new group (`{ name }`, 1–50 characters, unique per organization case-insensitively — membership is stored by name).
-  - `DELETE /api/groups/:id`: Delete group; sets member devices' `group_name` to `NULL` (`404` for an unknown group).
-  - `POST /api/clients/group`: Assign devices to an **existing** group (`{ clientIds: string[], groupName: string | null }`; empty or `null` ungroups).
-- **Batch Command Dispatch (`POST /api/command`):**
-  - Accepts `targets: string[]` (or legacy single `target: string`). Duplicates are dropped and `"all"` replaces named targets.
-  - Actions are exactly `ALLOWED_COMMANDS`: `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`. There is no `reset` action: Reset to Portal is `navigate` with `resetPortal: true`, and `navigate` needs the `broadcast` permission.
-  - Both routes accept at most 500 ids per request, and D1's 100-parameter limit means `IN (...)` lists are written in slices of 90.
-  - The admin console features a "Select All" toggle, per-workstation and per-group selection checkboxes, dynamic selection count indicators, and targeted command buttons ("Lock", "Unlock", "Clear Session", "Reboot", "Shutdown").
-
----
-
-## 3. Global Invariant Rules (Zero Exceptions)
-
-### Rule 1: Zero NPM Dependencies in Cloudflare Worker
-
-- The Cloudflare Worker control plane uses **0 runtime npm dependencies**.
-- Hashing and session cryptography **must always use `crypto.subtle`** (Web Crypto API): `PBKDF2-HMAC-SHA256`, 100,000 iterations, 32-byte salt, 256 derived bits.
-- Never introduce external routing libraries, auth frameworks, or heavy database ORMs. Keep worker cold starts under 10ms.
-
-### Rule 2: 100% RAM Overlay Protection (`overlayroot="tmpfs"`)
-
-- The client OS runs as an **immutable system with all disk writes diverted to RAM**:
-  - Live ISO: `overlayroot="tmpfs"` (plus an optional `toram` boot entry, which is **not** the
-    default and must be chosen from the menu).
-  - Installed Drive: `overlayroot="tmpfs"` in `/etc/overlayroot.conf` on persistent ext4 partition.
-- Flash storage on thin clients (e.g. 12 GB SSDs) is protected from write exhaustion. The underlying root filesystem remains mounted read-only (`ro`).
-- Dynamic runtime files, browser profiles, logs, and downloads write to `/tmp` in `tmpfs` and reset completely upon reboot.
-
-### Rule 3: Native Top-Level Navigation & Shadow DOM Extension
-
-- **Never load external approved websites inside an `<iframe>`**. Modern sites enforce `X-Frame-Options: SAMEORIGIN` and fail.
-- Chromium navigates top-level pages.
-- The Chrome extension (`content.js`) injects the navigation header into the top frame inside an isolated **Shadow DOM**.
-- The content script **never** communicates with the agent directly (which would require unsafe wildcard CORS). It communicates through `background.js` (MV3 service worker), which owns `host_permissions` for `http://127.0.0.1:8888/*`.
-- The navigation bar **auto-hides** (`transform: translateY(-100%)`) and appears only when `mouseY <= 12px`. Viewport occupies 100% height with 0px scroll offset.
-- **International Keyboard Input**: `content.js` intercepts unauthorized keystrokes in all frames but MUST explicitly allow `event.getModifierState("AltGraph")` for printable characters and allow `event.key === "Dead"` for dead keys. International keyboards rely on `AltGr` for symbols (e.g. `@`, `€`, `\`) and diacritics; blocking them breaks non-US layouts.
-- **Query Parameter Preservation**: URL normalization in `content.js` must preserve `u.search` query parameters so approved applications with query parameters (e.g. `?room=101&user=demo`) are retained and not falsely identified as root broadcast URLs.
-- **Dynamic Directionality (RTL/LTR)**: The extension applies `dir="rtl"` or `dir="ltr"` to the host container, top bar, curtain, and modal based on the active catalog's `_meta.direction`.
-
-### Rule 4: Multi-Tenant Scoping & Security Guards
-
-- Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
-- Authoritative state (broadcasts, credentials, sessions) resides in D1, not isolate memory.
-- Every endpoint is strictly guarded via `guard.ts`: `resolveTenant()`, `requireTenantAdmin()`, `requireSuperAdmin()`, `requireDevice()`, and `rejectCrossSiteMutation()`.
-- Super admins are restricted from accessing any organization's admin console, telemetry, or VNC remote desktop *except* for the dedicated `demo` organization tenant to ensure organization data privacy. Accessing organization admin sub-routes (`/admin/workstations`, `/admin/apps-web`, etc.) as super admin routes directly to the `demo` organization console (`?tenant=demo`) rather than bouncing to `/super`, and all internal console links preserve `?tenant=<subdomain>` when rendered outside the dedicated organization subdomain. Full access permissions (`*`) are guaranteed for super admins on the `demo` tenant.
-- Organization admins can delegate functions to sub-admins and operators via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`). The Apps & Web page opens with any of `broadcast`, `portal` or `whitelist`, and each of its tabs calls routes guarded by that one permission. `*` is never stored: full access comes only from owning the organization or the `org_admin` role.
-- A delegate holding `staff` may grant only the permissions they hold, may not appoint an `org_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Without that, the staff permission was a one-request path to the organization's settings and enrolment key.
-
-### Rule 4b: Left-Side Multi-Level Panels Design & Seamless Transitions
-
-- The dashboard control planes (both Organization Admin `/admin/*` and Super Admin `/super/*`) enforce a unified **Left-Side Multi-Level Panels Architecture**:
-  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, exactly 4 primary module icons (Workstations, Apps & Web, Staff, Settings), live counter pills, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel collapse toggle.
-  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
-  - **Workstations Module (`/admin/workstations`)**:
-    - **Level 2 Subpanel**: Dedicated to Workstation Groups (`+ New Group`, live group member counts, group filtering, and group deletion). Removed redundant individual command buttons from sidebar.
-    - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted batch actions (`Lock`, `Unlock`, `Clear Session`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
-    - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes; collapse states persist in `localStorage`.
-  - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
-    - Merges Broadcast, User Portal Apps, and Domain Allowlist into a single, segmented module with 3 tab panes (`Broadcast`, `User Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy routes (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
-    - **Stabilized Sidebar Subpanel**: Fixed, non-shifting Level 2 subpanel featuring static tab view switchers (`📶 Broadcast`, `⊞ User Portal`, `🛡️ Domain Allowlist`), a `Preview User Portal &rarr;` shortcut opening `/home` in a new tab, and a static Module Overview card (total apps, allowed domains, live broadcast status). Eliminates dynamic layout shift.
-    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant "Standard Educational Presets" from Broadcast to prevent duplicate lists.
-  - **Staff Module (`/admin/staff`)**:
-    - **Level 2 Subpanel**: Interactive **"Role"** filter section (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with live count badges that filter the authorized operators table instantly without page reload.
-    - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
-  - **Settings Module (`/admin/settings`)**:
-    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 4 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`) with instant client-side switching and deep linking (`?tab=...`).
-    - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain & VNC Tunnel \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Lab Activity).
-    - **Scrollable Activity Table (`.table-scrollable`)**: Recent Lab Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
-  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
-  - **Transitions & Micro-Interactions**: Hardware-accelerated CSS transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
-
-### Rule 4c: One Design Language, Declared Once
-
-- `cloudflare-control/src/ui_tokens.ts` is the single declaration of the design
-  language for every web surface: the two consoles, the public landing page, the
-  user portal and the legal pages. Each renders its `:root` from
-  `rootTokensCss()` and its fonts from `FONT_LINKS`; none opens a `:root` of its own.
-- A class a page renders must be a class the shell declares, and the test suite
-  fails otherwise (including `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`). See Rule 5c in
-  [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md).
-
-### Rule 4d: Organizations, Not Schools
-
-- Lab Kiosk is for any organization: companies, public services, libraries and schools. Say
-  **organization** (never "school"), **operator / staff** (never "teacher"), **user** (never
-  "student"), **User Portal**, and **page / broadcast** (never "lesson"). Stored roles are
-  `org_admin`, `sub_admin`, `operator`, `assistant`, `content_manager`; the staff permission is
-  `staff`. A test fails if a console, the User Portal or an organization homepage says otherwise.
-- Education stays a named audience on the landing page, and **statements about the license keep
-  describing the license**: free only for accredited educational institutions and non-commercial
-  evaluation up to 45 computers, commercial or subscriber license for everyone else.
-- Kept on purpose, with reasons in `cloudflare-control/AGENTS.md` Rule 3c: applied migrations
-  `0001`–`0010`, six interface-catalog keys, and the `schoolName` compatibility field.
-- Changing a CHECK on a parent table (`users`, `tenants`) needs the cascade-safe rebuild in
-  `cloudflare-control/AGENTS.md` Rule 3b; a naive rebuild deletes every organization.
-
-### Rule 5: Zero Placeholders
-
-- ❌ No `// TODO: Implement later`
-- ❌ No empty `catch (e) {}` blocks.
-- ❌ No mock data stubs in production code.
-- ❌ No unverified constants. Cryptographic checksums and pins (`cloudflared.pin`, `grub.pin`) fail closed if unverified.
-
-### Rule 6: Fail Closed
-
-- Missing configuration is an error, not a reason to fall back to an insecure default.
-- The agent binds its local API exclusively to `127.0.0.1`.
-- Production database requires schema migrations to be applied before serving requests.
-
-### Rule 7b: The Simulator Container Is Untrusted Too
-
-- The workstation simulator (root `Dockerfile`, `docker-compose.yml`) runs as the unprivileged `kiosk`
-  user with Chromium's sandbox enabled, a read-only root filesystem, `cap_drop: ALL` apart from the
-  `SYS_CHROOT` that sandbox needs, `no-new-privileges`, and its noVNC port published on `127.0.0.1`
-  only. It browses the open web, so it is hardened like something that will be attacked.
-- `--no-sandbox` survives only as the entrypoint's fallback for a container started as root, and it
-  warns when it takes it. Never make it unconditional again.
-
-### Rule 7: Network Subsystem & State Persistence Guarantee
-
-- Network profiles (Ethernet and Wi-Fi) configured via the setup wizard or agent API are managed through NetworkManager.
-- To survive `overlayroot="tmpfs"` reboots on installed hardware, connection keyfiles are stored on the persistent `LABKIOSK_DATA` partition in `/etc/labkiosk/system-connections/` (mode `0700`, files mode `0600`, root:root) and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab`.
-- The unprivileged `kiosk` user is granted Polkit privileges for NetworkManager via `/etc/polkit-1/rules.d/50-labkiosk-network.rules` to allow the agent to manage network connections without running the agent as root.
-- Post-installation network changes and workstation reboots are gated behind administrator authentication (PBKDF2 verification against `/etc/grub.d/01_labkiosk_password`). The gate is enforced by the agent, not only the UI: `/api/admin/verify` issues a 10-minute token (throttled after 5 failures) and `/api/network/configure` as well as `POST /api/reboot` refuse an installed workstation's request without it (`X-LabKiosk-Admin`).
-- The browser extension (`content.js`) monitors network connectivity via `/api/status`, displays live online/offline state in the kiosk top bar, and redirects to `/setup#offline` if the workstation is offline for more than 6 seconds on an external, unlocked page. That page returns to the page by itself once the connection is back.
-- Wi-Fi scan results (SSIDs) are attacker-chosen and are rendered with `textContent` only: the wizard's origin can drive the disk installer.
-
----
-
-## 4. Subsystem Quick Reference
-
-| Subsystem | Key Files | Architecture Document |
-| :--- | :--- | :--- |
-| **Debian 12 Live Kiosk OS** | `distro-builder/auto/`, `distro-builder/Dockerfile` | [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) |
-| **Automated Disk Installer** | `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install` | [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) |
-| **Client Agent & API** | `distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py` | [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) |
-| **Browser Extension (MV3)** | `distro-builder/config/includes.chroot/opt/labkiosk/extension/` | [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) |
-| **Setup & Install Wizard** | `distro-builder/config/includes.chroot/opt/labkiosk/setup/wizard.html` | [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) |
-| **Cloudflare Control Plane** | `cloudflare-control/src/index.ts`, `guard.ts`, `auth.ts` | [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md) |
-| **Database & Migrations** | `cloudflare-control/migrations/`, `cloudflare-control/src/db.ts` | [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md) |
-| **HTML UI & CSP Nonces** | `cloudflare-control/src/ui*.ts`, `cloudflare-control/src/escape.ts` | [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md) |
-| **Integration Test Suite** | `cloudflare-control/test/worker.test.ts` | [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md) |
-
----
-
-## 5. Verification Quick Reference
+## 3. Verify
 
 ```bash
-# 1. Cloudflare Worker Typecheck & Tests
 pnpm --prefix cloudflare-control run typecheck
 pnpm --prefix cloudflare-control test
-
-# 2. Client Distro Syntax Check
-# PYTHONPYCACHEPREFIX is not optional: without it py_compile writes __pycache__
-# directories *inside* config/includes.chroot, and live-build copies whatever is
-# on disk straight into the ISO -- shipping bytecode built for the wrong
-# interpreter into the image.
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
-
-# The client's own validators: the loopback boundary, URL and catalog checks,
-# the persistence test, the locale spellings and the keyboard lockdown.
-PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover \
-  -s distro-builder/tests -t distro-builder/tests
-
-# The boot-time Chromium policy is generated from the single policy base; this
-# fails if the committed copy has drifted from it.
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests
 python3 distro-builder/tools/generate-chromium-policy.py --check
-
-# 3. Build the ISO (run from the repository root)
-docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder
-docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akbhoi/labkiosk-iso-builder
 ```
 
-The engine must be **rootful**: `debootstrap` creates device nodes with `mknod`, which a rootless
-user namespace refuses even under `--privileged`. See
-[`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) for the one-time switch if `docker` is
-served by a podman machine.
+`PYTHONPYCACHEPREFIX` keeps `__pycache__` out of the image overlay. Tests check markup and contracts,
+not behaviour: verify UI changes by driving the page in a browser, and kiosk changes with a screenshot
+from the simulator.
