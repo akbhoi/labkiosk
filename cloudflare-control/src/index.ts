@@ -138,6 +138,9 @@ const D1_IN_LIST_CHUNK = 90;
 /** Longest workstation group name, matching what the console accepts. */
 const MAX_GROUP_NAME_LENGTH = 50;
 
+/** A person's or an organization's display name, as registration caps it. */
+const MAX_PERSON_NAME_LENGTH = 120;
+
 /**
  * The permissions a staff account may hold. `*` is never stored: full access
  * comes only from owning the organization or holding the `org_admin` role.
@@ -625,7 +628,7 @@ export default {
           return jsonError(passwordProblem, 400, jsonHeaders);
         }
 
-        const name = String(body.name).trim().slice(0, 120);
+        const name = String(body.name).trim().slice(0, MAX_PERSON_NAME_LENGTH);
         if (!name) {
           return jsonError("Organization name is required", 400, jsonHeaders);
         }
@@ -1482,7 +1485,7 @@ export default {
         const updates: Record<string, any> = {};
 
         if (body.name !== undefined) {
-          const trimmedName = String(body.name).trim().slice(0, 120);
+          const trimmedName = String(body.name).trim().slice(0, MAX_PERSON_NAME_LENGTH);
           if (!trimmedName) return jsonError("Name cannot be empty", 400, jsonHeaders);
           updates.name = trimmedName;
         }
@@ -1687,10 +1690,15 @@ export default {
           permissions?: string[];
         }>();
 
-        if (!body.name || !body.email) {
+        // Strings only, trimmed and capped as a registration's name is: a number
+        // used to reach .trim() in createTenantUser and fail as a vague 400, and
+        // a name of spaces was stored empty.
+        const name = typeof body.name === "string" ? body.name.trim().slice(0, MAX_PERSON_NAME_LENGTH) : "";
+        const email = typeof body.email === "string" ? body.email.trim() : "";
+        if (!name || !email) {
           return jsonError("Name and email are required", 400, jsonHeaders);
         }
-        if (!isPlausibleEmail(body.email)) {
+        if (!isPlausibleEmail(email)) {
           return jsonError("Please enter a valid email address", 400, jsonHeaders);
         }
 
@@ -1712,14 +1720,14 @@ export default {
         // An address that already has an account is refused rather than linked:
         // linking would let any organization pull another organization's administrator (or
         // the platform's) into its own staff list and read back their name.
-        if (await findUserByEmail(db, String(body.email).toLowerCase().trim())) {
+        if (await findUserByEmail(db, email.toLowerCase())) {
           return jsonError("An account with this email address already exists", 409, jsonHeaders);
         }
 
         const operator = await createTenantUser(db, {
           tenantId: currentTenant!.id,
-          email: body.email,
-          name: body.name,
+          email,
+          name,
           password: body.password,
           role,
           permissions
@@ -1909,7 +1917,7 @@ export default {
 
         const updates: Partial<Tenant> = {};
         if (body.name !== undefined) {
-          const trimmed = String(body.name).trim().slice(0, 120);
+          const trimmed = String(body.name).trim().slice(0, MAX_PERSON_NAME_LENGTH);
           if (trimmed) updates.name = trimmed;
         }
         if (body.mode === "portal" || body.mode === "single_url") {

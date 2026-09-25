@@ -2561,6 +2561,25 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(!me.user);
   });
 
+  test("A staff name must be text, is trimmed, and is capped like a registration's", async () => {
+    const add = (fields: Record<string, unknown>) =>
+      callJson("/api/tenant/staff?tenant=greenwood", {
+        ...json({ email: `named-${Math.random().toString(36).slice(2)}@greenwood.example`, password: "NamedPassword123!", ...fields }),
+        cookie: orgSessionCookie
+      });
+    for (const name of [42, "   ", { first: "A" }]) {
+      const { res, data } = await add({ name });
+      assert.equal(res.status, 400, `name ${JSON.stringify(name)} is refused`);
+      assert.equal(data.error, "Name and email are required");
+    }
+    const { res, data } = await add({ name: `  ${"N".repeat(300)}  ` });
+    assert.equal(res.status, 200);
+    const { data: list } = await callJson("/api/tenant/staff?tenant=greenwood", { cookie: orgSessionCookie });
+    const created = list.staff.find((s: any) => s.id === data.operator?.id || s.email === data.operator?.email);
+    assert.ok(created, "the new staff member is listed");
+    assert.equal(created.name, "N".repeat(120));
+  });
+
   test("The organization's owner can appoint a co-administrator", async () => {
     // The owner has no tenant_users row of their own; getTenantUserPermissions()
     // must still answer "*" for them, or they could not delegate at all.
