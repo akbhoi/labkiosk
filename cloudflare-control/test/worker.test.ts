@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl } from "../src/escape";
 import { isHostUnder } from "../src/guard";
 import { Env } from "../src/types";
+import { PALETTE } from "../src/ui_tokens";
 
 /**
  * The suite runs against the in-memory D1 adapter, which a production
@@ -456,6 +457,109 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  // ------------------------------------------------------------ light and dark
+
+  test("Every text colour clears WCAG AA on every surface, in both themes", () => {
+    // The palette is a table of [light, dark] pairs. A colour that reads well in
+    // one theme and vanishes in the other is exactly what a second theme risks,
+    // so the table is measured rather than trusted.
+    const luminance = (hex: string) => {
+      const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+      const [r, g, b] = channels.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a: string, b: string) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const surfaces = ["--bg-base", "--bg-rail", "--bg-panel", "--bg-surface", "--bg-card", "--bg-card-hover", "--bg-subtle"];
+
+    for (const [theme, index] of [["light", 0], ["dark", 1]] as const) {
+      const colour = (token: string) => {
+        const value = PALETTE[token]?.[index];
+        assert.match(value ?? "", /^#[0-9a-f]{6}$/, `${token} must be a solid colour to be measurable`);
+        return value!;
+      };
+      const expect = (fg: string, bg: string, min: number) => {
+        const measured = ratio(colour(fg), colour(bg));
+        assert.ok(measured >= min, `${theme}: ${fg} on ${bg} is ${measured.toFixed(2)}:1, needs ${min}:1`);
+      };
+      for (const text of ["--text-main", "--text-muted", "--text-subtle", "--accent-text"]) {
+        for (const surface of surfaces) expect(text, surface, 4.5);
+      }
+      expect("--accent-fg", "--accent", 4.5);
+      expect("--accent-fg", "--accent-hover", 4.5);
+      expect("--on-solid", "--danger", 4.5);
+      for (const tone of ["accent", "success", "warning", "danger"]) {
+        expect(`--${tone}-text`, `--${tone}-soft`, 4.5);
+        expect(`--${tone}-text`, "--bg-card", 4.5);
+      }
+      // A form field's border is its only outline on a same-colour card.
+      expect("--border-input", "--bg-card", 3);
+      expect("--border-input", "--bg-surface", 3);
+    }
+  });
+
+  test("Every page ships both themes, and the consoles and landing page can switch", async () => {
+    const pages: [string, string | undefined, boolean][] = [
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie, true],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie, true],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie, true],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie, true],
+      ["/super/organizations", superSessionCookie, true],
+      ["/super/system", superSessionCookie, true],
+      ["/", undefined, true],
+      ["/home?tenant=greenwood", undefined, false],
+      ["/?tenant=greenwood", undefined, false],
+      ["/?tenant=no-such-organization", undefined, false],
+      ["/privacy", undefined, false],
+      ["/terms", undefined, false]
+    ];
+    for (const [page, cookie, hasToggle] of pages) {
+      const html = await (await call(page, cookie ? { cookie } : {})).text();
+      assert.match(html, /<meta name="color-scheme" content="light dark">/, `${page} declares both schemes`);
+      assert.match(html, /color-scheme: light dark;/, `${page} carries the light tokens`);
+      assert.match(html, /@media \(prefers-color-scheme: dark\)/, `${page} follows a dark system setting`);
+      assert.match(html, /:root\[data-theme="dark"\]/, `${page} honours a pinned dark theme`);
+      if (hasToggle) assert.match(html, /data-action="toggle-theme"/, `${page} offers the theme switch`);
+    }
+  });
+
+  test("No page paints a colour of its own: every colour comes from the palette", async () => {
+    // A literal colour in markup is right in one theme and wrong in the other.
+    const pages: [string, string | undefined][] = [
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie],
+      ["/", undefined],
+      ["/home?tenant=greenwood", undefined],
+      ["/?tenant=greenwood", undefined],
+      ["/?tenant=no-such-organization", undefined],
+      ["/privacy", undefined]
+    ];
+    const literal = /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/;
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, cookie ? { cookie } : {})).text();
+      for (const attr of html.match(/style="[^"]*"/g) || []) {
+        assert.doesNotMatch(attr, literal, `${page} has a literal colour in markup: ${attr}`);
+      }
+      for (const attr of html.match(/(?:fill|stroke)="#[^"]*"/g) || []) {
+        assert.fail(`${page} has a literal colour in an SVG: ${attr}`);
+      }
+      // Outside the token blocks, a stylesheet names colours only through tokens.
+      const css = (html.match(/<style>([\s\S]*?)<\/style>/) || ["", ""])[1]
+        .replace(/:root[^{]*\{[^}]*\}/g, "")
+        .replace(/@media \(prefers-color-scheme: dark\) \{\s*:root[^{]*\{[^}]*\}\s*\}/g, "");
+      const stray = css.match(/#[0-9a-fA-F]{3,8}\b(?![^(]*\))/g) || [];
+      assert.deepEqual(stray, [], `${page} has literal colours in its stylesheet: ${stray.join(", ")}`);
+    }
+  });
+
   test("The consoles never speak through a native browser dialog", async () => {
     // window.alert/confirm/prompt cannot be styled, block the 3-second telemetry
     // poll for as long as they are up, and made the platform console look like a
@@ -475,7 +579,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const [page, cookie] of pages) {
       const html = await (await call(page, { cookie })).text();
       for (const script of html.split("<script").slice(1)) {
-        const body = script.slice(script.indexOf(">") + 1);
+        // Up to its own closing tag: the theme script sits in <head>, so the text
+        // after it is the whole page, organization names included.
+        const body = script.slice(script.indexOf(">") + 1).split("</script>")[0];
         const offender = body.split("\n").find((line) => /(^|[^\w.])(alert|confirm|prompt)\s*\(/.test(line));
         assert.equal(
           offender,
@@ -1826,7 +1932,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const demoRes = await call("/admin?tenant=web-demo", { cookie: superSessionCookie });
     assert.equal(demoRes.status, 200);
     const demoHtml = await demoRes.text();
-    assert.match(demoHtml, /Workstation Grid &amp; Remote Control/);
+    assert.match(demoHtml, /<h1 class="page-title">Workstations<\/h1>/);
   });
 
   test("Sign-in lands where the request came from, not always on /super", async () => {
@@ -1987,10 +2093,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Renders all dedicated multi-page organization admin sub-routes with CSP nonces", async () => {
     const routes = [
-      ["/admin/workstations?tenant=greenwood", /Workstation Grid &amp; Remote Control/],
-      ["/admin/apps-web?tenant=greenwood", /Apps &amp; Web Control/],
+      ["/admin/workstations?tenant=greenwood", /<h1 class="page-title">Workstations<\/h1>/],
+      ["/admin/apps-web?tenant=greenwood", /<h1 class="page-title">Apps &amp; Web<\/h1>/],
       ["/admin/staff?tenant=greenwood", /Staff &amp; Delegation/],
-      ["/admin/settings?tenant=greenwood", /Settings &amp; Configuration/]
+      ["/admin/settings?tenant=greenwood", /<h1 class="page-title">Settings<\/h1>/]
     ] as const;
 
     for (const [route, pattern] of routes) {

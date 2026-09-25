@@ -23,20 +23,20 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
       <div class="sub-section-title">Grid Density</div>
       <div class="sub-action-list">
         <button type="button" class="sub-action-item" data-density="thumbs">
-          <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
             Screen Thumbnails
           </span>
         </button>
         <button type="button" class="sub-action-item" data-density="compact">
-          <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
             Compact List
           </span>
         </button>
       </div>
 
-      <div class="sub-section-title" style="margin-top: 14px;">Telemetry Filters</div>
+      <div class="sub-section-title">Telemetry Filters</div>
       <div class="sub-action-list">
         <button type="button" class="sub-action-item active" data-filter="all">
           <span>All Workstations</span>
@@ -44,7 +44,7 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
         </button>
         <button type="button" class="sub-action-item" data-filter="online">
           <span>Online (Active)</span>
-          <span class="sub-action-badge" id="sub-filter-online-count" style="color: #6ee7b7;">0</span>
+          <span class="sub-action-badge" id="sub-filter-online-count">0</span>
         </button>
         <button type="button" class="sub-action-item" data-filter="offline">
           <span>Offline / Standby</span>
@@ -52,13 +52,13 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
         </button>
         <button type="button" class="sub-action-item" data-filter="locked">
           <span>Locked Screens</span>
-          <span class="sub-action-badge" id="sub-filter-locked-count" style="color: #fde68a;">0</span>
+          <span class="sub-action-badge" id="sub-filter-locked-count">0</span>
         </button>
       </div>
 
-      <div class="sub-section-title" style="margin-top: 14px; display: flex; justify-content: space-between; align-items: center;">
-        <span>Workstation Groups</span>
-        <button type="button" class="btn btn-sm" data-action="new-group" title="Create new group" style="background: transparent; border: none; color: var(--accent); cursor: pointer; padding: 0 4px; font-weight: 700; font-size: 13px;">+ New</button>
+      <div class="sub-section-head">
+        <div class="sub-section-title">Workstation Groups</div>
+        <button type="button" class="panel-link-btn" data-action="new-group" title="Create new group">+ New</button>
       </div>
       <div class="sub-action-list" id="sub-group-list">
         <button type="button" class="sub-action-item" data-filter="group:all">
@@ -69,11 +69,11 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
           .map(
             (g) => `
         <div class="sub-action-group-row">
-          <button type="button" class="sub-action-item" data-filter="group:${escapeAttr(g.name)}" style="flex: 1;">
-            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(g.name)}</span>
+          <button type="button" class="sub-action-item" data-filter="group:${escapeAttr(g.name)}">
+            <span class="truncate">${escapeHtml(g.name)}</span>
             <span class="sub-action-badge" id="sub-group-${escapeAttr(g.id)}-count">0</span>
           </button>
-          <button type="button" class="btn btn-sm" data-action="delete-group" data-id="${escapeAttr(g.id)}" data-name="${escapeAttr(g.name)}" title="Delete group ${escapeAttr(g.name)}" style="padding: 4px 6px; font-size: 11px; background: transparent; border: none; color: var(--text-muted); cursor: pointer;">✕</button>
+          <button type="button" class="icon-btn" data-action="delete-group" data-id="${escapeAttr(g.id)}" data-name="${escapeAttr(g.name)}" title="Delete group ${escapeAttr(g.name)}" aria-label="Delete group ${escapeAttr(g.name)}">✕</button>
         </div>`
           )
           .join("")}
@@ -90,16 +90,22 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Workstation Grid &amp; Remote Control</h1>
-        <p class="page-desc">Real-time workstation telemetry, live screen monitoring, and remote command execution.</p>
+        <h1 class="page-title">Workstations</h1>
+        <p class="page-desc">Live screens, status and remote commands for every enrolled workstation.</p>
       </div>
-      <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-        <button type="button" class="btn btn-secondary" id="btn-select-all" title="Select or deselect all visible workstations">
+    </div>
+
+    <div class="toolbar" role="toolbar" aria-label="Workstation commands">
+      <div class="toolbar-group">
+        <button type="button" class="btn btn-ghost" id="btn-select-all" title="Select or deselect all visible workstations">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 11 12 14 22 4"/></svg>
           <span id="btn-select-all-label">Select All</span>
         </button>
-        <span id="selection-summary" style="font-size: 12px; color: var(--text-muted); font-weight: 600;">0 selected</span>
-        <button type="button" class="btn btn-warning" id="btn-lock-all" title="Locks selected workstations (or all if none selected) with an announcement message">
+        <span id="selection-summary" class="toolbar-count">0 selected</span>
+      </div>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <div class="toolbar-group">
+        <button type="button" class="btn btn-secondary" id="btn-lock-all" title="Locks selected workstations (or all if none selected) with an announcement message">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           <span id="btn-lock-label">Lock</span>
         </button>
@@ -107,6 +113,9 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
           <span id="btn-unlock-label">Unlock</span>
         </button>
+      </div>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <div class="toolbar-group">
         <button type="button" class="btn btn-primary" id="btn-open-broadcast">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
           <span id="btn-broadcast-label">Broadcast URL</span>
@@ -115,22 +124,38 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
           Reset to Portal
         </button>
-        <button type="button" class="btn btn-warning" id="btn-clear-session-all" title="Sign users out: wipes browser logins, history, cookies and cache on the selected workstations, without a reboot">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-          <span id="btn-clear-session-label">Clear Session</span>
-        </button>
-        <button type="button" class="btn btn-danger" id="btn-reboot-all" title="Reboot the selected workstations">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-          <span id="btn-reboot-label">Reboot</span>
-        </button>
-        <button type="button" class="btn btn-danger" id="btn-shutdown-all" title="Shut down the selected workstations">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-          <span id="btn-shutdown-label">Shutdown</span>
-        </button>
         <button type="button" class="btn btn-secondary" id="btn-move-group" style="display: none;">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Move to Group...
         </button>
+      </div>
+      <span class="toolbar-spacer"></span>
+      <div class="toolbar-group">
+        <!-- Session and power commands sit one click further away than the rest:
+             each one interrupts whoever is at the screen. -->
+        <button type="button" class="btn btn-secondary" id="btn-power-menu" popovertarget="ws-power-menu" aria-haspopup="menu">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          Session &amp; Power
+          <svg class="btn-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="menu-popover" id="ws-power-menu" popover role="menu" aria-label="Session and power commands">
+          <button type="button" class="menu-item" id="btn-clear-session-all" role="menuitem" title="Sign users out: wipes browser logins, history, cookies and cache on the selected workstations, without a reboot">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+            <span class="menu-item-text">
+              <span id="btn-clear-session-label">Clear Session</span>
+              <span class="menu-item-hint">Signs users out, no reboot</span>
+            </span>
+          </button>
+          <div class="menu-separator" role="separator"></div>
+          <button type="button" class="menu-item menu-item-danger" id="btn-reboot-all" role="menuitem" title="Reboot the selected workstations">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            <span id="btn-reboot-label">Reboot</span>
+          </button>
+          <button type="button" class="menu-item menu-item-danger" id="btn-shutdown-all" role="menuitem" title="Shut down the selected workstations">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+            <span id="btn-shutdown-label">Shutdown</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -148,45 +173,45 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
   return `
     <!-- VNC Remote Control Modal -->
     <div class="modal-overlay" id="vnc-modal">
-      <div class="modal-box" style="max-width: 1000px; width: 95%; height: 85vh; display: flex; flex-direction: column; padding: 20px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <h3 id="vnc-modal-title" style="font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+      <div class="modal-box modal-vnc">
+        <div class="row-between mb-sm">
+          <h3 id="vnc-modal-title" class="modal-title row">
             <span class="stat-dot dot-green"></span> Live Remote Control
           </h3>
           <button type="button" class="modal-close" id="btn-close-vnc" aria-label="Close dialog">✕</button>
         </div>
-        <div id="vnc-notice" style="display: none; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: #93c5fd; margin-bottom: 10px;"></div>
-        <iframe id="vnc-frame" src="about:blank" style="flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #000;" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+        <div id="vnc-notice" class="callout" style="display: none;"></div>
+        <iframe id="vnc-frame" class="vnc-frame" src="about:blank" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
       </div>
     </div>
 
     <!-- Broadcast URL Modal -->
     <div class="modal-overlay" id="url-modal">
-      <div class="modal-box" style="max-width: 540px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-          <h3 id="url-modal-title" style="font-size: 16px; font-weight: 700;">Broadcast URL to Workstations</h3>
+      <div class="modal-box modal-sm">
+        <div>
+          <h3 id="url-modal-title" class="modal-title">Broadcast URL to Workstations</h3>
           <button type="button" class="modal-close" id="btn-cancel-broadcast" aria-label="Close dialog">✕</button>
         </div>
-        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;" id="url-modal-desc">
+        <p class="modal-desc" id="url-modal-desc">
           Enter an approved website URL to immediately navigate user workstations.
         </p>
-        <div style="margin-bottom: 14px;">
-          <input type="url" id="target-url-input" class="form-input" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}" style="width: 100%; font-family: 'JetBrains Mono', monospace; font-size: 13px;">
+        <div class="form-group mb-sm">
+          <input type="url" id="target-url-input" class="form-input mono" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}">
         </div>
-        <div id="broadcast-error" style="color: var(--danger); font-size: 12px; margin-bottom: 10px; min-height: 16px;"></div>
-        <div style="margin-bottom: 16px;">
-          <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px;">Quick Shortcuts</div>
-          <div id="broadcast-quick-links" style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
+        <div id="broadcast-error" class="form-error"></div>
+        <div class="mt-sm">
+          <div class="form-label text-muted">Quick shortcuts</div>
+          <div id="broadcast-quick-links" class="chip-list mb-sm">
             <button type="button" class="btn btn-sm btn-secondary" data-url="https://scratch.mit.edu">Scratch</button>
             <button type="button" class="btn btn-sm btn-secondary" data-url="https://phet.colorado.edu">PhET Sims</button>
             <button type="button" class="btn btn-sm btn-secondary" data-url="https://www.khanacademy.org">Khan Academy</button>
             <button type="button" class="btn btn-sm btn-secondary" data-url="https://en.wikipedia.org">Wikipedia</button>
           </div>
-          <div id="broadcast-custom-shortcuts" style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <div id="broadcast-custom-shortcuts" class="chip-list">
             ${presets.map((p) => `<button type="button" class="btn btn-sm btn-secondary" data-url="${escapeAttr(p.url)}">${escapeHtml(p.title)}</button>`).join("")}
           </div>
         </div>
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <div class="modal-actions">
           <button type="button" class="btn btn-secondary" id="btn-reset-broadcast">Reset to Portal</button>
           <button type="button" class="btn btn-primary" id="btn-send-broadcast">Broadcast Now</button>
         </div>
@@ -195,40 +220,40 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
 
     <!-- Lock Screen Modal -->
     <div class="modal-overlay" id="lock-modal">
-      <div class="modal-box" style="max-width: 500px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-          <h3 id="lock-modal-title" style="font-size: 16px; font-weight: 700;">Lock Workstations</h3>
+      <div class="modal-box modal-sm">
+        <div>
+          <h3 id="lock-modal-title" class="modal-title">Lock Workstations</h3>
           <button type="button" class="modal-close" id="btn-cancel-lock" aria-label="Close dialog">✕</button>
         </div>
-        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;" id="lock-modal-desc">
+        <p class="modal-desc" id="lock-modal-desc">
           Freeze user screens with an announcement message. Keystrokes and shortcuts are locked.
         </p>
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Announcement Message</label>
-          <input type="text" id="lock-msg-input" class="form-input" value="${escapeHtml(tenant?.default_lock_message || "This screen has been locked by an administrator. Please wait.")}" maxlength="280" style="width: 100%;">
+        <div class="form-group">
+          <label class="form-label" for="lock-msg-input">Announcement message</label>
+          <input type="text" id="lock-msg-input" class="form-input" value="${escapeHtml(tenant?.default_lock_message || "This screen has been locked by an administrator. Please wait.")}" maxlength="280">
         </div>
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <div class="modal-actions">
           <button type="button" class="btn btn-secondary" id="btn-cancel-lock-action">Cancel</button>
-          <button type="button" class="btn btn-warning" id="btn-send-lock">Lock Workstations</button>
+          <button type="button" class="btn btn-primary" id="btn-send-lock">Lock Workstations</button>
         </div>
       </div>
     </div>
 
     <!-- New Group Modal -->
     <div class="modal-overlay" id="new-group-modal">
-      <div class="modal-box" style="max-width: 440px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-          <h3 style="font-size: 16px; font-weight: 700;">Create Workstation Group</h3>
+      <div class="modal-box modal-sm">
+        <div>
+          <h3 class="modal-title">Create Workstation Group</h3>
           <button type="button" class="modal-close" id="btn-cancel-new-group" aria-label="Close dialog">✕</button>
         </div>
-        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
+        <p class="modal-desc">
           Organize client PCs into groups (e.g. &quot;Row 1&quot;, &quot;Lab A&quot;, &quot;Team Blue&quot;) to quickly filter and run commands.
         </p>
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Group Name</label>
-          <input type="text" id="new-group-name-input" class="form-input" placeholder="e.g. Row 1" maxlength="50" style="width: 100%;">
+        <div class="form-group">
+          <label class="form-label" for="new-group-name-input">Group name</label>
+          <input type="text" id="new-group-name-input" class="form-input" placeholder="e.g. Row 1" maxlength="50">
         </div>
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <div class="modal-actions">
           <button type="button" class="btn btn-secondary" id="btn-cancel-new-group-action">Cancel</button>
           <button type="button" class="btn btn-primary" id="btn-submit-new-group">Create Group</button>
         </div>
@@ -237,22 +262,22 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
 
     <!-- Move to Group Modal -->
     <div class="modal-overlay" id="move-group-modal">
-      <div class="modal-box" style="max-width: 440px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-          <h3 id="move-group-modal-title" style="font-size: 16px; font-weight: 700;">Assign Workstations to Group</h3>
+      <div class="modal-box modal-sm">
+        <div>
+          <h3 id="move-group-modal-title" class="modal-title">Assign Workstations to Group</h3>
           <button type="button" class="modal-close" id="btn-cancel-move-group" aria-label="Close dialog">✕</button>
         </div>
-        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;" id="move-group-modal-desc">
+        <p class="modal-desc" id="move-group-modal-desc">
           Choose a group for the selected workstations.
         </p>
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px;">Select Group</label>
-          <select id="move-group-select" class="form-input" style="width: 100%;">
+        <div class="form-group">
+          <label class="form-label" for="move-group-select">Group</label>
+          <select id="move-group-select" class="form-select">
             <option value="">-- Remove from Group (Ungrouped) --</option>
             ${groups.map((g) => `<option value="${escapeAttr(g.name)}">${escapeHtml(g.name)}</option>`).join("")}
           </select>
         </div>
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <div class="modal-actions">
           <button type="button" class="btn btn-secondary" id="btn-cancel-move-group-action">Cancel</button>
           <button type="button" class="btn btn-primary" id="btn-submit-move-group">Apply</button>
         </div>
@@ -441,11 +466,13 @@ function renderWorkstationsScripts(
         idWrap.append(selectCb, dot, el("span", null, id));
 
         const badges = el("div", "kc-badges");
-        const lockBadge = el("span", "badge badge-yellow", "LOCKED");
+        const lockBadge = el("span", "badge badge-yellow", "Locked");
         lockBadge.dataset.role = "lock-badge";
         lockBadge.style.display = "none";
-        const removeBtn = el("button", "btn btn-sm btn-secondary", "✕");
+        const removeBtn = el("button", "icon-btn", "✕");
+        removeBtn.type = "button";
         removeBtn.title = "Remove " + id;
+        removeBtn.setAttribute("aria-label", "Remove " + id);
         removeBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           removeClient(id);
@@ -465,7 +492,7 @@ function renderWorkstationsScripts(
         thumbBox.append(thumb, placeholder);
 
         const actions = el("div", "kc-actions");
-        const vncBtn = el("button", "btn btn-sm btn-primary", "Remote Control");
+        const vncBtn = el("button", "btn btn-sm btn-secondary", "Remote Control");
         vncBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           openVncSession(id);
@@ -919,15 +946,14 @@ function renderWorkstationsScripts(
         for (const g of groupsList) {
           const row = el("div", "sub-action-group-row");
           const btn = filterButton("group:" + g.name, g.name, "sub-group-" + g.id + "-count", 0);
-          btn.style.flex = "1";
-          btn.firstChild.style.cssText = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
-          const del = el("button", "btn btn-sm", "✕");
+          btn.firstChild.className = "truncate";
+          const del = el("button", "icon-btn", "✕");
           del.type = "button";
           del.dataset.action = "delete-group";
           del.dataset.id = g.id;
           del.dataset.name = g.name;
           del.title = "Delete group " + g.name;
-          del.style.cssText = "padding: 4px 6px; font-size: 11px; background: transparent; border: none; color: var(--text-muted); cursor: pointer;";
+          del.setAttribute("aria-label", "Delete group " + g.name);
           row.append(btn, del);
           nodes.push(row);
         }

@@ -42,9 +42,11 @@ export function buildStaffPage(options: AdminPageInput): AdminPageParts {
     })
     .join("");
 
+  const roleLabels = new Map(allRoles.map((r) => [r.id, r.label]));
+
   return {
     title: "Staff & Delegation",
-    contentHtml: renderStaffPageHtml(staff),
+    contentHtml: renderStaffPageHtml(staff, roleLabels),
     scriptsHtml: renderStaffScripts(nonce),
     subPanelTitle: "Staff Directory",
     subPanelSubtitle: "Sub-admin delegation",
@@ -52,14 +54,14 @@ export function buildStaffPage(options: AdminPageInput): AdminPageParts {
       <div class="sub-section-title">Actions</div>
       <div class="sub-action-list">
         <button type="button" class="sub-action-item" data-focus="operator-name">
-          <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
             Add Staff Member
           </span>
         </button>
       </div>
 
-      <div class="sub-section-title" style="margin-top: 14px;">Role</div>
+      <div class="sub-section-title">Role</div>
       <div class="sub-action-list" id="sub-role-list">
         <button type="button" class="sub-action-item active" data-filter="all">
           <span>All Roles</span>
@@ -71,24 +73,31 @@ export function buildStaffPage(options: AdminPageInput): AdminPageParts {
   };
 }
 
-function renderStaffPageHtml(staff: TenantUser[] = []): string {
+/** A permission as a person reads it: "Workstations", not "workstations". */
+function permissionLabel(permission: string): string {
+  return permission.charAt(0).toUpperCase() + permission.slice(1);
+}
+
+function renderStaffPageHtml(staff: TenantUser[] = [], roleLabels: Map<string, string> = new Map()): string {
   const rowsHtml = staff
     .map((t) => {
-      const permsList = (t.permissions || []).map((p) => `<span class="badge badge-blue" style="font-size: 10px; margin-right: 4px;">${escapeHtml(p)}</span>`).join("");
+      const permsList = (t.permissions || []).map((p) => `<span class="badge badge-neutral">${escapeHtml(permissionLabel(p))}</span>`).join("");
       return `
         <tr data-role="${escapeAttr(t.role)}">
           <td>
-            <strong>${escapeHtml(t.name || "Operator")}</strong>
-            <div style="font-size: 12px; color: var(--text-muted);">${escapeHtml(t.email || "")}</div>
+            <div class="cell-title">${escapeHtml(t.name || "Operator")}</div>
+            <div class="cell-sub">${escapeHtml(t.email || "")}</div>
           </td>
           <td>
-            <span class="badge badge-green">${escapeHtml(t.role)}</span>
+            <span class="badge badge-blue">${escapeHtml(roleLabels.get(t.role) || t.role)}</span>
           </td>
           <td>
-            ${permsList || `<span style="color: var(--text-muted); font-size: 12px;">Full Lab Access</span>`}
+            <div class="badge-list">${permsList || `<span class="text-muted text-xs">Full access</span>`}</div>
           </td>
           <td>
-            <button type="button" class="btn btn-sm btn-danger btn-delete-operator" data-id="${escapeAttr(t.id)}">Remove</button>
+            <div class="cell-actions">
+              <button type="button" class="btn btn-sm btn-danger btn-delete-operator" data-id="${escapeAttr(t.id)}">Remove</button>
+            </div>
           </td>
         </tr>
       `;
@@ -103,7 +112,7 @@ function renderStaffPageHtml(staff: TenantUser[] = []): string {
       </div>
     </div>
 
-    <div class="grid-2col">
+    <div class="grid-sidebar">
       <div>
         <div class="card">
           <h2 class="card-title">Create Staff Account</h2>
@@ -135,7 +144,7 @@ function renderStaffPageHtml(staff: TenantUser[] = []): string {
 
             <div class="form-group">
               <label class="form-label">Delegated Permissions</label>
-              <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+              <div class="checkbox-list">
                 <label class="form-checkbox-label">
                   <input type="checkbox" class="form-checkbox" name="perms" value="workstations" checked>
                   <span>Workstations (Monitor &amp; Lock PCs)</span>
@@ -169,22 +178,22 @@ function renderStaffPageHtml(staff: TenantUser[] = []): string {
       </div>
 
       <div>
-        <div class="card" style="padding: 0; overflow: hidden;">
-          <div style="padding: 20px 24px; border-bottom: 1px solid var(--border);">
-            <h2 class="card-title" style="margin-bottom: 0;">Staff Accounts <span id="staff-count">(${staff.length})</span></h2>
+        <div class="card card-flush">
+          <div class="card-head">
+            <h2 class="card-title">Staff Accounts <span id="staff-count" class="text-muted">(${staff.length})</span></h2>
           </div>
-          <div class="table-container" style="border: none; border-radius: 0;">
+          <div class="table-container">
             <table>
               <thead>
                 <tr>
                   <th>Staff Member</th>
                   <th>Role</th>
                   <th>Permissions</th>
-                  <th>Actions</th>
+                  <th class="th-actions"><span class="visually-hidden">Actions</span></th>
                 </tr>
               </thead>
               <tbody id="staff-tbody">
-                ${rowsHtml || `<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 32px;">No sub-admins or operators added yet.</td></tr>`}
+                ${rowsHtml || `<tr><td colspan="4" class="table-empty">No sub-admins or operators added yet.</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -217,7 +226,7 @@ function renderStaffScripts(nonce: string): string {
             emptyRow.id = "empty-filter-row";
             const cell = document.createElement("td");
             cell.colSpan = 4;
-            cell.style.cssText = "text-align: center; color: var(--text-muted); padding: 32px;";
+            cell.className = "table-empty";
             cell.textContent = "No staff members found with this role.";
             emptyRow.appendChild(cell);
             const tbody = document.getElementById("staff-tbody");

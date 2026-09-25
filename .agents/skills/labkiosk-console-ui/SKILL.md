@@ -43,11 +43,23 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 4–5g and the root `
 
 ## Design language
 
-`ui_tokens.ts` is the only place a colour, radius, easing or panel width is defined; every surface
-renders `rootTokensCss()` and `FONT_LINKS` and never opens its own `:root`. **A class a page renders
-must be declared in `ui_layout.ts`** (a test fails otherwise): use `.form-input/.form-select/
-.form-textarea`, `.form-checkbox(-label)`, `.grid-2col`, `.tab-pane`, `.table-scrollable`
-(480 px, sticky `th`). Keep `--text-subtle` at `#808fa6` (WCAG AA contrast).
+Calm and neutral, in **light and dark** (details: `cloudflare-control/AGENTS.md` Rule 5c).
+
+- `ui_tokens.ts` is the only place a colour, radius, easing or panel width is defined. `PALETTE`
+  holds every colour as a `[light, dark]` pair; every surface renders `rootTokensCss()`,
+  `FONT_LINKS` (Inter + JetBrains Mono) and, where it has a nonce, `themeHeadHtml(nonce)`. Never
+  open a `:root` of your own; a new token needs both values.
+- **No literal colours** in markup, stylesheets or SVGs (`currentColor` for icons): a test rejects
+  them. Another test measures `PALETTE` contrast in both themes, so a token change that fails WCAG AA
+  fails the suite.
+- **A class a page renders must be declared in `ui_layout.ts`** (a test fails otherwise): buttons
+  (`.btn-primary` once per view, `.btn-secondary`, `.btn-ghost`, `.btn-danger`), `.form-input/
+  .form-select/.form-textarea`, `.form-checkbox(-label)`, `.grid-2col`, `.grid-sidebar`,
+  `.tab-pane`, `.card`/`.card-flush`/`.card-head`, `.table-container` (+ `.table-scrollable`),
+  `.callout(-success|-warning|-danger)`, `.badge-*`, `.stat-grid/.stat-tile`, `.kv-list`,
+  `.toolbar`, `.menu-popover/.menu-item` (popover menus, placed by the shell), and the text helpers
+  (`.text-muted`, `.mono`, `.truncate`…). Prefer these to inline `style`.
+- The theme switch is `data-action="toggle-theme"`; the shell and the landing page wire it.
 
 ## Wording
 
@@ -74,4 +86,5 @@ must be declared in `ui_layout.ts`** (a test fails otherwise): use `.form-input/
    through the API and attaches its session cookie server-side — so no password is ever typed into
    a form by an automation tool. Exercise the control (create/move/delete/filter), then read the
    browser console for errors and take a screenshot. Restart a Node harness after edits (no reload).
-3. Check narrow widths (1024 px): the landing nav once overflowed.
+3. Check narrow widths (1024 px): the landing nav once overflowed. Check **both themes**
+   (`resize_window colorScheme`, or headless Edge with `--blink-settings=preferredColorScheme=0|1`).

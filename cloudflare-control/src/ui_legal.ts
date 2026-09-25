@@ -25,73 +25,104 @@ function renderLegalShell(options: {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(title)}</title>
+  <meta name="color-scheme" content="light dark">
 ${FONT_LINKS}
   <style>
 ${rootTokensCss(LEGACY_LEGAL_ALIASES)}
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
-    body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; line-height: 1.7; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font-sans);
+      font-feature-settings: "cv11", "ss01";
+      background: var(--bg-base);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    :where(a):focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
     header {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 18px 36px;
+      background: var(--bg-base);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 12px 32px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
     }
-    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
     .brand-icon {
-      width: 36px; height: 36px; background: linear-gradient(135deg, #3b82f6, #6366f1);
-      border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; background: var(--accent); color: var(--accent-fg);
+      border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center;
     }
-    .brand-title { font-size: 18px; font-weight: 800; }
-    .nav-links { display: flex; align-items: center; gap: 20px; font-size: 14px; }
-    .nav-links a { color: var(--muted); text-decoration: none; transition: color 0.2s; }
-    .nav-links a:hover { color: var(--text); }
+    .brand-title { font-size: 0.9375rem; font-weight: 650; letter-spacing: -0.01em; }
+    .nav-links { display: flex; align-items: center; gap: 20px; font-size: 0.875rem; flex-wrap: wrap; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; transition: color 0.15s; }
+    .nav-links a:hover { color: var(--text-main); }
     main {
       flex: 1;
-      max-width: 900px;
+      max-width: 820px;
       width: 100%;
-      margin: 40px auto;
-      padding: 0 24px 60px;
+      margin: 48px auto;
+      padding: 0 24px 64px;
     }
     .legal-card {
-      background: var(--surface);
+      background: var(--bg-surface);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 40px;
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      padding: clamp(24px, 5vw, 48px);
     }
-    h1 { font-size: 32px; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.5px; }
-    .updated-date { color: var(--muted); font-size: 13px; margin-bottom: 30px; }
+    h1 { font-size: clamp(1.75rem, 1.3rem + 1.6vw, 2.25rem); font-weight: 700; margin: 0 0 6px; letter-spacing: -0.025em; line-height: 1.2; text-wrap: balance; }
+    .updated-date { color: var(--text-muted); font-size: 0.8125rem; margin: 0 0 28px; }
     .highlight-box {
-      background: rgba(16, 185, 129, 0.1);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      border-radius: 8px;
-      padding: 18px 22px;
+      background: var(--success-soft);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--success);
+      border-radius: var(--radius-sm);
+      padding: 16px 20px;
       margin: 24px 0 32px;
-      color: #6ee7b7;
-      font-size: 14px;
+      color: var(--text-main);
+      font-size: 0.875rem;
     }
-    .highlight-box strong { color: #fff; display: block; margin-bottom: 6px; font-size: 15px; }
-    h2 { font-size: 20px; font-weight: 700; margin: 32px 0 12px; color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
-    p { margin-bottom: 16px; color: #d1d5db; font-size: 15px; }
-    ul { margin: 0 0 20px 24px; color: #d1d5db; font-size: 15px; }
+    .highlight-box strong { color: var(--success-text); display: block; margin-bottom: 4px; font-size: 0.9375rem; }
+    h2 {
+      font-size: 1.125rem;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+      margin: 36px 0 10px;
+      color: var(--text-main);
+      padding-top: 20px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    p { margin: 0 0 16px; color: var(--text-muted); font-size: 0.9375rem; text-wrap: pretty; }
+    ul { margin: 0 0 20px 22px; padding: 0; color: var(--text-muted); font-size: 0.9375rem; }
     li { margin-bottom: 8px; }
+    strong { color: var(--text-main); font-weight: 600; }
     footer {
-      background: var(--surface);
-      border-top: 1px solid var(--border);
-      padding: 24px 36px;
+      border-top: 1px solid var(--border-subtle);
+      padding: 20px 32px;
       text-align: center;
-      color: var(--muted);
-      font-size: 13px;
+      color: var(--text-subtle);
+      font-size: 0.8125rem;
     }
-    footer a { color: var(--accent); text-decoration: none; }
+    .legal-card a { color: var(--accent-text); text-underline-offset: 2px; }
+    footer a { color: var(--accent-text); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+    @media (max-width: 640px) {
+      header { padding: 12px 16px; }
+      main { margin: 24px auto; padding: 0 12px 40px; }
+    }
   </style>
 </head>
 <body>
   <header>
     <a href="/" class="brand">
       <div class="brand-icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
       <div class="brand-title">Lab Kiosk OS</div>
     </a>
@@ -159,7 +190,7 @@ export function renderPrivacyPolicyHtml(): string {
       <p>Platform Super Administrators are architecturally restricted from accessing individual organization consoles, user portal configurations, or live workstation telemetry. Super administrator privileges are restricted strictly to tenant approval, status management, and the platform's own demo organizations used for testing (<code>web-demo</code>, <code>local-demo</code> and <code>docker-demo</code>).</p>
 
       <h2>6. Contact Us</h2>
-      <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@akbhoi.com" style="color: var(--accent);">privacy@akbhoi.com</a>.</p>
+      <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@akbhoi.com">privacy@akbhoi.com</a>.</p>
     </div>
   </main>
 `
@@ -206,7 +237,7 @@ export function renderTermsOfServiceHtml(): string {
       <p>The platform is provided "as is" and "as available". While we strive for 99.9% uptime via Cloudflare's global edge network, we do not warrant that service will be uninterrupted or error-free.</p>
 
       <h2>6. Inquiries &amp; Legal Notices</h2>
-      <p>For legal inquiries, contact <a href="mailto:legal@akbhoi.com" style="color: var(--accent);">legal@akbhoi.com</a>.</p>
+      <p>For legal inquiries, contact <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a>.</p>
     </div>
   </main>
 `

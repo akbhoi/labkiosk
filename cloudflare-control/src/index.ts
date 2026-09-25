@@ -13,6 +13,7 @@ import { renderOrgHomeHtml } from "./ui_org_home";
 import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
 import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { renderStatusPageHtml } from "./ui_status";
 import {
   initSchema,
   ensureSuperAdmin,
@@ -2817,12 +2818,12 @@ export default {
       if (!currentTenant) {
         const requested = cleanSubdomain(url.searchParams.get("tenant") ?? hostSubdomain(request, env.DEFAULT_DOMAIN) ?? "");
         return new Response(
-          `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Organization Not Found</title></head>
-           <body style="background:#090d16;color:#f8fafc;font-family:sans-serif;text-align:center;padding:80px 20px;">
-            <h1 style="font-size:36px;margin-bottom:12px;">Organization Subdomain Not Found</h1>
-            <p style="color:#94a3b8;font-size:16px;">The requested subdomain <code>${escapeHtml(requested)}</code> is not registered.</p>
-            <a href="${escapeHtml(url.origin)}/" style="display:inline-block;margin-top:24px;background:#3b82f6;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;">Back to Homepage</a>
-          </body></html>`,
+          renderStatusPageHtml({
+            title: "Organization Not Found",
+            heading: "Organization Subdomain Not Found",
+            messageHtml: `The requested subdomain <code>${escapeHtml(requested)}</code> is not registered.`,
+            homeHref: `${url.origin}/`
+          }),
           { status: 404, headers: htmlHeaders }
         );
       }
@@ -2830,12 +2831,13 @@ export default {
       if (currentTenant.status !== "active") {
         const suspended = currentTenant.status === "suspended";
         return new Response(
-          `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${suspended ? "Organization Suspended" : "Pending Approval"}</title></head>
-           <body style="background:#090d16;color:#f8fafc;font-family:sans-serif;text-align:center;padding:80px 20px;">
-            <h1 style="font-size:36px;margin-bottom:12px;color:#fbbf24;">${suspended ? "Organization Suspended" : "Subdomain Pending Approval"}</h1>
-            <p style="color:#94a3b8;font-size:16px;">Organization <strong>${escapeHtml(currentTenant.name)}</strong> (<code>${escapeHtml(currentTenant.subdomain)}</code>) ${suspended ? "has been suspended by the platform super administrator." : "is awaiting activation by the platform super administrator."}</p>
-            <a href="${escapeHtml(url.origin)}/" style="display:inline-block;margin-top:24px;background:#3b82f6;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;">Back to Homepage</a>
-          </body></html>`,
+          renderStatusPageHtml({
+            title: suspended ? "Organization Suspended" : "Pending Approval",
+            heading: suspended ? "Organization Suspended" : "Subdomain Pending Approval",
+            messageHtml: `Organization <strong>${escapeHtml(currentTenant.name)}</strong> (<code>${escapeHtml(currentTenant.subdomain)}</code>) ${suspended ? "has been suspended by the platform super administrator." : "is awaiting activation by the platform super administrator."}`,
+            homeHref: `${url.origin}/`,
+            tone: "warning"
+          }),
           { status: 403, headers: htmlHeaders }
         );
       }

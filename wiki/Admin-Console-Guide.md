@@ -41,6 +41,10 @@ The left subpanel is dedicated to group management:
 - **Group Filter List**: Filter the main canvas to view all machines or machines in a specific group, with live device count pills.
 - **Delete Group**: Deletes a group and resets member devices to unassigned (`NULL`).
 
+### Light and Dark Theme
+
+The console follows your device's light or dark setting. To use the other one, open the profile menu (your initial, bottom-left) and choose **Dark theme** or **Light theme**; the browser remembers the choice for this console. Choosing your device's own theme again returns to following the device.
+
 ### Selection Toolbar & Batch Commands
 
 The top toolbar provides multi-device room operations:
@@ -50,12 +54,13 @@ The top toolbar provides multi-device room operations:
 - **Targeted Action Buttons**:
   - **Lock**: Freeze selected screens with a custom message.
   - **Unlock**: Drop the lock curtain on selected machines.
+  - **Broadcast URL**: Send selected machines to a specific page URL.
+  - **Reset to Portal**: Return selected machines to the user launcher.
+  - **Move to Group...**: Assign selected workstations to a named group (shown once something is selected).
+- **Session & Power menu** (right-hand end of the toolbar). These interrupt whoever is at the screen, so they sit one click further away:
   - **Clear Session**: Sign every user out without restarting. The browser restarts in a few seconds with all website sign-ins, cookies, history and cache removed, then reopens its assigned page. Unsaved work in open pages is lost.
   - **Reboot**: Safely restart selected thin clients.
   - **Shutdown**: Safely power off selected thin clients at the end of the day.
-  - **Move to Group...**: Assign selected workstations to a named group.
-  - **Reset to Portal**: Return selected machines to the user launcher.
-  - **Broadcast URL**: Send selected machines to a specific page URL.
 
 ### Per-Workstation Card Commands
 
@@ -163,9 +168,9 @@ Structured into 4 semantic, deep-linkable tab panes (`?tab=...`) with horizontal
   2. Keystrokes, mouse clicks, and shortcuts are suppressed until unlocked.
 - **End of a Session** (before the next group sits down):
   1. Click **Select All** on the Workstations toolbar (or select one group's checkbox).
-  2. Click **Clear Session** and confirm.
+  2. Open **Session & Power**, choose **Clear Session** and confirm.
   3. Within a few seconds every browser restarts signed out: no Google or organization-portal login, history, cookies or cached pages from the previous class remain. The machines stay on, so the next class starts immediately.
 - **End of Day Lab Shutdown**:
   1. Click **Select All** on the Workstations toolbar.
-  2. Click **Shutdown**.
+  2. Open **Session & Power** and choose **Shutdown**.
   3. All thin clients power down cleanly. RAM overlay (`overlayroot="tmpfs"`) ensures browser histories, downloads, and temporary files reset 100% on the next boot.

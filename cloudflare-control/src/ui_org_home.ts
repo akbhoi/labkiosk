@@ -55,102 +55,118 @@ export function renderOrgHomeHtml(options: OrgHomeOptions): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(tenant.name)}</title>
   <meta name="description" content="${escapeAttr(intro)}">
+  <meta name="color-scheme" content="light dark">
 ${FONT_LINKS}
   <style>
 ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    *, *::before, *::after { box-sizing: border-box; }
+    :where(h1, h2, h3, p) { margin: 0; }
     body {
+      margin: 0;
+      font-family: var(--font-sans);
+      font-feature-settings: "cv11", "ss01";
       background: var(--bg-base);
       color: var(--text-main);
       min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
       line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
+    :where(a):focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 
     header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 16px 28px;
-      background: var(--bg-surface);
+      padding: 12px 28px;
+      background: var(--bg-base);
       border-bottom: 1px solid var(--border-subtle);
       flex-wrap: wrap;
     }
-    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
     .brand-mark {
-      width: 40px; height: 40px; border-radius: 10px;
-      background: var(--accent-gradient);
+      width: 36px; height: 36px; border-radius: var(--radius); flex-shrink: 0;
+      background: var(--accent);
       display: flex; align-items: center; justify-content: center;
-      font-weight: 800; font-size: 17px; color: #fff;
+      font-weight: 700; font-size: 1rem; color: var(--accent-fg);
     }
-    .brand-name { font-size: 16px; font-weight: 800; letter-spacing: -0.2px; }
-    .brand-sub { font-size: 12px; color: var(--text-muted); }
+    .brand-name { font-size: 0.9375rem; font-weight: 650; letter-spacing: -0.01em; line-height: 1.3; }
+    .brand-sub { font-size: 0.75rem; color: var(--text-muted); line-height: 1.3; }
     .header-link {
-      font-size: 13px; font-weight: 600; color: #93c5fd;
-      text-decoration: none; padding: 8px 14px; border-radius: var(--radius-sm);
-      border: 1px solid rgba(59, 130, 246, 0.3); background: rgba(59, 130, 246, 0.08);
+      font-size: 0.8125rem; font-weight: 500; color: var(--text-main);
+      text-decoration: none; padding: 7px 14px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border); background: var(--bg-surface);
+      box-shadow: var(--shadow-sm);
+      transition: background-color 0.15s ease;
     }
-    .header-link:hover { background: rgba(59, 130, 246, 0.16); }
+    .header-link:hover { background: var(--bg-card-hover); }
 
-    main { flex: 1; width: 100%; max-width: 980px; margin: 0 auto; padding: 56px 24px 72px; }
+    main { flex: 1; width: 100%; max-width: 980px; margin: 0 auto; padding: clamp(40px, 8vw, 88px) 24px 72px; }
 
-    .hero { text-align: center; margin-bottom: 44px; }
+    .hero { text-align: center; margin-bottom: 48px; }
     .hero-title {
-      font-size: clamp(28px, 5vw, 44px);
-      font-weight: 800;
-      letter-spacing: -1px;
-      margin-bottom: 14px;
+      font-size: clamp(1.875rem, 1.2rem + 3vw, 3rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.12;
+      margin-bottom: 16px;
       overflow-wrap: anywhere;
+      text-wrap: balance;
     }
     .hero-intro {
-      font-size: 16px;
+      font-size: 1.0625rem;
       color: var(--text-muted);
       max-width: 620px;
       margin: 0 auto 28px;
       overflow-wrap: anywhere;
+      text-wrap: pretty;
     }
     .hero-cta {
-      display: inline-flex; align-items: center; gap: 9px;
-      background: var(--accent); color: #fff; text-decoration: none;
-      font-size: 15px; font-weight: 700;
-      padding: 13px 26px; border-radius: var(--radius-sm);
-      box-shadow: 0 6px 20px var(--accent-glow);
-      transition: background 0.2s ease, transform 0.2s ease;
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--accent); color: var(--accent-fg); text-decoration: none;
+      font-size: 0.9375rem; font-weight: 600;
+      min-height: 44px; padding: 0 22px; border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      transition: background-color 0.15s ease;
     }
-    .hero-cta:hover { background: var(--accent-hover); transform: translateY(-1px); }
+    .hero-cta:hover { background: var(--accent-hover); }
 
-    .blocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+    .blocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px; }
     .block {
       background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius);
-      padding: 22px;
-      display: flex; flex-direction: column; gap: 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      padding: 20px;
+      display: flex; flex-direction: column; gap: 8px;
     }
-    .block-title { font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
-    .block-body { font-size: 14px; color: var(--text-muted); white-space: pre-line; overflow-wrap: anywhere; }
+    .block-title { font-size: 1rem; font-weight: 600; overflow-wrap: anywhere; }
+    .block-body { font-size: 0.875rem; color: var(--text-muted); white-space: pre-line; overflow-wrap: anywhere; }
     .block-link {
       align-self: flex-start;
       display: inline-flex; align-items: center; gap: 6px;
-      font-size: 13px; font-weight: 600; color: #93c5fd; text-decoration: none;
-      margin-top: 2px;
+      font-size: 0.8125rem; font-weight: 600; color: var(--accent-text); text-decoration: none;
+      margin-top: 4px;
     }
     .block-link:hover { text-decoration: underline; }
 
     footer {
-      background: var(--bg-surface);
       border-top: 1px solid var(--border-subtle);
       padding: 20px 28px;
       text-align: center;
-      color: var(--text-muted);
-      font-size: 12px;
+      color: var(--text-subtle);
+      font-size: 0.75rem;
     }
     footer a { color: var(--text-muted); text-decoration: underline; }
 
+    @media (forced-colors: active) {
+      .block, .header-link, .hero-cta { border: 1px solid CanvasText; }
+    }
     @media (max-width: 640px) {
-      header { padding: 14px 16px; }
+      header { padding: 12px 16px; }
       main { padding: 36px 16px 52px; }
     }
   </style>

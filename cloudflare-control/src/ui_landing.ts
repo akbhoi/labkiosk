@@ -18,7 +18,7 @@
  */
 
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
-import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES } from "./ui_tokens";
+import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 
 export interface LandingOptions {
   /** Message shown in a banner above the hero, e.g. after a rejected redirect. */
@@ -63,281 +63,650 @@ export function renderLandingHtml(data: LandingOptions): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lab Kiosk OS - Secure Browser Workstations for Any Organization</title>
   <meta name="description" content="Turn any computer into a secure browser workstation. Central management for companies, public services, libraries and schools: 100% RAM overlay, one-click screen lock, allowlist-only browsing, zero SSD wear, on Cloudflare's edge.">
-  <meta name="theme-color" content="#090d16">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="${PALETTE["--bg-base"][0]}">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="${PALETTE["--bg-base"][1]}">
+${themeHeadHtml(data.nonce)}
 ${FONT_LINKS}
   <style>
 ${rootTokensCss(LEGACY_LANDING_ALIASES)}
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif; }
-    html { scroll-behavior: smooth; color-scheme: dark; }
-    body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; overflow-x: hidden; line-height: 1.6; }
-    
+    *, *::before, *::after { box-sizing: border-box; }
+    :where(h1, h2, h3, h4, h5, p, ul, ol, li, figure) { margin: 0; }
+    :where(ul, ol) { padding: 0; }
+    html { scroll-behavior: smooth; accent-color: var(--accent); scroll-padding-top: 72px; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    body {
+      margin: 0;
+      font-family: var(--font-sans);
+      font-feature-settings: "cv11", "ss01";
+      background: var(--bg-base);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--border-focus);
+      outline-offset: 2px;
+    }
+    ::selection { background: var(--accent-glow); }
+
     /* Typography & Utilities */
     a { color: inherit; text-decoration: none; }
-    code { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #93c5fd; background: rgba(59, 130, 246, 0.1); padding: 2px 6px; border-radius: 6px; }
-    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-    .badge-blue { background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3); }
-    .badge-green { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
-    
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.8125em;
+      color: var(--text-main);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      padding: 1px 6px;
+      border-radius: var(--radius-xs);
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 12px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      line-height: 1.5;
+      border: 1px solid var(--border);
+      background: var(--bg-surface);
+      color: var(--text-muted);
+    }
+    .badge-blue { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+    .badge-green { background: var(--success-soft); color: var(--success-text); border-color: transparent; }
+
     /* Header & Navigation */
     header {
-      padding: 16px 32px; display: flex; align-items: center; justify-content: space-between;
-      border-bottom: 1px solid rgba(51, 65, 85, 0.6); background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(16px);
-      position: sticky; top: 0; z-index: 100;
+      padding: 12px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-base);
+      background: color-mix(in oklab, var(--bg-base) 82%, transparent);
+      -webkit-backdrop-filter: saturate(1.4) blur(14px);
+      backdrop-filter: saturate(1.4) blur(14px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }
-    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand { display: flex; align-items: center; gap: 10px; }
     .brand-logo {
-      width: 42px; height: 42px; background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-      border-radius: 11px; display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 4px 16px var(--accent-glow);
+      width: 34px;
+      height: 34px;
+      background: var(--accent);
+      color: var(--accent-fg);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
     }
-    .brand-title { font-size: 20px; font-weight: 800; letter-spacing: -0.3px; display: flex; align-items: center; gap: 8px; }
-    .brand-title span { font-size: 12px; font-weight: 600; color: var(--muted); background: var(--card); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); }
-    
-    .nav-links { display: flex; align-items: center; gap: 24px; list-style: none; }
-    .nav-links a { font-size: 14px; font-weight: 600; color: var(--muted); transition: color 0.2s; padding: 6px 0; }
-    .nav-links a:hover, .nav-links a:focus-visible { color: var(--text); outline: none; }
-    
-    .nav-actions { display: flex; align-items: center; gap: 12px; }
+    .brand-logo svg { width: 19px; height: 19px; }
+    .brand-title { font-size: 1rem; font-weight: 650; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+    .brand-title span {
+      font-size: 0.6875rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: var(--bg-subtle);
+      padding: 1px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .nav-links { display: flex; align-items: center; gap: 4px; list-style: none; }
+    .nav-links a {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      transition: color 0.15s, background-color 0.15s;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+    }
+    .nav-links a:hover { color: var(--text-main); background: var(--hover); }
+
+    .nav-actions { display: flex; align-items: center; gap: 8px; }
     .btn {
-      padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-      min-height: 40px; border: none; outline: none;
+      padding: 0 16px;
+      border-radius: var(--radius-sm);
+      font-size: 0.875rem;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 36px;
+      border: 1px solid transparent;
+      white-space: nowrap;
     }
-    .btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-    .btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
-    .btn-ghost:hover { background: rgba(255, 255, 255, 0.06); border-color: #475569; }
-    .btn-primary { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #fff; box-shadow: 0 4px 14px var(--accent-glow); }
-    .btn-primary:hover { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); transform: translateY(-1px); }
+    .btn-ghost { background: var(--bg-surface); color: var(--text-main); border-color: var(--border); box-shadow: var(--shadow-sm); }
+    .btn-ghost:hover { background: var(--bg-card-hover); border-color: var(--border-input); }
+    .btn-primary { background: var(--accent); color: var(--accent-fg); box-shadow: var(--shadow-sm); }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-lg { min-height: 44px; padding: 0 22px; font-size: 0.9375rem; }
+    .btn-sm { min-height: 32px; padding: 0 12px; font-size: 0.8125rem; }
+    .btn-danger-solid { background: var(--danger); color: var(--on-solid); }
+    .btn-danger-solid:hover { filter: brightness(0.92); }
     .btn-block { width: 100%; }
+    .theme-toggle {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg-surface);
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .theme-toggle:hover { color: var(--text-main); background: var(--bg-card-hover); }
 
     /* Edge Status Indicator */
     .edge-status {
-      display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(16, 185, 129, 0.08);
-      border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 20px; font-size: 12px; font-weight: 600; color: #a7f3d0;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      background: var(--success-soft);
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--success-text);
+      white-space: nowrap;
     }
-    .status-dot { width: 8px; height: 8px; background: var(--green); border-radius: 50%; box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .status-dot { width: 7px; height: 7px; background: var(--success); border-radius: 50%; box-shadow: 0 0 0 3px var(--success-glow); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+    @media (prefers-reduced-motion: reduce) { .status-dot { animation: none; } }
 
     /* Hero Section */
     .hero {
-      padding: 90px 24px 60px; text-align: center; max-width: 1080px; margin: 0 auto; position: relative;
+      padding: clamp(56px, 10vw, 112px) 24px 64px;
+      text-align: center;
+      max-width: 1080px;
+      margin: 0 auto;
+      position: relative;
     }
-    .hero-badge-container { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+    .hero-badge-container { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
     .hero-title {
-      font-size: clamp(34px, 6vw, 62px); font-weight: 800; line-height: 1.15; letter-spacing: -1.5px; margin-bottom: 24px;
+      font-size: clamp(2.25rem, 1.4rem + 4vw, 4rem);
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: -0.035em;
+      margin-bottom: 22px;
+      text-wrap: balance;
     }
-    .hero-title span {
-      background: linear-gradient(135deg, #60a5fa 0%, #c084fc 100%);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    }
+    .hero-title span { color: var(--accent-text); }
     .hero-desc {
-      font-size: clamp(16px, 2.2vw, 20px); color: var(--muted); line-height: 1.6; max-width: 820px; margin: 0 auto 36px;
+      font-size: clamp(1rem, 0.9rem + 0.45vw, 1.1875rem);
+      color: var(--text-muted);
+      line-height: 1.65;
+      max-width: 760px;
+      margin: 0 auto 36px;
+      text-wrap: pretty;
     }
-    .hero-ctas { display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap; margin-bottom: 48px; }
-    
+    .hero-ctas { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; margin-bottom: 56px; }
+
     /* Metrics Trust Bar */
     .metrics-bar {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; max-width: 1000px; margin: 0 auto;
-      padding: 24px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+      max-width: 1000px;
+      margin: 0 auto;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
     }
-    .metric-item { text-align: center; }
-    .metric-value { font-size: 26px; font-weight: 800; color: #fff; }
-    .metric-label { font-size: 13px; color: var(--muted); margin-top: 4px; font-weight: 500; }
+    .metric-item { text-align: center; padding: 22px 16px; }
+    .metric-item + .metric-item { border-left: 1px solid var(--border-subtle); }
+    .metric-value { font-size: 1.625rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text-main); font-variant-numeric: tabular-nums; }
+    .metric-label { font-size: 0.8125rem; color: var(--text-muted); margin-top: 4px; }
 
-    /* Stakeholders Audiences Section */
-    .section-wrap { padding: 80px 24px; max-width: 1240px; margin: 0 auto; width: 100%; }
-    .section-header { text-align: center; margin-bottom: 50px; max-width: 760px; margin-left: auto; margin-right: auto; }
-    .section-title { font-size: clamp(28px, 4vw, 40px); font-weight: 800; letter-spacing: -0.5px; margin-bottom: 12px; }
-    .section-sub { font-size: 17px; color: var(--muted); }
+    /* Sections */
+    .section-wrap { padding: clamp(56px, 8vw, 96px) 24px; max-width: 1200px; margin: 0 auto; width: 100%; }
+    .section-header { text-align: center; margin: 0 auto 48px; max-width: 720px; }
+    .section-title { font-size: clamp(1.75rem, 1.2rem + 2vw, 2.5rem); font-weight: 700; letter-spacing: -0.03em; line-height: 1.15; margin-bottom: 12px; text-wrap: balance; }
+    .section-sub { font-size: 1.0625rem; color: var(--text-muted); text-wrap: pretty; }
 
     /* Stakeholder Tabs */
     .tabs-nav {
-      display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 36px; flex-wrap: wrap;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      margin: 0 auto 32px;
+      flex-wrap: wrap;
+      width: fit-content;
+      max-width: 100%;
+      padding: 4px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius);
     }
     .tab-btn {
-      background: var(--panel); border: 1px solid var(--border); color: var(--muted); padding: 10px 20px;
-      border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all 0.2s;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 7px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.875rem;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      transition: color 0.15s, background-color 0.15s;
     }
-    .tab-btn:hover { color: #fff; border-color: #475569; }
-    .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 4px 14px var(--accent-glow); }
-    
+    .tab-btn:hover { color: var(--text-main); }
+    .tab-btn.active { background: var(--bg-surface); color: var(--text-main); box-shadow: var(--shadow-sm), 0 0 0 1px var(--border); }
+
     .tab-content { display: none; }
     .tab-content.active { display: block; animation: fadeIn 0.3s ease; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
+    @media (prefers-reduced-motion: reduce) { .tab-content.active { animation: none; } }
 
     .audience-card {
-      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 40px;
-      display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      padding: 40px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 40px;
+      align-items: center;
     }
     @media (max-width: 900px) { .audience-card { grid-template-columns: 1fr; padding: 24px; } }
-    .audience-info h3 { font-size: 28px; font-weight: 800; margin-bottom: 16px; color: #fff; }
-    .audience-info p { font-size: 16px; color: var(--muted); margin-bottom: 24px; line-height: 1.65; }
-    .audience-bullets { list-style: none; display: flex; flex-direction: column; gap: 14px; }
-    .audience-bullets li { display: flex; align-items: flex-start; gap: 12px; font-size: 15px; color: #cbd5e1; }
-    .bullet-icon { color: var(--green); flex-shrink: 0; margin-top: 2px; }
+    .audience-info h3 { font-size: 1.625rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; margin-bottom: 14px; color: var(--text-main); text-wrap: balance; }
+    .audience-info p { font-size: 1rem; color: var(--text-muted); margin-bottom: 24px; line-height: 1.65; }
+    .audience-bullets { list-style: none; display: flex; flex-direction: column; gap: 12px; }
+    .audience-bullets li { display: flex; align-items: flex-start; gap: 12px; font-size: 0.9375rem; color: var(--text-muted); }
+    .audience-bullets strong { color: var(--text-main); font-weight: 600; }
+    .bullet-icon {
+      color: var(--success-text);
+      background: var(--success-soft);
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.6875rem;
+      font-weight: 700;
+      margin-top: 2px;
+    }
 
     .audience-preview {
-      background: #020617; border: 1px solid var(--border); border-radius: 14px; padding: 24px;
-      display: flex; flex-direction: column; gap: 16px; box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: var(--shadow-md);
     }
 
     /* Live Interactive Simulator */
     .simulator-wrap {
-      background: #020617; border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
     }
     .simulator-bar {
-      background: var(--panel); padding: 14px 20px; display: flex; align-items: center; justify-content: space-between;
-      border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 12px;
+      background: var(--bg-surface);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+      gap: 12px;
     }
-    .sim-controls { display: flex; align-items: center; gap: 10px; }
-    .sim-app-card { transition: transform 0.2s; }
-    .sim-app-card:hover { transform: scale(1.03); }
+    .sim-controls { display: flex; align-items: center; gap: 2px; padding: 3px; background: var(--bg-subtle); border-radius: var(--radius); }
+    .sim-app-card { transition: translate 0.2s var(--ease-spring), border-color 0.15s; }
+    .sim-app-card:hover { translate: 0 -2px; border-color: var(--border-input); }
     .sim-tab-btn {
-      padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer;
-      background: transparent; color: var(--muted); border: 1px solid transparent; transition: all 0.15s;
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      background: transparent;
+      color: var(--text-muted);
+      border: none;
+      transition: color 0.15s, background-color 0.15s;
     }
-    .sim-tab-btn.active { background: var(--card); color: #fff; border-color: var(--border); }
+    .sim-tab-btn:hover { color: var(--text-main); }
+    .sim-tab-btn.active { background: var(--bg-surface); color: var(--text-main); box-shadow: var(--shadow-sm), 0 0 0 1px var(--border); }
     .simulator-body { padding: 32px; min-height: 440px; display: flex; flex-direction: column; justify-content: center; }
 
     /* Features Grid */
     .features-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+      gap: 16px;
     }
     .feature-card {
-      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px;
-      transition: all 0.2s ease; display: flex; flex-direction: column;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      box-shadow: var(--shadow-sm);
+      transition: border-color 0.15s ease, box-shadow 0.2s ease;
+      display: flex;
+      flex-direction: column;
     }
-    .feature-card:hover { border-color: #3b82f6; transform: translateY(-4px); background: var(--card-hover); }
+    .feature-card:hover { border-color: var(--border-input); box-shadow: var(--shadow-md); }
     .feature-icon {
-      width: 48px; height: 48px; background: rgba(59, 130, 246, 0.12); border-radius: 12px;
-      display: flex; align-items: center; justify-content: center; color: #60a5fa; margin-bottom: 20px;
+      width: 40px;
+      height: 40px;
+      background: var(--accent-soft);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent-text);
+      margin-bottom: 18px;
     }
-    .feature-title { font-size: 19px; font-weight: 700; margin-bottom: 10px; color: #fff; }
-    .feature-desc { font-size: 14px; color: var(--muted); line-height: 1.6; }
+    .feature-title { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 8px; color: var(--text-main); }
+    .feature-desc { font-size: 0.875rem; color: var(--text-muted); line-height: 1.65; }
 
     /* Hardware Specs Table */
-    .specs-table {
-      width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border);
-      border-radius: var(--radius); overflow: hidden; margin-top: 24px;
+    .specs-table-container {
+      width: 100%;
+      overflow-x: auto;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+      margin-top: 24px;
     }
-    .specs-table th, .specs-table td { padding: 16px 20px; text-align: left; border-bottom: 1px solid var(--border); font-size: 14px; }
-    .specs-table th { background: #1e293b; color: #fff; font-weight: 700; }
+    .specs-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--bg-surface);
+      font-variant-numeric: tabular-nums;
+    }
+    .specs-table th, .specs-table td { padding: 14px 20px; text-align: left; border-bottom: 1px solid var(--border-subtle); font-size: 0.875rem; }
+    .specs-table th { background: var(--bg-subtle); color: var(--text-muted); font-weight: 500; font-size: 0.8125rem; }
+    .specs-table td { color: var(--text-muted); }
+    .specs-table td:first-child { color: var(--text-main); font-weight: 500; }
     .specs-table tr:last-child td { border-bottom: none; }
 
     /* FAQ Accordion */
-    .faq-list { max-width: 840px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+    .faq-list { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
     .faq-item {
-      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
     }
     .faq-question {
-      padding: 18px 24px; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
-      font-weight: 700; font-size: 16px; user-select: none; color: #f1f5f9;
+      padding: 16px 20px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      font-weight: 600;
+      font-size: 0.9375rem;
+      user-select: none;
+      color: var(--text-main);
     }
-    .faq-question:hover { background: rgba(255, 255, 255, 0.02); }
-    .faq-chevron { transition: transform 0.2s; color: var(--muted); }
+    .faq-question:hover { background: var(--hover); }
+    .faq-chevron { transition: transform 0.2s; color: var(--text-subtle); flex-shrink: 0; }
     .faq-item.open .faq-chevron { transform: rotate(180deg); }
-    .faq-answer {
-      padding: 0 24px 20px; font-size: 14px; color: var(--muted); line-height: 1.65; display: none;
-    }
+    .faq-answer { padding: 0 20px 18px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.7; display: none; }
     .faq-item.open .faq-answer { display: block; }
 
     /* Contact Section Cards */
     .contact-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+      gap: 16px;
     }
     .contact-card {
-      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px;
-      text-align: center; display: flex; flex-direction: column; align-items: center;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      padding: 28px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
-    .contact-card h4 { font-size: 18px; font-weight: 700; margin: 14px 0 8px; color: #fff; }
-    .contact-card p { font-size: 14px; color: var(--muted); margin-bottom: 18px; line-height: 1.5; }
+    .contact-card h4 { font-size: 1.0625rem; font-weight: 600; margin: 14px 0 8px; color: var(--text-main); }
+    .contact-card p { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 18px; line-height: 1.55; }
     .contact-link {
-      color: #60a5fa; font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600;
-      text-decoration: underline; text-underline-offset: 4px;
+      color: var(--accent-text);
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+      font-weight: 500;
+      text-decoration: underline;
+      text-underline-offset: 4px;
+      overflow-wrap: anywhere;
     }
-    .contact-link:hover { color: #93c5fd; }
+    .contact-link:hover { text-decoration-thickness: 2px; }
 
     /* Modals */
     .modal-overlay {
-      position: fixed; inset: 0; background: rgba(9, 13, 22, 0.88); backdrop-filter: blur(10px);
-      display: none; align-items: center; justify-content: center; z-index: 1000; padding: 20px;
+      position: fixed;
+      inset: 0;
+      background: var(--overlay);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
     }
     .modal-overlay.active { display: flex; }
     .modal-box {
-      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 36px;
-      max-width: 480px; width: 100%; box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.9);
-      position: relative; max-height: 90vh; overflow-y: auto;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      max-width: 460px;
+      width: 100%;
+      box-shadow: var(--shadow-lg);
+      position: relative;
+      max-height: 90vh;
+      overflow-y: auto;
+      opacity: 1;
+      scale: 1;
+      transition: opacity 0.16s ease, scale 0.2s var(--ease-out);
+    }
+    @starting-style {
+      .modal-overlay.active .modal-box { opacity: 0; scale: 0.97; }
     }
     .modal-close {
-      position: absolute; top: 20px; right: 20px; background: transparent; border: none;
-      color: var(--muted); cursor: pointer; font-size: 22px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
-      border-radius: 6px;
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1.25rem;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-sm);
     }
-    .modal-close:hover { color: #fff; background: var(--card); }
-    .modal-title { font-size: 24px; font-weight: 800; margin-bottom: 8px; color: #fff; }
-    .modal-sub { font-size: 14px; color: var(--muted); margin-bottom: 24px; }
-    .form-group { margin-bottom: 18px; text-align: left; }
-    .form-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #cbd5e1; }
+    .modal-close:hover { color: var(--text-main); background: var(--hover); }
+    .modal-title { font-size: 1.375rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px; color: var(--text-main); padding-right: 36px; }
+    .modal-sub { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 24px; }
+    .form-group { margin-bottom: 16px; text-align: left; }
+    .form-label { display: block; font-size: 0.8125rem; font-weight: 500; margin-bottom: 6px; color: var(--text-main); }
     .form-input {
-      width: 100%; background: #1e293b; border: 1px solid var(--border); border-radius: 8px;
-      padding: 11px 14px; color: #fff; font-size: 14px; outline: none; transition: border 0.15s ease;
+      width: 100%;
+      min-height: 40px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-input);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      color: var(--text-main);
+      font-size: 0.875rem;
+      font-family: inherit;
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
     }
-    .form-input:focus { border-color: var(--accent); }
-    .input-hint { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.4; }
-    .modal-switch { text-align: center; margin-top: 18px; font-size: 13px; color: var(--muted); }
-    .modal-switch a { color: #60a5fa; text-decoration: none; cursor: pointer; font-weight: 600; }
+    .form-input::placeholder { color: var(--text-subtle); opacity: 1; }
+    .form-input:focus-visible { outline: none; border-color: var(--border-focus); box-shadow: var(--focus-ring); }
+    .form-input:user-invalid { border-color: var(--danger); }
+    .input-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 6px; line-height: 1.45; }
+    .modal-switch { text-align: center; margin-top: 18px; font-size: 0.8125rem; color: var(--text-muted); }
+    .modal-switch a { color: var(--accent-text); text-decoration: none; cursor: pointer; font-weight: 600; }
+    .modal-switch a:hover { text-decoration: underline; }
     .alert-box {
-      background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171;
-      padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 18px; display: none;
+      background: var(--danger-soft);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--danger);
+      color: var(--danger-text);
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      margin-bottom: 18px;
+      display: none;
     }
     .iso-build-note {
-      background: #1e293b; border: 1px solid var(--border); border-radius: 10px; padding: 16px;
-      font-size: 13px; color: var(--muted); line-height: 1.6; text-align: left;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      text-align: left;
     }
-    .iso-build-note code { display: block; margin: 8px 0; color: #93c5fd; background: #0b1120; padding: 8px 12px; }
+    .iso-build-note strong { color: var(--text-main); }
+    .iso-build-note code { display: block; margin: 8px 0; padding: 8px 12px; background: var(--bg-base); overflow-x: auto; }
     .page-alert {
-      max-width: 900px; margin: 24px auto -12px; background: rgba(239, 68, 68, 0.12);
-      border: 1px solid rgba(239, 68, 68, 0.35); color: #fca5a5; padding: 12px 18px;
-      border-radius: 10px; font-size: 14px; font-weight: 600; text-align: center;
+      max-width: 900px;
+      margin: 24px auto -12px;
+      background: var(--danger-soft);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--danger);
+      color: var(--danger-text);
+      padding: 12px 18px;
+      border-radius: var(--radius);
+      font-size: 0.875rem;
+      font-weight: 500;
+      text-align: center;
     }
+
+    /* The small illustrations inside the audience and simulator panels. */
+    .demo-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .demo-row-head { border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+    .demo-title { font-weight: 600; font-size: 0.875rem; }
+    .demo-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .demo-pc {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      text-align: center;
+    }
+    .demo-pc.is-blocked { border-color: var(--danger); }
+    .demo-pc-name { font-size: 0.6875rem; color: var(--text-muted); font-family: var(--font-mono); }
+    .demo-screen {
+      height: 48px;
+      background: var(--bg-subtle);
+      border-radius: var(--radius-xs);
+      margin: 6px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.6875rem;
+      color: var(--accent-text);
+    }
+    .demo-pc.is-blocked .demo-screen { color: var(--danger-text); }
+    .demo-status { font-size: 0.625rem; color: var(--success-text); }
+    .demo-pc.is-blocked .demo-status { color: var(--danger-text); }
+    .window-dots { display: flex; align-items: center; gap: 6px; }
+    .window-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border-input); }
+    .window-url { font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono); margin-left: 8px; }
 
     /* Footer */
     footer {
-      background: #020617; border-top: 1px solid var(--border); padding: 48px 24px 32px;
-      margin-top: auto; font-size: 14px; color: var(--muted);
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border-subtle);
+      padding: 56px 24px 32px;
+      margin-top: auto;
+      font-size: 0.875rem;
+      color: var(--text-muted);
     }
     .footer-content {
-      max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 2fr 1fr 1fr 1.5fr; gap: 36px;
-      margin-bottom: 36px;
+      max-width: 1200px;
+      margin: 0 auto 36px;
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr 1.5fr;
+      gap: 36px;
     }
     @media (max-width: 800px) { .footer-content { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 500px) { .footer-content { grid-template-columns: 1fr; } }
-    .footer-col h5 { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 16px; }
+    .footer-col h5 { font-size: 0.8125rem; font-weight: 600; color: var(--text-main); margin-bottom: 14px; }
     .footer-col ul { list-style: none; display: flex; flex-direction: column; gap: 10px; }
-    .footer-col ul a { color: var(--muted); font-size: 13px; }
-    .footer-col ul a:hover { color: #fff; }
+    .footer-col ul a { color: var(--text-muted); font-size: 0.8125rem; }
+    .footer-col ul a:hover { color: var(--text-main); }
     .footer-bottom {
-      max-width: 1200px; margin: 0 auto; padding-top: 24px; border-top: 1px solid rgba(51, 65, 85, 0.4);
-      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; font-size: 13px;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding-top: 24px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 0.8125rem;
+      color: var(--text-subtle);
     }
 
     /* Mobile Drawer */
     .mobile-drawer-backdrop {
-      position: fixed; inset: 0; background: rgba(9, 13, 22, 0.7); backdrop-filter: blur(4px);
-      z-index: 998; opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
+      position: fixed;
+      inset: 0;
+      background: var(--overlay);
+      z-index: 998;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
     }
     .mobile-drawer-backdrop.active { opacity: 1; pointer-events: auto; }
     .mobile-drawer {
-      position: fixed; top: 0; right: 0; bottom: 0; width: 300px; max-width: 85vw;
-      background: #0f172a; border-left: 1px solid var(--border); z-index: 999;
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 300px;
+      max-width: 85vw;
+      background: var(--bg-surface);
+      border-left: 1px solid var(--border);
+      z-index: 999;
       transform: translateX(100%);
       /* Hidden, not just off-screen, while closed: its links would otherwise sit
          in the Tab order and be read out by screen readers. Visibility flips
          after the slide-out and before the slide-in. */
       visibility: hidden;
       transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.25s;
-      display: flex; flex-direction: column; box-shadow: -10px 0 30px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+      box-shadow: var(--shadow-lg);
     }
     .mobile-drawer.active {
       transform: translateX(0);
@@ -345,104 +714,129 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s;
     }
     .mobile-drawer-header {
-      padding: 16px 20px; display: flex; align-items: center; justify-content: space-between;
-      border-bottom: 1px solid var(--border);
+      padding: 14px 16px 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-subtle);
     }
     .drawer-close-btn {
-      background: transparent; border: none; color: var(--muted); font-size: 26px;
-      line-height: 1; cursor: pointer; padding: 4px; display: flex; align-items: center;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      line-height: 1;
+      cursor: pointer;
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    .drawer-close-btn:hover { color: #fff; }
-    .mobile-drawer-nav {
-      flex: 1; padding: 16px 12px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto;
-    }
+    .drawer-close-btn:hover { color: var(--text-main); background: var(--hover); }
+    .mobile-drawer-nav { flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
     .mobile-drawer-nav a {
-      display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 8px;
-      font-size: 15px; font-weight: 600; color: #cbd5e1; transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 0.9375rem;
+      font-weight: 500;
+      color: var(--text-main);
+      transition: background-color 0.15s;
     }
-    .mobile-drawer-nav a:hover, .mobile-drawer-nav a:focus {
-      background: rgba(59, 130, 246, 0.12); color: #93c5fd;
-    }
+    .mobile-drawer-nav a svg { color: var(--text-muted); }
+    .mobile-drawer-nav a:hover, .mobile-drawer-nav a:focus-visible { background: var(--hover); }
     .mobile-drawer-actions {
-      padding: 16px 20px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px;
+      padding: 16px 20px;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
 
     /* Mobile Nav Toggle Button */
     .mobile-menu-btn {
-      display: none; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
-      color: #fff; cursor: pointer; padding: 8px; border-radius: 8px;
-      align-items: center; justify-content: center; min-width: 40px; min-height: 40px;
+      display: none;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      cursor: pointer;
+      padding: 0;
+      border-radius: var(--radius-sm);
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
     }
-    .mobile-menu-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: #475569; }
+    .mobile-menu-btn:hover { background: var(--bg-card-hover); }
+
+    @media (forced-colors: active) {
+      .btn, .badge, .feature-card, .faq-item, .contact-card, .audience-card, .metrics-bar, .form-input, .tab-btn.active, .sim-tab-btn.active {
+        border: 1px solid CanvasText;
+      }
+    }
 
     /* Responsive Breakpoints */
-    @media (max-width: 900px) {
+    @media (max-width: 1080px) {
       .nav-links { display: none; }
       .mobile-menu-btn { display: inline-flex; }
     }
     @media (max-width: 768px) {
-      header { padding: 12px 20px; }
+      header { padding: 10px 16px; }
       .edge-status { display: none; }
       .nav-register-btn { display: none; }
-      .section-wrap { padding: 50px 16px; }
+      .section-wrap { padding: 56px 16px; }
       .tabs-nav {
-        overflow-x: auto; flex-wrap: nowrap; justify-content: flex-start;
-        gap: 8px; padding-bottom: 8px; margin-bottom: 24px;
-        -webkit-overflow-scrolling: touch; scrollbar-width: none;
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+        width: 100%;
+        margin-bottom: 24px;
+        scrollbar-width: none;
       }
-      .tabs-nav::-webkit-scrollbar { display: none; }
-      .tab-btn { flex-shrink: 0; white-space: nowrap; padding: 8px 16px; font-size: 13px; }
+      .tab-btn { flex-shrink: 0; white-space: nowrap; }
+      .metric-item + .metric-item { border-left: none; }
     }
     @media (max-width: 640px) {
-      header { padding: 10px 14px; }
-      .brand { gap: 10px; }
-      .brand-logo { width: 34px; height: 34px; }
-      .brand-title { font-size: 17px; }
       .brand-title span { display: none; }
-      .nav-signin-btn { padding: 6px 12px; font-size: 13px; min-height: 36px; }
-
       .hero { padding: 44px 14px 32px; }
-      .hero-title { font-size: clamp(26px, 7.5vw, 38px); letter-spacing: -0.5px; margin-bottom: 16px; }
-      .hero-desc { font-size: 15px; margin-bottom: 24px; }
+      .hero-desc { margin-bottom: 24px; }
       .hero-ctas { flex-direction: column; width: 100%; gap: 10px; }
       .hero-ctas .btn { width: 100%; min-height: 48px; }
 
-      .metrics-bar { grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; }
-      .metric-value { font-size: 20px; }
-      .metric-label { font-size: 11px; }
+      .metrics-bar { grid-template-columns: 1fr 1fr; }
+      .metric-item { padding: 16px 10px; }
+      .metric-value { font-size: 1.25rem; }
+      .metric-label { font-size: 0.6875rem; }
 
-      .audience-card { padding: 18px 14px; border-radius: 16px; gap: 20px; }
-      .audience-info h3 { font-size: 20px; margin-bottom: 12px; }
-      .audience-info p { font-size: 14px; margin-bottom: 18px; }
-      .audience-bullets li { font-size: 13.5px; }
+      .audience-card { padding: 18px 14px; gap: 20px; }
+      .audience-info h3 { font-size: 1.25rem; }
+      .audience-info p { font-size: 0.875rem; }
 
       .simulator-bar { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px; }
-      .sim-controls { width: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
-      .sim-tab-btn { flex: 1; text-align: center; padding: 7px 6px; font-size: 12px; }
+      .sim-controls { width: 100%; }
+      .sim-tab-btn { flex: 1; text-align: center; padding: 7px 6px; font-size: 0.75rem; }
       .simulator-body { min-height: auto; padding: 18px 14px; }
 
-      .features-grid { grid-template-columns: 1fr; gap: 16px; }
       .feature-card { padding: 20px 16px; }
+      .specs-table { min-width: 540px; }
 
-      .specs-table-container {
-        width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
-        border-radius: var(--radius); border: 1px solid var(--border); margin-top: 20px;
-      }
-      .specs-table { margin-top: 0; border: none; min-width: 540px; }
+      .faq-question { padding: 14px 16px; font-size: 0.9375rem; }
+      .faq-answer { padding: 0 16px 16px; }
 
-      .faq-question { padding: 14px 16px; font-size: 15px; }
-      .faq-answer { padding: 0 16px 16px; font-size: 13.5px; }
-
-      .contact-grid { grid-template-columns: 1fr; gap: 16px; }
       .contact-card { padding: 20px 16px; }
 
       .modal-box {
-        padding: 22px 16px; border-radius: 16px; margin: 10px;
-        max-width: calc(100vw - 20px); max-height: 92vh;
+        padding: 22px 16px;
+        margin: 10px;
+        max-width: calc(100vw - 20px);
+        max-height: 92vh;
       }
-      .modal-title { font-size: 20px; }
-      .modal-sub { font-size: 13px; margin-bottom: 16px; }
-      .form-input { font-size: 16px; padding: 10px 12px; }
+      .modal-title { font-size: 1.25rem; }
+      .form-input { font-size: 1rem; }
     }
   </style>
 </head>
@@ -450,7 +844,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
   <header>
     <div class="brand">
       <div class="brand-logo" aria-hidden="true">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
       <div class="brand-title">
         Lab Kiosk
@@ -473,6 +867,9 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <div class="status-dot"></div>
         <span>Edge Active</span>
       </div>
+      <button type="button" class="theme-toggle" data-action="toggle-theme" aria-label="Switch theme" title="Switch between light and dark">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>
+      </button>
       <button class="btn btn-ghost nav-signin-btn" data-action="open-modal" data-modal="login">Sign In</button>
       <button class="btn btn-primary nav-register-btn" data-action="open-modal" data-modal="register">Get Started</button>
       <button class="mobile-menu-btn" id="mobile-toggle" aria-label="Toggle navigation menu" aria-expanded="false" data-action="toggle-drawer">
@@ -487,10 +884,10 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
   <div class="mobile-drawer" id="mobile-drawer" aria-label="Mobile Navigation" role="dialog" aria-modal="true">
     <div class="mobile-drawer-header">
       <div class="brand">
-        <div class="brand-logo" style="width: 34px; height: 34px;">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <div class="brand-logo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </div>
-        <div class="brand-title" style="font-size: 18px;">Lab Kiosk</div>
+        <div class="brand-title">Lab Kiosk</div>
       </div>
       <button class="drawer-close-btn" data-action="close-drawer" aria-label="Close menu">&times;</button>
     </div>
@@ -544,14 +941,14 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         For companies, public services, retail, libraries, schools and anyone who puts shared computers in front of people: manage every screen remotely, lock them in one click, allow only the sites you approve, and wipe every session clean. Runs on any PC or thin client, with zero SSD wear.
       </p>
       <div class="hero-ctas">
-        <button class="btn btn-primary" style="padding: 12px 28px; font-size: 16px;" data-action="open-modal" data-modal="register">
+        <button class="btn btn-primary btn-lg" data-action="open-modal" data-modal="register">
           Register Your Organization
         </button>
-        <button class="btn btn-ghost" style="padding: 12px 28px; font-size: 16px;" data-action="open-modal" data-modal="iso">
+        <button class="btn btn-ghost btn-lg" data-action="open-modal" data-modal="iso">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Download Kiosk ISO
         </button>
-        <a href="#simulator" class="btn btn-ghost" style="padding: 12px 24px; font-size: 15px;">
+        <a href="#simulator" class="btn btn-ghost btn-lg">
           Try Live Simulator &rarr;
         </a>
       </div>
@@ -624,20 +1021,20 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
               <span class="badge badge-green">38 Workstations Online</span>
             </div>
             <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
-              <div style="background: #1e293b; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid var(--border);">
+              <div style="background: var(--bg-surface); border-radius: 8px; padding: 10px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 11px; color: var(--muted);">PC-01</div>
-                <div style="height: 48px; background: #0f172a; border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #60a5fa;">Intranet</div>
-                <div style="font-size: 10px; color: var(--green);">● Active</div>
+                <div style="height: 48px; background: var(--bg-subtle); border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--accent-text);">Intranet</div>
+                <div style="font-size: 10px; color: var(--success-text);">● Active</div>
               </div>
-              <div style="background: #1e293b; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid var(--border);">
+              <div style="background: var(--bg-surface); border-radius: 8px; padding: 10px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 11px; color: var(--muted);">PC-02</div>
-                <div style="height: 48px; background: #0f172a; border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #a78bfa;">Service Portal</div>
-                <div style="font-size: 10px; color: var(--green);">● Active</div>
+                <div style="height: 48px; background: var(--bg-subtle); border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--accent-text);">Service Portal</div>
+                <div style="font-size: 10px; color: var(--success-text);">● Active</div>
               </div>
-              <div style="background: #1e293b; border-radius: 8px; padding: 10px; text-align: center; border: 1px solid #ef4444;">
+              <div style="background: var(--bg-surface); border-radius: 8px; padding: 10px; text-align: center; border: 1px solid var(--danger);">
                 <div style="font-size: 11px; color: var(--muted);">PC-03</div>
-                <div style="height: 48px; background: #0f172a; border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #f87171;">Blocked Site</div>
-                <div style="font-size: 10px; color: #ef4444;">● Intercepted</div>
+                <div style="height: 48px; background: var(--bg-subtle); border-radius: 4px; margin: 6px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--danger-text);">Blocked Site</div>
+                <div style="font-size: 10px; color: var(--danger-text);">● Intercepted</div>
               </div>
             </div>
             <button class="btn btn-primary btn-block" style="margin-top: 8px;" data-action="open-modal" data-modal="register">Register Your Organization</button>
@@ -672,14 +1069,14 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             </ul>
           </div>
           <div class="audience-preview">
-            <div style="background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
-              <h4 style="font-size: 14px; margin-bottom: 10px; color: #93c5fd;">User Portal Launcher</h4>
+            <div style="background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
+              <h4 style="font-size: 14px; margin-bottom: 10px; color: var(--accent-text);">User Portal Launcher</h4>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <div style="background: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid var(--border); text-align: center;">
+                <div style="background: var(--bg-surface); padding: 12px; border-radius: 8px; border: 1px solid var(--border); text-align: center;">
                   <div style="font-size: 20px; margin-bottom: 4px;">🗂️</div>
                   <div style="font-weight: 700; font-size: 12px;">Document Library</div>
                 </div>
-                <div style="background: #1e293b; padding: 12px; border-radius: 8px; border: 1px solid var(--border); text-align: center;">
+                <div style="background: var(--bg-surface); padding: 12px; border-radius: 8px; border: 1px solid var(--border); text-align: center;">
                   <div style="font-size: 20px; margin-bottom: 4px;">🧾</div>
                   <div style="font-weight: 700; font-size: 12px;">Self-Service Forms</div>
                 </div>
@@ -718,7 +1115,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           </div>
           <div class="audience-preview">
             <h4 style="font-size: 15px; margin-bottom: 12px;">Campus Examination Mode</h4>
-            <div style="background: #1e293b; border-radius: 8px; padding: 16px; border: 1px solid var(--border); font-size: 13px; line-height: 1.6;">
+            <div style="background: var(--bg-surface); border-radius: 8px; padding: 16px; border: 1px solid var(--border); font-size: 13px; line-height: 1.6;">
               <p><strong>Status:</strong> Strict Examination Lockdown Active</p>
               <p><strong>DevTools &amp; Extensions:</strong> Disabled</p>
               <p><strong>Domain Allowlist:</strong> <code>assessments.university.edu</code> only</p>
@@ -760,15 +1157,15 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <table style="width: 100%; font-size: 13px; border-collapse: collapse; margin-bottom: 16px;">
               <tr style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 8px 0; color: var(--muted);">OS &amp; Antivirus Licenses</td>
-                <td style="padding: 8px 0; text-align: right; color: #ef4444; text-decoration: line-through;">$2,400/yr</td>
+                <td style="padding: 8px 0; text-align: right; color: var(--danger-text); text-decoration: line-through;">$2,400/yr</td>
               </tr>
               <tr style="border-bottom: 1px solid var(--border);">
                 <td style="padding: 8px 0; color: var(--muted);">SSD Replacements</td>
-                <td style="padding: 8px 0; text-align: right; color: #ef4444; text-decoration: line-through;">$800/yr</td>
+                <td style="padding: 8px 0; text-align: right; color: var(--danger-text); text-decoration: line-through;">$800/yr</td>
               </tr>
               <tr style="border-bottom: 1px solid var(--border);">
-                <td style="padding: 8px 0; font-weight: 700; color: #fff;">Lab Kiosk</td>
-                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--green); font-size: 13px;">Free for education &le; 45 PCs; commercial license otherwise</td>
+                <td style="padding: 8px 0; font-weight: 700; color: var(--text-main);">Lab Kiosk</td>
+                <td style="padding: 8px 0; text-align: right; font-weight: 800; color: var(--success-text); font-size: 13px;">Free for education &le; 45 PCs; commercial license otherwise</td>
               </tr>
             </table>
             <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="register">Register Your Organization</button>
@@ -822,11 +1219,11 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
 
       <div class="simulator-wrap">
         <div class="simulator-bar">
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <div style="width: 10px; height: 10px; border-radius: 50%; background: #ef4444;"></div>
-            <div style="width: 10px; height: 10px; border-radius: 50%; background: #f59e0b;"></div>
-            <div style="width: 10px; height: 10px; border-radius: 50%; background: #10b981;"></div>
-            <span style="font-size: 12px; color: var(--muted); font-family: monospace; margin-left: 8px;">https://web-demo.${escapeHtml(baseDomain)}</span>
+          <div class="window-dots">
+            <span class="window-dot"></span>
+            <span class="window-dot"></span>
+            <span class="window-dot"></span>
+            <span class="window-url">https://web-demo.${escapeHtml(baseDomain)}</span>
           </div>
           <div class="sim-controls">
             <button class="sim-tab-btn active" id="sim-btn-portal" data-action="sim-view" data-view="portal">User Portal</button>
@@ -839,7 +1236,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <!-- User Portal Simulation -->
           <div id="sim-view-portal" style="display: block;">
             <div style="text-align: center; margin-bottom: 24px;">
-              <h3 style="font-size: 22px; font-weight: 800; color: #fff;">Select an Approved Resource</h3>
+              <h3 style="font-size: 22px; font-weight: 800; color: var(--text-main);">Select an Approved Resource</h3>
               <p style="font-size: 14px; color: var(--muted);">Click any approved application below to open it.</p>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; max-width: 800px; margin: 0 auto;">
@@ -874,39 +1271,39 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
                 <p style="font-size: 13px; color: var(--muted);">Click 'Lock Screens' to pause every screen, or broadcast a URL.</p>
               </div>
               <div style="display: flex; gap: 10px;">
-                <button class="btn btn-ghost" style="font-size: 13px; padding: 8px 14px;" data-action="sim-broadcast">Broadcast URL</button>
-                <button class="btn btn-primary" style="font-size: 13px; padding: 8px 14px; background: #ef4444;" data-action="sim-view" data-view="curtain">Lock Screens 🔒</button>
+                <button class="btn btn-ghost btn-sm" data-action="sim-broadcast">Broadcast URL</button>
+                <button class="btn btn-danger-solid btn-sm" data-action="sim-view" data-view="curtain">Lock Screens 🔒</button>
               </div>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px;">
-              <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
+              <div style="background: var(--bg-surface); border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 12px; font-weight: 700;">PC-01</div>
-                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Intranet</div>
-                <span style="font-size: 10px; color: var(--green);">● Online</span>
+                <div style="height: 50px; background: var(--bg-subtle); border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--accent-text);">Intranet</div>
+                <span style="font-size: 10px; color: var(--success-text);">● Online</span>
               </div>
-              <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
+              <div style="background: var(--bg-surface); border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 12px; font-weight: 700;">PC-02</div>
-                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Service Desk</div>
-                <span style="font-size: 10px; color: var(--green);">● Online</span>
+                <div style="height: 50px; background: var(--bg-subtle); border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--accent-text);">Service Desk</div>
+                <span style="font-size: 10px; color: var(--success-text);">● Online</span>
               </div>
-              <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
+              <div style="background: var(--bg-surface); border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 12px; font-weight: 700;">PC-03</div>
-                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Training Portal</div>
-                <span style="font-size: 10px; color: var(--green);">● Online</span>
+                <div style="height: 50px; background: var(--bg-subtle); border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--accent-text);">Training Portal</div>
+                <span style="font-size: 10px; color: var(--success-text);">● Online</span>
               </div>
-              <div style="background: #1e293b; border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
+              <div style="background: var(--bg-surface); border-radius: 8px; padding: 12px; text-align: center; border: 1px solid var(--border);">
                 <div style="font-size: 12px; font-weight: 700;">PC-04</div>
-                <div style="height: 50px; background: #0b1120; border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #38bdf8;">Self-Service Forms</div>
-                <span style="font-size: 10px; color: var(--green);">● Online</span>
+                <div style="height: 50px; background: var(--bg-subtle); border-radius: 4px; margin: 8px 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--accent-text);">Self-Service Forms</div>
+                <span style="font-size: 10px; color: var(--success-text);">● Online</span>
               </div>
             </div>
           </div>
 
           <!-- Screen Lock Simulation -->
-          <div id="sim-view-curtain" style="display: none; background: #090d16; border: 2px dashed #ef4444; border-radius: 12px; padding: 48px 24px; text-align: center;">
+          <div id="sim-view-curtain" style="display: none; background: var(--bg-base); border: 2px dashed var(--danger); border-radius: 12px; padding: 48px 24px; text-align: center;">
             <div style="font-size: 48px; margin-bottom: 16px;">🔒</div>
-            <h3 style="font-size: 26px; font-weight: 800; color: #f87171; margin-bottom: 8px;">Screens Paused</h3>
-            <p style="font-size: 16px; color: #cbd5e1; max-width: 500px; margin: 0 auto 24px;">
+            <h3 style="font-size: 26px; font-weight: 800; color: var(--danger-text); margin-bottom: 8px;">Screens Paused</h3>
+            <p style="font-size: 16px; color: var(--text-muted); max-width: 500px; margin: 0 auto 24px;">
               "This workstation has been paused by an administrator. Please wait."
             </p>
             <div style="font-size: 12px; color: var(--muted); margin-bottom: 20px;">All keyboard input and clicks are blocked until an administrator unlocks.</div>
@@ -1051,19 +1448,19 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <div style="background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 36px;">
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px;">
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: #93c5fd; margin-bottom: 8px;">1. Client OS Lockdown</h4>
+            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">1. Client OS Lockdown</h4>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               Virtual TTY consoles (TTY1-6) and X11 VT-switching keys are masked. Openbox runs without window border escape keybindings. The root filesystem is mounted strictly read-only.
             </p>
           </div>
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: #93c5fd; margin-bottom: 8px;">2. Managed Enterprise Chromium</h4>
+            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">2. Managed Enterprise Chromium</h4>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               <code>URLBlocklist: ["*"]</code> denies all internet browsing by default. The local Python agent dynamically reconciles the organization's approved whitelist on every heartbeat.
             </p>
           </div>
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: #93c5fd; margin-bottom: 8px;">3. Cloudflare Edge &amp; Web Crypto</h4>
+            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">3. Cloudflare Edge &amp; Web Crypto</h4>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               Control plane runs across 300+ edge colocations. Passwords are protected using native Web Crypto <code>PBKDF2-HMAC-SHA256</code> with 100,000 iterations. Workstations communicate via cryptographically hashed device tokens.
             </p>
@@ -1225,8 +1622,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <div class="form-group">
           <label class="form-label" for="reg-subdomain">Requested Subdomain Slug</label>
           <div style="display: flex; align-items: center; gap: 6px;">
-            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\-]+" style="font-family: monospace;">
-            <span style="font-family: monospace; font-size: 13px; color: var(--muted); white-space: nowrap;">.${escapeHtml(baseDomain)}</span>
+            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\-]+" style="font-family: var(--font-mono);">
+            <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap;">.${escapeHtml(baseDomain)}</span>
           </div>
           <div class="input-hint">Lowercase letters, numbers, hyphens only. Your organization is active as soon as you register.</div>
         </div>
@@ -1244,12 +1641,12 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <button class="modal-close" data-action="close-modal" data-modal="iso" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="iso-modal-title">Download Lab Kiosk ISO</h2>
       <p class="modal-sub">Flash to a USB drive and boot any PC or Thin Client.</p>
-      <div style="background: #1e293b; border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left;">
-        <h4 style="font-size: 14px; margin-bottom: 8px; color: #60a5fa;">Step 1: Write ISO to USB Drive</h4>
+      <div style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left;">
+        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 1: Write ISO to USB Drive</h4>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 14px;">
           Download <code>labkiosk-debian12-amd64.iso</code> and flash it to a 2 GB+ USB drive using <strong>Rufus</strong> (Windows, DD image mode) or <strong>balenaEtcher</strong> (Mac/Linux).
         </p>
-        <h4 style="font-size: 14px; margin-bottom: 8px; color: #60a5fa;">Step 2: Boot Client &amp; First-Boot Wizard</h4>
+        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 2: Boot Client &amp; First-Boot Wizard</h4>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5;">
           Boot your PC from USB. On first boot, the setup wizard prompts for your <strong>Organization Subdomain</strong>, <strong>PC Identifier (e.g. PC-01)</strong>, and <strong>Enrollment Key</strong>. Once verified, the workstation permanently links to your cloud dashboard!
         </p>
@@ -1279,7 +1676,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         </div>
         <div class="form-group">
           <label class="form-label" for="contact-type">Inquiry Type</label>
-          <select class="form-input" id="contact-type" style="background:#1e293b; color:#fff;">
+          <select class="form-input" id="contact-type" style="background: var(--bg-surface); color: var(--text-main);">
             <option value="Organization Deployment">Organization Deployment</option>
             <option value="Education Deployment / Assessments">Education Deployment / Assessments</option>
             <option value="Corporate CSR Hardware Donation">Corporate CSR Hardware Donation</option>
@@ -1299,15 +1696,15 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     <div class="footer-content">
       <div class="footer-col">
         <div class="brand" style="margin-bottom: 12px;">
-          <div class="brand-logo" style="width: 32px; height: 32px;">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <div class="brand-logo">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </div>
-          <span style="font-weight: 800; font-size: 16px; color: #fff;">Lab Kiosk OS</span>
+          <span style="font-weight: 800; font-size: 16px; color: var(--text-main);">Lab Kiosk OS</span>
         </div>
         <p style="font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
           Secure browser workstations for any organization. 100% RAM overlay, zero SSD degradation, and central control from Cloudflare's serverless edge.
         </p>
-        <p style="font-size: 12px; color: #64748b;">
+        <p style="font-size: 12px; color: var(--text-subtle);">
           Hosted globally at <code>${escapeHtml(baseDomain)}</code>
         </p>
       </div>
@@ -1338,10 +1735,10 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <div class="footer-col">
         <h5>Global Contact</h5>
         <ul>
-          <li><span style="color: #cbd5e1; font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
-          <li><span style="color: #cbd5e1; font-size: 13px;">Support:</span> <a href="mailto:support@akbhoi.com">support@akbhoi.com</a></li>
-          <li><span style="color: #cbd5e1; font-size: 13px;">Partners:</span> <a href="mailto:partners@akbhoi.com">partners@akbhoi.com</a></li>
-          <li><a href="/contact" data-action="open-modal" data-modal="contact" style="color: #60a5fa; font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@akbhoi.com">support@akbhoi.com</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@akbhoi.com">partners@akbhoi.com</a></li>
+          <li><a href="/contact" data-action="open-modal" data-modal="contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
         </ul>
       </div>
     </div>
@@ -1613,6 +2010,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       }
     });
   </script>
+  <script nonce="${escapeAttr(data.nonce)}">${THEME_TOGGLE_SCRIPT}</script>
 </body>
 </html>`;
 }

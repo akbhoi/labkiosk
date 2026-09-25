@@ -25,43 +25,43 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
       <div class="sub-section-title">Settings Views</div>
       <div class="sub-action-list" id="sub-tab-list">
         <button type="button" class="sub-action-item active" data-action="tab-general">
-          <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             General &amp; Kiosk
           </span>
         </button>
         <button type="button" class="sub-action-item" data-action="tab-domains">
-          <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
             Domains &amp; Network
           </span>
         </button>
         <button type="button" class="sub-action-item" data-action="tab-homepage">
-          <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
             Organization Homepage
           </span>
         </button>
         <button type="button" class="sub-action-item" data-action="tab-security">
-          <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             Security &amp; Audit
           </span>
         </button>
       </div>
 
-      <div class="sub-section-title" style="margin-top: 18px;">Quick Shortcuts</div>
+      <div class="sub-section-title">Quick Shortcuts</div>
       <div class="sub-action-list">
         <a href="/${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
-          <span style="display: flex; align-items: center; gap: 8px;">
+          <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             Preview Organization Homepage
           </span>
         </a>
       </div>
 
-      <div class="sub-section-title" style="margin-top: 18px;">Security Architecture</div>
-      <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.5;">
+      <div class="sub-section-title">Security Architecture</div>
+      <div class="panel-note">
         Passwords hashed with PBKDF2-HMAC-SHA256 (100k rounds) via WebCrypto. Device tokens authenticated per 3s heartbeat.
       </div>
     `
@@ -76,10 +76,10 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
   const tunnelDomain = tenant?.tunnel_domain || config?.tunnelDomain || "";
 
   return `
-    <div class="page-head" style="margin-bottom: 20px;">
+    <div class="page-head">
       <div>
-        <h1 class="page-title">Settings &amp; Configuration</h1>
-        <p class="page-desc">Manage organization profile, subdomain customization, custom domain, VNC tunnel, and enrollment keys.</p>
+        <h1 class="page-title">Settings</h1>
+        <p class="page-desc">Organization profile, kiosk behaviour, addresses and remote access, the homepage, and security.</p>
       </div>
     </div>
 
@@ -142,7 +142,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
     <!-- ============================================================== -->
     <div class="tab-pane" id="pane-domains">
       <div class="grid-2col">
-        <div style="display: flex; flex-direction: column; gap: 20px;">
+        <div class="stack-cards">
           <!-- Card 2: Subdomain Customization -->
           <div class="card" id="section-subdomain">
             <h2 class="card-title">Organization Subdomain Customization</h2>
@@ -153,9 +153,9 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
                 <label class="form-label" for="setting-subdomain">Subdomain Slug</label>
                 <div class="form-row">
                   <input type="text" class="form-input" id="setting-subdomain" value="${escapeAttr(currentSubdomain)}" required pattern="[a-zA-Z0-9-]{3,63}">
-                  <span style="font-size: 14px; color: var(--text-muted); white-space: nowrap; padding-bottom: 10px;">.${escapeHtml(baseDomain)}</span>
+                  <span class="input-suffix">.${escapeHtml(baseDomain)}</span>
                 </div>
-                <div class="form-hint" style="color: #fde68a;">Notice: Changing your subdomain takes effect immediately. Previously enrolled thin clients will need to be updated with the new address.</div>
+                <div class="form-hint text-warning">Changing your subdomain takes effect immediately. Previously enrolled thin clients will need to be updated with the new address.</div>
               </div>
               <button type="submit" class="btn btn-secondary">Update Subdomain</button>
             </form>
@@ -186,17 +186,21 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
             ${
               customDomain && customDomainStatus === "approved"
                 ? `
-                <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px;">
-                  <span class="badge badge-green">ACTIVE DOMAIN</span>
-                  <div style="font-size: 16px; font-weight: 700; color: #6ee7b7; margin-top: 6px; font-family: 'JetBrains Mono', monospace;">https://${escapeHtml(customDomain)}</div>
+                <div class="callout callout-success">
+                  <div>
+                    <span class="badge badge-green">Active domain</span>
+                    <div class="callout-value mono">https://${escapeHtml(customDomain)}</div>
+                  </div>
                 </div>
                 <button type="button" class="btn btn-danger" id="btn-disconnect-custom">Disconnect Custom Domain</button>
               `
                 : customDomainStatus === "pending"
                 ? `
-                <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px;">
-                  <span class="badge badge-yellow">PENDING SUPER ADMIN APPROVAL</span>
-                  <div style="font-size: 15px; font-weight: 700; color: #fde68a; margin-top: 6px;">${escapeHtml(tenant?.requested_custom_domain || "")}</div>
+                <div class="callout callout-warning">
+                  <div>
+                    <span class="badge badge-yellow">Pending platform approval</span>
+                    <div class="callout-value mono">${escapeHtml(tenant?.requested_custom_domain || "")}</div>
+                  </div>
                 </div>
                 <button type="button" class="btn btn-secondary" id="btn-cancel-custom">Cancel Request</button>
               `
@@ -235,7 +239,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
               <textarea class="form-textarea" id="homepage-intro" rows="3" maxlength="400" placeholder="One or two lines under the headline.">${escapeHtml(tenant?.homepage_intro || "")}</textarea>
             </div>
 
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <div class="form-actions">
               <button type="submit" class="btn btn-primary">Save Homepage</button>
               <a class="btn btn-secondary" href="/${tenantParam}" target="_blank" rel="noopener noreferrer">Preview &rarr;</a>
             </div>
@@ -244,8 +248,8 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
           <div class="card">
             <h2 class="card-title">Content Blocks</h2>
             <p class="card-sub">Notices, links to your own organization site, or user guidelines. Up to 12.</p>
-            <div id="homepage-blocks" style="margin-top: 12px;"></div>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-add-block" style="margin-top: 12px;">Add a block</button>
+            <div id="homepage-blocks"></div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-add-block">Add a block</button>
           </div>
         </div>
       </form>
@@ -256,14 +260,14 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
     <!-- ============================================================== -->
     <div class="tab-pane" id="pane-security">
       <div class="grid-2col">
-        <div style="display: flex; flex-direction: column; gap: 20px;">
+        <div class="stack-cards">
           <!-- Card 6: Workstation Enrollment Key -->
           <div class="card" id="section-enrollment">
             <h2 class="card-title">Workstation Enrollment Key</h2>
             <p class="card-sub">Secret key used to securely pair thin clients to this organization.</p>
 
-            <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
-              <code id="enrollment-key-display" style="font-size: 16px; font-weight: 700; color: #93c5fd; letter-spacing: 1px;">••••••••••••</code>
+            <div class="secret-box">
+              <code id="enrollment-key-display" class="secret-value">••••••••••••</code>
               <button type="button" class="btn btn-sm btn-secondary" id="btn-reveal-key">Reveal Key</button>
             </div>
             <button type="button" class="btn btn-danger btn-sm" id="btn-rotate-key">Rotate Enrollment Key</button>
@@ -303,7 +307,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
                   </tr>
                 </thead>
                 <tbody id="lab-audit-rows">
-                  <tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 24px;">Loading\u2026</td></tr>
+                  <tr><td colspan="3" class="table-empty">Loading\u2026</td></tr>
                 </tbody>
               </table>
             </div>
@@ -660,7 +664,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             const row = document.createElement("tr");
             const cell = document.createElement("td");
             cell.colSpan = 3;
-            cell.style.cssText = "text-align: center; color: var(--text-muted); padding: 24px;";
+            cell.className = "table-empty";
             cell.textContent = text;
             row.appendChild(cell);
             return row;
@@ -678,7 +682,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               const row = document.createElement("tr");
 
               const when = document.createElement("td");
-              when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
+              when.className = "mono text-xs nowrap";
               const date = new Date(entry.created_at * 1000);
               // The viewer's own clock, not UTC: an administrator in IST reading
               // "13:44" for something done at 19:14 has been misled.
@@ -704,7 +708,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               row.appendChild(action);
 
               const detail = document.createElement("td");
-              detail.style.cssText = "color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere;";
+              detail.className = "text-muted text-xs cell-detail";
               detail.textContent = entry.details || "\u2014";
               row.appendChild(detail);
 

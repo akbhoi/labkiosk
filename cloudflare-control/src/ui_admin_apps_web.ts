@@ -34,20 +34,20 @@ function renderAppsWebSubPanelHtml(
     <div class="sub-section-title">Navigation Views</div>
     <div class="sub-action-list" id="sub-tab-list">
       <button type="button" class="sub-action-item active" data-action="tab-broadcast">
-        <span style="display: flex; align-items: center; gap: 8px;">
+        <span class="row">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
           Broadcast
         </span>
       </button>
       <button type="button" class="sub-action-item" data-action="tab-portal">
-        <span style="display: flex; align-items: center; gap: 8px;">
+        <span class="row">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
           User Portal
         </span>
         <span class="sub-action-badge">${sites.length}</span>
       </button>
       <button type="button" class="sub-action-item" data-action="tab-whitelist">
-        <span style="display: flex; align-items: center; gap: 8px;">
+        <span class="row">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           Domain Allowlist
         </span>
@@ -55,29 +55,23 @@ function renderAppsWebSubPanelHtml(
       </button>
     </div>
 
-    <div class="sub-section-title" style="margin-top: 18px;">Quick Actions</div>
+    <div class="sub-section-title">Quick Actions</div>
     <div class="sub-action-list">
       <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
-        <span style="display: flex; align-items: center; gap: 8px;">
+        <span class="row">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
           Preview User Portal
         </span>
       </a>
     </div>
 
-    <div class="sub-section-title" style="margin-top: 18px;">Module Summary</div>
-    <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 13px;">
-      <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-        <span style="color: var(--text-muted);">Total Apps:</span>
-        <strong>${sites.length}</strong>
-      </div>
-      <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-        <span style="color: var(--text-muted);">Allowed Domains:</span>
-        <strong>${config.whitelist.length}</strong>
-      </div>
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Broadcast:</span>
-        <span class="badge ${activeUrl ? "badge-green" : "badge-yellow"}">${activeUrl ? "Active" : "Portal"}</span>
+    <div class="sub-section-title">Module Summary</div>
+    <div class="kv-list">
+      <div class="kv-row"><span>Portal apps</span><strong>${sites.length}</strong></div>
+      <div class="kv-row"><span>Allowed domains</span><strong>${config.whitelist.length}</strong></div>
+      <div class="kv-row">
+        <span>Broadcast</span>
+        <span class="badge ${activeUrl ? "badge-green" : "badge-neutral"}">${activeUrl ? "Live" : "Portal"}</span>
       </div>
     </div>
   `;
@@ -96,12 +90,12 @@ function renderAppsWebContentHtml(
   const presetsHtml = presets
     .map((p) => `
       <div class="preset-item">
-        <div>
-          <div style="font-weight: 700; font-size: 14px;">${escapeHtml(p.title)}</div>
-          <div style="font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">${escapeHtml(p.url)}</div>
+        <div class="flex-1">
+          <div class="cell-title">${escapeHtml(p.title)}</div>
+          <div class="cell-sub mono truncate">${escapeHtml(p.url)}</div>
         </div>
-        <div style="display: flex; gap: 8px;">
-          <button type="button" class="btn btn-sm btn-primary btn-launch-preset" data-url="${escapeAttr(p.url)}">Broadcast</button>
+        <div class="cell-actions">
+          <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="${escapeAttr(p.url)}">Broadcast</button>
           <button type="button" class="btn btn-sm btn-danger btn-delete-preset" data-id="${escapeAttr(p.id)}">Delete</button>
         </div>
       </div>
@@ -110,7 +104,7 @@ function renderAppsWebContentHtml(
 
   const appShortcutsHtml = sites
     .map((s) => `
-      <button type="button" class="btn btn-secondary btn-launch-preset" data-url="${escapeAttr(s.url)}" style="display: inline-flex; align-items: center; gap: 8px; margin: 4px;">
+      <button type="button" class="btn btn-secondary btn-launch-preset" data-url="${escapeAttr(s.url)}">
         <span>${escapeHtml(s.icon || "🌐")}</span>
         <span>${escapeHtml(s.title)}</span>
       </button>
@@ -119,22 +113,19 @@ function renderAppsWebContentHtml(
 
   const portalCardsHtml = sites
     .map((s) => `
-      <div class="card" style="display: flex; flex-direction: column; justify-content: space-between; gap: 12px; padding: 18px;">
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <span style="font-size: 24px;">${escapeHtml(s.icon || "🌐")}</span>
-          <div>
-            <div style="font-weight: 700; font-size: 15px;">${escapeHtml(s.title)}</div>
-            <div style="font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">${escapeHtml(s.domain)}</div>
+      <div class="app-tile">
+        <div class="app-tile-head">
+          <span class="app-tile-icon" aria-hidden="true">${escapeHtml(s.icon || "🌐")}</span>
+          <div class="flex-1">
+            <div class="cell-title truncate">${escapeHtml(s.title)}</div>
+            <div class="cell-sub mono truncate">${escapeHtml(s.domain)}</div>
           </div>
+          <span class="badge badge-blue">${escapeHtml(s.category)}</span>
         </div>
-        <div style="font-size: 12px; color: #93c5fd; background: rgba(59, 130, 246, 0.1); padding: 4px 8px; border-radius: 6px; align-self: flex-start;">
-          ${escapeHtml(s.category)}
-        </div>
-        <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 12px; margin-top: 4px;">
-          <div style="display: flex; gap: 8px; align-items: center;">
-            <a href="${escapeAttr(safeHttpUrl(s.url) || "#")}" target="_blank" rel="noopener noreferrer" style="font-size: 12px; color: var(--accent); text-decoration: none;">Test Link &rarr;</a>
-            <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="${escapeAttr(s.url)}">Broadcast</button>
-          </div>
+        <div class="app-tile-actions">
+          <a href="${escapeAttr(safeHttpUrl(s.url) || "#")}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-ghost">Open &rarr;</a>
+          <button type="button" class="btn btn-sm btn-secondary btn-launch-preset" data-url="${escapeAttr(s.url)}">Broadcast</button>
+          <span class="toolbar-spacer"></span>
           <button type="button" class="btn btn-sm btn-danger btn-delete-app" data-id="${escapeAttr(s.id)}">Remove</button>
         </div>
       </div>
@@ -145,16 +136,16 @@ function renderAppsWebContentHtml(
     .map((d) => `
       <span class="domain-tag">
         <span>${escapeHtml(d)}</span>
-        <button type="button" class="btn-remove-domain" data-domain="${escapeAttr(d)}" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 0 2px;">✕</button>
+        <button type="button" class="icon-btn btn-remove-domain" data-domain="${escapeAttr(d)}" title="Remove ${escapeAttr(d)}" aria-label="Remove ${escapeAttr(d)}">✕</button>
       </span>
     `)
     .join("");
 
   return `
-    <div class="page-head" style="margin-bottom: 20px;">
+    <div class="page-head">
       <div>
-        <h1 class="page-title">Apps &amp; Web Control</h1>
-        <p class="page-desc">Manage portal applications, broadcast pages live, and configure allowed web domains.</p>
+        <h1 class="page-title">Apps &amp; Web</h1>
+        <p class="page-desc">Broadcast a page to every screen, choose the apps on the User Portal, and control which sites workstations may open.</p>
       </div>
     </div>
 
@@ -172,36 +163,36 @@ function renderAppsWebContentHtml(
             <p class="card-sub">
               ${
                 isBroadcasting
-                  ? `Workstations are currently synchronized to: <br><code style="font-size: 14px; margin-top: 6px; display: inline-block;">${escapeHtml(activeUrl!)}</code>`
+                  ? `Workstations are currently synchronized to: <br><code class="code-chip">${escapeHtml(activeUrl!)}</code>`
                   : "Workstations are showing the standard User Portal."
               }
             </p>
 
-            <form id="broadcast-form" style="margin-top: 20px;">
+            <form id="broadcast-form">
               <div class="form-group">
                 <label class="form-label" for="broadcast-url">New Page or Resource URL</label>
                 <input type="url" class="form-input" id="broadcast-url" required placeholder="https://scratch.mit.edu or https://phet.colorado.edu">
                 <div class="form-hint">Workstations navigate instantly via top-level window. External iframes are never used.</div>
               </div>
-              <div style="display: flex; gap: 10px;">
+              <div class="form-actions">
                 <button type="submit" class="btn btn-primary">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
                   Broadcast to All Screens
                 </button>
                 ${
                   isBroadcasting
-                    ? `<button type="button" class="btn btn-danger" id="btn-stop-broadcast">Stop Broadcast &amp; Return to Portal</button>`
+                    ? `<button type="button" class="btn btn-secondary" id="btn-stop-broadcast">Stop Broadcast &amp; Return to Portal</button>`
                     : ""
                 }
               </div>
             </form>
           </div>
 
-          <div class="card" style="margin-top: 20px;">
+          <div class="card">
             <h2 class="card-title">1-Click Broadcast from Portal Apps</h2>
             <p class="card-sub">Open an approved app on every screen in one click.</p>
-            <div style="display: flex; flex-wrap: wrap;">
-              ${appShortcutsHtml || `<p style="color: var(--text-muted); font-size: 13px;">No portal apps configured yet.</p>`}
+            <div class="chip-list">
+              ${appShortcutsHtml || `<p class="empty-note">No portal apps configured yet.</p>`}
             </div>
           </div>
         </div>
@@ -211,7 +202,7 @@ function renderAppsWebContentHtml(
             <h2 class="card-title">Custom Page Presets &amp; Shortcuts</h2>
             <p class="card-sub">Saved bookmarks for pages you broadcast often.</p>
 
-            <form id="add-preset-form" style="margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border);">
+            <form id="add-preset-form" class="form-section">
               <div class="form-group">
                 <label class="form-label" for="preset-title">Shortcut Name</label>
                 <input type="text" class="form-input" id="preset-title" required placeholder="e.g. Monday Safety Briefing">
@@ -224,7 +215,7 @@ function renderAppsWebContentHtml(
             </form>
 
             <div id="presets-list">
-              ${presetsHtml || `<p style="color: var(--text-muted); font-size: 13px;">No custom shortcuts saved yet.</p>`}
+              ${presetsHtml || `<p class="empty-note">No custom shortcuts saved yet.</p>`}
             </div>
           </div>
         </div>
@@ -235,9 +226,9 @@ function renderAppsWebContentHtml(
     <!-- TAB 2: USER PORTAL APPS                                    -->
     <!-- ============================================================== -->
     <div class="tab-pane" id="pane-portal">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <span style="font-size: 14px; color: var(--text-muted);">Current Mode:</span>
+      <div class="row-between mb-md">
+        <div class="row">
+          <span class="text-muted">Current mode</span>
           <span class="badge ${tenant?.mode === "single_url" ? "badge-yellow" : "badge-green"}">${tenant?.mode === "single_url" ? "Single URL Lockdown" : "App Grid Launcher"}</span>
         </div>
         <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Preview User Portal">
@@ -284,8 +275,8 @@ function renderAppsWebContentHtml(
           <div class="card">
             <h2 class="card-title">Configured Portal Applications (${sites.length})</h2>
             <p class="card-sub">Click Test Link to preview or Broadcast to push directly to screens.</p>
-            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-top: 14px;" id="portal-apps-grid">
-              ${portalCardsHtml || `<p style="color: var(--text-muted); font-size: 13px;">No applications added yet. Use the form on the left to add one.</p>`}
+            <div class="app-tile-grid" id="portal-apps-grid">
+              ${portalCardsHtml || `<p class="empty-note">No applications added yet. Use the form on the left to add one.</p>`}
             </div>
           </div>
         </div>
@@ -302,7 +293,7 @@ function renderAppsWebContentHtml(
             <h2 class="card-title">Add Allowed Domain</h2>
             <p class="card-sub">Workstation browsers enforce this policy at the OS layer.</p>
 
-            <form id="add-domain-form" style="margin-bottom: 24px;">
+            <form id="add-domain-form" class="form-section">
               <div class="form-group">
                 <label class="form-label" for="domain-input">Domain Name</label>
                 <input type="text" class="form-input" id="domain-input" required placeholder="e.g. scratch.mit.edu">
@@ -311,8 +302,8 @@ function renderAppsWebContentHtml(
               <button type="submit" class="btn btn-primary">Add to Allowlist</button>
             </form>
 
-            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px;">Quick-Add Preset Packs</h3>
-            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <h3 class="section-label">Quick-add preset packs</h3>
+            <div class="chip-list">
               <button type="button" class="btn btn-secondary btn-sm btn-pack" data-domains="khanacademy.org,kastatic.org,kasandbox.org">Khan Academy Pack</button>
               <button type="button" class="btn btn-secondary btn-sm btn-pack" data-domains="scratch.mit.edu,replit.com,github.com">Coding &amp; STEM Pack</button>
               <button type="button" class="btn btn-secondary btn-sm btn-pack" data-domains="cbse.gov.in,ncert.nic.in,diksha.gov.in">CBSE / NCERT Pack</button>
@@ -323,17 +314,15 @@ function renderAppsWebContentHtml(
 
         <div>
           <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-              <h2 class="card-title" style="margin-bottom: 0;">Currently Allowed Domains (${config.whitelist.length})</h2>
-            </div>
+            <h2 class="card-title">Currently Allowed Domains (${config.whitelist.length})</h2>
             <p class="card-sub">These domains are merged into the Chromium URLAllowlist across all workstations.</p>
 
-            <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px;" id="whitelist-tags-container">
-              ${domainTagsHtml || `<p style="color: var(--text-muted); font-size: 13px;">No domains currently whitelisted.</p>`}
+            <div class="chip-list" id="whitelist-tags-container">
+              ${domainTagsHtml || `<p class="empty-note">No domains currently whitelisted.</p>`}
             </div>
 
-            <div style="margin-top: 20px; padding: 12px 14px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: var(--radius-sm); font-size: 12px; color: var(--text-muted); line-height: 1.5;">
-              <strong style="color: #93c5fd;">Enterprise Managed Policy:</strong> Permitted domains are merged into Chromium's managed policy (<code>URLAllowlist</code>) upon each 3-second workstation heartbeat.
+            <div class="callout mt-lg mb-0">
+              <div><strong>Enterprise managed policy.</strong> Permitted domains are merged into Chromium's managed policy (<code>URLAllowlist</code>) upon each 3-second workstation heartbeat.</div>
             </div>
           </div>
         </div>

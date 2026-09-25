@@ -35,6 +35,7 @@ cloudflare-control/
 │   ├── ui_portal.ts                    # User Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms)
+│   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   └── types.ts                        # Strict TypeScript interfaces
 └── test/
     ├── worker.test.ts                  # Multi-tenant automated integration & security test suite
@@ -190,7 +191,7 @@ cloudflare-control/
   - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
   - **Workstations Page Layout (`/admin/workstations`)**:
     - **Sidebar Subpanel**: Removed duplicate batch commands. Dedicated to Workstation Groups management (`+ New Group`, member counts, filtering by group, and delete group actions).
-    - **Top Toolbar**: Contains "Select All" toggle checkbox, dynamic selection count indicator (`# selected`), targeted batch actions (`Lock`, `Unlock`, `Clear Session`, `Reboot`, `Shutdown`), `Move to Group...`, `Reset to Portal`, and `Broadcast URL`.
+    - **Top Toolbar** (`.toolbar`): "Select All" and the selection count (`# selected`); `Lock` and `Unlock`; `Broadcast URL` (the one primary button), `Reset to Portal` and `Move to Group...`; and a **Session & Power** menu (a `popover`, `.menu-popover`) holding `Clear Session`, `Reboot` and `Shutdown`. The destructive commands sit one click further away because each interrupts whoever is at the screen; their button ids are unchanged, so the panel's `runToolbarAction()` still clicks them.
     - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, saving collapse states in `localStorage`.
   - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
     - Unifies Broadcast, User Portal Apps, and Domain Allowlist into a single, cohesive view with 3 tab panes (`Broadcast`, `User Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy paths (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
@@ -204,7 +205,7 @@ cloudflare-control/
     - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain & VNC Tunnel \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Activity).
     - **Scrollable Activity Table (`.table-scrollable`)**: Recent Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
   - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
-  - **Transitions & Micro-Interactions**: Hardware-accelerated transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
+  - **Look, Motion & Accessibility**: a calm, neutral design in light and dark (Rule 5c): flat surfaces with hairline borders and small shadows, one accent blue for the primary action, status shown as dots and soft badges, red only on destructive actions. Inter for the interface, JetBrains Mono for ids, hosts and URLs. Compositor-only transitions, a cross-fade between console pages (`@view-transition`), all of it off under `prefers-reduced-motion`; `:focus-visible` outlines, `forced-colors` borders, and zero inline event handlers (`data-action` pattern).
 
 ### Rule 5c: One Design Language, Declared Once
 
@@ -224,9 +225,24 @@ cloudflare-control/
   browser defaults inside a dark console for as long as they existed. A test
   renders every console page and fails on any class the stylesheet does not carry
   (including `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`).
-- `--text-subtle` is `#808fa6` and not a darker slate because the section headings
-  it paints have to clear 4.5:1 against `--bg-panel`, `--bg-surface` and
-  `--bg-card`. The WCAG 2.2 AA claim in Rule 5b is only true while it does.
+- **Two themes from one table.** `PALETTE` holds every colour as a `[light, dark]` pair
+  and `rootTokensCss()` writes both: light on `:root`, dark under
+  `prefers-color-scheme: dark` unless the visitor pinned light, and either one pinned
+  through `<html data-theme>`. The page follows the system; the consoles (profile menu)
+  and the landing page (header) offer a two-state switch, system or its opposite,
+  remembered per origin in `localStorage` (`labkiosk-theme`) and applied before first
+  paint by `themeHeadHtml(nonce)`. The User Portal, organization homepage, legal and
+  status pages follow the system setting. Adding a token means adding both values.
+- **No page paints a colour of its own.** A literal colour in a page is right in one
+  theme and wrong in the other: use a token, or a declared class (`.callout`,
+  `.badge-*`, `.text-muted`, `.stat-tile`…). SVG icons use `currentColor`. A test
+  fails on any `#hex`/`rgba()` in a `style` attribute, an SVG `fill`/`stroke`, or a
+  stylesheet outside the token blocks.
+- **Contrast is measured, not claimed.** A test computes WCAG ratios from `PALETTE` in
+  both themes: every text token ≥ 4.5:1 on every surface, each `--*-text` on its
+  `--*-soft` tint, white on the accent and danger fills, and `--border-input` ≥ 3:1
+  (a field's border is its only outline). The accent fill is `#2563eb` in both themes
+  because white on the brighter `#3b82f6` measures 3.7:1.
 
 ### Rule 5d: The Context Panel Is Wired, Not Decorative
 
@@ -365,6 +381,8 @@ pnpm dev                        # predev applies migrations/ to local D1
 | **A control in the left context panel does nothing** | Its `data-` attribute is not one `renderSubPanelScripts()` reads, or its target element id does not exist on that page. | Add the case to that function, or take the control out. See Rule 5d. |
 | **Every dashboard API call answers `400 No organization selected` under `pnpm dev`** | The call was written as a bare `fetch("/api/...")`. There is no organization subdomain on a dev host, so nothing resolves the tenant. | Call `labkioskApi(path)`. See Rule 5e. |
 | **A page looks subtly off-brand next to the consoles** | It declared its own `:root`. Four surfaces each had one, on four different backgrounds. | Render `:root` from `rootTokensCss()` in `ui_tokens.ts`. See Rule 5c. |
+| **Text or an icon is fine in one theme and invisible in the other** | A literal colour (`#fff`, `#93c5fd`, `rgba(255,255,255,…)`) in markup, a stylesheet or an SVG `stroke`. | Use a `PALETTE` token, a declared class, or `currentColor`. A test rejects literals. See Rule 5c. |
+| **A console page renders zoomed out on a phone although nothing looks wide** | An absolutely positioned descendant (the visually hidden "Actions" header) inside an `overflow: auto` scroller that is not positioned: its containing block is the page, so it widens the page instead of being clipped. | `.table-container` is `position: relative`. Keep scrollers positioned; check `innerWidth === 375` under mobile emulation. |
 | **A `/super` tab shows another tab's content** | All four panes were emitted together and hidden with an inline `display`, and `.tab-pane` had no CSS at all -- so the pane without an inline rule rendered everywhere. | Render one pane. `panesByTab[activeTab]` in `ui_super.ts` is the only thing that reaches the page. |
 | **Resetting Broadcast lands on SaaS landing page instead of organization portal** | `resetBroadcastToPortal()` sent `origin + "/"` without tenant scoping. | Authoritatively resolve `portalUrlFor(tenant)` in `POST /api/command`. |
 | **Single-Site Lockdown URL rejected without scheme** | URL lacked `https://` prefix (e.g. `canvas.example.com`). | `safeHttpUrl()` in `escape.ts` automatically prepends `https://` for scheme-less domains. |
