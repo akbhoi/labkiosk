@@ -11,10 +11,9 @@ import {
   PortalSite,
   ClientDevice,
   HomepageBlock,
-  RemoteCommand,
-  CommandAction,
   DeviceToken,
   AuditLogEntry,
+  AuditEntryMessage,
   BroadcastPreset,
   TenantUser,
   TenantUserRole,
@@ -66,6 +65,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   homepage_headline TEXT,
   homepage_intro TEXT,
   homepage_blocks TEXT,
+  online_workstations INTEGER NOT NULL DEFAULT 0,
+  custom_hostname_id TEXT,
+  custom_hostname_status TEXT NOT NULL DEFAULT 'none',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -101,7 +103,6 @@ CREATE TABLE IF NOT EXISTS client_devices (
   last_seen INTEGER NOT NULL,
   is_locked INTEGER NOT NULL DEFAULT 0,
   active_url TEXT,
-  thumbnail TEXT,
   vnc_password TEXT,
   remote_host TEXT,
   group_name TEXT,
@@ -109,16 +110,6 @@ CREATE TABLE IF NOT EXISTS client_devices (
   broadcast_epoch INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS commands (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  target TEXT NOT NULL,
-  action TEXT NOT NULL,
-  payload_json TEXT,
-  created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -146,13 +137,6 @@ CREATE TABLE IF NOT EXISTS tenant_whitelist (
   domain TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   UNIQUE (tenant_id, domain)
-);
-
-CREATE TABLE IF NOT EXISTS command_deliveries (
-  command_id TEXT NOT NULL,
-  client_id TEXT NOT NULL,
-  delivered_at INTEGER NOT NULL,
-  PRIMARY KEY (command_id, client_id)
 );
 
 CREATE TABLE IF NOT EXISTS login_attempts (
@@ -205,10 +189,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_portal_sites_tenant ON portal_sites(tenant_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_client_devices_tenant ON client_devices(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_commands_tenant_target ON commands(tenant_id, target, expires_at);
 CREATE INDEX IF NOT EXISTS idx_device_tokens_tenant ON device_tokens(tenant_id, client_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_command_deliveries_client ON command_deliveries(client_id, delivered_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
@@ -355,6 +337,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     if (!groupNames) {
       throw new Error("workstation group names are not unique yet (0012)");
     }
+    // 0014: live state moved to OrgHub; the organization carries its online count.
+    await db.prepare("SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -659,6 +643,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "custom_domain",
   "requested_custom_domain",
   "custom_domain_status",
+  "custom_hostname_id",
+  "custom_hostname_status",
   "default_lock_message",
   "portal_title",
   "portal_subtitle",
@@ -795,7 +781,10 @@ export async function approveCustomDomain(
   await updateTenant(db, tenantId, {
     custom_domain: targetDomain,
     requested_custom_domain: null,
-    custom_domain_status: "approved"
+    custom_domain_status: "approved",
+    // Cloudflare for SaaS provisioning starts now (custom_hostnames.ts).
+    custom_hostname_id: null,
+    custom_hostname_status: "pending"
   });
 }
 
@@ -812,7 +801,9 @@ export async function removeCustomDomain(db: D1Database, tenantId: string): Prom
   await updateTenant(db, tenantId, {
     custom_domain: null,
     requested_custom_domain: null,
-    custom_domain_status: "none"
+    custom_domain_status: "none",
+    custom_hostname_id: null,
+    custom_hostname_status: "none"
   });
 }
 
@@ -994,17 +985,15 @@ export async function getTenantUserPermissions(
 export async function listAllTenants(
   db: D1Database
 ): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>> {
-  const now = Math.floor(Date.now() / 1000);
   const res = await db
     .prepare(
       `SELECT t.*, u.email as admin_email, u.name as admin_name,
-              (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id AND (? - cd.last_seen) < 15) as online_clients,
+              t.online_workstations as online_clients,
               (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id) as total_clients
        FROM tenants t
        JOIN users u ON t.user_id = u.id
        ORDER BY t.created_at DESC`
     )
-    .bind(now)
     .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>();
 
   return res.results || [];
@@ -1137,64 +1126,86 @@ export async function deletePortalSite(
     .run();
 }
 
-export async function upsertClientDevice(
-  db: D1Database,
-  data: {
-    tenantId: string;
-    clientId: string;
-    clientNum?: number;
-    ip?: string;
-    isLocked?: boolean;
-    activeUrl?: string;
-    thumbnail?: string;
-    vncPassword?: string;
-    remoteHost?: string;
-  }
-): Promise<{ broadcast_url: string | null; broadcast_epoch: number }> {
-  const compositeId = `${data.tenantId}:${data.clientId}`;
+/** A workstation's registry row as its organization's OrgHub writes it back. */
+export interface DeviceRegistryRow {
+  tenantId: string;
+  clientId: string;
+  clientNum: number;
+  ip: string;
+  isLocked: boolean;
+  activeUrl: string | null;
+  vncPassword: string | null;
+  remoteHost: string | null;
+  /** Unix seconds. */
+  lastSeen: number;
+}
+
+/**
+ * Write workstations' last known state to their registry rows, creating a row
+ * for a workstation seen for the first time.
+ *
+ * Only OrgHub calls this, and only when something changed, a machine connected
+ * or left, or a row is five minutes old -- never per heartbeat. Group membership
+ * and per-workstation broadcast state are left alone: people set those.
+ */
+export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryRow[]): Promise<void> {
+  if (!rows.length) return;
   const now = Math.floor(Date.now() / 1000);
-  const isLockedVal = data.isLocked ? 1 : 0;
-  const clientNum = data.clientNum || 1;
-
-  // RETURNING hands back this workstation's own broadcast in the same round trip,
-  // so the heartbeat that runs every 3 seconds costs no extra query.
-  const row = await db
-    .prepare(
-      `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, thumbnail, vnc_password, remote_host, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         client_num = excluded.client_num,
-         ip = excluded.ip,
-         last_seen = excluded.last_seen,
-         is_locked = excluded.is_locked,
-         active_url = excluded.active_url,
-         thumbnail = COALESCE(excluded.thumbnail, client_devices.thumbnail),
-         vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
-         remote_host = COALESCE(excluded.remote_host, client_devices.remote_host),
-         updated_at = excluded.updated_at
-       RETURNING broadcast_url, broadcast_epoch`
+  const statement = db.prepare(
+    `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password, remote_host, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       client_num = excluded.client_num,
+       ip = excluded.ip,
+       last_seen = excluded.last_seen,
+       is_locked = excluded.is_locked,
+       active_url = COALESCE(excluded.active_url, client_devices.active_url),
+       vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
+       remote_host = COALESCE(excluded.remote_host, client_devices.remote_host),
+       updated_at = excluded.updated_at`
+  );
+  await db.batch(
+    rows.map((row) =>
+      statement.bind(
+        `${row.tenantId}:${row.clientId}`,
+        row.tenantId,
+        row.clientId,
+        row.clientNum,
+        row.ip || null,
+        row.lastSeen,
+        row.isLocked ? 1 : 0,
+        row.activeUrl,
+        row.vncPassword,
+        row.remoteHost,
+        now,
+        now
+      )
     )
-    .bind(
-      compositeId,
-      data.tenantId,
-      data.clientId,
-      clientNum,
-      data.ip || null,
-      now,
-      isLockedVal,
-      data.activeUrl || null,
-      data.thumbnail || null,
-      data.vncPassword || null,
-      data.remoteHost || null,
-      now,
-      now
-    )
-    .first<{ broadcast_url: string | null; broadcast_epoch: number }>();
+  );
+}
 
-  return {
-    broadcast_url: row?.broadcast_url ?? null,
-    broadcast_epoch: Number(row?.broadcast_epoch) || 0
-  };
+/** Per-workstation broadcasts an organization has recorded, for OrgHub's configuration cache. */
+export async function listDeviceBroadcasts(
+  db: D1Database,
+  tenantId: string
+): Promise<Map<string, { url: string | null; epoch: number }>> {
+  const res = await db
+    .prepare("SELECT client_id, broadcast_url, broadcast_epoch FROM client_devices WHERE tenant_id = ? AND broadcast_epoch > 0")
+    .bind(tenantId)
+    .all<{ client_id: string; broadcast_url: string | null; broadcast_epoch: number }>();
+  const map = new Map<string, { url: string | null; epoch: number }>();
+  for (const row of res.results || []) {
+    map.set(row.client_id, { url: row.broadcast_url, epoch: Number(row.broadcast_epoch) || 0 });
+  }
+  return map;
+}
+
+/** The number of workstations online, as the organization's OrgHub last counted it. */
+export async function setTenantOnlineCount(db: D1Database, tenantId: string, online: number): Promise<void> {
+  await db
+    .prepare("UPDATE tenants SET online_workstations = ? WHERE id = ?")
+    .bind(Math.max(0, Math.floor(online)), tenantId)
+    .run();
 }
 
 /**
@@ -1306,129 +1317,6 @@ export async function assignClientsToGroup(
     )
     .bind(groupName, now, tenantId, ...clientIds)
     .run();
-}
-
-/**
- * Queue one command per target, returning the command ids in target order.
- *
- * All rows go in with a single statement: the (id, target) pairs travel as one
- * JSON parameter and `json_each` expands them, so a 500-workstation batch is one
- * database round trip and stays far below D1's 100-parameter limit.
- */
-export async function enqueueCommands(
-  db: D1Database,
-  data: {
-    tenantId: string;
-    targets: string[];
-    action: CommandAction;
-    url?: string;
-    message?: string;
-    epoch?: number;
-    portal?: boolean;
-  }
-): Promise<string[]> {
-  if (data.targets.length === 0) return [];
-  const rows = data.targets.map((target) => ({ id: crypto.randomUUID(), target }));
-  const now = Math.floor(Date.now() / 1000);
-  const expiresAt = now + 60; // 60s command TTL
-  const payloadJson = JSON.stringify({
-    url: data.url,
-    message: data.message,
-    epoch: data.epoch,
-    ...(data.portal ? { portal: true } : {})
-  });
-
-  await db
-    .prepare(
-      `INSERT INTO commands (id, tenant_id, target, action, payload_json, created_at, expires_at)
-       SELECT json_extract(value, '$.id'), ?, json_extract(value, '$.target'), ?, ?, ?, ?
-       FROM json_each(?)`
-    )
-    .bind(data.tenantId, data.action, payloadJson, now, expiresAt, JSON.stringify(rows))
-    .run();
-
-  return rows.map((r) => r.id);
-}
-
-/**
- * Drain the commands a workstation has not yet seen.
- *
- * Broadcast commands (`target: "all"`) stay queued until they expire so a client
- * that was offline at dispatch time still receives them, but a delivery receipt
- * per (command, client) guarantees each workstation executes one exactly once.
- * Previously every client re-ran a broadcast on all ~20 heartbeats within the
- * 60s TTL, so a single "Broadcast URL" spawned ~20 browser launches per PC.
- */
-export async function popCommandsForClient(
-  db: D1Database,
-  tenantId: string,
-  clientId: string
-): Promise<RemoteCommand[]> {
-  const now = Math.floor(Date.now() / 1000);
-  const rows = await db
-    .prepare(
-      `SELECT c.* FROM commands c
-       WHERE c.tenant_id = ?
-         AND (c.target = 'all' OR c.target = ?)
-         AND c.expires_at > ?
-         AND NOT EXISTS (
-           SELECT 1 FROM command_deliveries d
-           WHERE d.command_id = c.id AND d.client_id = ?
-         )
-       ORDER BY c.created_at ASC`
-    )
-    .bind(tenantId, clientId, now, clientId)
-    .all<any>();
-
-  const commands: RemoteCommand[] = [];
-
-  for (const row of rows.results || []) {
-    let payload: { url?: string; message?: string; epoch?: number; portal?: boolean } = {};
-    if (row.payload_json) {
-      try {
-        payload = JSON.parse(row.payload_json);
-      } catch (err) {
-        console.warn(`[DB] Discarding malformed payload for command ${row.id}:`, err);
-      }
-    }
-
-    commands.push({
-      id: row.id,
-      target: row.target,
-      action: row.action as CommandAction,
-      url: payload.url,
-      message: payload.message,
-      epoch: payload.epoch,
-      ...(payload.portal === true ? { portal: true } : {}),
-      timestamp: row.created_at
-    });
-
-    await db
-      .prepare(
-        "INSERT OR IGNORE INTO command_deliveries (command_id, client_id, delivered_at) VALUES (?, ?, ?)"
-      )
-      .bind(row.id, clientId, now)
-      .run();
-
-    // A unicast command has exactly one recipient, so it can retire immediately.
-    if (row.target === clientId) {
-      await db.prepare("DELETE FROM commands WHERE id = ?").bind(row.id).run();
-    }
-  }
-
-  return commands;
-}
-
-/** Remove expired commands and the delivery receipts that referenced them. */
-export async function purgeExpiredCommands(db: D1Database): Promise<void> {
-  const now = Math.floor(Date.now() / 1000);
-  await db
-    .prepare(
-      "DELETE FROM command_deliveries WHERE command_id IN (SELECT id FROM commands WHERE expires_at <= ?)"
-    )
-    .bind(now)
-    .run();
-  await db.prepare("DELETE FROM commands WHERE expires_at <= ?").bind(now).run();
 }
 
 // ============================================================
@@ -1708,29 +1596,105 @@ export async function deleteBroadcastPreset(
 // AUDIT LOG
 // ============================================================
 
+/**
+ * Where audit entries go. With the AUDIT_QUEUE binding (production) they are
+ * queued and written to D1 in batches by the queue consumer; without it (tests,
+ * local development) they are inserted directly. Set once per isolate from the
+ * Worker's environment by `useAuditQueue`.
+ */
+let auditQueue: Queue<AuditEntryMessage> | null = null;
+
+export function useAuditQueue(queue: Queue<AuditEntryMessage> | null | undefined): void {
+  auditQueue = queue ?? null;
+}
+
 export async function writeAuditLog(
   db: D1Database,
   entry: { tenantId?: string | null; userId?: string | null; action: string; details?: string }
 ): Promise<void> {
+  const message: AuditEntryMessage = {
+    id: crypto.randomUUID(),
+    tenantId: entry.tenantId || null,
+    userId: entry.userId || null,
+    action: entry.action,
+    details: entry.details || null,
+    createdAt: Math.floor(Date.now() / 1000)
+  };
   try {
-    await db
-      .prepare(
-        "INSERT INTO audit_logs (id, tenant_id, user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-      )
-      .bind(
-        crypto.randomUUID(),
-        entry.tenantId || null,
-        entry.userId || null,
-        entry.action,
-        entry.details || null,
-        Math.floor(Date.now() / 1000)
-      )
-      .run();
+    if (auditQueue) {
+      await auditQueue.send(message);
+      return;
+    }
+    await insertAuditEntries(db, [message]);
   } catch (err) {
     // Auditing must never break the operation it records, but a failure to
-    // record is itself worth surfacing in the worker logs.
+    // record is itself worth surfacing in the worker logs. A queue that cannot
+    // be reached falls back to writing the entry directly.
     console.error("[DB] Failed writing audit log:", err);
+    if (auditQueue) {
+      try {
+        await insertAuditEntries(db, [message]);
+      } catch (fallbackErr) {
+        console.error("[DB] Direct audit write failed too:", fallbackErr);
+      }
+    }
   }
+}
+
+/**
+ * Insert audit entries in one statement. Idempotent on the entry id, because a
+ * queue may deliver a batch again after a consumer failure.
+ */
+export async function insertAuditEntries(db: D1Database, entries: AuditEntryMessage[]): Promise<void> {
+  if (!entries.length) return;
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO audit_logs (id, tenant_id, user_id, action, details, created_at)
+       SELECT json_extract(value, '$.id'), json_extract(value, '$.tenantId'), json_extract(value, '$.userId'),
+              json_extract(value, '$.action'), json_extract(value, '$.details'), json_extract(value, '$.createdAt')
+       FROM json_each(?)`
+    )
+    .bind(JSON.stringify(entries))
+    .run();
+}
+
+/** How long audit entries stay in D1 before they are archived to R2. */
+export const AUDIT_RETENTION_DAYS = 180;
+/** Entries archived per run; the hourly cron works through a backlog. */
+const AUDIT_ARCHIVE_BATCH = 5000;
+
+/**
+ * Move audit entries older than the retention period from D1 into R2, as one
+ * NDJSON file per run, and delete them from D1 only once the file is stored.
+ * Returns how many entries were archived.
+ */
+export async function archiveOldAuditLogs(
+  db: D1Database,
+  bucket: R2Bucket,
+  now = Math.floor(Date.now() / 1000)
+): Promise<number> {
+  const cutoff = now - AUDIT_RETENTION_DAYS * 86400;
+  const res = await db
+    .prepare("SELECT * FROM audit_logs WHERE created_at < ? ORDER BY created_at ASC LIMIT ?")
+    .bind(cutoff, AUDIT_ARCHIVE_BATCH)
+    .all<AuditLogEntry>();
+  const rows = res.results || [];
+  if (!rows.length) return 0;
+
+  const first = new Date(rows[0].created_at * 1000).toISOString().slice(0, 10);
+  const key = `audit/${first.slice(0, 4)}/${first}-${rows[0].id}.ndjson`;
+  await bucket.put(key, rows.map((row) => JSON.stringify(row) + "\n").join(""), {
+    httpMetadata: { contentType: "application/x-ndjson" }
+  });
+
+  const ids = rows.map((row) => row.id);
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const slice = ids.slice(i, i + 90);
+    statements.push(db.prepare(`DELETE FROM audit_logs WHERE id IN (${slice.map(() => "?").join(",")})`).bind(...slice));
+  }
+  await db.batch(statements);
+  return rows.length;
 }
 
 /**

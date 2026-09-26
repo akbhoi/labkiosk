@@ -43,7 +43,8 @@ The typecheck deliberately runs twice, against two TypeScript projects. `tsconfi
 
 ### Command delivery
 
-- A broadcast reaches each workstation **exactly once** — the regression that `command_deliveries` exists to prevent.
+- A broadcast reaches each workstation **exactly once** — the regression the hub's delivery receipts exist to prevent.
+- OrgHub: a socket is configured and online at once, commands are pushed once, frames flow only while a console watches, a quiet workstation writes nothing to D1, a stale socket is closed, removal and suspension close sockets, and one organization's hub refuses another's requests.
 - A broadcast sets the authoritative `targetUrl` and epoch in telemetry, and reset restores the portal.
 - Broadcast state lives in the database rather than worker memory.
 - A `navigate` command with a non-`http(s)` URL is rejected.

@@ -38,7 +38,7 @@ assumed). Follow `0011_organization_vocabulary.sql`:
    `SCHEMA_SQL` because later migrations appended columns — mapping values in the `SELECT`.
 6. Drop the holding tables. Wrangler applies the file as one unit.
 
-Tables that reference neither (`command_deliveries`, `login_attempts`, `ui_catalogs`) stay untouched.
+Tables that reference neither (`login_attempts`, `ui_catalogs`) stay untouched.
 
 ## Test a migration before it ships
 
@@ -82,3 +82,15 @@ assistant | content_manager`; permissions JSON in `tenant_users.permissions`. Br
 `tenants.broadcast_url/epoch` and `client_devices.broadcast_url/epoch` (`0010`). Groups:
 `workstation_groups` + `client_devices.group_name` (by name). Catalogs: `ui_catalogs` has no
 `tenant_id` on purpose.
+
+**Live state is not in D1** (`0014`). The command queue (`commands`, `command_deliveries`) and
+`client_devices.thumbnail` were dropped: queued commands, deliveries and who is connected live in
+each organization's OrgHub (its own SQLite: `commands`, `deliveries`, `revoked`, `meta`), and
+frames are relayed, never stored. `client_devices` is the **registry** the hub writes back to
+(connect, disconnect, batched changes, a 5-minute refresh) — never per heartbeat.
+`tenants.online_workstations` is the hub's count, for the super admin list without a query per
+organization. `tenants.custom_hostname_id` / `custom_hostname_status`
+(`none | pending | active | failed | local`) track the Cloudflare for SaaS hostname. `audit_logs`
+keeps 180 days (`AUDIT_RETENTION_DAYS`); the hourly cron moves older rows to R2 as NDJSON.
+A DO's own schema is not a D1 migration: it is created in `OrgHub`'s constructor, and changing it
+needs its own versioned step there.

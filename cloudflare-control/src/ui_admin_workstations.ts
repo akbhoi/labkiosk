@@ -351,6 +351,7 @@ function renderWorkstationsScripts(
       }
       window.addEventListener("scroll", refreshVisibleCards, { passive: true });
       window.addEventListener("resize", refreshVisibleCards, { passive: true });
+      window.addEventListener("scroll", function () { sendWatch(); }, { passive: true });
 
       function applyDensity(next) {
         density = next === "compact" ? "compact" : "thumbs";
@@ -363,6 +364,7 @@ function renderWorkstationsScripts(
           var card = document.getElementById("card-" + id);
           if (card) updateCard(card, id, clientsData[id]);
         }
+        sendWatch();
       }
       window.labkioskApplyDensity = applyDensity;
       window.labkioskGridDensity = function () { return density; };
@@ -634,14 +636,39 @@ function renderWorkstationsScripts(
         return sec;
       }
 
-      // --------------------------------------------------------- poll telemetry
+      // --------------------------------------------------------- workstation list
+      // The full list (groups, offline machines) comes from /api/clients; while
+      // the live channel is open, changes arrive over it and this runs only to
+      // pick up new enrolments and group moves. The screens on view are named,
+      // so a console that has fallen back to polling still gets their frames.
       async function pollClients() {
         try {
-          const res = await fetch(labkioskApi("/api/clients"));
+          const res = await fetch(labkioskApi("/api/clients"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ watch: live ? [] : visibleClientIds() })
+          });
           if (!res.ok) return;
           const data = await res.json();
           clientsData = data.clients || {};
+          renderClients();
+        } catch (err) {
+          console.warn("Workstation list:", err);
+        }
+      }
 
+      var renderQueued = false;
+      function scheduleRender() {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(function () {
+          renderQueued = false;
+          renderClients();
+        });
+      }
+
+      function renderClients() {
+        try {
           const grid = document.getElementById("kiosk-grid");
           const ids = Object.keys(clientsData).sort();
 
@@ -726,9 +753,128 @@ function renderWorkstationsScripts(
 
           applyFilter(activeFilter);
           updateSelectionToolbar();
+          sendWatch();
         } catch (err) {
-          console.warn("Telemetry poll:", err);
+          console.warn("Rendering workstations:", err);
         }
+      }
+
+      // --------------------------------------------------------- live channel
+      // One WebSocket to this organization's OrgHub: status changes as they
+      // happen, and frames only for the screens this console is showing. Nobody
+      // watching a screen means that workstation takes no screenshots at all.
+      var live = null;
+      var liveRetryMs = 1000;
+      var pollTimer = null;
+      var watchSent = null;
+
+      function visibleClientIds() {
+        if (density === "compact") return [];
+        var ids = [];
+        for (var id in clientsData) {
+          var card = document.getElementById("card-" + id);
+          if (card && card.style.display !== "none" && clientsData[id] && clientsData[id].online && wantsThumbnail(card)) ids.push(id);
+        }
+        return ids.slice(0, 500);
+      }
+
+      function sendWatch() {
+        if (!live || live.readyState !== 1) return;
+        var ids = visibleClientIds();
+        var key = ids.join(",");
+        if (key === watchSent) return;
+        watchSent = key;
+        live.send(JSON.stringify({ type: "watch", clientIds: ids }));
+      }
+
+      function startPolling() {
+        if (!pollTimer) pollTimer = setInterval(pollClients, 5000);
+      }
+
+      function stopPolling() {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }
+
+      function mergeStatus(status) {
+        var c = clientsData[status.clientId] || { clientId: status.clientId };
+        c.clientNum = status.clientNum;
+        c.activeUrl = status.activeUrl || c.activeUrl;
+        c.isLocked = status.isLocked;
+        c.ip = status.ip || c.ip;
+        c.online = status.online;
+        c.vncPassword = status.vncPassword || c.vncPassword;
+        c.remoteHost = status.remoteHost || c.remoteHost;
+        if (!status.online) c.thumbnail = undefined;
+        clientsData[status.clientId] = c;
+      }
+
+      function handleLive(text) {
+        var msg;
+        try {
+          msg = JSON.parse(text);
+        } catch (err) {
+          console.warn("Live channel: unreadable message", err);
+          return;
+        }
+        if (msg.type === "snapshot") {
+          for (var id in msg.clients || {}) {
+            if (clientsData[id]) mergeStatus(msg.clients[id]);
+          }
+          scheduleRender();
+        } else if (msg.type === "status" && msg.client) {
+          // A machine this console has never listed: fetch the list to place it.
+          if (!clientsData[msg.client.clientId]) {
+            pollClients();
+            return;
+          }
+          mergeStatus(msg.client);
+          scheduleRender();
+        } else if (msg.type === "frame") {
+          var client = clientsData[msg.clientId];
+          if (!client) return;
+          client.thumbnail = msg.thumbnail;
+          var card = document.getElementById("card-" + msg.clientId);
+          if (card) updateCard(card, msg.clientId, client);
+        } else if (msg.type === "removed") {
+          delete clientsData[msg.clientId];
+          scheduleRender();
+        }
+      }
+
+      function connectLive() {
+        if (typeof WebSocket === "undefined") {
+          startPolling();
+          return;
+        }
+        var address = new URL(labkioskApi("/api/console/ws"), window.location.href);
+        address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
+        var socket;
+        try {
+          socket = new WebSocket(address.toString());
+        } catch (err) {
+          console.warn("Live channel unavailable, polling instead:", err);
+          startPolling();
+          return;
+        }
+        socket.addEventListener("open", function () {
+          live = socket;
+          liveRetryMs = 1000;
+          watchSent = null;
+          stopPolling();
+          sendWatch();
+        });
+        socket.addEventListener("message", function (event) {
+          handleLive(String(event.data));
+        });
+        socket.addEventListener("close", function () {
+          if (live === socket) live = null;
+          startPolling();
+          setTimeout(connectLive, liveRetryMs);
+          liveRetryMs = Math.min(liveRetryMs * 2, 30000);
+        });
       }
 
       function openVncSession(id) {
@@ -1239,8 +1385,9 @@ function renderWorkstationsScripts(
       }
 
       applyDensity(density);
-      pollClients();
-      setInterval(pollClients, 3000);
+      pollClients().then(connectLive);
+      // New enrolments and group moves, while the live channel carries the rest.
+      setInterval(function () { if (live) pollClients(); }, 60000);
     </script>
   `;
 }

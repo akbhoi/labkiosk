@@ -72,10 +72,10 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 |                        ├── Nonce CSP + hardened headers on every HTML response        |
 |                        ├── Device Token Enrolment & Verification                      |
 |                        ├── scheduled(): hourly housekeeping (cron trigger)            |
-|                        └── Cloudflare D1 Database (+ memory telemetry cache)          |
+|                        └── Cloudflare D1 + one OrgHub Durable Object per organization |
 +---------------------------------------------------------------------------------------+
                                          ▲
-                                         │ (HTTPS Telemetry / Remote Commands)
+                                         │ (WebSocket control channel, HTTPS fallback)
 +---------------------------------------------------------------------------------------+
 |                      CLIENT WORKSTATION LAYER (Intel Thin Clients)                    |
 |                                                                                       |
@@ -91,7 +91,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 |                                                                                       |
 |   [ Local Python 3 Agent: agent.py ]                                                  |
 |         ├── First-Boot Enrolment Wizard (127.0.0.1:8888, loopback only)               |
-|         ├── Authenticated Heartbeat & Screen Thumbnails (device bearer token, 3s)     |
+|         ├── Control channel: WebSocket to OrgHub (frames only while watched)          |
 |         └── Chromium Policy Synchronisation & Remote Command Dispatch                 |
 |                                                                                       |
 |   [ Remote Control Gateway ]                                                          |

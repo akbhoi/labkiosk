@@ -99,7 +99,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/telemetry` | `POST` | Three-second heartbeat: state up, commands and policy down |
+| `/api/devices/ws` | `GET` (WebSocket) | The control channel: status and frames up; configuration, commands and frame requests down |
+| `/api/telemetry` | `POST` | The HTTP fallback: a three-second heartbeat carrying the same |
 
 ### Super admin
 
@@ -171,9 +172,37 @@ The agent writes the token to `/etc/labkiosk/config.json` with mode `0600`. On l
 
 ---
 
+### `GET /api/devices/ws`
+
+The workstation's control channel: a WebSocket to its organization's OrgHub. Current agents use it
+whenever the image has `python3-websocket`.
+
+**Access:** `Authorization: Bearer <deviceToken>` on the upgrade. `401`/`403` when the token or the
+organization is refused, `426` without an upgrade.
+
+| Direction | Message |
+| :--- | :--- |
+| hub → workstation | `{"type":"config", whitelist, mode, targetUrl, broadcastUrl, broadcastEpoch, commands?}` on connect and after every admin change |
+| hub → workstation | `{"type":"commands", commands}` the moment a command is dispatched |
+| hub → workstation | `{"type":"frames", on, intervalSeconds}` when a console starts or stops showing this screen |
+| workstation → hub | `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?, remoteHost?}` on connect and on change |
+| workstation → hub | `{"type":"frame", thumbnail}` every `intervalSeconds` while asked |
+| workstation → hub | `{"type":"ping"}` every 15 s, byte for byte; answered `{"type":"pong"}` at the edge |
+
+Close codes: `4001` the workstation was removed, `4003` the organization is not active (both send
+the screen to re-enrolment), `4000` replaced by a newer connection, `4008` silent for 75 s.
+
+### `GET /api/console/ws`
+
+The Workstations page's live channel. **Access:** a session with the `workstations` permission and
+an `Origin` of this site. The console sends `{"type":"watch", clientIds}` for the screens it is
+showing and receives `snapshot`, `status`, `frame` and `removed` messages.
+
 ### `POST /api/telemetry`
 
-The workstation heartbeat, called every three seconds. This single endpoint carries the entire client–server relationship.
+The HTTP heartbeat, called every three seconds by agents without the WebSocket client (and by any
+agent whose server has no WebSocket route). It carries the same state as the control channel in
+one request and reply.
 
 **Access:** `Authorization: Bearer <deviceToken>`.
 
@@ -221,7 +250,7 @@ There is **no `currentUrl` key and no `metrics` object.** The agent collects no 
 
 | Field | Notes |
 | :--- | :--- |
-| `commands` | Pending commands for *this* workstation. Delivery is recorded in `command_deliveries`, so each command executes exactly once rather than on every heartbeat. |
+| `commands` | Pending commands for *this* workstation. The hub records each delivery, so each command executes exactly once rather than on every heartbeat. |
 | `whitelist` | Effective allowlist: the organization's own domains plus every portal app host, plus the active broadcast host if it is not already present. Merged into the Chromium managed policy. |
 | `targetUrl` | Where the kiosk should point. Validated as `http(s)` by `safe_navigable_url()` before the agent stores it, because it ends up in `window.location`. |
 | `broadcastUrl` / `broadcastEpoch` | The authoritative synchronised page. The epoch is a monotonic marker letting a workstation distinguish a new broadcast from a replayed one. |
@@ -266,13 +295,13 @@ Targeting supports either `targets: string[]` (array of `clientId` strings) or `
 
 **`200 OK`** → `{ "status": "ok", "commandId": "cmd-uuid-99" }`
 
-Lock and unlock additionally update the telemetry cache immediately, so the console reflects the new state without waiting a heartbeat. Every dispatch writes an audit-log row (`command.<action>`).
+The hub pushes the command to a connected workstation at once; the console sees the new state as soon as the workstation reports it. Every dispatch writes an audit-log row (`command.<action>`).
 
 ---
 
 ### `GET /api/clients`
 
-Returns the organization's fleet and its latest telemetry.
+Returns the organization's fleet: the D1 registry merged with the hub's live status. `POST` with `{"watch": ["PC-01", …]}` also asks the hub for those screens' frames for the next 10 seconds -- the fallback for a console without its live channel; `thumbnail` is present only for watched, online workstations.
 
 **Access:** organization admin.
 

@@ -38,8 +38,9 @@ labkiosk/
 │       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
 │       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0013 (never edit an applied one)
-│   ├── src/                 index.ts (router), guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts,
+│   ├── migrations/          0001..0014 (never edit an applied one)
+│   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
+│   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
 │   │                        ui_*.ts (one module per page), ui_tokens.ts, ui_layout.ts
 │   └── test/                worker.test.ts, dump_admin_html.ts, dev_server.ts
 ├── Dockerfile, docker-compose.yml, docker-test/   workstation simulator
@@ -47,9 +48,12 @@ labkiosk/
 └── .agents/skills/          on-demand procedures (above)
 ```
 
-The workstation agent sends a heartbeat every 3 s (`POST /api/telemetry`, device bearer token);
-the reply carries the allowlist, the target URL, broadcast state and queued commands (`lock`,
-`unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`). Enrolment exchanges
+The workstation agent holds one WebSocket to its organization's **OrgHub** Durable Object
+(`/api/devices/ws`, device bearer token), which pushes the allowlist, the target URL, broadcast
+state and commands (`lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`,
+`mute`) as they change and asks for screen frames only while an operator is watching. Agents
+without it post the older 3-second heartbeat (`POST /api/telemetry`), which carries the same.
+D1 is the registry the hubs write back to, never per heartbeat. Enrolment exchanges
 an organization's enrollment key for the device token. Remote control is loopback VNC →
 websockify → Cloudflare Tunnel. Full contracts: `labkiosk-core`.
 

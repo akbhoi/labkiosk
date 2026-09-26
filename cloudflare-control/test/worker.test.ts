@@ -1,17 +1,36 @@
-import { test, describe } from "node:test";
+import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import worker from "../src/index";
 import * as workerModule from "../src/index";
-import { SCHEMA_SQL, initSchema, assertSchemaCurrent, ensureDemoTenants, createUser, createTenant, findTenantBySubdomain } from "../src/db";
+import {
+  SCHEMA_SQL,
+  initSchema,
+  assertSchemaCurrent,
+  ensureDemoTenants,
+  createUser,
+  createTenant,
+  findTenantBySubdomain,
+  useAuditQueue,
+  writeAuditLog,
+  insertAuditEntries,
+  archiveOldAuditLogs,
+  AUDIT_RETENTION_DAYS
+} from "../src/db";
 import { DEMO_SLUGS } from "../src/demo";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl } from "../src/escape";
 import { isHostUnder } from "../src/guard";
-import { Env } from "../src/types";
+import { Env, AuditEntryMessage } from "../src/types";
+import { localHubNamespace } from "../src/hub";
+import { portalContextFrom } from "../src/portal_url";
+import { getDatabase } from "../src/database";
+import { HUB_PING, HUB_PONG } from "../src/org_hub";
+import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
+import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
 
 /**
@@ -51,6 +70,14 @@ function allowlistHas(list: unknown, domain: string): boolean {
 async function call(path: string, init: RequestInit & { cookie?: string; bearer?: string } = {}) {
   const res = await worker.fetch(request(path, init), mockEnv);
   return res;
+}
+
+/** A page's CSS: its inline <style> blocks and any stylesheet it links on this worker. */
+async function pageCss(html: string): Promise<string> {
+  const inline = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]);
+  const linked = [...html.matchAll(/<link rel="stylesheet" href="(\/assets\/[^"]+\.css)">/g)].map((m) => m[1]);
+  const fetched = await Promise.all(linked.map(async (href) => (await call(href)).text()));
+  return [...inline, ...fetched].join("\n");
 }
 
 async function callJson<T = any>(path: string, init: RequestInit & { cookie?: string; bearer?: string } = {}) {
@@ -443,7 +470,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     for (const [page, cookie] of pages) {
       const html = await (await call(page, { cookie })).text();
-      const style = html.split("<style>")[1].split("</style>")[0];
+      const style = await pageCss(html);
       const declared = new Set((style.match(/\.[a-z][a-z0-9_-]*/g) || []).map((c) => c.slice(1)));
       const used = new Set<string>();
       for (const attr of html.match(/class="[^"<>]*"/g) || []) {
@@ -517,10 +544,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     ];
     for (const [page, cookie, hasToggle] of pages) {
       const html = await (await call(page, cookie ? { cookie } : {})).text();
+      const css = await pageCss(html);
       assert.match(html, /<meta name="color-scheme" content="light dark">/, `${page} declares both schemes`);
-      assert.match(html, /color-scheme: light dark;/, `${page} carries the light tokens`);
-      assert.match(html, /@media \(prefers-color-scheme: dark\)/, `${page} follows a dark system setting`);
-      assert.match(html, /:root\[data-theme="dark"\]/, `${page} honours a pinned dark theme`);
+      assert.match(css, /color-scheme: light dark;/, `${page} carries the light tokens`);
+      assert.match(css, /@media \(prefers-color-scheme: dark\)/, `${page} follows a dark system setting`);
+      assert.match(css, /:root\[data-theme="dark"\]/, `${page} honours a pinned dark theme`);
       if (hasToggle) assert.match(html, /data-action="toggle-theme"/, `${page} offers the theme switch`);
     }
   });
@@ -552,7 +580,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         assert.fail(`${page} has a literal colour in an SVG: ${attr}`);
       }
       // Outside the token blocks, a stylesheet names colours only through tokens.
-      const css = (html.match(/<style>([\s\S]*?)<\/style>/) || ["", ""])[1]
+      const css = (await pageCss(html))
         .replace(/:root[^{]*\{[^}]*\}/g, "")
         .replace(/@media \(prefers-color-scheme: dark\) \{\s*:root[^{]*\{[^}]*\}\s*\}/g, "");
       const stray = css.match(/#[0-9a-fA-F]{3,8}\b(?![^(]*\))/g) || [];
@@ -1585,6 +1613,364 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(after.data.broadcastUrl, "");
   });
 
+  // ------------------------------------------------------ organization hub (OrgHub)
+  //
+  // Live workstation state lives in one Durable Object per organization. Node has
+  // no WebSocket upgrade, so these tests connect sockets straight to the local
+  // stand-in through the same acceptDevice/acceptConsole the upgrade path uses.
+
+  const hubs = () => localHubNamespace(mockEnv);
+  const portalContext = () => {
+    const req = new Request(`${BASE}/api/devices/ws`);
+    return portalContextFrom(req, new URL(req.url), mockEnv);
+  };
+  const greenwoodId = async () => (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant.id as string;
+  const enrolAs = async (clientId: string) => {
+    const { res, data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }));
+    assert.equal(res.status, 200, `enrolling ${clientId}`);
+    return data.deviceToken as string;
+  };
+  const ofType = (socket: { messages(): Array<Record<string, unknown>> }, type: string) =>
+    socket.messages().filter((m) => m.type === type);
+
+  test("A workstation's socket gets its configuration at once and shows as online", async () => {
+    const tenantId = await greenwoodId();
+    await enrolAs("WS-A");
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+
+    const [config] = ofType(device, "config");
+    assert.ok(config, "the first message is the workstation's configuration");
+    assert.ok(allowlistHas(config.whitelist as string[], "khanacademy.org"));
+    assert.match(String(config.targetUrl), /greenwood/);
+    assert.ok(Array.isArray(config.commands));
+
+    const { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(data.clients["WS-A"]?.online, true, "a connected workstation is online");
+    assert.equal(data.clients["WS-A"]?.ip, "10.0.0.5");
+    await device.closeFromClient();
+    const after = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(after.data.clients["WS-A"]?.online, false, "a closed connection is offline, and still listed");
+  });
+
+  test("Commands reach connected workstations immediately, once each", async () => {
+    const tenantId = await greenwoodId();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+
+    const dispatch = await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: ["WS-A"], action: "lock", message: "Briefing" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(dispatch.res.status, 200);
+    const pushed = ofType(device, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>);
+    assert.deepEqual(pushed.map((c) => c.action), ["lock"], "pushed without waiting for a heartbeat");
+    assert.equal(pushed[0].message, "Briefing");
+
+    // Reconnecting does not replay it: a command for one machine retires on delivery.
+    await device.closeFromClient();
+    const again = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    const [config] = ofType(again, "config");
+    assert.deepEqual((config.commands as unknown[]).length, 0);
+
+    // A Reset to Portal carries this workstation's own portal address.
+    await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: ["WS-A"], action: "navigate", resetPortal: true }),
+      cookie: orgSessionCookie
+    });
+    const reset = ofType(again, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>);
+    assert.match(String(reset.at(-1)?.url), /greenwood/);
+    await again.closeFromClient();
+  });
+
+  test("Screens are streamed only while a console is watching them, and never stored", async () => {
+    const tenantId = await greenwoodId();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    assert.equal(ofType(device, "frames").length, 0, "nobody is watching, so no frames are asked for");
+
+    const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+    const [snapshot] = ofType(viewer, "snapshot");
+    assert.ok((snapshot.clients as Record<string, unknown>)["WS-A"], "the console starts from a snapshot");
+
+    await viewer.fromClient({ type: "watch", clientIds: ["WS-A"] });
+    assert.deepEqual(ofType(device, "frames").at(-1), { type: "frames", on: true, intervalSeconds: 3 });
+
+    const frame = "data:image/jpeg;base64," + "A".repeat(64);
+    await device.fromClient({ type: "frame", thumbnail: frame });
+    assert.equal(ofType(viewer, "frame").at(-1)?.thumbnail, frame, "the frame is relayed to the console");
+    await device.fromClient({ type: "frame", thumbnail: "javascript:alert(1)" });
+    assert.equal(ofType(viewer, "frame").length, 1, "anything but an image data URL is dropped");
+
+    const rows = (await getDatabase(mockEnv).prepare("PRAGMA table_info(client_devices)").all<{ name: string }>()).results;
+    assert.ok(!rows.some((c) => c.name === "thumbnail"), "there is nowhere in D1 a screenshot could be written");
+
+    await viewer.closeFromClient();
+    assert.deepEqual(ofType(device, "frames").at(-1), { type: "frames", on: false, intervalSeconds: 3 }, "the last viewer leaving stops the frames");
+    await device.closeFromClient();
+  });
+
+  test("A status change reaches consoles at once and D1 only in a batch", async () => {
+    const tenantId = await greenwoodId();
+    const db = getDatabase(mockEnv);
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+
+    await device.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: true, clientNum: 7 });
+    const status = ofType(viewer, "status").at(-1)?.client as Record<string, unknown>;
+    assert.equal(status.activeUrl, "https://www.wikipedia.org/");
+    assert.equal(status.isLocked, true);
+
+    const rowBefore = await db.prepare("SELECT active_url, is_locked FROM client_devices WHERE id = ?").bind(`${tenantId}:WS-A`).first<any>();
+    assert.notEqual(rowBefore.active_url, "https://www.wikipedia.org/", "not written on every message");
+    await hubs().runAlarm(tenantId);
+    const rowAfter = await db.prepare("SELECT active_url, is_locked, client_num FROM client_devices WHERE id = ?").bind(`${tenantId}:WS-A`).first<any>();
+    assert.equal(rowAfter.active_url, "https://www.wikipedia.org/", "written back by the alarm");
+    assert.equal(rowAfter.is_locked, 1);
+    assert.equal(rowAfter.client_num, 7);
+
+    const online = await db.prepare("SELECT online_workstations FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.ok(online.online_workstations >= 1, "the directory's online count comes from the hub");
+    await viewer.closeFromClient();
+    await device.closeFromClient();
+  });
+
+  test("A heartbeat that changes nothing writes nothing to D1", async () => {
+    const token = await enrolAs("HB-QUIET");
+    const db = getDatabase(mockEnv);
+    const tenantId = await greenwoodId();
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const beat = () => callJson("/api/telemetry", { ...json({ activeUrl: "https://www.khanacademy.org/", isLocked: false }), bearer: token });
+      assert.equal((await beat()).res.status, 200);
+      const first = await db.prepare("SELECT updated_at FROM client_devices WHERE id = ?").bind(`${tenantId}:HB-QUIET`).first<any>();
+      mock.timers.tick(30_000);
+      assert.equal((await beat()).res.status, 200);
+      await hubs().runAlarm(tenantId);
+      const second = await db.prepare("SELECT updated_at FROM client_devices WHERE id = ?").bind(`${tenantId}:HB-QUIET`).first<any>();
+      assert.equal(second.updated_at, first.updated_at, "an unchanged workstation's row is left alone");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  test("A workstation that stops pinging is marked offline by the alarm", async () => {
+    const tenantId = await greenwoodId();
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+      const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+      await device.fromClient(HUB_PING);
+      assert.equal(device.sent.at(-1), HUB_PONG, "a ping is answered without waking the object");
+
+      mock.timers.tick(80_000);
+      await hubs().runAlarm(tenantId);
+      assert.equal(device.closedWith?.code, 4008, "a silent socket is closed");
+      const last = ofType(viewer, "status")
+        .map((m) => m.client as Record<string, unknown>)
+        .filter((c) => c.clientId === "WS-A")
+        .at(-1)!;
+      assert.equal(last.online, false, "consoles hear it went offline");
+      await viewer.closeFromClient();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  test("Removing a workstation closes its connection and refuses it from then on", async () => {
+    const tenantId = await greenwoodId();
+    const token = await enrolAs("WS-GONE");
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-GONE", ip: "10.0.0.9", portal: portalContext() });
+
+    const removed = await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId: "WS-GONE" }), cookie: orgSessionCookie });
+    assert.equal(removed.status, 200);
+    assert.equal(device.closedWith?.code, 4001, "its socket is closed as removed");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 401);
+    const socket = await call("/api/devices/ws", { headers: { Upgrade: "websocket" }, bearer: token });
+    assert.equal(socket.status, 401, "and it cannot reconnect");
+
+    // Enrolled again, it is welcome again.
+    const fresh = await enrolAs("WS-GONE");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: fresh })).status, 200);
+  });
+
+  test("Suspending an organization closes its workstations' connections", async () => {
+    const tenantId = await greenwoodId();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    await callJson("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: superSessionCookie });
+    assert.equal(device.closedWith?.code, 4003);
+    const socket = await call("/api/devices/ws", { headers: { Upgrade: "websocket" }, bearer: deviceToken });
+    assert.equal(socket.status, 403, "a suspended organization's workstations are refused");
+    await callJson("/api/super/tenants/reactivate", { ...json({ tenantId }), cookie: superSessionCookie });
+  });
+
+  test("An allowlist change is pushed to connected workstations", async () => {
+    const tenantId = await greenwoodId();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    await callJson("/api/whitelist?tenant=greenwood", { ...json({ action: "add", domain: "pushed.example.org" }), cookie: orgSessionCookie });
+    const config = ofType(device, "config").at(-1)!;
+    assert.ok(allowlistHas(config.whitelist as string[], "pushed.example.org"), "pushed without a heartbeat");
+    await callJson("/api/whitelist?tenant=greenwood", { ...json({ action: "remove", domain: "pushed.example.org" }), cookie: orgSessionCookie });
+    assert.ok(!allowlistHas(ofType(device, "config").at(-1)!.whitelist as string[], "pushed.example.org"));
+    await device.closeFromClient();
+  });
+
+  test("The workstation and console sockets are guarded", async () => {
+    assert.equal((await call("/api/devices/ws", { bearer: deviceToken })).status, 426, "an upgrade is required");
+    assert.equal((await call("/api/devices/ws", { headers: { Upgrade: "websocket" } })).status, 401, "a token is required");
+    assert.equal(
+      (await call("/api/devices/ws", { headers: { Upgrade: "websocket" }, bearer: "f".repeat(64) })).status,
+      401,
+      "a forged token is refused"
+    );
+
+    const upgrade = { Upgrade: "websocket", Origin: BASE };
+    assert.equal((await call("/api/console/ws?tenant=greenwood", { cookie: orgSessionCookie })).status, 426);
+    const anonymous = await call("/api/console/ws?tenant=greenwood", { headers: upgrade });
+    assert.ok(anonymous.status === 401 || anonymous.status === 403, "a session is required");
+    assert.equal(
+      (await call("/api/console/ws?tenant=greenwood", { headers: { ...upgrade, Origin: "https://evil.example" }, cookie: orgSessionCookie })).status,
+      403,
+      "a cross-site page cannot open an administrator's live channel"
+    );
+    assert.equal(
+      (await call("/api/console/ws?tenant=greenwood", { headers: { Upgrade: "websocket" }, cookie: orgSessionCookie })).status,
+      403,
+      "a handshake without an Origin is not a browser's and is refused"
+    );
+    assert.equal(
+      (await call("/api/console/ws?tenant=greenwood", { headers: upgrade, cookie: rivalSessionCookie })).status,
+      403,
+      "another organization's administrator is refused"
+    );
+  });
+
+  test("An organization's hub refuses a request naming another organization", async () => {
+    const tenantId = await greenwoodId();
+    const namespace = hubs();
+    const stub = namespace.get(namespace.idFromName(tenantId));
+    const res = await stub.fetch(new Request("https://org-hub/live", { headers: { "x-labkiosk-tenant": "some-other-organization" } }));
+    assert.equal(res.status, 409);
+  });
+
+  test("The console stylesheet is one immutable file per version", async () => {
+    const current = await call(CONSOLE_STYLESHEET_PATH);
+    assert.equal(current.status, 200);
+    assert.match(current.headers.get("content-type") || "", /text\/css/);
+    assert.match(current.headers.get("cache-control") || "", /immutable/);
+    const stale = await call("/assets/console-00000000.css");
+    assert.equal(stale.headers.get("cache-control"), "no-store", "an old page gets today's styles, uncached");
+    const page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(page.includes(`<link rel="stylesheet" href="${CONSOLE_STYLESHEET_PATH}">`));
+  });
+
+  test("Sign-in, registration and enrolment sit behind the rate limiter", async () => {
+    const limited = { ...mockEnv, AUTH_RATE_LIMITER: { limit: async () => ({ success: false }) } as RateLimit };
+    for (const path of ["/api/auth/login", "/api/auth/register", "/api/devices/enroll"]) {
+      const res = await worker.fetch(request(path, json({})), limited as Env);
+      assert.equal(res.status, 429, `${path} is throttled`);
+    }
+    // A limiter that fails is logged, and the D1 lockouts behind it decide.
+    const broken = { ...mockEnv, AUTH_RATE_LIMITER: { limit: async () => { throw new Error("internal error"); } } as RateLimit };
+    const res = await worker.fetch(request("/api/auth/login", json({ email: "nobody@example.org", password: "wrong" })), broken as Env);
+    assert.equal(res.status, 401, "a broken limiter does not take sign-in down");
+  });
+
+  test("Audit entries go through the queue, and a redelivered batch is written once", async () => {
+    const sent: AuditEntryMessage[] = [];
+    useAuditQueue({ send: async (m: AuditEntryMessage) => { sent.push(m); } } as unknown as Queue<AuditEntryMessage>);
+    try {
+      await writeAuditLog(getDatabase(mockEnv), { tenantId: null, action: "test.queued", details: "via queue" });
+    } finally {
+      useAuditQueue(null);
+    }
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].action, "test.queued");
+
+    let acked = 0;
+    const batch = { messages: [{ body: sent[0] }, { body: sent[0] }], ackAll: () => { acked++; }, retryAll: () => assert.fail("no retry") };
+    await worker.queue!(batch as unknown as MessageBatch<AuditEntryMessage>, mockEnv);
+    await worker.queue!(batch as unknown as MessageBatch<AuditEntryMessage>, mockEnv);
+    assert.equal(acked, 2);
+    const rows = await getDatabase(mockEnv).prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE id = ?").bind(sent[0].id).first<any>();
+    assert.equal(rows.n, 1, "a batch delivered twice is written once");
+  });
+
+  test("Audit entries older than the retention period move to R2", async () => {
+    const db = getDatabase(mockEnv);
+    const now = Math.floor(Date.now() / 1000);
+    const old = now - (AUDIT_RETENTION_DAYS + 5) * 86400;
+    await insertAuditEntries(db, [
+      { id: "old-1", tenantId: null, userId: null, action: "test.old", details: null, createdAt: old },
+      { id: "old-2", tenantId: null, userId: null, action: "test.old", details: null, createdAt: old + 1 },
+      { id: "recent-1", tenantId: null, userId: null, action: "test.recent", details: null, createdAt: now }
+    ]);
+    const stored: Array<{ key: string; body: string }> = [];
+    const bucket = { put: async (key: string, body: string) => { stored.push({ key, body }); } } as unknown as R2Bucket;
+
+    const archived = await archiveOldAuditLogs(db, bucket, now);
+    assert.ok(archived >= 2);
+    assert.equal(stored.length, 1, "one file per run");
+    const lines = stored[0].body.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(lines.some((row) => row.id === "old-1") && lines.some((row) => row.id === "old-2"));
+    assert.match(stored[0].key, /^audit\/\d{4}\/\d{4}-\d{2}-\d{2}-.+\.ndjson$/);
+    const left = await db.prepare("SELECT id FROM audit_logs WHERE id IN ('old-1', 'old-2', 'recent-1')").all<{ id: string }>();
+    assert.deepEqual(left.results.map((r) => r.id), ["recent-1"], "archived entries leave D1; recent ones stay");
+  });
+
+  test("Approving a custom domain provisions it through Cloudflare for SaaS", async () => {
+    const tenantId = await greenwoodId();
+    const approve = await callJson("/api/super/tenants/custom-domain/approve", {
+      ...json({ tenantId, customDomain: "kiosk.greenwood-test.example" }),
+      cookie: superSessionCookie
+    });
+    assert.equal(approve.res.status, 200);
+    const db = getDatabase(mockEnv);
+    const local = await db.prepare("SELECT custom_hostname_status FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.equal(local.custom_hostname_status, "local", "local development never calls Cloudflare");
+
+    // The job itself, against a mocked Cloudflare API: create, record, wait for the certificate.
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    let checks = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method || "GET";
+      calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer cf-token");
+      const ok = (result: unknown) => new Response(JSON.stringify({ success: true, errors: [], result }), { status: 200 });
+      if (method === "POST") return ok({ id: "ch-1", hostname: "kiosk.greenwood-test.example", status: "pending" });
+      if (method === "GET") {
+        checks++;
+        return ok({ id: "ch-1", hostname: "kiosk.greenwood-test.example", status: checks > 1 ? "active" : "pending", ssl: { status: checks > 1 ? "active" : "pending_validation" } });
+      }
+      return ok({ id: "ch-1" });
+    }) as typeof fetch;
+    const sleeps: string[] = [];
+    const step = { do: <T>(_name: string, fn: () => Promise<T>) => fn(), sleep: async (name: string) => { sleeps.push(name); } };
+    const env = { ...mockEnv, CF_API_TOKEN: "cf-token", CF_ZONE_ID: "zone-1" } as Env;
+    try {
+      const outcome = await runCustomHostnameJob(env, { operation: "create", tenantId, hostname: "kiosk.greenwood-test.example" }, step);
+      assert.equal(outcome, "active");
+      assert.deepEqual(calls[0], {
+        method: "POST",
+        url: "https://api.cloudflare.com/client/v4/zones/zone-1/custom_hostnames",
+        body: { hostname: "kiosk.greenwood-test.example", ssl: { method: "http", type: "dv" } }
+      });
+      assert.equal(sleeps.length, 1, "it waited once for the certificate");
+      const row = await db.prepare("SELECT custom_hostname_id, custom_hostname_status FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+      assert.deepEqual({ ...row }, { custom_hostname_id: "ch-1", custom_hostname_status: "active" });
+
+      const deleted = await runCustomHostnameJob(env, { operation: "delete", tenantId, hostname: "kiosk.greenwood-test.example", customHostnameId: "ch-1" }, step);
+      assert.equal(deleted, "none");
+      assert.deepEqual(calls.at(-1), { method: "DELETE", url: "https://api.cloudflare.com/client/v4/zones/zone-1/custom_hostnames/ch-1", body: undefined });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    const remove = await callJson("/api/super/tenants/custom-domain/remove", { ...json({ tenantId }), cookie: superSessionCookie });
+    assert.equal(remove.res.status, 200);
+    const cleared = await db.prepare("SELECT custom_domain, custom_hostname_id, custom_hostname_status FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.deepEqual({ ...cleared }, { custom_domain: null, custom_hostname_id: null, custom_hostname_status: "none" });
+  });
+
   // --------------------------------------------------------- suspend organization
 
   test("Lets the super admin suspend and reactivate an organization", async () => {
@@ -1677,12 +2063,31 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: migrated, SUPER_ADMIN_EMAIL: "owner@example.com" } as Env),
       /must both be set/
     );
-    // With both secrets present the same database serves normally.
-    const res = await worker.fetch(request("/"), {
+    // Both secrets are not enough: production also needs its platform bindings,
+    // and the refusal names every one that is missing.
+    const secrets = {
       DEFAULT_DOMAIN: "labkiosk.akbhoi.com",
       DB: migrated,
       SUPER_ADMIN_EMAIL: "owner@example.com",
       SUPER_ADMIN_PASSWORD: "OwnerPassword2026!"
+    };
+    await assert.rejects(
+      () => worker.fetch(request("/"), secrets as Env),
+      (err: Error) =>
+        ["ORG_HUB", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
+          .every((name) => err.message.includes(name))
+    );
+    // With them bound, the same database serves normally.
+    const res = await worker.fetch(request("/"), {
+      ...secrets,
+      ORG_HUB: {} as DurableObjectNamespace,
+      AUDIT_QUEUE: { send: async () => undefined } as unknown as Queue,
+      AUDIT_ARCHIVE: {} as R2Bucket,
+      FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
+      AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+      CUSTOM_HOSTNAMES: {} as Workflow,
+      CF_API_TOKEN: "test-token",
+      CF_ZONE_ID: "test-zone"
     } as Env);
     assert.equal(res.status, 200);
   });
@@ -3034,6 +3439,16 @@ describe("Schema sources agree", () => {
     for (const [, table, column] of stripped.matchAll(alterRe)) {
       tables.get(table)?.add(column);
     }
+    // ...and columns or tables a later migration retired do not (0014). A plain
+    // DROP TABLE is part of 0011's rebuild, which recreates the table at once.
+    const dropColumnRe = /ALTER TABLE\s+(\w+)\s+DROP COLUMN\s+(\w+)/g;
+    for (const [, table, column] of stripped.matchAll(dropColumnRe)) {
+      tables.get(table)?.delete(column);
+    }
+    const dropTableRe = /DROP TABLE IF EXISTS\s+(\w+)/g;
+    for (const [, table] of stripped.matchAll(dropTableRe)) {
+      tables.delete(table);
+    }
 
     return tables;
   }
@@ -3171,6 +3586,12 @@ describe("Schema sources agree", () => {
       "no demo history is left behind as platform history");
     assert.equal((db.prepare("SELECT count(*) AS n FROM users").get() as any).n, 2, "user accounts are kept");
     assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+    // Current once the migrations after 0013 are applied as well.
+    for (const f of migrationFiles().filter((name) => name > "0013")) {
+      db.exec("BEGIN;");
+      db.exec(fs.readFileSync(path.join(migrationDir, f), "utf8"));
+      db.exec("COMMIT;");
+    }
     await assertSchemaCurrent(asD1(db));
   });
 

@@ -30,7 +30,7 @@ The control plane handles tenant routing, operator management dashboards, user p
    - Super admins are restricted from accessing any organization's admin console, telemetry, or VNC remote-control *except* for the platform's own demo organizations (`web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator)), preserving each organization's privacy.
    - Organization admins can delegate management tasks to sub-admins and operators via `tenant_users` with granular permissions (`workstations`, `apps-web`, `staff`, `settings`, with backward-compatible support for legacy `broadcast`, `portal`, `whitelist`).
    - Every database query in `src/db.ts` filters explicitly by `tenant_id`.
-   - Telemetry cache (`tenantTelemetryCache`) is partitioned by tenant ID and serves as an ephemeral cache only; D1 `client_devices` is the single source of truth across worker isolates.
+   - Live workstation state lives in each organization's OrgHub Durable Object (`src/org_hub.ts`), named by tenant ID; D1 `client_devices` is the registry it writes back to, and nothing two requests must agree on lives in isolate memory.
    - Active broadcast URL and epoch reside in D1 (`tenants.broadcast_url` / `broadcast_epoch`), preventing colo isolate drift.
 
 4. **Defense-in-Depth Security & Browser Hardening:**
@@ -46,9 +46,9 @@ The control plane handles tenant routing, operator management dashboards, user p
 
 ```text
 cloudflare-control/
-├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0013)
+├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0014)
 ├── src/
-│   ├── index.ts               # Worker router, REST endpoints, telemetry cache, scheduled()
+│   ├── index.ts               # Worker router, REST endpoints, scheduled(), queue()
 │   ├── guard.ts               # Tenant resolution, authorization guards, CSRF origin checks
 │   ├── escape.ts              # HTML / attribute / JSON escaping and URL validation
 │   ├── db.ts                  # D1 database queries, schema definitions, tenant seeding

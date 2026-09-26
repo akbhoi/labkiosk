@@ -30,14 +30,15 @@ Nothing else is required. There is no per-organization server, no on-premise app
 |                        |-- escape.ts  HTML / attribute / JSON escaping, safe URLs     |
 |                        |-- db.ts      D1 queries, SCHEMA_SQL, tenant seeding          |
 |                        |-- ui*.ts     Server-rendered consoles, nonce CSP             |
+|                        |-- org_hub.ts One Durable Object per organization             |
 |                        `-- scheduled() Hourly housekeeping cron                       |
 |                                        |                                              |
 |                                        v                                              |
 |                          [ Cloudflare D1 (SQLite at the edge) ]                       |
-|                          + per-isolate in-memory telemetry cache                      |
+|             + Queue (audit), R2 (audit archive), Analytics Engine, Workflow           |
 +---------------------------------------------------------------------------------------+
                                          ^
-                                         | HTTPS: telemetry up, commands down
+                                         | WebSocket: status up, config and commands down
 +---------------------------------------------------------------------------------------+
 |                      CLIENT WORKSTATION LAYER (Intel thin clients)                    |
 |                                                                                       |
@@ -52,7 +53,7 @@ Nothing else is required. There is no per-organization server, no on-premise app
 |                                                                                       |
 |   [ Python 3 agent: /opt/labkiosk/agent/agent.py ]                                    |
 |         |-- Loopback API on 127.0.0.1:8888 (setup wizard, install, status)            |
-|         |-- 3-second authenticated heartbeat with JPEG screen thumbnail               |
+|         |-- Control channel to OrgHub; JPEG frames only while an operator watches     |
 |         `-- Chromium policy synchronisation and command execution                     |
 |                                                                                       |
 |   [ Remote control gateway ]                                                          |
@@ -75,23 +76,32 @@ The critical architectural rule is that **worker isolates are per-colocation and
 | Active broadcast URL and epoch | `tenants.broadcast_url` / `broadcast_epoch` (organization-wide) and `client_devices.broadcast_url` / `broadcast_epoch` (selected workstations) in D1; the newer wins | Workstations hitting different colos must see the same page, and a broadcast to some screens must survive their next heartbeat. |
 | Device VNC password and tunnel host | `client_devices.vnc_password` / `remote_host` in D1 | The operator's browser and the workstation's heartbeat land in different isolates. |
 | Domain allowlist | `tenant_whitelist` rows in D1 | Previously a module global shared across every tenant, and lost on isolate recycle. |
-| Latest thumbnail and liveness | `tenantTelemetryCache` **and** `client_devices` | The cache is an optimisation only; D1 is the source of truth. |
+| Who is online, the command queue, screen frames | The organization's **OrgHub** Durable Object | One object per organization sees every workstation and console of it; frames are relayed, never stored. |
+| Workstation registry (last known state, groups) | `client_devices` in D1 | Written by the hub on connect, disconnect, a change, or every 5 minutes -- never per heartbeat. |
 
-### 2. Transport — one contract, two directions
+### 2. Transport — one channel, pushed both ways
 
-A workstation's entire relationship with the platform is a single endpoint called every three seconds:
+A workstation holds one WebSocket to its organization's OrgHub:
 
 ```text
-POST /api/telemetry
+GET /api/devices/ws   (Upgrade: websocket)
 Authorization: Bearer <device token>
 
-   up  ->  clientNum, activeUrl, isLocked, thumbnail?, vncPassword?, remoteHost?
- down  <-  commands[], whitelist[], mode, targetUrl, broadcastUrl, broadcastEpoch
+   up  ->  status {clientNum, activeUrl, isLocked, vncPassword?, remoteHost?}   on change
+           frame {thumbnail}                                                  only while watched
+           {"type":"ping"}                                                    every 15 s
+ down  <-  config {whitelist, mode, targetUrl, broadcastUrl, broadcastEpoch}  on connect and change
+           commands [...]                                                     at once
+           frames {on, intervalSeconds}                                       when a console watches
 ```
+
+The ping is answered at the edge without waking the hub, so an idle workstation costs nothing.
+Agents without the WebSocket client, and any agent whose server lacks the route, use the older
+`POST /api/telemetry` every three seconds, which carries the same fields in one request and reply.
 
 The device token, never the request body, decides which workstation and which tenant the request belongs to. A payload claiming a different `clientId` is ignored.
 
-That single loop delivers everything: fleet liveness, screen thumbnails, operator commands, the Chromium allowlist, and the authoritative page URL. There is no push channel, no WebSocket, and no inbound connection to the organization's network.
+That one channel delivers everything: fleet liveness, screen frames, operator commands, the Chromium allowlist, and the authoritative page URL. It is opened by the workstation, so there is still no inbound connection to the organization's network.
 
 → [REST API Reference](REST-API-Reference) for the full catalogue.
 

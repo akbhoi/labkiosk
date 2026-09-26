@@ -20,7 +20,7 @@ Only the latest release and the current `main` branch receive security updates:
 
 If you discover a potential vulnerability in Lab Kiosk—such as:
 - **Kiosk Breakout:** A method allowing a user to escape the locked Chromium session into an interactive bash shell or Openbox desktop.
-- **Tenant Isolation Bypass:** An unauthorized read or write across organization tenant boundaries in Cloudflare D1 or the telemetry cache.
+- **Tenant Isolation Bypass:** An unauthorized read or write across organization tenant boundaries in Cloudflare D1 or an organization's OrgHub Durable Object.
 - **Authentication Bypass:** Flaws in the PBKDF2 Web Crypto implementation, session token generation, or cookie security.
 - **Remote Code Execution:** Vulnerabilities in the client Python agent (`agent.py`) or its local
   loopback API.

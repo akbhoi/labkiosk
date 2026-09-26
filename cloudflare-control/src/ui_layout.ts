@@ -65,71 +65,13 @@ function renderRailBadge(item: NavItem): string {
   return `<span class="rail-badge${tone}">${escapeHtml(text)}</span>`;
 }
 
-export function renderLayoutHtml(options: LayoutOptions): string {
-  const {
-    title,
-    brandTitle,
-    brandSubtitle,
-    brandIconSvg,
-    navItems,
-    activeNavId,
-    subPanelTitle = "Module Actions",
-    subPanelSubtitle = "Quick tools & filters",
-    subPanelHtml = "",
-    stats = [],
-    userMeta,
-    logoutAction = "/api/auth/logout",
-    contentHtml,
-    modalsHtml = "",
-    scriptsHtml = "",
-    nonce
-  } = options;
-
-  const defaultBrandIcon = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
-
-  const brandHref = options.brandHref || "/admin";
-  const activeItem = navItems.find((item) => item.id === activeNavId) || navItems[0];
-  const activeNavLabel = activeItem ? activeItem.label : "Dashboard";
-
-  // Level 1: Primary Vertical Rail items
-  const railItemsHtml = navItems
-    .map((item) => {
-      const isActive = item.id === activeNavId;
-      return `
-        <a href="${escapeAttr(item.href)}" class="rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" title="${escapeAttr(item.label)}">
-          <span class="rail-icon">${item.iconSvg}</span>
-          <span class="rail-tooltip">${escapeHtml(item.label)}</span>
-          ${renderRailBadge(item)}
-        </a>
-      `;
-    })
-    .join("");
-
-  // Stats pills
-  const statsHtml = stats
-    .map((s) => {
-      const colorClass = s.color ? `dot-${s.color}` : "dot-green";
-      const idAttr = s.id ? ` id="${escapeAttr(s.id)}"` : "";
-      return `
-        <div class="stat-pill">
-          <span class="stat-dot ${colorClass}"></span>
-          <span class="stat-label">${escapeHtml(s.label)}:</span>
-          <strong class="stat-val"${idAttr}>${escapeHtml(String(s.value))}</strong>
-        </div>
-      `;
-    })
-    .join("");
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(title)}</title>
-${themeHeadHtml(nonce)}
-${FONT_LINKS}
-  <style>
-${rootTokensCss()}
+/**
+ * The console stylesheet (both consoles, every page), served as one immutable
+ * file whose name carries a hash of its content, instead of ~50 KB inlined into
+ * every console response. A new version is a new file name, so a deploy never
+ * leaves a browser on stale styles.
+ */
+const CONSOLE_CSS = `${rootTokensCss()}
 
     /* ---------------------------------------------------------------------- */
     /* Base                                                                   */
@@ -1933,7 +1875,87 @@ ${rootTokensCss()}
       .kiosk-card.selected { outline: 2px solid Highlight; }
       .stat-dot { forced-color-adjust: none; }
     }
-  </style>
+`;
+
+function fnv1a(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+export const CONSOLE_STYLESHEET_PATH = `/assets/console-${fnv1a(CONSOLE_CSS)}.css`;
+
+export function consoleStylesheet(): string {
+  return CONSOLE_CSS;
+}
+
+export function renderLayoutHtml(options: LayoutOptions): string {
+  const {
+    title,
+    brandTitle,
+    brandSubtitle,
+    brandIconSvg,
+    navItems,
+    activeNavId,
+    subPanelTitle = "Module Actions",
+    subPanelSubtitle = "Quick tools & filters",
+    subPanelHtml = "",
+    stats = [],
+    userMeta,
+    logoutAction = "/api/auth/logout",
+    contentHtml,
+    modalsHtml = "",
+    scriptsHtml = "",
+    nonce
+  } = options;
+
+  const defaultBrandIcon = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+
+  const brandHref = options.brandHref || "/admin";
+  const activeItem = navItems.find((item) => item.id === activeNavId) || navItems[0];
+  const activeNavLabel = activeItem ? activeItem.label : "Dashboard";
+
+  // Level 1: Primary Vertical Rail items
+  const railItemsHtml = navItems
+    .map((item) => {
+      const isActive = item.id === activeNavId;
+      return `
+        <a href="${escapeAttr(item.href)}" class="rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" title="${escapeAttr(item.label)}">
+          <span class="rail-icon">${item.iconSvg}</span>
+          <span class="rail-tooltip">${escapeHtml(item.label)}</span>
+          ${renderRailBadge(item)}
+        </a>
+      `;
+    })
+    .join("");
+
+  // Stats pills
+  const statsHtml = stats
+    .map((s) => {
+      const colorClass = s.color ? `dot-${s.color}` : "dot-green";
+      const idAttr = s.id ? ` id="${escapeAttr(s.id)}"` : "";
+      return `
+        <div class="stat-pill">
+          <span class="stat-dot ${colorClass}"></span>
+          <span class="stat-label">${escapeHtml(s.label)}:</span>
+          <strong class="stat-val"${idAttr}>${escapeHtml(String(s.value))}</strong>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+${themeHeadHtml(nonce)}
+${FONT_LINKS}
+  <link rel="stylesheet" href="${CONSOLE_STYLESHEET_PATH}">
 </head>
 <body>
   <div class="app-layout" id="app-layout">

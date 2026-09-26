@@ -126,7 +126,7 @@ Here is the quick summary of non-negotiable standards:
 6. **Multi-Tenant Scoping:**
    - Every database query touching devices, portal apps, or sessions must be explicitly scoped by `tenant_id`.
    - Never leak telemetry or settings across organization boundaries.
-   - The in-memory telemetry cache is a cache; `client_devices` in D1 is the source of truth.
+   - Live workstation state belongs to the organization's OrgHub Durable Object; `client_devices` in D1 is the registry, and nothing two requests must agree on lives in isolate memory.
 
 7. **Zero-Margin Floating Viewport:**
    - The kiosk extension must never alter `document.body.style.marginTop` or induce scrollbars.

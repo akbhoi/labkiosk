@@ -8,9 +8,11 @@ How `cloudflare-control/` is put together, and the rules for changing it.
 
 ```text
 cloudflare-control/
-├── migrations/             D1 SQL migrations 0001..0013
+├── migrations/             D1 SQL migrations 0001..0014
 ├── src/
-│   ├── index.ts            Router, REST endpoints, telemetry cache, scheduled()
+│   ├── index.ts            Router, REST endpoints, scheduled(), queue()
+│   ├── org_hub.ts          OrgHub: one Durable Object per organization
+│   ├── hub.ts              The only way the Worker reaches a hub
 │   ├── guard.ts            Tenant resolution, authorization, CSRF origin guard
 │   ├── escape.ts           HTML / attribute / JSON escaping, safe URLs
 │   ├── db.ts               D1 queries, SCHEMA_SQL, tenant seeding
@@ -64,19 +66,34 @@ No framework, no middleware stack, no decorators. Adding a route means adding a 
 5. The handler.
 6. `buildHtmlHeaders(nonce, …)` for HTML responses.
 
-### The telemetry cache
+### OrgHub — one Durable Object per organization
 
-```ts
-tenantTelemetryCache[tenantId][clientId] = record;
-```
+Worker isolates are per-colocation and short-lived, so live state cannot sit in module memory, and
+writing every heartbeat to D1 (one database for every organization) does not scale. Each
+organization instead has one **OrgHub** (`src/org_hub.ts`, `idFromName(tenant.id)`):
 
-Partitioned by tenant, and a **cache only**. Worker isolates are per-colocation and short-lived, so this map can be empty on any given request. `client_devices` in D1 is the source of truth; the cache exists so the dashboard's frequent polls do not hit D1 for data that changed three seconds ago.
+- Workstations hold a WebSocket to it (`/api/devices/ws`), and so does each open Workstations page
+  (`/api/console/ws`). Older agents post `/api/telemetry`, which the Worker forwards to the hub.
+- It keeps who is connected and what each one shows, and the command queue (its own SQLite:
+  `commands`, `deliveries`, `revoked`, `meta`; commands expire after 60 s).
+- It pushes configuration (`notifyConfigChanged()` after every admin change) and commands the
+  moment they exist, and asks a workstation for screen frames only while a console is showing it.
+- It writes back to `client_devices` on connect, disconnect, a change (batched by a 20 s alarm)
+  and every 5 minutes, and keeps `tenants.online_workstations` current. A quiet workstation costs
+  D1 nothing.
+- It hibernates between messages: sockets are accepted with tags, per-socket state lives in
+  attachments, timers are alarms, and the ping is answered at the edge without waking it.
 
-Lock and unlock update the cache on dispatch so the console reflects the new state without waiting a heartbeat.
+The Worker reaches a hub only through `src/hub.ts`; each call names the organization, and a hub
+refuses any other (`409`). Tests run hubs in-process through `src/local_do.ts`.
 
 ### `scheduled()`
 
-Invoked hourly by the cron in `wrangler.jsonc`. Purges expired sessions, delivered commands, and stale rate-limit rows. Command rows are also purged opportunistically on dispatch, so the queue does not depend on the cron alone.
+Invoked hourly by the cron in `wrangler.jsonc`. Purges expired sessions and stale rate-limit rows, and moves audit entries older than 180 days to the `AUDIT_ARCHIVE` R2 bucket as NDJSON. Expired commands are the hubs' own business: each deletes its own when it next runs.
+
+### `queue()`
+
+Consumes the `labkiosk-audit` queue: `writeAuditLog()` sends entries there, and the consumer writes each batch in one statement with `INSERT OR IGNORE` on the entry id, so a redelivered batch is written once.
 
 ---
 
@@ -147,13 +164,13 @@ Notable helpers:
 
 | Function | Notes |
 | :--- | :--- |
-| `buildEffectiveWhitelist(db, tenantId)` | Unions `tenant_whitelist` with every `portal_sites.domain`, computed per heartbeat rather than stored |
-| `popCommandsForClient(db, tenantId, clientId)` | Records a `command_deliveries` receipt so each command runs exactly once |
-| `enqueueCommand(db, {…})` | Writes the row with an expiry |
-| `purgeExpiredCommands(db)` | Called opportunistically and from `scheduled()` |
-| `upsertClientDevice(db, {…})` | One row per `tenant_id:client_id` |
+| `buildEffectiveWhitelist(db, tenantId)` | Unions `tenant_whitelist` with every `portal_sites.domain`; the hub caches it and reloads it on a configuration change |
+| `upsertDeviceRegistry(db, rows)` | The hub's batched write-back to `client_devices`; never touches the group or broadcast columns |
+| `listDeviceBroadcasts(db, tenantId)` | Per-workstation broadcasts, for the hub's configuration |
+| `setTenantOnlineCount(db, tenantId, n)` | `tenants.online_workstations` |
 | `rateLimitWait` / `recordRateLimitHit` | Public-endpoint throttling |
-| `writeAuditLog(db, {…})` | |
+| `writeAuditLog(db, {…})` | Through the audit queue when bound, directly otherwise |
+| `archiveOldAuditLogs(db, bucket, now)` | The 180-day retention, from `scheduled()` |
 | `assertSchemaCurrent(db)` | Refuses to serve an un-migrated database |
 
 `SCHEMA_SQL` lives here and must mirror `migrations/` exactly. → [Database Schema](Database-Schema#the-schema-has-two-homes)

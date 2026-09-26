@@ -1,52 +1,134 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "labkiosk-controller",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-09-01",
-  "compatibility_flags": ["nodejs_compat"],
-
-  // Multi-tenant routing: every organization is a subdomain of the zone, and the
-  // apex serves the public landing page and the /super console.
-  // Replace `labkiosk.akbhoi.com` with your own zone before deploying, and make sure a
-  // wildcard DNS record (CNAME *) points at the worker.
-  "workers_dev": true,
-  "routes": [
-    { "pattern": "labkiosk.akbhoi.com/*", "zone_name": "akbhoi.com" },
-    { "pattern": "*.labkiosk.akbhoi.com/*", "zone_name": "akbhoi.com" }
-  ],
-
-  // Create the database once with:
-  //   npx wrangler d1 create labkiosk-db
-  // then paste the returned uuid into `database_id` below, and apply the schema:
-  //   npx wrangler d1 migrations apply labkiosk-db --remote
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "labkiosk-db",
-      "database_id": "8caa2850-2b30-4e74-a9a8-46cbfdbfb670",
-      "migrations_dir": "migrations"
-    }
-  ],
-
-  // Environment variables (DEFAULT_DOMAIN, ISO_DOWNLOAD_URL, etc.) are managed
-  // directly in the Cloudflare Dashboard under Worker Settings -> Variables and Secrets,
-  // preventing wrangler deploy from overriding hosted configuration.
-  // For local development with wrangler dev, configure them in .dev.vars.
-
-  // SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are secrets. Set them before the
-  // first deploy creates the super admin account:
-  //   npx wrangler secret put SUPER_ADMIN_EMAIL
-  //   npx wrangler secret put SUPER_ADMIN_PASSWORD
-  // Rule 7 (fail closed): with a D1 database bound, the worker refuses to serve
-  // unless both secrets are set. There is no default super admin account in production.
-
-  // Hourly housekeeping handled by the `scheduled` export in src/index.ts:
-  // expired sessions, delivered commands and stale sign-in throttle rows.
-  "triggers": {
-    "crons": ["0 * * * *"]
-  },
-
-  "observability": {
-    "enabled": true
-  }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "labkiosk-controller",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// Multi-tenant routing: every organization is a subdomain of the zone, and the
+	// apex serves the public landing page and the /super console.
+	// Replace `labkiosk.akbhoi.com` with your own zone before deploying, and make sure a
+	// wildcard DNS record (CNAME *) points at the worker.
+	"workers_dev": true,
+	"routes": [
+		{
+			"pattern": "labkiosk.akbhoi.com/*",
+			"zone_name": "akbhoi.com"
+		},
+		{
+			"pattern": "*.labkiosk.akbhoi.com/*",
+			"zone_name": "akbhoi.com"
+		}
+	],
+	// Create the database once with:
+	//   npx wrangler d1 create labkiosk-db
+	// then paste the returned uuid into `database_id` below, and apply the schema:
+	//   npx wrangler d1 migrations apply labkiosk-db --remote
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "labkiosk-db",
+			"database_id": "8caa2850-2b30-4e74-a9a8-46cbfdbfb670",
+			"migrations_dir": "migrations"
+		}
+	],
+	// Environment variables (DEFAULT_DOMAIN, ISO_DOWNLOAD_URL, etc.) are managed
+	// directly in the Cloudflare Dashboard under Worker Settings -> Variables and Secrets,
+	// preventing wrangler deploy from overriding hosted configuration.
+	// For local development with wrangler dev, configure them in .dev.vars.
+	// SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are secrets. Set them before the
+	// first deploy creates the super admin account:
+	//   npx wrangler secret put SUPER_ADMIN_EMAIL
+	//   npx wrangler secret put SUPER_ADMIN_PASSWORD
+	// Rule 7 (fail closed): with a D1 database bound, the worker refuses to serve
+	// unless both secrets are set. There is no default super admin account in production.
+	// Hourly housekeeping handled by the `scheduled` export in src/index.ts:
+	// expired sessions, stale sign-in throttle rows, and audit entries older than
+	// 180 days moved to R2.
+	"triggers": {
+		"crons": ["0 * * * *"]
+	},
+	// ---------------------------------------------------------------------------
+	// Platform resources. All of them are required in production: the worker
+	// refuses to start without any one (Rule 7, `requiredBindingsProblem` in
+	// src/hub.ts). Create them once -- see docs/DEPLOYMENT.md, "Platform resources".
+	// ---------------------------------------------------------------------------
+	// One OrgHub per organization: live workstation state, the command queue, and
+	// the WebSockets of workstations and consoles (src/org_hub.ts).
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "ORG_HUB",
+				"class_name": "OrgHub"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1-org-hub",
+			"new_sqlite_classes": ["OrgHub"]
+		}
+	],
+	// Audit entries are queued and written to D1 in batches.
+	//   npx wrangler queues create labkiosk-audit
+	//   npx wrangler queues create labkiosk-audit-dlq
+	"queues": {
+		"producers": [
+			{
+				"binding": "AUDIT_QUEUE",
+				"queue": "labkiosk-audit"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "labkiosk-audit",
+				"max_batch_size": 100,
+				"max_batch_timeout": 2,
+				"max_retries": 10,
+				"dead_letter_queue": "labkiosk-audit-dlq"
+			}
+		]
+	},
+	// Audit entries older than the retention period, as NDJSON files.
+	//   npx wrangler r2 bucket create labkiosk-audit-archive
+	"r2_buckets": [
+		{
+			"binding": "AUDIT_ARCHIVE",
+			"bucket_name": "labkiosk-audit-archive"
+		}
+	],
+	// Fleet history: connections, disconnections and online counts per organization.
+	// The dataset is created on first write.
+	"analytics_engine_datasets": [
+		{
+			"binding": "FLEET_METRICS",
+			"dataset": "labkiosk_fleet"
+		}
+	],
+	// A coarse per-address limit in front of sign-in, registration and enrolment.
+	"ratelimits": [
+		{
+			"name": "AUTH_RATE_LIMITER",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 20,
+				"period": 60
+			}
+		}
+	],
+	// Custom domains through Cloudflare for SaaS (src/custom_hostnames.ts). Needs
+	// two secrets as well:
+	//   npx wrangler secret put CF_API_TOKEN   (Zone > SSL and Certificates > Edit)
+	//   npx wrangler secret put CF_ZONE_ID
+	"workflows": [
+		{
+			"name": "labkiosk-custom-hostnames",
+			"binding": "CUSTOM_HOSTNAMES",
+			"class_name": "CustomHostnameWorkflow"
+		}
+	],
+	// Every invocation used to be logged; a tenth is plenty to debug with.
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 0.1
+	}
 }

@@ -6,7 +6,7 @@
  * No route in this file may resolve a tenant or render untrusted data without them.
  */
 
-import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole, Session } from "./types";
+import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole, Session, AuditEntryMessage } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
@@ -14,6 +14,7 @@ import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
 import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import { renderStatusPageHtml } from "./ui_status";
+import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
   initSchema,
   ensureSuperAdmin,
@@ -34,7 +35,6 @@ import {
   listPortalSites,
   createPortalSite,
   deletePortalSite,
-  upsertClientDevice,
   listClientDevices,
   deleteClientDevice,
   listWorkstationGroups,
@@ -42,9 +42,6 @@ import {
   deleteWorkstationGroup,
   assignClientsToGroup,
   setClientsBroadcast,
-  enqueueCommands,
-  popCommandsForClient,
-  purgeExpiredCommands,
   createDeviceToken,
   revokeDeviceTokensForClient,
   addWhitelistDomain,
@@ -53,6 +50,10 @@ import {
   normalizeDomain,
   regenerateEnrollmentKey,
   writeAuditLog,
+  useAuditQueue,
+  insertAuditEntries,
+  archiveOldAuditLogs,
+  AUDIT_RETENTION_DAYS,
   HOMEPAGE_LIMITS,
   parseHomepageBlocks,
   sanitizeHomepageBlocks,
@@ -106,20 +107,27 @@ import {
   requireTenantAdmin,
   requireTenantPermission,
   requireDevice,
+  forgetDeviceToken,
   jsonError,
   hostname,
   hostSubdomain,
   isDevHost,
   isHostUnder,
   isReservedSlug,
-  rejectCrossSiteMutation
+  rejectCrossSiteMutation,
+  rejectCrossSiteSocket
 } from "./guard";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
-import { createLocalD1Database } from "./d1_adapter";
-import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, demoTunnelFallback, isDemoSlug, isDemoTenant } from "./demo";
+import { getDatabase } from "./database";
+import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
+import { LiveStatus } from "./org_hub";
+import { startCustomHostnameJob } from "./custom_hostnames";
+import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
 
-/** Largest screen thumbnail a workstation may upload (base64 data URL). */
-const MAX_THUMBNAIL_BYTES = 256 * 1024;
+// The Durable Object and Workflow classes wrangler binds (wrangler.jsonc).
+export { OrgHub } from "./org_hub";
+export { CustomHostnameWorkflow } from "./custom_hostname_workflow";
+import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, demoTunnelFallback, isDemoSlug, isDemoTenant } from "./demo";
 
 /** Commands an admin console is allowed to dispatch. */
 const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "clear-session", "mute"]);
@@ -193,9 +201,6 @@ async function staffDelegationProblem(
  */
 const DEMO_LOCKED_MESSAGE = "The platform's demo organizations keep their names and cannot be suspended or rejected";
 
-/** Longest x11vnc password a workstation may report (x11vnc itself uses the first 8 characters). */
-const MAX_VNC_PASSWORD_LENGTH = 64;
-
 /** DNS label limit; a longer organization slug can never resolve. */
 const MAX_SUBDOMAIN_LENGTH = 63;
 
@@ -203,25 +208,6 @@ const MAX_SUBDOMAIN_LENGTH = 63;
 const REGISTER_RATE_LIMIT = { limit: 10, windowSeconds: 3600 };
 /** Failed enrolments allowed per source address per window before the endpoint answers 429. */
 const ENROLL_FAILURE_RATE_LIMIT = { limit: 10, windowSeconds: 900 };
-
-/**
- * Ephemeral in-memory database, used only by the test suite and local dev.
- * A production deployment with no D1 binding fails loudly rather than silently
- * running on storage that disappears when the isolate recycles.
- */
-let localDbInstance: D1Database | null = null;
-function getDatabase(env: Env): D1Database {
-  if (env.DB) return env.DB;
-  if (env.ALLOW_LOCAL_DB !== "1") {
-    throw new Error(
-      "No D1 database bound. Bind `DB` in wrangler.jsonc, or set ALLOW_LOCAL_DB=1 to use the ephemeral in-memory database for local development."
-    );
-  }
-  if (!localDbInstance) {
-    localDbInstance = createLocalD1Database();
-  }
-  return localDbInstance;
-}
 
 /**
  * One-time startup work, memoized per isolate.
@@ -268,6 +254,11 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
           "SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set as Wrangler secrets before the worker can serve production traffic (`npx wrangler secret put SUPER_ADMIN_EMAIL`, then SUPER_ADMIN_PASSWORD). Refusing to seed the well-known default account."
         );
       }
+      // Live control, audit history and custom domains all depend on these.
+      if (production) {
+        const missing = requiredBindingsProblem(env);
+        if (missing) throw new Error(missing);
+      }
       if (!production && (Boolean(email) !== Boolean(password))) {
         throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must be set together, or both left unset for local development.");
       }
@@ -295,34 +286,6 @@ const DEFAULT_CONFIG: LabConfig = {
   whitelist: [],
   scheduledShutdown: "17:00"
 };
-
-/**
- * In-memory telemetry cache, partitioned by tenant.
- * This is a latency optimisation only -- `client_devices` in D1 is the source of
- * truth, because worker isolates are per-colocation and short-lived.
- */
-const tenantTelemetryCache: Record<string, Record<string, ClientTelemetry>> = {};
-
-/**
- * The URL a workstation of this organization should open.
- *
- * A workstation may reach the control plane on a host that is not its organization's
- * own subdomain: the Docker simulator talks to `host.docker.internal`, and a
- * worker deployed to `*.workers.dev` has no organization subdomain at all. Returning a
- * bare `${origin}/` in those cases lands the kiosk on the public landing page
- * instead of the organization's portal, so the organization is named explicitly whenever the
- * host itself cannot carry it.
- */
-function effectiveOrigin(request: Request, url: URL): string {
-  // The Host header is the only origin evidence honoured: a caller-supplied
-  // X-Forwarded-Host would let anyone choose where a workstation is sent.
-  const host = request.headers.get("host");
-  if (host && isDevHost(request)) {
-    const proto = (request.headers.get("x-forwarded-proto") || url.protocol || "http:").replace(/:?$/, ":");
-    return `${proto}//${host}`;
-  }
-  return url.origin;
-}
 
 /**
  * Where a successful sign-in should land.
@@ -359,50 +322,54 @@ function postLoginRedirect(options: {
   return "/admin";
 }
 
-function portalUrlFor(tenant: Tenant, request: Request, url: URL, env: Env): string {
-  const origin = effectiveOrigin(request, url);
-  const homePath = tenant.home_route && tenant.home_route.startsWith("/") ? tenant.home_route : "/";
-  const named = `${origin}${homePath === "/" ? "" : homePath}?tenant=${encodeURIComponent(tenant.subdomain)}`;
+/**
+ * A workstation's two routes: the WebSocket it keeps open to its organization's
+ * OrgHub, and the HTTP heartbeat agents installed before it still use.
+ *
+ * They are answered before sessions and organization resolution, which a
+ * workstation never needs: its device token alone decides the organization and
+ * the workstation, and nothing in the request body can change either. Neither
+ * route touches D1 in the steady state -- verified tokens are cached for a
+ * minute, and everything else is OrgHub's.
+ */
+async function handleWorkstationRequest(
+  request: Request,
+  url: URL,
+  env: Env,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const socket = url.pathname === "/api/devices/ws";
+  if (socket && request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return jsonError("Expected a WebSocket upgrade", 426, jsonHeaders);
+  }
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+  const ip = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
+  const portal = portalContextFrom(request, url, env);
 
-  if (tenant.mode === "single_url") {
-    return safeHttpUrl(tenant.default_url) || named;
+  if (socket) {
+    return hubUpgrade(env, device.tenant_id, "device", { clientId: device.client_id, ip, portal });
   }
 
-  // If reached on local dev or unencrypted HTTP, return the local origin URL so
-  // workstations and Docker simulators can test without needing public DNS.
-  const isHttps = Boolean(
-    url.protocol === "https:" ||
-    request.headers.get("x-forwarded-proto") === "https" ||
-    request.headers.get("cf-visitor")?.includes('"scheme":"https"')
-  );
-  if (!isHttps || isDevHost(request)) {
-    return named;
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch (err) {
+    console.warn("[Worker] Unreadable telemetry payload:", err);
+    return jsonError("Telemetry payload could not be processed", 400, jsonHeaders);
   }
-
-  // Already on this organization's own subdomain or custom domain:
-  if (
-    hostSubdomain(request, env.DEFAULT_DOMAIN) === tenant.subdomain ||
-    (tenant.custom_domain && hostname(request) === tenant.custom_domain.toLowerCase())
-  ) {
-    return `${url.origin}${homePath}`;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return jsonError("Telemetry payload could not be processed", 400, jsonHeaders);
   }
-
-  // If an active custom domain is configured, it is the canonical address for this organization.
-  if (tenant.custom_domain) {
-    return `https://${tenant.custom_domain}${homePath}`;
-  }
-
-  // Talking to the production domain, so the organization has a canonical address.
-  if (env.DEFAULT_DOMAIN) {
-    const base = env.DEFAULT_DOMAIN.replace(/^\./, "").toLowerCase();
-    const host = hostname(request);
-    if (host === base || host.endsWith("." + base)) {
-      return `https://${tenant.subdomain}.${base}${homePath}`;
-    }
-  }
-
-  // Reached on some other host (container gateway, workers.dev, a bare IP).
-  return named;
+  const res = await hubRequest(env, device.tenant_id, "/heartbeat", {
+    clientId: device.client_id,
+    ip,
+    portal,
+    payload
+  });
+  return new Response(res.body, { status: res.status, headers: jsonHeaders });
 }
 
 /**
@@ -521,9 +488,28 @@ export default {
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
     const db = getDatabase(env);
     await bootstrap(db, env);
+    useAuditQueue(env.AUDIT_QUEUE);
     await deleteExpiredSessions(db);
-    await purgeExpiredCommands(db);
     await purgeStaleLoginAttempts(db);
+    // Commands expire inside each organization's OrgHub; the audit log is the
+    // one table here that grows without bound, so old entries move to R2.
+    if (env.AUDIT_ARCHIVE) {
+      const archived = await archiveOldAuditLogs(db, env.AUDIT_ARCHIVE);
+      if (archived) console.log(`[Worker] Archived ${archived} audit entries older than ${AUDIT_RETENTION_DAYS} days to R2.`);
+    }
+  },
+
+  /** The AUDIT_QUEUE consumer: one insert per batch instead of one per action. */
+  async queue(batch: MessageBatch<AuditEntryMessage>, env: Env): Promise<void> {
+    const db = getDatabase(env);
+    await bootstrap(db, env);
+    try {
+      await insertAuditEntries(db, batch.messages.map((message) => message.body));
+      batch.ackAll();
+    } catch (err) {
+      console.error("[Worker] Writing a batch of audit entries failed; the queue will retry it:", err);
+      batch.retryAll();
+    }
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -533,6 +519,7 @@ export default {
 
     const db = getDatabase(env);
     await bootstrap(db, env);
+    useAuditQueue(env.AUDIT_QUEUE);
 
     // Same-origin JSON API: no cross-origin credentials are ever needed, so no
     // Access-Control-Allow-Origin is emitted. `/api/status` opts in explicitly
@@ -544,6 +531,24 @@ export default {
     };
     if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: { Allow: "GET, POST, DELETE, OPTIONS" } });
+    }
+
+    if ((path === "/api/telemetry" && method === "POST") || (path === "/api/devices/ws" && method === "GET")) {
+      return handleWorkstationRequest(request, url, env, db, jsonHeaders);
+    }
+
+    // The console stylesheet: one immutable file per version instead of ~50 KB
+    // inlined into every console page.
+    if (path.startsWith("/assets/console-") && path.endsWith(".css") && method === "GET") {
+      const current = path === CONSOLE_STYLESHEET_PATH;
+      return new Response(consoleStylesheet(), {
+        headers: {
+          "Content-Type": "text/css; charset=utf-8",
+          "X-Content-Type-Options": "nosniff",
+          // An old page asking for an old version gets today's styles, uncached.
+          "Cache-Control": current ? "public, max-age=31536000, immutable" : "no-store"
+        }
+      });
     }
 
     // --- Identity -----------------------------------------------------------
@@ -569,6 +574,27 @@ export default {
     const sessionCookie = (token: string) =>
       createSessionCookie(token, { domain: cookieDomain, secure: secureCookies });
     const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
+
+    // A coarse per-address limit in front of what a stranger can hammer. The
+    // precise lockout windows stay in D1 (login attempts, enrolment failures);
+    // this keeps a flood from reaching the database at all.
+    if (
+      env.AUTH_RATE_LIMITER &&
+      method === "POST" &&
+      (path === "/api/auth/login" || path === "/api/auth/register" || path === "/api/devices/enroll")
+    ) {
+      let success = true;
+      try {
+        ({ success } = await env.AUTH_RATE_LIMITER.limit({ key: `${path}|${clientIp}` }));
+      } catch (err) {
+        // A fault in the front layer must not take sign-in down: the D1 lockouts
+        // below still apply. (wrangler's local simulator throws on every call.)
+        console.error("[Worker] The sign-in rate limiter failed; relying on the D1 lockouts:", err);
+      }
+      if (!success) {
+        return jsonError("Too many attempts from this address. Wait a minute and try again.", 429, jsonHeaders);
+      }
+    }
 
     // Every HTML response carries the same hardened headers and a fresh CSP nonce.
     const nonce = generateNonce();
@@ -600,10 +626,6 @@ export default {
     // once, here, rather than falling through to a route-specific message.
     if (resolution.denied && path.startsWith("/api/")) {
       return jsonError("You do not have access to this organization", 403, jsonHeaders);
-    }
-
-    if (currentTenant && !tenantTelemetryCache[currentTenant.id]) {
-      tenantTelemetryCache[currentTenant.id] = {};
     }
 
     // ==========================================
@@ -938,6 +960,8 @@ export default {
           userId: session!.user_id,
           action: suspend ? "tenant.suspend" : "tenant.reactivate"
         });
+        // A suspension closes every workstation's connection and refuses heartbeats.
+        await notifyConfigChanged(env, target.id);
         return new Response(JSON.stringify({ status: "ok", tenantStatus: suspend ? "suspended" : "active" }), {
           headers: jsonHeaders
         });
@@ -1101,6 +1125,7 @@ export default {
           action: "tenant.approve",
           details: `subdomain=${cleanSub}`
         });
+        await notifyConfigChanged(env, body.tenantId);
 
         return new Response(JSON.stringify({ status: "ok", subdomain: cleanSub }), { headers: jsonHeaders });
       } catch (err: any) {
@@ -1124,6 +1149,7 @@ export default {
           userId: session!.user_id,
           action: "tenant.reject"
         });
+        await notifyConfigChanged(env, body.tenantId);
         return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Tenant rejection failed:", err);
@@ -1155,6 +1181,10 @@ export default {
           return jsonError("This domain is already assigned to another organization", 400, jsonHeaders);
         }
 
+        const replaced =
+          targetTenant.custom_domain && targetTenant.custom_domain !== domain
+            ? { hostname: targetTenant.custom_domain, id: targetTenant.custom_hostname_id }
+            : null;
         await approveCustomDomain(db, targetTenant.id, domain);
         await writeAuditLog(db, {
           tenantId: targetTenant.id,
@@ -1162,6 +1192,17 @@ export default {
           action: "tenant.approve_custom_domain",
           details: `customDomain=${domain}`
         });
+        // Cloudflare for SaaS issues the certificate and routes the domain here.
+        if (replaced) {
+          await startCustomHostnameJob(env, {
+            operation: "delete",
+            tenantId: targetTenant.id,
+            hostname: replaced.hostname,
+            customHostnameId: replaced.id
+          });
+        }
+        await startCustomHostnameJob(env, { operation: "create", tenantId: targetTenant.id, hostname: domain });
+        await notifyConfigChanged(env, targetTenant.id);
 
         return new Response(JSON.stringify({ status: "ok", customDomain: domain }), { headers: jsonHeaders });
       } catch (err: any) {
@@ -1211,12 +1252,22 @@ export default {
         }
         if (!targetTenant) return jsonError("Organization not found", 404, jsonHeaders);
 
+        const previous = { hostname: targetTenant.custom_domain, id: targetTenant.custom_hostname_id };
         await removeCustomDomain(db, targetTenant.id);
         await writeAuditLog(db, {
           tenantId: targetTenant.id,
           userId: session!.user_id,
           action: "tenant.remove_custom_domain"
         });
+        if (previous.hostname) {
+          await startCustomHostnameJob(env, {
+            operation: "delete",
+            tenantId: targetTenant.id,
+            hostname: previous.hostname,
+            customHostnameId: previous.id
+          });
+        }
+        await notifyConfigChanged(env, targetTenant.id);
         return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Custom domain removal failed:", err);
@@ -1275,6 +1326,7 @@ export default {
           action: "portal.add",
           details: `${title} -> ${targetUrl}`
         });
+        await notifyConfigChanged(env, currentTenant!.id);
 
         return new Response(JSON.stringify({ status: "ok", site }), { headers: jsonHeaders });
       } catch (err: any) {
@@ -1296,6 +1348,7 @@ export default {
           action: "portal.remove",
           details: `site=${id}`
         });
+        await notifyConfigChanged(env, currentTenant!.id);
         return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Deleting portal site failed:", err);
@@ -1337,6 +1390,7 @@ export default {
           action: "broadcast_presets.create",
           details: `title=${title} url=${validatedUrl}`
         });
+        await notifyConfigChanged(env, currentTenant!.id);
         return new Response(JSON.stringify({ status: "ok", preset }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Failed adding broadcast preset:", err);
@@ -1359,6 +1413,7 @@ export default {
           action: "broadcast_presets.delete",
           details: `id=${presetId}`
         });
+        await notifyConfigChanged(env, currentTenant!.id);
         return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Deleting broadcast preset failed:", err);
@@ -1425,6 +1480,7 @@ export default {
           action: "settings.mode",
           details: `${body.mode}${updates.default_url ? ` url=${updates.default_url}` : ""}`
         });
+        await notifyConfigChanged(env, currentTenant!.id);
         return new Response(
           JSON.stringify({
             status: "ok",
@@ -1544,6 +1600,7 @@ export default {
             action: "settings.customization",
             details: JSON.stringify(updates)
           });
+          await notifyConfigChanged(env, currentTenant!.id);
         }
 
         return new Response(
@@ -1642,12 +1699,22 @@ export default {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       try {
+        const previous = { hostname: currentTenant!.custom_domain, id: currentTenant!.custom_hostname_id };
         await removeCustomDomain(db, currentTenant!.id);
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,
           userId: session!.user_id,
           action: "settings.remove_custom_domain"
         });
+        if (previous.hostname) {
+          await startCustomHostnameJob(env, {
+            operation: "delete",
+            tenantId: currentTenant!.id,
+            hostname: previous.hostname,
+            customHostnameId: previous.id
+          });
+        }
+        await notifyConfigChanged(env, currentTenant!.id);
         return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
       } catch (err: any) {
         console.error("[Worker] Remove custom domain failed:", err);
@@ -1846,6 +1913,7 @@ export default {
           action: "tenant.update_subdomain",
           details: `subdomain=${cleanSub}`
         });
+        await notifyConfigChanged(env, currentTenant!.id);
 
         const redirectUrl = isDev
           ? `/admin?tenant=${encodeURIComponent(cleanSub)}`
@@ -1962,6 +2030,7 @@ export default {
             action: "settings.update",
             details: JSON.stringify(updates)
           });
+          await notifyConfigChanged(env, currentTenant!.id);
         }
 
         return new Response(JSON.stringify({ status: "ok", updates }), { headers: jsonHeaders });
@@ -2036,6 +2105,9 @@ export default {
         }
 
         const { token } = await createDeviceToken(db, { tenantId: tenant.id, clientId });
+        // A workstation removed earlier and enrolled again is welcome again.
+        forgetDeviceToken(tenant.id, clientId);
+        await hubJson(env, tenant.id, "/device-enrolled", { clientId });
         await writeAuditLog(db, {
           tenantId: tenant.id,
           action: "device.enroll",
@@ -2068,156 +2140,68 @@ export default {
     // CLIENT TELEMETRY & COMMAND EXECUTION API
     // ==========================================
 
-    // POST /api/telemetry: Ingest workstation status & thumbnail (device token required)
-    if (path === "/api/telemetry" && method === "POST") {
-      const auth = await requireDevice(request, db, jsonHeaders);
-      if (auth.error) return auth.error;
-      const device = auth.device;
-
-      const tenant = await findTenantById(db, device.tenant_id);
-      if (!tenant || tenant.status !== "active") {
-        return jsonError("This organization is not active", 403, jsonHeaders);
-      }
-
-      try {
-        const body = await request.json<Partial<ClientTelemetry>>();
-        // The token, never the request body, decides who this workstation is.
-        const clientId = device.client_id;
-        const tenantId = device.tenant_id;
-        const now = Math.floor(Date.now() / 1000);
-
-        // Remote-control details the workstation volunteers: the x11vnc password
-        // it generated at boot and the tunnel hostname its noVNC gateway answers on.
-        const vncPassword =
-          typeof body.vncPassword === "string" && body.vncPassword.trim()
-            ? body.vncPassword.trim().slice(0, MAX_VNC_PASSWORD_LENGTH)
-            : undefined;
-        const remoteHost = typeof body.remoteHost === "string" ? cleanCustomDomain(body.remoteHost) || undefined : undefined;
-
-        let thumbnail = typeof body.thumbnail === "string" ? body.thumbnail : undefined;
-        if (thumbnail) {
-          if (!thumbnail.startsWith("data:image/jpeg;base64,") && !thumbnail.startsWith("data:image/png;base64,")) {
-            thumbnail = undefined;
-          } else if (thumbnail.length > MAX_THUMBNAIL_BYTES) {
-            console.warn(`[Worker] Dropping oversized thumbnail from ${clientId} (${thumbnail.length} bytes)`);
-            thumbnail = undefined;
-          }
-        }
-
-        const activeUrl = safeHttpUrl(body.activeUrl) || (tenant.default_url ? safeHttpUrl(tenant.default_url) : "") || DEFAULT_CONFIG.defaultHomepage;
-        const clientNum = Number.isFinite(Number(body.clientNum)) ? Number(body.clientNum) : 1;
-
-        const record: ClientTelemetry = {
-          clientId,
-          clientNum,
-          activeUrl,
-          isLocked: Boolean(body.isLocked),
-          thumbnail,
-          timestamp: now,
-          ip: clientIp,
-          lastSeen: new Date().toISOString(),
-          online: true,
-          vncPassword: vncPassword ?? tenantTelemetryCache[tenantId]?.[clientId]?.vncPassword,
-          remoteHost: remoteHost ?? tenantTelemetryCache[tenantId]?.[clientId]?.remoteHost
-        };
-
-        if (!tenantTelemetryCache[tenantId]) tenantTelemetryCache[tenantId] = {};
-        tenantTelemetryCache[tenantId][clientId] = record;
-
-        const ownBroadcast = await upsertClientDevice(db, {
-          tenantId,
-          clientId,
-          clientNum,
-          ip: clientIp,
-          isLocked: Boolean(body.isLocked),
-          activeUrl,
-          thumbnail,
-          vncPassword,
-          remoteHost
-        });
-
-        const commandsForClient = await popCommandsForClient(db, tenantId, clientId);
-        const activeWhitelist = await buildEffectiveWhitelist(db, tenantId);
-        // Broadcast state lives in D1 -- organization-wide on the tenant row, per
-        // workstation on its own row -- so every colo and every isolate hands this
-        // workstation the same answer. The newer of the two wins; a winner with no
-        // URL is a reset, and the workstation gets the portal.
-        const organizationEpoch = Number(tenant.broadcast_epoch) || 0;
-        const winner = ownBroadcast.broadcast_epoch > organizationEpoch
-          ? { url: ownBroadcast.broadcast_url, epoch: ownBroadcast.broadcast_epoch }
-          : { url: tenant.broadcast_url ?? null, epoch: organizationEpoch };
-        const validatedBroadcastUrl = winner.url ? safeHttpUrl(winner.url) : null;
-        const activeBroadcast = validatedBroadcastUrl
-          ? { url: validatedBroadcastUrl, epoch: winner.epoch }
-          : null;
-        if (activeBroadcast) {
-          const bHost = new URL(activeBroadcast.url).hostname.toLowerCase();
-          if (bHost && !activeWhitelist.includes(bHost)) {
-            activeWhitelist.push(bHost);
-            activeWhitelist.sort();
-          }
-        }
-        const portalUrl = portalUrlFor(tenant, request, url, env);
-        const targetUrl = activeBroadcast?.url || portalUrl;
-        // A "Reset to Portal" gets this workstation's portal, from this request.
-        const commands = commandsForClient.map(({ portal, ...command }) =>
-          portal ? { ...command, url: portalUrl } : command
-        );
-
-        return new Response(
-          JSON.stringify({
-            status: "ok",
-            commands,
-            whitelist: activeWhitelist,
-            mode: tenant.mode,
-            targetUrl,
-            broadcastUrl: activeBroadcast?.url || "",
-            broadcastEpoch: activeBroadcast?.epoch || 0
-          }),
-          { headers: jsonHeaders }
-        );
-      } catch (err: any) {
-        console.error("[Worker] Telemetry ingest failed:", err);
-        return jsonError("Telemetry payload could not be processed", 400, jsonHeaders);
-      }
-    }
-
-    // GET /api/clients: Active client list for dashboard
-    if (path === "/api/clients" && method === "GET") {
+    // GET /api/clients: every workstation of this organization, with live status.
+    // POST /api/clients: the same, from a console without its live channel, naming
+    // the screens it shows so their frames keep coming.
+    if (path === "/api/clients" && (method === "GET" || method === "POST")) {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
-
-      const now = Math.floor(Date.now() / 1000);
-      const cache = tenantTelemetryCache[currentTenant!.id] || {};
-      const clientsWithStatus: Record<string, ClientTelemetry> = {};
-
-      // D1 is the source of truth; the cache only supplies fresher frames for
-      // workstations this particular isolate has recently heard from.
-      for (const row of await listClientDevices(db, currentTenant!.id)) {
-        clientsWithStatus[row.client_id] = {
-          clientId: row.client_id,
-          clientNum: row.client_num,
-          activeUrl: row.active_url || currentTenant!.default_url || DEFAULT_CONFIG.defaultHomepage,
-          isLocked: row.is_locked === 1,
-          thumbnail: row.thumbnail || undefined,
-          timestamp: row.last_seen,
-          ip: row.ip || undefined,
-          lastSeen: new Date(row.last_seen * 1000).toISOString(),
-          online: now - row.last_seen < 12,
-          vncPassword: row.vnc_password || undefined,
-          remoteHost: row.remote_host || undefined,
-          groupName: row.group_name || undefined
-        };
-      }
-
-      for (const [id, cached] of Object.entries(cache)) {
-        const existing = clientsWithStatus[id];
-        if (!existing || cached.timestamp >= existing.timestamp) {
-          clientsWithStatus[id] = { ...cached, groupName: existing?.groupName, online: now - cached.timestamp < 12 };
+      let watch: string[] = [];
+      if (method === "POST") {
+        try {
+          const body = await request.json<{ watch?: unknown }>();
+          watch = Array.isArray(body.watch) ? body.watch.map((id) => String(id)).slice(0, MAX_BATCH_TARGETS) : [];
+        } catch (err) {
+          console.warn("[Worker] Unreadable workstation list request:", err);
+          return jsonError("The request body is not valid JSON", 400, jsonHeaders);
         }
       }
 
-      return new Response(JSON.stringify({ clients: clientsWithStatus }), { headers: jsonHeaders });
+      const tenant = currentTenant!;
+      // D1 is the registry (groups, offline machines, last known state); OrgHub
+      // is who is connected right now and what each one shows.
+      const [rows, live] = await Promise.all([
+        listClientDevices(db, tenant.id),
+        hubJson<{ clients: Record<string, LiveStatus> }>(env, tenant.id, "/live", { watch })
+      ]);
+      const fallbackUrl = tenant.default_url || DEFAULT_CONFIG.defaultHomepage;
+      const clients: Record<string, ClientTelemetry> = {};
+      const toTelemetry = (status: LiveStatus | undefined, row?: (typeof rows)[number]): ClientTelemetry => {
+        const lastSeenMs = status ? status.lastSeen : (row?.last_seen ?? 0) * 1000;
+        return {
+          clientId: status?.clientId ?? row!.client_id,
+          clientNum: status?.clientNum ?? row?.client_num ?? 1,
+          activeUrl: status?.activeUrl || row?.active_url || fallbackUrl,
+          isLocked: status ? status.isLocked : row?.is_locked === 1,
+          thumbnail: status?.thumbnail,
+          timestamp: Math.floor(lastSeenMs / 1000),
+          ip: status?.ip || row?.ip || undefined,
+          lastSeen: new Date(lastSeenMs).toISOString(),
+          online: Boolean(status?.online),
+          vncPassword: status?.vncPassword || row?.vnc_password || undefined,
+          remoteHost: status?.remoteHost || row?.remote_host || undefined,
+          groupName: row?.group_name || undefined
+        };
+      };
+      for (const row of rows) clients[row.client_id] = toTelemetry(live.clients[row.client_id], row);
+      // Connected a moment ago, before its registry row could be listed.
+      for (const [id, status] of Object.entries(live.clients)) {
+        if (!clients[id]) clients[id] = toTelemetry(status);
+      }
+      return new Response(JSON.stringify({ clients }), { headers: jsonHeaders });
+    }
+
+    // GET /api/console/ws: the console's live channel to this organization's
+    // OrgHub -- status changes and the frames of the screens it is showing.
+    if (path === "/api/console/ws" && method === "GET") {
+      if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+        return jsonError("Expected a WebSocket upgrade", 426, jsonHeaders);
+      }
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      const crossSite = rejectCrossSiteSocket(request, { baseDomain: env.DEFAULT_DOMAIN }, jsonHeaders);
+      if (crossSite) return crossSite;
+      return hubUpgrade(env, currentTenant!.id, "console", { userId: session!.user_id });
     }
 
     // POST /api/clients/remove: Decommission a workstation
@@ -2230,11 +2214,14 @@ export default {
         if (!clientId) return jsonError("A workstation id is required", 400, jsonHeaders);
 
         const tenantId = currentTenant!.id;
-        delete tenantTelemetryCache[tenantId]?.[clientId];
         await deleteClientDevice(db, tenantId, clientId);
         // Decommissioning must also invalidate the device's credentials, or the
-        // workstation simply re-registers itself on its next heartbeat.
+        // workstation simply re-registers itself on its next heartbeat. OrgHub
+        // refuses it at once and closes its connection; the token cache of this
+        // isolate forgets it, and other isolates' copies expire within a minute.
         await revokeDeviceTokensForClient(db, tenantId, clientId);
+        forgetDeviceToken(tenantId, clientId);
+        await hubJson(env, tenantId, "/remove-device", { clientId });
         await writeAuditLog(db, {
           tenantId,
           userId: session!.user_id,
@@ -2245,7 +2232,7 @@ export default {
         return new Response(
           JSON.stringify({
             status: "ok",
-            remaining: Object.keys(tenantTelemetryCache[tenantId] || {}).length
+            remaining: (await listClientDevices(db, tenantId)).length
           }),
           { headers: jsonHeaders }
         );
@@ -2278,11 +2265,6 @@ export default {
 
         for (let i = 0; i < clientIds.length; i += D1_IN_LIST_CHUNK) {
           await assignClientsToGroup(db, currentTenant!.id, clientIds.slice(i, i + D1_IN_LIST_CHUNK), groupName);
-        }
-
-        const cache = tenantTelemetryCache[currentTenant!.id] || {};
-        for (const cid of clientIds) {
-          if (cache[cid]) cache[cid].groupName = groupName || undefined;
         }
 
         await writeAuditLog(db, {
@@ -2448,30 +2430,19 @@ export default {
           ? (currentTenant!.default_lock_message || "This screen has been locked by an administrator. Please wait.")
           : undefined;
 
-        const cache = tenantTelemetryCache[tenantId] || {};
-        const isLock = action === "lock";
-        const isUnlock = action === "unlock";
-
-        // One statement for every target, not one round trip each.
-        const cmdIds = await enqueueCommands(db, {
-          tenantId,
+        // OrgHub queues the command and pushes it at once to every connected
+        // workstation it addresses; the rest get it on their next connection or
+        // heartbeat until it expires. A navigate changed the recorded broadcast
+        // above, so the hub reloads before it delivers.
+        const { commandIds: cmdIds } = await hubJson<{ commandIds: string[] }>(env, tenantId, "/enqueue", {
           targets,
-          action: action as any,
+          action,
           url: commandUrl,
           epoch: commandEpoch,
           message: lockMsg,
-          portal: toPortal
+          portal: toPortal,
+          reloadConfig: action === "navigate"
         });
-
-        for (const target of targets) {
-          if (isLock || isUnlock) {
-            if (target === "all") {
-              for (const c of Object.values(cache)) c.isLocked = isLock;
-            } else if (cache[target]) {
-              cache[target].isLocked = isLock;
-            }
-          }
-        }
 
         await writeAuditLog(db, {
           tenantId,
@@ -2479,9 +2450,6 @@ export default {
           action: `command.${action}`,
           details: `targets=${targets.join(",")}${toPortal ? " url=portal" : commandUrl ? ` url=${commandUrl}` : ""}`
         });
-
-        // Opportunistic housekeeping; command rows are short-lived by design.
-        await purgeExpiredCommands(db);
 
         return new Response(JSON.stringify({ status: "ok", commandId: cmdIds[0], commandIds: cmdIds, count: cmdIds.length }), { headers: jsonHeaders });
       } catch (err: any) {
@@ -2530,6 +2498,7 @@ export default {
         } else {
           return jsonError("Action must be either 'add' or 'remove'", 400, jsonHeaders);
         }
+        await notifyConfigChanged(env, tenantId);
 
         return new Response(
           JSON.stringify({ status: "ok", whitelist: await buildEffectiveWhitelist(db, tenantId) }),

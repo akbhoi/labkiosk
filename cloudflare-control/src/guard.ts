@@ -241,6 +241,35 @@ export function rejectCrossSiteMutation(
   return sameSite ? null : jsonError("Cross-site requests are not accepted", 403, headers);
 }
 
+/**
+ * A cookie-authenticated WebSocket handshake must come from this site.
+ *
+ * Browsers send cookies with a cross-site WebSocket handshake and CORS does not
+ * apply to it, so without this any page could open the console's live channel
+ * as a signed-in administrator. Browsers always send `Origin` on a handshake;
+ * one without it is refused.
+ */
+export function rejectCrossSiteSocket(
+  request: Request,
+  options: { baseDomain?: string },
+  headers: Record<string, string>
+): Response | null {
+  const origin = request.headers.get("origin");
+  if (!origin || origin === "null") return jsonError("Cross-site requests are not accepted", 403, headers);
+  let originHost: string;
+  try {
+    originHost = new URL(origin).hostname.toLowerCase();
+  } catch (err) {
+    console.warn("[Guard] Unparseable Origin on a WebSocket handshake:", err);
+    return jsonError("Cross-site requests are not accepted", 403, headers);
+  }
+  const sameSite =
+    originHost === hostname(request) ||
+    (DEV_HOSTS.has(originHost) && isDevHost(request)) ||
+    isHostUnder(originHost, options.baseDomain);
+  return sameSite ? null : jsonError("Cross-site requests are not accepted", 403, headers);
+}
+
 /** 403 unless the session is the platform super admin. */
 export function requireSuperAdmin(session: Session | null, headers: Record<string, string>): Response | null {
   if (!session) return jsonError("Authentication required", 401, headers);
@@ -307,6 +336,27 @@ export interface DeviceAuthFailure {
 }
 
 /**
+ * Verified device tokens, per isolate, for a minute.
+ *
+ * A workstation on the HTTP heartbeat presents its token every 3 seconds, and
+ * looking it up in D1 each time was a query per heartbeat. A removed
+ * workstation is still refused at once: its organization's OrgHub keeps its own
+ * list of removed machines, and `forgetDeviceToken` clears this isolate's copy.
+ */
+const DEVICE_TOKEN_CACHE_MS = 60_000;
+const DEVICE_TOKEN_CACHE_LIMIT = 20_000;
+/** A token's last-used time is written at most this often. */
+const DEVICE_TOKEN_TOUCH_SECONDS = 3600;
+const deviceTokenCache = new Map<string, { device: DeviceToken; until: number }>();
+
+/** Drop this isolate's cached tokens for a workstation (it was removed or re-enrolled). */
+export function forgetDeviceToken(tenantId: string, clientId: string): void {
+  for (const [token, entry] of deviceTokenCache) {
+    if (entry.device.tenant_id === tenantId && entry.device.client_id === clientId) deviceTokenCache.delete(token);
+  }
+}
+
+/**
  * Authenticate an enrolled workstation by its bearer token.
  * The token, not the request body, decides which tenant and which client id the
  * caller may act as.
@@ -326,11 +376,23 @@ export async function requireDevice(
     return { error: jsonError("Device token required", 401, headers) };
   }
 
+  const now = Date.now();
+  const cached = deviceTokenCache.get(token);
+  if (cached && cached.until > now) return { device: cached.device };
+
   const device = await findDeviceByToken(db, token);
   if (!device || device.revoked) {
+    deviceTokenCache.delete(token);
     return { error: jsonError("Invalid or revoked device token", 401, headers) };
   }
 
-  await touchDeviceToken(db, device.id);
+  if (Math.floor(now / 1000) - Number(device.last_used_at || 0) > DEVICE_TOKEN_TOUCH_SECONDS) {
+    await touchDeviceToken(db, device.id);
+  }
+  if (deviceTokenCache.size >= DEVICE_TOKEN_CACHE_LIMIT) {
+    const oldest = deviceTokenCache.keys().next().value;
+    if (oldest !== undefined) deviceTokenCache.delete(oldest);
+  }
+  deviceTokenCache.set(token, { device, until: now + DEVICE_TOKEN_CACHE_MS });
   return { device };
 }

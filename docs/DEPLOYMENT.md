@@ -85,6 +85,14 @@ Pending migrations are applied the same way. Two of them change existing data:
   workstations into `web-demo` afterwards. Before deploying, check nobody already holds one of the
   new names — a row there not owned by the super admin is left alone and is not a demo:
   `npx wrangler d1 execute labkiosk-db --remote --command "SELECT subdomain, user_id FROM tenants WHERE subdomain IN ('web-demo','local-demo','docker-demo')"`
+- **`0014_org_hub_live_state.sql`** moves live state out of D1: it **drops the `commands` and
+  `command_deliveries` tables and `client_devices.thumbnail`**, and adds
+  `tenants.online_workstations`, `custom_hostname_id` and `custom_hostname_status`. Commands
+  queued at that moment are lost (they expired within a minute anyway). Create the
+  [platform resources](#platform-resources) first — the new worker refuses to start without them —
+  and deploy in the same release, because the old worker reads the dropped tables. Workstations
+  from an older ISO keep working over the HTTP heartbeat; those with `python3-websocket` connect
+  over a WebSocket.
 
 Back up, apply, then deploy:
 
@@ -119,6 +127,41 @@ npx wrangler secret put SUPER_ADMIN_PASSWORD
 
 > [!NOTE]
 > Updating `SUPER_ADMIN_EMAIL` in the future will automatically migrate the super-admin account to the new email address. Once logged in to the `/super` console, passwords can also be rotated directly via the authenticated password-change interface.
+
+---
+
+## Platform resources
+
+The worker needs more than D1. Live workstation state lives in one **OrgHub** Durable Object per
+organization, audit entries go through a queue and are archived to R2, and custom domains are
+provisioned by a Workflow. **A production worker refuses to start without every one of them**
+(`requiredBindingsProblem()`), and the error names each one that is missing.
+
+| Binding | What it is | Create it |
+| :--- | :--- | :--- |
+| `ORG_HUB` | Durable Object class `OrgHub` (SQLite-backed) | Nothing to create: the first deploy applies the `v1-org-hub` migration in `wrangler.jsonc`. |
+| `AUDIT_QUEUE` | Queue `labkiosk-audit`, dead-letter queue `labkiosk-audit-dlq` | `npx wrangler queues create labkiosk-audit` and `npx wrangler queues create labkiosk-audit-dlq` |
+| `AUDIT_ARCHIVE` | R2 bucket `labkiosk-audit-archive` (audit entries older than 180 days, as NDJSON) | `npx wrangler r2 bucket create labkiosk-audit-archive` |
+| `FLEET_METRICS` | Analytics Engine dataset `labkiosk_fleet` (connects and disconnects) | Nothing: it is created on first write. |
+| `AUTH_RATE_LIMITER` | Rate limit, namespace `1001`, 20 requests per 60 s per address | Nothing; change `namespace_id` if your account already uses `1001`. |
+| `CUSTOM_HOSTNAMES` | Workflow `labkiosk-custom-hostnames` | Nothing: created on deploy. |
+| `CF_API_TOKEN` | Secret: an API token for the zone with **SSL and Certificates: Edit** (custom hostnames) | `npx wrangler secret put CF_API_TOKEN` |
+| `CF_ZONE_ID` | Secret: the zone id of your platform domain | `npx wrangler secret put CF_ZONE_ID` |
+
+**Custom domains (Cloudflare for SaaS).** When a super admin approves an organization's custom
+domain, the Workflow creates a custom hostname on your zone, waits for its certificate, and records
+`custom_hostname_status` (`pending`, then `active` or `failed`); removing the domain deletes it.
+Before the first approval, enable Cloudflare for SaaS on the zone, set a **fallback origin** (a
+proxied DNS record on your zone), and make sure the worker serves custom hostnames — Cloudflare's
+guide for using a Worker as the SaaS origin describes the catch-all route. Each organization then
+points its domain at the fallback origin with a CNAME.
+
+**Local development** needs none of this: `pnpm dev` (`wrangler dev`) runs every binding locally,
+and with `ALLOW_LOCAL_DB=1` a custom domain is marked `local` instead of provisioned. wrangler's
+local rate-limit simulator throws on every call; the worker logs that and keeps to the D1 lockouts.
+
+**The CI token.** `wrangler deploy` now also binds a queue, a bucket and a Workflow. If the deploy
+reports an authorization error, add the permission it names to `CLOUDFLARE_API_TOKEN`.
 
 ---
 
@@ -198,8 +241,11 @@ The worker defines an hourly cron trigger in `wrangler.jsonc`:
 Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of every hour:
 
 - Purges expired user and admin sessions.
-- Deletes delivered and acknowledged commands from the command queue.
 - Cleans up stale rate-limiting and sign-in throttle rows.
+- Moves audit entries older than 180 days to the `labkiosk-audit-archive` R2 bucket (one NDJSON
+  file per run) and deletes them from D1.
+
+Queued commands are no longer in D1: each organization's OrgHub expires its own.
 
 ---
 
@@ -234,7 +280,7 @@ For workstations running Lab Kiosk OS to communicate reliably with the Cloudflar
 
 Organization firewalls should permit outbound connections for the following ports and hosts:
 
-- **HTTPS (`TCP 443`):** To `<organization>.labkiosk.yourdomain.com` (telemetry, enrollment, and web pages).
+- **HTTPS (`TCP 443`):** To `<organization>.labkiosk.yourdomain.com` (the control channel, enrollment, and web pages). The control channel is a long-lived WebSocket; a proxy that refuses WebSocket upgrades only costs efficiency, because the agent falls back to the 3-second HTTPS heartbeat after three failed attempts.
 - **DNS (`UDP/TCP 53`):** To organization DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
 - **Cloudflare Tunnel (`TCP 7844` / `UDP 7844` QUIC):** Optional, required only if remote desktop assistance via `cloudflared` is deployed.
 

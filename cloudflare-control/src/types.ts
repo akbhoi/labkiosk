@@ -2,6 +2,7 @@ export type UserRole = "super_admin" | "org_admin";
 export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
 export type KioskMode = "portal" | "single_url";
 export type CommandAction = "lock" | "unlock" | "navigate" | "reload" | "reboot" | "shutdown" | "clear-session" | "mute";
+export type CustomHostnameStatus = "none" | "pending" | "active" | "failed" | "local";
 export type TenantUserRole = "org_admin" | "sub_admin" | "operator" | "assistant" | "content_manager";
 
 export interface TenantUser {
@@ -56,6 +57,12 @@ export interface Tenant {
   /** A JSON array of HomepageBlock; read it with parseHomepageBlocks. */
   homepage_blocks?: string | null;
   tunnel_domain?: string | null;
+  /** Workstations online, as the organization's OrgHub last counted them. */
+  online_workstations?: number;
+  /** Cloudflare for SaaS custom hostname id for `custom_domain`, once provisioned. */
+  custom_hostname_id?: string | null;
+  /** none, pending (certificate being issued), active, failed, or local (development). */
+  custom_hostname_status?: CustomHostnameStatus;
   created_at: number;
   updated_at: number;
 }
@@ -99,7 +106,6 @@ export interface ClientDevice {
   last_seen: number;
   is_locked: number; // 0 or 1
   active_url?: string | null;
-  thumbnail?: string | null;
   /** x11vnc password the workstation generated at boot; reported over telemetry. */
   vnc_password?: string | null;
   /** Hostname the workstation's noVNC gateway is reachable on (Cloudflare Tunnel). */
@@ -195,8 +201,48 @@ export interface LabConfig {
   scheduledShutdown: string;
 }
 
+/** What the audit queue carries: one entry, as `writeAuditLog` received it. */
+export interface AuditEntryMessage {
+  id: string;
+  tenantId: string | null;
+  userId: string | null;
+  action: string;
+  details: string | null;
+  createdAt: number;
+}
+
+/** A custom hostname job for the CUSTOM_HOSTNAMES workflow. */
+export interface CustomHostnameParams {
+  operation: "create" | "delete";
+  tenantId: string;
+  hostname: string;
+  /** For "delete": the Cloudflare for SaaS custom hostname id to remove. */
+  customHostnameId?: string | null;
+}
+
 export interface Env {
   DB?: D1Database;
+  /**
+   * The bindings below are required in production (bootstrap refuses to serve
+   * without them). Tests and `ALLOW_LOCAL_DB=1` development use in-process
+   * stand-ins, so they are optional in the type.
+   */
+  /** One OrgHub Durable Object per organization (src/org_hub.ts). */
+  ORG_HUB?: DurableObjectNamespace;
+  /** Audit entries, written to D1 in batches by the queue consumer. */
+  AUDIT_QUEUE?: Queue<AuditEntryMessage>;
+  /** Audit entries older than the retention period, as NDJSON files. */
+  AUDIT_ARCHIVE?: R2Bucket;
+  /** Fleet history: connections, disconnections and online counts per organization. */
+  FLEET_METRICS?: AnalyticsEngineDataset;
+  /** Coarse per-address throttle in front of sign-in, registration and enrolment. */
+  AUTH_RATE_LIMITER?: RateLimit;
+  /** Provisions and removes Cloudflare for SaaS custom hostnames. */
+  CUSTOM_HOSTNAMES?: Workflow<CustomHostnameParams>;
+  /** API token with SSL and Certificates: Edit on the zone (Cloudflare for SaaS). */
+  CF_API_TOKEN?: string;
+  /** The zone custom hostnames are created in (the platform domain's zone). */
+  CF_ZONE_ID?: string;
   SUPER_ADMIN_EMAIL?: string;
   SUPER_ADMIN_PASSWORD?: string;
   DEFAULT_DOMAIN?: string; // e.g. "labkiosk.akbhoi.com"

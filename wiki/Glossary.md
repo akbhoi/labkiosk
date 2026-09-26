@@ -24,7 +24,11 @@ A workstation's human-readable identifier — `PC-01`, `LAB3-07`. Matches `^[A-Z
 
 ### Command delivery receipt
 
-A row in `command_deliveries` (`command_id`, `client_id`) recording that a workstation has received a command, so a broadcast executes exactly once per machine.
+A row in an OrgHub's `deliveries` table (`command_id`, `client_id`) recording that a workstation has received a command, so a broadcast executes exactly once per machine.
+
+### OrgHub
+
+The Durable Object each organization has one of: it holds the WebSockets of its workstations and consoles, who is online, and the command queue, and writes the registry back to D1.
 
 ### Control plane
 

@@ -167,7 +167,7 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 Particularly wanted:
 
 - **Kiosk breakout** — escaping the locked Chromium session into a shell or the Openbox desktop.
-- **Tenant isolation bypass** — reading or writing across organization boundaries in D1 or the telemetry cache.
+- **Tenant isolation bypass** — reading or writing across organization boundaries in D1 or an organization's OrgHub.
 - **Authentication bypass** — flaws in the PBKDF2 implementation, session token generation, or cookie handling.
 - **Remote code execution** in `agent.py` or its loopback API.
 - **Device impersonation** — posting telemetry, draining a command queue, or reading an allowlist without a token issued through enrolment.

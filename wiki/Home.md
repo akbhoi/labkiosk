@@ -2,7 +2,7 @@
 
 **An ultra-lightweight Linux kiosk operating system and a multi-tenant Cloudflare control plane, built for organization workstation fleets.**
 
-Lab Kiosk replaces commercial kiosk software in educational organizations. It turns commodity thin clients (Intel x86_64, 4 GB RAM, 12 GB SSD) into immutable, RAM-only user workstations, and gives operators a live console with three-second screen telemetry, one-click screen locking, Broadcast, and embedded remote control.
+Lab Kiosk replaces commercial kiosk software in educational organizations. It turns commodity thin clients (Intel x86_64, 4 GB RAM, 12 GB SSD) into immutable, RAM-only user workstations, and gives operators a live console with real-time screen previews, one-click screen locking, Broadcast, and embedded remote control.
 
 Every organization gets its own isolated subdomain (`greenwood.labkiosk.example.edu`), its own curated User Portal, and its own Operator Lab Dashboard. Organization data never crosses a tenant boundary.
 

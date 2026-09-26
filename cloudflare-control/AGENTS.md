@@ -9,14 +9,22 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0013)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0014)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
-├── wrangler.jsonc                      # Routes, D1 binding, hourly cron trigger
+├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), hourly cron
+├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
 ├── src/
-│   ├── index.ts                        # Edge router, REST APIs, telemetry cache, scheduled()
+│   ├── index.ts                        # Edge router, REST APIs, scheduled(), queue()
+│   ├── org_hub.ts                      # OrgHub Durable Object: one per organization (Rule 2d)
+│   ├── hub.ts                          # The only way to reach a hub; required-bindings check
+│   ├── local_do.ts                     # In-process OrgHub runtime for tests and Node development
+│   ├── database.ts                     # getDatabase(), isLocalEnvironment()
+│   ├── portal_url.ts                   # A workstation's portal URL from its connection details
+│   ├── custom_hostnames.ts             # Cloudflare for SaaS custom hostname jobs
+│   ├── custom_hostname_workflow.ts     # The Workflow that runs those jobs with durable retries
 │   ├── guard.ts                        # Tenant resolution, authorization, CSRF origin guard (MANDATORY)
 │   ├── escape.ts                       # HTML / attribute / JSON escaping & safe URLs (MANDATORY)
-│   ├── db.ts                           # D1 Database queries, SCHEMA_SQL & tenant seeding
+│   ├── db.ts                           # D1 Database queries, SCHEMA_SQL, tenant seeding, audit
 │   ├── demo.ts                         # The three platform demo organizations (web/local/docker)
 │   ├── auth.ts                         # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   ├── d1_adapter.ts                   # Node 22+ native `node:sqlite` mock for local unit tests
@@ -40,7 +48,8 @@ cloudflare-control/
 └── test/
     ├── worker.test.ts                  # Multi-tenant automated integration & security test suite
     ├── dump_admin_html.ts              # Renders the four console pages from fixed inputs (Rule 5f)
-    └── dev_server.ts                   # Runs the worker under Node on the in-memory database
+    ├── dev_server.ts                   # Runs the worker under Node on the in-memory database
+    └── shims/                          # Node stand-ins for `cloudflare:workers`
 ```
 
 ---
@@ -60,8 +69,8 @@ cloudflare-control/
 ### Rule 2: Multi-Tenant Scoping, Privacy Isolation & Delegation
 
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
-- The in-memory telemetry cache is partitioned by tenant ID: `tenantTelemetryCache[tenantKey]`. It is a cache only; `client_devices` in D1 is the source of truth, because worker isolates are per-colo and short-lived.
-- **Nothing that two requests must agree on lives in module memory.** The active broadcast (`tenants.broadcast_url` / `broadcast_epoch` organization-wide, `client_devices.broadcast_url` / `broadcast_epoch` per workstation) and a workstation's remote-control details (`client_devices.vnc_password` / `remote_host`) are rows in D1.
+- Live workstation state belongs to the organization's **OrgHub** (Rule 2d), which is named by tenant id, so one organization's hub never sees another's workstations. `client_devices` in D1 is the registry it writes back to.
+- **Nothing that two requests must agree on lives in module memory** — worker isolates are per-colo and short-lived. The active broadcast (`tenants.broadcast_url` / `broadcast_epoch` organization-wide, `client_devices.broadcast_url` / `broadcast_epoch` per workstation) and a workstation's remote-control details (`client_devices.vnc_password` / `remote_host`) are rows in D1; who is connected and the command queue are the hub's. The isolate's verified-device-token cache (`guard.ts`, 60 s) is a cache only: a removal also tells the hub, which refuses the workstation at once.
 - **Subdomain Routing & Apex Redirection**: Organization admin dashboards are located at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`). Accessing `/admin` on the base apex domain redirects (302) to the authenticated organization admin's subdomain `/admin` (or `/super` for super admins). When a super admin accesses a specific organization admin sub-route (`/admin/workstations`, `/admin/broadcast`, etc.) on apex or dev without a query param, it routes to a demo organization's console rather than bouncing to `/super`: `local-demo` on a dev host, `web-demo` otherwise. Furthermore, whenever a console is rendered outside its dedicated subdomain (e.g. On apex or dev hosts), all internal navigation links preserve `?tenant=<subdomain>` to maintain session context.
 - **Super Admin Privacy Isolation**: Super admins are strictly restricted from accessing any organization's admin console (`/admin`), workstation telemetry, or remote desktop/VNC channel *except* for the platform's three demo organizations, one per way of testing: `web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator). Super admin privileges permit approving custom domains, managing interface catalogs, and system maintenance, but protect each organization's privacy. Super admins have full access (`*`) inside a demo.
 - **A demo is a demo slug the platform owns** (`isDemoTenant()` in `src/demo.ts`): the slug alone never opens an organization, or one that registered the name before it was reserved would be exposed. `ensureDemoTenants()` creates any missing demo at startup, moves one owned by an earlier super admin account to the current one, and never adopts a demo name another organization holds. The demo names and the retired `demo` are reserved (`isReservedSlug()`), and a demo cannot be renamed, suspended or rejected. The single `demo` organization was deleted with all its data by migration `0013`. `local-demo` and `docker-demo` have no custom domain and no tunnel domain, and do not inherit the deployment's `TUNNEL_DOMAIN` (`demoTunnelFallback()`); only `web-demo` has a hosted tunnel.
@@ -69,8 +78,8 @@ cloudflare-control/
 - **Delegation Never Escalates**: a staff member holding `staff` who is not a co-administrator may only grant permissions they hold, may not appoint an `org_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Adding staff refuses an email that already has an account (`409`) rather than linking another organization's user, and removing staff ends that account's sessions.
 - **Customizable Subdomain & Settings**: Organization admins can customize their subdomain (`POST /api/tenant/subdomain`), default home route (`home_route`: e.g. `/` vs `/home`), and tunnel domain (`tunnel_domain` for per-organization Cloudflare Tunnels).
 - **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (who may then open only the platform-owned demos), for a session that already owns that tenant, or on an explicitly public route.
-- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry` calls `requireDevice()`. A route with no guard is a security vulnerability.
-- A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims.
+- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry` and `/api/devices/ws` call `requireDevice()`. A route with no guard is a security vulnerability.
+- A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims, and a WebSocket carries only the identity the Worker verified (`hubUpgrade()` builds a fresh request).
 - Only the `Host` header says where a request arrived. Never read `X-Forwarded-Host` (or any other caller-supplied header) to build a URL that is handed back to a workstation.
 
 ### Rule 2b: Interface Catalogs Are Platform Assets, Not Tenant Data
@@ -105,17 +114,65 @@ cloudflare-control/
 - **Batch Command Dispatch (`POST /api/command`)**:
   - Accepts `targets: string[]` (or legacy single `target: string`). Duplicates are dropped and
     `"all"` replaces any named targets, so a broadcast is queued once.
-  - Iterates targets and enqueues commands for each device, returning `{ status: "ok", count, commandIds }`.
+  - Hands the command to the organization's hub (`/enqueue`), which pushes it to connected
+    workstations at once and keeps it 60 s for the rest, returning `{ status: "ok", count, commandIds }`.
 - **A broadcast is recorded where it was addressed** (migration `0010`). `"all"` writes the tenant
   row; a list of workstations writes each one's `client_devices.broadcast_url` / `broadcast_epoch`.
-  A reset is recorded as `NULL` with its own epoch, never erased. The heartbeat hands each
-  workstation the newer of the two (read back from the upsert with `RETURNING`, no extra query).
+  A reset is recorded as `NULL` with its own epoch, never erased. The hub hands each workstation
+  the newer of the two, from the configuration it caches and reloads on `notifyConfigChanged()`.
   Recording only the `"all"` case is what sent a broadcast to selected screens back to the portal
   on the very next heartbeat, and let a subset reset clear everyone's broadcast.
 - **Bounded batches**: at most `MAX_BATCH_TARGETS` (500) ids per request on both routes. D1 binds at
   most **100 parameters per statement**, so any `IN (...)` list is written in slices of
   `D1_IN_LIST_CHUNK` (90). An unbounded list is both a denial-of-service lever and a query that
   fails outright past ~97 ids.
+
+### Rule 2d: One OrgHub Per Organization; D1 Is the Registry
+
+- **Why.** Every workstation used to post a heartbeat every 3 s, and each one cost about eight D1
+  queries, two of them writes carrying a screenshot. D1 is one database for every organization, so
+  the fleet as a whole ran into its write ceiling at a few hundred online workstations. Now each
+  organization has one **OrgHub** Durable Object (`src/org_hub.ts`, `idFromName(tenant.id)`), and
+  a steady-state workstation costs D1 nothing.
+- **What the hub owns:** who is connected and what each one shows (in memory and in socket
+  attachments), the command queue (`commands`, `deliveries`, `revoked`, `meta` in its own SQLite;
+  commands expire after 60 s; a command for `"all"` records one delivery per workstation), and the
+  WebSockets of workstations (`/api/devices/ws`) and consoles (`/api/console/ws`).
+- **What D1 still owns:** everything two requests must agree on (Rule 2) and the `client_devices`
+  registry, written on connect, on disconnect, on a status change (batched by a 20 s alarm) and
+  every 5 minutes for an unchanged workstation — never per ping or per frame.
+  `tenants.online_workstations` is the hub's count, so the super admin list needs no query per
+  organization.
+- **Hibernation rules.** Sockets are accepted with `ctx.acceptWebSocket()` and tags (`device`,
+  `device:<id>`, `console`); per-socket state lives in `serializeAttachment()` (≤ 16 KB); timers are
+  alarms; the ping is `setWebSocketAutoResponse('{"type":"ping"}' → '{"type":"pong"}')`, which the
+  edge answers without waking the hub — so the agent's ping must be those exact bytes. A plain
+  field on the class is a cache that can vanish between two messages; anything a later message
+  needs is in an attachment or SQLite.
+- **Frames are watch-driven.** A console sends the ids it is showing; the hub tells exactly those
+  workstations `{"type":"frames","on":true}` and relays their frames, never storing them. Nobody
+  watching means no screenshots are taken at all. A console without its socket polls
+  `POST /api/clients` with a `watch` list, which leases frames for 10 s.
+- **Tenancy.** The Worker reaches a hub only through `src/hub.ts`; every call carries
+  `x-labkiosk-tenant`, the hub binds itself to the first organization that calls it and answers
+  `409` to any other. An upgrade is a fresh request carrying only the identity the Worker verified.
+- **An admin change must reach connected workstations.** A route that saves anything a workstation
+  sees — allowlist, portal apps, presets, mode, customization, subdomain, suspension, approval,
+  custom domain — calls `notifyConfigChanged(env, tenantId)` after the write. The hub's 5-minute
+  configuration cache is only the safety net. Removing a workstation calls `/remove-device`, which
+  closes its socket with `4001`; a suspended organization's sockets close with `4003`.
+- **Platform resources are required** (Rule 7): `ORG_HUB`, `AUDIT_QUEUE` (audit entries are
+  queued and batch-inserted with `INSERT OR IGNORE` on their id), `AUDIT_ARCHIVE` (R2; the hourly
+  cron moves audit rows older than 180 days there as NDJSON), `FLEET_METRICS` (Analytics Engine:
+  connects and disconnects), `AUTH_RATE_LIMITER` (a coarse per-address limit in front of sign-in,
+  registration and enrolment; the D1 lockouts stay authoritative, and a limiter fault is logged,
+  not fatal), `CUSTOM_HOSTNAMES` (a Workflow that creates, polls and deletes Cloudflare for SaaS
+  hostnames) with the secrets `CF_API_TOKEN` and `CF_ZONE_ID`.
+- **Tests** run a hub in-process: `LocalHubNamespace` (`src/local_do.ts`) implements the parts of
+  the Durable Object runtime the hub uses on `node:sqlite`, and `tsconfig.runtime.json` maps
+  `cloudflare:workers` to `test/shims/`. Real sockets need workerd: `pnpm dev` (`wrangler dev`) runs
+  every binding locally, while the Node `test/dev_server.ts` has no `WebSocketPair`, so agents fall
+  back to the HTTP heartbeat there.
 
 ### Rule 3: The Schema Has Two Homes
 
@@ -326,6 +383,7 @@ cloudflare-control/
 - Missing configuration is an error, not a reason to fall back to something weaker.
 - `getDatabase()` throws without a D1 binding unless `ALLOW_LOCAL_DB=1`.
 - With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`); it never creates tables in production.
+- In production it also refuses to serve without every platform resource (`requiredBindingsProblem()` in `hub.ts`, Rule 2d), naming each one that is missing. `ALLOW_LOCAL_DB=1` lets a missing one fall back to an in-process stand-in.
 - Public endpoints are throttled per source address (`rateLimitWait` / `recordRateLimitHit` in `db.ts`): registration and failed enrolments. Reserved slugs (`RESERVED_SLUGS` in `guard.ts`) can neither be registered nor assigned.
 
 ---
@@ -348,7 +406,7 @@ pnpm --prefix cloudflare-control run typecheck
 pnpm --prefix cloudflare-control test
 ```
 
-*Expected result:* All unit and integration tests passing. Uses Node 22 native `node:sqlite` in `d1_adapter.ts`.
+*Expected result:* All unit and integration tests passing. Uses Node 22 native `node:sqlite` in `d1_adapter.ts`, and runs OrgHub in-process (Rule 2d); the script passes `--tsconfig tsconfig.runtime.json` so `cloudflare:workers` resolves.
 
 **Testing Rule**: Whenever you add an API route, you MUST add its matching negative tests:
 
@@ -393,3 +451,8 @@ pnpm dev                        # predev applies migrations/ to local D1
 | **Moving ~100+ workstations to a group fails** | D1 binds at most 100 parameters per statement and the `IN (...)` list was built in one go. | Cap at `MAX_BATCH_TARGETS` and write in `D1_IN_LIST_CHUNK` slices. |
 | **A broadcast to selected workstations reverts to the portal after 2–3 seconds** | Only a broadcast to `"all"` was stored (on the tenant); a list of ids only queued a command, and the next heartbeat's `targetUrl` sent the screens back. | Record per workstation on `client_devices` (migration `0010`); the heartbeat serves the newer of organization-wide and per-workstation. |
 | **Online / Total read 0 everywhere except the grid** | Only the Workstations page polled telemetry. | `renderSubPanelScripts()` polls `/api/clients` on the other pages. |
+| **An admin change reaches workstations only minutes later** | The route saved it to D1 but never told the hub, so connected workstations kept the hub's cached configuration. | Call `notifyConfigChanged(env, tenantId)` after the write (Rule 2d). |
+| **Every idle workstation is a billed hub request every 15 s** | The ping was not byte-identical to the auto-response request (`json.dumps` writes `{"type": "ping"}` with a space), so the edge woke the hub for each one. | Send the literal `{"type":"ping"}`; a client test compares the agent's constant with `HUB_PING`. |
+| **`InvalidAccessError: Invalid WebSocket close code: 1006`** | `webSocketClose()` echoed the code it was given, and 1005/1006/1015 describe a close but may never be sent. | Answer those with `1000` (`RESERVED_CLOSE_CODES`). |
+| **Sign-in answers 500 under `pnpm dev`** | wrangler's local rate-limit simulator throws on every `limit()` call. | The Worker logs a limiter fault and relies on the D1 lockouts; never let the front layer take sign-in down. |
+| **The Worker refuses to start: "missing required bindings"** | A platform resource was not created or declared. | Create it (`docs/DEPLOYMENT.md`, "Platform resources"); the message names each one. |

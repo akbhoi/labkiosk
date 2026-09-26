@@ -1,6 +1,6 @@
 # Database Schema
 
-Lab Kiosk stores everything durable in **Cloudflare D1** (SQLite at the edge). There are no other data stores; the worker's in-memory telemetry cache is an optimisation that may be empty at any moment.
+Lab Kiosk stores everything durable in **Cloudflare D1** (SQLite at the edge). Live state -- who is connected, the command queue, screen frames -- belongs to each organization's OrgHub Durable Object, which writes back to `client_devices` here; audit entries older than 180 days move to R2.
 
 ---
 
@@ -46,6 +46,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0011_organization_vocabulary.sql` | Renames the stored roles and staff permission (`school_admin`→`org_admin`, `teacher`→`operator`, `lab_assistant`→`assistant`, `teachers`→`staff`); rebuilds the 12 tables that reference `users` cascade-safely |
 | `0012_unique_workstation_group_names.sql` | Unique index on `workstation_groups(tenant_id, name COLLATE NOCASE)`; merges existing duplicates into the oldest group first |
 | `0013_retire_demo_tenant.sql` | Deletes the single `demo` organization and all its rows (data only); the worker now creates `web-demo`, `local-demo` and `docker-demo` at startup |
+| `0014_org_hub_live_state.sql` | Drops `commands`, `command_deliveries` and `client_devices.thumbnail` (live state moved to OrgHub); adds `tenants.online_workstations`, `custom_hostname_id`, `custom_hostname_status` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -90,6 +91,9 @@ One row per organization. This table has accumulated the most columns because it
 | `custom_domain` | TEXT | Approved FQDN; unique index |
 | `requested_custom_domain` | TEXT | Awaiting approval |
 | `custom_domain_status` | TEXT | `none` \| `pending` \| `approved` \| `rejected` |
+| `custom_hostname_id` | TEXT | The Cloudflare for SaaS custom hostname id, once created |
+| `custom_hostname_status` | TEXT | `none` \| `pending` \| `active` \| `failed` \| `local` (no provisioning in local development) |
+| `online_workstations` | INTEGER | Kept by the organization's OrgHub, so the super admin list needs no query per organization |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
@@ -128,7 +132,7 @@ User Portal cards.
 
 ### `client_devices`
 
-The fleet, and the source of truth behind the dashboard.
+The fleet registry. OrgHub writes it back on connect, disconnect, a change and every 5 minutes; who is online right now comes from the hub.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |
@@ -140,7 +144,6 @@ The fleet, and the source of truth behind the dashboard.
 | `last_seen` | INTEGER | Drives the online/offline indicator |
 | `is_locked` | INTEGER | |
 | `active_url` | TEXT | |
-| `thumbnail` | TEXT | Latest base64 JPEG, ≤ 256 KB |
 | `vnc_password` | TEXT | Per-boot ephemeral x11vnc secret |
 | `remote_host` | TEXT | Cloudflare Tunnel hostname for noVNC |
 | `group_name` | TEXT | Workstation group, matched by name to `workstation_groups.name`; NULL when ungrouped |
@@ -162,22 +165,13 @@ The fleet, and the source of truth behind the dashboard.
 
 Per-organization permanent domain allowlist. `UNIQUE (tenant_id, domain)`.
 
-The *effective* allowlist a workstation receives is this table unioned with every `portal_sites.domain` and, when a broadcast is active, its host. That union is computed per heartbeat by `buildEffectiveWhitelist()` and is not stored.
+The *effective* allowlist a workstation receives is this table unioned with every `portal_sites.domain` and, when a broadcast is active, its host. That union is computed by `buildEffectiveWhitelist()`, cached by the organization's hub and pushed to workstations when it changes; it is not stored.
 
-### `commands`
+### Commands (not in D1 since `0014`)
 
-| Column | Type | Notes |
-| :--- | :--- | :--- |
-| `id` | TEXT PK | |
-| `tenant_id` | TEXT → `tenants.id` | |
-| `target` | TEXT | `"all"` or a specific `client_id` |
-| `action` | TEXT | One of the seven supported actions |
-| `payload_json` | TEXT | `url`, `message`, `epoch` |
-| `created_at` / `expires_at` | INTEGER | Rows are short-lived by design and purged opportunistically |
-
-### `command_deliveries`
-
-`PRIMARY KEY (command_id, client_id)`. A receipt per workstation per command, so a broadcast executes **exactly once** on each machine instead of on every three-second heartbeat.
+Queued commands and their per-workstation delivery receipts live in each organization's OrgHub,
+in its own SQLite (`commands`, `deliveries`). A command for `"all"` records one delivery per
+workstation, so a broadcast executes **exactly once** on each machine; commands expire after 60 s.
 
 ### `broadcast_presets`
 
@@ -251,10 +245,8 @@ idx_sessions_user_id               sessions(user_id)
 idx_sessions_expires_at            sessions(expires_at)
 idx_portal_sites_tenant            portal_sites(tenant_id, order_index)
 idx_client_devices_tenant          client_devices(tenant_id)
-idx_commands_tenant_target         commands(tenant_id, target, expires_at)
 idx_device_tokens_tenant           device_tokens(tenant_id, client_id)
 idx_tenant_whitelist_tenant        tenant_whitelist(tenant_id)
-idx_command_deliveries_client      command_deliveries(client_id, delivered_at)
 idx_broadcast_presets_tenant       broadcast_presets(tenant_id)
 idx_audit_logs_tenant              audit_logs(tenant_id, created_at)
 ```

@@ -81,7 +81,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/command` | `POST` | Organization Admin | Dispatch remote command to targets (lock, unlock, reboot, shutdown, etc.) |
 | `/api/audit-logs` | `GET` | Organization Admin | Retrieve paginated organization security audit log |
 | `/api/devices/enroll` | `POST` | Public / Key | Exchange organization enrollment key for persistent device token |
-| `/api/telemetry` | `POST` | Device Token | 3-second heartbeat, thumbnail ingest, command retrieval |
+| `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
+| `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
+| `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
 | `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending organization subdomain registration |
 | `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending organization registration |
 | `/api/super/tenants/suspend` | `POST` | Super Admin | Suspend active organization tenant |
@@ -299,9 +301,40 @@ Exchanges the organization's enrollment key for a persistent workstation device 
 organization vocabulary. It is deprecated: new code reads `organizationName`, and the field will be
 removed once no workstation in the field depends on it.
 
+#### `GET /api/devices/ws`
+
+The workstation's control channel: a WebSocket to its organization's OrgHub Durable Object.
+
+- **Access:** Workstation (`Authorization: Bearer <deviceToken>` on the upgrade). `401`/`403` when the
+  token or the organization is refused; `426` without `Upgrade: websocket`.
+- **Hub → workstation:**
+  - `{"type":"config","whitelist":[…],"mode":"portal","targetUrl":"…","broadcastUrl":"","broadcastEpoch":0,"commands":[…]}`
+    on connect and after every admin change;
+  - `{"type":"commands","commands":[{"id":"…","action":"lock","message":"…"}]}` when dispatched;
+  - `{"type":"frames","on":true,"intervalSeconds":3}` while a console shows this screen, `on:false` after;
+  - `{"type":"pong"}`, answered at the edge.
+- **Workstation → hub:**
+  - `{"type":"status","clientNum":1,"activeUrl":"…","isLocked":false,"vncPassword":"…","remoteHost":"…"}`
+    on connect and whenever it changes;
+  - `{"type":"frame","thumbnail":"data:image/jpeg;base64,…"}` every `intervalSeconds` while asked
+    (≤ 256 KB, relayed to consoles and never stored);
+  - `{"type":"ping"}` every 15 s, exactly these bytes.
+- **Close codes:** `4001` workstation removed, `4003` organization not active, `4000` replaced by a
+  newer connection, `4008` nothing received for 75 s.
+
+#### `GET /api/console/ws`
+
+The live channel of the Workstations page. **Access:** a session with the `workstations`
+permission, and an `Origin` of this site (a WebSocket from another site, or without `Origin`, is
+refused with `403`). The console sends `{"type":"watch","clientIds":[…]}` for the screens it is
+showing and receives `snapshot`, `status`, `frame` and `removed` messages. Without it, the page
+polls `POST /api/clients` with the same `watch` list.
+
 #### `POST /api/telemetry`
 
-Transmits 3-second heartbeat, active URL, screen screenshot thumbnail, and retrieves queued commands.
+The HTTP fallback, used by agents without the WebSocket client: a 3-second heartbeat carrying the
+active URL, a screen thumbnail and the remote-control details, answered with the configuration and
+any queued commands.
 
 - **Access:** Workstation (`Authorization: Bearer <deviceToken>`)
 - **Request Body:**
@@ -343,7 +376,9 @@ Transmits 3-second heartbeat, active URL, screen screenshot thumbnail, and retri
 
 #### `GET /api/clients`
 
-Retrieves all currently registered workstations and their latest telemetry state.
+Retrieves all registered workstations: the D1 registry merged with the organization hub's live
+status. `POST /api/clients` with `{"watch":["PC-01"]}` does the same and asks the hub for those
+screens' frames for the next 10 seconds.
 
 - **Access:** Organization Admin
 - **Response `200 OK`:**

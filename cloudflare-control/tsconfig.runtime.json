@@ -1,0 +1,12 @@
+{
+  // Used only by tsx to *run* the tests and the Node dev server; typechecking uses
+  // tsconfig.json and tsconfig.test.json. Node has no `cloudflare:workers`, so
+  // it is mapped to a stand-in with the base classes the Worker extends.
+  "extends": "./tsconfig.test.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "cloudflare:workers": ["./test/shims/cloudflare-workers.ts"]
+    }
+  }
+}

@@ -52,7 +52,7 @@ Lab Kiosk enables operators to take interactive control of user thin clients dir
    > guard against an accidental connection, **not** against someone who wants in. The
    > authentication that matters has to sit at the tunnel edge; see the next section.
 3. **Authenticated Out-of-Band Key Exchange:**
-   - The workstation's Python agent reads `/tmp/labkiosk/vnc.secret` and transmits it alongside the tunnel hostname over the HTTPS telemetry channel (`POST /api/telemetry`).
+   - The workstation's Python agent reads `/tmp/labkiosk/vnc.secret` and transmits it alongside the tunnel hostname over its authenticated control channel (the WebSocket to the organization's hub, or `POST /api/telemetry` on older agents).
    - The request is authenticated with the workstation's private device bearer token.
    - The control plane stores `vnc_password` and `remote_host` in D1 (`client_devices`), scoped strictly to the organization's `tenant_id`.
    - Only operators authenticated to that specific organization can read the workstation's remote control credentials from `/api/clients`.
@@ -148,7 +148,7 @@ The local Docker simulator (`docker-test/`) simulates remote control without phy
 
 | Symptom | Root Cause | Solution |
 | :--- | :--- | :--- |
-| **noVNC prompts for a password** | Workstation has not completed its first heartbeat after boot, or `/tmp/labkiosk/vnc.secret` is missing. | Verify the workstation is enrolled. Wait 3 seconds for the initial telemetry cycle to record the password in D1. |
+| **noVNC prompts for a password** | Workstation has not completed its first heartbeat after boot, or `/tmp/labkiosk/vnc.secret` is missing. | Verify the workstation is enrolled. The password is reported as soon as the workstation connects; check `vncPassword` in `GET /api/clients`. |
 | **noVNC shows "Failed to connect to server"** | Cloudflare Tunnel is not running on the target machine, or DNS does not point to Cloudflare. | Ensure `cloudflared-kiosk.service` is active (`systemctl status cloudflared-kiosk`) and `/etc/cloudflared/config.yml` exists. |
 | **"Remote Control" button is disabled** | The device has no `remote_host` registered and no default `TUNNEL_DOMAIN` is set in control plane variables. | Configure `TUNNEL_DOMAIN` in Cloudflare Dashboard, or ensure workstation reports `remoteHost` in telemetry. |
 | **Screen is black or sluggish** | Low network bandwidth or thin client CPU constrained by high framerate. | noVNC automatically adapts to WAN latencies. Ensure hardware acceleration is enabled in thin client BIOS. |
