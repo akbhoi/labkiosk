@@ -119,6 +119,7 @@ VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
 CLOUDFLARED_CONFIG_FILE = "/etc/cloudflared/config.yml"
 REMOTE_HOST_PATTERN = re.compile(r"^\s*-?\s*hostname:\s*['\"]?([A-Za-z0-9.-]+)['\"]?\s*$", re.MULTILINE)
 
+AGENT_VERSION = "2.5.0"
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8888
 HEARTBEAT_SECONDS = 3
@@ -1926,7 +1927,7 @@ def _log_rejected_origin(origin):
 
 
 class LocalApiHandler(BaseHTTPRequestHandler):
-    server_version = "LabKioskAgent/2.1.0"
+    server_version = f"LabKioskAgent/{AGENT_VERSION}"
 
     def log_message(self, fmt, *args):
         pass  # Suppress per-request noise; the agent logs what matters itself.
@@ -2639,7 +2640,7 @@ def post_telemetry():
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": "LabKioskAgent/2.1.0",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
         },
     )
 
@@ -2809,7 +2810,7 @@ def open_control_channel():
         ws = websocket.create_connection(
             websocket_url(worker_url),
             timeout=WEBSOCKET_CONNECT_TIMEOUT_SECONDS,
-            header=[f"Authorization: Bearer {token}", "User-Agent: LabKioskAgent/2.2.0"],
+            header=[f"Authorization: Bearer {token}", f"User-Agent: LabKioskAgent/{AGENT_VERSION}"],
             suppress_origin=True,
             **websocket_proxy_options(load_proxy_config()),
         )
