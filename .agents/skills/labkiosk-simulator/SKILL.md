@@ -47,11 +47,19 @@ changed. To call agent functions in place, load the module in a separate interpr
 - `python3` is the Microsoft Store stub; use `python` on the host.
 - The simulator container here **cannot reach the host** (not even `host.docker.internal`). For an
   end-to-end run, put the control plane in a container on the simulator's network instead: a
-  compose override with a fixed subnet, a `node:24` service running the Worker under `tsx` on the
-  in-memory D1 (mount `cloudflare-control/src` read-only), and `WORKER_URL=http://<its private IP>:8787`
-  for the simulator — a private IPv4 literal is both an allowed worker URL and a dev host. Publish
-  its ports on `127.0.0.1` to drive the consoles from the host; attach sessions server-side in the
-  harness rather than typing passwords. Enrol through the agent API
+  compose override with a fixed subnet, a `node:24` service that copies `cloudflare-control`
+  without `node_modules` (the host's are Windows builds), installs the Linux `wrangler`, applies
+  the migrations with `--local --persist-to` and runs `wrangler dev --ip 0.0.0.0` with an
+  `--env-file` of throwaway super admin credentials — workerd, so OrgHub, its WebSockets, the queue,
+  R2 and the Workflow all run for real (the Node `test/dev_server.ts` has no `WebSocketPair`, so
+  agents fall back to HTTP there). Set `WORKER_URL=http://<its private IP>:8787` for the simulator —
+  a private IPv4 literal is both an allowed worker URL and a dev host. Publish its port on
+  `127.0.0.1` to drive the consoles from the host, through a small proxy that signs in once and
+  attaches the session cookie (upgrades included), rather than typing passwords. wrangler's local
+  rate-limit simulator throws on every call; the Worker logs that and carries on.
+- **The image must have `python3-websocket`** for the agent's control channel: an image built
+  before it was added keeps working over HTTP, but it tests the fallback, not the WebSocket.
+  Rebuild with `docker compose build kiosk-simulator`. Enrol through the agent API
   (`curl -H 'Origin: http://127.0.0.1:8888' -d '{clientId,enrollmentKey,subdomain}' …/api/setup`);
   to re-enrol, POST `/api/setup` again with an admin token from `/api/admin/verify` (the simulator
   has no boot password, so any value verifies), or delete `/etc/labkiosk/config.json` and restart

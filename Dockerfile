@@ -68,6 +68,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     x11vnc \
     websockify \
     python3 \
+    python3-websocket \
     scrot \
     xdotool \
     alsa-utils \

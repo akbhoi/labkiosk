@@ -89,4 +89,10 @@ wireless-regdb
 rfkill
 curl
 python3
+# The agent's control channel: one WebSocket to the organization's hub. Without it
+# the agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
+python3-websocket
+# The agent's control channel (a WebSocket to the organization's hub). Without it the
+# agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
+python3-websocket
 ca-certificates

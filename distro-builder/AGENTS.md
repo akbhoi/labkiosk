@@ -37,7 +37,7 @@ distro-builder/
 │       │   ├── setup/wizard.html       # Setup & Enrollment Wizard GUI (HTML/JS)
 │       │   ├── extension/              # Manifest V3: content.js (top bar & curtain) +
 │       │   │                           #   background.js (service worker; sole loopback caller)
-│       │   └── agent/agent.py          # Python 3 telemetry daemon & local loopback API
+│       │   └── agent/agent.py          # Python 3 control-channel daemon & local loopback API
 │       ├── usr/local/bin/
 │       │   └── labkiosk-install        # Automated Python disk installer (GPT, ESP, ext4, dual GRUB)
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
@@ -367,8 +367,9 @@ distro-builder/
 
 ### Rule 6b: A Workstation Is Never Stranded
 
-- **A refused device token sends the screen to re-enrolment.** When `/api/telemetry` answers
-  401/403 (the organization was deleted, or the workstation removed), `mark_enrolment_rejected()`
+- **A refused device token sends the screen to re-enrolment.** When the control plane refuses
+  the token — `/api/telemetry` or the WebSocket handshake answers 401/403, or the hub closes the
+  socket with `4001` (removed) or `4003` (organization not active) — `mark_enrolment_rejected()`
   sets `enrolmentRejected`, points `targetUrl` at `http://127.0.0.1:8888/setup#reenrol` — which
   the boot-time policy always allows — and restarts the browser once. It used to only log it:
   the kiosk kept its old home page with no allowlist, and after a reboot sat on Chromium's "This
@@ -389,6 +390,27 @@ distro-builder/
   site and loop). `/blocked` retries the original `http(s)` address once after 7 s — a broadcast
   allowlists its site in the same heartbeat that sends the screen there, and Chromium rereads a
   changed policy only after a few seconds — then stays, with Try again, Back and Home.
+
+### Rule 6c: One Control Channel, With a Fallback That Always Works
+
+- The agent keeps **one WebSocket** to its organization's OrgHub (`/api/devices/ws`,
+  `ControlChannel` in `agent.py`), instead of posting a heartbeat every 3 seconds. The hub pushes
+  the allowlist, target, broadcast and commands as they change and asks for screen frames only
+  while an operator watches, so a quiet workstation takes no screenshots and costs the control
+  plane nothing. Contracts: `labkiosk-core` §1.
+- It needs **`python3-websocket`** (Debian's websocket-client), which is in `kiosk.list.chroot`
+  and the simulator's Dockerfile. The import is guarded: without the package the agent runs
+  exactly as before, on the HTTP heartbeat.
+- **HTTP is the fallback, never removed.** A handshake answered `404`/`426`/`501` (a Worker without
+  the route, or the Node development server) or three failed connections in a row switch to the
+  HTTP heartbeat for 10 minutes. An organization proxy that drops WebSocket upgrades therefore
+  costs efficiency, not control.
+- **The ping is a literal.** `WEBSOCKET_PING` must stay byte-identical to the hub's
+  `HUB_PING` (`{"type":"ping"}`, no spaces): the edge answers that exact message without waking the
+  hub. `json.dumps` would add a space and bill every ping; `test_client.py` compares the two.
+- One thread: every receive waits at most 0.5 s, then the loop sends what is due. The socket
+  honours the saved proxy (`load_proxy_config()` passed explicitly), and `heartbeat_wakeup` — set by
+  a new enrolment — closes it so the new token connects at once.
 
 ### Rule 7: Network Configuration Persistence on `LABKIOSK_DATA`
 

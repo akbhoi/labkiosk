@@ -2,7 +2,7 @@
 
 `distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py` — a single-file Python 3 daemon, standard library only, that is the workstation's entire relationship with the control plane.
 
-It has three jobs: serve the local setup wizard, run the telemetry heartbeat, and execute operator commands.
+It has three jobs: serve the local setup wizard, keep the control channel to the organization's hub open, and execute operator commands.
 
 ---
 
@@ -54,21 +54,32 @@ Environment overrides, useful in the simulator:
 
 ---
 
-## The telemetry loop
+## The control channel
 
-Every three seconds, `post_telemetry()` sends the workstation's state and receives everything it needs back. → [REST API Reference](REST-API-Reference#post-apitelemetry) for the exact payload.
+`telemetry_loop()` keeps one WebSocket open to the organization's OrgHub (`ControlChannel`,
+`GET /api/devices/ws` with the device token). The hub pushes the configuration on connect and on
+every admin change, pushes commands the moment they are dispatched, and asks for screen frames
+only while an operator has this screen on view. The agent sends its status when it changes, a
+frame every 3 s while asked, and `{"type":"ping"}` every 15 s — byte for byte, because the edge
+answers exactly that without waking the hub. → [REST API Reference](REST-API-Reference#get-apidevicesws).
+
+It needs Debian's `python3-websocket`. Without it, or when the server has no WebSocket route
+(an older Worker, or the Node development server), or after three failed connections in a row,
+the agent uses the older HTTP heartbeat for ten minutes and then tries again: every three seconds,
+`post_telemetry()` sends the same state with a thumbnail and receives the same updates back.
 
 ```text
          +-----------------------------------------------+
-         |  capture_thumbnail_base64()   scrot -t 20 -q 35 |
+         |  current_status()             url, lock, num   |
+         |  capture_thumbnail_base64()   only if watched   |
          |  read_vnc_password()          /tmp/labkiosk/…   |
          |  detect_remote_host()         cloudflared cfg   |
          +-----------------------------------------------+
                               |
-                     POST /api/telemetry
+                 WebSocket /api/devices/ws  (or POST /api/telemetry)
                      Authorization: Bearer …
                               |
-                              v
+                              v  apply_control_update()
          +-----------------------------------------------+
          |  commands[]      -> execute_command()          |
          |  whitelist[]     -> sync_chromium_policies()   |
@@ -77,9 +88,9 @@ Every three seconds, `post_telemetry()` sends the workstation's state and receiv
          +-----------------------------------------------+
 ```
 
-**Failure handling.** A failed heartbeat backs off exponentially up to `MAX_BACKOFF_SECONDS` (60), so a lab that loses its uplink does not hammer the edge, and recovers promptly when the link returns.
+**Failure handling.** A failed connection or heartbeat backs off exponentially up to `MAX_BACKOFF_SECONDS` (60), so a lab that loses its uplink does not hammer the edge, and recovers promptly when the link returns. A connection the server closed on purpose (a deploy restarts every hub) is re-opened after a random pause of up to 10 s, so a whole fleet does not return at the same instant. A close with `4001` (removed) or `4003` (organization not active), like a `401`/`403`, sends the screen to the re-enrolment form.
 
-**Thumbnails.** Captured with `scrot -t 20 -q 35` — there is **no PIL/Pillow dependency**; the agent is standard library plus `scrot`. A frame whose base64 payload exceeds `MAX_THUMBNAIL_BYTES` (256 KB) is dropped rather than sent, so an oversized capture never costs the organization's uplink or delays the loop. The heartbeat still lands; only that one frame is missing.
+**Thumbnails.** Captured with `scrot -t 20 -q 35` — there is **no PIL/Pillow dependency**; the agent is standard library plus `scrot`. A frame whose base64 payload exceeds `MAX_THUMBNAIL_BYTES` (256 KB) is dropped rather than sent, so an oversized capture never costs the organization's uplink or delays the loop. The heartbeat still lands; only that one frame is missing. Over the WebSocket, no screenshot is taken at all unless an operator is watching.
 
 ---
 

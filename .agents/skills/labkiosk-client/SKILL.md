@@ -28,7 +28,16 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
 - **Worker URL** (`validate_worker_url()`): `https`, or plain `http` only to loopback, container
   gateways, `*.internal`/`*.local`, or a private IPv4 literal (`is_private_ip_literal()`:
   `10/8`, `172.16/12`, `192.168/16`). Never widen to hostnames or public IPs — the device token
-  rides every heartbeat.
+  rides every connection.
+- **Control channel** (`telemetry_loop()`): a WebSocket to the organization's hub
+  (`ControlChannel`, `open_control_channel()`; `wss://` beside `https://`) when `python3-websocket`
+  is installed, the 3-second HTTP heartbeat (`http_heartbeat()`) otherwise and for 10 minutes after
+  the server has no WebSocket route or three connects fail. One thread, receives that wait
+  0.5 s, then sends what is due: the ping (`WEBSOCKET_PING`, byte-identical to the hub's
+  auto-response — never `json.dumps` it), a status when it changed, a frame only while the hub says
+  someone watches. Every reply goes through `apply_control_update()`. `heartbeat_wakeup` (set by a
+  new enrolment) closes the socket so the new token connects at once. The proxy from
+  `load_proxy_config()` is passed to websocket-client explicitly. Contracts: `labkiosk-core` §1.
 - Enrolment reply names the organization via `organization_name()` (`organizationName`, falling
   back to the deprecated `schoolName`). Persistence is reported, not assumed:
   `enrolment_is_persistent()` checks the **filesystem type** at `/etc/labkiosk`.
@@ -71,8 +80,8 @@ auto-selects, Continue refuses an empty zone.
 
 ## Extension (`opt/labkiosk/extension/`)
 
-**Never strand a workstation** (`distro-builder/AGENTS.md` Rule 6b): a 401/403 heartbeat calls
-`mark_enrolment_rejected()` (screen → `/setup#reenrol`, browser restarted once); an enrolled
+**Never strand a workstation** (`distro-builder/AGENTS.md` Rule 6b): a 401/403 heartbeat or
+handshake, or a hub close `4001`/`4003`, calls `mark_enrolment_rejected()` (screen → `/setup#reenrol`, browser restarted once); an enrolled
 workstation re-enrols through `/api/setup` with the admin token; `background.js` replaces
 `chrome-error://` pages — where no extension runs — with `/blocked` (one automatic retry) or
 `/setup#offline` (only when the agent says offline, or a dead site would loop). Before telling

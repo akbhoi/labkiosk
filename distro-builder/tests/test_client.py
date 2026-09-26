@@ -19,6 +19,7 @@ would be shipped to workstations.
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -604,13 +605,259 @@ class RejectedEnrolment(unittest.TestCase):
 
     def test_the_heartbeat_reacts_to_a_refused_token(self):
         import inspect
-        source = inspect.getsource(agent.telemetry_loop)
-        self.assertIn("if err.code in (401, 403):", source)
-        self.assertIn("mark_enrolment_rejected()", source)
-        self.assertIn("clear_enrolment_rejected()", source)
+        from urllib.error import HTTPError
+        orig_post = agent.post_telemetry
+
+        def refused():
+            raise HTTPError("http://10.0.0.5:8787/api/telemetry", 401, "Unauthorized", {}, None)
+
+        try:
+            agent.post_telemetry = refused
+            self.assertEqual(agent.http_heartbeat(), "rejected")
+            self.assertEqual(agent.state["targetUrl"], agent.REENROL_URL)
+            agent.post_telemetry = lambda: {"status": "ok"}
+            self.assertEqual(agent.http_heartbeat(), "ok")
+            self.assertFalse(agent.state["enrolmentRejected"], "an accepted heartbeat clears it")
+        finally:
+            agent.post_telemetry = orig_post
         # An enrolment must not wait out a minute of back-off for its allowlist.
-        self.assertIn("heartbeat_wakeup.wait(backoff)", source)
+        self.assertIn("heartbeat_wakeup.wait(wait)", inspect.getsource(agent.telemetry_loop))
         self.assertIn("heartbeat_wakeup.set()", inspect.getsource(agent.enroll))
+
+
+class FakeWebSocketModule:
+    """The parts of websocket-client the agent uses, so these tests need no package."""
+
+    class WebSocketException(Exception):
+        pass
+
+    class WebSocketTimeoutException(WebSocketException):
+        pass
+
+    class WebSocketConnectionClosedException(WebSocketException):
+        pass
+
+    class WebSocketBadStatusException(WebSocketException):
+        def __init__(self, status):
+            super().__init__(f"Handshake status {status}")
+            self.status_code = status
+
+    class ABNF:
+        OPCODE_TEXT = 1
+        OPCODE_CLOSE = 8
+
+
+class FakeSocket:
+    def __init__(self, *incoming):
+        self.incoming = list(incoming)
+        self.sent = []
+        self.closed = False
+
+    def settimeout(self, seconds):
+        self.timeout = seconds
+
+    def recv_data(self):
+        if not self.incoming:
+            raise FakeWebSocketModule.WebSocketTimeoutException("timed out")
+        return self.incoming.pop(0)
+
+    def send(self, text):
+        self.sent.append(text)
+
+    def close(self):
+        self.closed = True
+
+
+def text_frame(message):
+    return (FakeWebSocketModule.ABNF.OPCODE_TEXT, json.dumps(message).encode("utf-8"))
+
+
+def close_frame(code, reason=""):
+    return (FakeWebSocketModule.ABNF.OPCODE_CLOSE, code.to_bytes(2, "big") + reason.encode("utf-8"))
+
+
+class ControlChannel(unittest.TestCase):
+    """The WebSocket to the organization's hub: what it applies, what it sends, and
+    how each way it can end is handled. A mistake here is a workstation that
+    stops obeying its operators, or one that streams its screen to nobody."""
+
+    PATCHED = ("websocket", "sync_chromium_policies", "execute_command", "restart_browser",
+               "capture_thumbnail_base64", "current_status", "mark_enrolment_rejected", "load_proxy_config")
+    KEYS = ("targetUrl", "broadcastUrl", "broadcastEpoch", "workerUrl", "deviceToken", "subdomain",
+            "enrolmentRejected", "pendingBrowserRestart")
+
+    def setUp(self):
+        self.orig = {name: getattr(agent, name) for name in self.PATCHED}
+        self.saved = {key: agent.state[key] for key in self.KEYS}
+        self.whitelists, self.commands, self.rejections = [], [], []
+        self.status = {"clientNum": 3, "activeUrl": "https://portal.example/home", "isLocked": False}
+        self.now = [1000.0]
+        agent.websocket = FakeWebSocketModule
+        agent.sync_chromium_policies = lambda hosts, force=False: self.whitelists.append(list(hosts))
+        agent.execute_command = self.commands.append
+        agent.restart_browser = lambda reason="": None
+        agent.capture_thumbnail_base64 = lambda: "data:image/jpeg;base64,AAAA"
+        agent.current_status = lambda: dict(self.status)
+        agent.mark_enrolment_rejected = lambda: self.rejections.append(True)
+        agent.load_proxy_config = lambda: dict(agent.DEFAULT_PROXY_CONFIG)
+        agent.state.update({"workerUrl": "https://acme.labkiosk.example", "deviceToken": "tok-123",
+                            "subdomain": "acme", "broadcastEpoch": 0, "broadcastUrl": "",
+                            "pendingBrowserRestart": False})
+        agent.heartbeat_wakeup.clear()
+
+    def tearDown(self):
+        for name, value in self.orig.items():
+            setattr(agent, name, value)
+        agent.state.update(self.saved)
+        agent.heartbeat_wakeup.clear()
+
+    def channel(self, *incoming):
+        ws = FakeSocket(*incoming)
+        return ws, agent.ControlChannel(ws, clock=lambda: self.now[0])
+
+    def sent(self, ws, kind):
+        return [json.loads(text) for text in ws.sent if json.loads(text).get("type") == kind]
+
+    def test_the_ping_is_exactly_the_hubs_auto_response_request(self):
+        # The edge answers a byte-identical ping without waking the hub; json.dumps
+        # would add a space and turn every ping into a billed request.
+        with open(os.path.join(ROOT, "..", "cloudflare-control", "src", "org_hub.ts"), encoding="utf-8") as handle:
+            hub = handle.read()
+        self.assertIn(f"export const HUB_PING = '{agent.WEBSOCKET_PING}';", hub)
+        self.assertLess(agent.WEBSOCKET_PING_SECONDS, agent.ONLINE_HEARTBEAT_WINDOW_SECONDS,
+                        "a pong must arrive inside the window that counts the workstation online")
+
+    def test_the_address_follows_the_worker_scheme(self):
+        self.assertEqual(agent.websocket_url("https://acme.labkiosk.example"), "wss://acme.labkiosk.example/api/devices/ws")
+        self.assertEqual(agent.websocket_url("http://10.0.0.5:8787"), "ws://10.0.0.5:8787/api/devices/ws")
+
+    def test_config_and_commands_are_applied(self):
+        ws, channel = self.channel()
+        channel.handle(json.dumps({"type": "config", "whitelist": ["docs.example"],
+                                   "broadcastUrl": "https://docs.example/", "broadcastEpoch": 42,
+                                   "targetUrl": "https://docs.example/", "commands": [{"action": "lock"}]}))
+        channel.handle(json.dumps({"type": "commands", "commands": [{"action": "reload"}, "junk"]}))
+        self.assertEqual(self.whitelists, [["docs.example"]])
+        self.assertEqual(agent.state["targetUrl"], "https://docs.example/")
+        self.assertEqual((agent.state["broadcastEpoch"], agent.state["broadcastUrl"]), (42, "https://docs.example/"))
+        self.assertEqual(self.commands, [{"action": "lock"}, {"action": "reload"}], "only objects are commands")
+
+    def test_a_malformed_message_changes_nothing(self):
+        ws, channel = self.channel()
+        for text in ("not json", "[1, 2]", json.dumps({"type": "config", "broadcastEpoch": "soon"})):
+            channel.handle(text)
+        self.assertEqual(agent.state["broadcastEpoch"], 0)
+        self.assertEqual(self.commands, [])
+
+    def test_status_is_sent_on_connect_and_then_only_when_it_changes(self):
+        ws, channel = self.channel()
+        channel.tick()
+        self.now[0] += 1.5
+        channel.tick()
+        self.assertEqual(len(self.sent(ws, "status")), 1)
+        self.status["isLocked"] = True
+        self.now[0] += 1.5
+        channel.tick()
+        statuses = self.sent(ws, "status")
+        self.assertEqual(len(statuses), 2)
+        self.assertTrue(statuses[-1]["isLocked"])
+        self.assertNotIn("thumbnail", statuses[-1], "a status never carries the screen")
+
+    def test_it_pings_and_gives_up_on_silence(self):
+        ws, channel = self.channel()
+        self.now[0] += agent.WEBSOCKET_PING_SECONDS
+        self.assertIsNone(channel.tick())
+        self.assertIn(agent.WEBSOCKET_PING, ws.sent)
+        self.now[0] += agent.WEBSOCKET_SILENCE_SECONDS
+        self.assertEqual(channel.tick(), agent.SESSION_ENDED)
+
+    def test_a_pong_keeps_the_workstation_online(self):
+        ws, channel = self.channel(text_frame({"type": "pong"}))
+        agent.state["lastHeartbeatOk"] = 0.0
+        self.now[0] += 30
+        self.assertIsNone(channel.receive())
+        self.assertGreater(agent.state["lastHeartbeatOk"], 0.0)
+        self.assertEqual(channel.last_heard, self.now[0])
+
+    def test_frames_are_sent_only_while_someone_watches(self):
+        ws, channel = self.channel()
+        channel.tick()
+        self.assertEqual(self.sent(ws, "frame"), [], "nobody is watching yet")
+        channel.handle(json.dumps({"type": "frames", "on": True, "intervalSeconds": 3}))
+        channel.tick()
+        self.now[0] += 1
+        channel.tick()
+        self.assertEqual(len(self.sent(ws, "frame")), 1, "one frame per interval")
+        self.now[0] += 2
+        channel.tick()
+        self.assertEqual(len(self.sent(ws, "frame")), 2)
+        channel.handle(json.dumps({"type": "frames", "on": False}))
+        self.now[0] += 10
+        channel.tick()
+        self.assertEqual(len(self.sent(ws, "frame")), 2)
+
+    def test_the_frame_interval_is_bounded(self):
+        ws, channel = self.channel()
+        channel.handle(json.dumps({"type": "frames", "on": True, "intervalSeconds": 0}))
+        self.assertEqual(channel.frame_interval, agent.FRAME_INTERVAL_BOUNDS[0])
+        channel.handle(json.dumps({"type": "frames", "on": True, "intervalSeconds": 10 ** 9}))
+        self.assertEqual(channel.frame_interval, agent.FRAME_INTERVAL_BOUNDS[1])
+
+    def test_each_close_code_is_handled(self):
+        cases = (
+            (agent.WS_CLOSE_REMOVED, agent.SESSION_REJECTED, 1),
+            (agent.WS_CLOSE_INACTIVE, agent.SESSION_REJECTED, 1),
+            (agent.WS_CLOSE_REPLACED, agent.SESSION_FAILED, 0),
+            (agent.WS_CLOSE_STALE, agent.SESSION_ENDED, 0),
+            (1001, agent.SESSION_ENDED, 0),
+        )
+        for code, outcome, rejections in cases:
+            with self.subTest(code=code):
+                self.rejections.clear()
+                ws, channel = self.channel(close_frame(code, "bye"))
+                self.assertEqual(channel.run(), outcome)
+                self.assertEqual(len(self.rejections), rejections)
+
+    def test_a_new_enrolment_reconnects(self):
+        ws, channel = self.channel()
+        agent.heartbeat_wakeup.set()
+        self.assertEqual(channel.run(), agent.SESSION_ENDED)
+        self.assertFalse(agent.heartbeat_wakeup.is_set())
+
+    def test_the_handshake_outcomes(self):
+        cases = ((401, agent.SESSION_REJECTED, 1), (403, agent.SESSION_REJECTED, 1),
+                 (426, agent.SESSION_UNSUPPORTED, 0), (404, agent.SESSION_UNSUPPORTED, 0),
+                 (501, agent.SESSION_UNSUPPORTED, 0), (502, agent.SESSION_FAILED, 0))
+        for status, outcome, rejections in cases:
+            with self.subTest(status=status):
+                self.rejections.clear()
+
+                def refuse(*args, **kwargs):
+                    raise FakeWebSocketModule.WebSocketBadStatusException(status)
+
+                FakeWebSocketModule.create_connection = staticmethod(refuse)
+                self.assertEqual(agent.open_control_channel(), (None, outcome))
+                self.assertEqual(len(self.rejections), rejections)
+
+        def unreachable(*args, **kwargs):
+            raise ConnectionRefusedError("refused")
+
+        FakeWebSocketModule.create_connection = staticmethod(unreachable)
+        self.assertEqual(agent.open_control_channel(), (None, agent.SESSION_FAILED))
+
+    def test_the_handshake_carries_the_token_and_the_proxy(self):
+        calls = []
+        FakeWebSocketModule.create_connection = staticmethod(lambda url, **kwargs: calls.append((url, kwargs)) or FakeSocket())
+        agent.load_proxy_config = lambda: {"enabled": True, "host": "proxy.acme.example", "port": 3128, "bypass": "intranet.example"}
+        ws, outcome = agent.open_control_channel()
+        self.assertIsNone(outcome)
+        url, options = calls[0]
+        self.assertEqual(url, "wss://acme.labkiosk.example/api/devices/ws")
+        self.assertIn("Authorization: Bearer tok-123", options["header"])
+        self.assertTrue(options["suppress_origin"], "a workstation is not a browser page")
+        self.assertEqual((options["http_proxy_host"], options["http_proxy_port"]), ("proxy.acme.example", 3128))
+        self.assertIn("127.0.0.1", options["http_no_proxy"])
+        self.assertIn("intranet.example", options["http_no_proxy"])
 
 
 class ReenrolmentGating(unittest.TestCase):

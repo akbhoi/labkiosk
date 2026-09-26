@@ -39,7 +39,14 @@ except ImportError:
 import hashlib
 import hmac
 import ipaddress
+import random
 import secrets
+try:
+    # Debian's python3-websocket (websocket-client). Without it the agent keeps
+    # to the HTTP heartbeat, which every control plane still answers.
+    import websocket
+except ImportError:
+    websocket = None
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -121,6 +128,36 @@ MAX_BACKOFF_SECONDS = 60
 # control plane documents this ceiling; a frame over budget is dropped rather
 # than sent, so the heartbeat itself always gets through.
 MAX_THUMBNAIL_BYTES = 256 * 1024
+
+# The control channel. A workstation holds one WebSocket to its organization's
+# hub instead of posting a heartbeat every 3 seconds: the hub pushes the
+# allowlist, the broadcast and commands the moment they change, and asks for
+# screen frames only while an operator has this screen on view. The ping must
+# be byte-for-byte the hub's auto-response request -- the edge answers it
+# without waking the hub, which is what makes an idle workstation free.
+WEBSOCKET_PING = '{"type":"ping"}'
+WEBSOCKET_PING_SECONDS = 15
+# Nothing heard for this long (not even a pong) means the connection is dead.
+WEBSOCKET_SILENCE_SECONDS = 45
+WEBSOCKET_CONNECT_TIMEOUT_SECONDS = 10
+# How long one receive waits before the loop sends what is due.
+WEBSOCKET_POLL_SECONDS = 0.5
+# Connections the server ended on purpose (a deploy restarts every hub) are
+# re-opened after a random pause up to this, so a whole fleet does not return at once.
+WEBSOCKET_RECONNECT_SECONDS = 10
+# A control plane that answers the upgrade with one of these has no WebSocket
+# route (an older Worker, or the Node development server): use HTTP for a while.
+WEBSOCKET_UNSUPPORTED_STATUSES = (404, 426, 501)
+# Connections that fail this many times in a row (a proxy that drops upgrades)
+# also fall back to HTTP; nothing may leave a workstation without a control channel.
+WEBSOCKET_FAILURES_BEFORE_HTTP = 3
+WEBSOCKET_RETRY_SECONDS = 600
+# Close codes the hub uses (org_hub.ts).
+WS_CLOSE_REPLACED = 4000
+WS_CLOSE_REMOVED = 4001
+WS_CLOSE_INACTIVE = 4003
+WS_CLOSE_STALE = 4008
+FRAME_INTERVAL_BOUNDS = (1, 60)
 
 # Hosts that may appear in a workerUrl in addition to a public https origin.
 LOCAL_WORKER_HOSTS = {
@@ -2568,27 +2605,33 @@ def navigate_to(new_url, epoch=0):
 # Telemetry loop
 # --------------------------------------------------------------------------
 
+def current_status():
+    """What the console shows about this workstation, minus the screen."""
+    with state_lock:
+        status = {
+            "clientNum": state["clientNum"],
+            "activeUrl": state["targetUrl"],
+            "isLocked": state["isLocked"],
+        }
+    # Remote-control details, sent only when the workstation actually has them
+    # so the control plane keeps whatever it already knows otherwise.
+    vnc_password = read_vnc_password()
+    if vnc_password:
+        status["vncPassword"] = vnc_password
+    remote_host = detect_remote_host()
+    if remote_host:
+        status["remoteHost"] = remote_host
+    return status
+
+
 def post_telemetry():
     """One heartbeat. Returns the decoded response, or raises on failure."""
     with state_lock:
         worker_url = state["workerUrl"]
         token = state["deviceToken"]
-        payload = {
-            "clientNum": state["clientNum"],
-            "activeUrl": state["targetUrl"],
-            "isLocked": state["isLocked"],
-        }
 
+    payload = current_status()
     payload["thumbnail"] = capture_thumbnail_base64()
-
-    # Remote-control details, sent only when the workstation actually has them
-    # so the control plane keeps whatever it already knows otherwise.
-    vnc_password = read_vnc_password()
-    if vnc_password:
-        payload["vncPassword"] = vnc_password
-    remote_host = detect_remote_host()
-    if remote_host:
-        payload["remoteHost"] = remote_host
 
     request = Request(
         f"{worker_url}/api/telemetry",
@@ -2642,9 +2685,313 @@ def clear_enrolment_rejected():
         log("The control plane accepts this workstation's device token again.")
 
 
+def control_plane_reached():
+    """The control plane answered: the workstation is online whatever the generic probes say."""
+    with state_lock:
+        state["lastHeartbeatOk"] = time.monotonic()
+
+
+def apply_control_update(data):
+    """
+    Apply what the control plane says this workstation should be doing.
+
+    One shape, whichever way it arrived: the reply to an HTTP heartbeat and the
+    hub's "config" message carry the same allowlist, target and broadcast.
+    """
+    if not isinstance(data, dict):
+        log(f"Ignoring an update from the control plane that is not an object: {type(data).__name__}")
+        return
+
+    if "whitelist" in data:
+        sync_chromium_policies(data["whitelist"])
+
+    new_target = safe_navigable_url(data.get("targetUrl"))
+    if "targetUrl" in data and data["targetUrl"] and not new_target:
+        log(f"Ignoring an unusable targetUrl from the control plane: {data['targetUrl']!r}")
+    if new_target:
+        with state_lock:
+            worker_url = state["workerUrl"]
+            sub = state["subdomain"]
+        if worker_url:
+            parsed_worker = urlparse(worker_url)
+            if (parsed_worker.hostname in LOCAL_WORKER_HOSTS or parsed_worker.scheme == "http") and "tenant=" in new_target:
+                new_target = f"{worker_url}/?tenant={sub}"
+        with state_lock:
+            old_target = state["targetUrl"]
+            if old_target != new_target:
+                state["targetUrl"] = new_target
+                log(f"Target URL updated from {old_target} to {new_target}")
+
+    srv_epoch = data.get("broadcastEpoch")
+    if srv_epoch is not None and (isinstance(srv_epoch, bool) or not isinstance(srv_epoch, int)):
+        log(f"Ignoring an unusable broadcastEpoch from the control plane: {srv_epoch!r}")
+    elif srv_epoch:
+        with state_lock:
+            local_epoch = state["broadcastEpoch"]
+            if srv_epoch > local_epoch:
+                state["broadcastEpoch"] = srv_epoch
+                state["broadcastUrl"] = safe_navigable_url(data.get("broadcastUrl"))
+                log(f"Synced broadcast epoch {srv_epoch} from control plane")
+    elif srv_epoch == 0:
+        with state_lock:
+            state["broadcastEpoch"] = 0
+            state["broadcastUrl"] = ""
+
+    # Apply a just-completed enrolment to the running browser.
+    with state_lock:
+        needs_restart = state["pendingBrowserRestart"]
+        state["pendingBrowserRestart"] = False
+    if needs_restart:
+        restart_browser()
+
+    commands = data.get("commands", [])
+    if isinstance(commands, list):
+        for command in commands:
+            if isinstance(command, dict):
+                execute_command(command)
+
+
+def http_heartbeat():
+    """One HTTP heartbeat. Returns "ok", "rejected" or "error"."""
+    try:
+        data = post_telemetry()
+    except HTTPError as err:
+        if err.code in (401, 403):
+            mark_enrolment_rejected()
+            return "rejected"
+        log(f"Telemetry rejected with HTTP {err.code}")
+        return "error"
+    except (URLError, TimeoutError, socket.timeout, ValueError, OSError) as err:
+        log(f"Telemetry error: {err}")
+        return "error"
+    clear_enrolment_rejected()
+    control_plane_reached()
+    apply_control_update(data)
+    return "ok"
+
+
+# How one WebSocket session ended, which decides what the loop does next.
+SESSION_ENDED = "ended"              # it worked, then closed: reconnect soon
+SESSION_FAILED = "failed"            # could not connect, or was replaced: back off
+SESSION_REJECTED = "rejected"        # the token was refused: re-enrolment form, back off
+SESSION_UNSUPPORTED = "unsupported"  # no WebSocket route: use HTTP for a while
+
+
+def websocket_url(worker_url):
+    """The hub's address for this worker: ws:// beside http://, wss:// beside https://."""
+    parsed = urlparse(worker_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return f"{scheme}://{parsed.netloc}/api/devices/ws"
+
+
+def websocket_proxy_options(cfg):
+    """The saved proxy in websocket-client's terms, or nothing when there is none."""
+    if not cfg.get("enabled"):
+        return {}
+    bypass = [item for item in cfg.get("bypass", "").split(",") if item]
+    return {
+        "http_proxy_host": cfg["host"],
+        "http_proxy_port": int(cfg["port"]),
+        "http_no_proxy": list(LOOPBACK_NO_PROXY) + bypass,
+        "proxy_type": "http",
+    }
+
+
+def open_control_channel():
+    """Connect to the hub. Returns (socket, None), or (None, how the attempt ended)."""
+    # This connection uses the enrolment as it is now; only a later one should
+    # make ControlChannel.run() reconnect.
+    heartbeat_wakeup.clear()
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    try:
+        ws = websocket.create_connection(
+            websocket_url(worker_url),
+            timeout=WEBSOCKET_CONNECT_TIMEOUT_SECONDS,
+            header=[f"Authorization: Bearer {token}", "User-Agent: LabKioskAgent/2.2.0"],
+            suppress_origin=True,
+            **websocket_proxy_options(load_proxy_config()),
+        )
+    except websocket.WebSocketBadStatusException as err:
+        status = getattr(err, "status_code", 0)
+        if status in (401, 403):
+            mark_enrolment_rejected()
+            return None, SESSION_REJECTED
+        if status in WEBSOCKET_UNSUPPORTED_STATUSES:
+            log(f"The control plane has no WebSocket route (HTTP {status}); using the HTTP heartbeat.")
+            return None, SESSION_UNSUPPORTED
+        log(f"The control plane refused the WebSocket with HTTP {status}")
+        return None, SESSION_FAILED
+    except (websocket.WebSocketException, OSError, ValueError) as err:
+        log(f"Could not open the control channel: {err}")
+        return None, SESSION_FAILED
+    return ws, None
+
+
+class ControlChannel:
+    """
+    One open WebSocket to the organization's hub.
+
+    Single-threaded on purpose: every receive waits at most
+    WEBSOCKET_POLL_SECONDS, and between receives the loop sends whatever is
+    due -- the ping, a changed status, a frame an operator is watching.
+    """
+
+    def __init__(self, ws, clock=time.monotonic):
+        self.ws = ws
+        self.clock = clock
+        now = clock()
+        self.last_heard = now
+        self.next_ping = now + WEBSOCKET_PING_SECONDS
+        self.next_status_check = now
+        self.last_status = None
+        # Seconds between frames while a console is watching; 0 when nobody is.
+        self.frame_interval = 0
+        self.next_frame = now
+
+    def run(self):
+        """Serve the connection until it ends; returns a SESSION_* outcome."""
+        clear_enrolment_rejected()
+        control_plane_reached()
+        self.ws.settimeout(WEBSOCKET_POLL_SECONDS)
+        while True:
+            if heartbeat_wakeup.is_set():
+                # A new enrolment: its token and organization need a new connection.
+                heartbeat_wakeup.clear()
+                log("Reconnecting the control channel for the new enrolment.")
+                return SESSION_ENDED
+            outcome = self.receive() or self.tick()
+            if outcome:
+                return outcome
+
+    def receive(self):
+        try:
+            opcode, data = self.ws.recv_data()
+        except (websocket.WebSocketTimeoutException, socket.timeout):
+            return None
+        except websocket.WebSocketConnectionClosedException:
+            log("The control channel was closed.")
+            return SESSION_ENDED
+        except (websocket.WebSocketException, OSError, ValueError) as err:
+            log(f"The control channel failed: {err}")
+            return SESSION_ENDED
+        self.last_heard = self.clock()
+        control_plane_reached()
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            return self.closed(data)
+        if opcode == websocket.ABNF.OPCODE_TEXT:
+            self.handle(data.decode("utf-8", "replace") if isinstance(data, bytes) else data)
+        return None
+
+    def closed(self, data):
+        code = int.from_bytes(data[:2], "big") if len(data) >= 2 else 1005
+        reason = data[2:].decode("utf-8", "replace")
+        if code in (WS_CLOSE_REMOVED, WS_CLOSE_INACTIVE):
+            log(f"The control plane closed the channel: {reason or code}")
+            mark_enrolment_rejected()
+            return SESSION_REJECTED
+        log(f"The control plane closed the channel ({code}{': ' + reason if reason else ''}).")
+        # Another connection for this workstation took over: do not fight it.
+        return SESSION_FAILED if code == WS_CLOSE_REPLACED else SESSION_ENDED
+
+    def handle(self, text):
+        try:
+            message = json.loads(text)
+        except ValueError as err:
+            log(f"Ignoring a control message that is not JSON: {err}")
+            return
+        if not isinstance(message, dict):
+            log("Ignoring a control message that is not an object.")
+            return
+        kind = message.get("type")
+        if kind == "pong":
+            return
+        if kind == "config":
+            apply_control_update(message)
+        elif kind == "commands":
+            apply_control_update({"commands": message.get("commands", [])})
+        elif kind == "frames":
+            self.set_frames(message)
+        else:
+            log(f"Ignoring an unknown control message: {str(kind)[:40]!r}")
+
+    def set_frames(self, message):
+        low, high = FRAME_INTERVAL_BOUNDS
+        try:
+            interval = int(message.get("intervalSeconds", HEARTBEAT_SECONDS))
+        except (TypeError, ValueError):
+            interval = HEARTBEAT_SECONDS
+        interval = min(max(interval, low), high)
+        if message.get("on") is True:
+            if not self.frame_interval:
+                self.next_frame = self.clock()
+                log("An operator is watching this screen; sending frames.")
+            self.frame_interval = interval
+        elif self.frame_interval:
+            self.frame_interval = 0
+            log("Nobody is watching this screen; frames stopped.")
+
+    def send(self, text):
+        try:
+            self.ws.send(text)
+            return True
+        except (websocket.WebSocketException, OSError) as err:
+            log(f"The control channel failed while sending: {err}")
+            return False
+
+    def tick(self):
+        """Send what is due. Returns a SESSION_* outcome when the connection is over."""
+        now = self.clock()
+        if now - self.last_heard > WEBSOCKET_SILENCE_SECONDS:
+            log(f"Nothing heard from the control plane for {WEBSOCKET_SILENCE_SECONDS} s; reconnecting.")
+            return SESSION_ENDED
+        if now >= self.next_ping:
+            self.next_ping = now + WEBSOCKET_PING_SECONDS
+            if not self.send(WEBSOCKET_PING):
+                return SESSION_ENDED
+        if now >= self.next_status_check:
+            self.next_status_check = now + 1
+            status = current_status()
+            if status != self.last_status:
+                if not self.send(json.dumps({"type": "status", **status})):
+                    return SESSION_ENDED
+                self.last_status = status
+        if self.frame_interval and now >= self.next_frame:
+            self.next_frame = now + self.frame_interval
+            frame = capture_thumbnail_base64()
+            if frame and not self.send(json.dumps({"type": "frame", "thumbnail": frame})):
+                return SESSION_ENDED
+        return None
+
+
+def websocket_session():
+    """Open the control channel and serve it until it ends."""
+    ws, outcome = open_control_channel()
+    if ws is None:
+        return outcome
+    log("Control channel open.")
+    try:
+        return ControlChannel(ws).run()
+    finally:
+        try:
+            ws.close()
+        except (websocket.WebSocketException, OSError) as err:
+            log(f"Closing the control channel: {err}")
+
+
 def telemetry_loop():
+    """
+    Keep this workstation in touch with its control plane.
+
+    A WebSocket when the image has websocket-client and the server has the
+    route; the HTTP heartbeat every 3 seconds otherwise, and for a while after
+    the WebSocket keeps failing. Both apply the same updates, and both send a
+    refused workstation to the re-enrolment form.
+    """
     backoff = HEARTBEAT_SECONDS
-    revoked_notified = False
+    failures = 0
+    websocket_after = 0.0
 
     while True:
         with state_lock:
@@ -2655,73 +3002,31 @@ def telemetry_loop():
             time.sleep(HEARTBEAT_SECONDS)
             continue
 
-        try:
-            data = post_telemetry()
-            backoff = HEARTBEAT_SECONDS
-            revoked_notified = False
-            clear_enrolment_rejected()
-            with state_lock:
-                state["lastHeartbeatOk"] = time.monotonic()
-
-            if "whitelist" in data:
-                sync_chromium_policies(data["whitelist"])
-
-            new_target = safe_navigable_url(data.get("targetUrl"))
-            if "targetUrl" in data and data["targetUrl"] and not new_target:
-                log(f"Ignoring an unusable targetUrl from the control plane: {data['targetUrl']!r}")
-            if new_target:
-                with state_lock:
-                    worker_url = state["workerUrl"]
-                    sub = state["subdomain"]
-                if worker_url:
-                    parsed_worker = urlparse(worker_url)
-                    if (parsed_worker.hostname in LOCAL_WORKER_HOSTS or parsed_worker.scheme == "http") and "tenant=" in new_target:
-                        new_target = f"{worker_url}/?tenant={sub}"
-                with state_lock:
-                    old_target = state["targetUrl"]
-                    if old_target != new_target:
-                        state["targetUrl"] = new_target
-                        log(f"Target URL updated from {old_target} to {new_target}")
-
-            if "broadcastEpoch" in data and data["broadcastEpoch"]:
-                srv_epoch = int(data["broadcastEpoch"])
-                with state_lock:
-                    local_epoch = state["broadcastEpoch"]
-                    if srv_epoch > local_epoch:
-                        state["broadcastEpoch"] = srv_epoch
-                        state["broadcastUrl"] = safe_navigable_url(data.get("broadcastUrl"))
-                        log(f"Synced broadcast epoch {srv_epoch} from control plane")
-            elif "broadcastEpoch" in data and data["broadcastEpoch"] == 0:
-                with state_lock:
-                    state["broadcastEpoch"] = 0
-                    state["broadcastUrl"] = ""
-
-            # Apply a just-completed enrolment to the running browser.
-            with state_lock:
-                needs_restart = state["pendingBrowserRestart"]
-                state["pendingBrowserRestart"] = False
-            if needs_restart:
-                restart_browser()
-
-            for command in data.get("commands", []):
-                execute_command(command)
-
-        except HTTPError as err:
-            if err.code in (401, 403):
-                if not revoked_notified:
-                    mark_enrolment_rejected()
-                    revoked_notified = True
-                backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+        if websocket is not None and time.monotonic() >= websocket_after:
+            outcome = websocket_session()
+            failures = failures + 1 if outcome == SESSION_FAILED else 0
+            if outcome == SESSION_UNSUPPORTED or failures >= WEBSOCKET_FAILURES_BEFORE_HTTP:
+                if outcome == SESSION_FAILED:
+                    log("The control channel keeps failing; using the HTTP heartbeat for now.")
+                failures = 0
+                websocket_after = time.monotonic() + WEBSOCKET_RETRY_SECONDS
+                backoff = HEARTBEAT_SECONDS
+                continue
+            if outcome == SESSION_ENDED:
+                wait = random.uniform(1, WEBSOCKET_RECONNECT_SECONDS)
+                backoff = HEARTBEAT_SECONDS
             else:
-                log(f"Telemetry rejected with HTTP {err.code}")
                 backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
-        except (URLError, TimeoutError, socket.timeout, ValueError, OSError) as err:
-            log(f"Telemetry error: {err}")
-            backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+                wait = backoff * random.uniform(0.5, 1)
+        else:
+            result = http_heartbeat()
+            backoff = HEARTBEAT_SECONDS if result == "ok" else min(backoff * 2, MAX_BACKOFF_SECONDS)
+            wait = backoff
 
-        if heartbeat_wakeup.wait(backoff):
+        if heartbeat_wakeup.wait(wait):
             heartbeat_wakeup.clear()
             backoff = HEARTBEAT_SECONDS
+            websocket_after = 0.0
 
 
 def main():
