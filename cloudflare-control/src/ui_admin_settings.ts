@@ -369,12 +369,6 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       const tabFromHash = tabMap[hash];
       const initialTab = tabFromHash || new URLSearchParams(window.location.search).get("tab") || "general";
       switchTab(initialTab);
-      // The browser jumped to the anchor while its tab was still hidden, so it
-      // went nowhere: bring the card (e.g. #section-password) into view now.
-      if (tabFromHash) {
-        const target = document.getElementById(hash);
-        if (target) requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
-      }
       document.getElementById("form-profile-settings").addEventListener("submit", async (e) => {
         e.preventDefault();
         const name = document.getElementById("setting-organization-name").value.trim();
