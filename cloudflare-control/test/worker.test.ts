@@ -22,7 +22,7 @@ import {
 import { DEMO_SLUGS } from "../src/demo";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
-import { safeHttpUrl } from "../src/escape";
+import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
 import { isHostUnder } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -1562,6 +1562,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://canvas.example.com:8080/?param=1#section"
     );
     assert.equal(safeHttpUrl("canvas.example.com:8080#section"), "https://canvas.example.com:8080/#section");
+  });
+
+  test("A custom domain is cleaned in linear time, whatever a workstation sends", () => {
+    assert.equal(cleanCustomDomain("https://Kiosk.Example.com:8443/path/to/page"), "kiosk.example.com");
+    assert.equal(cleanCustomDomain("pc-01.labkiosk.example.com"), "pc-01.labkiosk.example.com");
+    assert.equal(cleanCustomDomain("not a domain"), null);
+    // A run of "/" made the old path pattern quadratic (CodeQL js/polynomial-redos),
+    // and a workstation's remoteHost reaches this function.
+    const started = performance.now();
+    assert.equal(cleanCustomDomain("/".repeat(200_000)), null);
+    assert.equal(cleanCustomDomain("kiosk.example.com" + "/".repeat(2000)), "kiosk.example.com");
+    assert.ok(performance.now() - started < 200, "cleaning hostile input stays fast");
   });
 
   test("Checks domain boundaries case-insensitively with isHostUnder", () => {
