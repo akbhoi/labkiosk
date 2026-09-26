@@ -1,6 +1,6 @@
 # Super Admin Guide
 
-The Super Admin Master Console at `/super` on the platform apex — `https://labkiosk.<your-domain>/super`. This is the platform operator's console, not a school's.
+The Super Admin Master Console at `/super` on the platform apex — `https://labkiosk.<your-domain>/super`. This is the platform operator's console, not an organization's.
 
 Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default super admin: with a D1 binding present, the worker **refuses to serve at all** if either secret is unset.
 
@@ -10,14 +10,14 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 
 | Capability | Why it is reserved |
 | :--- | :--- |
-| Approve or reject school registrations | Anyone can register; nothing works until a human approves |
-| Suspend or reactivate a school | The platform's kill switch |
+| Approve or reject organization registrations | Anyone can register; nothing works until a human approves |
+| Suspend or reactivate an organization | The platform's kill switch |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
-| Act on any tenant via `?tenant=` | Support, without a school sharing credentials |
+| Act on any tenant via `?tenant=` | Support, without an organization sharing credentials |
 
 A super-admin session may use `?tenant=<slug>` and `X-Tenant` on any host — one of only four cases where the `Host` header is not the sole authority. → [Architecture Overview](Architecture-Overview#tenant-resolution)
 
-A super admin cannot read school passwords. They are PBKDF2 digests with per-user salts.
+A super admin cannot read organization passwords. They are PBKDF2 digests with per-user salts.
 
 ---
 
@@ -45,16 +45,16 @@ A super admin cannot read school passwords. They are PBKDF2 digests with per-use
 | `suspended` | ✗ | ✗ | ✗ | `403` |
 | `rejected` | ✗ | ✗ | ✗ | ✗ |
 
-### Approving a school
+### Approving an organization
 
 ```json
 POST /api/super/tenants/approve
 { "tenantId": "tenant-uuid-1", "subdomain": "oakridge" }
 ```
 
-Before approving, check that the subdomain is plausible for the institution, that it is not a [reserved slug](Configuration-Reference#reserved-subdomains), and that the admin email belongs to that institution's domain.
+Before approving, check that the subdomain is plausible for the organization, that it is not a [reserved slug](Configuration-Reference#reserved-subdomains), and that the admin email belongs to that organization's domain.
 
-On approval the school can sign in, configure its portal, generate an enrollment key, and enrol workstations.
+On approval the organization can sign in, configure its portal, generate an enrollment key, and enrol workstations.
 
 ### Rejecting
 
@@ -72,7 +72,7 @@ POST /api/super/tenants/suspend
 { "tenantId": "tenant-uuid-1" }
 ```
 
-Suspension takes effect on the next heartbeat, within three seconds. Every workstation gets `403`, stops receiving commands and policy, and the portal stops serving. **Nothing is deleted** — reactivation restores the school exactly as it was, with its devices still enrolled.
+Suspension takes effect on the next heartbeat, within three seconds. Every workstation gets `403`, stops receiving commands and policy, and the portal stops serving. **Nothing is deleted** — reactivation restores the organization exactly as it was, with its devices still enrolled.
 
 Use it for non-payment, abuse, or a compromised account. It is reversible; deletion is not.
 
@@ -87,29 +87,29 @@ POST /api/super/tenants/reactivate
 
 ## Custom domains
 
-Schools with their own domain can serve Lab Kiosk from `kiosk.theirschool.edu` rather than `theirschool.labkiosk.yourdomain.com`.
+Organizations with their own domain can serve Lab Kiosk from `kiosk.acme.edu` rather than `acme.labkiosk.yourdomain.com`.
 
 ```text
- school requests          you verify + approve         Cloudflare routes
- kiosk.school.edu   -->   custom_domain_status:   -->  Host: kiosk.school.edu
+ organization requests          you verify + approve         Cloudflare routes
+ kiosk.example.com   -->   custom_domain_status:   -->  Host: kiosk.example.com
  (status: pending)         approved                    resolves to that tenant
 ```
 
 ### The steps
 
-1. **School requests** it under Settings → Custom Domain. `requested_custom_domain` is set and `custom_domain_status` becomes `pending`.
-2. **School creates a `CNAME`** for that hostname pointing at your platform apex.
-3. **You verify** that the requesting school actually controls the domain. The platform does not check this for you — approving a domain the requester does not own hands them traffic intended for someone else.
+1. **Organization requests** it under Settings → Custom Domain. `requested_custom_domain` is set and `custom_domain_status` becomes `pending`.
+2. **Organization creates a `CNAME`** for that hostname pointing at your platform apex.
+3. **You verify** that the requesting organization actually controls the domain. The platform does not check this for you — approving a domain the requester does not own hands them traffic intended for someone else.
 4. **You approve:**
 
    ```json
    POST /api/super/tenants/custom-domain/approve
-   { "tenantId": "tenant-uuid-1", "customDomain": "kiosk.school.edu" }
+   { "tenantId": "tenant-uuid-1", "customDomain": "kiosk.example.com" }
    ```
 
 5. **Cloudflare** must route that hostname to the worker. With a proxied `CNAME` into your zone this is automatic; a domain in a zone you do not control needs a Cloudflare for SaaS custom hostname.
 
-`custom_domain` carries a **unique index**, so two schools cannot claim the same FQDN.
+`custom_domain` carries a **unique index**, so two organizations cannot claim the same FQDN.
 
 ### Rejecting or removing
 
@@ -118,13 +118,13 @@ POST /api/super/tenants/custom-domain/reject
 POST /api/super/tenants/custom-domain/remove
 ```
 
-Removing unbinds the domain; the school reverts to its platform subdomain. Workstations enrolled against the custom domain will need re-pointing, so give notice.
+Removing unbinds the domain; the organization reverts to its platform subdomain. Workstations enrolled against the custom domain will need re-pointing, so give notice.
 
 ---
 
 ## Subdomain change requests
 
-A school can request a different subdomain (`POST /api/settings/subdomain`), which lands in `requested_subdomain` for a super admin to act on. Treat it as a rename with consequences: enrolled workstations hold a `workerUrl` pointing at the old host.
+An organization can request a different subdomain (`POST /api/settings/subdomain`), which lands in `requested_subdomain` for a super admin to act on. Treat it as a rename with consequences: enrolled workstations hold a `workerUrl` pointing at the old host.
 
 ---
 
@@ -145,7 +145,7 @@ Once signed in, use the authenticated password-change form rather than the secre
 
 `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`
 
-These can be neither registered nor resolved as a school. Add one to `RESERVED_SLUGS` in `src/guard.ts` **before** you start using a hostname for platform purposes, not after.
+These can be neither registered nor resolved as an organization. Add one to `RESERVED_SLUGS` in `src/guard.ts` **before** you start using a hostname for platform purposes, not after.
 
 ---
 
@@ -167,8 +167,8 @@ Command rows are short-lived by design and are also purged opportunistically on 
 | :--- | :--- |
 | Worker is serving | `GET /api/status` on the apex |
 | Migrations are current | The worker refuses to serve otherwise — a failure to boot after deploy usually means this |
-| A school's fleet is healthy | Sign in with `?tenant=<slug>` and look at `last_seen` across the grid |
-| Something changed unexpectedly | The school's audit log |
+| An organization's fleet is healthy | Sign in with `?tenant=<slug>` and look at `last_seen` across the grid |
+| Something changed unexpectedly | The organization's audit log |
 
 ### Two failure modes worth recognising
 

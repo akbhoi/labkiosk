@@ -131,7 +131,7 @@ chmod -R go-w /opt/labkiosk || true
 chown -R root:root /etc/openbox || true
 chmod -R go-w /etc/openbox || true
 
-#    The agent rewrites Chromium's managed policy whenever the school's
+#    The agent rewrites Chromium's managed policy whenever the organization's
 #    allowlist changes. Without this the directory stays root-owned and every
 #    policy sync fails silently, freezing the allowlist at its boot-time value.
 mkdir -p /etc/chromium/policies/managed
@@ -219,7 +219,7 @@ EOF
 
 # 6. Allow the kiosk user to reboot and power off, and nothing else.
 #    These are the only privileged actions the agent performs; without a rule it
-#    runs as an unprivileged user and the teacher's shutdown command silently
+#    runs as an unprivileged user and the operator's shutdown command silently
 #    does nothing.
 mkdir -p /etc/polkit-1/rules.d
 cat << 'EOF' > /etc/polkit-1/rules.d/50-labkiosk-power.rules
@@ -356,7 +356,7 @@ if [ -e /etc/labkiosk-installed ] && ! mountpoint -q "$DIR"; then
         echo "labkiosk: an enrolment made now would be forgotten at the next reboot."
         # Deliberately left as it is. An unwritable directory makes the agent
         # report something recoverable; a writable one in RAM silently loses
-        # the school's enrolment.
+        # the organization's enrolment.
         exit 0
     fi
 fi
@@ -407,11 +407,11 @@ systemctl enable labkiosk-data-permissions.service || true
 #
 #     live-tools prints this for optical media, but bails out for USB mass
 #     storage before it ever prompts (ejecting one needs a cold reboot). A USB
-#     stick is exactly what schools install from, so without this a freshly
+#     stick is exactly what organizations install from, so without this a freshly
 #     installed workstation reboots straight back into the installer.
 #
 #     The guards match live-tools': nothing happens on an installed disk (no
-#     boot=live), after toram, or when noeject was passed -- so a teacher's
+#     boot=live), after toram, or when noeject was passed -- so an operator's
 #     remote reboot of an enrolled workstation never waits for a keypress.
 #     systemd runs these with a timeout, so an unattended machine continues on
 #     its own rather than hanging forever.
@@ -450,7 +450,7 @@ chmod 0755 /lib/systemd/system-shutdown/labkiosk-medium.shutdown
 
 # 9. noVNC web client, from the pinned and checksum-verified upstream release
 #    (usr/share/labkiosk/novnc.pin) rather than Debian's package, which drags in
-#    Node.js. Unlike cloudflared this is not optional: the teacher console's
+#    Node.js. Unlike cloudflared this is not optional: the admin console's
 #    remote control loads /vnc.html from here, so a failure stops the build.
 NOVNC_INSTALLER=/usr/share/labkiosk/install-novnc.sh
 sh "$NOVNC_INSTALLER" /usr/share/labkiosk/novnc.pin /usr/share/novnc

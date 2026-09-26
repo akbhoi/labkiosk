@@ -86,7 +86,7 @@ VNC_SECRET="${VNC_PASSWORD:-$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\
 echo "VNC password: $VNC_SECRET"
 x11vnc -storepasswd "$VNC_SECRET" "$VNC_PASSWD_FILE" >/dev/null 2>&1
 chmod 600 "$VNC_PASSWD_FILE"
-# The agent reports this to the teacher console so "Remote Control" autoconnects.
+# The agent reports this to the admin console so "Remote Control" autoconnects.
 (umask 077 && printf '%s' "$VNC_SECRET" > /tmp/labkiosk/vnc.secret)
 x11vnc -display :0 -forever -shared -rfbport 5900 -localhost \
   -rfbauth "$VNC_PASSWD_FILE" -quiet -bg
@@ -100,7 +100,7 @@ websockify --web=/usr/share/novnc/ 0.0.0.0:6080 localhost:5900 >/tmp/websockify.
 
 # 5. Lab Kiosk agent.
 #    No config is written here: the workstation enrols through the setup wizard
-#    exactly as a real one does, using the school's enrollment key. The agent's
+#    exactly as a real one does, using the organization's enrollment key. The agent's
 #    API binds to loopback inside the container, so drive the wizard from the
 #    noVNC screen rather than from the host.
 echo "[5/5] Starting Lab Kiosk Agent..."
@@ -127,8 +127,8 @@ fi
 ) &
 
 # Ask the agent where the kiosk should point right now: the setup wizard until the
-# workstation is enrolled, the school portal afterwards. Re-read on every relaunch
-# so the agent's post-enrolment browser restart lands on the school's page under
+# workstation is enrolled, the organization portal afterwards. Re-read on every relaunch
+# so the agent's post-enrolment browser restart lands on the organization's page under
 # the freshly written Chromium policy.
 read_kiosk_url() {
   for _ in $(seq 1 50); do
@@ -147,12 +147,12 @@ echo "========================================================"
 echo "  Kiosk is READY"
 echo "  Open on your laptop: http://localhost:6080/vnc.html"
 echo "  Then complete the setup wizard on the kiosk screen"
-echo "  using your school subdomain and enrollment key."
+echo "  using your organization subdomain and enrollment key."
 echo "========================================================"
 
 # Chromium kiosk watchdog.
 # --disable-web-security is intentionally absent here too; it was disabling the
-# same-origin policy for every page the simulated student visited.
+# same-origin policy for every page the simulated user visited.
 #
 # $CHROMIUM_SANDBOX_FLAGS is deliberately unquoted: it is empty in the normal,
 # unprivileged case, and an empty quoted argument would reach Chromium as a URL.

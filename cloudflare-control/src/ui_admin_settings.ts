@@ -1,5 +1,5 @@
 /**
- * Lab settings: identity, routing, custom domain, enrollment key, the audit
+ * Settings: identity, routing, custom domain, enrollment key, the audit
  * trail and the administrator password.
  *
  * The page markup, its context-panel contents and its client script live
@@ -14,57 +14,57 @@ import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
-  const { tenant, config, sites, presets, teachers, tenantParam, baseDomain, nonce } = options;
+  const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
   return {
-    title: "Lab Settings & Configuration",
+    title: "Settings & Configuration",
     contentHtml: renderSettingsPageHtml(tenant, config, baseDomain, tenantParam),
     scriptsHtml: renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)),
-        subPanelTitle: "Lab Configuration",
-        subPanelSubtitle: "Settings & preferences",
-        subPanelHtml: `
-          <div class="sub-section-title">Jump to Section</div>
-          <div class="sub-action-list">
-            <a href="#section-general" class="sub-action-item">
-              <span>General Information</span>
-            </a>
-            <a href="#section-subdomain" class="sub-action-item">
-              <span>Subdomain &amp; Routing</span>
-            </a>
-            <a href="#section-custom-domain" class="sub-action-item">
-              <span>Custom Domain</span>
-            </a>
-            <a href="#section-routing" class="sub-action-item">
-              <span>Kiosk Routing &amp; Home URL</span>
-            </a>
-            <a href="#section-vnc" class="sub-action-item">
-              <span>VNC &amp; Remote Control</span>
-            </a>
-            <a href="#section-enrollment" class="sub-action-item">
-              <span>Workstation Enrollment Key</span>
-            </a>
-            <a href="#section-homepage" class="sub-action-item">
-              <span>School Homepage</span>
-            </a>
-            <a href="#section-activity" class="sub-action-item">
-              <span>Recent Lab Activity</span>
-            </a>
-            <a href="#section-password" class="sub-action-item">
-              <span>Admin Password</span>
-            </a>
-          </div>
+    subPanelTitle: "Organization Settings",
+    subPanelSubtitle: "Settings & preferences",
+    subPanelHtml: `
+      <div class="sub-section-title">Settings Views</div>
+      <div class="sub-action-list" id="sub-tab-list">
+        <button type="button" class="sub-action-item active" data-action="tab-general">
+          <span class="row">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            General &amp; Kiosk
+          </span>
+        </button>
+        <button type="button" class="sub-action-item" data-action="tab-domains">
+          <span class="row">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            Domains &amp; Network
+          </span>
+        </button>
+        <button type="button" class="sub-action-item" data-action="tab-homepage">
+          <span class="row">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            Organization Homepage
+          </span>
+        </button>
+        <button type="button" class="sub-action-item" data-action="tab-security">
+          <span class="row">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Security &amp; Audit
+          </span>
+        </button>
+      </div>
 
-          <div class="sub-section-title" style="margin-top: 14px;">Security Audit</div>
-          <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-muted); line-height: 1.4;">
-            Passwords use PBKDF2-HMAC-SHA256 (100k rounds) via WebCrypto. Device enrollment keys use cryptographically secure random bytes.
-          </div>
+      <div class="sub-section-title">Quick Shortcuts</div>
+      <div class="sub-action-list">
+        <a href="/${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
+          <span class="row">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            Preview Organization Homepage
+          </span>
+        </a>
+      </div>
 
-          <div class="sub-section-title" style="margin-top: 14px;">Navigation</div>
-          <div class="sub-action-list">
-            <a href="/admin/workstations${tenantParam}" class="sub-action-item">
-              <span>← Back to Workstations</span>
-            </a>
-          </div>
-        `
+      <div class="sub-section-title">Security Architecture</div>
+      <div class="panel-note">
+        Passwords hashed with PBKDF2-HMAC-SHA256 (100k rounds) via WebCrypto. Device tokens authenticated per 3s heartbeat.
+      </div>
+    `
   };
 }
 
@@ -78,200 +78,241 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
   return `
     <div class="page-head">
       <div>
-        <h1 class="page-title">Lab Settings &amp; Configuration</h1>
-        <p class="page-desc">Manage institution profile, subdomain customization, custom domain, VNC tunnel, and enrollment keys.</p>
+        <h1 class="page-title">Settings</h1>
+        <p class="page-desc">Organization profile, kiosk behaviour, addresses and remote access, the homepage, and security.</p>
       </div>
     </div>
 
-    <div class="grid-2col">
-      <!-- Card 1: Lab Profile & Kiosk Mode -->
-      <div class="card" id="section-general">
-        <h2 class="card-title">Institution &amp; Kiosk Profile</h2>
-        <p class="card-sub">General settings for this computer lab environment.</p>
+    <!-- ============================================================== -->
+    <!-- TAB 1: GENERAL & KIOSK PROFILE                                 -->
+    <!-- ============================================================== -->
+    <div class="tab-pane active" id="pane-general">
+      <div class="grid-2col">
+        <!-- Card 1: Lab Profile & Kiosk Mode -->
+        <div class="card" id="section-general">
+          <h2 class="card-title">Organization &amp; Kiosk Profile</h2>
+          <p class="card-sub">General settings for this organization's workstations.</p>
 
-        <form id="form-profile-settings">
-          <div class="form-group">
-            <label class="form-label" for="setting-school-name">School / Lab Name</label>
-            <input type="text" class="form-input" id="setting-school-name" value="${escapeAttr(tenant?.name || "")}" required>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="setting-kiosk-mode">Kiosk Display Mode</label>
-            <select class="form-select" id="setting-kiosk-mode">
-              <option value="portal" ${tenant?.mode === "portal" ? "selected" : ""}>Student Educational Portal (Card Grid)</option>
-              <option value="single_url" ${tenant?.mode === "single_url" ? "selected" : ""}>Direct Single-Site Lockdown</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="setting-default-url">Direct Lockdown URL (for Single-Site Mode)</label>
-            <input type="url" class="form-input" id="setting-default-url" value="${escapeAttr(tenant?.default_url || "https://www.khanacademy.org")}">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="setting-lock-msg">Default Lock Screen Message</label>
-            <input type="text" class="form-input" id="setting-lock-msg" value="${escapeAttr(tenant?.default_lock_message || "Screens locked by the instructor. Please look to the front.")}">
-          </div>
-          <button type="submit" class="btn btn-primary">Save Profile Settings</button>
-        </form>
+          <form id="form-profile-settings">
+            <div class="form-group">
+              <label class="form-label" for="setting-organization-name">Organization Name</label>
+              <input type="text" class="form-input" id="setting-organization-name" value="${escapeAttr(tenant?.name || "")}" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="setting-kiosk-mode">Kiosk Display Mode</label>
+              <select class="form-select" id="setting-kiosk-mode">
+                <option value="portal" ${tenant?.mode === "portal" ? "selected" : ""}>User Portal (Card Grid)</option>
+                <option value="single_url" ${tenant?.mode === "single_url" ? "selected" : ""}>Direct Single-Site Lockdown</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="setting-default-url">Direct Lockdown URL (for Single-Site Mode)</label>
+              <input type="url" class="form-input" id="setting-default-url" value="${escapeAttr(tenant?.default_url || "https://www.khanacademy.org")}">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="setting-lock-msg">Default Lock Screen Message</label>
+              <input type="text" class="form-input" id="setting-lock-msg" value="${escapeAttr(tenant?.default_lock_message || "This screen has been locked by an administrator. Please wait.")}">
+            </div>
+            <button type="submit" class="btn btn-primary">Save Profile Settings</button>
+          </form>
+        </div>
+
+        <!-- Card 4: Kiosk Routing & Home Page -->
+        <div class="card" id="section-routing">
+          <h2 class="card-title">Kiosk Routing &amp; Home URL</h2>
+          <p class="card-sub">Choose where workstations navigate upon boot and when resetting.</p>
+
+          <form id="form-routing-settings">
+            <div class="form-group">
+              <label class="form-label" for="setting-home-route">Default Landing Path</label>
+              <select class="form-select" id="setting-home-route">
+                <option value="/" ${homeRoute === "/" ? "selected" : ""}>/ &mdash; the organization homepage</option>
+                <option value="/home" ${homeRoute === "/home" ? "selected" : ""}>/home &mdash; straight to the app grid</option>
+              </select>
+              <div class="form-hint">Where a workstation lands on start-up and on Reset to Portal. The homepage is a page your organization writes; the app grid is the launcher users pick a site from.</div>
+            </div>
+            <button type="submit" class="btn btn-secondary">Save Routing</button>
+          </form>
+        </div>
       </div>
+    </div>
 
-      <!-- Card 2: Subdomain Customization -->
-      <div class="card" id="section-subdomain">
-        <h2 class="card-title">School Subdomain Customization</h2>
-        <p class="card-sub">Customize your school's unique address on <code>${escapeHtml(baseDomain)}</code>.</p>
+    <!-- ============================================================== -->
+    <!-- TAB 2: DOMAINS & CONNECTIVITY                                  -->
+    <!-- ============================================================== -->
+    <div class="tab-pane" id="pane-domains">
+      <div class="grid-2col">
+        <div class="stack-cards">
+          <!-- Card 2: Subdomain Customization -->
+          <div class="card" id="section-subdomain">
+            <h2 class="card-title">Organization Subdomain Customization</h2>
+            <p class="card-sub">Customize your organization's unique address on <code>${escapeHtml(baseDomain)}</code>.</p>
 
-        <form id="form-subdomain-settings">
-          <div class="form-group">
-            <label class="form-label" for="setting-subdomain">Subdomain Slug</label>
-            <div class="form-row">
-              <input type="text" class="form-input" id="setting-subdomain" value="${escapeAttr(currentSubdomain)}" required pattern="[a-zA-Z0-9-]{3,63}">
-              <span style="font-size: 14px; color: var(--text-muted); white-space: nowrap; padding-bottom: 10px;">.${escapeHtml(baseDomain)}</span>
-            </div>
-            <div class="form-hint" style="color: #fde68a;">Notice: Changing your subdomain takes effect immediately. Previously enrolled thin clients will need to be updated with the new address.</div>
-          </div>
-          <button type="submit" class="btn btn-secondary">Update Subdomain</button>
-        </form>
-      </div>
-
-      <!-- Card 3: Custom Domain -->
-      <div class="card" id="section-custom-domain">
-        <h2 class="card-title">White-Label Custom Domain</h2>
-        <p class="card-sub">Point your own institutional domain (e.g. <code>kiosk.myschool.edu</code>) to this lab.</p>
-
-        ${
-          customDomain && customDomainStatus === "approved"
-            ? `
-            <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px;">
-              <span class="badge badge-green">ACTIVE DOMAIN</span>
-              <div style="font-size: 16px; font-weight: 700; color: #6ee7b7; margin-top: 6px; font-family: 'JetBrains Mono', monospace;">https://${escapeHtml(customDomain)}</div>
-            </div>
-            <button type="button" class="btn btn-danger" id="btn-disconnect-custom">Disconnect Custom Domain</button>
-          `
-            : customDomainStatus === "pending"
-            ? `
-            <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px;">
-              <span class="badge badge-yellow">PENDING SUPER ADMIN APPROVAL</span>
-              <div style="font-size: 15px; font-weight: 700; color: #fde68a; margin-top: 6px;">${escapeHtml(tenant?.requested_custom_domain || "")}</div>
-            </div>
-            <button type="button" class="btn btn-secondary" id="btn-cancel-custom">Cancel Request</button>
-          `
-            : `
-            <form id="form-custom-domain">
+            <form id="form-subdomain-settings">
               <div class="form-group">
-                <label class="form-label" for="setting-custom-domain">Domain Name</label>
-                <input type="text" class="form-input" id="setting-custom-domain" placeholder="e.g. lab.myschool.edu" required>
-                <div class="form-hint">Create a CNAME record in your DNS pointing to <code>${escapeHtml(baseDomain)}</code>, then submit below.</div>
+                <label class="form-label" for="setting-subdomain">Subdomain Slug</label>
+                <div class="form-row">
+                  <input type="text" class="form-input" id="setting-subdomain" value="${escapeAttr(currentSubdomain)}" required pattern="[a-zA-Z0-9-]{3,63}">
+                  <span class="input-suffix">.${escapeHtml(baseDomain)}</span>
+                </div>
+                <div class="form-hint text-warning">Changing your subdomain takes effect immediately. Previously enrolled thin clients will need to be updated with the new address.</div>
               </div>
-              <button type="submit" class="btn btn-secondary">Request Custom Domain</button>
+              <button type="submit" class="btn btn-secondary">Update Subdomain</button>
             </form>
-          `
-        }
-      </div>
-
-      <!-- Card 4: Kiosk Routing & Home Page -->
-      <div class="card" id="section-routing">
-        <h2 class="card-title">Kiosk Routing &amp; Home URL</h2>
-        <p class="card-sub">Choose where workstations navigate upon boot and when resetting.</p>
-
-        <form id="form-routing-settings">
-          <div class="form-group">
-            <label class="form-label" for="setting-home-route">Default Landing Path</label>
-            <select class="form-select" id="setting-home-route">
-              <option value="/" ${homeRoute === "/" ? "selected" : ""}>/ &mdash; the school homepage</option>
-              <option value="/home" ${homeRoute === "/home" ? "selected" : ""}>/home &mdash; straight to the app grid</option>
-            </select>
-            <div class="form-hint">Where a workstation lands on start-up and on Reset to Portal. The homepage is a page your school writes; the app grid is the launcher students pick a site from.</div>
           </div>
-          <button type="submit" class="btn btn-secondary">Save Routing</button>
-        </form>
-      </div>
 
-      <!-- Card 5: VNC & Remote Control Tunnel -->
-      <div class="card" id="section-vnc">
-        <h2 class="card-title">Remote Control &amp; VNC Tunnel</h2>
-        <p class="card-sub">Cloudflare Tunnel hostname for live classroom screen control.</p>
+          <!-- Card 5: VNC & Remote Control Tunnel -->
+          <div class="card" id="section-vnc">
+            <h2 class="card-title">Remote Control &amp; VNC Tunnel</h2>
+            <p class="card-sub">Cloudflare Tunnel hostname for live remote screen control.</p>
 
-        <form id="form-tunnel-settings">
-          <div class="form-group">
-            <label class="form-label" for="setting-tunnel-domain">Tunnel Domain</label>
-            <input type="text" class="form-input" id="setting-tunnel-domain" value="${escapeAttr(tunnelDomain)}" placeholder="e.g. lab.myschool.edu or demo.labkiosk.akbhoi.com">
-            <div class="form-hint">Thin clients forward loopback noVNC port 6080 to this tunnel egress domain.</div>
+            <form id="form-tunnel-settings">
+              <div class="form-group">
+                <label class="form-label" for="setting-tunnel-domain">Tunnel Domain</label>
+                <input type="text" class="form-input" id="setting-tunnel-domain" value="${escapeAttr(tunnelDomain)}" placeholder="e.g. remote.example.com">
+                <div class="form-hint">Thin clients forward loopback noVNC port 6080 to this tunnel egress domain.</div>
+              </div>
+              <button type="submit" class="btn btn-secondary">Update Tunnel Domain</button>
+            </form>
           </div>
-          <button type="submit" class="btn btn-secondary">Update Tunnel Domain</button>
-        </form>
-      </div>
-
-      <!-- Card 6: Workstation Enrollment Key -->
-      <div class="card" id="section-enrollment">
-        <h2 class="card-title">Workstation Enrollment Key</h2>
-        <p class="card-sub">Secret key used to securely pair thin clients to this school.</p>
-
-        <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
-          <code id="enrollment-key-display" style="font-size: 16px; font-weight: 700; color: #93c5fd; letter-spacing: 1px;">••••••••••••</code>
-          <button type="button" class="btn btn-sm btn-secondary" id="btn-reveal-key">Reveal Key</button>
         </div>
-        <button type="button" class="btn btn-danger btn-sm" id="btn-rotate-key">Rotate Enrollment Key</button>
-      </div>
 
-      <!-- Card 7: Account Security -->
-      <div class="card" id="section-homepage">
-        <h2 class="card-title">School Homepage</h2>
-        <p class="card-sub">The page at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}/</code>. Leave the headline and introduction empty to use your school name and the standard welcome line.</p>
+        <div>
+          <!-- Card 3: Custom Domain -->
+          <div class="card" id="section-custom-domain">
+            <h2 class="card-title">White-Label Custom Domain</h2>
+            <p class="card-sub">Point your own domain (e.g. <code>kiosk.example.com</code>) at this organization's console.</p>
 
-        <form id="form-homepage">
-          <div class="form-group">
-            <label class="form-label" for="homepage-headline">Headline</label>
-            <input type="text" class="form-input" id="homepage-headline" maxlength="120" placeholder="${escapeAttr(tenant?.name || "Your school")}" value="${escapeAttr(tenant?.homepage_headline || "")}">
+            ${
+              customDomain && customDomainStatus === "approved"
+                ? `
+                <div class="callout callout-success">
+                  <div>
+                    <span class="badge badge-green">Active domain</span>
+                    <div class="callout-value mono">https://${escapeHtml(customDomain)}</div>
+                  </div>
+                </div>
+                <button type="button" class="btn btn-danger" id="btn-disconnect-custom">Disconnect Custom Domain</button>
+              `
+                : customDomainStatus === "pending"
+                ? `
+                <div class="callout callout-warning">
+                  <div>
+                    <span class="badge badge-yellow">Pending platform approval</span>
+                    <div class="callout-value mono">${escapeHtml(tenant?.requested_custom_domain || "")}</div>
+                  </div>
+                </div>
+                <button type="button" class="btn btn-secondary" id="btn-cancel-custom">Cancel Request</button>
+              `
+                : `
+                <form id="form-custom-domain">
+                  <div class="form-group">
+                    <label class="form-label" for="setting-custom-domain">Domain Name</label>
+                    <input type="text" class="form-input" id="setting-custom-domain" placeholder="e.g. lab.example.com" required>
+                    <div class="form-hint">Create a CNAME record in your DNS pointing to <code>${escapeHtml(baseDomain)}</code>, then submit below.</div>
+                  </div>
+                  <button type="submit" class="btn btn-secondary">Request Custom Domain</button>
+                </form>
+              `
+            }
           </div>
-          <div class="form-group">
-            <label class="form-label" for="homepage-intro">Introduction</label>
-            <textarea class="form-textarea" id="homepage-intro" rows="2" maxlength="400" placeholder="One or two lines under the headline.">${escapeHtml(tenant?.homepage_intro || "")}</textarea>
-          </div>
-
-          <div class="sub-section-title" style="margin: 18px 0 8px;">Content Blocks</div>
-          <p class="form-hint" style="margin-bottom: 12px;">Notices, links to your own site, anything else worth saying. Up to 12.</p>
-          <div id="homepage-blocks"></div>
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-add-block" style="margin-bottom: 16px;">Add a block</button>
-
-          <div>
-            <button type="submit" class="btn btn-primary">Save Homepage</button>
-            <a class="btn btn-secondary" href="/${tenantParam}" target="_blank" rel="noopener noreferrer">Preview &rarr;</a>
-          </div>
-        </form>
-      </div>
-
-      <div class="card" id="section-activity">
-        <h2 class="card-title">Recent Lab Activity</h2>
-        <p class="card-sub">Privileged changes to this lab, including anything the platform did to it. Every one of these was already being recorded; this is the first place it can be read.</p>
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Action</th>
-                <th>Detail</th>
-              </tr>
-            </thead>
-            <tbody id="lab-audit-rows">
-              <tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 24px;">Loading\u2026</td></tr>
-            </tbody>
-          </table>
         </div>
       </div>
+    </div>
 
-      <div class="card" id="section-password">
-        <h2 class="card-title">Account Security &amp; Password</h2>
-        <p class="card-sub">Change the password for this administrative account.</p>
+    <!-- ============================================================== -->
+    <!-- TAB 3: ORGANIZATION HOMEPAGE                                         -->
+    <!-- ============================================================== -->
+    <div class="tab-pane" id="pane-homepage">
+      <form id="form-homepage">
+        <div class="grid-2col">
+          <div class="card" id="section-homepage">
+            <h2 class="card-title">Homepage Identity &amp; Welcome</h2>
+            <p class="card-sub">The welcome page at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}/</code>.</p>
 
-        <form id="form-change-password">
-          <div class="form-group">
-            <label class="form-label" for="pwd-current">Current Password</label>
-            <input type="password" class="form-input" id="pwd-current" required>
+            <div class="form-group">
+              <label class="form-label" for="homepage-headline">Headline</label>
+              <input type="text" class="form-input" id="homepage-headline" maxlength="120" placeholder="${escapeAttr(tenant?.name || "Your organization")}" value="${escapeAttr(tenant?.homepage_headline || "")}">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="homepage-intro">Introduction</label>
+              <textarea class="form-textarea" id="homepage-intro" rows="3" maxlength="400" placeholder="One or two lines under the headline.">${escapeHtml(tenant?.homepage_intro || "")}</textarea>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Save Homepage</button>
+              <a class="btn btn-secondary" href="/${tenantParam}" target="_blank" rel="noopener noreferrer">Preview &rarr;</a>
+            </div>
           </div>
-          <div class="form-group">
-            <label class="form-label" for="pwd-new">New Password (min 12 characters)</label>
-            <input type="password" class="form-input" id="pwd-new" required minlength="12">
+
+          <div class="card">
+            <h2 class="card-title">Content Blocks</h2>
+            <p class="card-sub">Notices, links to your own organization site, or user guidelines. Up to 12.</p>
+            <div id="homepage-blocks"></div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-add-block">Add a block</button>
           </div>
-          <button type="submit" class="btn btn-secondary">Change Password</button>
-        </form>
+        </div>
+      </form>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- TAB 4: SECURITY & AUDIT                                        -->
+    <!-- ============================================================== -->
+    <div class="tab-pane" id="pane-security">
+      <div class="grid-2col">
+        <div class="stack-cards">
+          <!-- Card 6: Workstation Enrollment Key -->
+          <div class="card" id="section-enrollment">
+            <h2 class="card-title">Workstation Enrollment Key</h2>
+            <p class="card-sub">Secret key used to securely pair thin clients to this organization.</p>
+
+            <div class="secret-box">
+              <code id="enrollment-key-display" class="secret-value">••••••••••••</code>
+              <button type="button" class="btn btn-sm btn-secondary" id="btn-reveal-key">Reveal Key</button>
+            </div>
+            <button type="button" class="btn btn-danger btn-sm" id="btn-rotate-key">Rotate Enrollment Key</button>
+          </div>
+
+          <!-- Card 9: Account Password -->
+          <div class="card" id="section-password">
+            <h2 class="card-title">Account Security &amp; Password</h2>
+            <p class="card-sub">Change the password for this administrative account.</p>
+
+            <form id="form-change-password">
+              <div class="form-group">
+                <label class="form-label" for="pwd-current">Current Password</label>
+                <input type="password" class="form-input" id="pwd-current" required>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="pwd-new">New Password (min 12 characters)</label>
+                <input type="password" class="form-input" id="pwd-new" required minlength="12">
+              </div>
+              <button type="submit" class="btn btn-secondary">Change Password</button>
+            </form>
+          </div>
+        </div>
+
+        <div>
+          <!-- Card 8: Recent Activity -->
+          <div class="card" id="section-activity">
+            <h2 class="card-title">Recent Activity</h2>
+            <p class="card-sub">Privileged changes to this organization, including anything the platform did to it.</p>
+            <div class="table-container table-scrollable">
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Action</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody id="lab-audit-rows">
+                  <tr><td colspan="3" class="table-empty">Loading\u2026</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -280,9 +321,57 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
 function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
+      // -------------------------------------------------------------
+      // Tab Switching Logic
+      // -------------------------------------------------------------
+      const tabMap = {
+        "section-general": "general",
+        "section-routing": "general",
+        "section-subdomain": "domains",
+        "section-custom-domain": "domains",
+        "section-vnc": "domains",
+        "section-homepage": "homepage",
+        "section-enrollment": "security",
+        "section-password": "security",
+        "section-activity": "security"
+      };
+
+      function switchTab(tabId) {
+        const validTabs = ["general", "domains", "homepage", "security"];
+        if (!validTabs.includes(tabId)) tabId = "general";
+
+        // Update Subpanel Tabs
+        const subBtns = document.querySelectorAll("#sub-tab-list .sub-action-item");
+        subBtns.forEach((btn) => {
+          btn.classList.toggle("active", btn.getAttribute("data-action") === "tab-" + tabId);
+        });
+
+        // Update Tab Panes
+        const panes = document.querySelectorAll(".tab-pane");
+        panes.forEach((pane) => {
+          pane.classList.toggle("active", pane.id === "pane-" + tabId);
+        });
+
+        // Sync URL search param without reload
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.set("tab", tabId);
+          window.history.replaceState({}, "", url.toString());
+        } catch (err) {
+          console.warn("Could not record the tab in the address:", err);
+        }
+      }
+
+      window.labkioskSwitchTab = switchTab;
+
+      // Initialize from hash or URL query param
+      const hash = window.location.hash.replace("#", "");
+      const tabFromHash = tabMap[hash];
+      const initialTab = tabFromHash || new URLSearchParams(window.location.search).get("tab") || "general";
+      switchTab(initialTab);
       document.getElementById("form-profile-settings").addEventListener("submit", async (e) => {
         e.preventDefault();
-        const name = document.getElementById("setting-school-name").value.trim();
+        const name = document.getElementById("setting-organization-name").value.trim();
         const mode = document.getElementById("setting-kiosk-mode").value;
         const defaultUrl = document.getElementById("setting-default-url").value.trim();
         const defaultLockMessage = document.getElementById("setting-lock-msg").value.trim();
@@ -309,7 +398,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         e.preventDefault();
         const subdomain = document.getElementById("setting-subdomain").value.trim().toLowerCase();
         const agreed = await lkConfirm({
-          title: "Move the lab to '" + subdomain + "'?",
+          title: "Move the organization to '" + subdomain + "'?",
           message: "The current address stops working once this is approved, and every enrolled workstation needs its configuration updated to the new one.",
           confirmLabel: "Request change"
         });
@@ -362,7 +451,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         disconnectBtn.addEventListener("click", async () => {
           const agreed = await lkConfirm({
             title: "Disconnect the custom domain?",
-            message: "The lab goes back to its subdomain address. Workstations enrolled against the custom domain will need reconfiguring.",
+            message: "The organization goes back to its subdomain address. Workstations enrolled against the custom domain will need reconfiguring.",
             confirmLabel: "Disconnect",
             tone: "danger"
           });
@@ -478,10 +567,10 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         }
       });
 
-      // ------------------------------------------------------ school homepage
+      // ------------------------------------------------------ organization homepage
       // The block list is seeded from the server and edited entirely in the DOM;
       // it is posted back whole. escapeJson, because a block carries whatever
-      // text the school typed.
+      // text the organization typed.
       const homepageBlocks = ${escapeJson(blocks)};
       const blocksHost = document.getElementById("homepage-blocks");
 
@@ -577,7 +666,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             const row = document.createElement("tr");
             const cell = document.createElement("td");
             cell.colSpan = 3;
-            cell.style.cssText = "text-align: center; color: var(--text-muted); padding: 24px;";
+            cell.className = "table-empty";
             cell.textContent = text;
             row.appendChild(cell);
             return row;
@@ -588,16 +677,25 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             const logs = Array.isArray(data.logs) ? data.logs : [];
             labAuditRows.replaceChildren();
             if (!logs.length) {
-              labAuditRows.appendChild(placeholder("Nothing recorded for this lab yet."));
+              labAuditRows.appendChild(placeholder("Nothing recorded for this organization yet."));
               return;
             }
             for (const entry of logs) {
               const row = document.createElement("tr");
 
               const when = document.createElement("td");
-              when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
+              when.className = "mono text-xs nowrap";
               const date = new Date(entry.created_at * 1000);
-              when.textContent = isNaN(date.getTime()) ? "\u2014" : date.toISOString().slice(0, 16).replace("T", " ");
+              // The viewer's own clock, not UTC: an administrator in IST reading
+              // "13:44" for something done at 19:14 has been misled.
+              const pad = (n) => String(n).padStart(2, "0");
+              if (isNaN(date.getTime())) {
+                when.textContent = "\u2014";
+              } else {
+                when.textContent = date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+                  " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+                when.title = date.toISOString();
+              }
               row.appendChild(when);
 
               const action = document.createElement("td");
@@ -605,14 +703,14 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               const removes = /suspend|reject|delete|remove|revoke|rotate/.test(entry.action);
               const grants = /approve|reactivate|create|add/.test(entry.action);
               badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
-              // textContent throughout: details carries teacher names, domains
+              // textContent throughout: details carries operator names, domains
               // and URLs that arrived from the console.
               badge.textContent = entry.action;
               action.appendChild(badge);
               row.appendChild(action);
 
               const detail = document.createElement("td");
-              detail.style.cssText = "color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere;";
+              detail.className = "text-muted text-xs cell-detail";
               detail.textContent = entry.details || "\u2014";
               row.appendChild(detail);
 

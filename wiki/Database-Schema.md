@@ -1,6 +1,6 @@
 # Database Schema
 
-Lab Kiosk stores everything durable in **Cloudflare D1** (SQLite at the edge). There are no other data stores; the worker's in-memory telemetry cache is an optimisation that may be empty at any moment.
+Lab Kiosk stores everything durable in **Cloudflare D1** (SQLite at the edge). Live state -- who is connected, the command queue, screen frames -- belongs to each organization's OrgHub Durable Object, which writes back to `client_devices` here; audit entries older than 180 days move to R2.
 
 ---
 
@@ -38,8 +38,21 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0003_custom_domains.sql` | `tenants.custom_domain`, `requested_custom_domain`, `custom_domain_status` |
 | `0004_customization_and_presets.sql` | `broadcast_presets`; `tenants.default_lock_message`, `portal_title`, `portal_subtitle`, `portal_description`, `portal_footer` |
 | `0005_broadcast_state_and_remote_control.sql` | `tenants.broadcast_url`, `broadcast_epoch`; `client_devices.vnc_password`, `remote_host` |
+| `0006_ui_catalogs.sql` | `ui_catalogs` (platform-wide interface translations) |
+| `0007_tenant_users_and_subadmins.sql` | `tenant_users` (staff delegation); `tenants.home_route`, `tunnel_domain` |
+| `0008_school_homepage.sql` | `tenants.homepage_headline`, `homepage_intro`, `homepage_blocks`; moves `home_route = '/portal'` to `/home` |
+| `0009_workstation_groups.sql` | `workstation_groups`; `client_devices.group_name` |
+| `0010_workstation_broadcast.sql` | `client_devices.broadcast_url`, `broadcast_epoch` (a broadcast or reset addressed to selected workstations) |
+| `0011_organization_vocabulary.sql` | Renames the stored roles and staff permission (`school_admin`→`org_admin`, `teacher`→`operator`, `lab_assistant`→`assistant`, `teachers`→`staff`); rebuilds the 12 tables that reference `users` cascade-safely |
+| `0012_unique_workstation_group_names.sql` | Unique index on `workstation_groups(tenant_id, name COLLATE NOCASE)`; merges existing duplicates into the oldest group first |
+| `0013_retire_demo_tenant.sql` | Deletes the single `demo` organization and all its rows (data only); the worker now creates `web-demo`, `local-demo` and `docker-demo` at startup |
+| `0014_org_hub_live_state.sql` | Drops `commands`, `command_deliveries` and `client_devices.thumbnail` (live state moved to OrgHub); adds `tenants.online_workstations`, `custom_hostname_id`, `custom_hostname_status` |
 
-Each migration exists because something concrete broke. Migration 0002 is worth reading in full: before it, anyone who guessed a subdomain could post screenshots and drain that school's command queue, the allowlist was a mutable module global shared by every tenant, and broadcast commands re-executed on every three-second heartbeat.
+Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
+
+**`0011` rebuilds tables that other tables cascade from.** D1 cannot switch foreign keys off, and `DROP TABLE` deletes a table's rows first, firing `ON DELETE CASCADE` even with foreign-key checks deferred — a naive rebuild of `users` deletes every organization. `0011` copies every row into holding tables with no foreign keys, drops leaves first, recreates parents first and copies back with explicit column lists. **Export the database before applying it in production** (`wrangler d1 export labkiosk-db --remote --output backup.sql`).
+
+Each migration exists because something concrete broke. Migration 0002 is worth reading in full: before it, anyone who guessed a subdomain could post screenshots and drain that organization's command queue, the allowlist was a mutable module global shared by every tenant, and broadcast commands re-executed on every three-second heartbeat.
 
 ---
 
@@ -47,7 +60,7 @@ Each migration exists because something concrete broke. Migration 0002 is worth 
 
 ### `users`
 
-Platform and school administrators.
+Platform and organization administrators.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |
@@ -55,13 +68,13 @@ Platform and school administrators.
 | `email` | TEXT UNIQUE | |
 | `password_hash` | TEXT | PBKDF2-HMAC-SHA256, 100 000 iterations, 256 bits, hex |
 | `salt` | TEXT | 32 random bytes, hex |
-| `role` | TEXT | `super_admin` \| `school_admin` |
+| `role` | TEXT | `super_admin` \| `org_admin` |
 | `name` | TEXT | |
 | `created_at` | INTEGER | Unix seconds |
 
 ### `tenants`
 
-One row per school. This table has accumulated the most columns because it is where a school's entire configuration lives.
+One row per organization. This table has accumulated the most columns because it is where an organization's entire configuration lives.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |
@@ -78,13 +91,19 @@ One row per school. This table has accumulated the most columns because it is wh
 | `custom_domain` | TEXT | Approved FQDN; unique index |
 | `requested_custom_domain` | TEXT | Awaiting approval |
 | `custom_domain_status` | TEXT | `none` \| `pending` \| `approved` \| `rejected` |
+| `custom_hostname_id` | TEXT | The Cloudflare for SaaS custom hostname id, once created |
+| `custom_hostname_status` | TEXT | `none` \| `pending` \| `active` \| `failed` \| `local` (no provisioning in local development) |
+| `online_workstations` | INTEGER | Kept by the organization's OrgHub, so the super admin list needs no query per organization |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
-| `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | Student portal copy |
-| `broadcast_url` | TEXT | Active synchronised lesson, or NULL |
+| `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
+| `broadcast_url` | TEXT | Active synchronised page, or NULL |
 | `broadcast_epoch` | INTEGER | Monotonic marker; `0` when no broadcast is active |
+| `home_route` | TEXT | `/` (organization homepage) or `/home` (User Portal); where workstations land |
+| `tunnel_domain` | TEXT | Per-organization Cloudflare Tunnel domain for remote control |
+| `homepage_headline` / `homepage_intro` / `homepage_blocks` | TEXT | Organization homepage copy; blocks are JSON, sanitised on the way in and escaped on the way out |
 | `created_at` / `updated_at` | INTEGER | |
 
-`broadcast_url` and `broadcast_epoch` live here rather than in worker memory because isolates are per-colocation and short-lived. When they were module-level state, workstations in different colos disagreed about the current lesson and a recycled isolate forgot the broadcast entirely.
+`broadcast_url` and `broadcast_epoch` live here rather than in worker memory because isolates are per-colocation and short-lived. When they were module-level state, workstations in different colos disagreed about the current page and a recycled isolate forgot the broadcast entirely. A broadcast sent to **selected** workstations is recorded on each of their `client_devices` rows instead; the heartbeat hands a workstation whichever of the two is newer.
 
 ### `sessions`
 
@@ -98,7 +117,7 @@ One row per school. This table has accumulated the most columns because it is wh
 
 ### `portal_sites`
 
-Student Learning Portal cards.
+User Portal cards.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |
@@ -113,7 +132,7 @@ Student Learning Portal cards.
 
 ### `client_devices`
 
-The fleet, and the source of truth behind the dashboard.
+The fleet registry. OrgHub writes it back on connect, disconnect, a change and every 5 minutes; who is online right now comes from the hub.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |
@@ -125,9 +144,11 @@ The fleet, and the source of truth behind the dashboard.
 | `last_seen` | INTEGER | Drives the online/offline indicator |
 | `is_locked` | INTEGER | |
 | `active_url` | TEXT | |
-| `thumbnail` | TEXT | Latest base64 JPEG, ≤ 256 KB |
 | `vnc_password` | TEXT | Per-boot ephemeral x11vnc secret |
 | `remote_host` | TEXT | Cloudflare Tunnel hostname for noVNC |
+| `group_name` | TEXT | Workstation group, matched by name to `workstation_groups.name`; NULL when ungrouped |
+| `broadcast_url` | TEXT | Last broadcast addressed to this workstation alone; NULL with a non-zero epoch records a reset to the portal |
+| `broadcast_epoch` | INTEGER | Orders the above against `tenants.broadcast_epoch`; the newer wins |
 | `created_at` / `updated_at` | INTEGER | |
 
 ### `device_tokens`
@@ -142,28 +163,19 @@ The fleet, and the source of truth behind the dashboard.
 
 ### `tenant_whitelist`
 
-Per-school permanent domain allowlist. `UNIQUE (tenant_id, domain)`.
+Per-organization permanent domain allowlist. `UNIQUE (tenant_id, domain)`.
 
-The *effective* allowlist a workstation receives is this table unioned with every `portal_sites.domain` and, when a broadcast is active, its host. That union is computed per heartbeat by `buildEffectiveWhitelist()` and is not stored.
+The *effective* allowlist a workstation receives is this table unioned with every `portal_sites.domain` and, when a broadcast is active, its host. That union is computed by `buildEffectiveWhitelist()`, cached by the organization's hub and pushed to workstations when it changes; it is not stored.
 
-### `commands`
+### Commands (not in D1 since `0014`)
 
-| Column | Type | Notes |
-| :--- | :--- | :--- |
-| `id` | TEXT PK | |
-| `tenant_id` | TEXT → `tenants.id` | |
-| `target` | TEXT | `"all"` or a specific `client_id` |
-| `action` | TEXT | One of the seven supported actions |
-| `payload_json` | TEXT | `url`, `message`, `epoch` |
-| `created_at` / `expires_at` | INTEGER | Rows are short-lived by design and purged opportunistically |
-
-### `command_deliveries`
-
-`PRIMARY KEY (command_id, client_id)`. A receipt per workstation per command, so a broadcast executes **exactly once** on each machine instead of on every three-second heartbeat.
+Queued commands and their per-workstation delivery receipts live in each organization's OrgHub,
+in its own SQLite (`commands`, `deliveries`). A command for `"all"` records one delivery per
+workstation, so a broadcast executes **exactly once** on each machine; commands expire after 60 s.
 
 ### `broadcast_presets`
 
-Teacher-defined quick-launch shortcuts: `id`, `tenant_id`, `title`, `url`, `created_at`.
+Operator-defined quick-launch shortcuts: `id`, `tenant_id`, `title`, `url`, `created_at`.
 
 ### `login_attempts`
 
@@ -173,6 +185,41 @@ Teacher-defined quick-launch shortcuts: `id`, `tenant_id`, `title`, `url`, `crea
 | `failed_count` | INTEGER | |
 | `last_failed_at` | INTEGER | |
 | `locked_until` | INTEGER | Exponential back-off; drives `429` |
+
+### `ui_catalogs`
+
+Interface translations for the setup wizard and kiosk bar. **No `tenant_id`, on purpose**: the text is the same for every organization, and a workstation fetches it before it is enrolled. Written only by a super admin.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `tag` | TEXT PK | BCP 47 language tag, e.g. `hi-IN` |
+| `name` / `direction` | TEXT | Display name; `ltr` or `rtl` |
+| `body` | TEXT | Sanitised flat JSON map of key to string |
+| `entry_count` | INTEGER | |
+| `updated_at` / `updated_by` | INTEGER / TEXT | |
+
+### `tenant_users`
+
+Staff accounts delegated by an organization.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT PK | |
+| `tenant_id` / `user_id` | TEXT | Unique together; both `ON DELETE CASCADE` |
+| `role` | TEXT | `org_admin` \| `sub_admin` \| `operator` \| `assistant` \| `content_manager` (default `operator`) |
+| `permissions` | TEXT | JSON array of `workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`; `*` is never stored |
+| `created_at` | INTEGER | |
+
+An `org_admin` row, or owning the organization (`tenants.user_id`), means full access. A delegate holding `staff` can grant only what they hold themselves and cannot appoint an `org_admin`.
+
+### `workstation_groups`
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT PK | |
+| `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
+| `name` | TEXT | 1–50 characters, unique per organization case-insensitively (index `idx_workstation_groups_tenant_name`; membership is by name) |
+| `created_at` | INTEGER | |
 
 ### `audit_logs`
 
@@ -198,10 +245,8 @@ idx_sessions_user_id               sessions(user_id)
 idx_sessions_expires_at            sessions(expires_at)
 idx_portal_sites_tenant            portal_sites(tenant_id, order_index)
 idx_client_devices_tenant          client_devices(tenant_id)
-idx_commands_tenant_target         commands(tenant_id, target, expires_at)
 idx_device_tokens_tenant           device_tokens(tenant_id, client_id)
 idx_tenant_whitelist_tenant        tenant_whitelist(tenant_id)
-idx_command_deliveries_client      command_deliveries(client_id, delivered_at)
 idx_broadcast_presets_tenant       broadcast_presets(tenant_id)
 idx_audit_logs_tenant              audit_logs(tenant_id, created_at)
 ```

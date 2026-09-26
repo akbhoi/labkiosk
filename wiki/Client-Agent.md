@@ -2,7 +2,7 @@
 
 `distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py` — a single-file Python 3 daemon, standard library only, that is the workstation's entire relationship with the control plane.
 
-It has three jobs: serve the local setup wizard, run the telemetry heartbeat, and execute teacher commands.
+It has three jobs: serve the local setup wizard, keep the control channel to the organization's hub open, and execute operator commands.
 
 ---
 
@@ -54,21 +54,32 @@ Environment overrides, useful in the simulator:
 
 ---
 
-## The telemetry loop
+## The control channel
 
-Every three seconds, `post_telemetry()` sends the workstation's state and receives everything it needs back. → [REST API Reference](REST-API-Reference#post-apitelemetry) for the exact payload.
+`telemetry_loop()` keeps one WebSocket open to the organization's OrgHub (`ControlChannel`,
+`GET /api/devices/ws` with the device token). The hub pushes the configuration on connect and on
+every admin change, pushes commands the moment they are dispatched, and asks for screen frames
+only while an operator has this screen on view. The agent sends its status when it changes, a
+frame every 3 s while asked, and `{"type":"ping"}` every 15 s — byte for byte, because the edge
+answers exactly that without waking the hub. → [REST API Reference](REST-API-Reference#get-apidevicesws).
+
+It needs Debian's `python3-websocket`. Without it, or when the server has no WebSocket route
+(an older Worker, or the Node development server), or after three failed connections in a row,
+the agent uses the older HTTP heartbeat for ten minutes and then tries again: every three seconds,
+`post_telemetry()` sends the same state with a thumbnail and receives the same updates back.
 
 ```text
          +-----------------------------------------------+
-         |  capture_thumbnail_base64()   scrot -t 20 -q 35 |
+         |  current_status()             url, lock, num   |
+         |  capture_thumbnail_base64()   only if watched   |
          |  read_vnc_password()          /tmp/labkiosk/…   |
          |  detect_remote_host()         cloudflared cfg   |
          +-----------------------------------------------+
                               |
-                     POST /api/telemetry
+                 WebSocket /api/devices/ws  (or POST /api/telemetry)
                      Authorization: Bearer …
                               |
-                              v
+                              v  apply_control_update()
          +-----------------------------------------------+
          |  commands[]      -> execute_command()          |
          |  whitelist[]     -> sync_chromium_policies()   |
@@ -77,9 +88,9 @@ Every three seconds, `post_telemetry()` sends the workstation's state and receiv
          +-----------------------------------------------+
 ```
 
-**Failure handling.** A failed heartbeat backs off exponentially up to `MAX_BACKOFF_SECONDS` (60), so a lab that loses its uplink does not hammer the edge, and recovers promptly when the link returns.
+**Failure handling.** A failed connection or heartbeat backs off exponentially up to `MAX_BACKOFF_SECONDS` (60), so a lab that loses its uplink does not hammer the edge, and recovers promptly when the link returns. A connection the server closed on purpose (a deploy restarts every hub) is re-opened after a random pause of up to 10 s, so a whole fleet does not return at the same instant. A close with `4001` (removed) or `4003` (organization not active), like a `401`/`403`, sends the screen to the re-enrolment form.
 
-**Thumbnails.** Captured with `scrot -t 20 -q 35` — there is **no PIL/Pillow dependency**; the agent is standard library plus `scrot`. A frame whose base64 payload exceeds `MAX_THUMBNAIL_BYTES` (256 KB) is dropped rather than sent, so an oversized capture never costs the school's uplink or delays the loop. The heartbeat still lands; only that one frame is missing.
+**Thumbnails.** Captured with `scrot -t 20 -q 35` — there is **no PIL/Pillow dependency**; the agent is standard library plus `scrot`. A frame whose base64 payload exceeds `MAX_THUMBNAIL_BYTES` (256 KB) is dropped rather than sent, so an oversized capture never costs the organization's uplink or delays the loop. The heartbeat still lands; only that one frame is missing. Over the WebSocket, no screenshot is taken at all unless an operator is watching.
 
 ---
 
@@ -108,13 +119,17 @@ Every three seconds, `post_telemetry()` sends the workstation's state and receiv
 The agent incorporates a full network management subsystem communicating with NetworkManager via `nmcli` and system sockets.
 
 ### 1. Interface & Carrier Detection (`/api/network/interfaces`)
+
 `get_interfaces()` scans network hardware (`nmcli -t -f DEVICE,TYPE,STATE dev status`), categorising adapters as `ethernet` or `wifi`. For ethernet devices, it reads `/sys/class/net/<dev>/carrier` to provide real-time feedback on physical cable plug state (`Connected` vs. `Unplugged`).
 
 ### 2. Wi-Fi Scanning (`/api/network/wifi/scan`)
+
 `scan_wifi()` triggers `nmcli -t -f SSID,BSSID,SIGNAL,SECURITY,CHAN dev wifi list`, deduplicating BSSIDs by SSID name and sorting candidates by signal percentage. Networks report encryption types (e.g. WPA2/WPA3-PSK vs. Open). Hidden networks are supported via manual SSID input.
 
 ### 3. Connection Configuration (`/api/network/configure`)
+
 `configure_network()` orchestrates NetworkManager profiles:
+
 - **Ethernet:** Deletes stale profiles on the interface and creates `Wired Connection (<dev>)`.
 - **Wi-Fi:** Configures `Wi-Fi (<ssid>)` with `802-11-wireless-security.key-mgmt wpa-psk` and PSK passphrase.
 - **IPv4:**
@@ -125,26 +140,32 @@ The agent incorporates a full network management subsystem communicating with Ne
 - **Proxy:** Saves settings to `/etc/labkiosk/proxy.json`, applies proxy exports (`http_proxy`, `https_proxy`, `no_proxy`, loopback always exempt) to the agent's own environment, and regenerates `/etc/chromium/policies/managed/policies.json` with a `ProxySettings` dictionary (`ProxyMode: "fixed_servers"`, `ProxyServer: "<host>:<port>"`, `ProxyBypassList` as a comma-separated string). On installed systems the request needs the `X-LabKiosk-Admin` token from `/api/admin/verify`.
 
 ### 4. Connectivity Probing & Caching (`/api/network/test`)
+
 `test_connectivity()` validates the connection:
+
 - DNS resolution via `socket.getaddrinfo("cloudflare.com", 443)`.
 - Direct routing reachability via socket connection to `1.1.1.1:53` and `8.8.8.8:53` (2.5s timeout).
 - **5-Second TTL Cache:** Because `/api/status` is polled once a second by the browser extension, `test_connectivity(force=False)` returns cached results to avoid socket exhaustion.
 
 ### 5. Administrator Verification (`/api/admin/verify`)
+
 Post-installation network management is locked behind `verify_admin_password()`. When `/etc/grub.d/01_labkiosk_password` exists, the agent parses the GRUB PBKDF2 line:
+
 ```text
 password_pbkdf2 <user> grub.pbkdf2.sha512.<rounds>.<salt_hex>.<hash_hex>
 ```
+
 It computes `hashlib.pbkdf2_hmac("sha512", password, salt, rounds)` and checks equality in constant time.
 
 ### 6. Polkit Permissions
+
 The agent runs as unprivileged user `kiosk`. NetworkManager commands succeed because `/etc/polkit-1/rules.d/50-labkiosk-network.rules` explicitly authorizes `org.freedesktop.NetworkManager.*` for user `kiosk`.
 
 ---
 
 ## Chromium policy synchronisation
 
-`sync_chromium_policies(new_whitelist)` merges the school's effective allowlist into `/etc/chromium/policies/managed/policies.json`.
+`sync_chromium_policies(new_whitelist)` merges the organization's effective allowlist into `/etc/chromium/policies/managed/policies.json`.
 
 The static half of that policy is declared exactly once, in `/usr/share/labkiosk/chromium-policy-base.json`. Two consumers read it and **neither may carry its own copy of those keys**:
 
@@ -227,7 +248,9 @@ It also reports **`persistentStorage`**. That is false when `/etc/labkiosk` is n
 
 `enroll()` posts to `POST /api/devices/enroll` on the control plane and, on success, writes the config file, syncs the Chromium policy, and flags a browser restart. `validate_worker_url()` and `probe_worker_url()` check the target before anything is stored, so a typo in the subdomain fails loudly at the wizard instead of producing a workstation that silently never checks in.
 
-Re-enrolment is refused with `409` while a token is present. To move a workstation to another school, decommission it from the teacher dashboard (`POST /api/clients/remove`) and reboot — on live media the config is gone with the RAM overlay; on an installed disk, clear `/etc/labkiosk/config.json`.
+The server must be `https`. Plain `http` is accepted only for a local test server: `localhost`, a loopback address, the container gateways (`host.docker.internal`, `host.containers.internal`, `*.internal`, `*.local`), or a private IPv4 literal in `10.0.0.0/8`, `172.16.0.0/12` or `192.168.0.0/16` (the set the control plane treats as a dev host). That covers a test VM reaching `pnpm dev` on its host, e.g. `http://172.31.64.1:8787` over the Hyper-V Default Switch. Public, link-local (`169.254.x.x`) and IPv6 addresses, and any hostname, still need `https`, because the device token travels in every heartbeat.
+
+Re-enrolment is refused with `409` while a token is present. To move a workstation to another organization, decommission it from the admin console (`POST /api/clients/remove`) and reboot — on live media the config is gone with the RAM overlay; on an installed disk, clear `/etc/labkiosk/config.json`.
 
 ---
 

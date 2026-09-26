@@ -7,7 +7,7 @@ set -e
 # 02-security.hook.chroot installs /etc/grub.d/01_labkiosk_password, but that is
 # only consumed by update-grub on an installed disk. The ISO's own menus come
 # from config/bootloaders/, which the chroot hooks never touch -- so until this
-# ran, a student could boot the USB, press `e`, append init=/bin/sh and get a
+# ran, a user could boot the USB, press `e`, append init=/bin/sh and get a
 # root shell before a single one of this image's protections existed.
 #
 # The generated file only sets superusers/password_pbkdf2. Every menuentry in
@@ -97,6 +97,6 @@ lb config noauto \
     --compression gzip \
     --memtest none \
     --iso-application "Lab Kiosk OS" \
-    --iso-publisher "School Computer Lab" \
+    --iso-publisher "Lab Kiosk" \
     --iso-volume "LAB_KIOSK" \
     "${@}"

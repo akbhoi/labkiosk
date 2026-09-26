@@ -23,6 +23,7 @@ The simulator closely mirrors the production live Debian 12 kiosk environment (`
 ```
 
 ### Deliberate Differences vs. Physical Hardware
+
 1. **Gateway Binding:** `websockify` binds to `0.0.0.0:6080` *inside* the container so you can view the simulated display, but the port is published only on the host's `127.0.0.1`. In the physical ISO, `websockify` binds strictly to `127.0.0.1:6080` and is reachable only through a per-workstation Cloudflare Tunnel.
 2. **Sandboxing:** the same as the real image — Chromium runs sandboxed as the unprivileged `kiosk` user. `--no-sandbox` is used only if someone starts the container as root, and the entrypoint warns when that happens.
 3. **Loopback Preservation:** The agent's local API (`127.0.0.1:8888`) remains bound to loopback inside the container, exactly as on physical hardware. You drive the setup wizard from the simulated noVNC screen rather than your host browser.
@@ -74,15 +75,18 @@ acceptable.
 > [!NOTE]
 > The simulator image is defined by the **repository-root `Dockerfile`**, not by anything in this
 > directory. There used to be a near-identical `docker-test/Dockerfile`; it drifted out of step
-> (it lost `alsa-utils`, so the teacher's "mute" command failed in that variant alone) and was
+> (it lost `alsa-utils`, so the operator's "mute" command failed in that variant alone) and was
 > removed. This directory holds the entrypoint and these docs.
 
 ### 1. Prerequisites
+
 - A rootful Docker-compatible engine with Docker Compose v2 (`docker compose`).
 - The Cloudflare Control Plane running locally (`pnpm dev` in `cloudflare-control/`) or deployed to Cloudflare Workers.
 
 ### 2. Start the Simulator
+
 From the repository root:
+
 ```bash
 docker compose up -d
 ```
@@ -104,10 +108,13 @@ docker compose up -d
 > [Interactive Development Workflows](#%EF%B8%8F-interactive-development-workflows) below.
 
 ### 3. Open the In-Browser Workstation Display
+
 Navigate to:
+
 ```text
 http://localhost:6080/vnc.html
 ```
+
 - **VNC Password:** random per container, printed in the startup log (`docker compose logs | grep "VNC password"`). Set `VNC_PASSWORD` to pin one.
 - You will see the simulated thin-client desktop rendering the **First-Boot Setup Wizard**.
 
@@ -115,20 +122,20 @@ http://localhost:6080/vnc.html
 
 ## 🎓 Simulating First-Boot Enrolment
 
-1. Open the Teacher Lab Dashboard in your host browser:
-   `http://localhost:8787/admin?tenant=demo`
+1. Sign in as the super admin and open the Docker demo's console in your host browser:
+   `http://localhost:8787/admin?tenant=docker-demo`
 2. Go to **Settings → Workstation Enrollment Key** and copy the active key.
 3. In the simulated noVNC window (`http://localhost:6080/vnc.html`):
-   - **School Subdomain:** `demo`
+   - **Organization Subdomain:** `docker-demo`
    - **Workstation Identifier:** `PC-01`
-   - **Enrollment Key:** Paste or type the key copied from the teacher dashboard.
+   - **Enrollment Key:** Paste or type the key copied from the admin console.
 4. Click **Connect & Register Workstation**.
 5. **What happens under the hood:**
    - The agent verifies credentials with `POST http://host.docker.internal:8787/api/devices/enroll`.
-   - The worker validates the key and returns a persistent device bearer token and the school's portal URL.
+   - The worker validates the key and returns a persistent device bearer token and the organization's portal URL.
    - The agent writes the initial Chromium enterprise policy (`/etc/chromium/policies/managed/policies.json`).
-   - The browser watchdog restarts Chromium once so it lands on the student learning portal under the newly written policy.
-   - The workstation appears live on the Teacher Dashboard with sub-second thumbnail telemetry!
+   - The browser watchdog restarts Chromium once so it lands on the user portal under the newly written policy.
+   - The workstation appears live on the Admin console with sub-second thumbnail telemetry!
 
 ---
 
@@ -137,28 +144,37 @@ http://localhost:6080/vnc.html
 The simulator mounts `./distro-builder/config/includes.chroot/opt/labkiosk` as a volume into `/opt/labkiosk`.
 
 ### 1. Testing Agent Updates
+
 If you modify `agent.py`:
+
 ```bash
 # Restart the agent daemon inside the container
 docker exec labkiosk-client-01 pkill -f agent.py
 ```
+
 The watchdog loop in `entrypoint.sh` will immediately relaunch `agent.py`.
 
 ### 2. Testing Browser Extension Changes
+
 Manifest V3 extensions are parsed by Chromium on browser launch. To test changes to `content.js` or `background.js`:
+
 ```bash
 # Restart Chromium
 docker exec labkiosk-client-01 pkill -f -- --user-data-dir=/tmp/chromium-profile
 ```
+
 The watchdog loop in `entrypoint.sh` will relaunch Chromium within one second with the updated extension.
 
 ### 3. Viewing Agent Logs
+
 ```bash
 docker exec labkiosk-client-01 tail -n 50 /tmp/lab-agent.log
 ```
 
 ### 4. Taking Headless Screenshots
+
 Always verify visual rendering directly on screen rather than relying solely on log outputs:
+
 ```bash
 # Capture virtual display :0 to a file inside the container
 docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
@@ -179,15 +195,17 @@ Configure these in `docker-compose.yml` or via shell exports:
 | `WORKER_URL` | `http://host.docker.internal:8787` | Target Cloudflare Worker control plane. Set to your production URL (e.g. `https://labkiosk.akbhoi.com`) to test remote staging. |
 | `LABKIOSK_DOMAIN` | `labkiosk.akbhoi.com` | Base platform domain. |
 | `VNC_PASSWORD` | random per container | Password for the local noVNC session; printed in the startup log when generated. |
-| `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional public hostname (e.g. Cloudflare Tunnel) that routes to port 6080. If set, reported to the teacher console for remote assistance. |
+| `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional public hostname (e.g. Cloudflare Tunnel) that routes to port 6080. If set, reported to the admin console for remote assistance. |
 
 ---
 
 ## 🧹 Teardown & Resetting State
 
 To completely reset the simulator back to an un-enrolled, fresh first-boot state:
+
 ```bash
 docker compose down -v
 docker compose up -d
 ```
+
 All ephemeral state in `/tmp` (browser profile, session caches, VNC secrets) is wiped on container recreation.

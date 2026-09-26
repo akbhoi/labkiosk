@@ -11,13 +11,13 @@ import {
   PortalSite,
   ClientDevice,
   HomepageBlock,
-  RemoteCommand,
-  CommandAction,
   DeviceToken,
   AuditLogEntry,
+  AuditEntryMessage,
   BroadcastPreset,
   TenantUser,
-  TenantUserRole
+  TenantUserRole,
+  WorkstationGroup
 } from "./types";
 import {
   hashPassword,
@@ -26,6 +26,7 @@ import {
   generateDeviceToken,
   generateEnrollmentKey
 } from "./auth";
+import { DEMO_SLUGS, DEMO_TENANTS, WEB_DEMO_TUNNEL_DOMAIN } from "./demo";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -33,7 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   salt TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('super_admin', 'school_admin')),
+  role TEXT NOT NULL CHECK (role IN ('super_admin', 'org_admin')),
   name TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
@@ -52,7 +53,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   custom_domain TEXT UNIQUE,
   requested_custom_domain TEXT,
   custom_domain_status TEXT NOT NULL DEFAULT 'none',
-  default_lock_message TEXT NOT NULL DEFAULT 'Screens locked by the instructor. Please look to the front.',
+  default_lock_message TEXT NOT NULL DEFAULT 'This screen has been locked by an administrator. Please wait.',
   portal_title TEXT,
   portal_subtitle TEXT,
   portal_description TEXT,
@@ -64,6 +65,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   homepage_headline TEXT,
   homepage_intro TEXT,
   homepage_blocks TEXT,
+  online_workstations INTEGER NOT NULL DEFAULT 0,
+  custom_hostname_id TEXT,
+  custom_hostname_status TEXT NOT NULL DEFAULT 'none',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -99,21 +103,13 @@ CREATE TABLE IF NOT EXISTS client_devices (
   last_seen INTEGER NOT NULL,
   is_locked INTEGER NOT NULL DEFAULT 0,
   active_url TEXT,
-  thumbnail TEXT,
   vnc_password TEXT,
   remote_host TEXT,
+  group_name TEXT,
+  broadcast_url TEXT,
+  broadcast_epoch INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS commands (
-  id TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  target TEXT NOT NULL,
-  action TEXT NOT NULL,
-  payload_json TEXT,
-  created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -141,13 +137,6 @@ CREATE TABLE IF NOT EXISTS tenant_whitelist (
   domain TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   UNIQUE (tenant_id, domain)
-);
-
-CREATE TABLE IF NOT EXISTS command_deliveries (
-  command_id TEXT NOT NULL,
-  client_id TEXT NOT NULL,
-  delivered_at INTEGER NOT NULL,
-  PRIMARY KEY (command_id, client_id)
 );
 
 CREATE TABLE IF NOT EXISTS login_attempts (
@@ -179,33 +168,40 @@ CREATE TABLE IF NOT EXISTS tenant_users (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role TEXT NOT NULL DEFAULT 'teacher' CHECK (role IN ('school_admin', 'sub_admin', 'teacher', 'lab_assistant', 'content_manager')),
+  role TEXT NOT NULL DEFAULT 'operator' CHECK (role IN ('org_admin', 'sub_admin', 'operator', 'assistant', 'content_manager')),
   permissions TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   UNIQUE (tenant_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS workstation_groups (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
-CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
 CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain_status ON tenants(custom_domain_status);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_portal_sites_tenant ON portal_sites(tenant_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_client_devices_tenant ON client_devices(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_commands_tenant_target ON commands(tenant_id, target, expires_at);
 CREATE INDEX IF NOT EXISTS idx_device_tokens_tenant ON device_tokens(tenant_id, client_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_command_deliveries_client ON command_deliveries(client_id, delivered_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_user ON tenant_users(user_id);
+CREATE INDEX IF NOT EXISTS idx_workstation_groups_tenant ON workstation_groups(tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workstation_groups_tenant_name ON workstation_groups(tenant_id, name COLLATE NOCASE);
 `;
 
 /**
- * Domains every new school starts with. Schools edit their own copy from the
+ * Domains every new organization starts with. Organizations edit their own copy from the
  * dashboard; nothing here is shared mutable state between tenants.
  */
 export const DEFAULT_WHITELIST_DOMAINS = [
@@ -323,6 +319,33 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT remote_host FROM client_devices LIMIT 1").run();
     await db.prepare("SELECT home_route FROM tenants LIMIT 1").run();
     await db.prepare("SELECT role FROM tenant_users LIMIT 1").run();
+    await db.prepare("SELECT group_name FROM client_devices LIMIT 1").run();
+    await db.prepare("SELECT name FROM workstation_groups LIMIT 1").run();
+    await db.prepare("SELECT broadcast_epoch FROM client_devices LIMIT 1").run();
+    // 0011 renamed the stored roles. A CHECK change is invisible to a column
+    // probe, so read the table definition itself.
+    const users = await db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+      .first<{ sql: string }>();
+    if (!users?.sql?.includes("'org_admin'")) {
+      throw new Error("users.role still uses the pre-0011 role names");
+    }
+    // 0012 only adds an index, which no column probe can see.
+    const groupNames = await db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_workstation_groups_tenant_name'")
+      .first<{ name: string }>();
+    if (!groupNames) {
+      throw new Error("workstation group names are not unique yet (0012)");
+    }
+    // 0014: live state moved to OrgHub; the organization carries its online count.
+    await db.prepare("SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1").run();
+    // 0013 is data only: the retired `demo` organization must be gone.
+    const retiredDemo = await db
+      .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
+      .first<{ id: string }>();
+    if (retiredDemo) {
+      throw new Error("the retired `demo` organization is still present (0013)");
+    }
   } catch (err: any) {
     throw new Error(
       "The D1 database is missing the current schema. Run `wrangler d1 migrations apply labkiosk-db --remote` (or `--local` for `wrangler dev`) before starting the worker. " +
@@ -332,36 +355,50 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
 }
 
 /**
- * Ensures a default Demonstration School tenant exists for local dev and testing
+ * Make sure each demo organization exists and belongs to the platform.
+ *
+ * A demo slug held by an organization that is not the platform's -- registered
+ * before the name was reserved -- is left exactly as it is and is not a demo:
+ * adopting it would open a real organization to the platform administrator.
+ * One owned by an earlier super admin account (the configured email changed)
+ * is still the platform's, and moves to the current one.
  */
-export async function ensureDefaultTenant(
-  db: D1Database,
-  superAdminId: string
-): Promise<Tenant> {
-  const existing = await db
-    .prepare("SELECT * FROM tenants WHERE subdomain = 'demo' LIMIT 1")
-    .first<Tenant>();
-
-  if (existing) {
-    if (!existing.tunnel_domain) {
-      await updateTenant(db, existing.id, { tunnel_domain: "demo.labkiosk.akbhoi.com" });
-      existing.tunnel_domain = "demo.labkiosk.akbhoi.com";
+export async function ensureDemoTenants(db: D1Database, superAdminId: string): Promise<Tenant[]> {
+  const demos: Tenant[] = [];
+  for (const slug of DEMO_SLUGS) {
+    const existing = await findTenantBySubdomain(db, slug);
+    if (!existing) {
+      const tenant = await createTenant(db, {
+        userId: superAdminId,
+        name: DEMO_TENANTS[slug].name,
+        subdomain: slug,
+        status: "active",
+        mode: "portal"
+      });
+      const seeded: Partial<Tenant> = { homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}` };
+      if (slug === "web-demo") seeded.tunnel_domain = WEB_DEMO_TUNNEL_DOMAIN;
+      await updateTenant(db, tenant.id, seeded);
+      demos.push({ ...tenant, ...seeded });
+      continue;
     }
-    return existing;
+    if (existing.user_id === superAdminId) {
+      demos.push(existing);
+      continue;
+    }
+    const owner = await findUserById(db, existing.user_id);
+    if (owner?.role === "super_admin") {
+      await db.prepare("UPDATE tenants SET user_id = ?, updated_at = ? WHERE id = ?")
+        .bind(superAdminId, Math.floor(Date.now() / 1000), existing.id)
+        .run();
+      demos.push({ ...existing, user_id: superAdminId });
+      continue;
+    }
+    console.error(
+      `[DB] "${slug}" belongs to an organization the platform does not own (tenant ${existing.id}); ` +
+        "it is left alone and is not a demo. Resolve it before relying on this demo."
+    );
   }
-
-  const tenant = await createTenant(db, {
-    userId: superAdminId,
-    name: "Demonstration High School",
-    subdomain: "demo",
-    status: "active",
-    mode: "portal",
-    defaultUrl: "https://www.khanacademy.org"
-  });
-
-  await updateTenant(db, tenant.id, { tunnel_domain: "demo.labkiosk.akbhoi.com" });
-  tenant.tunnel_domain = "demo.labkiosk.akbhoi.com";
-  return tenant;
+  return demos;
 }
 
 export async function findUserByEmail(db: D1Database, email: string): Promise<User | null> {
@@ -377,12 +414,12 @@ export async function findUserById(db: D1Database, id: string): Promise<User | n
 
 export async function createUser(
   db: D1Database,
-  data: { email: string; password: string; name: string; role?: "super_admin" | "school_admin" }
+  data: { email: string; password: string; name: string; role?: "super_admin" | "org_admin" }
 ): Promise<User> {
   const { hashHex, saltHex } = await hashPassword(data.password);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  const role = data.role || "school_admin";
+  const role = data.role || "org_admin";
 
   await db
     .prepare(
@@ -463,7 +500,7 @@ export async function createTenant(
   const mode = data.mode || "portal";
   const defaultUrl = data.defaultUrl || "https://www.khanacademy.org";
   const defaultLockMessage =
-    data.defaultLockMessage || "Screens locked by the instructor. Please look to the front.";
+    data.defaultLockMessage || "This screen has been locked by an administrator. Please wait.";
   const enrollmentKey = generateEnrollmentKey();
 
   await db
@@ -490,7 +527,7 @@ export async function createTenant(
     )
     .run();
 
-  // Populate default educational portal cards and the school's own allowlist
+  // Populate default educational portal cards and the organization's own allowlist
   await seedDefaultPortalSites(db, id);
   await seedDefaultWhitelist(db, id);
 
@@ -606,6 +643,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "custom_domain",
   "requested_custom_domain",
   "custom_domain_status",
+  "custom_hostname_id",
+  "custom_hostname_status",
   "default_lock_message",
   "portal_title",
   "portal_subtitle",
@@ -620,15 +659,15 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "homepage_blocks"
 ]);
 
-/** How many blocks a school may publish, and how long each part may be. */
+/** How many blocks an organization may publish, and how long each part may be. */
 export const HOMEPAGE_LIMITS = { blocks: 12, title: 120, body: 600, intro: 400, headline: 120 } as const;
 
 /**
  * Parse the stored block list.
  *
  * Anything malformed reads as an empty list rather than throwing: this is
- * rendered on the page students land on, and a homepage with no notices is a
- * far better failure than a school whose site will not load.
+ * rendered on the page users land on, and a homepage with no notices is a
+ * far better failure than an organization whose site will not load.
  */
 export function parseHomepageBlocks(raw: unknown): HomepageBlock[] {
   if (typeof raw !== "string" || !raw.trim()) return [];
@@ -729,7 +768,7 @@ export async function requestCustomDomain(
   });
 }
 
-/** Approve and assign a custom domain to a school. */
+/** Approve and assign a custom domain to an organization. */
 export async function approveCustomDomain(
   db: D1Database,
   tenantId: string,
@@ -742,7 +781,10 @@ export async function approveCustomDomain(
   await updateTenant(db, tenantId, {
     custom_domain: targetDomain,
     requested_custom_domain: null,
-    custom_domain_status: "approved"
+    custom_domain_status: "approved",
+    // Cloudflare for SaaS provisioning starts now (custom_hostnames.ts).
+    custom_hostname_id: null,
+    custom_hostname_status: "pending"
   });
 }
 
@@ -754,12 +796,14 @@ export async function rejectCustomDomain(db: D1Database, tenantId: string): Prom
   });
 }
 
-/** Remove an active custom domain from a school. */
+/** Remove an active custom domain from an organization. */
 export async function removeCustomDomain(db: D1Database, tenantId: string): Promise<void> {
   await updateTenant(db, tenantId, {
     custom_domain: null,
     requested_custom_domain: null,
-    custom_domain_status: "none"
+    custom_domain_status: "none",
+    custom_hostname_id: null,
+    custom_hostname_status: "none"
   });
 }
 
@@ -805,13 +849,13 @@ export async function createTenantUser(
       email,
       name: data.name.trim(),
       password: data.password || crypto.randomUUID().slice(0, 16) + "Aa1!",
-      role: "school_admin"
+      role: "org_admin"
     });
   }
 
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  const role: TenantUserRole = data.role || "teacher";
+  const role: TenantUserRole = data.role || "operator";
   const permissions = data.permissions || [];
   const permissionsJson = JSON.stringify(permissions);
 
@@ -862,6 +906,18 @@ export async function updateTenantUser(
     .prepare(`UPDATE tenant_users SET ${fields.join(", ")} WHERE id = ? AND tenant_id = ?`)
     .bind(...values)
     .run();
+}
+
+/** One staff row of this organization by its own id, or null. */
+export async function findTenantUserById(
+  db: D1Database,
+  tenantId: string,
+  id: string
+): Promise<{ id: string; user_id: string; role: TenantUserRole } | null> {
+  return await db
+    .prepare("SELECT id, user_id, role FROM tenant_users WHERE id = ? AND tenant_id = ? LIMIT 1")
+    .bind(id, tenantId)
+    .first<{ id: string; user_id: string; role: TenantUserRole }>();
 }
 
 export async function deleteTenantUser(db: D1Database, tenantId: string, id: string): Promise<void> {
@@ -916,7 +972,7 @@ export async function getTenantUserPermissions(
     .first<{ role?: string; permissions: string }>();
 
   if (!row) return [];
-  if (row.role === "school_admin") {
+  if (row.role === "org_admin") {
     return ["*"];
   }
   try {
@@ -929,17 +985,15 @@ export async function getTenantUserPermissions(
 export async function listAllTenants(
   db: D1Database
 ): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>> {
-  const now = Math.floor(Date.now() / 1000);
   const res = await db
     .prepare(
       `SELECT t.*, u.email as admin_email, u.name as admin_name,
-              (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id AND (? - cd.last_seen) < 15) as online_clients,
+              t.online_workstations as online_clients,
               (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id) as total_clients
        FROM tenants t
        JOIN users u ON t.user_id = u.id
        ORDER BY t.created_at DESC`
     )
-    .bind(now)
     .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>();
 
   return res.results || [];
@@ -1072,55 +1126,107 @@ export async function deletePortalSite(
     .run();
 }
 
-export async function upsertClientDevice(
-  db: D1Database,
-  data: {
-    tenantId: string;
-    clientId: string;
-    clientNum?: number;
-    ip?: string;
-    isLocked?: boolean;
-    activeUrl?: string;
-    thumbnail?: string;
-    vncPassword?: string;
-    remoteHost?: string;
-  }
-): Promise<void> {
-  const compositeId = `${data.tenantId}:${data.clientId}`;
-  const now = Math.floor(Date.now() / 1000);
-  const isLockedVal = data.isLocked ? 1 : 0;
-  const clientNum = data.clientNum || 1;
+/** A workstation's registry row as its organization's OrgHub writes it back. */
+export interface DeviceRegistryRow {
+  tenantId: string;
+  clientId: string;
+  clientNum: number;
+  ip: string;
+  isLocked: boolean;
+  activeUrl: string | null;
+  vncPassword: string | null;
+  remoteHost: string | null;
+  /** Unix seconds. */
+  lastSeen: number;
+}
 
+/**
+ * Write workstations' last known state to their registry rows, creating a row
+ * for a workstation seen for the first time.
+ *
+ * Only OrgHub calls this, and only when something changed, a machine connected
+ * or left, or a row is five minutes old -- never per heartbeat. Group membership
+ * and per-workstation broadcast state are left alone: people set those.
+ */
+export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryRow[]): Promise<void> {
+  if (!rows.length) return;
+  const now = Math.floor(Date.now() / 1000);
+  const statement = db.prepare(
+    `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password, remote_host, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       client_num = excluded.client_num,
+       ip = excluded.ip,
+       last_seen = excluded.last_seen,
+       is_locked = excluded.is_locked,
+       active_url = COALESCE(excluded.active_url, client_devices.active_url),
+       vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
+       remote_host = COALESCE(excluded.remote_host, client_devices.remote_host),
+       updated_at = excluded.updated_at`
+  );
+  await db.batch(
+    rows.map((row) =>
+      statement.bind(
+        `${row.tenantId}:${row.clientId}`,
+        row.tenantId,
+        row.clientId,
+        row.clientNum,
+        row.ip || null,
+        row.lastSeen,
+        row.isLocked ? 1 : 0,
+        row.activeUrl,
+        row.vncPassword,
+        row.remoteHost,
+        now,
+        now
+      )
+    )
+  );
+}
+
+/** Per-workstation broadcasts an organization has recorded, for OrgHub's configuration cache. */
+export async function listDeviceBroadcasts(
+  db: D1Database,
+  tenantId: string
+): Promise<Map<string, { url: string | null; epoch: number }>> {
+  const res = await db
+    .prepare("SELECT client_id, broadcast_url, broadcast_epoch FROM client_devices WHERE tenant_id = ? AND broadcast_epoch > 0")
+    .bind(tenantId)
+    .all<{ client_id: string; broadcast_url: string | null; broadcast_epoch: number }>();
+  const map = new Map<string, { url: string | null; epoch: number }>();
+  for (const row of res.results || []) {
+    map.set(row.client_id, { url: row.broadcast_url, epoch: Number(row.broadcast_epoch) || 0 });
+  }
+  return map;
+}
+
+/** The number of workstations online, as the organization's OrgHub last counted it. */
+export async function setTenantOnlineCount(db: D1Database, tenantId: string, online: number): Promise<void> {
+  await db
+    .prepare("UPDATE tenants SET online_workstations = ? WHERE id = ?")
+    .bind(Math.max(0, Math.floor(online)), tenantId)
+    .run();
+}
+
+/**
+ * Record a broadcast, or a reset to the portal (`url` null), for these
+ * workstations. The epoch orders it against the organization-wide broadcast: the
+ * heartbeat hands a workstation whichever of the two is newer.
+ */
+export async function setClientsBroadcast(
+  db: D1Database,
+  tenantId: string,
+  clientIds: string[],
+  url: string | null,
+  epoch: number
+): Promise<void> {
+  if (!clientIds.length) return;
+  const placeholders = clientIds.map(() => "?").join(",");
   await db
     .prepare(
-      `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, thumbnail, vnc_password, remote_host, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         client_num = excluded.client_num,
-         ip = excluded.ip,
-         last_seen = excluded.last_seen,
-         is_locked = excluded.is_locked,
-         active_url = excluded.active_url,
-         thumbnail = COALESCE(excluded.thumbnail, client_devices.thumbnail),
-         vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
-         remote_host = COALESCE(excluded.remote_host, client_devices.remote_host),
-         updated_at = excluded.updated_at`
+      `UPDATE client_devices SET broadcast_url = ?, broadcast_epoch = ? WHERE tenant_id = ? AND client_id IN (${placeholders})`
     )
-    .bind(
-      compositeId,
-      data.tenantId,
-      data.clientId,
-      clientNum,
-      data.ip || null,
-      now,
-      isLockedVal,
-      data.activeUrl || null,
-      data.thumbnail || null,
-      data.vncPassword || null,
-      data.remoteHost || null,
-      now,
-      now
-    )
+    .bind(url, epoch, tenantId, ...clientIds)
     .run();
 }
 
@@ -1147,111 +1253,70 @@ export async function deleteClientDevice(
     .run();
 }
 
-export async function enqueueCommand(
+export async function listWorkstationGroups(
   db: D1Database,
-  data: {
-    tenantId: string;
-    target: string;
-    action: CommandAction;
-    url?: string;
-    message?: string;
-    epoch?: number;
-  }
-): Promise<string> {
-  const id = crypto.randomUUID();
-  const now = Math.floor(Date.now() / 1000);
-  const expiresAt = now + 60; // 60s command TTL
-  const payloadJson = JSON.stringify({ url: data.url, message: data.message, epoch: data.epoch });
+  tenantId: string
+): Promise<WorkstationGroup[]> {
+  const res = await db
+    .prepare("SELECT * FROM workstation_groups WHERE tenant_id = ? ORDER BY name ASC")
+    .bind(tenantId)
+    .all<WorkstationGroup>();
 
-  await db
-    .prepare(
-      `INSERT INTO commands (id, tenant_id, target, action, payload_json, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(id, data.tenantId, data.target, data.action, payloadJson, now, expiresAt)
-    .run();
-
-  return id;
+  return res.results || [];
 }
 
-/**
- * Drain the commands a workstation has not yet seen.
- *
- * Broadcast commands (`target: "all"`) stay queued until they expire so a client
- * that was offline at dispatch time still receives them, but a delivery receipt
- * per (command, client) guarantees each workstation executes one exactly once.
- * Previously every client re-ran a broadcast on all ~20 heartbeats within the
- * 60s TTL, so a single "Broadcast URL" spawned ~20 browser launches per PC.
- */
-export async function popCommandsForClient(
+export async function createWorkstationGroup(
   db: D1Database,
   tenantId: string,
-  clientId: string
-): Promise<RemoteCommand[]> {
+  name: string
+): Promise<WorkstationGroup> {
+  const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  const rows = await db
-    .prepare(
-      `SELECT c.* FROM commands c
-       WHERE c.tenant_id = ?
-         AND (c.target = 'all' OR c.target = ?)
-         AND c.expires_at > ?
-         AND NOT EXISTS (
-           SELECT 1 FROM command_deliveries d
-           WHERE d.command_id = c.id AND d.client_id = ?
-         )
-       ORDER BY c.created_at ASC`
-    )
-    .bind(tenantId, clientId, now, clientId)
-    .all<any>();
+  await db
+    .prepare("INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES (?, ?, ?, ?)")
+    .bind(id, tenantId, name, now)
+    .run();
 
-  const commands: RemoteCommand[] = [];
-
-  for (const row of rows.results || []) {
-    let payload: { url?: string; message?: string } = {};
-    if (row.payload_json) {
-      try {
-        payload = JSON.parse(row.payload_json);
-      } catch (err) {
-        console.warn(`[DB] Discarding malformed payload for command ${row.id}:`, err);
-      }
-    }
-
-    commands.push({
-      id: row.id,
-      target: row.target,
-      action: row.action as CommandAction,
-      url: payload.url,
-      message: payload.message,
-      epoch: (payload as any).epoch,
-      timestamp: row.created_at
-    });
-
-    await db
-      .prepare(
-        "INSERT OR IGNORE INTO command_deliveries (command_id, client_id, delivered_at) VALUES (?, ?, ?)"
-      )
-      .bind(row.id, clientId, now)
-      .run();
-
-    // A unicast command has exactly one recipient, so it can retire immediately.
-    if (row.target === clientId) {
-      await db.prepare("DELETE FROM commands WHERE id = ?").bind(row.id).run();
-    }
-  }
-
-  return commands;
+  return { id, tenant_id: tenantId, name, created_at: now };
 }
 
-/** Remove expired commands and the delivery receipts that referenced them. */
-export async function purgeExpiredCommands(db: D1Database): Promise<void> {
+export async function deleteWorkstationGroup(
+  db: D1Database,
+  tenantId: string,
+  groupId: string
+): Promise<boolean> {
+  const group = await db
+    .prepare("SELECT name FROM workstation_groups WHERE id = ? AND tenant_id = ?")
+    .bind(groupId, tenantId)
+    .first<{ name: string }>();
+  if (!group) return false;
+
+  await db.batch([
+    db
+      .prepare("UPDATE client_devices SET group_name = NULL WHERE tenant_id = ? AND group_name = ?")
+      .bind(tenantId, group.name),
+    db
+      .prepare("DELETE FROM workstation_groups WHERE id = ? AND tenant_id = ?")
+      .bind(groupId, tenantId)
+  ]);
+  return true;
+}
+
+export async function assignClientsToGroup(
+  db: D1Database,
+  tenantId: string,
+  clientIds: string[],
+  groupName: string | null
+): Promise<void> {
+  if (!clientIds.length) return;
+  const placeholders = clientIds.map(() => "?").join(",");
   const now = Math.floor(Date.now() / 1000);
   await db
     .prepare(
-      "DELETE FROM command_deliveries WHERE command_id IN (SELECT id FROM commands WHERE expires_at <= ?)"
+      `UPDATE client_devices SET group_name = ?, updated_at = ? WHERE tenant_id = ? AND client_id IN (${placeholders})`
     )
-    .bind(now)
+    .bind(groupName, now, tenantId, ...clientIds)
     .run();
-  await db.prepare("DELETE FROM commands WHERE expires_at <= ?").bind(now).run();
 }
 
 // ============================================================
@@ -1389,8 +1454,8 @@ export async function removeWhitelistDomain(
 }
 
 /**
- * The complete set of domains a workstation may reach: the school's own
- * allowlist plus the hostnames of every app card on its student portal, plus
+ * The complete set of domains a workstation may reach: the organization's own
+ * allowlist plus the hostnames of every app card on its user portal, plus
  * any configured single-site lockdown domain, plus custom broadcast shortcuts.
  */
 export async function buildEffectiveWhitelist(db: D1Database, tenantId: string): Promise<string[]> {
@@ -1431,7 +1496,7 @@ export async function buildEffectiveWhitelist(db: D1Database, tenantId: string):
  * Interface catalogs.
  *
  * Platform assets rather than tenant data: the wizard and the kiosk bar say the
- * same thing to every school, so there is no tenant_id to scope by and nothing
+ * same thing to every organization, so there is no tenant_id to scope by and nothing
  * tenant-specific may be stored here. Only a super admin writes them; every
  * workstation reads them, including before it is enrolled.
  */
@@ -1531,43 +1596,119 @@ export async function deleteBroadcastPreset(
 // AUDIT LOG
 // ============================================================
 
+/**
+ * Where audit entries go. With the AUDIT_QUEUE binding (production) they are
+ * queued and written to D1 in batches by the queue consumer; without it (tests,
+ * local development) they are inserted directly. Set once per isolate from the
+ * Worker's environment by `useAuditQueue`.
+ */
+let auditQueue: Queue<AuditEntryMessage> | null = null;
+
+export function useAuditQueue(queue: Queue<AuditEntryMessage> | null | undefined): void {
+  auditQueue = queue ?? null;
+}
+
 export async function writeAuditLog(
   db: D1Database,
   entry: { tenantId?: string | null; userId?: string | null; action: string; details?: string }
 ): Promise<void> {
+  const message: AuditEntryMessage = {
+    id: crypto.randomUUID(),
+    tenantId: entry.tenantId || null,
+    userId: entry.userId || null,
+    action: entry.action,
+    details: entry.details || null,
+    createdAt: Math.floor(Date.now() / 1000)
+  };
   try {
-    await db
-      .prepare(
-        "INSERT INTO audit_logs (id, tenant_id, user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-      )
-      .bind(
-        crypto.randomUUID(),
-        entry.tenantId || null,
-        entry.userId || null,
-        entry.action,
-        entry.details || null,
-        Math.floor(Date.now() / 1000)
-      )
-      .run();
+    if (auditQueue) {
+      await auditQueue.send(message);
+      return;
+    }
+    await insertAuditEntries(db, [message]);
   } catch (err) {
     // Auditing must never break the operation it records, but a failure to
-    // record is itself worth surfacing in the worker logs.
+    // record is itself worth surfacing in the worker logs. A queue that cannot
+    // be reached falls back to writing the entry directly.
     console.error("[DB] Failed writing audit log:", err);
+    if (auditQueue) {
+      try {
+        await insertAuditEntries(db, [message]);
+      } catch (fallbackErr) {
+        console.error("[DB] Direct audit write failed too:", fallbackErr);
+      }
+    }
   }
+}
+
+/**
+ * Insert audit entries in one statement. Idempotent on the entry id, because a
+ * queue may deliver a batch again after a consumer failure.
+ */
+export async function insertAuditEntries(db: D1Database, entries: AuditEntryMessage[]): Promise<void> {
+  if (!entries.length) return;
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO audit_logs (id, tenant_id, user_id, action, details, created_at)
+       SELECT json_extract(value, '$.id'), json_extract(value, '$.tenantId'), json_extract(value, '$.userId'),
+              json_extract(value, '$.action'), json_extract(value, '$.details'), json_extract(value, '$.createdAt')
+       FROM json_each(?)`
+    )
+    .bind(JSON.stringify(entries))
+    .run();
+}
+
+/** How long audit entries stay in D1 before they are archived to R2. */
+export const AUDIT_RETENTION_DAYS = 180;
+/** Entries archived per run; the hourly cron works through a backlog. */
+const AUDIT_ARCHIVE_BATCH = 5000;
+
+/**
+ * Move audit entries older than the retention period from D1 into R2, as one
+ * NDJSON file per run, and delete them from D1 only once the file is stored.
+ * Returns how many entries were archived.
+ */
+export async function archiveOldAuditLogs(
+  db: D1Database,
+  bucket: R2Bucket,
+  now = Math.floor(Date.now() / 1000)
+): Promise<number> {
+  const cutoff = now - AUDIT_RETENTION_DAYS * 86400;
+  const res = await db
+    .prepare("SELECT * FROM audit_logs WHERE created_at < ? ORDER BY created_at ASC LIMIT ?")
+    .bind(cutoff, AUDIT_ARCHIVE_BATCH)
+    .all<AuditLogEntry>();
+  const rows = res.results || [];
+  if (!rows.length) return 0;
+
+  const first = new Date(rows[0].created_at * 1000).toISOString().slice(0, 10);
+  const key = `audit/${first.slice(0, 4)}/${first}-${rows[0].id}.ndjson`;
+  await bucket.put(key, rows.map((row) => JSON.stringify(row) + "\n").join(""), {
+    httpMetadata: { contentType: "application/x-ndjson" }
+  });
+
+  const ids = rows.map((row) => row.id);
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const slice = ids.slice(i, i + 90);
+    statements.push(db.prepare(`DELETE FROM audit_logs WHERE id IN (${slice.map(() => "?").join(",")})`).bind(...slice));
+  }
+  await db.batch(statements);
+  return rows.length;
 }
 
 /**
  * The platform action history, for the super admin console.
  *
  * Two kinds of entry qualify, and both were unreadable before this: rows with
- * no tenant at all (a catalog upload is not any school's business, and
+ * no tenant at all (a catalog upload is not any organization's business, and
  * `listAuditLogs` filters `tenant_id = ?`, so nothing could ever list them),
- * and rows a super admin wrote against a school -- approving a subdomain,
+ * and rows a super admin wrote against an organization -- approving a subdomain,
  * suspending a lab.
  *
- * It deliberately cannot reach a school's own activity. Rule 2 keeps super
- * admins out of school data, so the second clause matches on who acted, never
- * on which school was acted upon.
+ * It deliberately cannot reach an organization's own activity. Rule 2 keeps super
+ * admins out of organization data, so the second clause matches on who acted, never
+ * on which organization was acted upon.
  */
 export async function listPlatformAuditLogs(db: D1Database, limit = 100): Promise<AuditLogEntry[]> {
   const res = await db

@@ -3,19 +3,19 @@
 Lab Kiosk Local Agent
 
 Responsibilities:
-  * First-boot enrolment against the school's Cloudflare Worker.
+  * First-boot enrolment against the organization's Cloudflare Worker.
   * Screen thumbnail telemetry and remote command execution.
-  * Synchronising the school's domain allowlist into Chromium managed policies.
+  * Synchronising the organization's domain allowlist into Chromium managed policies.
   * A loopback-only HTTP API for the setup wizard and the browser extension.
 
 Security notes:
   * The local API binds to 127.0.0.1 only. It used to listen on 0.0.0.0 with a
-    wildcard CORS header, which let any device on the school network re-point a
+    wildcard CORS header, which let any device on the organization network re-point a
     workstation at a different control plane or inject keystrokes into it.
   * Telemetry is authenticated with a per-device bearer token obtained by
-    exchanging the school's enrollment key once, at enrolment.
+    exchanging the organization's enrollment key once, at enrolment.
   * There is no built-in control-plane URL. An unconfigured workstation talks to
-    nobody until a teacher completes the setup wizard.
+    nobody until an operator completes the setup wizard.
 """
 
 import json
@@ -39,7 +39,14 @@ except ImportError:
 import hashlib
 import hmac
 import ipaddress
+import random
 import secrets
+try:
+    # Debian's python3-websocket (websocket-client). Without it the agent keeps
+    # to the HTTP heartbeat, which every control plane still answers.
+    import websocket
+except ImportError:
+    websocket = None
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -54,7 +61,7 @@ MAX_LOG_BYTES = 64 * 1024
 # The log lives on /tmp, which is a tmpfs -- so it is RAM, on machines with as
 # little as 2 GB of it. The agent is at its most talkative exactly when a
 # workstation is left running with something wrong (a pulled cable logs on every
-# probe), so an append-only file is a slow leak that ends in a classroom.
+# probe), so an append-only file is a slow leak that ends in a room.
 # Trimmed in place rather than rotated: the autostart owns the file through a
 # ">>" redirect, and renaming it would leave the shell writing to an inode
 # nobody can read any more.
@@ -72,7 +79,7 @@ LOCALIZATION_CONFIG_FILE = "/etc/labkiosk/localization.json"
 LOCALIZATION_HELPER = "/usr/local/sbin/labkiosk-localization"
 LOCALIZATION_TIMEOUT_SECONDS = 60
 # en-US ships in the image; every other catalog is dropped onto the data
-# partition, which is how a school adds its language without a new ISO.
+# partition, which is how an organization adds its language without a new ISO.
 UI_LANGUAGE_DIR = "/opt/labkiosk/i18n"
 UI_LANGUAGE_EXTRA_DIR = "/etc/labkiosk/i18n"
 UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}\Z")
@@ -84,6 +91,7 @@ CATALOG_MAX_KEYS = 2000
 CATALOG_MAX_VALUE = 2000
 GRUB_PASSWORD_FILE = "/etc/grub.d/01_labkiosk_password"
 WIZARD_HTML_FILE = "/opt/labkiosk/setup/wizard.html"
+BLOCKED_HTML_FILE = "/opt/labkiosk/setup/blocked.html"
 CHROMIUM_POLICY_FILE = "/etc/chromium/policies/managed/policies.json"
 # The single declaration of the static Chromium policy. The ISO build generates
 # the boot-time policies.json from this same file (01-lockdown.hook.chroot), so
@@ -104,7 +112,7 @@ DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.akbhoi.com")
 
 # Remote control. The Openbox autostart (and the simulator's entrypoint) writes
 # the plaintext x11vnc password it generated for this boot here, mode 600, so
-# the agent can hand it to the teacher console over the authenticated
+# the agent can hand it to the admin console over the authenticated
 # telemetry channel. The tunnel hostname comes from LABKIOSK_REMOTE_HOST or, on
 # the real image, from the first ingress hostname in cloudflared's config.
 VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
@@ -116,10 +124,40 @@ LOCAL_API_PORT = 8888
 HEARTBEAT_SECONDS = 3
 MAX_BACKOFF_SECONDS = 60
 # Upper bound on the base64 thumbnail in one heartbeat. At a 3-second cadence an
-# unbounded screenshot is a standing egress cost on a school's uplink, and the
+# unbounded screenshot is a standing egress cost on an organization's uplink, and the
 # control plane documents this ceiling; a frame over budget is dropped rather
 # than sent, so the heartbeat itself always gets through.
 MAX_THUMBNAIL_BYTES = 256 * 1024
+
+# The control channel. A workstation holds one WebSocket to its organization's
+# hub instead of posting a heartbeat every 3 seconds: the hub pushes the
+# allowlist, the broadcast and commands the moment they change, and asks for
+# screen frames only while an operator has this screen on view. The ping must
+# be byte-for-byte the hub's auto-response request -- the edge answers it
+# without waking the hub, which is what makes an idle workstation free.
+WEBSOCKET_PING = '{"type":"ping"}'
+WEBSOCKET_PING_SECONDS = 15
+# Nothing heard for this long (not even a pong) means the connection is dead.
+WEBSOCKET_SILENCE_SECONDS = 45
+WEBSOCKET_CONNECT_TIMEOUT_SECONDS = 10
+# How long one receive waits before the loop sends what is due.
+WEBSOCKET_POLL_SECONDS = 0.5
+# Connections the server ended on purpose (a deploy restarts every hub) are
+# re-opened after a random pause up to this, so a whole fleet does not return at once.
+WEBSOCKET_RECONNECT_SECONDS = 10
+# A control plane that answers the upgrade with one of these has no WebSocket
+# route (an older Worker, or the Node development server): use HTTP for a while.
+WEBSOCKET_UNSUPPORTED_STATUSES = (404, 426, 501)
+# Connections that fail this many times in a row (a proxy that drops upgrades)
+# also fall back to HTTP; nothing may leave a workstation without a control channel.
+WEBSOCKET_FAILURES_BEFORE_HTTP = 3
+WEBSOCKET_RETRY_SECONDS = 600
+# Close codes the hub uses (org_hub.ts).
+WS_CLOSE_REPLACED = 4000
+WS_CLOSE_REMOVED = 4001
+WS_CLOSE_INACTIVE = 4003
+WS_CLOSE_STALE = 4008
+FRAME_INTERVAL_BOUNDS = (1, 60)
 
 # Hosts that may appear in a workerUrl in addition to a public https origin.
 LOCAL_WORKER_HOSTS = {
@@ -167,7 +205,7 @@ LOOPBACK_NO_PROXY = ("localhost", "127.0.0.1", "::1")
 NMCLI_TIMEOUT_SECONDS = 15
 # A heartbeat that reached the control plane this recently proves the
 # workstation is online even where the generic probes below are firewalled
-# (schools that force all traffic through a proxy commonly block both).
+# (organizations that force all traffic through a proxy commonly block both).
 ONLINE_HEARTBEAT_WINDOW_SECONDS = 20
 
 state = {
@@ -179,7 +217,7 @@ state = {
     "customDomain": "",
     "isConfigured": False,
     "isLocked": False,
-    "lockMessage": "Screens locked by the instructor. Please look to the front.",
+    "lockMessage": "This screen has been locked by an administrator. Please wait.",
     "targetUrl": SETUP_URL,
     "broadcastUrl": "",
     "broadcastEpoch": 0,
@@ -193,7 +231,17 @@ state = {
     "pendingBrowserRestart": False,
     # time.monotonic() of the last heartbeat the control plane accepted.
     "lastHeartbeatOk": 0.0,
+    # The control plane refused this workstation's device token (the
+    # organization was deleted, or the workstation removed). The screen is sent
+    # to the wizard's re-enrolment form rather than left on a page Chromium
+    # blocks, which is a page the kiosk bar cannot appear on.
+    "enrolmentRejected": False,
 }
+REENROL_URL = "http://127.0.0.1:8888/setup#reenrol"
+# Set by an enrolment so the heartbeat runs at once instead of finishing a
+# back-off (up to MAX_BACKOFF_SECONDS after a rejected token): until that
+# heartbeat brings the new allowlist, the new home page is itself blocked.
+heartbeat_wakeup = threading.Event()
 state_lock = threading.Lock()
 
 
@@ -252,8 +300,51 @@ def log(message):
 # Configuration
 # --------------------------------------------------------------------------
 
+def is_private_ip_literal(hostname):
+    """
+    True for a loopback or RFC 1918 address written as an IP literal.
+
+    This is the same set the control plane treats as a dev host (isDevHost() in
+    guard.ts): the machine running `pnpm dev`, reached from a test VM or the
+    simulator by its LAN or Hyper-V/WSL adapter address (e.g. 172.31.64.1). A
+    public address, a link-local one or a hostname never qualifies, so plain
+    http cannot be pointed at anything off the local network.
+    """
+    try:
+        address = ipaddress.ip_address(str(hostname or "").strip("[]"))
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    return address.version == 4 and any(
+        address in ipaddress.ip_network(block)
+        for block in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    )
+
+
+def organization_name(reply, fallback):
+    """
+    The organization's display name from an enrolment reply.
+
+    Workers older than the organization vocabulary send it as `schoolName`, so
+    that key is still read; `fallback` (the subdomain or custom domain the
+    operator typed) covers a reply with neither.
+    """
+    for key in ("organizationName", "schoolName"):
+        value = reply.get(key) if isinstance(reply, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
 def validate_worker_url(candidate):
-    """Accept only an https origin, or a loopback/container host for local testing."""
+    """
+    Accept only an https origin, or plain http to a local test server.
+
+    Plain http is for development only: a loopback or container host, or a
+    private IP literal (see is_private_ip_literal). An organization's real server is
+    always https, and the device token travels in every heartbeat.
+    """
     if not candidate:
         return None
     cand = candidate if candidate.startswith(("http://", "https://")) else f"https://{candidate}"
@@ -267,6 +358,7 @@ def validate_worker_url(candidate):
         parsed.hostname in LOCAL_WORKER_HOSTS
         or parsed.hostname.endswith(".internal")
         or parsed.hostname.endswith(".local")
+        or is_private_ip_literal(parsed.hostname)
     )
     if parsed.scheme == "https" or (parsed.scheme == "http" and is_local):
         return f"{parsed.scheme}://{parsed.netloc}"
@@ -279,7 +371,7 @@ def safe_navigable_url(candidate):
 
     Everything the control plane sends eventually reaches window.location in the
     browser, so a javascript: or data: value arriving as a targetUrl would run in
-    whatever page the student is on. navigate_to() already checked this for
+    whatever page the user is on. navigate_to() already checked this for
     broadcast commands; this makes the same check reusable for the values that
     arrive on the telemetry response and at enrolment.
     """
@@ -567,7 +659,7 @@ def save_config(payload):
     except OSError as err:
         raise RuntimeError(
             f"could not save the enrolment to {CONFIG_FILE} ({err.strerror}). "
-            f"{describe_config_dir()} The school has already registered this "
+            f"{describe_config_dir()} The organization has already registered this "
             "workstation, so enrol again once the permission is corrected."
         ) from err
 
@@ -648,7 +740,7 @@ def available_ui_languages():
     Interface languages this workstation can display.
 
     A catalog is <tag>.json; en-US is the source and ships in the image. The
-    rest are added by dropping files into /etc/labkiosk/i18n, so a school can
+    rest are added by dropping files into /etc/labkiosk/i18n, so an organization can
     add its own language without rebuilding the ISO.
     """
     languages = {}
@@ -711,7 +803,7 @@ def validate_catalog(document):
 
 def remote_languages():
     """
-    Interface languages the school's control plane offers.
+    Interface languages the organization's control plane offers.
 
     Only meaningful once the workstation is enrolled and online, which is why
     this is a separate call and not part of the options the wizard opens with.
@@ -853,8 +945,8 @@ def configure_localization(data):
         # out again -- the helper is root and may not even reach the display.
         relock_keyboard(keymap, keymap_variant)
 
-    # Accept-Language is what actually changes which version of a lesson site a
-    # school gets, so the browser is told as well as the system.
+    # Accept-Language is what actually changes which version of a page site a
+    # organization gets, so the browser is told as well as the system.
     sync_chromium_policies(cached_whitelist or [], force=True)
     os.environ.pop("TZ", None)
     time.tzset()
@@ -926,7 +1018,7 @@ def apply_saved_localization():
 
 def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_domain=None):
     """
-    Exchange the school's enrollment key for this workstation's device token.
+    Exchange the organization's enrollment key for this workstation's device token.
 
     This is also what makes the wizard's "Verify & Connect" button honest: a
     wrong subdomain or key is reported here instead of being written to disk and
@@ -941,7 +1033,7 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
 
     base_url = validate_worker_url(candidate)
     if not base_url:
-        raise ValueError("The school address is not a valid server URL.")
+        raise ValueError("The organization address is not a valid server URL.")
 
     base_url = probe_worker_url(base_url)
     payload = {
@@ -1013,8 +1105,15 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
         state["deviceToken"] = token
         state["targetUrl"] = config["targetUrl"]
         state["isConfigured"] = True
+        # A re-enrolment starts clean: the previous organization's broadcast or
+        # lock does not carry over.
+        state["enrolmentRejected"] = False
+        state["broadcastUrl"] = ""
+        state["broadcastEpoch"] = 0
+        state["isLocked"] = False
 
         state["pendingBrowserRestart"] = True
+    heartbeat_wakeup.set()
 
     log(f"Enrolled {config['clientId']} with {config['subdomain'] or config['customDomain']}")
     persistent = enrolment_is_persistent()
@@ -1024,7 +1123,7 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
             "so this enrolment lives in RAM and will be gone at the next reboot.")
     return {
         "status": "ok",
-        "schoolName": data.get("schoolName", subdomain or custom_domain),
+        "organizationName": organization_name(data, subdomain or custom_domain),
         "clientId": config["clientId"],
         "targetUrl": config["targetUrl"],
         # The wizard shows this instead of a plain success: the workstation is
@@ -1035,7 +1134,7 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
             + (f"a {mounted_fstype(os.path.dirname(CONFIG_FILE))} mount in RAM"
                if mounted_fstype(os.path.dirname(CONFIG_FILE))
                else "not the persistent data partition")
-            + ", so the school address and the device token are only in memory "
+            + ", so the organization address and the device token are only in memory "
               "and will be gone after the next reboot. Reinstall from a current "
               "Lab Kiosk ISO to fix it."
         ),
@@ -1234,7 +1333,7 @@ def apply_proxy_to_environment(cfg):
 
     open_url() builds its opener per request, so a change here applies to the
     very next heartbeat. Loopback is always exempt: the local worker used in
-    development must never be sent through a school proxy.
+    development must never be sent through an organization proxy.
     """
     names = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY")
     for name in names:
@@ -1855,7 +1954,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
     def _is_local_caller(self):
         """
-        Reject cross-origin calls from a page the student navigated to.
+        Reject cross-origin calls from a page the user navigated to.
 
         The socket already only accepts loopback connections, but the kiosk
         browser itself is a loopback client, so a hostile page could otherwise
@@ -1888,7 +1987,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         Binding to 127.0.0.1 stops packets from the network but not DNS
         rebinding: a page on an attacker's domain whose name briefly resolves to
-        127.0.0.1 reaches this server through the student's own browser with an
+        127.0.0.1 reaches this server through the user's own browser with an
         Origin the checks above never see on a GET. Such a request still carries
         the attacker's hostname in Host, so that is what is checked here.
         """
@@ -1927,6 +2026,20 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 self._send(500, b"<h1>Setup wizard unavailable</h1>", "text/html; charset=utf-8")
             return
 
+        if self.path.split("?", 1)[0] == "/blocked":
+            # Where the extension sends a page the managed policy blocked.
+            # Chromium's own block page is chrome-error://, which no extension
+            # runs on, so the kiosk bar -- and with it the network status and
+            # the way back -- could never appear there. This page is on the
+            # agent's origin, where the bar does.
+            try:
+                with open(BLOCKED_HTML_FILE, "rb") as handle:
+                    self._send(200, handle.read(), "text/html; charset=utf-8")
+            except OSError as err:
+                log(f"Blocked-page notice missing at {BLOCKED_HTML_FILE}: {err}")
+                self._send(500, b"<h1>This site is not allowed on this workstation</h1>", "text/html; charset=utf-8")
+            return
+
         if self.path == "/api/status":
             live = is_live_session()
             online = test_connectivity()["ok"]
@@ -1943,6 +2056,10 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "broadcastEpoch": state.get("broadcastEpoch", 0),
                         "reloadEpoch": state.get("reloadEpoch", 0),
                         "isConfigured": state["isConfigured"],
+                        # True once the control plane refuses this workstation's
+                        # device token; the wizard then offers to register again.
+                        "enrolmentRejected": state["enrolmentRejected"],
+                        "organization": state["subdomain"] or state["customDomain"],
                         "baseDomain": DEFAULT_BASE_DOMAIN,
                         "isLive": live,
                         "isInstalled": not live,
@@ -1963,7 +2080,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         if self.path.split("?", 1)[0] == "/api/log":
             # Same gate as changing the network: on an installed workstation a
-            # student must not be able to read it, but during setup, and on live
+            # user must not be able to read it, but during setup, and on live
             # media, it has to be reachable before anything is configured.
             if admin_auth_required() and not has_admin_session(self.headers.get(ADMIN_TOKEN_HEADER, "")):
                 self._send(401, {"error": "Administrator authentication is required"})
@@ -2069,8 +2186,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/setup":
             with state_lock:
                 already = state["isConfigured"]
-            if already:
-                self._send(409, {"error": "This workstation is already enrolled."})
+            # Registering again replaces the enrolment, so on an installed
+            # workstation it takes the administrator password, like changing its
+            # network. It used to be refused outright, which left a workstation
+            # whose organization was deleted with no way back but a reinstall.
+            if already and admin_auth_required() and not has_admin_session(self.headers.get(ADMIN_TOKEN_HEADER, "")):
+                self._send(401, {"error": "Administrator authentication is required to register this workstation again"})
                 return
 
             data = self._read_json()
@@ -2088,7 +2209,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 self._send(
                     400,
                     {
-                        "error": "School subdomain or custom domain, workstation name, and enrollment key are all required."
+                        "error": "Organization subdomain or custom domain, workstation name, and enrollment key are all required."
                     },
                 )
                 return
@@ -2185,7 +2306,7 @@ class LocalApiServer(ThreadingHTTPServer):
     /api/install/disks shells out with a 10 s timeout. On the single-threaded
     HTTPServer this blocked every other request for that whole window, and the
     browser extension polls /api/status once a second to drive the lock curtain
-    -- so a teacher's "lock screens" could arrive up to ten seconds late with
+    -- so an operator's "lock screens" could arrive up to ten seconds late with
     nothing in the log to explain it.
     """
 
@@ -2236,7 +2357,7 @@ def load_policy_base():
 
 def sync_chromium_policies(new_whitelist, force=False):
     """
-    Write the school's allowlist into Chromium's managed enterprise policy.
+    Write the organization's allowlist into Chromium's managed enterprise policy.
 
     `force` rewrites the policy even when the allowlist is unchanged, which is
     how a proxy change made in the setup wizard reaches the browser.
@@ -2286,7 +2407,7 @@ def sync_chromium_policies(new_whitelist, force=False):
     policy_data = load_policy_base()
     if policy_data is None:
         # Fail closed: overwriting the managed policy with a partial document
-        # would drop URLBlocklist and hand the student an unfiltered browser.
+        # would drop URLBlocklist and hand the user an unfiltered browser.
         log(
             f"REFUSING to update Chromium policy: {CHROMIUM_POLICY_BASE_FILE} is "
             "unreadable, so the blocklist cannot be reproduced. The browser keeps "
@@ -2295,7 +2416,7 @@ def sync_chromium_policies(new_whitelist, force=False):
         return
 
     # The interface language the operator chose, and the locale's own language,
-    # are what a school website uses to decide which translation to serve.
+    # are what an organization website uses to decide which translation to serve.
     localization = load_localization_config()
     accept = []
     for tag in (str(localization.get("uiLanguage", "")), str(localization.get("locale", ""))):
@@ -2313,7 +2434,7 @@ def sync_chromium_policies(new_whitelist, force=False):
     policy_data["URLAllowlist"] = list(dict.fromkeys(allowlist))
 
     # Chromium bypasses loopback on its own, so the agent's API and the setup
-    # wizard stay reachable however the school proxy is configured.
+    # wizard stay reachable however the organization proxy is configured.
     proxy_cfg = load_proxy_config()
     if proxy_cfg["enabled"]:
         proxy_settings = {"ProxyMode": "fixed_servers", "ProxyServer": proxy_server_address(proxy_cfg)}
@@ -2343,14 +2464,15 @@ def sync_chromium_policies(new_whitelist, force=False):
 # Screen capture & command execution
 # --------------------------------------------------------------------------
 
-def restart_browser():
+def restart_browser(reason="to apply the new policy"):
     """
     Ask the kiosk watchdog to relaunch Chromium.
 
     The watchdog loop in the Openbox autostart (and in the Docker simulator's
     entrypoint) relaunches the browser whenever it exits, re-reading the agent's
     current target URL, so terminating it is how the agent applies a new policy
-    or a new home page.
+    or a new home page. Before every launch it deletes BROWSER_PROFILE_DIR and
+    the disk cache, so every restart is also a fresh, signed-out session.
     """
     # Match on the kiosk profile directory rather than on the flags as written:
     # Debian's `chromium` wrapper re-orders arguments and re-execs
@@ -2361,7 +2483,7 @@ def restart_browser():
     try:
         result = subprocess.run(["pkill", "-f", "--", pattern], check=False)
         if result.returncode == 0:
-            log("Restarting the browser to apply the new policy")
+            log(f"Restarting the browser {reason}")
         else:
             log(f"No running kiosk browser matched {pattern}; nothing to restart")
     except OSError as err:
@@ -2440,6 +2562,16 @@ def execute_command(cmd_data):
         run_x11(["systemctl", "reboot"])
     elif action == "shutdown":
         run_x11(["systemctl", "poweroff"])
+    elif action == "clear-session":
+        # The end of a session: sign every user out without a reboot.
+        # Ending Chromium is enough, because the kiosk watchdog deletes the
+        # profile (cookies, saved sign-ins, history, local storage, IndexedDB,
+        # service workers) and the disk cache before it relaunches, and the
+        # in-memory HTTP auth cache and X clipboard die with the process. The
+        # relaunch opens the page this workstation is assigned. The wipe stays
+        # in the watchdog on purpose: deleting the profile from here while
+        # Chromium still has it open would race its own writes.
+        restart_browser("to clear the session (profile and cache are wiped before relaunch)")
     elif action == "mute":
         # Plain ALSA: the image ships alsa-utils and no sound server.
         run_x11(["amixer", "-q", "set", "Master", "mute"])
@@ -2448,7 +2580,7 @@ def execute_command(cmd_data):
 
 
 def navigate_to(new_url, epoch=0):
-    """Point the kiosk browser at a teacher-supplied URL."""
+    """Point the kiosk browser at an operator-supplied URL."""
     if not new_url:
         return
     parsed = urlparse(str(new_url))
@@ -2463,8 +2595,8 @@ def navigate_to(new_url, epoch=0):
         state["broadcastEpoch"] = now_epoch
         state["isLocked"] = False
 
-    # Make sure the lesson's host is allowed right away, without dropping the
-    # rest of the school's allowlist until the next heartbeat replaces it.
+    # Make sure the page's host is allowed right away, without dropping the
+    # rest of the organization's allowlist until the next heartbeat replaces it.
     sync_chromium_policies(sorted(set(cached_whitelist or []) | {parsed.hostname.lower()}))
     log(f"Broadcast navigation set to {new_url} (epoch {now_epoch})")
 
@@ -2473,27 +2605,33 @@ def navigate_to(new_url, epoch=0):
 # Telemetry loop
 # --------------------------------------------------------------------------
 
+def current_status():
+    """What the console shows about this workstation, minus the screen."""
+    with state_lock:
+        status = {
+            "clientNum": state["clientNum"],
+            "activeUrl": state["targetUrl"],
+            "isLocked": state["isLocked"],
+        }
+    # Remote-control details, sent only when the workstation actually has them
+    # so the control plane keeps whatever it already knows otherwise.
+    vnc_password = read_vnc_password()
+    if vnc_password:
+        status["vncPassword"] = vnc_password
+    remote_host = detect_remote_host()
+    if remote_host:
+        status["remoteHost"] = remote_host
+    return status
+
+
 def post_telemetry():
     """One heartbeat. Returns the decoded response, or raises on failure."""
     with state_lock:
         worker_url = state["workerUrl"]
         token = state["deviceToken"]
-        payload = {
-            "clientNum": state["clientNum"],
-            "activeUrl": state["targetUrl"],
-            "isLocked": state["isLocked"],
-        }
 
+    payload = current_status()
     payload["thumbnail"] = capture_thumbnail_base64()
-
-    # Remote-control details, sent only when the workstation actually has them
-    # so the control plane keeps whatever it already knows otherwise.
-    vnc_password = read_vnc_password()
-    if vnc_password:
-        payload["vncPassword"] = vnc_password
-    remote_host = detect_remote_host()
-    if remote_host:
-        payload["remoteHost"] = remote_host
 
     request = Request(
         f"{worker_url}/api/telemetry",
@@ -2509,86 +2647,386 @@ def post_telemetry():
         return json.loads(response.read().decode("utf-8"))
 
 
+def mark_enrolment_rejected():
+    """
+    React, once, to the control plane refusing this workstation's device token.
+
+    Logging it was all this did, which left the kiosk on its old home page with
+    no allowlist -- after a reboot Chromium blocks that page outright, and a
+    blocked page is one the kiosk bar can never appear on. So the screen goes to
+    the wizard's re-enrolment form instead, which the boot-time policy always
+    allows. The enrolment on disk is kept: the token needs replacing either way,
+    and a mistaken refusal on the server must not wipe a healthy workstation.
+    """
+    with state_lock:
+        if state["enrolmentRejected"]:
+            return False
+        state["enrolmentRejected"] = True
+        state["targetUrl"] = REENROL_URL
+        state["broadcastUrl"] = ""
+        state["broadcastEpoch"] = 0
+        state["isLocked"] = False
+        organization = state["subdomain"] or state["customDomain"]
+    log(
+        f"The control plane rejected this workstation's device token for {organization or 'its organization'} "
+        "(the organization or this workstation may have been removed). "
+        "Showing the re-enrolment form; registering again needs the administrator password."
+    )
+    restart_browser("to show the re-enrolment form")
+    return True
+
+
+def clear_enrolment_rejected():
+    """A heartbeat was accepted again (typically right after re-enrolling)."""
+    with state_lock:
+        was = state["enrolmentRejected"]
+        state["enrolmentRejected"] = False
+    if was:
+        log("The control plane accepts this workstation's device token again.")
+
+
+def control_plane_reached():
+    """The control plane answered: the workstation is online whatever the generic probes say."""
+    with state_lock:
+        state["lastHeartbeatOk"] = time.monotonic()
+
+
+def apply_control_update(data):
+    """
+    Apply what the control plane says this workstation should be doing.
+
+    One shape, whichever way it arrived: the reply to an HTTP heartbeat and the
+    hub's "config" message carry the same allowlist, target and broadcast.
+    """
+    if not isinstance(data, dict):
+        log(f"Ignoring an update from the control plane that is not an object: {type(data).__name__}")
+        return
+
+    if "whitelist" in data:
+        sync_chromium_policies(data["whitelist"])
+
+    new_target = safe_navigable_url(data.get("targetUrl"))
+    if "targetUrl" in data and data["targetUrl"] and not new_target:
+        log(f"Ignoring an unusable targetUrl from the control plane: {data['targetUrl']!r}")
+    if new_target:
+        with state_lock:
+            worker_url = state["workerUrl"]
+            sub = state["subdomain"]
+        if worker_url:
+            parsed_worker = urlparse(worker_url)
+            if (parsed_worker.hostname in LOCAL_WORKER_HOSTS or parsed_worker.scheme == "http") and "tenant=" in new_target:
+                new_target = f"{worker_url}/?tenant={sub}"
+        with state_lock:
+            old_target = state["targetUrl"]
+            if old_target != new_target:
+                state["targetUrl"] = new_target
+                log(f"Target URL updated from {old_target} to {new_target}")
+
+    srv_epoch = data.get("broadcastEpoch")
+    if srv_epoch is not None and (isinstance(srv_epoch, bool) or not isinstance(srv_epoch, int)):
+        log(f"Ignoring an unusable broadcastEpoch from the control plane: {srv_epoch!r}")
+    elif srv_epoch:
+        with state_lock:
+            local_epoch = state["broadcastEpoch"]
+            if srv_epoch > local_epoch:
+                state["broadcastEpoch"] = srv_epoch
+                state["broadcastUrl"] = safe_navigable_url(data.get("broadcastUrl"))
+                log(f"Synced broadcast epoch {srv_epoch} from control plane")
+    elif srv_epoch == 0:
+        with state_lock:
+            state["broadcastEpoch"] = 0
+            state["broadcastUrl"] = ""
+
+    # Apply a just-completed enrolment to the running browser.
+    with state_lock:
+        needs_restart = state["pendingBrowserRestart"]
+        state["pendingBrowserRestart"] = False
+    if needs_restart:
+        restart_browser()
+
+    commands = data.get("commands", [])
+    if isinstance(commands, list):
+        for command in commands:
+            if isinstance(command, dict):
+                execute_command(command)
+
+
+def http_heartbeat():
+    """One HTTP heartbeat. Returns "ok", "rejected" or "error"."""
+    try:
+        data = post_telemetry()
+    except HTTPError as err:
+        if err.code in (401, 403):
+            mark_enrolment_rejected()
+            return "rejected"
+        log(f"Telemetry rejected with HTTP {err.code}")
+        return "error"
+    except (URLError, TimeoutError, socket.timeout, ValueError, OSError) as err:
+        log(f"Telemetry error: {err}")
+        return "error"
+    clear_enrolment_rejected()
+    control_plane_reached()
+    apply_control_update(data)
+    return "ok"
+
+
+# How one WebSocket session ended, which decides what the loop does next.
+SESSION_ENDED = "ended"              # it worked, then closed: reconnect soon
+SESSION_FAILED = "failed"            # could not connect, or was replaced: back off
+SESSION_REJECTED = "rejected"        # the token was refused: re-enrolment form, back off
+SESSION_UNSUPPORTED = "unsupported"  # no WebSocket route: use HTTP for a while
+
+
+def websocket_url(worker_url):
+    """The hub's address for this worker: ws:// beside http://, wss:// beside https://."""
+    parsed = urlparse(worker_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return f"{scheme}://{parsed.netloc}/api/devices/ws"
+
+
+def websocket_proxy_options(cfg):
+    """The saved proxy in websocket-client's terms, or nothing when there is none."""
+    if not cfg.get("enabled"):
+        return {}
+    bypass = [item for item in cfg.get("bypass", "").split(",") if item]
+    return {
+        "http_proxy_host": cfg["host"],
+        "http_proxy_port": int(cfg["port"]),
+        "http_no_proxy": list(LOOPBACK_NO_PROXY) + bypass,
+        "proxy_type": "http",
+    }
+
+
+def open_control_channel():
+    """Connect to the hub. Returns (socket, None), or (None, how the attempt ended)."""
+    # This connection uses the enrolment as it is now; only a later one should
+    # make ControlChannel.run() reconnect.
+    heartbeat_wakeup.clear()
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    try:
+        ws = websocket.create_connection(
+            websocket_url(worker_url),
+            timeout=WEBSOCKET_CONNECT_TIMEOUT_SECONDS,
+            header=[f"Authorization: Bearer {token}", "User-Agent: LabKioskAgent/2.2.0"],
+            suppress_origin=True,
+            **websocket_proxy_options(load_proxy_config()),
+        )
+    except websocket.WebSocketBadStatusException as err:
+        status = getattr(err, "status_code", 0)
+        if status in (401, 403):
+            mark_enrolment_rejected()
+            return None, SESSION_REJECTED
+        if status in WEBSOCKET_UNSUPPORTED_STATUSES:
+            log(f"The control plane has no WebSocket route (HTTP {status}); using the HTTP heartbeat.")
+            return None, SESSION_UNSUPPORTED
+        log(f"The control plane refused the WebSocket with HTTP {status}")
+        return None, SESSION_FAILED
+    except (websocket.WebSocketException, OSError, ValueError) as err:
+        log(f"Could not open the control channel: {err}")
+        return None, SESSION_FAILED
+    return ws, None
+
+
+class ControlChannel:
+    """
+    One open WebSocket to the organization's hub.
+
+    Single-threaded on purpose: every receive waits at most
+    WEBSOCKET_POLL_SECONDS, and between receives the loop sends whatever is
+    due -- the ping, a changed status, a frame an operator is watching.
+    """
+
+    def __init__(self, ws, clock=time.monotonic):
+        self.ws = ws
+        self.clock = clock
+        now = clock()
+        self.last_heard = now
+        self.next_ping = now + WEBSOCKET_PING_SECONDS
+        self.next_status_check = now
+        self.last_status = None
+        # Seconds between frames while a console is watching; 0 when nobody is.
+        self.frame_interval = 0
+        self.next_frame = now
+
+    def run(self):
+        """Serve the connection until it ends; returns a SESSION_* outcome."""
+        clear_enrolment_rejected()
+        control_plane_reached()
+        self.ws.settimeout(WEBSOCKET_POLL_SECONDS)
+        while True:
+            if heartbeat_wakeup.is_set():
+                # A new enrolment: its token and organization need a new connection.
+                heartbeat_wakeup.clear()
+                log("Reconnecting the control channel for the new enrolment.")
+                return SESSION_ENDED
+            outcome = self.receive() or self.tick()
+            if outcome:
+                return outcome
+
+    def receive(self):
+        try:
+            opcode, data = self.ws.recv_data()
+        except (websocket.WebSocketTimeoutException, socket.timeout):
+            return None
+        except websocket.WebSocketConnectionClosedException:
+            log("The control channel was closed.")
+            return SESSION_ENDED
+        except (websocket.WebSocketException, OSError, ValueError) as err:
+            log(f"The control channel failed: {err}")
+            return SESSION_ENDED
+        self.last_heard = self.clock()
+        control_plane_reached()
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            return self.closed(data)
+        if opcode == websocket.ABNF.OPCODE_TEXT:
+            self.handle(data.decode("utf-8", "replace") if isinstance(data, bytes) else data)
+        return None
+
+    def closed(self, data):
+        code = int.from_bytes(data[:2], "big") if len(data) >= 2 else 1005
+        reason = data[2:].decode("utf-8", "replace")
+        if code in (WS_CLOSE_REMOVED, WS_CLOSE_INACTIVE):
+            log(f"The control plane closed the channel: {reason or code}")
+            mark_enrolment_rejected()
+            return SESSION_REJECTED
+        log(f"The control plane closed the channel ({code}{': ' + reason if reason else ''}).")
+        # Another connection for this workstation took over: do not fight it.
+        return SESSION_FAILED if code == WS_CLOSE_REPLACED else SESSION_ENDED
+
+    def handle(self, text):
+        try:
+            message = json.loads(text)
+        except ValueError as err:
+            log(f"Ignoring a control message that is not JSON: {err}")
+            return
+        if not isinstance(message, dict):
+            log("Ignoring a control message that is not an object.")
+            return
+        kind = message.get("type")
+        if kind == "pong":
+            return
+        if kind == "config":
+            apply_control_update(message)
+        elif kind == "commands":
+            apply_control_update({"commands": message.get("commands", [])})
+        elif kind == "frames":
+            self.set_frames(message)
+        else:
+            log(f"Ignoring an unknown control message: {str(kind)[:40]!r}")
+
+    def set_frames(self, message):
+        low, high = FRAME_INTERVAL_BOUNDS
+        try:
+            interval = int(message.get("intervalSeconds", HEARTBEAT_SECONDS))
+        except (TypeError, ValueError):
+            interval = HEARTBEAT_SECONDS
+        interval = min(max(interval, low), high)
+        if message.get("on") is True:
+            if not self.frame_interval:
+                self.next_frame = self.clock()
+                log("An operator is watching this screen; sending frames.")
+            self.frame_interval = interval
+        elif self.frame_interval:
+            self.frame_interval = 0
+            log("Nobody is watching this screen; frames stopped.")
+
+    def send(self, text):
+        try:
+            self.ws.send(text)
+            return True
+        except (websocket.WebSocketException, OSError) as err:
+            log(f"The control channel failed while sending: {err}")
+            return False
+
+    def tick(self):
+        """Send what is due. Returns a SESSION_* outcome when the connection is over."""
+        now = self.clock()
+        if now - self.last_heard > WEBSOCKET_SILENCE_SECONDS:
+            log(f"Nothing heard from the control plane for {WEBSOCKET_SILENCE_SECONDS} s; reconnecting.")
+            return SESSION_ENDED
+        if now >= self.next_ping:
+            self.next_ping = now + WEBSOCKET_PING_SECONDS
+            if not self.send(WEBSOCKET_PING):
+                return SESSION_ENDED
+        if now >= self.next_status_check:
+            self.next_status_check = now + 1
+            status = current_status()
+            if status != self.last_status:
+                if not self.send(json.dumps({"type": "status", **status})):
+                    return SESSION_ENDED
+                self.last_status = status
+        if self.frame_interval and now >= self.next_frame:
+            self.next_frame = now + self.frame_interval
+            frame = capture_thumbnail_base64()
+            if frame and not self.send(json.dumps({"type": "frame", "thumbnail": frame})):
+                return SESSION_ENDED
+        return None
+
+
+def websocket_session():
+    """Open the control channel and serve it until it ends."""
+    ws, outcome = open_control_channel()
+    if ws is None:
+        return outcome
+    log("Control channel open.")
+    try:
+        return ControlChannel(ws).run()
+    finally:
+        try:
+            ws.close()
+        except (websocket.WebSocketException, OSError) as err:
+            log(f"Closing the control channel: {err}")
+
+
 def telemetry_loop():
+    """
+    Keep this workstation in touch with its control plane.
+
+    A WebSocket when the image has websocket-client and the server has the
+    route; the HTTP heartbeat every 3 seconds otherwise, and for a while after
+    the WebSocket keeps failing. Both apply the same updates, and both send a
+    refused workstation to the re-enrolment form.
+    """
     backoff = HEARTBEAT_SECONDS
-    revoked_notified = False
+    failures = 0
+    websocket_after = 0.0
 
     while True:
         with state_lock:
             configured = state["isConfigured"]
 
         if not configured:
-            # Nothing to report until a teacher completes the wizard.
+            # Nothing to report until an operator completes the wizard.
             time.sleep(HEARTBEAT_SECONDS)
             continue
 
-        try:
-            data = post_telemetry()
-            backoff = HEARTBEAT_SECONDS
-            revoked_notified = False
-            with state_lock:
-                state["lastHeartbeatOk"] = time.monotonic()
-
-            if "whitelist" in data:
-                sync_chromium_policies(data["whitelist"])
-
-            new_target = safe_navigable_url(data.get("targetUrl"))
-            if "targetUrl" in data and data["targetUrl"] and not new_target:
-                log(f"Ignoring an unusable targetUrl from the control plane: {data['targetUrl']!r}")
-            if new_target:
-                with state_lock:
-                    worker_url = state["workerUrl"]
-                    sub = state["subdomain"]
-                if worker_url:
-                    parsed_worker = urlparse(worker_url)
-                    if (parsed_worker.hostname in LOCAL_WORKER_HOSTS or parsed_worker.scheme == "http") and "tenant=" in new_target:
-                        new_target = f"{worker_url}/?tenant={sub}"
-                with state_lock:
-                    old_target = state["targetUrl"]
-                    if old_target != new_target:
-                        state["targetUrl"] = new_target
-                        log(f"Target URL updated from {old_target} to {new_target}")
-
-            if "broadcastEpoch" in data and data["broadcastEpoch"]:
-                srv_epoch = int(data["broadcastEpoch"])
-                with state_lock:
-                    local_epoch = state["broadcastEpoch"]
-                    if srv_epoch > local_epoch:
-                        state["broadcastEpoch"] = srv_epoch
-                        state["broadcastUrl"] = safe_navigable_url(data.get("broadcastUrl"))
-                        log(f"Synced broadcast epoch {srv_epoch} from control plane")
-            elif "broadcastEpoch" in data and data["broadcastEpoch"] == 0:
-                with state_lock:
-                    state["broadcastEpoch"] = 0
-                    state["broadcastUrl"] = ""
-
-            # Apply a just-completed enrolment to the running browser.
-            with state_lock:
-                needs_restart = state["pendingBrowserRestart"]
-                state["pendingBrowserRestart"] = False
-            if needs_restart:
-                restart_browser()
-
-            for command in data.get("commands", []):
-                execute_command(command)
-
-        except HTTPError as err:
-            if err.code in (401, 403):
-                if not revoked_notified:
-                    log(
-                        "The control plane rejected this workstation's device token "
-                        "(it may have been decommissioned). Re-enrolment is required."
-                    )
-                    revoked_notified = True
-                backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+        if websocket is not None and time.monotonic() >= websocket_after:
+            outcome = websocket_session()
+            failures = failures + 1 if outcome == SESSION_FAILED else 0
+            if outcome == SESSION_UNSUPPORTED or failures >= WEBSOCKET_FAILURES_BEFORE_HTTP:
+                if outcome == SESSION_FAILED:
+                    log("The control channel keeps failing; using the HTTP heartbeat for now.")
+                failures = 0
+                websocket_after = time.monotonic() + WEBSOCKET_RETRY_SECONDS
+                backoff = HEARTBEAT_SECONDS
+                continue
+            if outcome == SESSION_ENDED:
+                wait = random.uniform(1, WEBSOCKET_RECONNECT_SECONDS)
+                backoff = HEARTBEAT_SECONDS
             else:
-                log(f"Telemetry rejected with HTTP {err.code}")
                 backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
-        except (URLError, TimeoutError, socket.timeout, ValueError, OSError) as err:
-            log(f"Telemetry error: {err}")
-            backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+                wait = backoff * random.uniform(0.5, 1)
+        else:
+            result = http_heartbeat()
+            backoff = HEARTBEAT_SECONDS if result == "ok" else min(backoff * 2, MAX_BACKOFF_SECONDS)
+            wait = backoff
 
-        time.sleep(backoff)
+        if heartbeat_wakeup.wait(wait):
+            heartbeat_wakeup.clear()
+            backoff = HEARTBEAT_SECONDS
+            websocket_after = 0.0
 
 
 def main():

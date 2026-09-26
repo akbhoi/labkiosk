@@ -1,7 +1,7 @@
 # LabKiosk Cloudflare Control Plane — AI Agent Codex
 
 > **Scope:** This document is the authoritative architectural specification and coding standard for the **Cloudflare Workers Control Plane**, Cloudflare D1 database, Web Crypto authentication, edge routing, multi-tenant scoping, and HTML/UI generation.
-> For the client Debian 12 operating system and installer, refer to [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md). For master cross-cutting contracts, refer to the root [`AGENTS.md`](../AGENTS.md).
+> For the client Debian 12 operating system and installer, refer to [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md). For the global invariants, see the root [`AGENTS.md`](../AGENTS.md); the client ↔ Worker contracts (telemetry, enrolment, commands, broadcast state, remote control) are in [`.agents/skills/labkiosk-core/SKILL.md`](../.agents/skills/labkiosk-core/SKILL.md).
 
 ---
 
@@ -9,35 +9,47 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0007)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0014)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
-├── wrangler.jsonc                      # Routes, D1 binding, hourly cron trigger
+├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), hourly cron
+├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
 ├── src/
-│   ├── index.ts                        # Edge router, REST APIs, telemetry cache, scheduled()
+│   ├── index.ts                        # Edge router, REST APIs, scheduled(), queue()
+│   ├── org_hub.ts                      # OrgHub Durable Object: one per organization (Rule 2d)
+│   ├── hub.ts                          # The only way to reach a hub; required-bindings check
+│   ├── local_do.ts                     # In-process OrgHub runtime for tests and Node development
+│   ├── database.ts                     # getDatabase(), isLocalEnvironment()
+│   ├── portal_url.ts                   # A workstation's portal URL from its connection details
+│   ├── custom_hostnames.ts             # Cloudflare for SaaS custom hostname jobs
+│   ├── custom_hostname_workflow.ts     # The Workflow that runs those jobs with durable retries
 │   ├── guard.ts                        # Tenant resolution, authorization, CSRF origin guard (MANDATORY)
 │   ├── escape.ts                       # HTML / attribute / JSON escaping & safe URLs (MANDATORY)
-│   ├── db.ts                           # D1 Database queries, SCHEMA_SQL & tenant seeding
+│   ├── db.ts                           # D1 Database queries, SCHEMA_SQL, tenant seeding, audit
+│   ├── demo.ts                         # The three platform demo organizations (web/local/docker)
 │   ├── auth.ts                         # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   ├── d1_adapter.ts                   # Node 22+ native `node:sqlite` mock for local unit tests
-│   ├── ui.ts                           # School admin console: picks the page, fills the shell
+│   ├── ui.ts                           # Organization admin console: picks the page, fills the shell
 │   ├── ui_admin_shared.ts              # Tenant API scope + Level 2 context panel behaviour
-│   ├── ui_admin_workstations.ts        # One module per admin page: its markup, its context
-│   ├── ui_admin_broadcast.ts           #   panel and its client script together, so a control
-│   ├── ui_admin_portal.ts              #   sits beside the handler that reads it
-│   ├── ui_admin_whitelist.ts
-│   ├── ui_admin_teachers.ts
-│   ├── ui_admin_settings.ts
+│   ├── ui_admin_workstations.ts        # One module per admin page (Rule 5f): its markup, its
+│   ├── ui_admin_apps_web.ts            #   context panel and its client script together.
+│   ├── ui_admin_staff.ts               #   apps_web unifies broadcasts, portal apps and
+│   ├── ui_admin_settings.ts            #   the domain allowlist in three tabs
 │   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
 │   │                                   #   radii and easing, plus the legacy aliases the public
 │   │                                   #   pages were written against
 │   ├── ui_layout.ts                    # Shared shell: 72px rail, 272px context panel, primitives
 │   ├── ui_landing.ts                   # Public SaaS Landing Page
-│   ├── ui_school_home.ts               # The school homepage at the subdomain root (/)
-│   ├── ui_portal.ts                    # Student Learning Portal at /home (cards grid)
+│   ├── ui_org_home.ts                  # The organization homepage at the subdomain root (/)
+│   ├── ui_portal.ts                    # User Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms)
+│   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   └── types.ts                        # Strict TypeScript interfaces
-└── test/worker.test.ts                 # Multi-tenant automated integration & security test suite
+└── test/
+    ├── worker.test.ts                  # Multi-tenant automated integration & security test suite
+    ├── dump_admin_html.ts              # Renders the four console pages from fixed inputs (Rule 5f)
+    ├── dev_server.ts                   # Runs the worker under Node on the in-memory database
+    └── shims/                          # Node stand-ins for `cloudflare:workers`
 ```
 
 ---
@@ -45,6 +57,7 @@ cloudflare-control/
 ## 2. Invariant Rules for Control Plane & Edge Workers
 
 ### Rule 1: Zero NPM Dependencies in Cloudflare Worker
+
 - The Cloudflare Worker control plane uses **0 runtime npm dependencies**.
 - Hashing and session cryptography **must always use `crypto.subtle`** (Web Crypto API):
   - Algorithm: `PBKDF2-HMAC-SHA256`
@@ -54,21 +67,25 @@ cloudflare-control/
 - Never add external routing libraries, auth frameworks, or heavy database ORMs. Keep cold start under 10ms.
 
 ### Rule 2: Multi-Tenant Scoping, Privacy Isolation & Delegation
+
 - Every database query in `db.ts` dealing with devices, commands, sessions, or portal apps **must filter by `tenant_id`**.
-- The in-memory telemetry cache is partitioned by tenant ID: `tenantTelemetryCache[tenantKey]`. It is a cache only; `client_devices` in D1 is the source of truth, because worker isolates are per-colo and short-lived.
-- **Nothing that two requests must agree on lives in module memory.** The active broadcast (`tenants.broadcast_url` / `broadcast_epoch`) and a workstation's remote-control details (`client_devices.vnc_password` / `remote_host`) are rows in D1.
-- **Subdomain Routing & Apex Redirection**: School admin dashboards are located at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`). Accessing `/admin` on the base apex domain redirects (302) to the authenticated school admin's subdomain `/admin` (or `/super` for super admins).
-- **Super Admin Privacy Isolation**: Super admins are strictly restricted from accessing any school's admin console (`/admin`), workstation telemetry, or remote desktop/VNC channel *except* for the dedicated `demo` school tenant. Super admin privileges permit approving custom domains, managing interface catalogs, and system maintenance, but protect institutional privacy.
-- **Granular Staff Delegation & Sub-admins**: School admins can delegate management functions by creating staff accounts (`tenant_users` table) with roles (`sub_admin`, `teacher`, `lab_assistant`, `content_manager`) and granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `teachers`, `settings`).
-- **Customizable Subdomain & Lab Settings**: School admins can customize their subdomain (`POST /api/tenant/subdomain`), default home route (`home_route`: e.g. `/` vs `/home`), and tunnel domain (`tunnel_domain` for per-school Cloudflare Tunnels).
-- **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (restricted to `demo`), for a session that already owns that tenant, or on an explicitly public route.
-- **Never write a route without a guard.** Every endpoint that reads or changes a school's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry` calls `requireDevice()`. A route with no guard is a security vulnerability.
-- A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims.
+- Live workstation state belongs to the organization's **OrgHub** (Rule 2d), which is named by tenant id, so one organization's hub never sees another's workstations. `client_devices` in D1 is the registry it writes back to.
+- **Nothing that two requests must agree on lives in module memory** — worker isolates are per-colo and short-lived. The active broadcast (`tenants.broadcast_url` / `broadcast_epoch` organization-wide, `client_devices.broadcast_url` / `broadcast_epoch` per workstation) and a workstation's remote-control details (`client_devices.vnc_password` / `remote_host`) are rows in D1; who is connected and the command queue are the hub's. The isolate's verified-device-token cache (`guard.ts`, 60 s) is a cache only: a removal also tells the hub, which refuses the workstation at once.
+- **Subdomain Routing & Apex Redirection**: Organization admin dashboards are located at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`). Accessing `/admin` on the base apex domain redirects (302) to the authenticated organization admin's subdomain `/admin` (or `/super` for super admins). When a super admin accesses a specific organization admin sub-route (`/admin/workstations`, `/admin/broadcast`, etc.) on apex or dev without a query param, it routes to a demo organization's console rather than bouncing to `/super`: `local-demo` on a dev host, `web-demo` otherwise. Furthermore, whenever a console is rendered outside its dedicated subdomain (e.g. On apex or dev hosts), all internal navigation links preserve `?tenant=<subdomain>` to maintain session context.
+- **Super Admin Privacy Isolation**: Super admins are strictly restricted from accessing any organization's admin console (`/admin`), workstation telemetry, or remote desktop/VNC channel *except* for the platform's three demo organizations, one per way of testing: `web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator). Super admin privileges permit approving custom domains, managing interface catalogs, and system maintenance, but protect each organization's privacy. Super admins have full access (`*`) inside a demo.
+- **A demo is a demo slug the platform owns** (`isDemoTenant()` in `src/demo.ts`): the slug alone never opens an organization, or one that registered the name before it was reserved would be exposed. `ensureDemoTenants()` creates any missing demo at startup, moves one owned by an earlier super admin account to the current one, and never adopts a demo name another organization holds. The demo names and the retired `demo` are reserved (`isReservedSlug()`), and a demo cannot be renamed, suspended or rejected. The single `demo` organization was deleted with all its data by migration `0013`. `local-demo` and `docker-demo` have no custom domain and no tunnel domain, and do not inherit the deployment's `TUNNEL_DOMAIN` (`demoTunnelFallback()`); only `web-demo` has a hosted tunnel.
+- **Granular Staff Delegation & Sub-admins**: Organization admins can delegate management functions by creating staff accounts (`tenant_users` table) with roles (`org_admin`, `sub_admin`, `operator`, `assistant`, `content_manager`) and granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`). Both are validated against those lists on the way in; `*` is never stored.
+- **Delegation Never Escalates**: a staff member holding `staff` who is not a co-administrator may only grant permissions they hold, may not appoint an `org_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Adding staff refuses an email that already has an account (`409`) rather than linking another organization's user, and removing staff ends that account's sessions.
+- **Customizable Subdomain & Settings**: Organization admins can customize their subdomain (`POST /api/tenant/subdomain`), default home route (`home_route`: e.g. `/` vs `/home`), and tunnel domain (`tunnel_domain` for per-organization Cloudflare Tunnels).
+- **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (who may then open only the platform-owned demos), for a session that already owns that tenant, or on an explicitly public route.
+- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry` and `/api/devices/ws` call `requireDevice()`. A route with no guard is a security vulnerability.
+- A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims, and a WebSocket carries only the identity the Worker verified (`hubUpgrade()` builds a fresh request).
 - Only the `Host` header says where a request arrived. Never read `X-Forwarded-Host` (or any other caller-supplied header) to build a URL that is handed back to a workstation.
 
 ### Rule 2b: Interface Catalogs Are Platform Assets, Not Tenant Data
+
 - `ui_catalogs` holds the translated interface text for the wizard and the kiosk top bar. It has no
-  `tenant_id` and must not grow one: the product says the same thing to every school, and a
+  `tenant_id` and must not grow one: the product says the same thing to every organization, and a
   workstation asks for its language **before** it is enrolled, so there is no tenant to scope by
   and no credential to present.
 - Writes are super-admin only (`POST /api/super/i18n`, `DELETE /api/super/i18n/<tag>`), pass the
@@ -81,18 +98,139 @@ cloudflare-control/
   `addEventListener`, completely avoiding inline event handlers.
 - Nothing tenant-specific may be put in a catalog, precisely because it is served to everyone.
 
+### Rule 2c: Workstation Groups & Batch Command Architecture
+
+- **Workstation Groups Table (`workstation_groups`)**: Tenants can organize client devices into named groups (e.g. "Row 1", "Lab A", "Physics"). Devices link via `client_devices.group_name`.
+- **Management Endpoints**:
+  - `GET /api/groups`: List workstation groups for the tenant.
+  - `POST /api/groups`: Create a new group (`{ name }`, 1–50 characters). Names are unique per
+    organization, compared case-insensitively (`409` otherwise): membership is stored **by name**, so two
+    groups sharing one would share members and deleting either would ungroup both. A unique index
+    (`0012`) enforces it too, so two requests at once cannot both create the same name.
+  - `DELETE /api/groups/:id`: Delete group and set member devices' `group_name` to `NULL` in one
+    `db.batch()`; `404` for a group this organization does not have.
+  - `POST /api/clients/group`: Assign devices to a group (`{ clientIds: string[], groupName: string | null }`).
+    `groupName` must be an existing group (`404`), or empty/`null` to ungroup.
+- **Batch Command Dispatch (`POST /api/command`)**:
+  - Accepts `targets: string[]` (or legacy single `target: string`). Duplicates are dropped and
+    `"all"` replaces any named targets, so a broadcast is queued once.
+  - Hands the command to the organization's hub (`/enqueue`), which pushes it to connected
+    workstations at once and keeps it 60 s for the rest, returning `{ status: "ok", count, commandIds }`.
+- **A broadcast is recorded where it was addressed** (migration `0010`). `"all"` writes the tenant
+  row; a list of workstations writes each one's `client_devices.broadcast_url` / `broadcast_epoch`.
+  A reset is recorded as `NULL` with its own epoch, never erased. The hub hands each workstation
+  the newer of the two, from the configuration it caches and reloads on `notifyConfigChanged()`.
+  Recording only the `"all"` case is what sent a broadcast to selected screens back to the portal
+  on the very next heartbeat, and let a subset reset clear everyone's broadcast.
+- **Bounded batches**: at most `MAX_BATCH_TARGETS` (500) ids per request on both routes. D1 binds at
+  most **100 parameters per statement**, so any `IN (...)` list is written in slices of
+  `D1_IN_LIST_CHUNK` (90). An unbounded list is both a denial-of-service lever and a query that
+  fails outright past ~97 ids.
+
+### Rule 2d: One OrgHub Per Organization; D1 Is the Registry
+
+- **Why.** Every workstation used to post a heartbeat every 3 s, and each one cost about eight D1
+  queries, two of them writes carrying a screenshot. D1 is one database for every organization, so
+  the fleet as a whole ran into its write ceiling at a few hundred online workstations. Now each
+  organization has one **OrgHub** Durable Object (`src/org_hub.ts`, `idFromName(tenant.id)`), and
+  a steady-state workstation costs D1 nothing.
+- **What the hub owns:** who is connected and what each one shows (in memory and in socket
+  attachments), the command queue (`commands`, `deliveries`, `revoked`, `meta` in its own SQLite;
+  commands expire after 60 s; a command for `"all"` records one delivery per workstation), and the
+  WebSockets of workstations (`/api/devices/ws`) and consoles (`/api/console/ws`).
+- **What D1 still owns:** everything two requests must agree on (Rule 2) and the `client_devices`
+  registry, written on connect, on disconnect, on a status change (batched by a 20 s alarm) and
+  every 5 minutes for an unchanged workstation — never per ping or per frame.
+  `tenants.online_workstations` is the hub's count, so the super admin list needs no query per
+  organization.
+- **Hibernation rules.** Sockets are accepted with `ctx.acceptWebSocket()` and tags (`device`,
+  `device:<id>`, `console`); per-socket state lives in `serializeAttachment()` (≤ 16 KB); timers are
+  alarms; the ping is `setWebSocketAutoResponse('{"type":"ping"}' → '{"type":"pong"}')`, which the
+  edge answers without waking the hub — so the agent's ping must be those exact bytes. A plain
+  field on the class is a cache that can vanish between two messages; anything a later message
+  needs is in an attachment or SQLite.
+- **Frames are watch-driven.** A console sends the ids it is showing; the hub tells exactly those
+  workstations `{"type":"frames","on":true}` and relays their frames, never storing them. Nobody
+  watching means no screenshots are taken at all. A console without its socket polls
+  `POST /api/clients` with a `watch` list, which leases frames for 10 s.
+- **Tenancy.** The Worker reaches a hub only through `src/hub.ts`; every call carries
+  `x-labkiosk-tenant`, the hub binds itself to the first organization that calls it and answers
+  `409` to any other. An upgrade is a fresh request carrying only the identity the Worker verified.
+- **An admin change must reach connected workstations.** A route that saves anything a workstation
+  sees — allowlist, portal apps, presets, mode, customization, subdomain, suspension, approval,
+  custom domain — calls `notifyConfigChanged(env, tenantId)` after the write. The hub's 5-minute
+  configuration cache is only the safety net. Removing a workstation calls `/remove-device`, which
+  closes its socket with `4001`; a suspended organization's sockets close with `4003`.
+- **Platform resources are required** (Rule 7): `ORG_HUB`, `AUDIT_QUEUE` (audit entries are
+  queued and batch-inserted with `INSERT OR IGNORE` on their id), `AUDIT_ARCHIVE` (R2; the hourly
+  cron moves audit rows older than 180 days there as NDJSON), `FLEET_METRICS` (Analytics Engine:
+  connects and disconnects), `AUTH_RATE_LIMITER` (a coarse per-address limit in front of sign-in,
+  registration and enrolment; the D1 lockouts stay authoritative, and a limiter fault is logged,
+  not fatal), `CUSTOM_HOSTNAMES` (a Workflow that creates, polls and deletes Cloudflare for SaaS
+  hostnames) with the secrets `CF_API_TOKEN` and `CF_ZONE_ID`.
+- **Tests** run a hub in-process: `LocalHubNamespace` (`src/local_do.ts`) implements the parts of
+  the Durable Object runtime the hub uses on `node:sqlite`, and `tsconfig.runtime.json` maps
+  `cloudflare:workers` to `test/shims/`. Real sockets need workerd: `pnpm dev` (`wrangler dev`) runs
+  every binding locally, while the Node `test/dev_server.ts` has no `WebSocketPair`, so agents fall
+  back to the HTTP heartbeat there.
+
 ### Rule 3: The Schema Has Two Homes
+
 - `migrations/` is what a deployed D1 database has; `SCHEMA_SQL` in `db.ts` builds the in-memory database that tests and local development use. Both must be changed together.
 - Add a **new** numbered migration file (e.g. `0006_feature.sql`); **never** edit an applied migration.
-- `test/worker.test.ts` compares the two schemas and fails on drift.
+- `test/worker.test.ts` compares the two schemas and fails on drift — column names, and, on the real
+  SQLite engine, types, NOT NULL, defaults, primary and foreign keys, indexes (UNIQUE included) and
+  CHECK constraints. The column-only check missed that `SCHEMA_SQL` had `idx_tenants_custom_domain`
+  non-unique while production had it UNIQUE.
+
+### Rule 3b: Rebuilding a Parent Table Must Never Cascade
+
+- D1 cannot switch foreign keys off, and `DROP TABLE` deletes the table's rows first — which fires
+  `ON DELETE CASCADE` even under `PRAGMA defer_foreign_keys = true`. Rebuilding `users` (or `tenants`)
+  in place deletes every organization and session. This was demonstrated, not assumed.
+- A CHECK or column-definition change on a parent table therefore follows `0011_organization_vocabulary.sql`:
+  hold every affected row in `_hold_<t>` tables (`CREATE TABLE … AS SELECT`, no foreign keys), drop
+  **leaves first**, recreate **parents first**, copy back with **explicit column lists** (production
+  column order differs from `SCHEMA_SQL`), then drop the holding tables. Wrangler applies the file as
+  one unit.
+- Every such migration ships with a test that builds the database from the earlier migrations, seeds
+  every affected table, applies it, and asserts identical row counts and an empty
+  `PRAGMA foreign_key_check`. Export the production database first:
+  `wrangler d1 export labkiosk-db --remote --output backup.sql`.
+
+### Rule 3c: The Product Is for Any Organization
+
+- Lab Kiosk serves companies, public bodies, libraries and schools alike. The tenant is an
+  **organization**; its roles are `org_admin`, `sub_admin`, `operator`, `assistant` and
+  `content_manager`; the staff permission is `staff`; the console's modules are Workstations,
+  Apps & Web, Staff and Settings; the launcher is the **User Portal**. Migration `0011` renamed the
+  stored values (`school_admin`, `teacher`, `lab_assistant`, `teachers`).
+- A test renders every console page, the User Portal and the organization homepage and fails on
+  "school", "teacher", "student", "lesson", "classroom" or "instructor". The landing page (which has
+  an Education audience) and the legal pages are exempt.
+- **Kept on purpose:** applied migrations `0001`–`0010` (never edited, and wrangler tracks them by file
+  name); the interface-catalog keys `ui.classroom-workstation-setup`,
+  `ui.i-understand-continue-to-the-lesson`, `ui.school-http-https-proxy-optional`,
+  `ui.institution-subdomain` and the two `…-institution-edu` placeholders (translations already use
+  them; only their English values changed); and `schoolName`, still sent beside `organizationName` in
+  the enrolment and `/api/status` replies for agents installed before the rename.
+- **Statements about the license describe the license.** `LICENSE` grants free use only to accredited
+  educational institutions and non-commercial evaluation, up to 45 computers; everyone else needs a
+  commercial or subscriber license. Never generalize those sentences to "organizations".
 
 ### Rule 4: Escape Everything Rendered & Safe URLs
-- Tenant data is attacker-controlled: school names, admin emails, portal card titles, and URLs arrive through registration or the teacher console.
+
+- Tenant data is attacker-controlled: organization names, admin emails, portal card titles, and URLs arrive through registration or the admin console.
 - Server-side, every interpolation into a `ui*.ts` template goes through `escapeHtml()` / `escapeJson()` from `escape.ts`. `escapeJson()` is required for anything inlined into a `<script>` block.
 - Client-side, build DOM nodes and assign `textContent`. Never concatenate a value into `innerHTML`, and never place one inside an inline `onclick=` attribute — attach listeners and pass ids through `dataset`.
+- **`escapeHtml()` / `escapeAttr()` do not exist in the browser.** Inside a template's client script
+  (`\${...}` escaped in the TypeScript string) a call to them is a `ReferenceError` at runtime — the
+  workstation group list crashed on every refresh that way. Use `el()` / `textContent` / `dataset` /
+  `new Option()` and `replaceChildren()`. A test fails if any console script contains either name.
 - URLs that will be navigated to, redirected to, or rendered as `href` must pass `safeHttpUrl()` first.
 
 ### Rule 5: Nonce CSP, No Inline Event Handlers, Hardened Headers
+
 - Every HTML response is built with `buildHtmlHeaders(nonce, ...)` in `index.ts`:
   - Nonce-based `Content-Security-Policy`
   - HSTS (`Strict-Transport-Security`, HTTPS only)
@@ -104,14 +242,30 @@ cloudflare-control/
 - `test/worker.test.ts` renders every page and fails if any script lacks the nonce or any `on*=` attribute is detected.
 
 ### Rule 5b: Left-Side Multi-Level Panels Design & Seamless Transitions
-- The dashboard control planes (both School Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
-  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, primary module icons (Workstations, Broadcast, Portal, Whitelist, Teachers, Settings), live stats counter, user avatar, and panel expand/collapse toggle.
-  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific sub-views, quick filters (All, Online, Locked), and batch action triggers.
-  - **Content Area**: Fluid layout adapting smoothly to panel states without content jumping or horizontal scrollbars.
-  - **Transitions & Micro-Interactions**: Hardware-accelerated transitions, 2026 CSS tokens, dark glassmorphism surfaces (`backdrop-filter: blur(12px)`), accessible contrast (WCAG 2.2 AA), and zero inline event handlers (`data-action` pattern).
 
+- The dashboard control planes (both Organization Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
+  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, exactly 4 primary module icons (Workstations, Apps & Web, Staff, Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
+  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
+  - **Workstations Page Layout (`/admin/workstations`)**:
+    - **Sidebar Subpanel**: Removed duplicate batch commands. Dedicated to Workstation Groups management (`+ New Group`, member counts, filtering by group, and delete group actions).
+    - **Top Toolbar** (`.toolbar`): "Select All" and the selection count (`# selected`); `Lock` and `Unlock`; `Broadcast URL` (the one primary button), `Reset to Portal` and `Move to Group...`; and a **Session & Power** menu (a `popover`, `.menu-popover`) holding `Clear Session`, `Reboot` and `Shutdown`. The destructive commands sit one click further away because each interrupts whoever is at the screen; their button ids are unchanged, so the panel's `runToolbarAction()` still clicks them.
+    - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, saving collapse states in `localStorage`.
+  - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
+    - Unifies Broadcast, User Portal Apps, and Domain Allowlist into a single, cohesive view with 3 tab panes (`Broadcast`, `User Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy paths (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
+    - **Stabilized Sidebar Subpanel**: Fixed, non-shifting Level 2 subpanel featuring static tab view switchers (`📶 Broadcast`, `⊞ User Portal`, `🛡️ Domain Allowlist`), a `Preview User Portal &rarr;` shortcut opening `/home` in a new tab, and a static Module Overview card (total apps, allowed domains, live broadcast status). Eliminates dynamic layout shift.
+    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant "Standard Educational Presets" from Broadcast to prevent duplicate lists.
+  - **Staff Page Layout (`/admin/staff`)**:
+    - **Sidebar Subpanel**: Active **"Role"** filter section (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with live count badges that filter the authorized operators table instantly without page reload.
+    - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
+  - **Settings Page Layout (`/admin/settings`)**:
+    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 4 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`) with instant client-side switching and deep linking (`?tab=...`).
+    - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain & VNC Tunnel \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Activity).
+    - **Scrollable Activity Table (`.table-scrollable`)**: Recent Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
+  - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
+  - **Look, Motion & Accessibility**: a calm, neutral design in light and dark (Rule 5c): flat surfaces with hairline borders and small shadows, one accent blue for the primary action, status shown as dots and soft badges, red only on destructive actions. Inter for the interface, JetBrains Mono for ids, hosts and URLs. Compositor-only transitions, a cross-fade between console pages (`@view-transition`), all of it off under `prefers-reduced-motion`; `:focus-visible` outlines, `forced-colors` borders, and zero inline event handlers (`data-action` pattern).
 
 ### Rule 5c: One Design Language, Declared Once
+
 - **`src/ui_tokens.ts` is the only place a colour, radius, easing curve or panel
   width is defined.** Every surface renders its `:root` from `rootTokensCss()` and
   its typography from `FONT_LINKS`. Never open a second `:root` block in a `ui*.ts`
@@ -126,37 +280,66 @@ cloudflare-control/
 - **A class a page renders must be a class the shell declares.** `input-field` was
   used fourteen times and declared nowhere, so those inputs rendered as white
   browser defaults inside a dark console for as long as they existed. A test
-  renders every console page and fails on any class the stylesheet does not carry.
-- `--text-subtle` is `#808fa6` and not a darker slate because the section headings
-  it paints have to clear 4.5:1 against `--bg-panel`, `--bg-surface` and
-  `--bg-card`. The WCAG 2.2 AA claim in Rule 5b is only true while it does.
+  renders every console page and fails on any class the stylesheet does not carry
+  (including `.table-scrollable`, `.form-checkbox`, `.form-checkbox-label`, `.grid-2col`, `.tab-pane`).
+- **Two themes from one table.** `PALETTE` holds every colour as a `[light, dark]` pair
+  and `rootTokensCss()` writes both: light on `:root`, dark under
+  `prefers-color-scheme: dark` unless the visitor pinned light, and either one pinned
+  through `<html data-theme>`. The page follows the system; the consoles (profile menu)
+  and the landing page (header) offer a two-state switch, system or its opposite,
+  remembered per origin in `localStorage` (`labkiosk-theme`) and applied before first
+  paint by `themeHeadHtml(nonce)`. The User Portal, organization homepage, legal and
+  status pages follow the system setting. Adding a token means adding both values.
+- **No page paints a colour of its own.** A literal colour in a page is right in one
+  theme and wrong in the other: use a token, or a declared class (`.callout`,
+  `.badge-*`, `.text-muted`, `.stat-tile`…). SVG icons use `currentColor`. A test
+  fails on any `#hex`/`rgba()` in a `style` attribute, an SVG `fill`/`stroke`, or a
+  stylesheet outside the token blocks.
+- **Contrast is measured, not claimed.** A test computes WCAG ratios from `PALETTE` in
+  both themes: every text token ≥ 4.5:1 on every surface, each `--*-text` on its
+  `--*-soft` tint, white on the accent and danger fills, and `--border-input` ≥ 3:1
+  (a field's border is its only outline). The accent fill is `#2563eb` in both themes
+  because white on the brighter `#3b82f6` measures 3.7:1.
 
 ### Rule 5d: The Context Panel Is Wired, Not Decorative
+
 - Every control the Level 2 panel renders does something. It shipped as markup
   only once: `data-filter`, `data-action`, `data-preset` and `data-quick-domain`
   were read by nothing, the three "Add ..." shortcuts pointed at element ids that
   did not exist, the five settings jump links pointed at sections that did not
   exist, and the four telemetry counts never moved off the zero they rendered with.
   That is roughly thirty dead controls in the product's most-used surface.
-- `renderSubPanelScripts()` in `ui.ts` owns the behaviour and is emitted on every
+- `renderSubPanelScripts()` in `ui_admin_shared.ts` owns the behaviour and is emitted on every
   admin page. A panel control is a `data-` attribute that function reads, or it does
   not go in the panel.
 - A command the panel triggers delegates to the page's own button rather than
   re-implementing the call, so there is one code path per action. Where the page
   has no such button, the panel navigates to the page that does.
+- Whether a `data-filter` / `data-density` control is disabled is decided by **what the page
+  provides** (`window.labkioskApplyFilter` / `window.labkioskApplyDensity`), never by which page
+  it is. Keying it on "not the workstations page" silently disabled the Operators role filter.
+- The header counters (`stat-online-count`, `stat-total-count`, `stat-locked-count`) are real on
+  every page: the workstations grid updates them from its own poll, and `renderSubPanelScripts()`
+  polls `/api/clients` every 15 s everywhere else, hiding them for a caller refused `workstations`.
 
 ### Rule 5e: The Tenant Rides Along on a Dev Host
+
 - Client-side calls go through `window.labkioskApi(path)`, never bare `fetch("/api/...")`.
-- In production the school is its own subdomain and the `Host` header resolves the
+- In production the organization is its own subdomain and the `Host` header resolves the
   tenant. On `localhost` / `127.0.0.1` there is no subdomain, the tenant travels as
-  `?tenant=<slug>`, and a call without it answers `400 No school selected` -- which
+  `?tenant=<slug>`, and a call without it answers `400 No organization selected` -- which
   is what made the entire dashboard untestable with `pnpm dev`.
 - Whether this is a dev host is a property of the **request** (`isDevHost()` in
   `guard.ts`, passed to the renderer as `isDevHost`), never of the configured
   `DEFAULT_DOMAIN`: that is `labkiosk.akbhoi.com` in local development too.
+- Loopback and RFC 1918 addresses count as dev hosts, because `pnpm dev` listens on
+  `0.0.0.0` and the simulator reaches it by LAN address. A deployed worker never sees
+  such a `Host` (Cloudflare routes only configured hostnames), which is what keeps that
+  safe; do not widen it to anything a public request could carry.
 
 ### Rule 5f: One Module Per Admin Page
-- A page of the school console owns its markup, its context-panel contents and
+
+- A page of the organization console owns its markup, its context-panel contents and
   its client script in one `ui_admin_<page>.ts`, exported as a single
   `build<Page>Page(options): AdminPageParts`. `ui.ts` picks the builder and
   fills the shell; it renders nothing itself.
@@ -165,37 +348,42 @@ cloudflare-control/
   and that distance is precisely why thirty dead controls sat there unnoticed.
 - `ui_admin_shared.ts` holds only what every page needs: `renderApiScopeScript`
   (Rule 5e) and `renderSubPanelScripts` (Rule 5d).
-- `test/dump_admin_html.ts` renders all six pages from fixed inputs. Diff its
+- `test/dump_admin_html.ts` renders all four pages from fixed inputs. Diff its
   output across a refactor of these modules; the split that created them was
   verified byte-for-byte that way.
 
-### Rule 5g: Three Paths on a School Host, Each With One Job
-- `/` is the **school homepage**: a headline, an introduction and the content
-  blocks the school publishes, rendered by `ui_school_home.ts`. It is the page
-  a school puts its own name on, and the only one a visitor sees first.
-- `/home` is the **student app grid** (`ui_portal.ts`), the launcher a student
+### Rule 5g: Three Paths on a Organization Host, Each With One Job
+
+- `/` is the **organization homepage**: a headline, an introduction and the content
+  blocks the organization publishes, rendered by `ui_org_home.ts`. It is the page
+  an organization puts its own name on, and the only one a visitor sees first.
+- `/home` is the **user app grid** (`ui_portal.ts`), the launcher a user
   picks a site from.
-- `/admin` is the **school console**, and `/admin/<page>` its sub-pages.
+- `/admin` is the **organization console**, and `/admin/<page>` its sub-pages.
 - `/portal` no longer exists. All three paths used to render the same grid,
-  which is why `home_route` could be set to any of them. A school that had
+  which is why `home_route` could be set to any of them. An organization that had
   pointed its workstations at `/portal` would have had them reset to a 404, so
   migration 0008 moves those to `/home` and the option is gone from Lab
   Settings. **Never add a fourth alias**: every one of them is somewhere a
-  workstation can be pinned, and removing it later breaks classrooms.
-- Single-site lockdown outranks both public paths: a school in `single_url`
+  workstation can be pinned, and removing it later breaks rooms.
+- Single-site lockdown outranks both public paths: an organization in `single_url`
   mode redirects to its locked site from `/` and `/home` alike.
-- Homepage text is school-supplied and rendered to students. It is normalised
+- Homepage text is organization-supplied and rendered to users. It is normalised
   and size-capped on the way in (`sanitizeHomepageBlocks`), escaped on the way
   out, and a block link goes through `safeHttpUrl()` on both sides -- neither
   side may assume the other did it.
+
 ### Rule 6: State-Changing Requests Prove Their Origin
-- Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host, the platform domain, or a dev host. Bearer-authenticated device routes are exempt.
+
+- Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host or the platform domain. A dev-host origin (`localhost`, ...) is accepted **only when the request itself is on a dev host**; in production it would admit any page served from the operator's own machine. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.
 
 ### Rule 7: Fail Closed
+
 - Missing configuration is an error, not a reason to fall back to something weaker.
 - `getDatabase()` throws without a D1 binding unless `ALLOW_LOCAL_DB=1`.
 - With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`); it never creates tables in production.
+- In production it also refuses to serve without every platform resource (`requiredBindingsProblem()` in `hub.ts`, Rule 2d), naming each one that is missing. `ALLOW_LOCAL_DB=1` lets a missing one fall back to an in-process stand-in.
 - Public endpoints are throttled per source address (`rateLimitWait` / `recordRateLimitHit` in `db.ts`): registration and failed enrolments. Reserved slugs (`RESERVED_SLUGS` in `guard.ts`) can neither be registered nor assigned.
 
 ---
@@ -203,25 +391,32 @@ cloudflare-control/
 ## 3. Verification & Testing Playbook
 
 ### 1. TypeScript Strict Typecheck
+
 Checks both `src/` (against Cloudflare Workers runtime) and `test/` (against Node types):
+
 ```bash
 pnpm --prefix cloudflare-control run typecheck
 ```
+
 *Expected result:* Exit code 0, zero errors.
 
 ### 2. Automated Multi-Tenant & Security Tests
+
 ```bash
 pnpm --prefix cloudflare-control test
 ```
-*Expected result:* All unit and integration tests passing. Uses Node 22 native `node:sqlite` in `d1_adapter.ts`.
+
+*Expected result:* All unit and integration tests passing. Uses Node 22 native `node:sqlite` in `d1_adapter.ts`, and runs OrgHub in-process (Rule 2d); the script passes `--tsconfig tsconfig.runtime.json` so `cloudflare:workers` resolves.
 
 **Testing Rule**: Whenever you add an API route, you MUST add its matching negative tests:
+
 - Anonymous access rejection (`401`)
 - Cross-tenant tampering rejection (`403` / `404`)
 - Cross-site CSRF rejection
 - Input validation & escaping checks
 
 ### 3. Local Dev Server
+
 ```bash
 cd cloudflare-control
 cp .dev.vars.example .dev.vars   # Edit secrets for local test
@@ -242,9 +437,22 @@ pnpm dev                        # predev applies migrations/ to local D1
 | **Workstations disagree about the active broadcast** | Broadcast state was stored in isolate memory, which differs across edge colos. | Store `broadcast_url` and `broadcast_epoch` in the `tenants` table in D1. |
 | **A form inside the console renders as a white box with black text** | The markup used a class the shell never declared (`input-field`). An undeclared class styles nothing, so the control falls back to the browser default. | Use `.form-input` / `.form-select` / `.form-textarea` from `ui_layout.ts`. A test renders every console page and fails on any class the stylesheet does not carry. |
 | **A control in the left context panel does nothing** | Its `data-` attribute is not one `renderSubPanelScripts()` reads, or its target element id does not exist on that page. | Add the case to that function, or take the control out. See Rule 5d. |
-| **Every dashboard API call answers `400 No school selected` under `pnpm dev`** | The call was written as a bare `fetch("/api/...")`. There is no school subdomain on a dev host, so nothing resolves the tenant. | Call `labkioskApi(path)`. See Rule 5e. |
+| **Every dashboard API call answers `400 No organization selected` under `pnpm dev`** | The call was written as a bare `fetch("/api/...")`. There is no organization subdomain on a dev host, so nothing resolves the tenant. | Call `labkioskApi(path)`. See Rule 5e. |
 | **A page looks subtly off-brand next to the consoles** | It declared its own `:root`. Four surfaces each had one, on four different backgrounds. | Render `:root` from `rootTokensCss()` in `ui_tokens.ts`. See Rule 5c. |
+| **Text or an icon is fine in one theme and invisible in the other** | A literal colour (`#fff`, `#93c5fd`, `rgba(255,255,255,…)`) in markup, a stylesheet or an SVG `stroke`. | Use a `PALETTE` token, a declared class, or `currentColor`. A test rejects literals. See Rule 5c. |
+| **A console page renders zoomed out on a phone although nothing looks wide** | An absolutely positioned descendant (the visually hidden "Actions" header) inside an `overflow: auto` scroller that is not positioned: its containing block is the page, so it widens the page instead of being clipped. | `.table-container` is `position: relative`. Keep scrollers positioned; check `innerWidth === 375` under mobile emulation. |
 | **A `/super` tab shows another tab's content** | All four panes were emitted together and hidden with an inline `display`, and `.tab-pane` had no CSS at all -- so the pane without an inline rule rendered everywhere. | Render one pane. `panesByTab[activeTab]` in `ui_super.ts` is the only thing that reaches the page. |
-| **Resetting Broadcast lands on SaaS landing page instead of school portal** | `resetBroadcastToPortal()` sent `origin + "/"` without tenant scoping. | Authoritatively resolve `portalUrlFor(tenant)` in `POST /api/command`. |
-| **Single-Site Lockdown URL rejected without scheme** | URL lacked `https://` prefix (e.g. `canvas.institution.edu`). | `safeHttpUrl()` in `escape.ts` automatically prepends `https://` for scheme-less domains. |
+| **Resetting Broadcast lands on SaaS landing page instead of organization portal** | `resetBroadcastToPortal()` sent `origin + "/"` without tenant scoping. | Authoritatively resolve `portalUrlFor(tenant)` in `POST /api/command`. |
+| **Single-Site Lockdown URL rejected without scheme** | URL lacked `https://` prefix (e.g. `canvas.example.com`). | `safeHttpUrl()` in `escape.ts` automatically prepends `https://` for scheme-less domains. |
 | **Cloudflare Dashboard env vars overwritten on deploy** | Defining `vars` in `wrangler.jsonc` overrides Cloudflare dashboard variables. | Omit `vars` block from `wrangler.jsonc`. Manage production secrets via Cloudflare Dashboard / `wrangler secret`. |
+| **Creating a workstation group does nothing; console logs `escapeAttr is not defined`** | The client script rebuilt the group list by calling the server-only `escapeHtml`/`escapeAttr` inside an escaped `\${...}`. | Build nodes with `el()`/`textContent`/`dataset`/`new Option()`. A test rejects either name in any console script. |
+| **The Operators role filter is greyed out** | `renderSubPanelScripts()` disabled every `data-filter` on pages other than Workstations. | Disable a panel control only when the page defines no handler for it (`window.labkioskApplyFilter`). |
+| **An operator with the staff permission becomes a co-administrator** | Staff routes stored any role and any permission string, `*` included, and let a delegate edit their own row. | `STAFF_ROLES` / `STAFF_PERMISSIONS` validation plus `staffDelegationProblem()` on create, update and delete. |
+| **Moving ~100+ workstations to a group fails** | D1 binds at most 100 parameters per statement and the `IN (...)` list was built in one go. | Cap at `MAX_BATCH_TARGETS` and write in `D1_IN_LIST_CHUNK` slices. |
+| **A broadcast to selected workstations reverts to the portal after 2–3 seconds** | Only a broadcast to `"all"` was stored (on the tenant); a list of ids only queued a command, and the next heartbeat's `targetUrl` sent the screens back. | Record per workstation on `client_devices` (migration `0010`); the heartbeat serves the newer of organization-wide and per-workstation. |
+| **Online / Total read 0 everywhere except the grid** | Only the Workstations page polled telemetry. | `renderSubPanelScripts()` polls `/api/clients` on the other pages. |
+| **An admin change reaches workstations only minutes later** | The route saved it to D1 but never told the hub, so connected workstations kept the hub's cached configuration. | Call `notifyConfigChanged(env, tenantId)` after the write (Rule 2d). |
+| **Every idle workstation is a billed hub request every 15 s** | The ping was not byte-identical to the auto-response request (`json.dumps` writes `{"type": "ping"}` with a space), so the edge woke the hub for each one. | Send the literal `{"type":"ping"}`; a client test compares the agent's constant with `HUB_PING`. |
+| **`InvalidAccessError: Invalid WebSocket close code: 1006`** | `webSocketClose()` echoed the code it was given, and 1005/1006/1015 describe a close but may never be sent. | Answer those with `1000` (`RESERVED_CLOSE_CODES`). |
+| **Sign-in answers 500 under `pnpm dev`** | wrangler's local rate-limit simulator throws on every `limit()` call. | The Worker logs a limiter fault and relies on the D1 lockouts; never let the front layer take sign-in down. |
+| **The Worker refuses to start: "missing required bindings"** | A platform resource was not created or declared. | Create it (`docs/DEPLOYMENT.md`, "Platform resources"); the message names each one. |

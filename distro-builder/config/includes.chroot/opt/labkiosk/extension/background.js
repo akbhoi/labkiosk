@@ -5,7 +5,7 @@
  * in a content script, which runs in the page's origin -- so its fetches to the
  * local agent (http://127.0.0.1:8888) are cross-origin and would need the agent
  * to answer with `Access-Control-Allow-Origin: *`. The agent used to do exactly
- * that, which meant any site a student visited could talk to it.
+ * that, which meant any site a user visited could talk to it.
  *
  * A service-worker fetch is governed by the extension's host_permissions instead
  * of the page's CORS, so the agent can refuse cross-origin callers entirely
@@ -13,7 +13,7 @@
  *
  * It also owns the active broadcast marker (`labkiosk:broadcast-get` /
  * `labkiosk:broadcast-set`). That used to live in the visited page's own
- * sessionStorage, which meant the page could rewrite it to sit out a teacher's
+ * sessionStorage, which meant the page could rewrite it to sit out an operator's
  * broadcast or re-enable Back at the broadcast root. chrome.storage.session
  * keeps it in the extension's partition -- unreachable from page script, still
  * wiped at every boot -- and surviving both page navigation and this service
@@ -65,7 +65,7 @@ const BAR_INTRO_KEY = "labkiosk_bar_intro";
 /**
  * True exactly once per browser session, for the first page that asks.
  *
- * The navigation bar auto-hides, so a student who has never seen it has no way
+ * The navigation bar auto-hides, so a user who has never seen it has no way
  * to discover it. It is shown briefly at the start of a session; the flag lives
  * here rather than in the content script because that runs afresh on every
  * page, and in chrome.storage.session so it resets when the kiosk reboots.
@@ -84,7 +84,7 @@ const I18N_KEY = "labkiosk_catalog";
  * The interface catalog for the language chosen in the setup wizard.
  *
  * Cached in chrome.storage.session because content.js runs again on every page
- * a student opens, and the bar must not fetch a catalog each time. The cache
+ * a user opens, and the bar must not fetch a catalog each time. The cache
  * lasts exactly as long as the boot does, which is also how long the chosen
  * language can change without a restart.
  */
@@ -184,4 +184,87 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   return false;
+});
+
+/*
+ * Never leave the kiosk on a page the bar cannot appear on.
+ *
+ * A page the managed policy blocks, and a page that fails to load, are shown by
+ * Chromium as chrome-error:// pages, and no extension runs there: no bar, no
+ * network icon, no clock, and no way back to the setup pages -- which is how a
+ * workstation whose organization had been deleted ended up stranded on "This
+ * page is blocked". Such a top-level failure is sent to a page on the agent's
+ * origin instead, where content.js builds the bar as everywhere else.
+ */
+const AGENT_ORIGIN = "http://127.0.0.1:8888";
+const BLOCKED_PAGE_URL = `${AGENT_ORIGIN}/blocked`;
+const OFFLINE_PAGE_URL = `${AGENT_ORIGIN}/setup#offline`;
+
+// Failures that mean "no network" rather than "this site": the wizard's offline
+// page shows the connection state and returns to the lesson once it is back.
+const NETWORK_ERRORS = new Set([
+  "net::ERR_INTERNET_DISCONNECTED",
+  "net::ERR_NETWORK_CHANGED",
+  "net::ERR_NAME_NOT_RESOLVED",
+  "net::ERR_NAME_RESOLUTION_FAILED",
+  "net::ERR_ADDRESS_UNREACHABLE",
+  "net::ERR_CONNECTION_REFUSED",
+  "net::ERR_CONNECTION_RESET",
+  "net::ERR_CONNECTION_CLOSED",
+  "net::ERR_CONNECTION_FAILED",
+  "net::ERR_CONNECTION_TIMED_OUT",
+  "net::ERR_TIMED_OUT",
+  "net::ERR_PROXY_CONNECTION_FAILED",
+  "net::ERR_TUNNEL_CONNECTION_FAILED"
+]);
+
+/**
+ * Where a failed top-level navigation should go instead, or null to leave it.
+ * `isOnline` is the agent's view: a DNS or connection failure while the
+ * workstation is online means that one site is down, and the offline page --
+ * which returns to the lesson once it sees a connection -- would bounce straight
+ * back to the dead site and loop.
+ */
+function recoveryUrlFor(details, isOnline) {
+  if (details.frameId !== 0) return null; // a failed iframe leaves its page usable
+  let failed;
+  try {
+    failed = new URL(details.url);
+  } catch {
+    return null;
+  }
+  // The agent's own pages are where recovery happens; never redirect away from
+  // them, or a failure there would loop.
+  if (failed.origin === AGENT_ORIGIN) return null;
+  if (details.error === "net::ERR_BLOCKED_BY_ADMINISTRATOR") {
+    // The full address too, so the page can try it once more: a broadcast adds
+    // its site to the allowlist in the same heartbeat that sends the screen
+    // there, and Chromium only rereads a changed policy after a few seconds.
+    // The agent never logs request paths, so this goes nowhere else.
+    return `${BLOCKED_PAGE_URL}?host=${encodeURIComponent(failed.hostname)}&url=${encodeURIComponent(failed.href)}`;
+  }
+  if (NETWORK_ERRORS.has(details.error)) {
+    if (!isOnline) return OFFLINE_PAGE_URL;
+    return `${BLOCKED_PAGE_URL}?reason=unreachable&host=${encodeURIComponent(failed.hostname)}&url=${encodeURIComponent(failed.href)}`;
+  }
+  return null; // ERR_ABORTED (a cancelled navigation) and the like
+}
+
+chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
+  if (details.frameId !== 0) return;
+  let isOnline = false;
+  if (NETWORK_ERRORS.has(details.error)) {
+    try {
+      isOnline = Boolean((await readStatus()).isOnline);
+    } catch (err) {
+      // The agent itself did not answer: treat it as offline, whose page is
+      // the one that knows how to wait for the connection.
+      isOnline = false;
+    }
+  }
+  const target = recoveryUrlFor(details, isOnline);
+  if (!target) return;
+  chrome.tabs.update(details.tabId, { url: target }).catch((err) => {
+    console.warn("Could not leave the error page:", err);
+  });
 });

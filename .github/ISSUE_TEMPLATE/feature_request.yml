@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest an enhancement, new educational app preset, or management feature
+description: Suggest an enhancement, new approved app preset, or management feature
 labels: ["enhancement"]
 body:
   - type: markdown
@@ -9,8 +9,8 @@ body:
   - type: textarea
     id: problem
     attributes:
-      label: Problem or Classroom Need
-      description: Is your feature request related to a problem or specific teaching workflow?
+      label: Problem or Room Need
+      description: Is your feature request related to a problem or a specific workflow?
     validations:
       required: true
   - type: textarea
@@ -24,4 +24,4 @@ body:
     id: context
     attributes:
       label: Educational / Technical Context
-      description: Any links to educational tools, CBSE/NCERT curriculum portals, or technical specs.
+      description: Any links to approved tools, content portals, or technical specs.

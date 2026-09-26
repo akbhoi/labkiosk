@@ -311,7 +311,7 @@ def install_to_disk(target_disk, grub_password_hash=None):
     #
     # The installed system runs with overlayroot="tmpfs", so every write to /
     # lands in a RAM overlay and is gone at power-off. That is the whole point
-    # for student state, but it also silently discarded the device token: a
+    # for user state, but it also silently discarded the device token: a
     # workstation enrolled *after* installation came back unenrolled on the next
     # boot, with nothing in the UI to say so. /etc/labkiosk is mounted from here
     # instead, so the enrolment survives while the rest of the OS stays
@@ -592,7 +592,7 @@ tmpfs             /tmp                               tmpfs defaults,noatime,mode
             if os.path.exists(grub_password_file):
                 os.unlink(grub_password_file)
             print(
-                "[INSTALL] WARNING: no boot-menu password supplied. A student at the keyboard "
+                "[INSTALL] WARNING: no boot-menu password supplied. A user at the keyboard "
                 "can edit the GRUB entry and boot with init=/bin/sh.",
                 file=sys.stderr,
             )

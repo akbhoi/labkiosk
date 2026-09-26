@@ -79,7 +79,7 @@ network-manager
 systemd-timesyncd
 # The locale definitions the setup wizard's Language & Region step generates
 # from (~21 MB). Not locales-all, which is 350 MB of pre-generated locales for
-# languages no single school uses: labkiosk-localization generates the one that
+# languages no single organization uses: labkiosk-localization generates the one that
 # was chosen, in about three megabytes, at installation time.
 locales
 iproute2
@@ -89,4 +89,10 @@ wireless-regdb
 rfkill
 curl
 python3
+# The agent's control channel: one WebSocket to the organization's hub. Without it
+# the agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
+python3-websocket
+# The agent's control channel (a WebSocket to the organization's hub). Without it the
+# agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
+python3-websocket
 ca-certificates

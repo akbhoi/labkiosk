@@ -1,16 +1,15 @@
 /**
- * Student Educational Portal / App Launcher UI
- * Configurable card grid for approved educational websites.
+ * The User Portal: the app launcher a workstation shows, a card per approved site.
  */
 
 import { Tenant, PortalSite } from "./types";
 import { escapeHtml, safeHttpUrl, escapeAttr } from "./escape";
-import { FONT_LINKS, rootTokensCss, LEGACY_PORTAL_ALIASES } from "./ui_tokens";
+import { FONT_LINKS, rootTokensCss, themeHeadHtml, LEGACY_PORTAL_ALIASES } from "./ui_tokens";
 
 export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string): string {
   const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
 
-  // Card content is teacher-supplied. Cards are anchors rather than divs with an
+  // Card content is operator-supplied. Cards are anchors rather than divs with an
   // inline navigation handler, so a hostile URL cannot become executable markup,
   // and a non-http(s) URL is dropped entirely rather than rendered.
   const cardsHtml = sites
@@ -43,8 +42,8 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
   const emptyState = `
     <div class="portal-empty">
       <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-      <div>No learning applications have been added yet.</div>
-      <div class="portal-empty-hint">Your teacher can add them from the lab console.</div>
+      <div>No applications have been added yet.</div>
+      <div class="portal-empty-hint">An administrator can add them from the admin console.</div>
     </div>`;
 
   return `<!DOCTYPE html>
@@ -52,88 +51,107 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(tenant.name)} - ${escapeHtml(tenant.portal_title || "Student Learning Portal")}</title>
+  <title>${escapeHtml(tenant.name)} - ${escapeHtml(tenant.portal_title || "User Portal")}</title>
+${themeHeadHtml(nonce)}
 ${FONT_LINKS}
   <style>
 ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    *, *::before, *::after { box-sizing: border-box; }
+    :where(h1, h2, h3, p) { margin: 0; }
+    html { accent-color: var(--accent); }
     body {
-      background: radial-gradient(circle at 50% 0%, #1e293b 0%, #090d16 80%);
+      margin: 0;
+      font-family: var(--font-sans);
+      font-feature-settings: "cv11", "ss01";
+      background: var(--bg-base);
       color: var(--text-main);
       min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
       user-select: none;
       overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
     }
+    :where(a, button):focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
     header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 18px 36px;
-      background: rgba(15, 23, 42, 0.8);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border);
+      gap: 16px;
+      padding: 12px 32px;
+      background: var(--bg-base);
+      background: color-mix(in oklab, var(--bg-base) 85%, transparent);
+      -webkit-backdrop-filter: saturate(1.4) blur(12px);
+      backdrop-filter: saturate(1.4) blur(12px);
+      border-bottom: 1px solid var(--border-subtle);
     }
     .brand {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
+      min-width: 0;
     }
     .brand-icon {
-      width: 42px;
-      height: 42px;
-      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-      border-radius: 12px;
+      width: 36px;
+      height: 36px;
+      flex-shrink: 0;
+      background: var(--accent);
+      color: var(--accent-fg);
+      border-radius: var(--radius);
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
     }
     .brand-name {
-      font-size: 20px;
-      font-weight: 800;
-      letter-spacing: -0.3px;
+      font-size: 1rem;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .brand-sub {
-      font-size: 12px;
+      font-size: 0.75rem;
       color: var(--text-muted);
-      font-weight: 500;
     }
     .header-meta {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 14px;
     }
     .status-pill {
       display: flex;
       align-items: center;
       gap: 8px;
-      background: rgba(16, 185, 129, 0.1);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      padding: 6px 14px;
-      border-radius: 20px;
-      font-size: 13px;
-      font-weight: 600;
-      color: #34d399;
+      background: var(--success-soft);
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--success-text);
+      white-space: nowrap;
     }
     .dot {
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
-      background: var(--green);
-      box-shadow: 0 0 8px var(--green);
+      background: var(--success);
+      box-shadow: 0 0 0 3px var(--success-glow);
     }
     .clock {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 14px;
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
       color: var(--text-muted);
-      font-weight: 500;
+      font-variant-numeric: tabular-nums;
     }
     main {
       flex: 1;
-      padding: 40px 36px 60px;
-      max-width: 1380px;
+      padding: 48px 32px 64px;
+      max-width: 1320px;
       width: 100%;
       margin: 0 auto;
     }
@@ -142,121 +160,127 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
       margin-bottom: 40px;
     }
     .portal-title {
-      font-size: 32px;
-      font-weight: 800;
-      letter-spacing: -0.5px;
+      font-size: clamp(1.5rem, 1.1rem + 1.4vw, 2.125rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.2;
       margin-bottom: 10px;
+      text-wrap: balance;
     }
     .portal-desc {
-      font-size: 16px;
+      font-size: 1rem;
+      line-height: 1.6;
       color: var(--text-muted);
-      max-width: 600px;
+      max-width: 620px;
       margin: 0 auto;
+      text-wrap: pretty;
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 24px;
+      grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+      gap: 20px;
     }
     .app-card {
       text-decoration: none;
       color: inherit;
-      background: var(--bg-card);
+      background: var(--bg-surface);
       border: 1px solid var(--border);
-      border-radius: 16px;
+      border-radius: var(--radius-lg);
       overflow: hidden;
       cursor: pointer;
-      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
       display: flex;
       flex-direction: column;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+      box-shadow: var(--shadow-sm);
+      transition: border-color 0.18s ease, box-shadow 0.18s ease, translate 0.22s var(--ease-spring);
     }
     .app-card:hover {
-      transform: translateY(-6px);
-      border-color: #3b82f6;
-      box-shadow: 0 12px 30px rgba(59, 130, 246, 0.25);
+      translate: 0 -3px;
+      border-color: var(--border-input);
+      box-shadow: var(--shadow-md);
     }
     .card-thumb {
-      height: 150px;
+      aspect-ratio: 16 / 9;
       position: relative;
-      background-color: #1e293b;
+      background-color: var(--bg-subtle);
       overflow: hidden;
+      border-bottom: 1px solid var(--border-subtle);
     }
     .card-thumb-img {
       width: 100%;
       height: 100%;
       object-fit: cover;
       display: block;
+      transition: scale 0.4s var(--ease-out);
     }
-    .card-thumb::after {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background: linear-gradient(to top, rgba(30, 41, 59, 0.9) 0%, transparent 70%);
-    }
+    .app-card:hover .card-thumb-img { scale: 1.03; }
     .card-category {
       position: absolute;
-      top: 12px;
-      left: 12px;
-      background: rgba(15, 23, 42, 0.85);
-      backdrop-filter: blur(8px);
-      padding: 4px 10px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: #93c5fd;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      top: 10px;
+      left: 10px;
+      background: var(--bg-surface);
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--text-main);
+      box-shadow: var(--shadow-sm);
       z-index: 1;
     }
     .card-body {
-      padding: 20px;
+      padding: 16px;
       display: flex;
       flex-direction: column;
       flex: 1;
       justify-content: space-between;
+      gap: 14px;
     }
     .card-header {
       display: flex;
       align-items: center;
       gap: 10px;
-      margin-bottom: 6px;
     }
     .card-icon {
-      font-size: 20px;
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-subtle);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.0625rem;
+      flex-shrink: 0;
     }
     .card-title {
-      font-size: 18px;
-      font-weight: 700;
-      letter-spacing: -0.3px;
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
     }
     .card-domain {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
       color: var(--text-muted);
-      margin-bottom: 18px;
+      margin-top: 2px;
     }
     .launch-btn {
       width: 100%;
-      background: #0f172a;
+      min-height: 36px;
+      background: var(--bg-subtle);
       border: 1px solid var(--border);
       color: var(--text-main);
-      padding: 10px 16px;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      font-weight: 500;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      transition: all 0.15s ease;
+      transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
     }
     .app-card:hover .launch-btn {
       background: var(--accent);
       border-color: var(--accent);
-      color: #ffffff;
+      color: var(--accent-fg);
     }
     .portal-empty {
       grid-column: 1 / -1;
@@ -264,28 +288,40 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
       flex-direction: column;
       align-items: center;
       gap: 10px;
-      padding: 60px 24px;
-      border: 1px dashed var(--border);
-      border-radius: 16px;
+      padding: 64px 24px;
+      background: var(--bg-surface);
+      border: 1px dashed var(--border-input);
+      border-radius: var(--radius-lg);
       color: var(--text-muted);
-      font-size: 15px;
+      font-size: 0.9375rem;
       text-align: center;
     }
-    .portal-empty-hint { font-size: 13px; opacity: 0.8; }
+    .portal-empty-hint { font-size: 0.8125rem; color: var(--text-subtle); }
     footer {
       text-align: center;
-      padding: 24px;
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
-      font-size: 12px;
-      color: var(--text-muted);
+      padding: 20px 24px;
+      border-top: 1px solid var(--border-subtle);
+      font-size: 0.75rem;
+      color: var(--text-subtle);
+    }
+    footer a { color: var(--text-muted); }
+    footer a:hover { color: var(--text-main); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .app-card, .card-thumb-img, .launch-btn { transition: none; }
+      .app-card:hover { translate: none; }
+      .app-card:hover .card-thumb-img { scale: none; }
+    }
+    @media (forced-colors: active) {
+      .app-card, .launch-btn, .status-pill { border: 1px solid CanvasText; }
     }
 
     /* Responsive Mobile & Tablet */
     @media (max-width: 768px) {
       header {
-        padding: 14px 20px;
+        padding: 12px 20px;
         flex-wrap: wrap;
-        gap: 12px;
+        gap: 10px;
       }
       .header-meta {
         width: 100%;
@@ -297,60 +333,18 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
       .portal-hero {
         margin-bottom: 28px;
       }
-      .portal-title {
-        font-size: 26px;
-      }
-      .portal-desc {
-        font-size: 14px;
-      }
       .grid {
-        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
         gap: 16px;
       }
     }
     @media (max-width: 480px) {
-      header {
-        padding: 12px 16px;
-      }
-      .brand {
-        gap: 10px;
-      }
-      .brand-icon {
-        width: 36px;
-        height: 36px;
-      }
-      .brand-name {
-        font-size: 17px;
-      }
-      .brand-sub {
-        font-size: 11px;
-      }
-      .status-pill {
-        font-size: 11px;
-        padding: 4px 10px;
-      }
-      .clock {
-        font-size: 12px;
-      }
-      main {
-        padding: 20px 14px 36px;
-      }
-      .portal-title {
-        font-size: 22px;
-      }
-      .grid {
-        grid-template-columns: 1fr;
-        gap: 14px;
-      }
-      .card-thumb {
-        height: 130px;
-      }
-      .card-body {
-        padding: 16px;
-      }
-      .launch-btn {
-        min-height: 44px;
-      }
+      header { padding: 10px 16px; }
+      .brand { gap: 10px; }
+      .status-pill { font-size: 0.6875rem; padding: 3px 10px; }
+      .clock { font-size: 0.75rem; }
+      main { padding: 20px 14px 36px; }
+      .grid { grid-template-columns: 1fr; gap: 14px; }
+      .launch-btn { min-height: 44px; }
     }
   </style>
 </head>
@@ -358,11 +352,11 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
   <header>
     <div class="brand">
       <div class="brand-icon">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
       <div>
         <div class="brand-name">${escapeHtml(tenant.name)}</div>
-        <div class="brand-sub">${escapeHtml(tenant.portal_subtitle || "Computer Lab Learning Portal")}</div>
+        <div class="brand-sub">${escapeHtml(tenant.portal_subtitle || "User Portal")}</div>
       </div>
     </div>
     <div class="header-meta">
@@ -376,8 +370,8 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
 
   <main>
     <div class="portal-hero">
-      <h1 class="portal-title">${escapeHtml(tenant.portal_title || "Select an Educational Resource")}</h1>
-      <p class="portal-desc">${escapeHtml(tenant.portal_description || "Click any approved application below to begin your lesson. All external access is filtered and managed by your teacher.")}</p>
+      <h1 class="portal-title">${escapeHtml(tenant.portal_title || "Select an Approved Resource")}</h1>
+      <p class="portal-desc">${escapeHtml(tenant.portal_description || "Choose an approved application below to get started. Access to every other site is filtered and managed by your organization.")}</p>
     </div>
 
     <div class="grid">
@@ -386,7 +380,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
   </main>
 
   <footer>
-    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Educational Environment Restricted")} • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy</a> • <a href="/terms" style="color: var(--text-muted); text-decoration: underline;">Terms</a>
+    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Managed Workstation")} • <a href="/privacy">Privacy</a> • <a href="/terms">Terms</a>
   </footer>
 
   <script nonce="${escapeAttr(nonce)}">

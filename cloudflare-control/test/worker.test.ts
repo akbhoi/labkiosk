@@ -1,15 +1,37 @@
-import { test, describe } from "node:test";
+import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import worker from "../src/index";
 import * as workerModule from "../src/index";
-import { SCHEMA_SQL, initSchema } from "../src/db";
+import {
+  SCHEMA_SQL,
+  initSchema,
+  assertSchemaCurrent,
+  ensureDemoTenants,
+  createUser,
+  createTenant,
+  findTenantBySubdomain,
+  useAuditQueue,
+  writeAuditLog,
+  insertAuditEntries,
+  archiveOldAuditLogs,
+  AUDIT_RETENTION_DAYS
+} from "../src/db";
+import { DEMO_SLUGS } from "../src/demo";
 import { createLocalD1Database } from "../src/d1_adapter";
-import { safeHttpUrl } from "../src/escape";
+import { DatabaseSync } from "node:sqlite";
+import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
 import { isHostUnder } from "../src/guard";
-import { Env } from "../src/types";
+import { Env, AuditEntryMessage } from "../src/types";
+import { localHubNamespace } from "../src/hub";
+import { portalContextFrom } from "../src/portal_url";
+import { getDatabase } from "../src/database";
+import { HUB_PING, HUB_PONG } from "../src/org_hub";
+import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
+import { runCustomHostnameJob } from "../src/custom_hostnames";
+import { PALETTE } from "../src/ui_tokens";
 
 /**
  * The suite runs against the in-memory D1 adapter, which a production
@@ -36,9 +58,26 @@ function json(body: unknown): RequestInit {
   return { method: "POST", body: JSON.stringify(body) };
 }
 
+/**
+ * Exact membership of a domain in an allowlist the API returned. `list.includes()`
+ * would silently turn into a substring test if the list ever came back as a string.
+ */
+function allowlistHas(list: unknown, domain: string): boolean {
+  assert.ok(Array.isArray(list), "the allowlist is an array of domains");
+  return new Set(list).has(domain);
+}
+
 async function call(path: string, init: RequestInit & { cookie?: string; bearer?: string } = {}) {
   const res = await worker.fetch(request(path, init), mockEnv);
   return res;
+}
+
+/** A page's CSS: its inline <style> blocks and any stylesheet it links on this worker. */
+async function pageCss(html: string): Promise<string> {
+  const inline = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]);
+  const linked = [...html.matchAll(/<link rel="stylesheet" href="(\/assets\/[^"]+\.css)">/g)].map((m) => m[1]);
+  const fetched = await Promise.all(linked.map(async (href) => (await call(href)).text()));
+  return [...inline, ...fetched].join("\n");
 }
 
 async function callJson<T = any>(path: string, init: RequestInit & { cookie?: string; bearer?: string } = {}) {
@@ -48,7 +87,7 @@ async function callJson<T = any>(path: string, init: RequestInit & { cookie?: st
 }
 
 describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
-  let schoolSessionCookie = "";
+  let orgSessionCookie = "";
   let rivalSessionCookie = "";
   let superSessionCookie = "";
   let createdSiteId = "";
@@ -62,9 +101,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Content-Type"), "text/html; charset=utf-8");
     const html = await res.text();
-    assert.match(html, /Centralized School Computer Lab/);
+    assert.match(html, /Turn Any Computer Into a/);
     assert.match(html, /Download Kiosk ISO/);
-    assert.match(html, /Register School Lab/);
+    assert.match(html, /Register Your Organization/);
     assert.match(html, /id="mobile-toggle"/);
     assert.match(html, /id="mobile-drawer"/);
     assert.match(html, /class="specs-table-container"/);
@@ -80,19 +119,19 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Rejects registration with a weak password", async () => {
     const { res, data } = await callJson(
       "/api/auth/register",
-      json({ name: "Weak School", email: "weak@school.edu", password: "short", subdomain: "weakschool" })
+      json({ name: "Weak Organization", email: "weak@example.com", password: "short", subdomain: "weakorganization" })
     );
     assert.equal(res.status, 400);
     assert.match(data.error, /at least 12 characters/);
   });
 
-  test("Registers new school admin and claims subdomain", async () => {
+  test("Registers new organization admin and claims subdomain", async () => {
     const { res, data } = await callJson(
       "/api/auth/register",
       json({
-        name: "Greenwood High School",
-        email: "teacher@greenwood.edu",
-        password: "SchoolPassword123!",
+        name: "Greenwood Holdings",
+        email: "operator@greenwood.example",
+        password: "OrganizationPassword123!",
         subdomain: "greenwood"
       })
     );
@@ -107,15 +146,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(cookie!, /HttpOnly/);
     assert.match(cookie!, /Secure/);
     assert.match(cookie!, /Domain=\.labkiosk\.akbhoi\.com/);
-    schoolSessionCookie = cookie!.split(";")[0];
+    orgSessionCookie = cookie!.split(";")[0];
   });
 
-  test("Registers a second, unrelated school for isolation checks", async () => {
+  test("Registers a second, unrelated organization for isolation checks", async () => {
     const { res } = await callJson(
       "/api/auth/register",
       json({
         name: "Riverside Academy",
-        email: "teacher@riverside.edu",
+        email: "operator@riverside.example",
         password: "RiversidePass456!",
         subdomain: "riverside"
       })
@@ -140,15 +179,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(superRes.status, 200);
     const html = await superRes.text();
     assert.match(html, /Super Admin Master Console/);
-    assert.match(html, /Greenwood High School/);
+    assert.match(html, /Greenwood Holdings/);
   });
 
   test("Refuses the Super Admin Console without a super admin session", async () => {
     const anonymous = await call("/super");
     assert.equal(anonymous.status, 401);
 
-    const asTeacher = await call("/super", { cookie: schoolSessionCookie });
-    assert.equal(asTeacher.status, 401);
+    const asOperator = await call("/super", { cookie: orgSessionCookie });
+    assert.equal(asOperator.status, 401);
   });
 
   test("Updates super admin password when SUPER_ADMIN_PASSWORD changes in environment", async () => {
@@ -190,11 +229,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Throttles repeated failed sign-in attempts", async () => {
     for (let i = 0; i < 6; i++) {
-      await callJson("/api/auth/login", json({ email: "throttle@school.edu", password: "WrongPassword1" }));
+      await callJson("/api/auth/login", json({ email: "throttle@example.com", password: "WrongPassword1" }));
     }
     const { res, data } = await callJson(
       "/api/auth/login",
-      json({ email: "throttle@school.edu", password: "WrongPassword1" })
+      json({ email: "throttle@example.com", password: "WrongPassword1" })
     );
     assert.equal(res.status, 429);
     assert.match(data.error, /Too many failed sign-in attempts/);
@@ -202,7 +241,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------------------- XSS
 
-  test("Escapes a hostile school name in the Super Admin Console", async () => {
+  test("Escapes a hostile organization name in the Super Admin Console", async () => {
     const hostileName = '<img src=x onerror=alert(1)>';
     const { res } = await callJson(
       "/api/auth/register",
@@ -210,7 +249,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         name: hostileName,
         email: "attacker@evil.test",
         password: "AttackerPass789!",
-        subdomain: "evilschool"
+        subdomain: "evilorganization"
       })
     );
     assert.equal(res.status, 200);
@@ -220,29 +259,29 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   });
 
-  // ---------------------------------------------------------- student portal
+  // ---------------------------------------------------------- user portal
 
-  test("Serves the Student Learning Portal at /home on a school subdomain", async () => {
+  test("Serves the User Portal at /home on an organization subdomain", async () => {
     const res = await call("/home?tenant=greenwood");
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Content-Type"), "text/html; charset=utf-8");
     const html = await res.text();
-    assert.match(html, /Greenwood High School/);
-    assert.match(html, /Select an Educational Resource/);
+    assert.match(html, /Greenwood Holdings/);
+    assert.match(html, /Select an Approved Resource/);
     assert.match(html, /Khan Academy/);
     assert.match(html, /Scratch Studio/);
   });
 
-  test("The subdomain root is the school homepage, and /portal is gone", async () => {
+  test("The subdomain root is the organization homepage, and /portal is gone", async () => {
     // The root used to render the app grid, the same page as /home and /portal.
-    // It is the school's own page now.
+    // It is the organization's own page now.
     const home = await call("/?tenant=greenwood");
     assert.equal(home.status, 200);
     const html = await home.text();
-    assert.match(html, /Greenwood High School/);
-    assert.match(html, /Enter the Lab/);
+    assert.match(html, /Greenwood Holdings/);
+    assert.match(html, /Open User Portal/);
     // It is not the app grid.
-    assert.doesNotMatch(html, /Select an Educational Resource/);
+    assert.doesNotMatch(html, /Select an Approved Resource/);
     // And it links to where the grid actually is.
     assert.match(html, /href="\/home\?tenant=greenwood"/);
 
@@ -251,24 +290,24 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.notEqual(gone.status, 200, "/portal must no longer serve a page");
   });
 
-  test("A school edits its homepage, and the editor is guarded", async () => {
+  test("An organization edits its homepage, and the editor is guarded", async () => {
     const payload = {
       headline: "Welcome to Greenwood Computing",
-      intro: "Lessons run here every weekday.",
+      intro: "Pages run here every weekday.",
       blocks: [
-        { title: "Library", body: "Open at break.", url: "library.greenwood.edu" },
+        { title: "Library", body: "Open at break.", url: "library.greenwood.example" },
         { title: "", body: "", url: "https://dropped.example" },
         { title: "No link", body: "Just a notice." }
       ]
     };
 
     // Anonymous callers are refused. An anonymous request that names another
-    // school is refused at tenant resolution (403) rather than at the guard.
+    // organization is refused at tenant resolution (403) rather than at the guard.
     const anon = await call("/api/tenant/homepage?tenant=greenwood", json(payload));
     assert.ok(anon.status === 401 || anon.status === 403, `anonymous got ${anon.status}`);
 
-    // And so is a signed-in account that does not own this school. Rule 2 keeps
-    // the super admin out of every school but demo.
+    // And so is a signed-in account that does not own this organization. Rule 2 keeps
+    // the super admin out of every organization but demo.
     const asSuper = await call("/api/tenant/homepage?tenant=greenwood", {
       ...json(payload),
       cookie: superSessionCookie
@@ -277,17 +316,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const saved = await callJson("/api/tenant/homepage?tenant=greenwood", {
       ...json(payload),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(saved.res.status, 200);
     // The empty block is dropped and the scheme-less URL is repaired.
     assert.equal(saved.data.blocks.length, 2);
-    assert.equal(saved.data.blocks[0].url, "https://library.greenwood.edu/");
+    assert.equal(saved.data.blocks[0].url, "https://library.greenwood.example/");
     assert.equal(saved.data.blocks[1].url, null);
 
     const html = await (await call("/?tenant=greenwood")).text();
     assert.match(html, /Welcome to Greenwood Computing/);
-    assert.match(html, /Lessons run here every weekday/);
+    assert.match(html, /Pages run here every weekday/);
     assert.match(html, /Open at break/);
     assert.match(html, /Just a notice/);
   });
@@ -300,7 +339,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         intro: "",
         blocks: [{ title: hostileTitle, body: "ok", url: "javascript:alert(1)" }]
       }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
 
     const html = await (await call("/?tenant=greenwood")).text();
@@ -312,7 +351,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Put it back so later tests see a normal page.
     await callJson("/api/tenant/homepage?tenant=greenwood", {
       ...json({ headline: "", intro: "", blocks: [] }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
   });
 
@@ -325,7 +364,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------------ portal apps
 
-  test("Adds and deletes a custom app card in Student Portal", async () => {
+  test("Adds and deletes a custom app card in User Portal", async () => {
     const { res: addRes, data: addData } = await callJson("/api/portal-sites?tenant=greenwood", {
       ...json({
         title: "NASA Space Sims",
@@ -333,7 +372,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         category: "Astronomy",
         icon: "\u{1F680}"
       }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
 
     assert.equal(addRes.status, 200);
@@ -347,7 +386,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const { res: delRes, data: delData } = await callJson(
       `/api/portal-sites/${createdSiteId}?tenant=greenwood`,
-      { method: "DELETE", cookie: schoolSessionCookie }
+      { method: "DELETE", cookie: orgSessionCookie }
     );
     assert.equal(delRes.status, 200);
     assert.equal(delData.status, "ok");
@@ -356,17 +395,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Rejects a portal app whose URL is not http(s)", async () => {
     const { res, data } = await callJson("/api/portal-sites?tenant=greenwood", {
       ...json({ title: "Bad", url: "javascript:alert(1)" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(res.status, 400);
     assert.match(data.error, /valid http\(s\) address/);
   });
 
-  test("Escapes a hostile app title on the student portal", async () => {
+  test("Escapes a hostile app title on the user portal", async () => {
     const hostileTitle = "</script><script>alert(1)</script>";
     await callJson("/api/portal-sites?tenant=greenwood", {
-      ...json({ title: hostileTitle, url: "https://example.org/lesson" }),
-      cookie: schoolSessionCookie
+      ...json({ title: hostileTitle, url: "https://example.org/page" }),
+      cookie: orgSessionCookie
     });
 
     const html = await (await call("/home?tenant=greenwood")).text();
@@ -376,18 +415,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // -------------------------------------------------------------- dashboard
 
-  test("Serves School Teacher Dashboard on /admin for logged-in school admin", async () => {
-    const res = await call("/admin?tenant=greenwood", { cookie: schoolSessionCookie });
+  test("Serves Organization Admin console on /admin for logged-in organization admin", async () => {
+    const res = await call("/admin?tenant=greenwood", { cookie: orgSessionCookie });
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /Greenwood High School/);
+    assert.match(html, /Greenwood Holdings/);
     assert.match(html, /greenwood\.labkiosk\.akbhoi\.com/);
-    assert.match(html, /Portal Apps/);
+    assert.match(html, /Apps &amp; Web/);
     assert.match(html, /Settings/);
   });
 
   test("Dashboard markup is well formed so every modal is reachable", async () => {
-    const html = await (await call("/admin?tenant=greenwood", { cookie: schoolSessionCookie })).text();
+    const html = await (await call("/admin?tenant=greenwood", { cookie: orgSessionCookie })).text();
     const body = html.split("<body>")[1].split("<script>")[0];
     const opened = (body.match(/<div\b/g) || []).length;
     const closed = (body.match(/<\/div>/g) || []).length;
@@ -409,7 +448,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const id of ["whitelist-modal", "portal-modal", "settings-modal"]) {
       assert.equal(body.includes(`id="${id}"`), false, `${id} duplicates a dedicated page and must not come back`);
     }
-    for (const page of ["/admin/whitelist", "/admin/portal", "/admin/settings"]) {
+    for (const page of ["/admin/apps-web", "/admin/settings"]) {
       assert.ok(body.includes(`href="${page}"`), `the toolbar must link to ${page}`);
     }
   });
@@ -419,13 +458,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // white-on-white form ended up inside a dark console. Nothing catches that
     // but a render, so render every page and compare the two sets.
     const pages = [
-      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
-      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
-      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
-      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
-      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
-      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
-      ["/super/schools", superSessionCookie],
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/super/organizations", superSessionCookie],
       ["/super/approvals", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
@@ -433,7 +470,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     for (const [page, cookie] of pages) {
       const html = await (await call(page, { cookie })).text();
-      const style = html.split("<style>")[1].split("</style>")[0];
+      const style = await pageCss(html);
       const declared = new Set((style.match(/\.[a-z][a-z0-9_-]*/g) || []).map((c) => c.slice(1)));
       const used = new Set<string>();
       for (const attr of html.match(/class="[^"<>]*"/g) || []) {
@@ -447,19 +484,121 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  // ------------------------------------------------------------ light and dark
+
+  test("Every text colour clears WCAG AA on every surface, in both themes", () => {
+    // The palette is a table of [light, dark] pairs. A colour that reads well in
+    // one theme and vanishes in the other is exactly what a second theme risks,
+    // so the table is measured rather than trusted.
+    const luminance = (hex: string) => {
+      const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+      const [r, g, b] = channels.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a: string, b: string) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const surfaces = ["--bg-base", "--bg-rail", "--bg-panel", "--bg-surface", "--bg-card", "--bg-card-hover", "--bg-subtle"];
+
+    for (const [theme, index] of [["light", 0], ["dark", 1]] as const) {
+      const colour = (token: string) => {
+        const value = PALETTE[token]?.[index];
+        assert.match(value ?? "", /^#[0-9a-f]{6}$/, `${token} must be a solid colour to be measurable`);
+        return value!;
+      };
+      const expect = (fg: string, bg: string, min: number) => {
+        const measured = ratio(colour(fg), colour(bg));
+        assert.ok(measured >= min, `${theme}: ${fg} on ${bg} is ${measured.toFixed(2)}:1, needs ${min}:1`);
+      };
+      for (const text of ["--text-main", "--text-muted", "--text-subtle", "--accent-text"]) {
+        for (const surface of surfaces) expect(text, surface, 4.5);
+      }
+      expect("--accent-fg", "--accent", 4.5);
+      expect("--accent-fg", "--accent-hover", 4.5);
+      expect("--on-solid", "--danger", 4.5);
+      for (const tone of ["accent", "success", "warning", "danger"]) {
+        expect(`--${tone}-text`, `--${tone}-soft`, 4.5);
+        expect(`--${tone}-text`, "--bg-card", 4.5);
+      }
+      // A form field's border is its only outline on a same-colour card.
+      expect("--border-input", "--bg-card", 3);
+      expect("--border-input", "--bg-surface", 3);
+    }
+  });
+
+  test("Every page ships both themes, and the consoles and landing page can switch", async () => {
+    const pages: [string, string | undefined, boolean][] = [
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie, true],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie, true],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie, true],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie, true],
+      ["/super/organizations", superSessionCookie, true],
+      ["/super/system", superSessionCookie, true],
+      ["/", undefined, true],
+      ["/home?tenant=greenwood", undefined, false],
+      ["/?tenant=greenwood", undefined, false],
+      ["/?tenant=no-such-organization", undefined, false],
+      ["/privacy", undefined, false],
+      ["/terms", undefined, false]
+    ];
+    for (const [page, cookie, hasToggle] of pages) {
+      const html = await (await call(page, cookie ? { cookie } : {})).text();
+      const css = await pageCss(html);
+      assert.match(html, /<meta name="color-scheme" content="light dark">/, `${page} declares both schemes`);
+      assert.match(css, /color-scheme: light dark;/, `${page} carries the light tokens`);
+      assert.match(css, /@media \(prefers-color-scheme: dark\)/, `${page} follows a dark system setting`);
+      assert.match(css, /:root\[data-theme="dark"\]/, `${page} honours a pinned dark theme`);
+      if (hasToggle) assert.match(html, /data-action="toggle-theme"/, `${page} offers the theme switch`);
+    }
+  });
+
+  test("No page paints a colour of its own: every colour comes from the palette", async () => {
+    // A literal colour in markup is right in one theme and wrong in the other.
+    const pages: [string, string | undefined][] = [
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie],
+      ["/", undefined],
+      ["/home?tenant=greenwood", undefined],
+      ["/?tenant=greenwood", undefined],
+      ["/?tenant=no-such-organization", undefined],
+      ["/privacy", undefined]
+    ];
+    const literal = /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/;
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, cookie ? { cookie } : {})).text();
+      for (const attr of html.match(/style="[^"]*"/g) || []) {
+        assert.doesNotMatch(attr, literal, `${page} has a literal colour in markup: ${attr}`);
+      }
+      for (const attr of html.match(/(?:fill|stroke)="#[^"]*"/g) || []) {
+        assert.fail(`${page} has a literal colour in an SVG: ${attr}`);
+      }
+      // Outside the token blocks, a stylesheet names colours only through tokens.
+      const css = (await pageCss(html))
+        .replace(/:root[^{]*\{[^}]*\}/g, "")
+        .replace(/@media \(prefers-color-scheme: dark\) \{\s*:root[^{]*\{[^}]*\}\s*\}/g, "");
+      const stray = css.match(/#[0-9a-fA-F]{3,8}\b(?![^(]*\))/g) || [];
+      assert.deepEqual(stray, [], `${page} has literal colours in its stylesheet: ${stray.join(", ")}`);
+    }
+  });
+
   test("The consoles never speak through a native browser dialog", async () => {
     // window.alert/confirm/prompt cannot be styled, block the 3-second telemetry
     // poll for as long as they are up, and made the platform console look like a
-    // different product from the school one. The shell provides lkToast,
+    // different product from the organization one. The shell provides lkToast,
     // lkConfirm and lkPrompt instead.
     const pages = [
-      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
-      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
-      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
-      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
-      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
-      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
-      ["/super/schools", superSessionCookie],
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/super/organizations", superSessionCookie],
       ["/super/approvals", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
@@ -468,7 +607,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const [page, cookie] of pages) {
       const html = await (await call(page, { cookie })).text();
       for (const script of html.split("<script").slice(1)) {
-        const body = script.slice(script.indexOf(">") + 1);
+        // Up to its own closing tag: the theme script sits in <head>, so the text
+        // after it is the whole page, organization names included.
+        const body = script.slice(script.indexOf(">") + 1).split("</script>")[0];
         const offender = body.split("\n").find((line) => /(^|[^\w.])(alert|confirm|prompt)\s*\(/.test(line));
         assert.equal(
           offender,
@@ -482,8 +623,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Every API path a page script calls is a route the worker serves", () => {
+    // The allowlist tab called /api/settings/whitelist, which never existed: add,
+    // remove and every preset pack answered 404, and the markup tests were happy.
+    const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+    const router = fs.readFileSync(path.join(srcDir, "index.ts"), "utf8");
+    const routes = [...router.matchAll(/path (?:===|\.startsWith\() ?"(\/api\/[^"]*)"/g)].map((m) => m[1]);
+    const called = new Set<string>();
+    for (const f of fs.readdirSync(srcDir).filter((f) => /^ui.*\.ts$/.test(f))) {
+      const source = fs.readFileSync(path.join(srcDir, f), "utf8");
+      for (const m of source.matchAll(/(?:labkioskApi|fetch)\(\s*"(\/api\/[^"?]*)/g)) called.add(m[1]);
+    }
+    assert.ok(called.size > 10, "the scan found the console's API calls");
+    const missing = [...called].filter(
+      (p) => !routes.some((r) => r === p || r === p.replace(/\/$/, "") || (r.endsWith("/") && p.startsWith(r)))
+    );
+    assert.deepEqual(missing, [], "page scripts call paths no route serves");
+  });
+
   test("Every inline script on every page actually parses", async () => {
-    // A stray brace in the student portal clock made its whole <script> block a
+    // A stray brace in the user portal clock made its whole <script> block a
     // syntax error, so the clock never started. Nothing caught it: the block
     // lives inside a template literal, so tsc never sees it as code, and
     // rendering a page does not run it. new Function parses without executing.
@@ -492,13 +651,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/home?tenant=greenwood", undefined],
       ["/privacy", undefined],
       ["/terms", undefined],
-      ["/admin/workstations?tenant=greenwood", schoolSessionCookie],
-      ["/admin/broadcast?tenant=greenwood", schoolSessionCookie],
-      ["/admin/portal?tenant=greenwood", schoolSessionCookie],
-      ["/admin/whitelist?tenant=greenwood", schoolSessionCookie],
-      ["/admin/teachers?tenant=greenwood", schoolSessionCookie],
-      ["/admin/settings?tenant=greenwood", schoolSessionCookie],
-      ["/super/schools", superSessionCookie],
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/super/organizations", superSessionCookie],
       ["/super/approvals", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
@@ -537,15 +694,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // nothing. Neither failure shows up in a typecheck.
     const pages = [
       "/admin/workstations?tenant=greenwood",
-      "/admin/broadcast?tenant=greenwood",
-      "/admin/portal?tenant=greenwood",
-      "/admin/whitelist?tenant=greenwood",
-      "/admin/teachers?tenant=greenwood",
+      "/admin/apps-web?tenant=greenwood",
+      "/admin/staff?tenant=greenwood",
       "/admin/settings?tenant=greenwood"
     ];
 
     for (const page of pages) {
-      const html = await (await call(page, { cookie: schoolSessionCookie })).text();
+      const html = await (await call(page, { cookie: orgSessionCookie })).text();
       const panel = html.match(/<aside class="sub-panel"[\s\S]*?<\/aside>/);
       assert.ok(panel, `${page} has no context panel`);
 
@@ -567,20 +722,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Every link the console renders goes somewhere, and the portal preview goes to the grid", async () => {
     // Moving the app grid from / to /home left the context panel's "Preview
-    // Student Portal" link pointing at /, which had quietly become the school
+    // User Portal" link pointing at /, which had quietly become the organization
     // homepage. It did not 404 and it did not fail a typecheck -- it simply
     // opened the wrong page, which is the whole failure mode Rule 5g warns
     // about: these paths are somewhere a link, or a workstation, is pinned.
-    // On the school's own host, which is where the console lives in production
+    // On the organization's own host, which is where the console lives in production
     // and what its host-relative links are written against.
     const host = "greenwood.labkiosk.akbhoi.com";
-    const open = (path: string) => call(path, { cookie: schoolSessionCookie, headers: { host } });
+    const open = (path: string) => call(path, { cookie: orgSessionCookie, headers: { host } });
     const pages = [
       "/admin/workstations",
-      "/admin/broadcast",
-      "/admin/portal",
-      "/admin/whitelist",
-      "/admin/teachers",
+      "/admin/apps-web",
+      "/admin/staff",
       "/admin/settings"
     ];
 
@@ -588,7 +741,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     let portalHtml = "";
     for (const page of pages) {
       const html = await (await open(page)).text();
-      if (page === "/admin/portal") portalHtml = html;
+      if (page === "/admin/apps-web") portalHtml = html;
       for (const match of html.matchAll(/href="(\/[^"#]*)"/g)) targets.set(match[1], page);
     }
     assert.ok(targets.size > 0, "no internal links were found at all");
@@ -599,15 +752,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
 
     // The two preview links on the portal manager open the same thing, and it
-    // is the app grid rather than the school's own homepage.
-    const previews = [...portalHtml.matchAll(/href="([^"]+)"[^>]*>[\s\S]{0,400}?Preview Student Portal/g)].map((m) => m[1]);
+    // is the app grid rather than the organization's own homepage.
+    const previews = [...portalHtml.matchAll(/href="([^"]+)"[^>]*>[\s\S]{0,400}?Preview User Portal/g)].map((m) => m[1]);
     assert.equal(previews.length, 2, `expected both preview links, found ${previews.length}`);
     for (const href of previews) {
-      assert.ok(href.startsWith("/home"), `a "Preview Student Portal" link points at ${href}, not the app grid`);
+      assert.ok(href.startsWith("/home"), `a "Preview User Portal" link points at ${href}, not the app grid`);
     }
 
     const grid = await (await open(previews[0])).text();
-    assert.match(grid, /Select an Educational Resource/, "the preview link must reach the app grid");
+    assert.match(grid, /Select an Approved Resource/, "the preview link must reach the app grid");
   });
 
   test("Platform action history is readable, and only by a super admin", async () => {
@@ -625,21 +778,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const { logs } = (await res.json()) as { logs: Array<{ action: string; details?: string | null }> };
     assert.ok(logs.some((entry) => entry.action === "i18n.upload"), "the catalog upload must be listed");
 
-    // Anonymous and school-admin callers are refused.
+    // Anonymous and organization-admin callers are refused.
     assert.equal((await call("/api/super/audit-logs")).status, 401);
-    const asSchool = await call("/api/super/audit-logs", { cookie: schoolSessionCookie });
-    assert.ok(asSchool.status === 401 || asSchool.status === 403, `school admin got ${asSchool.status}`);
+    const asOrganization = await call("/api/super/audit-logs", { cookie: orgSessionCookie });
+    assert.ok(asOrganization.status === 401 || asOrganization.status === 403, `organization admin got ${asOrganization.status}`);
 
     await callJson("/api/super/i18n/de-DE", { method: "DELETE", cookie: superSessionCookie });
   });
 
-  test("Platform history never exposes a school's own activity", async () => {
-    // Rule 2 keeps super admins out of school data. The query matches on who
-    // acted, never on which school was acted upon, so a teacher adding a portal
+  test("Platform history never exposes an organization's own activity", async () => {
+    // Rule 2 keeps super admins out of organization data. The query matches on who
+    // acted, never on which organization was acted upon, so an operator adding a portal
     // card must not appear here even though that row carries a tenant_id.
     await callJson("/api/portal-sites?tenant=greenwood", {
       ...json({ title: "Private Lab Tool", url: "https://internal.greenwood.example" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
 
     const { logs } = (await (await call("/api/super/audit-logs?limit=200", { cookie: superSessionCookie })).json()) as {
@@ -647,34 +800,34 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     };
     // Prove the row exists before asserting it is absent, so this cannot pass
     // just because nothing was written.
-    const own = (await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json()) as {
+    const own = (await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).json()) as {
       logs: Array<{ action: string; details?: string | null }>;
     };
     assert.ok(
       own.logs.some((entry) => (entry.details || "").includes("Private Lab Tool")),
-      "the school must be able to see its own action"
+      "the organization must be able to see its own action"
     );
 
     const leaked = logs.find((entry) => (entry.details || "").includes("Private Lab Tool"));
-    assert.equal(leaked, undefined, "a school's own action leaked into the platform history");
+    assert.equal(leaked, undefined, "an organization's own action leaked into the platform history");
   });
 
-  test("A school can read what the platform did to its lab", async () => {
+  test("An organization can read what the platform did to its lab", async () => {
     // The answer to \"who changed our subdomain\". The super admin acts with the
-    // school's tenant_id on the row, so it belongs in that school's own log.
-    const meRes = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+    // organization's tenant_id on the row, so it belongs in that organization's own log.
+    const meRes = await callJson("/api/auth/me", { cookie: orgSessionCookie });
     const greenwoodTenantId = meRes.data.tenant.id;
 
-    const before = await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json();
+    const before = await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).json();
     assert.ok(Array.isArray((before as { logs: unknown[] }).logs));
 
     await callJson("/api/super/tenants/suspend", { ...json({ tenantId: greenwoodTenantId }), cookie: superSessionCookie });
     await callJson("/api/super/tenants/reactivate", { ...json({ tenantId: greenwoodTenantId }), cookie: superSessionCookie });
 
-    const { logs } = (await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: schoolSessionCookie })).json()) as {
+    const { logs } = (await (await call("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).json()) as {
       logs: Array<{ action: string }>;
     };
-    assert.ok(logs.some((entry) => entry.action === "tenant.suspend"), "the suspension must be visible to the school");
+    assert.ok(logs.some((entry) => entry.action === "tenant.suspend"), "the suspension must be visible to the organization");
     assert.ok(logs.some((entry) => entry.action === "tenant.reactivate"), "so must the reactivation");
   });
 
@@ -713,7 +866,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
-  test("Refuses cross-tenant access from a teacher at another school", async () => {
+  test("Refuses cross-tenant access from an operator at another organization", async () => {
     const apiRes = await call("/api/clients?tenant=greenwood", { cookie: rivalSessionCookie });
     assert.equal(apiRes.status, 403);
 
@@ -730,7 +883,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Rejects a navigate command that is not an http(s) URL", async () => {
     const { res, data } = await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "navigate", url: "javascript:alert(1)" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(res.status, 400);
     assert.match(data.error, /valid http\(s\) URL/);
@@ -739,16 +892,16 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Rejects an unsupported command action", async () => {
     const { res } = await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "rm -rf" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(res.status, 400);
   });
 
   // --------------------------------------------------------- device enrolment
 
-  test("Reveals the enrollment key to the school admin only", async () => {
+  test("Reveals the enrollment key to the organization admin only", async () => {
     const { res, data } = await callJson("/api/settings/enrollment-key?tenant=greenwood", {
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(res.status, 200);
     assert.match(data.enrollmentKey, /^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$/);
@@ -771,7 +924,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
     assert.equal(data.clientId, "PC-01");
-    assert.equal(data.schoolName, "Greenwood High School");
+    assert.equal(data.organizationName, "Greenwood Holdings");
     assert.match(data.deviceToken, /^[0-9a-f]{64}$/);
     deviceToken = data.deviceToken;
   });
@@ -792,7 +945,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Ingests client telemetry scoped to the token's own tenant", async () => {
     const { res, data } = await callJson("/api/telemetry", {
       ...json({
-        // A hostile client claiming another school and another PC is ignored:
+        // A hostile client claiming another organization and another PC is ignored:
         // the token decides both.
         clientId: "PC-EVIL",
         activeUrl: "https://www.khanacademy.org",
@@ -804,9 +957,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
     assert.ok(Array.isArray(data.whitelist));
-    assert.ok(data.whitelist.includes("khanacademy.org"));
+    assert.ok(allowlistHas(data.whitelist, "khanacademy.org"));
 
-    const { data: clients } = await callJson("/api/clients?tenant=greenwood", { cookie: schoolSessionCookie });
+    const { data: clients } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
     assert.ok(clients.clients["PC-01"], "telemetry must be recorded against the enrolled client id");
     assert.ok(!clients.clients["PC-EVIL"], "a client id supplied in the body must be ignored");
   });
@@ -814,7 +967,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Delivers a broadcast command to each workstation exactly once", async () => {
     const { res: cmdRes } = await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "lock", message: "Attention to front" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(cmdRes.status, 200);
 
@@ -830,7 +983,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Broadcast URL sets authoritative targetUrl and epoch in telemetry and reset restores portal", async () => {
     const { res: cmdRes } = await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "navigate", url: "https://scratch.mit.edu" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(cmdRes.status, 200);
 
@@ -848,7 +1001,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Reset broadcast to portal
     const { res: resetRes } = await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "navigate", url: "https://greenwood.labkiosk.akbhoi.com/", resetPortal: true }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(resetRes.status, 200);
 
@@ -856,6 +1009,24 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(telemAfter.res.status, 200);
     assert.equal(telemAfter.data.targetUrl, "https://greenwood.labkiosk.akbhoi.com/");
     assert.equal(telemAfter.data.broadcastUrl, "");
+    // The reset command sends the workstation to its own portal, not to wherever
+    // the operator reached the console: a console on http://localhost once sent
+    // every workstation to http://localhost, which on a workstation is itself.
+    const fromLocalConsole = await worker.fetch(
+      new Request("http://localhost:8787/api/command?tenant=greenwood", {
+        method: "POST",
+        headers: { Cookie: orgSessionCookie, "Content-Type": "application/json", Origin: "http://localhost:8787" },
+        body: JSON.stringify({ target: "all", action: "navigate", resetPortal: true })
+      }),
+      mockEnv
+    );
+    assert.equal(fromLocalConsole.status, 200);
+    const delivered = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    const reset = delivered.data.commands.find((c: any) => c.action === "navigate");
+    assert.ok(reset, "the reset is delivered as a navigate command");
+    assert.equal(reset.url, "https://greenwood.labkiosk.akbhoi.com/");
+    assert.equal(reset.url, delivered.data.targetUrl);
+    assert.equal(reset.portal, undefined, "the internal marker is not sent to the agent");
   });
 
   test("Drops an oversized screen thumbnail instead of storing it", async () => {
@@ -863,7 +1034,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const { res } = await callJson("/api/telemetry", { ...json({ thumbnail: huge }), bearer: deviceToken });
     assert.equal(res.status, 200);
 
-    const { data } = await callJson("/api/clients?tenant=greenwood", { cookie: schoolSessionCookie });
+    const { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
     const thumb = data.clients["PC-01"].thumbnail;
     assert.ok(!thumb || thumb.length < 300 * 1024, "an oversized thumbnail must not be persisted");
   });
@@ -871,7 +1042,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Revokes the device token when a workstation is decommissioned", async () => {
     const { res: removeRes } = await callJson("/api/clients/remove?tenant=greenwood", {
       ...json({ clientId: "PC-01" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(removeRes.status, 200);
 
@@ -881,25 +1052,25 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ---------------------------------------------------------------- misc
 
-  test("Keeps the domain allowlist separate per school", async () => {
+  test("Keeps the domain allowlist separate per organization", async () => {
     await callJson("/api/whitelist?tenant=greenwood", {
       ...json({ action: "add", domain: "https://nasa.gov/education" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
 
     const { data: greenwood } = await callJson("/api/whitelist?tenant=greenwood", {
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
-    assert.ok(greenwood.whitelist.includes("nasa.gov"), "the domain should be normalized to a bare hostname");
+    assert.ok(allowlistHas(greenwood.whitelist, "nasa.gov"), "the domain should be normalized to a bare hostname");
 
     const { data: riverside } = await callJson("/api/whitelist?tenant=riverside", {
       cookie: rivalSessionCookie
     });
-    assert.ok(!riverside.whitelist.includes("nasa.gov"), "one school's allowlist must not leak into another's");
+    assert.ok(!allowlistHas(riverside.whitelist, "nasa.gov"), "one organization's allowlist must not leak into another's");
   });
 
   test("Records privileged actions in the audit log", async () => {
-    const { res, data } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: schoolSessionCookie });
+    const { res, data } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
     assert.equal(res.status, 200);
     const actions = data.logs.map((l: any) => l.action);
     assert.ok(actions.includes("command.lock"), "dispatched commands must be auditable");
@@ -911,14 +1082,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
     assert.equal(data.subdomain, "greenwood");
-    assert.equal(data.schoolName, "Greenwood High School");
+    assert.equal(data.organizationName, "Greenwood Holdings");
     assert.equal(data.isActive, true);
   });
 
-  test("Points an enrolled workstation at its own school, whatever host it used", async () => {
+  test("Points an enrolled workstation at its own organization, whatever host it used", async () => {
     // A workstation may reach the control plane on a host that cannot carry the
-    // school name -- the Docker gateway, a *.workers.dev deployment, an IP. The
-    // enrolment response must still send it to its school's portal rather than
+    // organization name -- the Docker gateway, a *.workers.dev deployment, an IP. The
+    // enrolment response must still send it to its organization's portal rather than
     // to the public landing page.
     const expectations: Array<[string, RegExp]> = [
       ["greenwood.labkiosk.akbhoi.com", /^https:\/\/greenwood\.labkiosk\.akbhoi\.com\/$/],
@@ -944,96 +1115,96 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
-  test("Only treats a host under DEFAULT_DOMAIN as a school subdomain", async () => {
-    // A multi-label host that is not a school must not have its first label read
+  test("Only treats a host under DEFAULT_DOMAIN as an organization subdomain", async () => {
+    // A multi-label host that is not an organization must not have its first label read
     // as one: `host.docker.internal` is the Docker gateway, and a worker deployed
-    // at `my-worker.acct.workers.dev` serves its own landing page, not a school
-    // called "my-worker". Both previously rendered "School Subdomain Not Found".
+    // at `my-worker.acct.workers.dev` serves its own landing page, not an organization
+    // called "my-worker". Both previously rendered "Organization Subdomain Not Found".
     for (const host of ["host.docker.internal", "my-worker.acct.workers.dev", "127.0.0.1"]) {
       const res = await worker.fetch(new Request("https://labkiosk.akbhoi.com/", { headers: { host } }), mockEnv);
       assert.equal(res.status, 200, `${host} should serve the landing page`);
-      assert.match(await res.text(), /Centralized School Computer Lab/);
+      assert.match(await res.text(), /Turn Any Computer Into a/);
     }
 
-    // A real school subdomain under the configured base domain still resolves.
-    const school = await worker.fetch(
+    // A real organization subdomain under the configured base domain still resolves.
+    const organization = await worker.fetch(
       new Request("https://labkiosk.akbhoi.com/", { headers: { host: "greenwood.labkiosk.akbhoi.com" } }),
       mockEnv
     );
-    assert.equal(school.status, 200);
-    // The root is the school homepage now; the app grid is at /home.
-    assert.match(await school.text(), /Enter the Lab/);
+    assert.equal(organization.status, 200);
+    // The root is the organization homepage now; the app grid is at /home.
+    assert.match(await organization.text(), /Open User Portal/);
   });
 
   // ---------------------------------------------------------- custom domains
 
-  test("Allows School Admin to request a custom domain and validates domain syntax", async () => {
+  test("Allows Organization Admin to request a custom domain and validates domain syntax", async () => {
     // Reject invalid domain format
     const invalid = await callJson("/api/settings/custom-domain?tenant=greenwood", {
       ...json({ domain: "not-a-valid-domain" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(invalid.res.status, 400);
 
     // Accept valid FQDN
     const { res, data } = await callJson("/api/settings/custom-domain?tenant=greenwood", {
-      ...json({ domain: "kiosk.greenwood.edu" }),
-      cookie: schoolSessionCookie
+      ...json({ domain: "kiosk.greenwood.example" }),
+      cookie: orgSessionCookie
     });
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
-    assert.equal(data.requestedCustomDomain, "kiosk.greenwood.edu");
+    assert.equal(data.requestedCustomDomain, "kiosk.greenwood.example");
     assert.equal(data.customDomainStatus, "pending");
   });
 
   test("Allows Super Admin to approve custom domain and routes traffic via Host header", async () => {
     const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
-      ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.edu" }),
+      ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.example" }),
       cookie: superSessionCookie
     });
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
-    assert.equal(data.customDomain, "kiosk.greenwood.edu");
+    assert.equal(data.customDomain, "kiosk.greenwood.example");
 
-    // Edge routing via Host: kiosk.greenwood.edu now resolves Greenwood's portal
+    // Edge routing via Host: kiosk.greenwood.example now resolves Greenwood's portal
     const portal = await worker.fetch(
-      new Request("https://kiosk.greenwood.edu/", { headers: { host: "kiosk.greenwood.edu" } }),
+      new Request("https://kiosk.greenwood.example/", { headers: { host: "kiosk.greenwood.example" } }),
       mockEnv
     );
     assert.equal(portal.status, 200);
     const html = await portal.text();
-    // The custom domain root is the school homepage, same as the subdomain root.
-    assert.match(html, /Enter the Lab/);
-    assert.match(html, /Greenwood High School/);
-    assert.ok(!html.includes("Centralized School Computer Lab Management"), "custom domain must not render landing page");
+    // The custom domain root is the organization homepage, same as the subdomain root.
+    assert.match(html, /Open User Portal/);
+    assert.match(html, /Greenwood Holdings/);
+    assert.ok(!html.includes("Secure Browser Workstations for Any Organization"), "custom domain must not render landing page");
 
     // And /home on that domain is the app grid.
     const grid = await worker.fetch(
-      new Request("https://kiosk.greenwood.edu/home", { headers: { host: "kiosk.greenwood.edu" } }),
+      new Request("https://kiosk.greenwood.example/home", { headers: { host: "kiosk.greenwood.example" } }),
       mockEnv
     );
     assert.equal(grid.status, 200);
     const gridHtml = await grid.text();
     assert.match(gridHtml, /Protected Kiosk Session/);
-    assert.match(gridHtml, /<title>Greenwood High School - Student Learning Portal<\/title>/);
-    assert.match(gridHtml, /Select an Educational Resource/);
+    assert.match(gridHtml, /<title>Greenwood Holdings - User Portal<\/title>/);
+    assert.match(gridHtml, /Select an Approved Resource/);
   });
 
   test("Enrols a workstation using customDomain", async () => {
     const { res, data } = await callJson(
       "/api/devices/enroll",
-      json({ customDomain: "kiosk.greenwood.edu", clientId: "PC-CUSTOM", enrollmentKey })
+      json({ customDomain: "kiosk.greenwood.example", clientId: "PC-CUSTOM", enrollmentKey })
     );
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
     assert.equal(data.clientId, "PC-CUSTOM");
-    assert.equal(data.schoolName, "Greenwood High School");
+    assert.equal(data.organizationName, "Greenwood Holdings");
     assert.ok(data.deviceToken);
 
     // Verify custom domain is automatically included in client whitelist
     const telem = await callJson("/api/telemetry", { ...json({}), bearer: data.deviceToken });
     assert.equal(telem.res.status, 200);
-    assert.ok(telem.data.whitelist.includes("kiosk.greenwood.edu"), "custom domain must be included in client whitelist");
+    assert.ok(allowlistHas(telem.data.whitelist, "kiosk.greenwood.example"), "custom domain must be included in client whitelist");
   });
 
   test("Enrols a workstation using custom server URL or IP via enrollment key", async () => {
@@ -1044,14 +1215,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
     assert.equal(data.clientId, "PC-DOCKER");
-    assert.equal(data.schoolName, "Greenwood High School");
+    assert.equal(data.organizationName, "Greenwood Holdings");
     assert.ok(data.deviceToken);
   });
 
-  test("Allows School Admin to disconnect custom domain", async () => {
+  test("Allows Organization Admin to disconnect custom domain", async () => {
     const { res, data } = await callJson("/api/settings/custom-domain?tenant=greenwood", {
       method: "DELETE",
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(res.status, 200);
     assert.equal(data.status, "ok");
@@ -1069,57 +1240,57 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // 1. Rejects invalid non-http(s) URL
     const { res: badRes, data: badData } = await callJson("/api/settings/mode?tenant=greenwood", {
       ...json({ mode: "single_url", defaultUrl: "javascript:alert(1)" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(badRes.status, 400);
     assert.match(badData.error, /valid http\(s\) (URL|address)/i);
 
-    // 2. Accepts valid LMS / exam platform URL
+    // 2. Accepts valid LMS / assessment platform URL
     const { res: okRes, data: okData } = await callJson("/api/settings/mode?tenant=greenwood", {
-      ...json({ mode: "single_url", defaultUrl: "https://canvas.institution.edu" }),
-      cookie: schoolSessionCookie
+      ...json({ mode: "single_url", defaultUrl: "https://canvas.example.com" }),
+      cookie: orgSessionCookie
     });
     assert.equal(okRes.status, 200);
     assert.equal(okData.status, "ok");
     assert.equal(okData.mode, "single_url");
-    assert.equal(okData.defaultUrl, "https://canvas.institution.edu/");
+    assert.equal(okData.defaultUrl, "https://canvas.example.com/");
 
     // 3. Workstation telemetry receives the single-site lockdown target URL and auto-whitelisted domain
     const telem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     assert.equal(telem.res.status, 200);
-    assert.equal(telem.data.targetUrl, "https://canvas.institution.edu/");
-    assert.ok(telem.data.whitelist.includes("canvas.institution.edu"), "target domain must be automatically whitelisted");
+    assert.equal(telem.data.targetUrl, "https://canvas.example.com/");
+    assert.ok(allowlistHas(telem.data.whitelist, "canvas.example.com"), "target domain must be automatically whitelisted");
 
     // 4. Switching back to portal mode restores portal targetUrl
     const { res: portalRes, data: portalData } = await callJson("/api/settings/mode?tenant=greenwood", {
       ...json({ mode: "portal" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(portalRes.status, 200);
     assert.equal(portalData.mode, "portal");
   });
 
-  test("Updates and retrieves institution customization and reflects on student portal", async () => {
+  test("Updates and retrieves organization customization and reflects on user portal", async () => {
     // 1. Update customization settings
     const { res: updateRes, data: updateData } = await callJson("/api/settings/customization?tenant=greenwood", {
       ...json({
         name: "MIT Robotics Lab",
-        defaultLockMessage: "Class demonstration in progress. Please focus on the instructor.",
+        defaultLockMessage: "Class demonstration in progress. Please focus on the operator.",
         portalTitle: "Robotics Workstation Portal",
         portalSubtitle: "Department of Mechanical Engineering",
         portalDescription: "Select an engineering simulation tool below:",
         portalFooter: "RESTRICTED LAB ENVIRONMENT • MIT COMPUTING"
       }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(updateRes.status, 200);
     assert.equal(updateData.status, "ok");
     assert.equal(updateData.name, "MIT Robotics Lab");
-    assert.equal(updateData.defaultLockMessage, "Class demonstration in progress. Please focus on the instructor.");
+    assert.equal(updateData.defaultLockMessage, "Class demonstration in progress. Please focus on the operator.");
 
     // 2. GET /api/settings/customization returns the updated branding
     const { res: getRes, data: getData } = await callJson("/api/settings/customization?tenant=greenwood", {
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(getRes.status, 200);
     assert.equal(getData.name, "MIT Robotics Lab");
@@ -1128,7 +1299,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(getData.portalDescription, "Select an engineering simulation tool below:");
     assert.equal(getData.portalFooter, "RESTRICTED LAB ENVIRONMENT • MIT COMPUTING");
 
-    // 3. Student portal renders the customized branding
+    // 3. User Portal renders the customized branding
     const portalHtml = await (await call("/home?tenant=greenwood")).text();
     assert.ok(portalHtml.includes("Robotics Workstation Portal"), "portal title must be customized");
     assert.ok(portalHtml.includes("Department of Mechanical Engineering"), "portal subtitle must be customized");
@@ -1138,17 +1309,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // 4. Default lock screen announcement is used when no message is specified in lock command
     await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "lock" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     const telem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     const lockCmd = telem.data.commands.find((c: any) => c.action === "lock");
     assert.ok(lockCmd);
-    assert.equal(lockCmd.message, "Class demonstration in progress. Please focus on the instructor.");
+    assert.equal(lockCmd.message, "Class demonstration in progress. Please focus on the operator.");
 
     // Reset name back for remaining tests
     await callJson("/api/settings/customization?tenant=greenwood", {
-      ...json({ name: "Greenwood High School" }),
-      cookie: schoolSessionCookie
+      ...json({ name: "Greenwood Holdings" }),
+      cookie: orgSessionCookie
     });
   });
 
@@ -1156,67 +1327,67 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // 1. Rejects invalid preset URL
     const { res: badRes } = await callJson("/api/broadcast-presets?tenant=greenwood", {
       ...json({ title: "Bad", url: "ftp://not-allowed" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(badRes.status, 400);
 
     // 2. Adds valid preset (also testing scheme-less input resolution)
     const { res: addRes, data: addData } = await callJson("/api/broadcast-presets?tenant=greenwood", {
-      ...json({ title: "GitHub Classroom", url: "classroom.github.com" }),
-      cookie: schoolSessionCookie
+      ...json({ title: "GitHub Room", url: "room.github.com" }),
+      cookie: orgSessionCookie
     });
     assert.equal(addRes.status, 200);
     assert.equal(addData.status, "ok");
     assert.ok(addData.preset.id);
-    assert.equal(addData.preset.title, "GitHub Classroom");
-    assert.equal(addData.preset.url, "https://classroom.github.com/");
+    assert.equal(addData.preset.title, "GitHub Room");
+    assert.equal(addData.preset.url, "https://room.github.com/");
 
     const presetId = addData.preset.id;
 
     // 2b. Broadcast preset domain is automatically whitelisted in workstation telemetry
     const presetTelem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
-    assert.ok(presetTelem.data.whitelist.includes("classroom.github.com"), "broadcast preset domain must be automatically whitelisted");
+    assert.ok(allowlistHas(presetTelem.data.whitelist, "room.github.com"), "broadcast preset domain must be automatically whitelisted");
 
     // 2c. Active broadcast URL is dynamically whitelisted in telemetry during broadcast
     await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "navigate", url: "https://custom-demo.org/simulation" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     const broadcastTelem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
-    assert.ok(broadcastTelem.data.whitelist.includes("custom-demo.org"), "active broadcast domain must be dynamically whitelisted in telemetry");
+    assert.ok(allowlistHas(broadcastTelem.data.whitelist, "custom-demo.org"), "active broadcast domain must be dynamically whitelisted in telemetry");
 
     // 2d. Resetting broadcast restores authoritative portal target
     await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "navigate", resetPortal: true }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     const resetTelem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     assert.equal(resetTelem.data.broadcastUrl, "");
 
     // 3. Lists presets
     const { res: listRes, data: listData } = await callJson("/api/broadcast-presets?tenant=greenwood", {
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(listRes.status, 200);
     const found = listData.presets.find((p: any) => p.id === presetId);
     assert.ok(found);
-    assert.equal(found.title, "GitHub Classroom");
+    assert.equal(found.title, "GitHub Room");
 
-    // 4. Teacher dashboard includes the preset in rendered HTML
-    const adminHtml = await (await call("/admin?tenant=greenwood", { cookie: schoolSessionCookie })).text();
-    assert.ok(adminHtml.includes("GitHub Classroom"));
+    // 4. Admin console includes the preset in rendered HTML
+    const adminHtml = await (await call("/admin?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(adminHtml.includes("GitHub Room"));
 
     // 5. Deletes preset
     const { res: delRes, data: delData } = await callJson(`/api/broadcast-presets/${presetId}?tenant=greenwood`, {
       method: "DELETE",
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(delRes.status, 200);
     assert.equal(delData.status, "ok");
 
     // 6. Deleted preset no longer in list
     const { data: listAfter } = await callJson("/api/broadcast-presets?tenant=greenwood", {
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.ok(!listAfter.presets.some((p: any) => p.id === presetId));
   });
@@ -1225,14 +1396,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Every HTML page carries a strict CSP whose nonce matches every script and no inline handlers", async () => {
     // The third element says whether this page is expected to carry a script.
-    // A page with none is legitimate -- the school homepage has no script at
+    // A page with none is legitimate -- the organization homepage has no script at
     // all -- but every script that does render must carry this nonce.
     const pages: Array<[string, string | undefined, boolean]> = [
       ["/", undefined, true],
       ["/?login=1", undefined, true],
       ["/?tenant=greenwood", undefined, false],
       ["/home?tenant=greenwood", undefined, true],
-      ["/admin?tenant=greenwood", schoolSessionCookie, true],
+      ["/admin?tenant=greenwood", orgSessionCookie, true],
       ["/super", superSessionCookie, true]
     ];
     for (const [path, cookie, expectsScript] of pages) {
@@ -1248,7 +1419,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.ok(res.headers.get("Permissions-Policy"));
 
       const html = await res.text();
-      const scripts = html.match(/<script\b[^>]*>/g) || [];
+      const scripts = html.match(/<script\b[^>]*>/gi) || [];
       if (expectsScript) {
         assert.ok(scripts.length > 0, `${path} renders at least one script block`);
       }
@@ -1272,14 +1443,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Refuses a cookie-authenticated mutation from a cross-site origin", async () => {
     const crossSite = await call("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "unlock" }),
-      cookie: schoolSessionCookie,
+      cookie: orgSessionCookie,
       headers: { Origin: "https://evil.example" }
     });
     assert.equal(crossSite.status, 403);
 
     const sameSite = await call("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "unlock" }),
-      cookie: schoolSessionCookie,
+      cookie: orgSessionCookie,
       headers: { Origin: "https://greenwood.labkiosk.akbhoi.com" }
     });
     assert.equal(sameSite.status, 200);
@@ -1294,15 +1465,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Signs out only on POST, never on a GET link", async () => {
-    const viaGet = await call("/api/auth/logout", { cookie: schoolSessionCookie });
+    const viaGet = await call("/api/auth/logout", { cookie: orgSessionCookie });
     assert.equal(viaGet.status, 405);
-    const still = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+    const still = await callJson("/api/auth/me", { cookie: orgSessionCookie });
     assert.ok(still.data.user, "a GET must not have ended the session");
 
     // Sign a throwaway session out properly.
     const { res: loginRes } = await callJson(
       "/api/auth/login",
-      json({ email: "teacher@greenwood.edu", password: "SchoolPassword123!" })
+      json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" })
     );
     const throwaway = loginRes.headers.get("Set-Cookie")!.split(";")[0];
     const viaPost = await call("/api/auth/logout", { method: "POST", cookie: throwaway });
@@ -1317,7 +1488,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Lets a signed-in user change their password and ends their other sessions", async () => {
     const { res: otherLogin } = await callJson(
       "/api/auth/login",
-      json({ email: "teacher@riverside.edu", password: "RiversidePass456!" })
+      json({ email: "operator@riverside.example", password: "RiversidePass456!" })
     );
     const otherCookie = otherLogin.headers.get("Set-Cookie")!.split(";")[0];
 
@@ -1345,9 +1516,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const otherGone = await callJson("/api/auth/me", { cookie: otherCookie });
     assert.equal(otherGone.data.user, null, "every other session of that user is revoked");
 
-    const oldPassword = await call("/api/auth/login", json({ email: "teacher@riverside.edu", password: "RiversidePass456!" }));
+    const oldPassword = await call("/api/auth/login", json({ email: "operator@riverside.example", password: "RiversidePass456!" }));
     assert.equal(oldPassword.status, 401);
-    const newPassword = await call("/api/auth/login", json({ email: "teacher@riverside.edu", password: "RiversideNewPass789!" }));
+    const newPassword = await call("/api/auth/login", json({ email: "operator@riverside.example", password: "RiversideNewPass789!" }));
     assert.equal(newPassword.status, 200);
   });
 
@@ -1357,7 +1528,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const subdomain of ["admin", "www", "super", "api"]) {
       const { res, data } = await callJson(
         "/api/auth/register",
-        json({ name: "Reserved", email: `reserved-${subdomain}@school.edu`, password: "ReservedPass123!", subdomain })
+        json({ name: "Reserved", email: `reserved-${subdomain}@example.com`, password: "ReservedPass123!", subdomain })
       );
       assert.equal(res.status, 400, `${subdomain} must be refused`);
       assert.match(data.error, /reserved/);
@@ -1371,31 +1542,43 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const tooLong = await callJson(
       "/api/auth/register",
-      json({ name: "Long", email: "long@school.edu", password: "LongSlugPass123!", subdomain: "a".repeat(64) })
+      json({ name: "Long", email: "long@example.com", password: "LongSlugPass123!", subdomain: "a".repeat(64) })
     );
     assert.equal(tooLong.res.status, 400);
   });
 
   test("Accepts a scheme-less host:port as a valid URL", async () => {
     const { res, data } = await callJson("/api/broadcast-presets?tenant=greenwood", {
-      ...json({ title: "Local LMS", url: "canvas.institution.edu:8080/courses" }),
-      cookie: schoolSessionCookie
+      ...json({ title: "Local LMS", url: "canvas.example.com:8080/courses" }),
+      cookie: orgSessionCookie
     });
     assert.equal(res.status, 200);
-    assert.equal(data.preset.url, "https://canvas.institution.edu:8080/courses");
-    await call(`/api/broadcast-presets/${data.preset.id}?tenant=greenwood`, { method: "DELETE", cookie: schoolSessionCookie });
+    assert.equal(data.preset.url, "https://canvas.example.com:8080/courses");
+    await call(`/api/broadcast-presets/${data.preset.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
 
     // Host:port followed directly by query parameter or hash fragment without trailing slash
     assert.equal(
-      safeHttpUrl("canvas.institution.edu:8080?param=1#section"),
-      "https://canvas.institution.edu:8080/?param=1#section"
+      safeHttpUrl("canvas.example.com:8080?param=1#section"),
+      "https://canvas.example.com:8080/?param=1#section"
     );
-    assert.equal(safeHttpUrl("canvas.institution.edu:8080#section"), "https://canvas.institution.edu:8080/#section");
+    assert.equal(safeHttpUrl("canvas.example.com:8080#section"), "https://canvas.example.com:8080/#section");
+  });
+
+  test("A custom domain is cleaned in linear time, whatever a workstation sends", () => {
+    assert.equal(cleanCustomDomain("https://Kiosk.Example.com:8443/path/to/page"), "kiosk.example.com");
+    assert.equal(cleanCustomDomain("pc-01.labkiosk.example.com"), "pc-01.labkiosk.example.com");
+    assert.equal(cleanCustomDomain("not a domain"), null);
+    // A run of "/" made the old path pattern quadratic (CodeQL js/polynomial-redos),
+    // and a workstation's remoteHost reaches this function.
+    const started = performance.now();
+    assert.equal(cleanCustomDomain("/".repeat(200_000)), null);
+    assert.equal(cleanCustomDomain("kiosk.example.com" + "/".repeat(2000)), "kiosk.example.com");
+    assert.ok(performance.now() - started < 200, "cleaning hostile input stays fast");
   });
 
   test("Checks domain boundaries case-insensitively with isHostUnder", () => {
-    assert.equal(isHostUnder("School.LabKiosk.com", "labkiosk.com"), true);
-    assert.equal(isHostUnder("SCHOOL.LABKIOSK.COM", ".LabKiosk.COM"), true);
+    assert.equal(isHostUnder("Organization.LabKiosk.com", "labkiosk.com"), true);
+    assert.equal(isHostUnder("ORGANIZATION.LABKIOSK.COM", ".LabKiosk.COM"), true);
     assert.equal(isHostUnder("greenwood.labkiosk.akbhoi.com", "labkiosk.akbhoi.com"), true);
     assert.equal(isHostUnder("not-labkiosk.com", "labkiosk.com"), false);
     assert.equal(isHostUnder("fakelabkiosk.com", "labkiosk.com"), false);
@@ -1404,24 +1587,24 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // --------------------------------------------------------- remote control
 
-  test("Stores the remote-control details a workstation reports and shows them to its teacher", async () => {
+  test("Stores the remote-control details a workstation reports and shows them to its operator", async () => {
     const reported = await callJson("/api/telemetry", {
-      ...json({ vncPassword: "s3cr3t42", remoteHost: "PC-02.lab.greenwood.edu" }),
+      ...json({ vncPassword: "s3cr3t42", remoteHost: "PC-02.lab.greenwood.example" }),
       bearer: deviceToken
     });
     assert.equal(reported.res.status, 200);
 
-    let { data } = await callJson("/api/clients?tenant=greenwood", { cookie: schoolSessionCookie });
+    let { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
     assert.equal(data.clients["PC-02"].vncPassword, "s3cr3t42");
-    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.edu");
+    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.example");
 
     // A heartbeat that omits them keeps what is known; a garbage host is ignored.
     await callJson("/api/telemetry", { ...json({ remoteHost: "not a host!" }), bearer: deviceToken });
-    ({ data } = await callJson("/api/clients?tenant=greenwood", { cookie: schoolSessionCookie }));
+    ({ data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie }));
     assert.equal(data.clients["PC-02"].vncPassword, "s3cr3t42");
-    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.edu");
+    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.example");
 
-    // Another school's teacher never sees them.
+    // Another organization's operator never sees them.
     const rival = await call("/api/clients?tenant=greenwood", { cookie: rivalSessionCookie });
     assert.equal(rival.status, 403);
   });
@@ -1430,26 +1613,384 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((workerModule as any).tenantBroadcastState, undefined, "the in-memory broadcast map must be gone");
     await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "navigate", url: "https://phet.colorado.edu/en/simulations" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     const telem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     assert.equal(telem.data.broadcastUrl, "https://phet.colorado.edu/en/simulations");
     await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "navigate", resetPortal: true }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     const after = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     assert.equal(after.data.broadcastUrl, "");
   });
 
-  // --------------------------------------------------------- suspend school
+  // ------------------------------------------------------ organization hub (OrgHub)
+  //
+  // Live workstation state lives in one Durable Object per organization. Node has
+  // no WebSocket upgrade, so these tests connect sockets straight to the local
+  // stand-in through the same acceptDevice/acceptConsole the upgrade path uses.
 
-  test("Lets the super admin suspend and reactivate a school", async () => {
-    const meRes = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+  const hubs = () => localHubNamespace(mockEnv);
+  const portalContext = () => {
+    const req = new Request(`${BASE}/api/devices/ws`);
+    return portalContextFrom(req, new URL(req.url), mockEnv);
+  };
+  const greenwoodId = async () => (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant.id as string;
+  const enrolAs = async (clientId: string) => {
+    const { res, data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId }));
+    assert.equal(res.status, 200, `enrolling ${clientId}`);
+    return data.deviceToken as string;
+  };
+  const ofType = (socket: { messages(): Array<Record<string, unknown>> }, type: string) =>
+    socket.messages().filter((m) => m.type === type);
+
+  test("A workstation's socket gets its configuration at once and shows as online", async () => {
+    const tenantId = await greenwoodId();
+    await enrolAs("WS-A");
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+
+    const [config] = ofType(device, "config");
+    assert.ok(config, "the first message is the workstation's configuration");
+    assert.ok(allowlistHas(config.whitelist as string[], "khanacademy.org"));
+    assert.match(String(config.targetUrl), /greenwood/);
+    assert.ok(Array.isArray(config.commands));
+
+    const { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(data.clients["WS-A"]?.online, true, "a connected workstation is online");
+    assert.equal(data.clients["WS-A"]?.ip, "10.0.0.5");
+    await device.closeFromClient();
+    const after = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(after.data.clients["WS-A"]?.online, false, "a closed connection is offline, and still listed");
+  });
+
+  test("Commands reach connected workstations immediately, once each", async () => {
+    const tenantId = await greenwoodId();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+
+    const dispatch = await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: ["WS-A"], action: "lock", message: "Briefing" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(dispatch.res.status, 200);
+    const pushed = ofType(device, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>);
+    assert.deepEqual(pushed.map((c) => c.action), ["lock"], "pushed without waiting for a heartbeat");
+    assert.equal(pushed[0].message, "Briefing");
+
+    // Reconnecting does not replay it: a command for one machine retires on delivery.
+    await device.closeFromClient();
+    const again = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    const [config] = ofType(again, "config");
+    assert.deepEqual((config.commands as unknown[]).length, 0);
+
+    // A Reset to Portal carries this workstation's own portal address.
+    await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: ["WS-A"], action: "navigate", resetPortal: true }),
+      cookie: orgSessionCookie
+    });
+    const reset = ofType(again, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>);
+    assert.match(String(reset.at(-1)?.url), /greenwood/);
+    await again.closeFromClient();
+  });
+
+  test("Screens are streamed only while a console is watching them, and never stored", async () => {
+    const tenantId = await greenwoodId();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    assert.equal(ofType(device, "frames").length, 0, "nobody is watching, so no frames are asked for");
+
+    const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+    const [snapshot] = ofType(viewer, "snapshot");
+    assert.ok((snapshot.clients as Record<string, unknown>)["WS-A"], "the console starts from a snapshot");
+
+    await viewer.fromClient({ type: "watch", clientIds: ["WS-A"] });
+    assert.deepEqual(ofType(device, "frames").at(-1), { type: "frames", on: true, intervalSeconds: 3 });
+
+    const frame = "data:image/jpeg;base64," + "A".repeat(64);
+    await device.fromClient({ type: "frame", thumbnail: frame });
+    assert.equal(ofType(viewer, "frame").at(-1)?.thumbnail, frame, "the frame is relayed to the console");
+    await device.fromClient({ type: "frame", thumbnail: "javascript:alert(1)" });
+    assert.equal(ofType(viewer, "frame").length, 1, "anything but an image data URL is dropped");
+
+    const rows = (await getDatabase(mockEnv).prepare("PRAGMA table_info(client_devices)").all<{ name: string }>()).results;
+    assert.ok(!rows.some((c) => c.name === "thumbnail"), "there is nowhere in D1 a screenshot could be written");
+
+    await viewer.closeFromClient();
+    assert.deepEqual(ofType(device, "frames").at(-1), { type: "frames", on: false, intervalSeconds: 3 }, "the last viewer leaving stops the frames");
+    await device.closeFromClient();
+  });
+
+  test("A status change reaches consoles at once and D1 only in a batch", async () => {
+    const tenantId = await greenwoodId();
+    const db = getDatabase(mockEnv);
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+
+    await device.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: true, clientNum: 7 });
+    const status = ofType(viewer, "status").at(-1)?.client as Record<string, unknown>;
+    assert.equal(status.activeUrl, "https://www.wikipedia.org/");
+    assert.equal(status.isLocked, true);
+
+    const rowBefore = await db.prepare("SELECT active_url, is_locked FROM client_devices WHERE id = ?").bind(`${tenantId}:WS-A`).first<any>();
+    assert.notEqual(rowBefore.active_url, "https://www.wikipedia.org/", "not written on every message");
+    await hubs().runAlarm(tenantId);
+    const rowAfter = await db.prepare("SELECT active_url, is_locked, client_num FROM client_devices WHERE id = ?").bind(`${tenantId}:WS-A`).first<any>();
+    assert.equal(rowAfter.active_url, "https://www.wikipedia.org/", "written back by the alarm");
+    assert.equal(rowAfter.is_locked, 1);
+    assert.equal(rowAfter.client_num, 7);
+
+    const online = await db.prepare("SELECT online_workstations FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.ok(online.online_workstations >= 1, "the directory's online count comes from the hub");
+    await viewer.closeFromClient();
+    await device.closeFromClient();
+  });
+
+  test("A heartbeat that changes nothing writes nothing to D1", async () => {
+    const token = await enrolAs("HB-QUIET");
+    const db = getDatabase(mockEnv);
+    const tenantId = await greenwoodId();
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const beat = () => callJson("/api/telemetry", { ...json({ activeUrl: "https://www.khanacademy.org/", isLocked: false }), bearer: token });
+      assert.equal((await beat()).res.status, 200);
+      const first = await db.prepare("SELECT updated_at FROM client_devices WHERE id = ?").bind(`${tenantId}:HB-QUIET`).first<any>();
+      mock.timers.tick(30_000);
+      assert.equal((await beat()).res.status, 200);
+      await hubs().runAlarm(tenantId);
+      const second = await db.prepare("SELECT updated_at FROM client_devices WHERE id = ?").bind(`${tenantId}:HB-QUIET`).first<any>();
+      assert.equal(second.updated_at, first.updated_at, "an unchanged workstation's row is left alone");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  test("A workstation that stops pinging is marked offline by the alarm", async () => {
+    const tenantId = await greenwoodId();
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+      const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+      await device.fromClient(HUB_PING);
+      assert.equal(device.sent.at(-1), HUB_PONG, "a ping is answered without waking the object");
+
+      mock.timers.tick(80_000);
+      await hubs().runAlarm(tenantId);
+      assert.equal(device.closedWith?.code, 4008, "a silent socket is closed");
+      const last = ofType(viewer, "status")
+        .map((m) => m.client as Record<string, unknown>)
+        .filter((c) => c.clientId === "WS-A")
+        .at(-1)!;
+      assert.equal(last.online, false, "consoles hear it went offline");
+      await viewer.closeFromClient();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  test("Removing a workstation closes its connection and refuses it from then on", async () => {
+    const tenantId = await greenwoodId();
+    const token = await enrolAs("WS-GONE");
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-GONE", ip: "10.0.0.9", portal: portalContext() });
+
+    const removed = await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId: "WS-GONE" }), cookie: orgSessionCookie });
+    assert.equal(removed.status, 200);
+    assert.equal(device.closedWith?.code, 4001, "its socket is closed as removed");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 401);
+    const socket = await call("/api/devices/ws", { headers: { Upgrade: "websocket" }, bearer: token });
+    assert.equal(socket.status, 401, "and it cannot reconnect");
+
+    // Enrolled again, it is welcome again.
+    const fresh = await enrolAs("WS-GONE");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: fresh })).status, 200);
+  });
+
+  test("Suspending an organization closes its workstations' connections", async () => {
+    const tenantId = await greenwoodId();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    await callJson("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: superSessionCookie });
+    assert.equal(device.closedWith?.code, 4003);
+    const socket = await call("/api/devices/ws", { headers: { Upgrade: "websocket" }, bearer: deviceToken });
+    assert.equal(socket.status, 403, "a suspended organization's workstations are refused");
+    await callJson("/api/super/tenants/reactivate", { ...json({ tenantId }), cookie: superSessionCookie });
+  });
+
+  test("An allowlist change is pushed to connected workstations", async () => {
+    const tenantId = await greenwoodId();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-A", ip: "10.0.0.5", portal: portalContext() });
+    await callJson("/api/whitelist?tenant=greenwood", { ...json({ action: "add", domain: "pushed.example.org" }), cookie: orgSessionCookie });
+    const config = ofType(device, "config").at(-1)!;
+    assert.ok(allowlistHas(config.whitelist as string[], "pushed.example.org"), "pushed without a heartbeat");
+    await callJson("/api/whitelist?tenant=greenwood", { ...json({ action: "remove", domain: "pushed.example.org" }), cookie: orgSessionCookie });
+    assert.ok(!allowlistHas(ofType(device, "config").at(-1)!.whitelist as string[], "pushed.example.org"));
+    await device.closeFromClient();
+  });
+
+  test("The workstation and console sockets are guarded", async () => {
+    assert.equal((await call("/api/devices/ws", { bearer: deviceToken })).status, 426, "an upgrade is required");
+    assert.equal((await call("/api/devices/ws", { headers: { Upgrade: "websocket" } })).status, 401, "a token is required");
+    assert.equal(
+      (await call("/api/devices/ws", { headers: { Upgrade: "websocket" }, bearer: "f".repeat(64) })).status,
+      401,
+      "a forged token is refused"
+    );
+
+    const upgrade = { Upgrade: "websocket", Origin: BASE };
+    assert.equal((await call("/api/console/ws?tenant=greenwood", { cookie: orgSessionCookie })).status, 426);
+    const anonymous = await call("/api/console/ws?tenant=greenwood", { headers: upgrade });
+    assert.ok(anonymous.status === 401 || anonymous.status === 403, "a session is required");
+    assert.equal(
+      (await call("/api/console/ws?tenant=greenwood", { headers: { ...upgrade, Origin: "https://evil.example" }, cookie: orgSessionCookie })).status,
+      403,
+      "a cross-site page cannot open an administrator's live channel"
+    );
+    assert.equal(
+      (await call("/api/console/ws?tenant=greenwood", { headers: { Upgrade: "websocket" }, cookie: orgSessionCookie })).status,
+      403,
+      "a handshake without an Origin is not a browser's and is refused"
+    );
+    assert.equal(
+      (await call("/api/console/ws?tenant=greenwood", { headers: upgrade, cookie: rivalSessionCookie })).status,
+      403,
+      "another organization's administrator is refused"
+    );
+  });
+
+  test("An organization's hub refuses a request naming another organization", async () => {
+    const tenantId = await greenwoodId();
+    const namespace = hubs();
+    const stub = namespace.get(namespace.idFromName(tenantId));
+    const res = await stub.fetch(new Request("https://org-hub/live", { headers: { "x-labkiosk-tenant": "some-other-organization" } }));
+    assert.equal(res.status, 409);
+  });
+
+  test("The console stylesheet is one immutable file per version", async () => {
+    const current = await call(CONSOLE_STYLESHEET_PATH);
+    assert.equal(current.status, 200);
+    assert.match(current.headers.get("content-type") || "", /text\/css/);
+    assert.match(current.headers.get("cache-control") || "", /immutable/);
+    const stale = await call("/assets/console-00000000.css");
+    assert.equal(stale.headers.get("cache-control"), "no-store", "an old page gets today's styles, uncached");
+    const page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(page.includes(`<link rel="stylesheet" href="${CONSOLE_STYLESHEET_PATH}">`));
+  });
+
+  test("Sign-in, registration and enrolment sit behind the rate limiter", async () => {
+    const limited = { ...mockEnv, AUTH_RATE_LIMITER: { limit: async () => ({ success: false }) } as RateLimit };
+    for (const path of ["/api/auth/login", "/api/auth/register", "/api/devices/enroll"]) {
+      const res = await worker.fetch(request(path, json({})), limited as Env);
+      assert.equal(res.status, 429, `${path} is throttled`);
+    }
+    // A limiter that fails is logged, and the D1 lockouts behind it decide.
+    const broken = { ...mockEnv, AUTH_RATE_LIMITER: { limit: async () => { throw new Error("internal error"); } } as RateLimit };
+    const res = await worker.fetch(request("/api/auth/login", json({ email: "nobody@example.org", password: "wrong" })), broken as Env);
+    assert.equal(res.status, 401, "a broken limiter does not take sign-in down");
+  });
+
+  test("Audit entries go through the queue, and a redelivered batch is written once", async () => {
+    const sent: AuditEntryMessage[] = [];
+    useAuditQueue({ send: async (m: AuditEntryMessage) => { sent.push(m); } } as unknown as Queue<AuditEntryMessage>);
+    try {
+      await writeAuditLog(getDatabase(mockEnv), { tenantId: null, action: "test.queued", details: "via queue" });
+    } finally {
+      useAuditQueue(null);
+    }
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].action, "test.queued");
+
+    let acked = 0;
+    const batch = { messages: [{ body: sent[0] }, { body: sent[0] }], ackAll: () => { acked++; }, retryAll: () => assert.fail("no retry") };
+    await worker.queue!(batch as unknown as MessageBatch<AuditEntryMessage>, mockEnv);
+    await worker.queue!(batch as unknown as MessageBatch<AuditEntryMessage>, mockEnv);
+    assert.equal(acked, 2);
+    const rows = await getDatabase(mockEnv).prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE id = ?").bind(sent[0].id).first<any>();
+    assert.equal(rows.n, 1, "a batch delivered twice is written once");
+  });
+
+  test("Audit entries older than the retention period move to R2", async () => {
+    const db = getDatabase(mockEnv);
+    const now = Math.floor(Date.now() / 1000);
+    const old = now - (AUDIT_RETENTION_DAYS + 5) * 86400;
+    await insertAuditEntries(db, [
+      { id: "old-1", tenantId: null, userId: null, action: "test.old", details: null, createdAt: old },
+      { id: "old-2", tenantId: null, userId: null, action: "test.old", details: null, createdAt: old + 1 },
+      { id: "recent-1", tenantId: null, userId: null, action: "test.recent", details: null, createdAt: now }
+    ]);
+    const stored: Array<{ key: string; body: string }> = [];
+    const bucket = { put: async (key: string, body: string) => { stored.push({ key, body }); } } as unknown as R2Bucket;
+
+    const archived = await archiveOldAuditLogs(db, bucket, now);
+    assert.ok(archived >= 2);
+    assert.equal(stored.length, 1, "one file per run");
+    const lines = stored[0].body.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(lines.some((row) => row.id === "old-1") && lines.some((row) => row.id === "old-2"));
+    assert.match(stored[0].key, /^audit\/\d{4}\/\d{4}-\d{2}-\d{2}-.+\.ndjson$/);
+    const left = await db.prepare("SELECT id FROM audit_logs WHERE id IN ('old-1', 'old-2', 'recent-1')").all<{ id: string }>();
+    assert.deepEqual(left.results.map((r) => r.id), ["recent-1"], "archived entries leave D1; recent ones stay");
+  });
+
+  test("Approving a custom domain provisions it through Cloudflare for SaaS", async () => {
+    const tenantId = await greenwoodId();
+    const approve = await callJson("/api/super/tenants/custom-domain/approve", {
+      ...json({ tenantId, customDomain: "kiosk.greenwood-test.example" }),
+      cookie: superSessionCookie
+    });
+    assert.equal(approve.res.status, 200);
+    const db = getDatabase(mockEnv);
+    const local = await db.prepare("SELECT custom_hostname_status FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.equal(local.custom_hostname_status, "local", "local development never calls Cloudflare");
+
+    // The job itself, against a mocked Cloudflare API: create, record, wait for the certificate.
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    let checks = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method || "GET";
+      calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer cf-token");
+      const ok = (result: unknown) => new Response(JSON.stringify({ success: true, errors: [], result }), { status: 200 });
+      if (method === "POST") return ok({ id: "ch-1", hostname: "kiosk.greenwood-test.example", status: "pending" });
+      if (method === "GET") {
+        checks++;
+        return ok({ id: "ch-1", hostname: "kiosk.greenwood-test.example", status: checks > 1 ? "active" : "pending", ssl: { status: checks > 1 ? "active" : "pending_validation" } });
+      }
+      return ok({ id: "ch-1" });
+    }) as typeof fetch;
+    const sleeps: string[] = [];
+    const step = { do: <T>(_name: string, fn: () => Promise<T>) => fn(), sleep: async (name: string) => { sleeps.push(name); } };
+    const env = { ...mockEnv, CF_API_TOKEN: "cf-token", CF_ZONE_ID: "zone-1" } as Env;
+    try {
+      const outcome = await runCustomHostnameJob(env, { operation: "create", tenantId, hostname: "kiosk.greenwood-test.example" }, step);
+      assert.equal(outcome, "active");
+      assert.deepEqual(calls[0], {
+        method: "POST",
+        url: "https://api.cloudflare.com/client/v4/zones/zone-1/custom_hostnames",
+        body: { hostname: "kiosk.greenwood-test.example", ssl: { method: "http", type: "dv" } }
+      });
+      assert.equal(sleeps.length, 1, "it waited once for the certificate");
+      const row = await db.prepare("SELECT custom_hostname_id, custom_hostname_status FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+      assert.deepEqual({ ...row }, { custom_hostname_id: "ch-1", custom_hostname_status: "active" });
+
+      const deleted = await runCustomHostnameJob(env, { operation: "delete", tenantId, hostname: "kiosk.greenwood-test.example", customHostnameId: "ch-1" }, step);
+      assert.equal(deleted, "none");
+      assert.deepEqual(calls.at(-1), { method: "DELETE", url: "https://api.cloudflare.com/client/v4/zones/zone-1/custom_hostnames/ch-1", body: undefined });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    const remove = await callJson("/api/super/tenants/custom-domain/remove", { ...json({ tenantId }), cookie: superSessionCookie });
+    assert.equal(remove.res.status, 200);
+    const cleared = await db.prepare("SELECT custom_domain, custom_hostname_id, custom_hostname_status FROM tenants WHERE id = ?").bind(tenantId).first<any>();
+    assert.deepEqual({ ...cleared }, { custom_domain: null, custom_hostname_id: null, custom_hostname_status: "none" });
+  });
+
+  // --------------------------------------------------------- suspend organization
+
+  test("Lets the super admin suspend and reactivate an organization", async () => {
+    const meRes = await callJson("/api/auth/me", { cookie: orgSessionCookie });
     const tenantId = meRes.data.tenant.id;
 
-    const asTeacher = await call("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: schoolSessionCookie });
-    assert.equal(asTeacher.status, 403);
+    const asOperator = await call("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: orgSessionCookie });
+    assert.equal(asOperator.status, 403);
 
     const suspend = await callJson("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: superSessionCookie });
     assert.equal(suspend.res.status, 200);
@@ -1457,14 +1998,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const portal = await call("/?tenant=greenwood");
     assert.equal(portal.status, 403);
-    assert.match(await portal.text(), /School Suspended/);
+    assert.match(await portal.text(), /Organization Suspended/);
     const telem = await call("/api/telemetry", { ...json({}), bearer: deviceToken });
     assert.equal(telem.status, 403);
     const enrol = await call("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-SUSPENDED" }));
     assert.equal(enrol.status, 403);
 
     const again = await call("/api/super/tenants/suspend", { ...json({ tenantId }), cookie: superSessionCookie });
-    assert.equal(again.status, 400, "a suspended school cannot be suspended twice");
+    assert.equal(again.status, 400, "a suspended organization cannot be suspended twice");
 
     const reactivate = await callJson("/api/super/tenants/reactivate", { ...json({ tenantId }), cookie: superSessionCookie });
     assert.equal(reactivate.res.status, 200);
@@ -1476,7 +2017,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Runs the scheduled housekeeping handler", async () => {
     await worker.scheduled({} as ScheduledEvent, mockEnv);
-    const me = await callJson("/api/auth/me", { cookie: schoolSessionCookie });
+    const me = await callJson("/api/auth/me", { cookie: orgSessionCookie });
     assert.ok(me.data.user, "a live session survives housekeeping");
   });
 
@@ -1500,7 +2041,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (let i = 0; i < 15 && !throttled; i++) {
       const res = await call(
         "/api/auth/register",
-        json({ name: `Bulk ${i}`, email: `bulk-${i}@school.edu`, password: "BulkRegisterPass123!", subdomain: `bulk-${i}` })
+        json({ name: `Bulk ${i}`, email: `bulk-${i}@example.com`, password: "BulkRegisterPass123!", subdomain: `bulk-${i}` })
       );
       if (res.status === 429) throttled = true;
       else assert.equal(res.status, 200);
@@ -1531,15 +2072,34 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       /SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set/
     );
     await assert.rejects(
-      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: migrated, SUPER_ADMIN_EMAIL: "owner@school.edu" } as Env),
+      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: migrated, SUPER_ADMIN_EMAIL: "owner@example.com" } as Env),
       /must both be set/
     );
-    // With both secrets present the same database serves normally.
-    const res = await worker.fetch(request("/"), {
+    // Both secrets are not enough: production also needs its platform bindings,
+    // and the refusal names every one that is missing.
+    const secrets = {
       DEFAULT_DOMAIN: "labkiosk.akbhoi.com",
       DB: migrated,
-      SUPER_ADMIN_EMAIL: "owner@school.edu",
+      SUPER_ADMIN_EMAIL: "owner@example.com",
       SUPER_ADMIN_PASSWORD: "OwnerPassword2026!"
+    };
+    await assert.rejects(
+      () => worker.fetch(request("/"), secrets as Env),
+      (err: Error) =>
+        ["ORG_HUB", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
+          .every((name) => err.message.includes(name))
+    );
+    // With them bound, the same database serves normally.
+    const res = await worker.fetch(request("/"), {
+      ...secrets,
+      ORG_HUB: {} as DurableObjectNamespace,
+      AUDIT_QUEUE: { send: async () => undefined } as unknown as Queue,
+      AUDIT_ARCHIVE: {} as R2Bucket,
+      FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
+      AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) } as RateLimit,
+      CUSTOM_HOSTNAMES: {} as Workflow,
+      CF_API_TOKEN: "test-token",
+      CF_ZONE_ID: "test-zone"
     } as Env);
     assert.equal(res.status, 200);
   });
@@ -1548,11 +2108,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const anonymous = await callJson("/api/super/i18n", json({ tag: "hi-IN", catalog: {} }));
     assert.ok(anonymous.res.status === 401 || anonymous.res.status === 403, "anonymous upload must be refused");
 
-    const schoolAdmin = await callJson("/api/super/i18n", {
+    const organizationAdmin = await callJson("/api/super/i18n", {
       ...json({ tag: "hi-IN", catalog: {} }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
-    assert.equal(schoolAdmin.res.status, 403, "a school admin is not a platform admin");
+    assert.equal(organizationAdmin.res.status, 403, "an organization admin is not a platform admin");
   });
 
   test("Interface catalogs: a cross-site upload is refused", async () => {
@@ -1670,19 +2230,19 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Super console renders one tab at a time", async () => {
     // The four panes were emitted together and hidden with an inline `display`,
-    // except the schools directory, which had neither a display rule nor any
+    // except the organizations directory, which had neither a display rule nor any
     // matching CSS -- so every tenant row rendered on the approvals, catalogs
     // and system pages too.
-    const directoryHeading = "Registered Schools &amp; Institutions";
+    const directoryHeading = "Registered Organizations (";
 
-    const schools = await (await call("/super/schools", { cookie: superSessionCookie })).text();
-    assert.ok(schools.includes(directoryHeading), "schools tab shows the directory");
+    const organizations = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+    assert.ok(organizations.includes(directoryHeading), "organizations tab shows the directory");
 
     for (const tab of ["/super/approvals", "/super/catalogs", "/super/system"]) {
       const res = await call(tab, { cookie: superSessionCookie });
       assert.equal(res.status, 200);
       const body = await res.text();
-      assert.ok(!body.includes(directoryHeading), tab + " must not leak the schools directory");
+      assert.ok(!body.includes(directoryHeading), tab + " must not leak the organizations directory");
     }
 
     const approvals = await (await call("/super/approvals", { cookie: superSessionCookie })).text();
@@ -1694,25 +2254,102 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------ modern admin & privacy isolation
 
-  test("Super admin is restricted from school consoles but allowed on demo tenant", async () => {
-    // 1. Super admin attempts to access greenwood school console -> 403 Forbidden
+  test("The platform has three demos, the super admin opens each, and the old demo is gone", async () => {
+    for (const slug of DEMO_SLUGS) {
+      const res = await call(`/admin/workstations?tenant=${slug}`, { cookie: superSessionCookie });
+      assert.equal(res.status, 200, `the super admin opens ${slug}`);
+    }
+    const retired = await call("/admin/workstations?tenant=demo", { cookie: superSessionCookie });
+    assert.notEqual(retired.status, 200, "there is no `demo` organization any more");
+
+    const directory = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+    for (const slug of DEMO_SLUGS) assert.match(directory, new RegExp(`${slug}\\.labkiosk\\.akbhoi\\.com`));
+    assert.equal((directory.match(/>Open Console</g) || []).length, 3, "one Open Console per demo");
+    assert.doesNotMatch(directory, />demo\.labkiosk\.akbhoi\.com/);
+  });
+
+  test("The local demos have no domain and no tunnel, even when the deployment sets one", async () => {
+    const withTunnel = { ...mockEnv, TUNNEL_DOMAIN: "tunnels.example.com" } as Env;
+    const settings = async (tenant: string, cookie: string) =>
+      (await worker.fetch(request(`/admin/settings?tenant=${tenant}&tab=domains`, { cookie }), withTunnel)).text();
+    const tunnelOf = (html: string) => html.match(/id="setting-tunnel-domain" value="([^"]*)"/)![1];
+
+    for (const slug of ["local-demo", "docker-demo"]) {
+      const html = await settings(slug, superSessionCookie);
+      assert.equal(tunnelOf(html), "", `${slug} has no tunnel domain`);
+      assert.match(html, /<input type="text" class="form-input" id="setting-custom-domain" placeholder=/, `${slug} has no custom domain`);
+    }
+    assert.equal(tunnelOf(await settings("web-demo", superSessionCookie)), "demo.labkiosk.akbhoi.com", "the hosted demo keeps its own tunnel");
+    assert.equal(tunnelOf(await settings("greenwood", orgSessionCookie)), "tunnels.example.com", "an ordinary organization still inherits it");
+  });
+
+  test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
+    for (const subdomain of ["demo", ...DEMO_SLUGS]) {
+      const res = await call("/api/auth/register", json({
+        name: "Squatter", email: `squatter-${subdomain}@example.com`, password: "SquatterPassword123!", subdomain
+      }));
+      assert.equal(res.status, 400, `${subdomain} is reserved`);
+      const rename = await call("/api/tenant/subdomain?tenant=greenwood", {
+        ...json({ subdomain }), cookie: orgSessionCookie
+      });
+      assert.equal(rename.status, 400, `an organization cannot rename itself to ${subdomain}`);
+    }
+
+    const renameDemo = await call("/api/tenant/subdomain?tenant=web-demo", {
+      ...json({ subdomain: "web-demo-2" }), cookie: superSessionCookie
+    });
+    assert.equal(renameDemo.status, 400);
+
+    const directory = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+    const row = directory.slice(directory.indexOf("web-demo.labkiosk.akbhoi.com"));
+    const demoId = row.match(/data-tenant="([^"]+)"/)![1];
+    const suspend = await call("/api/super/tenants/suspend", { ...json({ tenantId: demoId }), cookie: superSessionCookie });
+    assert.equal(suspend.status, 400);
+    const reject = await call("/api/super/tenants/reject", { ...json({ tenantId: demoId }), cookie: superSessionCookie });
+    assert.equal(reject.status, 400);
+    const reassign = await call("/api/super/tenants/approve", {
+      ...json({ tenantId: demoId, subdomain: "renamed-demo" }), cookie: superSessionCookie
+    });
+    assert.equal(reassign.status, 400);
+  });
+
+  test("Startup never adopts a demo name another organization already holds", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const platform = await createUser(db, { email: "platform@example.com", password: "PlatformPassword123!", name: "Platform", role: "super_admin" });
+    const earlierPlatform = await createUser(db, { email: "old-platform@example.com", password: "PlatformPassword123!", name: "Old", role: "super_admin" });
+    const stranger = await createUser(db, { email: "stranger@example.com", password: "StrangerPassword123!", name: "Stranger" });
+    await createTenant(db, { userId: stranger.id, name: "Someone Else", subdomain: "web-demo", status: "active" });
+    await createTenant(db, { userId: earlierPlatform.id, name: "Local VM Demo", subdomain: "local-demo", status: "active" });
+
+    const demos = await ensureDemoTenants(db, platform.id);
+    assert.deepEqual(demos.map((t) => t.subdomain).sort(), ["docker-demo", "local-demo"], "web-demo is not the platform's");
+    assert.equal((await findTenantBySubdomain(db, "web-demo"))!.user_id, stranger.id, "left exactly as it was");
+    assert.equal((await findTenantBySubdomain(db, "local-demo"))!.user_id, platform.id, "an earlier super admin's demo moves over");
+    const docker = (await findTenantBySubdomain(db, "docker-demo"))!;
+    assert.equal(docker.user_id, platform.id);
+    assert.equal(docker.status, "active");
+  });
+
+  test("Super admin is restricted from organization consoles but allowed on the demo organizations", async () => {
+    // 1. Super admin attempts to access greenwood organization console -> 403 Forbidden
     const deniedRes = await call("/admin?tenant=greenwood", { cookie: superSessionCookie });
     assert.equal(deniedRes.status, 403);
     const deniedHtml = await deniedRes.text();
     // The refusal has to say which refusal it is. Telling a platform admin
     // "you do not have access" reads like a broken account rather than the
     // privacy isolation it actually is, and gives no route onward.
-    assert.match(deniedHtml, /Platform administrators cannot open a school console/);
-    assert.match(deniedHtml, /only the demo school is available for testing/);
+    assert.match(deniedHtml, /Platform administrators cannot open an organization console/);
+    assert.match(deniedHtml, /only the demo organizations \(web-demo, local-demo, docker-demo\) are available for testing/);
     assert.match(deniedHtml, /Super Admin console/);
     // And it must not claim the account lacks access.
-    assert.doesNotMatch(deniedHtml, /You do not have access to that school(?:'|&#39;)s console/);
+    assert.doesNotMatch(deniedHtml, /You do not have access to that organization(?:'|&#39;)s console/);
 
     // 2. Super admin accesses demo tenant console -> 200 OK
-    const demoRes = await call("/admin?tenant=demo", { cookie: superSessionCookie });
+    const demoRes = await call("/admin?tenant=web-demo", { cookie: superSessionCookie });
     assert.equal(demoRes.status, 200);
     const demoHtml = await demoRes.text();
-    assert.match(demoHtml, /Workstation Grid &amp; Remote Control/);
+    assert.match(demoHtml, /<h1 class="page-title">Workstations<\/h1>/);
   });
 
   test("Sign-in lands where the request came from, not always on /super", async () => {
@@ -1735,35 +2372,35 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((onApex as { redirect: string }).redirect, "/super");
 
     // On the demo subdomain, they belong in the console they were looking at.
-    const onDemo = await (await login(superCreds, { host: "demo.labkiosk.akbhoi.com" })).json();
+    const onDemo = await (await login(superCreds, { host: "web-demo.labkiosk.akbhoi.com" })).json();
     assert.equal(
       (onDemo as { redirect: string }).redirect,
-      "https://demo.labkiosk.akbhoi.com/admin",
+      "https://web-demo.labkiosk.akbhoi.com/admin",
       "a super admin signing in on demo must land on the demo console"
     );
 
-    // On any other school, Rule 2 applies: they may not open it, so /super.
+    // On any other organization, Rule 2 applies: they may not open it, so /super.
     const onGreenwood = await (await login(superCreds, { host: "greenwood.labkiosk.akbhoi.com" })).json();
     assert.equal(
       (onGreenwood as { redirect: string }).redirect,
       "/super",
-      "a super admin must never be sent into a school they cannot open"
+      "a super admin must never be sent into an organization they cannot open"
     );
 
-    // A school admin still lands on their own console wherever they signed in.
-    const asSchool = await (await login(
-      { email: "teacher@greenwood.edu", password: "SchoolPassword123!" },
+    // An organization admin still lands on their own console wherever they signed in.
+    const asOrganization = await (await login(
+      { email: "operator@greenwood.example", password: "OrganizationPassword123!" },
       { host: "labkiosk.akbhoi.com" }
     )).json();
-    assert.equal((asSchool as { redirect: string }).redirect, "https://greenwood.labkiosk.akbhoi.com/admin");
+    assert.equal((asOrganization as { redirect: string }).redirect, "https://greenwood.labkiosk.akbhoi.com/admin");
   });
 
-  test("Sign-in honours the school the page was showing, not just the host", async () => {
+  test("Sign-in honours the organization the page was showing, not just the host", async () => {
     // The first version of this fix only read the Host header, and the sign-in
     // POST goes to /api/auth/login with no query string. So on a dev host, and
-    // on the apex with ?tenant=demo, the server still saw no school and sent a
+    // on the apex with ?tenant=web-demo, the server still saw no organization and sent a
     // super admin to /super -- which is the whole complaint, unfixed. The page
-    // now sends the school it was showing.
+    // now sends the organization it was showing.
     const login = (body: object) =>
       call("/api/auth/login", {
         method: "POST",
@@ -1773,168 +2410,204 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const creds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
 
-    const viaBody = await (await login({ ...creds, tenant: "demo" })).json();
+    const viaBody = await (await login({ ...creds, tenant: "web-demo" })).json();
     assert.equal(
       (viaBody as { redirect: string }).redirect,
-      "https://demo.labkiosk.akbhoi.com/admin",
+      "https://web-demo.labkiosk.akbhoi.com/admin",
       "the page said it was showing demo, so that is where the sign-in belongs"
     );
 
-    // The hint is a hint. It cannot open a school Rule 2 keeps them out of.
+    // The hint is a hint. It cannot open an organization Rule 2 keeps them out of.
     const notAllowed = await (await login({ ...creds, tenant: "greenwood" })).json();
     assert.equal(
       (notAllowed as { redirect: string }).redirect,
       "/super",
-      "a client-supplied school must not route a super admin into it"
+      "a client-supplied organization must not route a super admin into it"
     );
 
-    // Nor does a school admin get moved by one.
-    const teacher = await (await login({
-      email: "teacher@greenwood.edu",
-      password: "SchoolPassword123!",
-      tenant: "demo"
+    // Nor does an organization admin get moved by one.
+    const operator = await (await login({
+      email: "operator@greenwood.example",
+      password: "OrganizationPassword123!",
+      tenant: "web-demo"
     })).json();
     assert.equal(
-      (teacher as { redirect: string }).redirect,
+      (operator as { redirect: string }).redirect,
       "https://greenwood.labkiosk.akbhoi.com/admin",
-      "a school admin goes to their own console whatever the page claimed"
+      "an organization admin goes to their own console whatever the page claimed"
     );
   });
 
-  test("A signed-out teacher can follow /admin all the way to a sign-in form", async () => {
+  test("A signed-out operator can follow /admin all the way to a sign-in form", async () => {
     // The whole chain, because every link in it was broken independently and
     // each one on its own looked fine.
 
-    // 1. /admin while signed out redirects to the sign-in page, naming the school.
-    const bounced = await call("/admin", { headers: { host: "demo.labkiosk.akbhoi.com" } });
+    // 1. /admin while signed out redirects to the sign-in page, naming the organization.
+    const bounced = await call("/admin", { headers: { host: "web-demo.labkiosk.akbhoi.com" } });
     assert.equal(bounced.status, 302);
     const target = bounced.headers.get("Location")!;
     assert.match(target, /login=1/);
-    assert.match(target, /tenant=demo/);
+    assert.match(target, /tenant=web-demo/);
 
-    // 2. That target must actually render a sign-in form. Naming a school used
-    //    to route it to that school's own page -- the portal before the
+    // 2. That target must actually render a sign-in form. Naming an organization used
+    //    to route it to that organization's own page -- the portal before the
     //    homepage existed, the homepage after -- so this link never reached one.
     const page = await call(new URL(target).pathname + new URL(target).search);
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.match(html, /id="login-form"/, "the sign-in redirect must reach a sign-in form");
-    assert.doesNotMatch(html, /Enter the Lab/, "it must not be the school homepage");
+    assert.doesNotMatch(html, /Open User Portal/, "it must not be the organization homepage");
     // Not asserting the absence of the app grid text here: the landing page's
     // own live simulator mimics the portal and legitimately contains it.
 
-    // 3. And the page has to tell the server which school it was showing, or the
+    // 3. And the page has to tell the server which organization it was showing, or the
     //    sign-in lands on /super however the rest of this works.
     assert.match(html, /currentTenantSlug/, "the page must send its tenant with the sign-in");
   });
 
   test("Redirects /admin on apex domain to appropriate tenant subdomain or super console", async () => {
-    // School admin without tenant query param on apex -> 302 to https://greenwood.labkiosk.akbhoi.com/admin
-    const schoolRes = await call("/admin", { cookie: schoolSessionCookie });
-    assert.equal(schoolRes.status, 302);
-    assert.equal(schoolRes.headers.get("Location"), "https://greenwood.labkiosk.akbhoi.com/admin");
+    // Organization admin without tenant query param on apex -> 302 to https://greenwood.labkiosk.akbhoi.com/admin
+    const organizationRes = await call("/admin", { cookie: orgSessionCookie });
+    assert.equal(organizationRes.status, 302);
+    assert.equal(organizationRes.headers.get("Location"), "https://greenwood.labkiosk.akbhoi.com/admin");
 
     // Super admin without tenant query param on apex -> 302 to https://labkiosk.akbhoi.com/super
     const superRes = await call("/admin", { cookie: superSessionCookie });
     assert.equal(superRes.status, 302);
     assert.equal(superRes.headers.get("Location"), "https://labkiosk.akbhoi.com/super");
+
+    // Super admin accessing organization admin sub-routes (/admin/workstations, /admin/broadcast, etc.)
+    // without tenant query param -> 302 to demo organization console (NOT to /super)
+    const superWorkstationsRes = await call("/admin/workstations", { cookie: superSessionCookie });
+    assert.equal(superWorkstationsRes.status, 302);
+    assert.equal(superWorkstationsRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/workstations?tenant=web-demo");
+
+    const superAppsWebRes = await call("/admin/apps-web", { cookie: superSessionCookie });
+    assert.equal(superAppsWebRes.status, 302);
+    assert.equal(superAppsWebRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tenant=web-demo");
+
+    const superLegacyBroadcastRes = await call("/admin/broadcast", { cookie: superSessionCookie });
+    assert.equal(superLegacyBroadcastRes.status, 302);
+    assert.equal(superLegacyBroadcastRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tab=broadcast");
+
+    // Super admin on dev host visiting /admin/workstations without tenant param -> 302 to ?tenant=web-demo
+    const devReq = new Request("http://localhost:8787/admin/workstations", {
+      headers: { Cookie: superSessionCookie, Host: "localhost:8787" }
+    });
+    const devRes = await worker.fetch(devReq, mockEnv);
+    assert.equal(devRes.status, 302);
+    assert.equal(devRes.headers.get("Location"), "http://localhost:8787/admin/workstations?tenant=local-demo");
+
+    // Super admin in demo console on apex domain preserves ?tenant=web-demo across all navigation links
+    const demoApexRes = await call("/admin?tenant=web-demo", { cookie: superSessionCookie });
+    assert.equal(demoApexRes.status, 200);
+    const demoApexHtml = await demoApexRes.text();
+    assert.match(demoApexHtml, /href="\/admin\/workstations\?tenant=web-demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/apps-web\?tenant=web-demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/staff\?tenant=web-demo"/);
+    assert.match(demoApexHtml, /href="\/admin\/settings\?tenant=web-demo"/);
   });
 
-  test("Renders all dedicated multi-page school admin sub-routes with CSP nonces", async () => {
+  test("Renders all dedicated multi-page organization admin sub-routes with CSP nonces", async () => {
     const routes = [
-      ["/admin/workstations?tenant=greenwood", /Workstation Grid &amp; Remote Control/],
-      ["/admin/broadcast?tenant=greenwood", /Lesson Broadcast Center/],
-      ["/admin/portal?tenant=greenwood", /Student Learning Portal Manager/],
-      ["/admin/whitelist?tenant=greenwood", /Allowed Educational Domains/],
-      ["/admin/teachers?tenant=greenwood", /Teachers &amp; Sub-Admin Delegation/],
-      ["/admin/settings?tenant=greenwood", /Lab Settings &amp; Configuration/]
+      ["/admin/workstations?tenant=greenwood", /<h1 class="page-title">Workstations<\/h1>/],
+      ["/admin/apps-web?tenant=greenwood", /<h1 class="page-title">Apps &amp; Web<\/h1>/],
+      ["/admin/staff?tenant=greenwood", /Staff &amp; Delegation/],
+      ["/admin/settings?tenant=greenwood", /<h1 class="page-title">Settings<\/h1>/]
     ] as const;
 
     for (const [route, pattern] of routes) {
-      const res = await call(route, { cookie: schoolSessionCookie });
+      const res = await call(route, { cookie: orgSessionCookie });
       assert.equal(res.status, 200, `${route} should return 200`);
       const csp = res.headers.get("Content-Security-Policy") || "";
       assert.match(csp, /script-src 'nonce-[^']+'/);
       const html = await res.text();
       assert.match(html, pattern, `${route} should contain expected heading`);
     }
+
+    // Legacy routes 302 redirect to /admin/apps-web?tab=...
+    for (const legacy of ["/admin/broadcast", "/admin/portal", "/admin/whitelist"]) {
+      const res = await call(`${legacy}?tenant=greenwood`, { cookie: orgSessionCookie });
+      assert.equal(res.status, 302, `${legacy} should return 302`);
+      assert.match(res.headers.get("Location") || "", /\/admin\/apps-web\?/);
+    }
   });
 
-  test("Manages teachers and sub-admin delegation with granular permissions", async () => {
-    // 1. School admin creates a sub-admin teacher with specific permissions
-    const { res: createRes, data: createData } = await callJson("/api/tenant/teachers?tenant=greenwood", {
+  test("Manages operators and sub-admin delegation with granular permissions", async () => {
+    // 1. Organization admin creates a sub-admin operator with specific permissions
+    const { res: createRes, data: createData } = await callJson("/api/tenant/staff?tenant=greenwood", {
       ...json({
-        name: "Assistant Teacher Bob",
-        email: "bob@greenwood.edu",
+        name: "Assistant Operator Bob",
+        email: "bob@greenwood.example",
         role: "sub_admin",
         permissions: ["workstations", "broadcast"]
       }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(createRes.status, 200);
     assert.equal(createData.status, "ok");
-    const teacherId = createData.teacher.id;
-    assert.ok(teacherId);
-    assert.equal(createData.teacher.name, "Assistant Teacher Bob");
-    assert.deepEqual(createData.teacher.permissions, ["workstations", "broadcast"]);
+    const operatorId = createData.operator.id;
+    assert.ok(operatorId);
+    assert.equal(createData.operator.name, "Assistant Operator Bob");
+    assert.deepEqual(createData.operator.permissions, ["workstations", "broadcast"]);
 
-    // 2. List teachers for the school
-    const { res: listRes, data: listData } = await callJson("/api/tenant/teachers?tenant=greenwood", {
-      cookie: schoolSessionCookie
+    // 2. List operators for the organization
+    const { res: listRes, data: listData } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      cookie: orgSessionCookie
     });
     assert.equal(listRes.status, 200);
-    assert.ok(Array.isArray(listData.teachers));
-    const found = listData.teachers.find((t: any) => t.id === teacherId);
+    assert.ok(Array.isArray(listData.staff));
+    const found = listData.staff.find((t: any) => t.id === operatorId);
     assert.ok(found);
     assert.equal(found.role, "sub_admin");
 
-    // 3. Update teacher role/permissions
-    const { res: updateRes, data: updateData } = await callJson("/api/tenant/teachers/update?tenant=greenwood", {
+    // 3. Update operator role/permissions
+    const { res: updateRes, data: updateData } = await callJson("/api/tenant/staff/update?tenant=greenwood", {
       ...json({
-        id: teacherId,
-        role: "teacher",
+        id: operatorId,
+        role: "operator",
         permissions: ["workstations"]
       }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(updateRes.status, 200);
     assert.equal(updateData.status, "ok");
 
-    // 4. Delete the teacher
-    const { res: delRes, data: delData } = await callJson(`/api/tenant/teachers/${teacherId}?tenant=greenwood`, {
+    // 4. Delete the operator
+    const { res: delRes, data: delData } = await callJson(`/api/tenant/staff/${operatorId}?tenant=greenwood`, {
       method: "DELETE",
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(delRes.status, 200);
     assert.equal(delData.status, "ok");
 
     // 5. Verify deleted from list
-    const { data: listAfter } = await callJson("/api/tenant/teachers?tenant=greenwood", {
-      cookie: schoolSessionCookie
+    const { data: listAfter } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      cookie: orgSessionCookie
     });
-    assert.ok(!listAfter.teachers.some((t: any) => t.id === teacherId));
+    assert.ok(!listAfter.staff.some((t: any) => t.id === operatorId));
   });
 
-  test("Delegated teacher login, session scoping, and granular permissions enforcement", async () => {
-    // 1. School admin creates a teacher with password and ONLY workstations permission
-    const { res: createRes, data: createData } = await callJson("/api/tenant/teachers?tenant=greenwood", {
+  test("Delegated operator login, session scoping, and granular permissions enforcement", async () => {
+    // 1. Organization admin creates an operator with password and ONLY workstations permission
+    const { res: createRes, data: createData } = await callJson("/api/tenant/staff?tenant=greenwood", {
       ...json({
-        name: "Math Teacher Alice",
-        email: "alice@greenwood.edu",
+        name: "Math Operator Alice",
+        email: "alice@greenwood.example",
         password: "AlicePassword123!",
-        role: "teacher",
+        role: "operator",
         permissions: ["workstations"]
       }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(createRes.status, 200);
     assert.equal(createData.status, "ok");
-    const teacherId = createData.teacher.id;
+    const operatorId = createData.operator.id;
 
-    // 2. Teacher logs in via /api/auth/login
+    // 2. Operator logs in via /api/auth/login
     const { res: loginRes, data: loginData } = await callJson("/api/auth/login", {
       ...json({
-        email: "alice@greenwood.edu",
+        email: "alice@greenwood.example",
         password: "AlicePassword123!"
       })
     });
@@ -1942,70 +2615,77 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(loginData.status, "ok");
     assert.equal(loginData.subdomain, "greenwood");
 
-    const teacherCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const operatorCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
 
     // 3. /api/auth/me returns permissions and tenantRole
     const { res: meRes, data: meData } = await callJson("/api/auth/me", {
-      cookie: teacherCookie
+      cookie: operatorCookie
     });
     assert.equal(meRes.status, 200);
-    assert.equal(meData.user.email, "alice@greenwood.edu");
-    assert.equal(meData.tenantRole, "teacher");
+    assert.equal(meData.user.email, "alice@greenwood.example");
+    assert.equal(meData.tenantRole, "operator");
     assert.deepEqual(meData.permissions, ["workstations"]);
 
-    // 4. Allowed: Teacher can view workstations list via /api/clients
+    // 4. Allowed: Operator can view workstations list via /api/clients
     const { res: clientsRes } = await callJson("/api/clients?tenant=greenwood", {
-      cookie: teacherCookie
+      cookie: operatorCookie
     });
     assert.equal(clientsRes.status, 200);
 
-    // 5. Allowed: Teacher can dispatch workstation lock command
+    // 5. Allowed: Operator can dispatch workstation lock command
     const { res: lockRes, data: lockData } = await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "lock" }),
-      cookie: teacherCookie
+      cookie: operatorCookie
     });
     assert.equal(lockRes.status, 200);
     assert.equal(lockData.status, "ok");
 
-    // 6. Refused: Teacher without 'broadcast' cannot dispatch navigate command
+    // 6. Refused: Operator without 'broadcast' cannot dispatch navigate command
     const { res: navRes } = await callJson("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "navigate", url: "https://khanacademy.org" }),
-      cookie: teacherCookie
+      cookie: operatorCookie
     });
     assert.equal(navRes.status, 403);
 
-    // 7. Refused: Teacher without 'portal' cannot create portal sites
+    // 7. Refused: Operator without 'portal' cannot create portal sites
     const { res: portalRes } = await callJson("/api/portal-sites?tenant=greenwood", {
       ...json({ title: "Alice Site", url: "https://alicesite.org" }),
-      cookie: teacherCookie
+      cookie: operatorCookie
     });
     assert.equal(portalRes.status, 403);
 
-    // 8. Refused: Teacher without 'whitelist' cannot modify allowlist
+    // 8. Refused: Operator without 'whitelist' cannot modify allowlist
     const { res: wlRes } = await callJson("/api/whitelist?tenant=greenwood", {
       ...json({ action: "add", domain: "unauthorized.org" }),
-      cookie: teacherCookie
+      cookie: operatorCookie
     });
     assert.equal(wlRes.status, 403);
 
-    // 9. Refused: Teacher without 'settings' cannot modify subdomain or settings
+    // 9. Refused: Operator without 'settings' cannot modify subdomain or settings
     const { res: subRes } = await callJson("/api/settings/subdomain?tenant=greenwood", {
       ...json({ subdomain: "hacked" }),
-      cookie: teacherCookie
+      cookie: operatorCookie
     });
     assert.equal(subRes.status, 403);
 
-    // 10. Dashboard navigation: Visiting /admin/broadcast without broadcast perm redirects to /admin
+    // 10. Dashboard navigation: Visiting /admin/apps-web without apps-web perm redirects to /admin
+    const appsWebPageRes = await call("/admin/apps-web?tenant=greenwood", {
+      cookie: operatorCookie
+    });
+    assert.equal(appsWebPageRes.status, 302);
+    assert.match(appsWebPageRes.headers.get("Location") || "", /\/admin(\?|$)/);
+
+    // 10b. Legacy /admin/broadcast redirects to /admin/apps-web?tab=broadcast
     const bcastPageRes = await call("/admin/broadcast?tenant=greenwood", {
-      cookie: teacherCookie
+      cookie: operatorCookie
     });
     assert.equal(bcastPageRes.status, 302);
-    assert.match(bcastPageRes.headers.get("Location") || "", /\/admin(\?|$)/);
+    assert.match(bcastPageRes.headers.get("Location") || "", /\/admin\/apps-web\?.*tab=broadcast/);
 
-    // Clean up teacher
-    await callJson(`/api/tenant/teachers/${teacherId}?tenant=greenwood`, {
+    // Clean up operator
+    await callJson(`/api/tenant/staff/${operatorId}?tenant=greenwood`, {
       method: "DELETE",
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
   });
 
@@ -2020,11 +2700,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(loc, "https://labkiosk.akbhoi.com/?login=1&tenant=greenwood");
   });
 
-  test("Allows school admin to update subdomain and enforces slug validation", async () => {
+  test("Allows organization admin to update subdomain and enforces slug validation", async () => {
     // 1. Reject invalid subdomain
     const { res: badRes, data: badData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
       ...json({ subdomain: "ab" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(badRes.status, 400);
     assert.match(badData.error, /3-63 characters/);
@@ -2032,7 +2712,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // 2. Reject reserved slug
     const { res: resvRes, data: resvData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
       ...json({ subdomain: "admin" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(resvRes.status, 400);
     assert.match(resvData.error, /reserved/);
@@ -2040,7 +2720,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // 3. Reject duplicate subdomain (already claimed by riverside)
     const { res: dupRes, data: dupData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
       ...json({ subdomain: "riverside" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(dupRes.status, 400);
     assert.match(dupData.error, /already claimed/);
@@ -2048,7 +2728,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // 4. Successfully update subdomain to greenwood-high
     const { res: okRes, data: okData } = await callJson("/api/tenant/subdomain?tenant=greenwood", {
       ...json({ subdomain: "greenwood-high" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(okRes.status, 200);
     assert.equal(okData.status, "ok");
@@ -2057,26 +2737,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Restore subdomain back to greenwood for subsequent tests
     await callJson("/api/tenant/subdomain?tenant=greenwood-high", {
       ...json({ subdomain: "greenwood" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
   });
 
-  test("Updates lab settings including custom home route and tunnel domain", async () => {
+  test("Updates Settings including custom home route and tunnel domain", async () => {
     // 1. Update settings
     const { res: setRes, data: setData } = await callJson("/api/tenant/settings?tenant=greenwood", {
       ...json({
         homeRoute: "/home",
-        tunnelDomain: "custom-tunnel.school.edu",
+        tunnelDomain: "custom-tunnel.example.com",
         portalTitle: "Greenwood STEM Portal"
       }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
     assert.equal(setRes.status, 200);
     assert.equal(setData.status, "ok");
     assert.equal(setData.updates.home_route, "/home");
-    assert.equal(setData.updates.tunnel_domain, "custom-tunnel.school.edu");
+    assert.equal(setData.updates.tunnel_domain, "custom-tunnel.example.com");
 
-    // 2. /home route serves the student portal
+    // 2. /home route serves the user portal
     const homeRes = await call("/home?tenant=greenwood");
     assert.equal(homeRes.status, 200);
     const homeHtml = await homeRes.text();
@@ -2085,7 +2765,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Reset settings
     await callJson("/api/tenant/settings?tenant=greenwood", {
       ...json({ homeRoute: "/", tunnelDomain: "" }),
-      cookie: schoolSessionCookie
+      cookie: orgSessionCookie
     });
   });
 
@@ -2109,9 +2789,612 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(termsHtml, /Educational Use/);
     assert.match(termsHtml, /45-Computer/);
     assert.match(termsHtml, /Subscriber Licensing/);
-    assert.match(termsHtml, /Institution Responsibilities/);
+    assert.match(termsHtml, /Organization Responsibilities/);
     const termsCsp = termsRes.headers.get("Content-Security-Policy") || "";
     assert.match(termsCsp, /script-src 'nonce-[^']+'/);
+  });
+
+  test("Manages workstation groups and assigns client devices", async () => {
+    // 0. Enrol PC-01 and report initial telemetry
+    const enrollRes = await callJson("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-01" }),
+      headers: { "CF-Connecting-IP": "198.51.100.99" }
+    });
+    assert.equal(enrollRes.res.status, 200);
+    deviceToken = enrollRes.data.deviceToken;
+    await callJson("/api/telemetry", {
+      ...json({ activeUrl: "https://khanacademy.org" }),
+      bearer: deviceToken
+    });
+
+    // 1. Create a group
+    const { res: createRes, data: createData } = await callJson("/api/groups?tenant=greenwood", {
+      ...json({ name: "Row 1" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(createRes.status, 200);
+    assert.equal(createData.status, "ok");
+    assert.equal(createData.group.name, "Row 1");
+    const groupId = createData.group.id;
+
+    // 2. List groups
+    const { res: listRes, data: listData } = await callJson("/api/groups?tenant=greenwood", {
+      cookie: orgSessionCookie
+    });
+    assert.equal(listRes.status, 200);
+    assert.ok(listData.groups.some((g: any) => g.id === groupId && g.name === "Row 1"));
+
+    // 3. Assign client PC-01 to "Row 1"
+    const { res: assignRes, data: assignData } = await callJson("/api/clients/group?tenant=greenwood", {
+      ...json({ clientIds: ["PC-01"], groupName: "Row 1" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(assignRes.status, 200);
+    assert.equal(assignData.status, "ok");
+
+    // 4. Verify client list includes groupName
+    const { res: clientsRes, data: clientsData } = await callJson("/api/clients?tenant=greenwood", {
+      cookie: orgSessionCookie
+    });
+    assert.equal(clientsRes.status, 200);
+    assert.equal(clientsData.clients["PC-01"].groupName, "Row 1");
+
+    // 5. Delete group and verify client group is unassigned
+    const { res: delRes, data: delData } = await callJson(`/api/groups/${groupId}?tenant=greenwood`, {
+      method: "DELETE",
+      cookie: orgSessionCookie
+    });
+    assert.equal(delRes.status, 200);
+    assert.equal(delData.status, "ok");
+
+    const { data: clientsAfterDel } = await callJson("/api/clients?tenant=greenwood", {
+      cookie: orgSessionCookie
+    });
+    assert.equal(clientsAfterDel.clients["PC-01"].groupName, undefined);
+  });
+
+  test("Dispatches batch commands across multiple selected workstation targets", async () => {
+    // Enrol PC-02
+    const enrollRes2 = await callJson("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-02" }),
+      headers: { "CF-Connecting-IP": "198.51.100.98" }
+    });
+    assert.equal(enrollRes2.res.status, 200);
+    const token2 = enrollRes2.data.deviceToken;
+    await callJson("/api/telemetry", {
+      ...json({ activeUrl: "https://khanacademy.org" }),
+      bearer: token2
+    });
+
+    const { res, data } = await callJson("/api/command?tenant=greenwood", {
+      ...json({
+        targets: ["PC-01", "PC-02"],
+        action: "lock",
+        message: "Assessment in progress"
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.status, "ok");
+    assert.equal(data.count, 2);
+    assert.equal(data.commandIds.length, 2);
+
+    // Verify both PC-01 and PC-02 receive the lock command on their next telemetry heartbeat
+    const pc1Telem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    const pc2Telem = await callJson("/api/telemetry", { ...json({}), bearer: token2 });
+
+    const pc1Lock = pc1Telem.data.commands.find((c: any) => c.action === "lock");
+    const pc2Lock = pc2Telem.data.commands.find((c: any) => c.action === "lock");
+
+    assert.ok(pc1Lock, "PC-01 must receive the lock command");
+    assert.equal(pc1Lock.message, "Assessment in progress");
+    assert.ok(pc2Lock, "PC-02 must receive the lock command");
+    assert.equal(pc2Lock.message, "Assessment in progress");
+
+    // Also dispatch batch shutdown command
+    const { res: shutRes, data: shutData } = await callJson("/api/command?tenant=greenwood", {
+      ...json({
+        targets: ["PC-01", "PC-02"],
+        action: "shutdown"
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(shutRes.status, 200);
+    assert.equal(shutData.status, "ok");
+    assert.equal(shutData.count, 2);
+
+    const pc1ShutTelem = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    const pc1Shut = pc1ShutTelem.data.commands.find((c: any) => c.action === "shutdown");
+    assert.ok(pc1Shut, "PC-01 must receive the shutdown command");
+  });
+
+  test("Workstations console sidebar renders Workstation Groups and removes duplicate commands", async () => {
+    const res = await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+
+    // Verify sidebar has Workstation Groups
+    assert.match(html, /Workstation Groups/);
+    assert.match(html, /data-filter="group:all"/);
+    assert.match(html, /data-filter="group:__ungrouped__"/);
+    assert.match(html, /data-action="new-group"/);
+
+    // Verify duplicate "Batch Commands" block is absent from sidebar
+    assert.ok(!html.includes("Batch Commands"));
+    assert.ok(!html.includes("data-action=\"open-lock-all\""));
+
+    // Verify toolbar has Select All and targeted buttons
+    assert.match(html, /id="btn-select-all"/);
+    assert.match(html, /id="selection-summary"/);
+    assert.match(html, /id="btn-move-group"/);
+    assert.match(html, /id="btn-lock-label">Lock</);
+    assert.match(html, /id="btn-unlock-label">Unlock</);
+    assert.match(html, /id="btn-reboot-label">Reboot</);
+    assert.match(html, /id="btn-shutdown-label">Shutdown</);
+    assert.match(html, /id="btn-shutdown-all"/);
+  });
+
+  test("Staff console sidebar renders Role filter and standard form-checkbox styling", async () => {
+    const res = await call("/admin/staff?tenant=greenwood", {
+      cookie: orgSessionCookie
+    });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+
+    // 1. Context subpanel renders "Role" section and filter options
+    assert.match(html, /<div class="sub-section-title"[^>]*>Role<\/div>/);
+    assert.match(html, /id="sub-role-list"/);
+    assert.match(html, /data-filter="all"/);
+    assert.match(html, /data-filter="operator"/);
+    assert.match(html, /data-filter="assistant"/);
+    assert.match(html, /data-filter="content_manager"/);
+    assert.match(html, /data-filter="org_admin"/);
+
+    // 2. Form uses standard .form-checkbox and .form-checkbox-label styling
+    assert.match(html, /class="form-checkbox"/);
+    assert.match(html, /class="form-checkbox-label"/);
+
+    // 3. Table rows are tagged with data-role for client-side filtering
+    assert.match(html, /id="staff-tbody"/);
+    assert.match(html, /id="staff-count"/);
+  });
+
+  test("Settings console renders tabbed panes and horizontal card grouping", async () => {
+    const res = await call("/admin/settings?tenant=greenwood", {
+      cookie: orgSessionCookie
+    });
+    assert.equal(res.status, 200);
+    const html = await res.text();
+
+    // 1. Context subpanel renders tab switching buttons (not scrolling anchor jumps)
+    assert.match(html, /data-action="tab-general"/);
+    assert.match(html, /data-action="tab-domains"/);
+    assert.match(html, /data-action="tab-homepage"/);
+    assert.match(html, /data-action="tab-security"/);
+
+    // 2. All 4 tab panes exist with horizontal 2-column card grouping
+    assert.match(html, /id="pane-general"/);
+    assert.match(html, /id="pane-domains"/);
+    assert.match(html, /id="pane-homepage"/);
+    assert.match(html, /id="pane-security"/);
+
+    // 3. Script wires window.labkioskSwitchTab
+    assert.match(html, /window\.labkioskSwitchTab = switchTab/);
+
+    // 4. Recent Lab Activity table uses table-scrollable container
+    assert.match(html, /class="table-container table-scrollable"/);
+  });
+
+  // ------------------------------------------------ staff delegation limits
+
+  test("A delegate who manages staff cannot promote themselves or grant beyond their own permissions", async () => {
+    const password = "DelegatePassword123!";
+    const { res: createRes } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Dee Legate", email: "dee@greenwood.example", password, role: "operator", permissions: ["workstations", "staff"] }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(createRes.status, 200);
+
+    const loginRes = await call("/api/auth/login", json({ email: "dee@greenwood.example", password }));
+    assert.equal(loginRes.status, 200);
+    const delegateCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+
+    const { data: list } = await callJson("/api/tenant/staff?tenant=greenwood", { cookie: delegateCookie });
+    const self = list.staff.find((t: any) => t.email === "dee@greenwood.example");
+    assert.ok(self);
+
+    // Self-promotion to co-administrator, whose permissions are "*".
+    const promote = await call("/api/tenant/staff/update?tenant=greenwood", {
+      ...json({ id: self.id, role: "org_admin" }),
+      cookie: delegateCookie
+    });
+    assert.equal(promote.status, 403);
+
+    // Settings stay out of reach afterwards.
+    const settings = await call("/api/tenant/settings?tenant=greenwood", { ...json({}), cookie: delegateCookie });
+    assert.equal(settings.status, 403);
+
+    // Appointing a new co-administrator, or granting a permission not held.
+    const coAdmin = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Mallory", email: "mallory@greenwood.example", password, role: "org_admin" }),
+      cookie: delegateCookie
+    });
+    assert.equal(coAdmin.status, 403);
+    const beyond = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Mallory", email: "mallory@greenwood.example", password, role: "operator", permissions: ["settings"] }),
+      cookie: delegateCookie
+    });
+    assert.equal(beyond.status, 403);
+
+    // Within their own permissions a delegate may still add staff.
+    const within = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Lab Aide", email: "aide@greenwood.example", password, role: "assistant", permissions: ["workstations"] }),
+      cookie: delegateCookie
+    });
+    assert.equal(within.status, 200);
+  });
+
+  test("Staff permissions are validated, and a wildcard can never be stored", async () => {
+    const wildcard = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Wild", email: "wild@greenwood.example", password: "WildPassword123!", permissions: ["*"] }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(wildcard.status, 400);
+
+    const badRole = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Wild", email: "wild@greenwood.example", password: "WildPassword123!", role: "owner" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(badRole.status, 400);
+
+    const weak = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Weak", email: "weak@greenwood.example", password: "short" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(weak.status, 400);
+  });
+
+  test("Adding staff never links an account that already exists", async () => {
+    // Riverside's administrator must not become a member of Greenwood.
+    const res = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Poached", email: "operator@riverside.example", password: "PoachedPassword123!" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(res.status, 409);
+  });
+
+  test("Removing a staff account ends the sessions it holds", async () => {
+    const password = "RemovedPassword123!";
+    await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Soon Gone", email: "gone@greenwood.example", password, role: "operator", permissions: ["workstations"] }),
+      cookie: orgSessionCookie
+    });
+    const loginRes = await call("/api/auth/login", json({ email: "gone@greenwood.example", password }));
+    const goneCookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await call("/api/clients?tenant=greenwood", { cookie: goneCookie })).status, 200);
+
+    const { data: list } = await callJson("/api/tenant/staff?tenant=greenwood", { cookie: orgSessionCookie });
+    const gone = list.staff.find((t: any) => t.email === "gone@greenwood.example");
+    const del = await call(`/api/tenant/staff/${gone.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    assert.equal(del.status, 200);
+
+    // Refused whichever way: no session (401), or a named organization it may not act on (403).
+    assert.ok([401, 403].includes((await call("/api/clients?tenant=greenwood", { cookie: goneCookie })).status));
+    const { data: me } = await callJson("/api/auth/me", { cookie: goneCookie });
+    assert.ok(!me.user);
+  });
+
+  test("A staff name must be text, is trimmed, and is capped like a registration's", async () => {
+    const add = (fields: Record<string, unknown>) =>
+      callJson("/api/tenant/staff?tenant=greenwood", {
+        ...json({ email: `named-${Math.random().toString(36).slice(2)}@greenwood.example`, password: "NamedPassword123!", ...fields }),
+        cookie: orgSessionCookie
+      });
+    for (const name of [42, "   ", { first: "A" }]) {
+      const { res, data } = await add({ name });
+      assert.equal(res.status, 400, `name ${JSON.stringify(name)} is refused`);
+      assert.equal(data.error, "Name and email are required");
+    }
+    const { res, data } = await add({ name: `  ${"N".repeat(300)}  ` });
+    assert.equal(res.status, 200);
+    const { data: list } = await callJson("/api/tenant/staff?tenant=greenwood", { cookie: orgSessionCookie });
+    const created = list.staff.find((s: any) => s.id === data.operator?.id || s.email === data.operator?.email);
+    assert.ok(created, "the new staff member is listed");
+    assert.equal(created.name, "N".repeat(120));
+  });
+
+  test("The organization's owner can appoint a co-administrator", async () => {
+    // The owner has no tenant_users row of their own; getTenantUserPermissions()
+    // must still answer "*" for them, or they could not delegate at all.
+    const res = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Co Admin", email: "coadmin@greenwood.example", password: "CoAdminPassword123!", role: "org_admin" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test("Remote Control never borrows the demo tunnel or puts the VNC password in a query string", async () => {
+    // An organization without a tunnel of its own used to fall back to the demo
+    // organization's, sending its VNC password to <pc>.demo.<domain>.
+    const ws = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(ws, /TUNNEL_DOMAIN = "demo\./, "another organization's tunnel is never the default");
+    assert.doesNotMatch(ws, /params\.set\("password"/, "the password goes in the fragment, never the query");
+    const settings = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /id="setting-tunnel-domain" value=""/, "no tunnel domain is pre-filled");
+  });
+
+  test("Workstation groups are rendered on the Workstations page", async () => {
+    const name = "Rendered Group";
+    assert.equal((await call("/api/groups?tenant=greenwood", { ...json({ name }), cookie: orgSessionCookie })).status, 200);
+    const html = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(html.includes(name), "a group the organization created appears on the page");
+  });
+
+  test("The staff list is readable only with the staff permission", async () => {
+    const password = "ListPassword1234!";
+    await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Only Screens", email: "screens@greenwood.example", password, role: "assistant", permissions: ["workstations"] }),
+      cookie: orgSessionCookie
+    });
+    const loginRes = await call("/api/auth/login", json({ email: "screens@greenwood.example", password }));
+    const cookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await call("/api/tenant/staff?tenant=greenwood", { cookie })).status, 403);
+  });
+
+  // --------------------------------------------- groups and batch commands
+
+  test("Workstation group routes refuse anonymous, cross-organization and cross-site callers", async () => {
+    // Anonymous: 401 without an organization, 403 once an organization is named on a production host.
+    const refused = (status: number) => status === 401 || status === 403;
+    assert.ok(refused((await call("/api/groups")).status));
+    assert.ok(refused((await call("/api/groups?tenant=greenwood")).status));
+    assert.ok(refused((await call("/api/groups?tenant=greenwood", json({ name: "Anon" }))).status));
+    assert.ok(refused((await call("/api/clients/group?tenant=greenwood", json({ clientIds: ["PC-01"], groupName: null }))).status));
+
+    // Riverside's administrator naming Greenwood.
+    assert.equal((await call("/api/groups?tenant=greenwood", { cookie: rivalSessionCookie })).status, 403);
+    assert.equal(
+      (await call("/api/groups?tenant=greenwood", { ...json({ name: "Rival" }), cookie: rivalSessionCookie })).status,
+      403
+    );
+
+    const crossSite = await call("/api/groups?tenant=greenwood", {
+      ...json({ name: "Forged" }),
+      cookie: orgSessionCookie,
+      headers: { Origin: "https://evil.example" }
+    });
+    assert.equal(crossSite.status, 403);
+  });
+
+  test("Workstation groups have unique names and only existing groups can be assigned or deleted", async () => {
+    const first = await call("/api/groups?tenant=greenwood", { ...json({ name: "Lab B" }), cookie: orgSessionCookie });
+    assert.equal(first.status, 200);
+    const duplicate = await call("/api/groups?tenant=greenwood", { ...json({ name: "lab b" }), cookie: orgSessionCookie });
+    assert.equal(duplicate.status, 409);
+    const tooLong = await call("/api/groups?tenant=greenwood", { ...json({ name: "x".repeat(51) }), cookie: orgSessionCookie });
+    assert.equal(tooLong.status, 400);
+
+    const phantom = await call("/api/clients/group?tenant=greenwood", {
+      ...json({ clientIds: ["PC-01"], groupName: "Nowhere" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(phantom.status, 404);
+
+    const missing = await call("/api/groups/no-such-group?tenant=greenwood", { method: "DELETE", cookie: orgSessionCookie });
+    assert.equal(missing.status, 404);
+
+    // More ids than one D1 statement can bind are written in slices.
+    const many = Array.from({ length: 150 }, (_, i) => `PC-${i}`);
+    const bulk = await call("/api/clients/group?tenant=greenwood", {
+      ...json({ clientIds: many, groupName: "Lab B" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(bulk.status, 200);
+  });
+
+  test("Batch commands are capped, and a broadcast to all is queued once", async () => {
+    const tooMany = await call("/api/command?tenant=greenwood", {
+      ...json({ targets: Array.from({ length: 501 }, (_, i) => `PC-${i}`), action: "reload" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(tooMany.status, 400);
+
+    const { res, data } = await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: ["all", "PC-01", "PC-01"], action: "reload" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.count, 1);
+
+    // A full batch is queued by one statement, one command per workstation.
+    const full = Array.from({ length: 500 }, (_, i) => `BATCH-${i}`);
+    const batch = await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: full, action: "reload" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(batch.res.status, 200);
+    assert.equal(batch.data.count, 500);
+    assert.equal(new Set(batch.data.commandIds).size, 500);
+  });
+
+  test("A localhost origin is not same-site for a production host", async () => {
+    const res = await call("/api/groups?tenant=greenwood", {
+      ...json({ name: "From Localhost" }),
+      cookie: orgSessionCookie,
+      headers: { Origin: "http://localhost:3000" }
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test("Console client scripts call no server-side escaping helpers", async () => {
+    // escapeHtml/escapeAttr exist only on the server. A client script that
+    // calls them throws at runtime, as the workstation group list once did.
+    for (const page of ["workstations", "apps-web", "staff", "settings"]) {
+      const html = await (await call(`/admin/${page}?tenant=greenwood`, { cookie: orgSessionCookie })).text();
+      // Case-insensitive, and tolerant of `</script >`, as an HTML parser is: a
+      // block spelt any other way would slip past this check.
+      const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi)].map((m) => m[1]).join("\n");
+      assert.doesNotMatch(scripts, /\bescape(Html|Attr)\(/, `${page} calls a server-only helper in the browser`);
+    }
+  });
+
+  // --------------------------------------------------- broadcasts that stick
+
+  test("A broadcast to selected workstations survives their heartbeats, and resets outrank older broadcasts", async () => {
+    const tokens: Record<string, string> = {};
+    for (const [i, id] of ["BC-1", "BC-2", "BC-3"].entries()) {
+      const { res, data } = await callJson("/api/devices/enroll", {
+        ...json({ subdomain: "greenwood", enrollmentKey, clientId: id }),
+        headers: { "CF-Connecting-IP": `198.51.100.${40 + i}` }
+      });
+      assert.equal(res.status, 200);
+      tokens[id] = data.deviceToken;
+    }
+    const beat = async (id: string) =>
+      (await callJson("/api/telemetry", { ...json({ activeUrl: "https://khanacademy.org" }), bearer: tokens[id] })).data;
+    const command = async (body: Record<string, unknown>) => {
+      await new Promise((r) => setTimeout(r, 5)); // distinct epochs, as real clicks are
+      const { res } = await callJson("/api/command?tenant=greenwood", { ...json(body), cookie: orgSessionCookie });
+      assert.equal(res.status, 200);
+    };
+    for (const id of Object.keys(tokens)) await beat(id);
+
+    const pageA = "https://phet.colorado.edu/page-a";
+    const pageB = "https://scratch.mit.edu/page-b";
+
+    // 1. Selected workstations: the second and third heartbeats must not undo it.
+    await command({ targets: ["BC-1", "BC-2"], action: "navigate", url: pageA });
+    for (let n = 0; n < 3; n++) {
+      const hb = await beat("BC-1");
+      assert.equal(hb.targetUrl, pageA, `heartbeat ${n + 1} sent BC-1 away from the broadcast`);
+      assert.ok(hb.broadcastEpoch > 0);
+    }
+    const bystander = await beat("BC-3");
+    assert.notEqual(bystander.targetUrl, pageA, "an unselected workstation must not follow the broadcast");
+    assert.equal(bystander.broadcastEpoch, 0);
+
+    // 2. A newer organization-wide broadcast outranks the per-workstation one.
+    await command({ target: "all", action: "navigate", url: pageB });
+    assert.equal((await beat("BC-1")).targetUrl, pageB);
+    assert.equal((await beat("BC-3")).targetUrl, pageB);
+
+    // 3. Resetting one workstation outranks the older organization-wide broadcast for it alone.
+    await command({ targets: ["BC-2"], action: "navigate", resetPortal: true });
+    const reset = await beat("BC-2");
+    assert.notEqual(reset.targetUrl, pageB);
+    assert.equal(reset.broadcastEpoch, 0);
+    assert.equal((await beat("BC-1")).targetUrl, pageB, "a reset of BC-2 must not stop BC-1's broadcast");
+
+    // 4. Stopping the broadcast for everyone clears every screen.
+    await command({ target: "all", action: "navigate", resetPortal: true });
+    for (const id of Object.keys(tokens)) {
+      const hb = await beat(id);
+      assert.equal(hb.broadcastEpoch, 0, `${id} still has a broadcast after Stop`);
+    }
+
+    // 5. A later broadcast to one workstation still sticks.
+    await command({ targets: ["BC-3"], action: "navigate", url: pageA });
+    assert.equal((await beat("BC-3")).targetUrl, pageA);
+    assert.equal((await beat("BC-3")).targetUrl, pageA);
+  });
+
+  // ------------------------------------------------------------ clear session
+
+  test("Clear Session is queued for the selected workstations and delivered on their next heartbeat", async () => {
+    const { res, data } = await callJson("/api/command?tenant=greenwood", {
+      ...json({ targets: ["PC-01"], action: "clear-session" }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(res.status, 200);
+    assert.equal(data.count, 1);
+
+    const { data: heartbeat } = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.ok(
+      heartbeat.commands.some((c: any) => c.action === "clear-session"),
+      "PC-01 must receive clear-session"
+    );
+  });
+
+  test("Clear Session requires the workstations permission and refuses anonymous callers", async () => {
+    const anonymous = await call("/api/command?tenant=greenwood", json({ targets: ["PC-01"], action: "clear-session" }));
+    assert.ok(anonymous.status === 401 || anonymous.status === 403);
+
+    const password = "BroadcastOnly123!";
+    await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Broadcast Only", email: "broadcaster@greenwood.example", password, role: "operator", permissions: ["broadcast"] }),
+      cookie: orgSessionCookie
+    });
+    const loginRes = await call("/api/auth/login", json({ email: "broadcaster@greenwood.example", password }));
+    const cookie = loginRes.headers.get("Set-Cookie")!.split(";")[0];
+    const refused = await call("/api/command?tenant=greenwood", {
+      ...json({ targets: ["PC-01"], action: "clear-session" }),
+      cookie
+    });
+    assert.equal(refused.status, 403);
+
+    // The console offers the control, confirmed, next to Reboot and Shutdown.
+    const html = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(html, /id="btn-clear-session-all"/);
+    assert.match(html, /sendCommand\(targets, "clear-session"\)/);
+  });
+
+  // ------------------------------------------------ organization vocabulary
+
+  test("The old staff and super-console paths redirect to their new names", async () => {
+    const staff = await call("/admin/teachers?tenant=greenwood", { cookie: orgSessionCookie, redirect: "manual" });
+    assert.equal(staff.status, 302);
+    assert.match(staff.headers.get("location") || "", /\/admin\/staff\?tenant=greenwood$/);
+
+    const orgs = await call("/super/schools", { cookie: superSessionCookie, redirect: "manual" });
+    assert.equal(orgs.status, 302);
+    assert.match(orgs.headers.get("location") || "", /\/super\/organizations$/);
+
+    const page = await call("/admin/staff?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /Staff &amp; Delegation/);
+  });
+
+  test("Workstations still get schoolName alongside organizationName, for agents installed before the rename", async () => {
+    const { data } = await callJson("/api/status?tenant=greenwood");
+    assert.equal(data.organizationName, "Greenwood Holdings");
+    assert.equal(data.schoolName, data.organizationName);
+  });
+
+  test("No console, portal or organization page speaks of schools, teachers, students or lessons", async () => {
+    // The landing page (which has an Education audience) and the legal pages
+    // (which quote the license's educational grant) are deliberately excluded.
+    const pages: [string, string?][] = [
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/super", superSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/approvals", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie],
+      ["/home?tenant=greenwood"],
+      ["/?tenant=greenwood"]
+    ];
+    // Also the leftovers a word-for-word rename produces: an education footer,
+    // "Enter the Lab", and a noun doubled where "Schools & Organizations" was.
+    const wrong = new RegExp(
+      [
+        String.raw`\b(schools?|teachers?|students?|lessons?|classrooms?|instructors?)\b`,
+        String.raw`\beducational\b`,
+        String.raw`\b(FERPA|COPPA)\b`,
+        String.raw`\b(enter the lab|lab (activity|configuration))\b`,
+        String.raw`\b(?<noun>\w{4,}) (?:&amp;|&|and) \k<noun>\b`
+      ].join("|"),
+      "i"
+    );
+    for (const [path, cookie] of pages) {
+      const res = await call(path, cookie ? { cookie } : {});
+      assert.equal(res.status, 200, `${path} did not render`);
+      const html = await res.text();
+      const hit = html.match(wrong);
+      assert.equal(hit, null, `${path} still says "${hit?.[0]}" near: ${hit ? html.slice(Math.max(0, hit.index! - 80), hit.index! + 40) : ""}`);
+    }
   });
 });
 
@@ -2168,6 +3451,16 @@ describe("Schema sources agree", () => {
     for (const [, table, column] of stripped.matchAll(alterRe)) {
       tables.get(table)?.add(column);
     }
+    // ...and columns or tables a later migration retired do not (0014). A plain
+    // DROP TABLE is part of 0011's rebuild, which recreates the table at once.
+    const dropColumnRe = /ALTER TABLE\s+(\w+)\s+DROP COLUMN\s+(\w+)/g;
+    for (const [, table, column] of stripped.matchAll(dropColumnRe)) {
+      tables.get(table)?.delete(column);
+    }
+    const dropTableRe = /DROP TABLE IF EXISTS\s+(\w+)/g;
+    for (const [, table] of stripped.matchAll(dropTableRe)) {
+      tables.delete(table);
+    }
 
     return tables;
   }
@@ -2190,4 +3483,229 @@ describe("Schema sources agree", () => {
       );
     }
   });
+
+  // ---------------------------------------------------- the real engine
+
+  const migrationDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "migrations");
+  const migrationFiles = () => fs.readdirSync(migrationDir).filter((f) => f.endsWith(".sql")).sort();
+
+  /**
+   * Apply migrations the way D1 does: foreign keys enforced, each file as one
+   * unit (so defer_foreign_keys lasts for exactly that file).
+   */
+  function migratedDb(upTo?: string): DatabaseSync {
+    const db = new DatabaseSync(":memory:");
+    db.exec("PRAGMA foreign_keys = ON;");
+    for (const f of migrationFiles()) {
+      if (upTo && f >= upTo) break;
+      db.exec("BEGIN;");
+      db.exec(fs.readFileSync(path.join(migrationDir, f), "utf8"));
+      db.exec("COMMIT;");
+    }
+    return db;
+  }
+
+  /** Everything SQLite knows about a table that a column-name comparison misses. */
+  function describeSchema(db: DatabaseSync): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    const tables = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'd1_%'")
+      .all() as { name: string; sql: string }[];
+    for (const { name, sql } of tables) {
+      out[name] = {
+        columns: (db.prepare(`PRAGMA table_info(${name})`).all() as any[])
+          .map((c) => `${c.name} ${c.type} notnull=${c.notnull} default=${c.dflt_value} pk=${c.pk}`)
+          .sort(),
+        foreignKeys: (db.prepare(`PRAGMA foreign_key_list(${name})`).all() as any[])
+          .map((k) => `${k.from}->${k.table}.${k.to} ${k.on_delete}`)
+          .sort(),
+        indexes: (db.prepare(`PRAGMA index_list(${name})`).all() as any[])
+          .filter((i) => i.origin === "c")
+          .map((i) => `${i.name}${i.unique ? " UNIQUE" : ""}`)
+          .sort(),
+        checks: [...sql.matchAll(/CHECK\s*\(([^()]*(?:\([^()]*\))?[^()]*)\)/g)].map((m) => m[1].replace(/\s+/g, " ")).sort()
+      };
+    }
+    return out;
+  }
+
+  test("SCHEMA_SQL builds exactly the schema migrations/ builds: types, defaults, keys, indexes and CHECKs", () => {
+    // The column-name test above could not see that SCHEMA_SQL had made
+    // idx_tenants_custom_domain non-unique while production had it UNIQUE.
+    const fromSchema = new DatabaseSync(":memory:");
+    fromSchema.exec(SCHEMA_SQL);
+    assert.deepEqual(describeSchema(fromSchema), describeSchema(migratedDb()));
+  });
+
+  /** Just enough of D1 for assertSchemaCurrent(), over a real SQLite database. */
+  function asD1(db: DatabaseSync): D1Database {
+    const statement = (sql: string) => ({
+      bind: () => statement(sql),
+      run: async () => { db.prepare(sql).all(); return { success: true, results: [], meta: {} }; },
+      first: async () => (db.prepare(sql).get() as unknown) ?? null
+    });
+    return { prepare: statement } as unknown as D1Database;
+  }
+
+  test("A worker refuses a database that has not had 0011 or 0012 applied, and accepts one that has", async () => {
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0011"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0012"))), /missing the current schema/);
+    await assertSchemaCurrent(asD1(migratedDb()));
+  });
+
+  test("0013 removes the old demo and everything in it, and nothing else", async () => {
+    const db = migratedDb("0013");
+    const seed = (t: string, owner: string) => `
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('${t}', '${owner}', '${t}', '${t === "t-demo" ? "demo" : "acme"}', 'active', 1, 1);
+      INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES ('s-${t}', '${owner}', '${t}', 'org_admin', 99999999999);
+      INSERT INTO portal_sites (id, tenant_id, title, url, domain, created_at) VALUES ('p-${t}', '${t}', 'Docs', 'https://docs.example', 'docs.example', 1);
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, created_at, updated_at) VALUES ('${t}:PC', '${t}', 'PC', 1, 1, 1);
+      INSERT INTO commands (id, tenant_id, target, action, created_at, expires_at) VALUES ('c-${t}', '${t}', 'PC', 'lock', 1, 99);
+      INSERT INTO command_deliveries (command_id, client_id, delivered_at) VALUES ('c-${t}', 'PC', 1);
+      INSERT INTO audit_logs (id, tenant_id, user_id, action, created_at) VALUES ('a-${t}', '${t}', '${owner}', 'auth.login', 1);
+      INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at) VALUES ('d-${t}', 'h-${t}', '${t}', 'PC', 1, 1);
+      INSERT INTO tenant_whitelist (id, tenant_id, domain, created_at) VALUES ('w-${t}', '${t}', 'docs.example', 1);
+      INSERT INTO broadcast_presets (id, tenant_id, title, url, created_at) VALUES ('b-${t}', '${t}', 'Handbook', 'https://docs.example/h', 1);
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g-${t}', '${t}', 'Floor 1', 1);
+    `;
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES
+        ('u-super', 'root@example.com', 'h', 's', 'super_admin', 'Root', 1),
+        ('u-acme', 'owner@acme.example', 'h', 's', 'org_admin', 'Owner', 1);
+      ${seed("t-demo", "u-super")}
+      ${seed("t-acme", "u-acme")}
+    `);
+    await assert.rejects(assertSchemaCurrent(asD1(db)), /missing the current schema/, "a database still holding demo is refused");
+
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0013_retire_demo_tenant.sql"), "utf8"));
+    db.exec("COMMIT;");
+
+    const tables: [string, string][] = [
+      ["tenants", "id"], ["sessions", "tenant_id"], ["portal_sites", "tenant_id"], ["client_devices", "tenant_id"],
+      ["commands", "tenant_id"], ["audit_logs", "tenant_id"], ["device_tokens", "tenant_id"],
+      ["tenant_whitelist", "tenant_id"], ["broadcast_presets", "tenant_id"], ["workstation_groups", "tenant_id"]
+    ];
+    for (const [table, column] of tables) {
+      const count = (t: string) => (db.prepare(`SELECT count(*) AS n FROM ${table} WHERE ${column} = ?`).get(t) as any).n;
+      assert.equal(count("t-demo"), 0, `${table} still holds the demo's rows`);
+      assert.equal(count("t-acme"), 1, `${table} lost another organization's row`);
+    }
+    const deliveries = (id: string) => (db.prepare("SELECT count(*) AS n FROM command_deliveries WHERE command_id = ?").get(id) as any).n;
+    assert.equal(deliveries("c-t-demo"), 0, "the demo's delivery receipts are gone");
+    assert.equal(deliveries("c-t-acme"), 1);
+    assert.equal((db.prepare("SELECT count(*) AS n FROM audit_logs WHERE tenant_id IS NULL").get() as any).n, 0,
+      "no demo history is left behind as platform history");
+    assert.equal((db.prepare("SELECT count(*) AS n FROM users").get() as any).n, 2, "user accounts are kept");
+    assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+    // Current once the migrations after 0013 are applied as well.
+    for (const f of migrationFiles().filter((name) => name > "0013")) {
+      db.exec("BEGIN;");
+      db.exec(fs.readFileSync(path.join(migrationDir, f), "utf8"));
+      db.exec("COMMIT;");
+    }
+    await assertSchemaCurrent(asD1(db));
+  });
+
+  test("0012 folds duplicate group names into one group and keeps every member grouped", () => {
+    const db = migratedDb("0012");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'owner@example.com', 'h', 's', 'org_admin', 'Owner', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('t1', 'u1', 'Acme', 'acme', 'active', 1, 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('t2', 'u1', 'Other', 'other', 'active', 1, 1);
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g-old', 't1', 'Floor 1', 10);
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g-new', 't1', 'floor 1', 20);
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g-t2', 't2', 'Floor 1', 5);
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, group_name, created_at, updated_at) VALUES ('t1:A', 't1', 'A', 1, 'Floor 1', 1, 1);
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, group_name, created_at, updated_at) VALUES ('t1:B', 't1', 'B', 1, 'floor 1', 1, 1);
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, group_name, created_at, updated_at) VALUES ('t2:C', 't2', 'C', 1, 'Floor 1', 1, 1);
+    `);
+
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0012_unique_workstation_group_names.sql"), "utf8"));
+    db.exec("COMMIT;");
+
+    const groups = db.prepare("SELECT id FROM workstation_groups ORDER BY id").all().map((r: any) => r.id);
+    assert.deepEqual(groups, ["g-old", "g-t2"], "the oldest group of each name survives, per organization");
+    const members = db.prepare("SELECT id, group_name FROM client_devices ORDER BY id").all().map((r: any) => `${r.id}=${r.group_name}`);
+    assert.deepEqual(members, ["t1:A=Floor 1", "t1:B=Floor 1", "t2:C=Floor 1"]);
+
+    assert.throws(() => db.exec("INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('dup', 't1', 'FLOOR 1', 30)"));
+    db.exec("INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('ok', 't1', 'Floor 2', 30)");
+  });
+
+  // @vocab-keep-start: this test seeds the pre-0011 values on purpose.
+  test("0011 renames the stored roles without losing a single row or breaking a reference", () => {
+    const db = migratedDb("0011");
+    const now = 1_700_000_000;
+    const oldLock = "Screens locked by the instructor. Please look to the front.";
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES
+        ('u-super', 'root@example.com', 'h', 's', 'super_admin', 'Root', ${now}),
+        ('u-owner', 'owner@example.com', 'h', 's', 'school_admin', 'Owner', ${now}),
+        ('u-op', 'op@example.com', 'h', 's', 'school_admin', 'Op', ${now}),
+        ('u-asst', 'asst@example.com', 'h', 's', 'school_admin', 'Asst', ${now});
+      INSERT INTO tenants (id, user_id, name, subdomain, status, custom_domain, created_at, updated_at) VALUES
+        ('t1', 'u-owner', 'Acme', 'acme', 'active', 'kiosk.acme.example', ${now}, ${now});
+      INSERT INTO tenants (id, user_id, name, subdomain, status, default_lock_message, created_at, updated_at) VALUES
+        ('t2', 'u-super', 'Demo', 'demo', 'active', 'Custom message kept', ${now}, ${now});
+      INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES
+        ('s-owner', 'u-owner', 't1', 'school_admin', ${now + 999}),
+        ('s-super', 'u-super', NULL, 'super_admin', ${now + 999});
+      INSERT INTO tenant_users (id, tenant_id, user_id, role, permissions, created_at) VALUES
+        ('tu-op', 't1', 'u-op', 'teacher', '["workstations","teachers"]', ${now}),
+        ('tu-asst', 't1', 'u-asst', 'lab_assistant', '["workstations"]', ${now});
+      INSERT INTO portal_sites (id, tenant_id, title, url, domain, created_at) VALUES ('p1', 't1', 'Docs', 'https://docs.example', 'docs.example', ${now});
+      INSERT INTO client_devices (id, tenant_id, client_id, last_seen, group_name, broadcast_url, broadcast_epoch, created_at, updated_at)
+        VALUES ('t1:PC-01', 't1', 'PC-01', ${now}, 'Floor 1', 'https://docs.example', 5, ${now}, ${now});
+      INSERT INTO commands (id, tenant_id, target, action, created_at, expires_at) VALUES ('c1', 't1', 'PC-01', 'lock', ${now}, ${now + 60});
+      INSERT INTO audit_logs (id, tenant_id, user_id, action, created_at) VALUES ('a1', 't1', 'u-owner', 'auth.login', ${now});
+      INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at) VALUES ('d1', 'hash', 't1', 'PC-01', ${now}, ${now});
+      INSERT INTO tenant_whitelist (id, tenant_id, domain, created_at) VALUES ('w1', 't1', 'docs.example', ${now});
+      INSERT INTO broadcast_presets (id, tenant_id, title, url, created_at) VALUES ('b1', 't1', 'Handbook', 'https://docs.example/h', ${now});
+      INSERT INTO workstation_groups (id, tenant_id, name, created_at) VALUES ('g1', 't1', 'Floor 1', ${now});
+    `);
+    const tables = [
+      "users", "tenants", "sessions", "portal_sites", "client_devices", "commands", "audit_logs",
+      "device_tokens", "tenant_whitelist", "broadcast_presets", "tenant_users", "workstation_groups"
+    ];
+    const counts = () => Object.fromEntries(tables.map((t) => [t, (db.prepare(`SELECT count(*) AS n FROM ${t}`).get() as any).n]));
+    const before = counts();
+
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0011_organization_vocabulary.sql"), "utf8"));
+    db.exec("COMMIT;");
+
+    assert.deepEqual(counts(), before, "a table lost or gained rows");
+    assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), [], "a reference was left dangling");
+    const leftovers = db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '_hold_%'").all();
+    assert.deepEqual(leftovers, [], "holding tables must be dropped");
+
+    const value = (sql: string) => db.prepare(sql).get() as any;
+    assert.equal(value("SELECT role FROM users WHERE id = 'u-owner'").role, "org_admin");
+    assert.equal(value("SELECT role FROM users WHERE id = 'u-super'").role, "super_admin");
+    assert.equal(value("SELECT role FROM sessions WHERE token = 's-owner'").role, "org_admin");
+    assert.equal(value("SELECT role FROM tenant_users WHERE id = 'tu-op'").role, "operator");
+    assert.equal(value("SELECT role FROM tenant_users WHERE id = 'tu-asst'").role, "assistant");
+    assert.deepEqual(JSON.parse(value("SELECT permissions FROM tenant_users WHERE id = 'tu-op'").permissions), ["workstations", "staff"]);
+    assert.equal(
+      value("SELECT default_lock_message AS m FROM tenants WHERE id = 't1'").m,
+      "This screen has been locked by an administrator. Please wait."
+    );
+    assert.equal(value("SELECT default_lock_message AS m FROM tenants WHERE id = 't2'").m, "Custom message kept");
+    assert.notEqual(oldLock, "");
+    const device = value("SELECT group_name, broadcast_url, broadcast_epoch FROM client_devices WHERE id = 't1:PC-01'");
+    assert.deepEqual({ ...device }, { group_name: "Floor 1", broadcast_url: "https://docs.example", broadcast_epoch: 5 });
+
+    // The new CHECKs are in force, and the old values can no longer be written.
+    assert.throws(() => db.exec(`INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('x', 'x@example.com', 'h', 's', 'school_admin', 'X', ${now})`));
+    assert.throws(() => db.exec(`UPDATE tenant_users SET role = 'teacher' WHERE id = 'tu-op'`));
+    // And the custom domain is unique again.
+    assert.throws(() => db.exec(`UPDATE tenants SET custom_domain = 'kiosk.acme.example' WHERE id = 't2'`));
+    // Deleting an organization still cascades to its own rows only.
+    db.exec("DELETE FROM tenants WHERE id = 't1'");
+    assert.equal(value("SELECT count(*) AS n FROM client_devices").n, 0);
+    assert.equal(value("SELECT count(*) AS n FROM users").n, 4);
+  });
+  // @vocab-keep-end
 });

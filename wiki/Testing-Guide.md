@@ -25,10 +25,10 @@ The typecheck deliberately runs twice, against two TypeScript projects. `tsconfi
 ### Authorization and isolation
 
 - Unauthenticated access to **every** workstation-control API is rejected.
-- A teacher at one school receives `403` for another school's console, clients, and commands.
+- An operator at one organization receives `403` for another organization's console, clients, and commands.
 - The Super Admin console is refused without a super-admin session.
 - An unknown subdomain returns `404` without reflecting the input as markup.
-- Only a host under `DEFAULT_DOMAIN` is treated as a school subdomain.
+- Only a host under `DEFAULT_DOMAIN` is treated as an organization subdomain.
 - `isHostUnder` matches domain boundaries case-insensitively.
 
 ### Device enrolment and telemetry
@@ -38,12 +38,13 @@ The typecheck deliberately runs twice, against two TypeScript projects. `tsconfi
 - Telemetry is scoped to the **token's own tenant**, whatever the body claims.
 - Decommissioning revokes the token.
 - An oversized thumbnail is dropped rather than stored.
-- An enrolled workstation is pointed at its own school whatever host it used.
+- An enrolled workstation is pointed at its own organization whatever host it used.
 - Enrolment works via a custom domain, and via a custom server URL or IP.
 
 ### Command delivery
 
-- A broadcast reaches each workstation **exactly once** — the regression that `command_deliveries` exists to prevent.
+- A broadcast reaches each workstation **exactly once** — the regression the hub's delivery receipts exist to prevent.
+- OrgHub: a socket is configured and online at once, commands are pushed once, frames flow only while a console watches, a quiet workstation writes nothing to D1, a stale socket is closed, removal and suspension close sockets, and one organization's hub refuses another's requests.
 - A broadcast sets the authoritative `targetUrl` and epoch in telemetry, and reset restores the portal.
 - Broadcast state lives in the database rather than worker memory.
 - A `navigate` command with a non-`http(s)` URL is rejected.
@@ -53,8 +54,8 @@ The typecheck deliberately runs twice, against two TypeScript projects. `tsconfi
 
 Hostile strings render inert in every surface:
 
-- a hostile school name in the Super Admin console;
-- a hostile app title on the student portal;
+- a hostile organization name in the Super Admin console;
+- a hostile app title on the user portal;
 - a portal app whose URL is not `http(s)`.
 
 ### Browser hardening
@@ -91,7 +92,7 @@ Hostile strings render inert in every surface:
 
 ### Multi-tenant feature coverage
 
-Custom domain request → approval → routing by `Host` → disconnection; single-site lockdown with auto-allowlisting; per-school customisation reflected on the portal; per-tenant broadcast presets; per-school allowlists kept separate; audit logging of privileged actions; suspend and reactivate; the scheduled housekeeping handler.
+Custom domain request → approval → routing by `Host` → disconnection; single-site lockdown with auto-allowlisting; per-organization customisation reflected on the portal; per-tenant broadcast presets; per-organization allowlists kept separate; audit logging of privileged actions; suspend and reactivate; the scheduled housekeeping handler.
 
 ---
 
@@ -102,7 +103,7 @@ Custom domain request → approval → routing by `Host` → disconnection; sing
 | Test | Asserts |
 | :--- | :--- |
 | **Anonymous rejection** | `401` without a session or token |
-| **Cross-tenant rejection** | `403` or `404` for an admin of another school |
+| **Cross-tenant rejection** | `403` or `404` for an admin of another organization |
 | **Cross-site CSRF rejection** | `403` for a cookie-authenticated mutation from a foreign origin |
 | **Input validation** | Malformed and hostile input is refused or escaped |
 
@@ -147,7 +148,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/verify.png
 docker cp labkiosk-client-01:/tmp/verify.png .
 ```
 
-**Never claim a UI change is complete without inspecting a capture.** The agent logging a command as executed proves only that the agent ran; it does not prove the student saw anything.
+**Never claim a UI change is complete without inspecting a capture.** The agent logging a command as executed proves only that the agent ran; it does not prove the user saw anything.
 
 ---
 

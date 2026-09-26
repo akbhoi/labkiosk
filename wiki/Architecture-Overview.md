@@ -2,10 +2,10 @@
 
 Lab Kiosk is two independently deployable systems joined by one authenticated HTTPS contract.
 
-- The **control plane** is a single Cloudflare Worker plus a D1 database. It is multi-tenant: one deployment serves every school.
+- The **control plane** is a single Cloudflare Worker plus a D1 database. It is multi-tenant: one deployment serves every organization.
 - The **client** is a Debian 12 image that boots into a locked Chromium session and runs a small Python daemon.
 
-Nothing else is required. There is no per-school server, no on-premise appliance, and no VPN.
+Nothing else is required. There is no per-organization server, no on-premise appliance, and no VPN.
 
 ---
 
@@ -15,11 +15,11 @@ Nothing else is required. There is no per-school server, no on-premise appliance
 +---------------------------------------------------------------------------------------+
 |                               CLOUDFLARE EDGE SAAS LAYER                              |
 |                                                                                       |
-|   [ Public Visitors ]          [ Platform Owner ]           [ School Teachers ]       |
+|   [ Public Visitors ]          [ Platform Owner ]           [ Organization Operators ]       |
 |            |                           |                             |                |
 |            v                           v                             v                |
 |   labkiosk.example.edu      labkiosk.example.edu/super   greenwood.labkiosk.example.edu|
-|    (Landing page & ISO)      (Super Admin console)         (Teacher Lab Dashboard)    |
+|    (Landing page & ISO)      (Super Admin console)         (Operator Lab Dashboard)    |
 |            |                           |                             |                |
 |            +---------------------------+-----------------------------+                |
 |                                        |                                              |
@@ -30,14 +30,15 @@ Nothing else is required. There is no per-school server, no on-premise appliance
 |                        |-- escape.ts  HTML / attribute / JSON escaping, safe URLs     |
 |                        |-- db.ts      D1 queries, SCHEMA_SQL, tenant seeding          |
 |                        |-- ui*.ts     Server-rendered consoles, nonce CSP             |
+|                        |-- org_hub.ts One Durable Object per organization             |
 |                        `-- scheduled() Hourly housekeeping cron                       |
 |                                        |                                              |
 |                                        v                                              |
 |                          [ Cloudflare D1 (SQLite at the edge) ]                       |
-|                          + per-isolate in-memory telemetry cache                      |
+|             + Queue (audit), R2 (audit archive), Analytics Engine, Workflow           |
 +---------------------------------------------------------------------------------------+
                                          ^
-                                         | HTTPS: telemetry up, commands down
+                                         | WebSocket: status up, config and commands down
 +---------------------------------------------------------------------------------------+
 |                      CLIENT WORKSTATION LAYER (Intel thin clients)                    |
 |                                                                                       |
@@ -52,7 +53,7 @@ Nothing else is required. There is no per-school server, no on-premise appliance
 |                                                                                       |
 |   [ Python 3 agent: /opt/labkiosk/agent/agent.py ]                                    |
 |         |-- Loopback API on 127.0.0.1:8888 (setup wizard, install, status)            |
-|         |-- 3-second authenticated heartbeat with JPEG screen thumbnail               |
+|         |-- Control channel to OrgHub; JPEG frames only while an operator watches     |
 |         `-- Chromium policy synchronisation and command execution                     |
 |                                                                                       |
 |   [ Remote control gateway ]                                                          |
@@ -72,32 +73,41 @@ The critical architectural rule is that **worker isolates are per-colocation and
 
 | State | Where it lives | Why |
 | :--- | :--- | :--- |
-| Active broadcast URL and epoch | `tenants.broadcast_url` / `broadcast_epoch` in D1 | Workstations hitting different colos must see the same lesson. |
-| Device VNC password and tunnel host | `client_devices.vnc_password` / `remote_host` in D1 | The teacher's browser and the workstation's heartbeat land in different isolates. |
+| Active broadcast URL and epoch | `tenants.broadcast_url` / `broadcast_epoch` (organization-wide) and `client_devices.broadcast_url` / `broadcast_epoch` (selected workstations) in D1; the newer wins | Workstations hitting different colos must see the same page, and a broadcast to some screens must survive their next heartbeat. |
+| Device VNC password and tunnel host | `client_devices.vnc_password` / `remote_host` in D1 | The operator's browser and the workstation's heartbeat land in different isolates. |
 | Domain allowlist | `tenant_whitelist` rows in D1 | Previously a module global shared across every tenant, and lost on isolate recycle. |
-| Latest thumbnail and liveness | `tenantTelemetryCache` **and** `client_devices` | The cache is an optimisation only; D1 is the source of truth. |
+| Who is online, the command queue, screen frames | The organization's **OrgHub** Durable Object | One object per organization sees every workstation and console of it; frames are relayed, never stored. |
+| Workstation registry (last known state, groups) | `client_devices` in D1 | Written by the hub on connect, disconnect, a change, or every 5 minutes -- never per heartbeat. |
 
-### 2. Transport — one contract, two directions
+### 2. Transport — one channel, pushed both ways
 
-A workstation's entire relationship with the platform is a single endpoint called every three seconds:
+A workstation holds one WebSocket to its organization's OrgHub:
 
 ```text
-POST /api/telemetry
+GET /api/devices/ws   (Upgrade: websocket)
 Authorization: Bearer <device token>
 
-   up  ->  clientNum, activeUrl, isLocked, thumbnail?, vncPassword?, remoteHost?
- down  <-  commands[], whitelist[], mode, targetUrl, broadcastUrl, broadcastEpoch
+   up  ->  status {clientNum, activeUrl, isLocked, vncPassword?, remoteHost?}   on change
+           frame {thumbnail}                                                  only while watched
+           {"type":"ping"}                                                    every 15 s
+ down  <-  config {whitelist, mode, targetUrl, broadcastUrl, broadcastEpoch}  on connect and change
+           commands [...]                                                     at once
+           frames {on, intervalSeconds}                                       when a console watches
 ```
+
+The ping is answered at the edge without waking the hub, so an idle workstation costs nothing.
+Agents without the WebSocket client, and any agent whose server lacks the route, use the older
+`POST /api/telemetry` every three seconds, which carries the same fields in one request and reply.
 
 The device token, never the request body, decides which workstation and which tenant the request belongs to. A payload claiming a different `clientId` is ignored.
 
-That single loop delivers everything: fleet liveness, screen thumbnails, teacher commands, the Chromium allowlist, and the authoritative lesson URL. There is no push channel, no WebSocket, and no inbound connection to the school's network.
+That one channel delivers everything: fleet liveness, screen frames, operator commands, the Chromium allowlist, and the authoritative page URL. It is opened by the workstation, so there is still no inbound connection to the organization's network.
 
 → [REST API Reference](REST-API-Reference) for the full catalogue.
 
 ### 3. Client — immutable by construction
 
-The client's defining property is that **it does not keep anything**. `overlayroot="tmpfs"` mounts the real root filesystem read-only and layers a RAM overlay on top. Browser profiles, caches, logs, downloads, and student artefacts all land in that overlay and are gone at power-off.
+The client's defining property is that **it does not keep anything**. `overlayroot="tmpfs"` mounts the real root filesystem read-only and layers a RAM overlay on top. Browser profiles, caches, logs, downloads, and user artefacts all land in that overlay and are gone at power-off.
 
 The one deliberate exception exists because enrolment has to survive a reboot: `labkiosk-install` creates a 512 MiB `LABKIOSK_DATA` partition and mounts it at `/etc/labkiosk`, which is where the device token lives. Without it, an installed workstation would forget its enrolment on the next boot.
 
@@ -107,11 +117,11 @@ The one deliberate exception exists because enrolment has to survive a reboot: `
 
 ## Tenant resolution
 
-The school a request belongs to is derived from the **`Host` header**, authoritatively, in `resolveTenant()` (`src/guard.ts`). Nothing else is trusted by default.
+The organization a request belongs to is derived from the **`Host` header**, authoritatively, in `resolveTenant()` (`src/guard.ts`). Nothing else is trusted by default.
 
 ```text
 greenwood.labkiosk.example.edu  ->  subdomain "greenwood"
-kiosk.greenwood.edu             ->  approved custom domain lookup
+kiosk.greenwood.example             ->  approved custom domain lookup
 labkiosk.example.edu            ->  platform apex: landing page, no tenant
 ```
 
@@ -122,7 +132,7 @@ labkiosk.example.edu            ->  platform apex: landing page, no tenant
 - the caller's session already owns that tenant, or
 - the route is explicitly public (`/`, `/home`, `/api/status`, `/api/portal-sites`, `/api/devices/enroll`, `/api/telemetry`).
 
-`X-Forwarded-Host` is never read. A set of [reserved slugs](Configuration-Reference#reserved-subdomains) — `www`, `super`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `labkiosk`, `root` — can be neither registered nor resolved as a school.
+`X-Forwarded-Host` is never read. A set of [reserved slugs](Configuration-Reference#reserved-subdomains) — `www`, `super`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `labkiosk`, `root` — can be neither registered nor resolved as an organization.
 
 ---
 
@@ -131,7 +141,7 @@ labkiosk.example.edu            ->  platform apex: landing page, no tenant
 Every request passes the same gauntlet before it reaches a handler:
 
 1. **`bootstrap(env)`** — refuses to serve if a D1 binding exists but `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD` are unset, or if migrations have not been applied (`assertSchemaCurrent()`). A deployed worker never creates tables at runtime.
-2. **`resolveTenant()`** — establishes the school from `Host`, per the rules above.
+2. **`resolveTenant()`** — establishes the organization from `Host`, per the rules above.
 3. **`rejectCrossSiteMutation()`** — for cookie-authenticated `POST`/`DELETE` under `/api/`, requires a browser `Origin` matching this host, the platform domain, or a dev host. Bearer-authenticated device routes are exempt because they carry no ambient credential.
 4. **A guard** — `requireTenantAdmin()`, `requireSuperAdmin()`, or `requireDevice()`. A route with no guard is treated as a security defect, and the test suite asserts coverage.
 5. **The handler**, whose every interpolation into HTML goes through `escapeHtml()` / `escapeAttr()` / `escapeJson()`, and whose every navigable URL goes through `safeHttpUrl()`.
@@ -143,14 +153,14 @@ Every request passes the same gauntlet before it reaches a handler:
 
 ## Two operating modes
 
-A school chooses one, and it is delivered to workstations in the telemetry response as `mode`:
+An organization chooses one, and it is delivered to workstations in the telemetry response as `mode`:
 
 | Mode | Behaviour |
 | :--- | :--- |
-| `portal` | Workstations land on the Student Learning Portal: a grid of approved application cards, curated by the teacher. |
-| `single_url` | Workstations are locked to one destination — an LMS, an exam platform, a library catalogue — with no launcher at all. |
+| `portal` | Workstations land on the User Portal: a grid of approved application cards, curated by the operator. |
+| `single_url` | Workstations are locked to one destination — an LMS, an assessment platform, a library catalogue — with no launcher at all. |
 
-Either mode can be temporarily overridden by a **broadcast**: the teacher pushes a URL to the whole lab at once, and it persists on the tenant row until reset. A broadcast is not its own command type; it is `navigate` plus a monotonic `broadcastEpoch` that lets a workstation tell a new broadcast from a replayed one.
+Either mode can be temporarily overridden by a **broadcast**: the operator pushes a URL to the whole lab at once, and it persists on the tenant row until reset. A broadcast is not its own command type; it is `navigate` plus a monotonic `broadcastEpoch` that lets a workstation tell a new broadcast from a replayed one.
 
 ---
 
@@ -162,7 +172,7 @@ labkiosk/
 ├── distro-builder/          live-build ISO pipeline, client source, installer
 ├── docker-test/             Workstation simulator entrypoint + docs
 ├── docs/                    In-repo deployment, remote control, API specs
-├── skills/                  AI agent operating procedures
+├── .agents/skills/          AI agent procedures (loaded on demand)
 ├── wiki/                    This wiki's source
 ├── AGENTS.md                Master engineering codex
 └── Dockerfile               The simulator image

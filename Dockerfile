@@ -8,7 +8,7 @@
 # THIS IS THE ONLY SIMULATOR IMAGE. docker-compose.yml and
 # .github/workflows/docker-publish.yml both build this file. There used to be a
 # near-identical copy at docker-test/Dockerfile; it drifted (it lost alsa-utils,
-# so the teacher's "mute" command failed in that variant alone) and was removed.
+# so the operator's "mute" command failed in that variant alone) and was removed.
 # docker-test/ keeps the entrypoint and the documentation, not a second image.
 # ==============================================================================
 # ------------------------------------------------------------------------------
@@ -41,7 +41,7 @@ LABEL org.opencontainers.image.source="https://github.com/akbhoi/labkiosk" \
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Asia/Kolkata (IST) everywhere, so container logs and anything the browser
-# renders read in the same clock as the school running it. tzdata is already in
+# renders read in the same clock as the organization running it. tzdata is already in
 # the base image; only the link and the name have to be set, and TZ covers the
 # libraries that read the variable instead of /etc/localtime.
 ENV TZ=Asia/Kolkata
@@ -49,7 +49,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Set to 0 to build without the Noto fonts (~55 MB smaller). Latin text still
 # renders through fonts-liberation, but non-Latin scripts and emoji do not, so
-# leave it on for anything a school will look at:
+# leave it on for anything an organization will look at:
 #   docker build --build-arg WITH_INTL_FONTS=0 -t labkiosk:slim .
 ARG WITH_INTL_FONTS=1
 
@@ -68,6 +68,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     x11vnc \
     websockify \
     python3 \
+    python3-websocket \
     scrot \
     xdotool \
     alsa-utils \
@@ -115,9 +116,16 @@ COPY --chmod=0755 distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-
 # bind-mounts and outside the directory a read-only container mounts a tmpfs
 # over. The entrypoint restores it from here when the policy directory is empty,
 # so the browser never starts with no blocklist at all.
+#
+# The policy file itself is handed to the kiosk user too, not just its directory.
+# Podman copies an image's files into a tmpfs mounted over them, so this copy
+# is what the running container starts with; left root-owned, the agent can
+# never rename its update over it (the tmpfs is sticky, mode 1777) and every
+# allowlist change fails with "Operation not permitted".
 RUN cp /etc/chromium/policies/managed/policies.json /usr/local/share/labkiosk-boot-policy.json \
     && mkdir -p /etc/labkiosk \
-    && chown kiosk:kiosk /etc/labkiosk /etc/chromium/policies/managed \
+    && chown kiosk:kiosk /etc/labkiosk /etc/chromium/policies/managed /etc/chromium/policies/managed/policies.json \
+    && chmod 0644 /etc/chromium/policies/managed/policies.json \
     && chmod 0700 /etc/labkiosk
 
 USER kiosk

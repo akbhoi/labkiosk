@@ -1,12 +1,14 @@
 /**
  * Super Admin Master Console UI
- * Platform owner interface for managing schools, approving subdomains, and global analytics.
- * Strictly enforces privacy: Super admin cannot access school consoles except demo.
+ * Platform owner interface for managing organizations, approving subdomains, and global analytics.
+ * Strictly enforces privacy: Super admin cannot access organization consoles except the
+ * platform's own demo organizations (web-demo, local-demo, docker-demo).
  */
 
 import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
+import { DEMO_TENANTS, isDemoTenant } from "./demo";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
 export interface SuperConsoleTenant extends Tenant {
@@ -26,15 +28,17 @@ export interface SuperConsoleCatalog {
 
 export interface SuperAdminOptions {
   superAdminEmail: string;
+  /** Whose demos these are: a demo row is a demo slug this account owns. */
+  superAdminId: string;
   tenants: SuperConsoleTenant[];
   catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
-  activeTab?: "schools" | "approvals" | "catalogs" | "system";
+  activeTab?: "organizations" | "approvals" | "catalogs" | "system";
   nonce: string;
 }
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
-  const { superAdminEmail, tenants, baseDomain = "labkiosk.akbhoi.com", activeTab = "schools", nonce } = data;
+  const { superAdminEmail, superAdminId, tenants, baseDomain = "labkiosk.akbhoi.com", activeTab = "organizations", nonce } = data;
 
   const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
@@ -47,17 +51,17 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     .map(
       (c) => `
     <tr>
-      <td><strong>${escapeHtml(c.tag)}</strong></td>
+      <td><span class="cell-title mono">${escapeHtml(c.tag)}</span></td>
       <td>${escapeHtml(c.name)}</td>
-      <td><span class="badge badge-blue">${escapeHtml(c.direction.toUpperCase())}</span></td>
+      <td><span class="badge badge-neutral">${escapeHtml(c.direction.toUpperCase())}</span></td>
       <td>${Number(c.entry_count) || 0}</td>
-      <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${
+      <td class="mono text-xs nowrap">${
         c.updated_at && Number.isFinite(c.updated_at)
-          ? escapeHtml(new Date(c.updated_at * 1000).toISOString().slice(0, 16).replace("T", " "))
+          ? escapeHtml(new Date(c.updated_at * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC")
           : "-"
       }</td>
       <td>
-        <button class="btn btn-sm btn-danger btn-delete-catalog" data-tag="${escapeAttr(c.tag)}">Delete</button>
+        <div class="cell-actions"><button class="btn btn-sm btn-danger btn-delete-catalog" data-tag="${escapeAttr(c.tag)}">Delete</button></div>
       </td>
     </tr>
   `
@@ -68,10 +72,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     .map(
       (t) => `
     <tr>
-      <td><strong>${escapeHtml(t.name)}</strong></td>
-      <td>${escapeHtml(t.admin_name)} <div style="font-size: 12px; color: var(--text-muted);">${escapeHtml(t.admin_email)}</div></td>
+      <td><div class="cell-title">${escapeHtml(t.name)}</div></td>
+      <td>${escapeHtml(t.admin_name)} <div class="cell-sub">${escapeHtml(t.admin_email)}</div></td>
       <td>
-        <span class="badge badge-yellow">
+        <span class="badge badge-yellow mono">
           ${
             t.requested_subdomain
               ? `<b>${escapeHtml(t.requested_subdomain)}</b> (was ${escapeHtml(t.subdomain)})`
@@ -79,11 +83,11 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           }
         </span>
       </td>
-      <td>${escapeHtml(new Date(t.created_at * 1000).toISOString().slice(0, 10))}</td>
+      <td class="mono text-xs nowrap">${escapeHtml(new Date(t.created_at * 1000).toISOString().slice(0, 10))}</td>
       <td>
-        <div style="display: flex; gap: 6px;">
-          <button class="btn btn-sm btn-success btn-approve-sub" data-tenant="${escapeAttr(t.id)}" data-subdomain="${escapeAttr(t.requested_subdomain || t.subdomain)}">Approve</button>
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Assign Custom</button>
+        <div class="cell-actions">
+          <button class="btn btn-sm btn-primary btn-approve-sub" data-tenant="${escapeAttr(t.id)}" data-subdomain="${escapeAttr(t.requested_subdomain || t.subdomain)}">Approve</button>
+          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>
           <button class="btn btn-sm btn-danger btn-reject-sub" data-tenant="${escapeAttr(t.id)}">Reject</button>
         </div>
       </td>
@@ -96,16 +100,16 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     .map(
       (t) => `
     <tr>
-      <td><strong>${escapeHtml(t.name)}</strong></td>
-      <td>${escapeHtml(t.admin_name)} <div style="font-size: 12px; color: var(--text-muted);">${escapeHtml(t.admin_email)}</div></td>
+      <td><div class="cell-title">${escapeHtml(t.name)}</div></td>
+      <td>${escapeHtml(t.admin_name)} <div class="cell-sub">${escapeHtml(t.admin_email)}</div></td>
       <td>
-        <span class="badge badge-yellow" style="font-family: 'JetBrains Mono', monospace;">
+        <span class="badge badge-yellow mono">
           ${escapeHtml(t.requested_custom_domain || "")}
         </span>
       </td>
       <td>
-        <div style="display: flex; gap: 6px;">
-          <button class="btn btn-sm btn-success btn-approve-custom" data-tenant="${escapeAttr(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}">Approve Domain</button>
+        <div class="cell-actions">
+          <button class="btn btn-sm btn-primary btn-approve-custom" data-tenant="${escapeAttr(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}">Approve Domain</button>
           <button class="btn btn-sm btn-danger btn-reject-custom" data-tenant="${escapeAttr(t.id)}">Reject</button>
         </div>
       </td>
@@ -114,55 +118,67 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     )
     .join("");
 
-  const allRows = tenants
+  // The demos first: they are the rows a platform administrator actually opens.
+  const allRows = [...tenants]
+    .sort((a, b) => Number(isDemoTenant(b, superAdminId)) - Number(isDemoTenant(a, superAdminId)))
     .map((t) => {
-      const isDemo = t.subdomain === "demo";
-      const href = `/admin?tenant=${encodeURIComponent(t.subdomain)}`;
+      const isDemo = isDemoTenant(t, superAdminId);
+      const purpose = isDemo ? DEMO_TENANTS[t.subdomain as keyof typeof DEMO_TENANTS].purpose : "";
+      const href = `/admin/workstations?tenant=${encodeURIComponent(t.subdomain)}`;
+      const menuId = `org-menu-${t.id}`;
       return `
     <tr>
-      <td>
-        <strong>${escapeHtml(t.name)}</strong>
-        ${isDemo ? `<span class="badge badge-blue" style="margin-left: 6px;">DEMO TENANT</span>` : ""}
+      <td class="cell-org">
+        <div class="row"><span class="cell-title">${escapeHtml(t.name)}</span>${isDemo ? `<span class="badge badge-blue">Demo</span>` : ""}</div>
+        ${isDemo ? `<div class="cell-sub cell-clamp">${escapeHtml(purpose)}</div>` : ""}
       </td>
-      <td>${escapeHtml(t.admin_name)} <div style="font-size: 12px; color: var(--text-muted);">${escapeHtml(t.admin_email)}</div></td>
+      <td>${escapeHtml(t.admin_name)} <div class="cell-sub">${escapeHtml(t.admin_email)}</div></td>
       <td>
-        <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">${escapeHtml(t.subdomain)}.${escapeHtml(baseDomain)}</span>
-      </td>
-      <td>
+        <div class="mono text-xs nowrap">${escapeHtml(t.subdomain)}.${escapeHtml(baseDomain)}</div>
         ${
           t.custom_domain
-            ? `<span class="badge badge-green">ACTIVE</span> <span style="color: #6ee7b7; font-family: 'JetBrains Mono', monospace; font-size: 12px; margin-left: 6px;">${escapeHtml(t.custom_domain)}</span>`
+            ? `<div class="row mt-sm"><span class="badge badge-green">Custom</span><span class="mono text-xs">${escapeHtml(t.custom_domain)}</span></div>`
             : t.custom_domain_status === "pending"
-              ? `<span class="badge badge-yellow">PENDING</span> <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; margin-left: 6px; color: #fbbf24;">${escapeHtml(t.requested_custom_domain || "")}</span>`
-              : `<span style="color: var(--text-muted);">&mdash;</span>`
+              ? `<div class="row mt-sm"><span class="badge badge-yellow">Pending</span><span class="mono text-xs text-muted">${escapeHtml(t.requested_custom_domain || "")}</span></div>`
+              : ""
         }
       </td>
       <td>
-        <span class="badge ${t.status === "active" ? "badge-green" : t.status === "suspended" ? "badge-red" : "badge-yellow"}">${escapeHtml(String(t.status).toUpperCase())}</span>
+        <span class="badge ${t.status === "active" ? "badge-green" : t.status === "suspended" ? "badge-red" : "badge-yellow"}">${escapeHtml(String(t.status).charAt(0).toUpperCase() + String(t.status).slice(1))}</span>
       </td>
       <td>
-        <span style="font-weight: 700;">
-          <span class="stat-dot ${t.online_clients > 0 ? "dot-green" : "dot-red"}"></span>
-          ${Number(t.online_clients) || 0} / ${Number(t.total_clients) || 0}
+        <span class="row nowrap">
+          <span class="stat-dot ${t.online_clients > 0 ? "dot-green" : "dot-neutral"}"></span>
+          <span class="stat-val">${Number(t.online_clients) || 0} / ${Number(t.total_clients) || 0}</span>
         </span>
       </td>
       <td>
-        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+        <div class="cell-actions">
           ${
             isDemo
-              ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">Open Test Console (Demo)</a>`
-              : `<span class="badge" style="background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid var(--border);">Console Restricted (Privacy)</span>`
+              ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">Open Console</a>`
+              : `<span class="restricted-note" title="Organization consoles are private to their own staff">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  Private
+                </span>`
           }
-          <button class="btn btn-sm btn-secondary btn-edit-sub" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>
-          <button class="btn btn-sm btn-secondary btn-assign-custom" data-tenant="${escapeAttr(t.id)}">Assign Custom</button>
-          ${t.custom_domain ? `<button class="btn btn-sm btn-danger btn-remove-custom" data-tenant="${escapeAttr(t.id)}">Disconnect</button>` : ""}
-          ${
-            t.status === "active"
-              ? `<button class="btn btn-sm btn-danger btn-suspend" data-tenant="${escapeAttr(t.id)}">Suspend</button>`
-              : t.status === "suspended"
-                ? `<button class="btn btn-sm btn-success btn-reactivate" data-tenant="${escapeAttr(t.id)}">Reactivate</button>`
-                : ""
-          }
+          <button type="button" class="btn btn-sm btn-ghost btn-icon" popovertarget="${escapeAttr(menuId)}" aria-haspopup="menu" title="More actions" aria-label="More actions">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+          </button>
+          <div class="menu-popover" id="${escapeAttr(menuId)}" popover role="menu" aria-label="Organization actions">
+            ${isDemo ? "" : `<button type="button" class="menu-item btn-edit-sub" role="menuitem" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>`}
+            <button type="button" class="menu-item btn-assign-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Custom Domain</button>
+            ${t.custom_domain ? `<button type="button" class="menu-item menu-item-danger btn-remove-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Disconnect Custom Domain</button>` : ""}
+            ${
+              isDemo
+                ? ""
+                : t.status === "active"
+                ? `<div class="menu-separator" role="separator"></div><button type="button" class="menu-item menu-item-danger btn-suspend" role="menuitem" data-tenant="${escapeAttr(t.id)}">Suspend Organization</button>`
+                : t.status === "suspended"
+                  ? `<div class="menu-separator" role="separator"></div><button type="button" class="menu-item btn-reactivate" role="menuitem" data-tenant="${escapeAttr(t.id)}">Reactivate Organization</button>`
+                  : ""
+            }
+          </div>
         </div>
       </td>
     </tr>
@@ -172,9 +188,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
   const navItems: NavItem[] = [
     {
-      id: "schools",
-      label: "Schools Directory",
-      href: "/super/schools",
+      id: "organizations",
+      label: "Organizations Directory",
+      href: "/super/organizations",
       badge: tenants.length,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`
     },
@@ -202,66 +218,114 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   ];
 
   const stats: StatItem[] = [
-    { label: "Schools", value: tenants.length, color: "blue" },
+    { label: "Organizations", value: tenants.length, color: "blue" },
     { label: "Online", value: `${totalOnline} / ${totalClients}`, color: "green" },
     { label: "Approvals", value: pendingCount, color: pendingCount > 0 ? "yellow" : "blue" }
   ];
 
-  const subPanelHtml = `
-    <div class="sub-section-title">Master Navigation</div>
-    <div class="sub-action-list">
-      <a href="/super/schools" class="sub-action-item ${activeTab === "schools" ? "active" : ""}">
-        <span>Schools Directory</span>
-        <span class="sub-action-badge">${tenants.length}</span>
-      </a>
-      <a href="/super/approvals" class="sub-action-item ${activeTab === "approvals" ? "active" : ""}">
-        <span>Approvals Queue</span>
-        ${pendingCount > 0 ? `<span class="sub-action-badge" style="color: #fde68a;">${pendingCount}</span>` : ""}
-      </a>
-      <a href="/super/catalogs" class="sub-action-item ${activeTab === "catalogs" ? "active" : ""}">
-        <span>Translation Catalogs</span>
-        <span class="sub-action-badge">${catalogList.length}</span>
-      </a>
-      <a href="/super/system" class="sub-action-item ${activeTab === "system" ? "active" : ""}">
-        <span>System Health &amp; Logs</span>
-      </a>
-    </div>
+  const activeTenantsCount = tenants.filter((t) => t.status === "active").length;
+  const suspendedTenantsCount = tenants.filter((t) => t.status === "suspended").length;
 
-    <div class="sub-section-title" style="margin-top: 16px;">Privacy Invariant</div>
-    <div style="background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); line-height: 1.5;">
-      Super Admins cannot access any school's internal console or telemetry except for <code>demo</code>. School data isolation is enforced at the edge D1 layer.
-    </div>
-  `;
+  let subPanelTitle = "Platform Governance";
+  let subPanelSubtitle = "Global tenant administration";
+  let subPanelHtml = "";
+
+  if (activeTab === "organizations") {
+    subPanelTitle = "Organizations Directory";
+    subPanelSubtitle = "Tenant overview & filters";
+    subPanelHtml = `
+      <div class="sub-section-title">Directory Overview</div>
+      <div class="kv-list">
+        <div class="kv-row"><span>Organizations</span><strong>${tenants.length}</strong></div>
+        <div class="kv-row"><span>Active</span><strong>${activeTenantsCount}</strong></div>
+        <div class="kv-row"><span>Suspended</span><strong>${suspendedTenantsCount}</strong></div>
+        <div class="kv-row"><span>Workstations online</span><strong>${totalOnline} / ${totalClients}</strong></div>
+      </div>
+
+      <div class="sub-section-title">Privacy Invariant</div>
+      <div class="panel-note">
+        Super Admins cannot access any organization's internal console or telemetry except the platform's demo organizations. Organization data isolation is enforced at the edge D1 layer.
+      </div>
+    `;
+  } else if (activeTab === "approvals") {
+    subPanelTitle = "Approvals Queue";
+    subPanelSubtitle = "Domain review & routing";
+    subPanelHtml = `
+      <div class="sub-section-title">Queue Status</div>
+      <div class="kv-list">
+        <div class="kv-row"><span>Subdomains pending</span><span class="badge ${pendingList.length > 0 ? "badge-yellow" : "badge-neutral"}">${pendingList.length}</span></div>
+        <div class="kv-row"><span>Custom domains pending</span><span class="badge ${pendingCustomList.length > 0 ? "badge-yellow" : "badge-neutral"}">${pendingCustomList.length}</span></div>
+      </div>
+
+      <div class="sub-section-title">Approval Policy</div>
+      <div class="panel-note">
+        Approved subdomains immediately bind in edge routing. Custom domains require DNS CNAME records pointing to <code>${escapeHtml(baseDomain)}</code>.
+      </div>
+    `;
+  } else if (activeTab === "catalogs") {
+    subPanelTitle = "Translation Catalogs";
+    subPanelSubtitle = "Language & localization";
+    subPanelHtml = `
+      <div class="sub-section-title">Catalogs Overview</div>
+      <div class="kv-list">
+        <div class="kv-row"><span>Installed languages</span><strong>${catalogList.length}</strong></div>
+        <div class="kv-row"><span>Default language</span><strong>English (en-US)</strong></div>
+      </div>
+
+      <div class="sub-section-title">Standard Locale Tags</div>
+      <div class="panel-note">
+        Catalogs follow BCP 47 language tags (e.g. <code>hi-IN</code>, <code>fr-FR</code>, <code>de-DE</code>, <code>es-ES</code>, <code>ar-SA</code>). Kiosk clients fetch translations dynamically at boot.
+      </div>
+    `;
+  } else {
+    subPanelTitle = "System Health";
+    subPanelSubtitle = "Diagnostics & audit logs";
+    subPanelHtml = `
+      <div class="sub-section-title">Quick Jump</div>
+      <div class="sub-action-list">
+        <a href="#platform-architecture" class="sub-action-item">
+          <span>Platform Architecture</span>
+        </a>
+        <a href="#platform-audit" class="sub-action-item">
+          <span>Platform Audit Logs</span>
+        </a>
+      </div>
+
+      <div class="sub-section-title">Edge Security</div>
+      <div class="panel-note">
+        Native Web Crypto PBKDF2 authentication with 100,000 iterations. Zero external runtime NPM packages. Immutable RAM overlay client OS.
+      </div>
+    `;
+  }
 
   // Each console tab renders on its own. The four panes used to be emitted
-  // together and hidden with an inline `display`, except #pane-schools, which
-  // carried no display rule and no matching CSS -- so the whole schools
+  // together and hidden with an inline `display`, except #pane-organizations, which
+  // carried no display rule and no matching CSS -- so the whole organizations
   // directory, every tenant row included, rendered above the approvals,
   // catalogs and system pages as well.
-  const bannerHtml = `    <div style="background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: var(--radius); padding: 16px 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 14px; font-size: 13px; color: #bfdbfe;">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+  const bannerHtml = `    <div class="callout">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       <div>
-        <strong>Privacy Invariant Enforced:</strong> Platform Super Administrators cannot access individual school consoles or view student workstation telemetry. Consoles are accessible solely to authorized school instructors. The dedicated <code>demo</code> tenant is available for platform testing.
+        <strong>Privacy invariant enforced.</strong> Platform Super Administrators cannot access individual organization consoles or view user workstation telemetry. Consoles are accessible solely to authorized organization operators. The platform's own demo organizations (<code>web-demo</code>, <code>local-demo</code> and <code>docker-demo</code>) are available for testing.
       </div>
     </div>
   `;
 
-  const schoolsPaneHtml = `
-      <div class="card" style="padding: 0; overflow: hidden;">
-        <div style="padding: 20px 24px; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
-          <h2 class="card-title" style="margin-bottom: 0;">Registered Schools &amp; Institutions (${tenants.length})</h2>
+  const organizationsPaneHtml = `
+      <div class="card card-flush">
+        <div class="card-head">
+          <h2 class="card-title">Registered Organizations (${tenants.length})</h2>
         </div>
-        <div class="table-container" style="border: none; border-radius: 0;">
+        <div class="table-container">
           <table>
             <thead>
               <tr>
-                <th>School Name</th>
+                <th>Organization</th>
                 <th>Admin Contact</th>
-                <th>Subdomain</th>
-                <th>Custom Domain</th>
+                <th>Address</th>
                 <th>Status</th>
                 <th>Workstations</th>
-                <th>Actions</th>
+                <th class="th-actions"><span class="visually-hidden">Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -275,12 +339,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const approvalsPaneHtml = `
       <div class="card">
         <h2 class="card-title">Pending Subdomain Requests (${pendingList.length})</h2>
-        <p class="card-sub">Schools requesting initial activation or subdomain modifications.</p>
+        <p class="card-sub">Organizations requesting initial activation or subdomain modifications.</p>
         <div class="table-container">
           <table>
             <thead>
               <tr>
-                <th>School</th>
+                <th>Organization</th>
                 <th>Contact</th>
                 <th>Requested Subdomain</th>
                 <th>Registered Date</th>
@@ -288,7 +352,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
               </tr>
             </thead>
             <tbody>
-              ${pendingSubdomainRows || `<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 32px;">No pending subdomain requests.</td></tr>`}
+              ${pendingSubdomainRows || `<tr><td colspan="5" class="table-empty">No pending subdomain requests.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -296,19 +360,19 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
       <div class="card">
         <h2 class="card-title">Pending Custom Domain Requests (${pendingCustomList.length})</h2>
-        <p class="card-sub">Schools requesting custom institutional domains (e.g. <code>kiosk.myschool.edu</code>).</p>
+        <p class="card-sub">Organizations requesting their own custom domains (e.g. <code>kiosk.example.com</code>).</p>
         <div class="table-container">
           <table>
             <thead>
               <tr>
-                <th>School</th>
+                <th>Organization</th>
                 <th>Contact</th>
                 <th>Requested Domain</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              ${pendingCustomRows || `<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 32px;">No pending custom domain requests.</td></tr>`}
+              ${pendingCustomRows || `<tr><td colspan="4" class="table-empty">No pending custom domain requests.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -320,8 +384,8 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         <h2 class="card-title">Upload / Replace Translation Catalog</h2>
         <p class="card-sub">Deploy multi-language user interfaces to the first-boot setup wizard and top bar.</p>
 
-        <form id="form-upload-catalog" style="max-width: 600px;">
-          <div class="grid-2col" style="gap: 12px;">
+        <form id="form-upload-catalog" class="form-narrow">
+          <div class="form-grid-2">
             <div class="form-group">
               <label class="form-label" for="catalog-tag">Language Tag</label>
               <input type="text" id="catalog-tag" required placeholder="e.g. hi-IN or fr-FR" class="form-input">
@@ -340,8 +404,8 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </div>
           <div class="form-group">
             <label class="form-label" for="catalog-json">Catalog JSON Content</label>
-            <textarea id="catalog-json" rows="6" required placeholder='{"bar.home": "Home", ...}' class="form-textarea" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;"></textarea>
-            <p class="form-hint">A flat map of string to string. Uploaded catalogs are platform-wide: never put anything school-specific in one.</p>
+            <textarea id="catalog-json" rows="6" required placeholder='{"bar.home": "Home", ...}' class="form-textarea mono"></textarea>
+            <p class="form-hint">A flat map of string to string. Uploaded catalogs are platform-wide: never put anything organization-specific in one.</p>
           </div>
           <button type="submit" class="btn btn-primary">Upload Translation Catalog</button>
         </form>
@@ -362,7 +426,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
               </tr>
             </thead>
             <tbody>
-              ${catalogRows || `<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 32px;">No interface catalogs uploaded.</td></tr>`}
+              ${catalogRows || `<tr><td colspan="6" class="table-empty">No interface catalogs uploaded.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -372,7 +436,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const auditCardHtml = `
       <div class="card" id="platform-audit">
         <h2 class="card-title">Platform Action History</h2>
-        <p class="card-sub">Catalog changes, and every platform action taken on a school. A school\u2019s own activity is not shown here and is not readable from this console.</p>
+        <p class="card-sub">Catalog changes, and every platform action taken on an organization. An organization\u2019s own activity is not shown here and is not readable from this console.</p>
         <div class="table-container">
           <table>
             <thead>
@@ -383,7 +447,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
               </tr>
             </thead>
             <tbody id="platform-audit-rows">
-              <tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 24px;">Loading\u2026</td></tr>
+              <tr><td colspan="3" class="table-empty">Loading\u2026</td></tr>
             </tbody>
           </table>
         </div>
@@ -391,24 +455,24 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   `;
 
   const systemPaneHtml = `
-      <div class="card">
+      <div class="card" id="platform-architecture">
         <h2 class="card-title">Platform Architecture &amp; Database Health</h2>
         <p class="card-sub">Cloudflare D1 edge database status and real-time operational telemetry.</p>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
-          <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
-            <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Database Engine</div>
-            <div style="font-size: 18px; font-weight: 800; margin-top: 4px; color: #93c5fd;">Cloudflare D1 (SQLite)</div>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">Schema verified at boot by assertSchemaCurrent()</div>
+        <div class="stat-grid">
+          <div class="stat-tile">
+            <div class="stat-tile-label">Database engine</div>
+            <div class="stat-tile-value">Cloudflare D1 (SQLite)</div>
+            <div class="stat-tile-hint">Schema verified at boot by assertSchemaCurrent()</div>
           </div>
-          <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
-            <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Zero Runtime NPM</div>
-            <div style="font-size: 18px; font-weight: 800; margin-top: 4px; color: #6ee7b7;">0 Dependencies</div>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">Native Web Crypto PBKDF2</div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Runtime dependencies</div>
+            <div class="stat-tile-value">0 npm packages</div>
+            <div class="stat-tile-hint">Native Web Crypto PBKDF2</div>
           </div>
-          <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 16px;">
-            <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Client OS Overlay</div>
-            <div style="font-size: 18px; font-weight: 800; margin-top: 4px; color: #fde68a;">100% RAM Overlay</div>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">overlayroot="tmpfs:recurse=0", 0 SSD Wear</div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Client OS overlay</div>
+            <div class="stat-tile-value">100% RAM overlay</div>
+            <div class="stat-tile-hint">overlayroot="tmpfs:recurse=0", no SSD wear</div>
           </div>
         </div>
       </div>
@@ -416,14 +480,14 @@ ${auditCardHtml}
   `;
 
   const panesByTab: Record<typeof activeTab, string> = {
-    schools: schoolsPaneHtml,
+    organizations: organizationsPaneHtml,
     approvals: approvalsPaneHtml,
     catalogs: catalogsPaneHtml,
     system: systemPaneHtml
   };
 
   const contentHtml = `${bannerHtml}
-${panesByTab[activeTab] || schoolsPaneHtml}`;
+${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const scriptsHtml = `
     <script nonce="${escapeAttr(nonce)}">
@@ -433,7 +497,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const subdomain = btn.dataset.subdomain;
           const agreed = await lkConfirm({
             title: "Approve '" + subdomain + "'?",
-            message: "The console and student portal for this school go live on that address straight away, and its workstations can enrol against it.",
+            message: "The console and user portal for this organization go live on that address straight away, and its workstations can enrol against it.",
             confirmLabel: "Approve"
           });
           if (!agreed) return;
@@ -460,7 +524,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
             title: "Reject this request?",
-            message: "The school stays pending and cannot enrol workstations. Nothing is deleted, so you can approve it later.",
+            message: "The organization stays pending and cannot enrol workstations. Nothing is deleted, so you can approve it later.",
             confirmLabel: "Reject",
             tone: "danger"
           });
@@ -489,7 +553,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const customDomain = btn.dataset.domain;
           const agreed = await lkConfirm({
             title: "Approve " + customDomain + "?",
-            message: "Traffic on that hostname will route to this school. Their DNS has to point at the worker before it resolves.",
+            message: "Traffic on that hostname will route to this organization. Their DNS has to point at the worker before it resolves.",
             confirmLabel: "Approve domain"
           });
           if (!agreed) return;
@@ -516,7 +580,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
             title: "Reject this domain request?",
-            message: "The school keeps its subdomain address and can request a different domain later.",
+            message: "The organization keeps its subdomain address and can request a different domain later.",
             confirmLabel: "Reject",
             tone: "danger"
           });
@@ -544,7 +608,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const newSub = await lkPrompt({
             title: "Assign a subdomain",
-            message: "The school reaches its console and portal at this address. Changing it breaks the old one immediately.",
+            message: "The organization reaches its console and portal at this address. Changing it breaks the old one immediately.",
             label: "Subdomain",
             placeholder: "greenwood",
             hint: "Lowercase letters, digits and hyphens. Reserved slugs are refused.",
@@ -574,9 +638,9 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const customDomain = await lkPrompt({
             title: "Assign a custom domain",
-            message: "The hostname the school owns. Their DNS has to point at this worker before it will resolve.",
+            message: "The hostname the organization owns. Their DNS has to point at this worker before it will resolve.",
             label: "Domain",
-            placeholder: "kiosk.myschool.edu",
+            placeholder: "kiosk.example.com",
             hint: "A hostname only: no scheme, no path, no port.",
             confirmLabel: "Assign"
           });
@@ -604,7 +668,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
             title: "Disconnect this custom domain?",
-            message: "The school falls back to its subdomain. Workstations enrolled against the custom domain will need reconfiguring.",
+            message: "The organization falls back to its subdomain. Workstations enrolled against the custom domain will need reconfiguring.",
             confirmLabel: "Disconnect",
             tone: "danger"
           });
@@ -631,9 +695,9 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
-            title: "Suspend this school?",
-            message: "Its student portal stops serving, its workstations stop reporting and no new one can enrol. Nothing is deleted and you can reactivate at any time.",
-            confirmLabel: "Suspend school",
+            title: "Suspend this organization?",
+            message: "Its user portal stops serving, its workstations stop reporting and no new one can enrol. Nothing is deleted and you can reactivate at any time.",
+            confirmLabel: "Suspend organization",
             tone: "danger"
           });
           if (!agreed) return;
@@ -647,7 +711,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              lkToast(data.error || "Failed to suspend school", "error");
+              lkToast(data.error || "Failed to suspend organization", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
@@ -659,7 +723,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
-            title: "Reactivate this school?",
+            title: "Reactivate this organization?",
             message: "Its portal, console and workstation telemetry all resume.",
             confirmLabel: "Reactivate"
           });
@@ -674,7 +738,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             if (data.status === "ok") {
               window.location.reload();
             } else {
-              lkToast(data.error || "Failed to reactivate school", "error");
+              lkToast(data.error || "Failed to reactivate organization", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
@@ -689,7 +753,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
             const row = document.createElement("tr");
             const cell = document.createElement("td");
             cell.colSpan = 3;
-            cell.style.cssText = "text-align: center; color: var(--text-muted); padding: 24px;";
+            cell.className = "table-empty";
             cell.textContent = text;
             row.appendChild(cell);
             return row;
@@ -707,9 +771,17 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
               const row = document.createElement("tr");
 
               const when = document.createElement("td");
-              when.style.cssText = "font-family: \u0027JetBrains Mono\u0027, monospace; font-size: 12px; white-space: nowrap;";
+              when.className = "mono text-xs nowrap";
               const date = new Date(entry.created_at * 1000);
-              when.textContent = isNaN(date.getTime()) ? "\u2014" : date.toISOString().slice(0, 16).replace("T", " ");
+              // The viewer's own clock, not UTC; the exact UTC instant is the tooltip.
+              const pad = (n) => String(n).padStart(2, "0");
+              if (isNaN(date.getTime())) {
+                when.textContent = "\u2014";
+              } else {
+                when.textContent = date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+                  " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+                when.title = date.toISOString();
+              }
               row.appendChild(when);
 
               const action = document.createElement("td");
@@ -719,13 +791,13 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
               const grants = /approve|reactivate|upload/.test(entry.action);
               badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
               // textContent: an action string is data, and details carries a
-              // school-supplied subdomain or domain.
+              // organization-supplied subdomain or domain.
               badge.textContent = entry.action;
               action.appendChild(badge);
               row.appendChild(action);
 
               const detail = document.createElement("td");
-              detail.style.cssText = "color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere;";
+              detail.className = "text-muted text-xs cell-detail";
               detail.textContent = entry.details || "\u2014";
               row.appendChild(detail);
 
@@ -780,7 +852,7 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
           if (!tag) return;
           const agreed = await lkConfirm({
             title: "Delete the '" + tag + "' catalog?",
-            message: "Workstations set to that language fall back to English at their next start. The catalogs are platform-wide, so this affects every school.",
+            message: "Workstations set to that language fall back to English at their next start. The catalogs are platform-wide, so this affects every organization.",
             confirmLabel: "Delete",
             tone: "danger"
           });
@@ -805,12 +877,12 @@ ${panesByTab[activeTab] || schoolsPaneHtml}`;
     title: "Super Admin Master Console • Lab Kiosk SaaS",
     brandTitle: "Super Admin Master Console",
     brandSubtitle: `${baseDomain} • Global Governance`,
-    brandIconSvg: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`,
+    brandIconSvg: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`,
     brandHref: "/super",
     navItems,
     activeNavId: activeTab,
-    subPanelTitle: "Platform Governance",
-    subPanelSubtitle: "Global tenant administration",
+    subPanelTitle,
+    subPanelSubtitle,
     subPanelHtml,
     stats,
     userMeta: { name: "Super Admin", email: superAdminEmail, role: "Super Admin" },

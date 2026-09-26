@@ -49,9 +49,9 @@ fi
 
 if [ -z "$GRUB_PASSWORD_HASH" ]; then
     echo "[Hook] WARNING: no GRUB password set in $GRUB_PIN."
-    echo "[Hook] The boot menu will be editable, so a student at the keyboard can"
+    echo "[Hook] The boot menu will be editable, so a user at the keyboard can"
     echo "[Hook] obtain a root shell with 'init=/bin/sh'. Set one before deploying"
-    echo "[Hook] to a classroom; see that file for instructions."
+    echo "[Hook] to a room; see that file for instructions."
 elif ! printf '%s' "$GRUB_PASSWORD_HASH" | grep -q '^grub\.pbkdf2\.sha512\.'; then
     echo "[Hook] ERROR: PASSWORD_PBKDF2 in $GRUB_PIN is not a grub-mkpasswd-pbkdf2 hash." >&2
     echo "[Hook] Expected a value beginning 'grub.pbkdf2.sha512.'." >&2

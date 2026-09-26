@@ -94,9 +94,9 @@ export function generateDeviceToken(): string {
 }
 
 /**
- * Human-transcribable per-school enrollment key.
+ * Human-transcribable per-organization enrollment key.
  * 20 characters from a Crockford-style alphabet with the ambiguous glyphs
- * (I, L, O, U, 0, 1) removed, grouped for reading aloud in a classroom.
+ * (I, L, O, U, 0, 1) removed, grouped for reading aloud in a room.
  */
 export function generateEnrollmentKey(): string {
   const alphabet = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
@@ -173,7 +173,7 @@ export function createSessionCookie(
     "SameSite=Lax"
   ];
   // Scope to the parent domain so a session created on labkiosk.akbhoi.com is still sent
-  // to greenwood.labkiosk.akbhoi.com, which is where the teacher console actually lives.
+  // to greenwood.labkiosk.akbhoi.com, which is where the admin console actually lives.
   if (domain) parts.push(`Domain=.${domain.replace(/^\./, "")}`);
   if (secure) parts.push("Secure");
   return parts.join("; ");

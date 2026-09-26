@@ -2,7 +2,7 @@
 
 Deploying the control plane to Cloudflare Workers with D1, secrets, wildcard DNS, and CI/CD.
 
-You deploy the control plane **once**; it serves every school. The client OS is deployed per workstation — → [Installation Guide](Installation-Guide).
+You deploy the control plane **once**; it serves every organization. The client OS is deployed per workstation — → [Installation Guide](Installation-Guide).
 
 ---
 
@@ -52,6 +52,40 @@ npx wrangler d1 migrations apply labkiosk-db --remote
 
 > **This is not optional.** `assertSchemaCurrent()` refuses to serve a bound database whose migrations have not been applied, and a deployed worker never creates tables at runtime. → [Database Schema](Database-Schema)
 
+### Upgrading an existing deployment
+
+Pending migrations are applied the same way. Two of them change existing data:
+
+- **`0010_workstation_broadcast.sql`** adds per-workstation broadcast state. Deploy the Worker in the
+  same release: the new Worker reads these columns on every heartbeat.
+- **`0011_organization_vocabulary.sql`** renames the stored roles (`school_admin` → `org_admin`,
+  `teacher` → `operator`, `lab_assistant` → `assistant`) and the staff permission (`teachers` →
+  `staff`) by rebuilding every table that references `users`. It is written to be cascade-safe and
+  is applied as one unit, but it rewrites your core tables, so **export the database first**.
+- **`0012_unique_workstation_group_names.sql`** makes group names unique per organization in the
+  database (case-insensitively). If an organization already has two groups spelled the same way,
+  they are merged into the oldest one and its member workstations keep their group.
+- **`0013_retire_demo_tenant.sql`** **deletes the old `demo` organization and everything in it** —
+  its workstations, device tokens, apps, allowlist, presets, groups, staff links and audit history.
+  It is replaced by three demo organizations the worker creates at startup: `web-demo` (the hosted
+  site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator). Re-enrol any demo
+  workstations into `web-demo` afterwards. Before deploying, check nobody already holds one of the
+  new names — a row there not owned by the super admin is left alone and is not a demo:
+  `npx wrangler d1 execute labkiosk-db --remote --command "SELECT subdomain, user_id FROM tenants WHERE subdomain IN ('web-demo','local-demo','docker-demo')"`
+
+Back up, apply, then deploy:
+
+```bash
+npx wrangler d1 export labkiosk-db --remote --output labkiosk-backup.sql
+npx wrangler d1 migrations apply labkiosk-db --remote
+npx wrangler deploy
+```
+
+D1 Time Travel is a second safety net (`wrangler d1 time-travel restore labkiosk-db --timestamp=<before>`).
+Admin sessions survive the migration; anyone with a console tab open should reload it. Workstations
+installed from an older ISO keep working: the Worker still sends `schoolName` alongside
+`organizationName`.
+
 ---
 
 ## 2. Set the super-admin secrets
@@ -88,7 +122,7 @@ Use `.dev.vars` for local development only; it is not read in production.
 
 ## 4. Routes and DNS
 
-Every school gets its own subdomain, so the worker needs both the apex and a wildcard.
+Every organization gets its own subdomain, so the worker needs both the apex and a wildcard.
 
 ```jsonc
 "routes": [
@@ -101,7 +135,7 @@ In Cloudflare DNS:
 
 1. **Apex record** — `CNAME` or `A` for `labkiosk.yourdomain.com` pointing at the worker, **proxied** (orange cloud).
 2. **Wildcard record** — `CNAME` with name `*.labkiosk` targeting `labkiosk.yourdomain.com`, **proxied**.
-3. **Custom domains** — schools create a `CNAME` pointing at your apex. Once a super admin approves it, the worker recognises it from the `Host` header. A domain in a zone you do not control needs a Cloudflare for SaaS custom hostname.
+3. **Custom domains** — organizations create a `CNAME` pointing at your apex. Once a super admin approves it, the worker recognises it from the `Host` header. A domain in a zone you do not control needs a Cloudflare for SaaS custom hostname.
 
 The orange cloud is required. An unproxied record bypasses the worker entirely.
 
@@ -128,7 +162,7 @@ npx wrangler deploy
 | `https://labkiosk.yourdomain.com/` | Landing page over HTTPS with hardened headers |
 | `https://labkiosk.yourdomain.com/super` | Sign-in; your super-admin credentials work |
 | `curl -I https://labkiosk.yourdomain.com/` | `Strict-Transport-Security`, `X-Frame-Options: DENY`, `Content-Security-Policy` with a nonce |
-| `https://<slug>.labkiosk.yourdomain.com/` | The wildcard route resolves a registered school |
+| `https://<slug>.labkiosk.yourdomain.com/` | The wildcard route resolves a registered organization |
 
 If the worker will not start, it is almost always one of: missing super-admin secrets, or unapplied migrations. Both fail loudly with a specific message. → [Troubleshooting](Troubleshooting)
 
@@ -186,7 +220,7 @@ A thumbnail can be up to 256 KB, and the newest one per device is stored on its 
 
 ### Backups
 
-D1 supports time-travel restore. The rows worth protecting are `users`, `tenants`, `portal_sites`, and `tenant_whitelist` — a school's entire configuration. `client_devices` and `commands` rebuild themselves from the fleet within seconds.
+D1 supports time-travel restore. The rows worth protecting are `users`, `tenants`, `portal_sites`, and `tenant_whitelist` — an organization's entire configuration. `client_devices` and `commands` rebuild themselves from the fleet within seconds.
 
 ### Rollback
 

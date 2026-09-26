@@ -19,6 +19,7 @@ would be shipped to workstations.
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -65,7 +66,7 @@ def handler_with(headers):
 class LoopbackBoundary(unittest.TestCase):
     """Who is allowed to reach the agent's API at all."""
 
-    def test_a_page_the_student_visited_is_refused(self):
+    def test_a_page_the_user_visited_is_refused(self):
         for origin in ("https://evil.example", "http://attacker.test:8080",
                        "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"):
             with self.subTest(origin=origin):
@@ -95,15 +96,77 @@ class WorkerUrls(unittest.TestCase):
                 self.assertFalse(agent.safe_navigable_url(url))
 
     def test_plain_http_is_refused_for_a_public_host(self):
-        self.assertFalse(agent.validate_worker_url("http://school.example"))
+        self.assertFalse(agent.validate_worker_url("http://organization.example"))
 
     def test_https_is_accepted(self):
-        self.assertTrue(agent.validate_worker_url("https://school.labkiosk.akbhoi.com"))
+        self.assertTrue(agent.validate_worker_url("https://organization.labkiosk.akbhoi.com"))
 
     def test_http_is_accepted_only_for_loopback_and_the_container_gateway(self):
         for url in ("http://127.0.0.1:8787", "http://host.docker.internal:8787"):
             with self.subTest(url=url):
                 self.assertTrue(agent.validate_worker_url(url))
+
+    def test_http_is_accepted_for_a_dev_server_on_a_private_address(self):
+        # `pnpm dev` on the host, reached from a Hyper-V/WSL VM or the LAN.
+        for url in ("http://172.31.64.1:8787/", "http://192.168.1.20:8787", "http://10.0.0.5:8787"):
+            with self.subTest(url=url):
+                self.assertEqual(agent.validate_worker_url(url), url.rstrip("/"))
+
+    def test_http_is_refused_for_public_link_local_and_lookalike_hosts(self):
+        for url in (
+            "http://8.8.8.8:8787",          # public address
+            "http://172.32.0.1:8787",       # just outside 172.16.0.0/12
+            "http://169.254.169.254",       # link-local (cloud metadata)
+            "http://0.0.0.0:8787",          # unspecified
+            "http://192.168.1.20.evil.com", # a hostname, not an address
+            "http://[fd00::1]:8787",        # IPv6 ULA: not a dev host on the control plane
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(agent.validate_worker_url(url))
+
+
+class CatalogKeysResolve(unittest.TestCase):
+    """Every string key the wizard and kiosk bar use must exist in the en-US catalog.
+
+    A key renamed in the markup but not in the catalog still shows its English
+    fallback, so nothing looks broken -- but every translation of it is silently
+    orphaned, in the image and on every workstation that downloaded one.
+    """
+
+    def test_every_referenced_key_is_in_the_catalog(self):
+        import json
+        import re
+        with open(os.path.join(CHROOT, "opt/labkiosk/i18n/en-US.json"), encoding="utf-8") as handle:
+            catalog = json.load(handle)
+        for rel in ("opt/labkiosk/setup/wizard.html", "opt/labkiosk/extension/content.js", "opt/labkiosk/setup/blocked.html"):
+            with open(os.path.join(CHROOT, rel), encoding="utf-8") as handle:
+                source = handle.read()
+            keys = set(re.findall(r'data-i18n(?:-[a-z]+)?="([a-z][A-Za-z0-9_.-]*)"', source))
+            keys |= set(re.findall(r"""\bt\(\s*['"]([a-z][A-Za-z0-9_.-]*)['"]""", source))
+            # Keys assigned from script (el.dataset.i18n = '...') are translated too.
+            keys |= set(re.findall(r"""dataset\.i18n\s*=\s*['"]([a-z][A-Za-z0-9_.-]*)['"]""", source))
+            with self.subTest(file=rel):
+                self.assertGreater(len(keys), 5)
+                self.assertEqual(sorted(k for k in keys if k not in catalog), [])
+
+
+class OrganizationNameFromEnrolment(unittest.TestCase):
+    """The Worker renamed schoolName to organizationName; both must be understood."""
+
+    def test_the_new_key_is_read(self):
+        self.assertEqual(agent.organization_name({"organizationName": "Acme"}, "acme"), "Acme")
+
+    def test_an_older_worker_still_names_the_organization(self):
+        self.assertEqual(agent.organization_name({"schoolName": "Greenwood"}, "greenwood"), "Greenwood")
+
+    def test_the_new_key_wins_when_both_are_sent(self):
+        reply = {"organizationName": "Acme Corp", "schoolName": "Acme Corp (old)"}
+        self.assertEqual(agent.organization_name(reply, "acme"), "Acme Corp")
+
+    def test_the_typed_address_is_the_last_resort(self):
+        for reply in ({}, {"organizationName": "  "}, None):
+            with self.subTest(reply=reply):
+                self.assertEqual(agent.organization_name(reply, "acme"), "acme")
 
 
 class InterfaceCatalogs(unittest.TestCase):
@@ -184,17 +247,53 @@ class LocaleSpellings(unittest.TestCase):
         self.assertEqual(localization.locale_key("sr_RS.UTF-8@latin"), "sr_RS.utf8@latin")
 
 
+class InterfaceLanguageTags(unittest.TestCase):
+    """The helper once rejected every tag, en-US included, and broke installs."""
+
+    GOOD = ("en-US", "en", "hi-IN", "zh-Hant-TW", "fil")
+    BAD = ("", "en_US", "e", "en-", "en-US\n", "../en", "en US")
+
+    def test_the_helper_accepts_the_tags_the_agent_offers(self):
+        for good in self.GOOD:
+            with self.subTest(tag=good):
+                self.assertIsNotNone(localization.UI_LANGUAGE_PATTERN.match(good))
+                self.assertIsNotNone(agent.UI_LANGUAGE_PATTERN.match(good))
+
+    def test_both_reject_malformed_tags_and_trailing_newlines(self):
+        for bad in self.BAD:
+            with self.subTest(tag=bad):
+                self.assertIsNone(localization.UI_LANGUAGE_PATTERN.match(bad))
+                self.assertIsNone(agent.UI_LANGUAGE_PATTERN.match(bad))
+
+    def test_the_two_patterns_are_the_same(self):
+        self.assertEqual(localization.UI_LANGUAGE_PATTERN.pattern, agent.UI_LANGUAGE_PATTERN.pattern)
+
+    def test_no_client_script_double_escapes_an_anchor(self):
+        # In a raw string, \\Z means a literal backslash followed by Z, so the
+        # pattern can never match. That is how en-US came to be refused.
+        scripts = [
+            "opt/labkiosk/agent/agent.py",
+            "usr/local/bin/labkiosk-install",
+            "usr/local/sbin/labkiosk-localization",
+        ]
+        for rel in scripts:
+            with self.subTest(script=rel):
+                with open(os.path.join(CHROOT, rel), encoding="utf-8") as handle:
+                    source = handle.read()
+                self.assertNotRegex(source, r"""r["'][^"'\n]*\\\\Z""")
+
+
 class TimeServers(unittest.TestCase):
     def test_a_shell_fragment_is_refused(self):
-        for bad in ("ntp.school.edu; rm -rf /", "ntp.school.edu\nNTP=evil", "a b c d e"):
+        for bad in ("ntp.example.com; rm -rf /", "ntp.example.com\nNTP=evil", "a b c d e"):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     localization.validate_ntp_servers(bad)
 
     def test_hosts_and_addresses_are_accepted(self):
         self.assertEqual(
-            localization.validate_ntp_servers("ntp.school.edu, 10.0.0.1"),
-            ["ntp.school.edu", "10.0.0.1"],
+            localization.validate_ntp_servers("ntp.example.com, 10.0.0.1"),
+            ["ntp.example.com", "10.0.0.1"],
         )
 
     def test_empty_means_the_default_pool(self):
@@ -313,6 +412,51 @@ class RemoteReloadCommand(unittest.TestCase):
         self.assertGreaterEqual(updated, initial)
 
 
+class RemoteClearSessionCommand(unittest.TestCase):
+    """clear-session ends the kiosk browser; the watchdog wipes its profile."""
+
+    def setUp(self):
+        self._run = agent.subprocess.run
+        self.calls = []
+
+        def fake_run(argv, **kwargs):
+            self.calls.append(list(argv))
+            return agent.subprocess.CompletedProcess(argv, 0)
+
+        agent.subprocess.run = fake_run
+
+    def tearDown(self):
+        agent.subprocess.run = self._run
+
+    def test_clear_session_ends_only_the_kiosk_browser(self):
+        agent.execute_command({"action": "clear-session"})
+        self.assertEqual(
+            self.calls,
+            [["pkill", "-f", "--", f"--user-data-dir={agent.BROWSER_PROFILE_DIR}"]],
+        )
+
+    def test_clear_session_neither_reboots_nor_deletes_files_itself(self):
+        agent.execute_command({"action": "clear-session"})
+        flat = [arg for call in self.calls for arg in call]
+        self.assertNotIn("systemctl", flat)
+        self.assertNotIn("rm", flat)
+
+    def test_the_profile_the_agent_ends_is_the_one_the_watchdogs_wipe(self):
+        # The agent relies on both launchers deleting this exact directory
+        # before every relaunch; if either stops, clear-session stops clearing.
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        launchers = [
+            os.path.join(CHROOT, "etc/openbox/autostart"),
+            os.path.join(root, "docker-test/entrypoint.sh"),
+        ]
+        for path in launchers:
+            with self.subTest(launcher=path):
+                with open(path, encoding="utf-8") as handle:
+                    script = handle.read()
+                self.assertIn(f"--user-data-dir={agent.BROWSER_PROFILE_DIR}", script)
+                self.assertRegex(script, r"rm -rf [^\n]*" + agent.BROWSER_PROFILE_DIR.replace("/", r"\/"))
+
+
 class AdminAuthenticationAndSession(unittest.TestCase):
     def setUp(self):
         agent._admin_sessions.clear()
@@ -416,6 +560,395 @@ class AgentLogTrimming(unittest.TestCase):
                 os.unlink(tf_path)
             except OSError:
                 pass
+
+
+class RejectedEnrolment(unittest.TestCase):
+    """A workstation whose token the control plane refuses must not be stranded.
+
+    It used to only log it, stay on its old home page with no allowlist, and --
+    after a reboot -- sit on Chromium's "This page is blocked", where the kiosk
+    bar cannot appear and nothing leads back to setup.
+    """
+
+    KEYS = ("enrolmentRejected", "targetUrl", "broadcastUrl", "broadcastEpoch", "isLocked", "subdomain", "customDomain")
+
+    def setUp(self):
+        self.saved = {key: agent.state[key] for key in self.KEYS}
+        self.restarts = []
+        self.orig_restart = agent.restart_browser
+        agent.restart_browser = lambda reason="": self.restarts.append(reason)
+        agent.state.update({
+            "enrolmentRejected": False, "targetUrl": "http://10.0.0.5:8787/?tenant=demo",
+            "broadcastUrl": "https://example.com/", "broadcastEpoch": 7, "isLocked": True,
+            "subdomain": "demo", "customDomain": "",
+        })
+
+    def tearDown(self):
+        agent.restart_browser = self.orig_restart
+        agent.state.update(self.saved)
+
+    def test_the_screen_goes_to_re_enrolment_once(self):
+        self.assertTrue(agent.mark_enrolment_rejected())
+        self.assertFalse(agent.mark_enrolment_rejected(), "a second refusal changes nothing")
+        self.assertEqual(len(self.restarts), 1, "the browser is restarted exactly once")
+        self.assertTrue(agent.state["enrolmentRejected"])
+        self.assertEqual(agent.state["targetUrl"], agent.REENROL_URL)
+        self.assertTrue(agent.REENROL_URL.startswith("http://127.0.0.1:8888/setup"),
+                        "somewhere the boot-time policy always allows")
+        # Nothing from the dead organization may pull the screen away again.
+        self.assertEqual((agent.state["broadcastUrl"], agent.state["broadcastEpoch"], agent.state["isLocked"]), ("", 0, False))
+
+    def test_an_accepted_heartbeat_clears_it(self):
+        agent.mark_enrolment_rejected()
+        agent.clear_enrolment_rejected()
+        self.assertFalse(agent.state["enrolmentRejected"])
+
+    def test_the_heartbeat_reacts_to_a_refused_token(self):
+        import inspect
+        from urllib.error import HTTPError
+        orig_post = agent.post_telemetry
+
+        def refused():
+            raise HTTPError("http://10.0.0.5:8787/api/telemetry", 401, "Unauthorized", {}, None)
+
+        try:
+            agent.post_telemetry = refused
+            self.assertEqual(agent.http_heartbeat(), "rejected")
+            self.assertEqual(agent.state["targetUrl"], agent.REENROL_URL)
+            agent.post_telemetry = lambda: {"status": "ok"}
+            self.assertEqual(agent.http_heartbeat(), "ok")
+            self.assertFalse(agent.state["enrolmentRejected"], "an accepted heartbeat clears it")
+        finally:
+            agent.post_telemetry = orig_post
+        # An enrolment must not wait out a minute of back-off for its allowlist.
+        self.assertIn("heartbeat_wakeup.wait(wait)", inspect.getsource(agent.telemetry_loop))
+        self.assertIn("heartbeat_wakeup.set()", inspect.getsource(agent.enroll))
+
+
+class FakeWebSocketModule:
+    """The parts of websocket-client the agent uses, so these tests need no package."""
+
+    class WebSocketException(Exception):
+        pass
+
+    class WebSocketTimeoutException(WebSocketException):
+        pass
+
+    class WebSocketConnectionClosedException(WebSocketException):
+        pass
+
+    class WebSocketBadStatusException(WebSocketException):
+        def __init__(self, status):
+            super().__init__(f"Handshake status {status}")
+            self.status_code = status
+
+    class ABNF:
+        OPCODE_TEXT = 1
+        OPCODE_CLOSE = 8
+
+
+class FakeSocket:
+    def __init__(self, *incoming):
+        self.incoming = list(incoming)
+        self.sent = []
+        self.closed = False
+
+    def settimeout(self, seconds):
+        self.timeout = seconds
+
+    def recv_data(self):
+        if not self.incoming:
+            raise FakeWebSocketModule.WebSocketTimeoutException("timed out")
+        return self.incoming.pop(0)
+
+    def send(self, text):
+        self.sent.append(text)
+
+    def close(self):
+        self.closed = True
+
+
+def text_frame(message):
+    return (FakeWebSocketModule.ABNF.OPCODE_TEXT, json.dumps(message).encode("utf-8"))
+
+
+def close_frame(code, reason=""):
+    return (FakeWebSocketModule.ABNF.OPCODE_CLOSE, code.to_bytes(2, "big") + reason.encode("utf-8"))
+
+
+class ControlChannel(unittest.TestCase):
+    """The WebSocket to the organization's hub: what it applies, what it sends, and
+    how each way it can end is handled. A mistake here is a workstation that
+    stops obeying its operators, or one that streams its screen to nobody."""
+
+    PATCHED = ("websocket", "sync_chromium_policies", "execute_command", "restart_browser",
+               "capture_thumbnail_base64", "current_status", "mark_enrolment_rejected", "load_proxy_config")
+    KEYS = ("targetUrl", "broadcastUrl", "broadcastEpoch", "workerUrl", "deviceToken", "subdomain",
+            "enrolmentRejected", "pendingBrowserRestart")
+
+    def setUp(self):
+        self.orig = {name: getattr(agent, name) for name in self.PATCHED}
+        self.saved = {key: agent.state[key] for key in self.KEYS}
+        self.whitelists, self.commands, self.rejections = [], [], []
+        self.status = {"clientNum": 3, "activeUrl": "https://portal.example/home", "isLocked": False}
+        self.now = [1000.0]
+        agent.websocket = FakeWebSocketModule
+        agent.sync_chromium_policies = lambda hosts, force=False: self.whitelists.append(list(hosts))
+        agent.execute_command = self.commands.append
+        agent.restart_browser = lambda reason="": None
+        agent.capture_thumbnail_base64 = lambda: "data:image/jpeg;base64,AAAA"
+        agent.current_status = lambda: dict(self.status)
+        agent.mark_enrolment_rejected = lambda: self.rejections.append(True)
+        agent.load_proxy_config = lambda: dict(agent.DEFAULT_PROXY_CONFIG)
+        agent.state.update({"workerUrl": "https://acme.labkiosk.example", "deviceToken": "tok-123",
+                            "subdomain": "acme", "broadcastEpoch": 0, "broadcastUrl": "",
+                            "pendingBrowserRestart": False})
+        agent.heartbeat_wakeup.clear()
+
+    def tearDown(self):
+        for name, value in self.orig.items():
+            setattr(agent, name, value)
+        agent.state.update(self.saved)
+        agent.heartbeat_wakeup.clear()
+
+    def channel(self, *incoming):
+        ws = FakeSocket(*incoming)
+        return ws, agent.ControlChannel(ws, clock=lambda: self.now[0])
+
+    def sent(self, ws, kind):
+        return [json.loads(text) for text in ws.sent if json.loads(text).get("type") == kind]
+
+    def test_the_ping_is_exactly_the_hubs_auto_response_request(self):
+        # The edge answers a byte-identical ping without waking the hub; json.dumps
+        # would add a space and turn every ping into a billed request.
+        with open(os.path.join(ROOT, "..", "cloudflare-control", "src", "org_hub.ts"), encoding="utf-8") as handle:
+            hub = handle.read()
+        self.assertIn(f"export const HUB_PING = '{agent.WEBSOCKET_PING}';", hub)
+        self.assertLess(agent.WEBSOCKET_PING_SECONDS, agent.ONLINE_HEARTBEAT_WINDOW_SECONDS,
+                        "a pong must arrive inside the window that counts the workstation online")
+
+    def test_the_address_follows_the_worker_scheme(self):
+        self.assertEqual(agent.websocket_url("https://acme.labkiosk.example"), "wss://acme.labkiosk.example/api/devices/ws")
+        self.assertEqual(agent.websocket_url("http://10.0.0.5:8787"), "ws://10.0.0.5:8787/api/devices/ws")
+
+    def test_config_and_commands_are_applied(self):
+        ws, channel = self.channel()
+        channel.handle(json.dumps({"type": "config", "whitelist": ["docs.example"],
+                                   "broadcastUrl": "https://docs.example/", "broadcastEpoch": 42,
+                                   "targetUrl": "https://docs.example/", "commands": [{"action": "lock"}]}))
+        channel.handle(json.dumps({"type": "commands", "commands": [{"action": "reload"}, "junk"]}))
+        self.assertEqual(self.whitelists, [["docs.example"]])
+        self.assertEqual(agent.state["targetUrl"], "https://docs.example/")
+        self.assertEqual((agent.state["broadcastEpoch"], agent.state["broadcastUrl"]), (42, "https://docs.example/"))
+        self.assertEqual(self.commands, [{"action": "lock"}, {"action": "reload"}], "only objects are commands")
+
+    def test_a_malformed_message_changes_nothing(self):
+        ws, channel = self.channel()
+        for text in ("not json", "[1, 2]", json.dumps({"type": "config", "broadcastEpoch": "soon"})):
+            channel.handle(text)
+        self.assertEqual(agent.state["broadcastEpoch"], 0)
+        self.assertEqual(self.commands, [])
+
+    def test_status_is_sent_on_connect_and_then_only_when_it_changes(self):
+        ws, channel = self.channel()
+        channel.tick()
+        self.now[0] += 1.5
+        channel.tick()
+        self.assertEqual(len(self.sent(ws, "status")), 1)
+        self.status["isLocked"] = True
+        self.now[0] += 1.5
+        channel.tick()
+        statuses = self.sent(ws, "status")
+        self.assertEqual(len(statuses), 2)
+        self.assertTrue(statuses[-1]["isLocked"])
+        self.assertNotIn("thumbnail", statuses[-1], "a status never carries the screen")
+
+    def test_it_pings_and_gives_up_on_silence(self):
+        ws, channel = self.channel()
+        self.now[0] += agent.WEBSOCKET_PING_SECONDS
+        self.assertIsNone(channel.tick())
+        self.assertIn(agent.WEBSOCKET_PING, ws.sent)
+        self.now[0] += agent.WEBSOCKET_SILENCE_SECONDS
+        self.assertEqual(channel.tick(), agent.SESSION_ENDED)
+
+    def test_a_pong_keeps_the_workstation_online(self):
+        ws, channel = self.channel(text_frame({"type": "pong"}))
+        agent.state["lastHeartbeatOk"] = 0.0
+        self.now[0] += 30
+        self.assertIsNone(channel.receive())
+        self.assertGreater(agent.state["lastHeartbeatOk"], 0.0)
+        self.assertEqual(channel.last_heard, self.now[0])
+
+    def test_frames_are_sent_only_while_someone_watches(self):
+        ws, channel = self.channel()
+        channel.tick()
+        self.assertEqual(self.sent(ws, "frame"), [], "nobody is watching yet")
+        channel.handle(json.dumps({"type": "frames", "on": True, "intervalSeconds": 3}))
+        channel.tick()
+        self.now[0] += 1
+        channel.tick()
+        self.assertEqual(len(self.sent(ws, "frame")), 1, "one frame per interval")
+        self.now[0] += 2
+        channel.tick()
+        self.assertEqual(len(self.sent(ws, "frame")), 2)
+        channel.handle(json.dumps({"type": "frames", "on": False}))
+        self.now[0] += 10
+        channel.tick()
+        self.assertEqual(len(self.sent(ws, "frame")), 2)
+
+    def test_the_frame_interval_is_bounded(self):
+        ws, channel = self.channel()
+        channel.handle(json.dumps({"type": "frames", "on": True, "intervalSeconds": 0}))
+        self.assertEqual(channel.frame_interval, agent.FRAME_INTERVAL_BOUNDS[0])
+        channel.handle(json.dumps({"type": "frames", "on": True, "intervalSeconds": 10 ** 9}))
+        self.assertEqual(channel.frame_interval, agent.FRAME_INTERVAL_BOUNDS[1])
+
+    def test_each_close_code_is_handled(self):
+        cases = (
+            (agent.WS_CLOSE_REMOVED, agent.SESSION_REJECTED, 1),
+            (agent.WS_CLOSE_INACTIVE, agent.SESSION_REJECTED, 1),
+            (agent.WS_CLOSE_REPLACED, agent.SESSION_FAILED, 0),
+            (agent.WS_CLOSE_STALE, agent.SESSION_ENDED, 0),
+            (1001, agent.SESSION_ENDED, 0),
+        )
+        for code, outcome, rejections in cases:
+            with self.subTest(code=code):
+                self.rejections.clear()
+                ws, channel = self.channel(close_frame(code, "bye"))
+                self.assertEqual(channel.run(), outcome)
+                self.assertEqual(len(self.rejections), rejections)
+
+    def test_a_new_enrolment_reconnects(self):
+        ws, channel = self.channel()
+        agent.heartbeat_wakeup.set()
+        self.assertEqual(channel.run(), agent.SESSION_ENDED)
+        self.assertFalse(agent.heartbeat_wakeup.is_set())
+
+    def test_the_handshake_outcomes(self):
+        cases = ((401, agent.SESSION_REJECTED, 1), (403, agent.SESSION_REJECTED, 1),
+                 (426, agent.SESSION_UNSUPPORTED, 0), (404, agent.SESSION_UNSUPPORTED, 0),
+                 (501, agent.SESSION_UNSUPPORTED, 0), (502, agent.SESSION_FAILED, 0))
+        for status, outcome, rejections in cases:
+            with self.subTest(status=status):
+                self.rejections.clear()
+
+                def refuse(*args, **kwargs):
+                    raise FakeWebSocketModule.WebSocketBadStatusException(status)
+
+                FakeWebSocketModule.create_connection = staticmethod(refuse)
+                self.assertEqual(agent.open_control_channel(), (None, outcome))
+                self.assertEqual(len(self.rejections), rejections)
+
+        def unreachable(*args, **kwargs):
+            raise ConnectionRefusedError("refused")
+
+        FakeWebSocketModule.create_connection = staticmethod(unreachable)
+        self.assertEqual(agent.open_control_channel(), (None, agent.SESSION_FAILED))
+
+    def test_the_handshake_carries_the_token_and_the_proxy(self):
+        calls = []
+        FakeWebSocketModule.create_connection = staticmethod(lambda url, **kwargs: calls.append((url, kwargs)) or FakeSocket())
+        agent.load_proxy_config = lambda: {"enabled": True, "host": "proxy.acme.example", "port": 3128, "bypass": "intranet.example"}
+        ws, outcome = agent.open_control_channel()
+        self.assertIsNone(outcome)
+        url, options = calls[0]
+        self.assertEqual(url, "wss://acme.labkiosk.example/api/devices/ws")
+        self.assertIn("Authorization: Bearer tok-123", options["header"])
+        self.assertTrue(options["suppress_origin"], "a workstation is not a browser page")
+        self.assertEqual((options["http_proxy_host"], options["http_proxy_port"]), ("proxy.acme.example", 3128))
+        self.assertIn("127.0.0.1", options["http_no_proxy"])
+        self.assertIn("intranet.example", options["http_no_proxy"])
+
+
+class ReenrolmentGating(unittest.TestCase):
+    """Registering an enrolled workstation again replaces its enrolment, so it takes
+    the administrator password on an installed workstation -- and is possible at
+    all, where it used to be refused outright with 409."""
+
+    def setUp(self):
+        agent._admin_sessions.clear()
+        self.orig_live = agent.is_live_session
+        self.orig_configured = agent.state["isConfigured"]
+
+    def tearDown(self):
+        agent.is_live_session = self.orig_live
+        agent.state["isConfigured"] = self.orig_configured
+        agent._admin_sessions.clear()
+
+    def post_setup(self, live, configured, token=None):
+        agent.is_live_session = lambda: live
+        agent.state["isConfigured"] = configured
+        headers = {"Host": "127.0.0.1:8888"}
+        if token:
+            headers[agent.ADMIN_TOKEN_HEADER] = token
+        handler = object.__new__(agent.LocalApiHandler)
+        handler.path = "/api/setup"
+        handler.headers = FakeHeaders(headers)
+        handler.sent = None
+        handler._send = lambda status, payload, content_type="application/json": setattr(handler, "sent", (status, payload))
+        handler.do_POST()
+        return handler.sent
+
+    def test_an_enrolled_installed_workstation_needs_the_password(self):
+        status, payload = self.post_setup(live=False, configured=True)
+        self.assertEqual(status, 401)
+        self.assertIn("Administrator authentication", payload["error"])
+
+    def test_with_the_password_it_may_register_again(self):
+        agent._admin_sessions["valid"] = 9999999999.0
+        status, payload = self.post_setup(live=False, configured=True, token="valid")
+        # Past the gate: what is refused now is the empty request itself.
+        self.assertEqual((status, payload.get("error")), (400, "A JSON body is required"))
+
+    def test_first_enrolment_and_live_media_are_unchanged(self):
+        self.assertEqual(self.post_setup(live=False, configured=False)[0], 400)
+        self.assertEqual(self.post_setup(live=True, configured=True)[0], 400)
+
+
+class NoPageWithoutTheBar(unittest.TestCase):
+    """Chromium's block and network-error pages are chrome-error://, where no
+    extension runs; the extension sends those failures to pages that have the bar."""
+
+    def read(self, rel):
+        with open(os.path.join(CHROOT, rel), encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_the_extension_may_see_navigation_errors(self):
+        import json
+        manifest = json.loads(self.read("opt/labkiosk/extension/manifest.json"))
+        self.assertIn("webNavigation", manifest["permissions"])
+
+    def test_only_top_level_failures_away_from_the_agent_are_redirected(self):
+        source = self.read("opt/labkiosk/extension/background.js")
+        self.assertIn("chrome.webNavigation.onErrorOccurred.addListener", source)
+        self.assertIn("details.frameId !== 0", source)
+        self.assertIn("failed.origin === AGENT_ORIGIN", source, "a failure on the agent's own page must not loop")
+        self.assertIn('"net::ERR_BLOCKED_BY_ADMINISTRATOR"', source)
+        self.assertIn("${BLOCKED_PAGE_URL}?host=", source)
+
+    def test_the_blocked_page_is_safe_markup(self):
+        import re
+        page = self.read("opt/labkiosk/setup/blocked.html")
+        self.assertIsNone(re.search(r"<[a-z][^>]*\son[a-z]+=", page, re.I), "no inline event handlers")
+        self.assertNotIn("innerHTML", page, "the blocked host is attacker-chosen: textContent only")
+        # The retry navigates to an address from the query string: http(s) only,
+        # and once, so a site that really is blocked cannot loop.
+        self.assertIn("parsed.protocol === 'http:' || parsed.protocol === 'https:'", page)
+        self.assertIn("sessionStorage.getItem(marker) === '1'", page)
+
+    def test_the_agent_serves_it(self):
+        orig = agent.BLOCKED_HTML_FILE
+        agent.BLOCKED_HTML_FILE = os.path.join(CHROOT, "opt/labkiosk/setup/blocked.html")
+        try:
+            handler = object.__new__(agent.LocalApiHandler)
+            handler.path = "/blocked?host=example.com"
+            handler.headers = FakeHeaders({"Host": "127.0.0.1:8888"})
+            handler.sent = None
+            handler._send = lambda status, payload, content_type="application/json": setattr(handler, "sent", (status, content_type))
+            handler.do_GET()
+            self.assertEqual(handler.sent, (200, "text/html; charset=utf-8"))
+        finally:
+            agent.BLOCKED_HTML_FILE = orig
 
 
 if __name__ == "__main__":

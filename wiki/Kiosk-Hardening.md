@@ -1,6 +1,6 @@
 # Kiosk Hardening
 
-Everything that stands between a curious student and a shell. Each layer assumes the others may fail, which is why there are so many of them.
+Everything that stands between a curious user and a shell. Each layer assumes the others may fail, which is why there are so many of them.
 
 ---
 
@@ -23,7 +23,7 @@ Three layers, because each one only catches what the layer below it let through.
    the context menu, are blocked in the capture phase, in every frame.
 
 The single exception is the clipboard (Ctrl+A/C/V/X/Z/Y) on the setup wizard's own loopback origin,
-so an administrator can paste the enrolment key. No page a student can reach has that origin.
+so an administrator can paste the enrolment key. No page a user can reach has that origin.
 
 `/etc/overlayroot.conf`:
 
@@ -37,12 +37,12 @@ does nothing and leaves `recurse` at its default of `1` — which overlays **eve
 entry with a RAM upper layer, `LABKIOSK_DATA` included, and quietly loses every enrolment
 at reboot.
 
-The real root filesystem is mounted **read-only**, with a `tmpfs` overlay on top. Every write — browser cache, agent logs, downloads, student files, session state — lands in RAM and is gone at power-off.
+The real root filesystem is mounted **read-only**, with a `tmpfs` overlay on top. Every write — browser cache, agent logs, downloads, user files, session state — lands in RAM and is gone at power-off.
 
 This holds on live media **and** on installed disks. Two consequences follow:
 
 - **Zero flash wear.** Thin-client SSDs as small as 12 GB with limited write cycles are never written to during operation.
-- **Every boot is a clean boot.** Nothing a student does survives a reboot, so there is no persistence for malware, no accumulated profile corruption, and no stale configuration.
+- **Every boot is a clean boot.** Nothing a user does survives a reboot, so there is no persistence for malware, no accumulated profile corruption, and no stale configuration.
 
 The single exception on an installed disk is `/etc/labkiosk`, mounted from the `LABKIOSK_DATA` partition so that an enrolment survives. → [Disk Installer](Disk-Installer#why-partition-4-exists)
 
@@ -75,7 +75,7 @@ What makes an empty password safe here is that **no login path exists to use it*
 
 ### Polkit power policy
 
-`/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants `kiosk` reboot and power-off through logind, and nothing else. That grant is what makes the teacher's remote shutdown command work: the agent runs as `kiosk`, so without it the command would be accepted and then silently do nothing.
+`/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants `kiosk` reboot and power-off through logind, and nothing else. That grant is what makes the operator's remote shutdown command work: the agent runs as `kiosk`, so without it the command would be accepted and then silently do nothing.
 
 ---
 
@@ -112,7 +112,7 @@ The browser runs `--kiosk` with a wiped profile on every launch, under an enterp
 ]
 ```
 
-Everything is denied, and the school's `URLAllowlist` re-permits exactly its own domains plus its portal apps. `view-source:` is listed explicitly because `DeveloperToolsAvailability` does not cover it and the `http`/`https` entries do not match it.
+Everything is denied, and the organization's `URLAllowlist` re-permits exactly its own domains plus its portal apps. `view-source:` is listed explicitly because `DeveloperToolsAvailability` does not cover it and the `http`/`https` entries do not match it.
 
 ### The rest of the static policy
 
@@ -121,16 +121,16 @@ Everything is denied, and the school's `URLAllowlist` re-permits exactly its own
 | `DeveloperToolsAvailability` | `2` | DevTools disabled entirely |
 | `IncognitoModeAvailability` | `1` | Incognito disabled |
 | `DownloadRestrictions` | `3` | All downloads blocked |
-| `AllowFileSelectionDialogs` | `false` | Without this an upload control still opens a filesystem browser over the kiosk — a file manager a student otherwise has no route to |
+| `AllowFileSelectionDialogs` | `false` | Without this an upload control still opens a filesystem browser over the kiosk — a file manager a user otherwise has no route to |
 | `PrintingEnabled` | `false` | |
-| `PasswordManagerEnabled`, `AutofillAddressEnabled`, `AutofillCreditCardEnabled` | `false` | Nothing is retained between students |
+| `PasswordManagerEnabled`, `AutofillAddressEnabled`, `AutofillCreditCardEnabled` | `false` | Nothing is retained between users |
 | `BrowserSignin` | `0` | No Google sign-in |
 | `SyncDisabled` | `true` | |
 | `DefaultSearchProviderEnabled` | `false` | An allowlisted kiosk has nowhere to search to |
 | `DefaultGeolocationSetting`, `DefaultNotificationsSetting` | `2` | Deny without prompting — a kiosk has nobody to answer a permission prompt, and a modal would sit above the lock curtain |
 | `HardwareAccelerationModeEnabled` | `true` | Thin clients need it |
 
-**Audio and video capture are deliberately *not* blocked.** Language labs and video lessons legitimately need the microphone and camera; taking them away breaks real classroom use.
+**Audio and video capture are deliberately *not* blocked.** Language labs and video pages legitimately need the microphone and camera; taking them away breaks real room use.
 
 ### One home for the policy
 
@@ -235,6 +235,6 @@ Stated plainly, because a hardening page that claims completeness is worse than 
 
 - **Physical disassembly.** Anyone who can remove the drive can read it. Nothing on it is secret except an enrolment token, which can be revoked from the dashboard in one click.
 - **A network-level attacker.** The client trusts its control plane. HTTPS and the device token protect the channel; a compromised control plane can point the kiosk anywhere the allowlist permits.
-- **An un-Access-protected tunnel.** `websockify` serves the full noVNC UI on the tunnel hostname. Without a Cloudflare Access policy, an 8-character RFB secret is the only thing between the internet and a live classroom desktop. → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
+- **An un-Access-protected tunnel.** `websockify` serves the full noVNC UI on the tunnel hostname. Without a Cloudflare Access policy, an 8-character RFB secret is the only thing between the internet and a live room desktop. → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
 
 → [Security Model](Security-Model) · [Disk Installer](Disk-Installer) · [Building the ISO](Building-the-ISO)

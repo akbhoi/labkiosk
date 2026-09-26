@@ -7,8 +7,8 @@ body:
       value: |
         Thank you for reporting a bug! Please ensure you have tested against the latest version.
 
-        > **Found a security vulnerability?** Do not file it here. This project runs in classrooms
-        > and handles live images of students' screens, so please report it privately through the
+        > **Found a security vulnerability?** Do not file it here. This project runs in rooms
+        > and handles live images of users' screens, so please report it privately through the
         > process in [SECURITY.md](../blob/main/SECURITY.md) instead.
   - type: dropdown
     id: component
@@ -36,7 +36,7 @@ body:
       description: Step-by-step instructions to reproduce the behavior.
       placeholder: |
         1. Boot thin client with subdomain 'greenwood'
-        2. Teacher clicks 'Lock All'
+        2. Operator clicks 'Lock All'
         3. Workstation fails to display curtain...
     validations:
       required: true
@@ -53,5 +53,5 @@ body:
       label: Relevant Logs or Error Output
       description: |
         Copy logs from `/tmp/lab-agent.log` on the workstation, the browser console, or `wrangler dev`.
-        Redact your school's enrollment key and any device tokens before pasting.
+        Redact your organization's enrollment key and any device tokens before pasting.
       render: shell

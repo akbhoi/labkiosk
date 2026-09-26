@@ -9,6 +9,7 @@ A step-by-step guide for deploying the Lab Kiosk multi-tenant edge control plane
 ## 📋 Prerequisites
 
 Before deploying to production, ensure you have:
+
 1. A **Cloudflare Account** with Workers and D1 enabled.
 2. An active **Domain/Zone** managed in Cloudflare (e.g. `yourdomain.com`).
 3. **Node.js v22+** and **pnpm** installed on your workstation.
@@ -18,14 +19,17 @@ Before deploying to production, ensure you have:
 
 ## 1. Cloudflare D1 Database Provisioning
 
-The control plane requires Cloudflare D1 for durable multi-tenant persistence (schools, admin users, sessions, portal apps, client devices, audit logs, and command queues).
+The control plane requires Cloudflare D1 for durable multi-tenant persistence (organizations, admin users, sessions, portal apps, client devices, audit logs, and command queues).
 
 ### Step 1: Create the Remote Database
+
 ```bash
 cd cloudflare-control
 npx wrangler d1 create labkiosk-db
 ```
+
 Wrangler will output the created database information:
+
 ```text
 ✅ Successfully created DB 'labkiosk-db'
 {
@@ -36,7 +40,9 @@ Wrangler will output the created database information:
 ```
 
 ### Step 2: Configure `wrangler.jsonc`
+
 Open `cloudflare-control/wrangler.jsonc` and paste your generated `database_id`:
+
 ```jsonc
 "d1_databases": [
   {
@@ -49,12 +55,57 @@ Open `cloudflare-control/wrangler.jsonc` and paste your generated `database_id`:
 ```
 
 ### Step 3: Apply Database Migrations
+
 Apply all schema migrations remotely to initialize the database tables:
+
 ```bash
 npx wrangler d1 migrations apply labkiosk-db --remote
 ```
+
 > [!IMPORTANT]
 > **Rule 7 (Fail Closed):** The worker refuses to serve a bound database whose migrations have not been applied (`assertSchemaCurrent()`). A deployed worker never creates tables dynamically at runtime, ensuring strict schema migration tracking.
+
+### Upgrading an existing deployment
+
+Pending migrations are applied the same way. Two of them change existing data:
+
+- **`0010_workstation_broadcast.sql`** adds per-workstation broadcast state. Deploy the Worker in the
+  same release: the new Worker reads these columns on every heartbeat.
+- **`0011_organization_vocabulary.sql`** renames the stored roles (`school_admin` → `org_admin`,
+  `teacher` → `operator`, `lab_assistant` → `assistant`) and the staff permission (`teachers` →
+  `staff`) by rebuilding every table that references `users`. It is written to be cascade-safe and
+  is applied as one unit, but it rewrites your core tables, so **export the database first**.
+- **`0012_unique_workstation_group_names.sql`** makes group names unique per organization in the
+  database (case-insensitively). If an organization already has two groups spelled the same way,
+  they are merged into the oldest one and its member workstations keep their group.
+- **`0013_retire_demo_tenant.sql`** **deletes the old `demo` organization and everything in it** —
+  its workstations, device tokens, apps, allowlist, presets, groups, staff links and audit history.
+  It is replaced by three demo organizations the worker creates at startup: `web-demo` (the hosted
+  site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator). Re-enrol any demo
+  workstations into `web-demo` afterwards. Before deploying, check nobody already holds one of the
+  new names — a row there not owned by the super admin is left alone and is not a demo:
+  `npx wrangler d1 execute labkiosk-db --remote --command "SELECT subdomain, user_id FROM tenants WHERE subdomain IN ('web-demo','local-demo','docker-demo')"`
+- **`0014_org_hub_live_state.sql`** moves live state out of D1: it **drops the `commands` and
+  `command_deliveries` tables and `client_devices.thumbnail`**, and adds
+  `tenants.online_workstations`, `custom_hostname_id` and `custom_hostname_status`. Commands
+  queued at that moment are lost (they expired within a minute anyway). Create the
+  [platform resources](#platform-resources) first — the new worker refuses to start without them —
+  and deploy in the same release, because the old worker reads the dropped tables. Workstations
+  from an older ISO keep working over the HTTP heartbeat; those with `python3-websocket` connect
+  over a WebSocket.
+
+Back up, apply, then deploy:
+
+```bash
+npx wrangler d1 export labkiosk-db --remote --output labkiosk-backup.sql
+npx wrangler d1 migrations apply labkiosk-db --remote
+npx wrangler deploy
+```
+
+D1 Time Travel is a second safety net (`wrangler d1 time-travel restore labkiosk-db --timestamp=<before>`).
+Admin sessions survive the migration; anyone with a console tab open should reload it. Workstations
+installed from an older ISO keep working: the Worker still sends `schoolName` alongside
+`organizationName`.
 
 ---
 
@@ -63,7 +114,9 @@ npx wrangler d1 migrations apply labkiosk-db --remote
 Production deployments **fail closed** if super-admin secrets are unset. No default or fallback administrative credentials exist in production paths.
 
 ### Configure Required Secrets
+
 Run the following commands to securely set the initial platform super-admin credentials:
+
 ```bash
 npx wrangler secret put SUPER_ADMIN_EMAIL
 # Enter the platform administrator email (e.g., admin@yourdomain.com)
@@ -77,11 +130,47 @@ npx wrangler secret put SUPER_ADMIN_PASSWORD
 
 ---
 
+## Platform resources
+
+The worker needs more than D1. Live workstation state lives in one **OrgHub** Durable Object per
+organization, audit entries go through a queue and are archived to R2, and custom domains are
+provisioned by a Workflow. **A production worker refuses to start without every one of them**
+(`requiredBindingsProblem()`), and the error names each one that is missing.
+
+| Binding | What it is | Create it |
+| :--- | :--- | :--- |
+| `ORG_HUB` | Durable Object class `OrgHub` (SQLite-backed) | Nothing to create: the first deploy applies the `v1-org-hub` migration in `wrangler.jsonc`. |
+| `AUDIT_QUEUE` | Queue `labkiosk-audit`, dead-letter queue `labkiosk-audit-dlq` | `npx wrangler queues create labkiosk-audit` and `npx wrangler queues create labkiosk-audit-dlq` |
+| `AUDIT_ARCHIVE` | R2 bucket `labkiosk-audit-archive` (audit entries older than 180 days, as NDJSON) | `npx wrangler r2 bucket create labkiosk-audit-archive` |
+| `FLEET_METRICS` | Analytics Engine dataset `labkiosk_fleet` (connects and disconnects) | Nothing: it is created on first write. |
+| `AUTH_RATE_LIMITER` | Rate limit, namespace `1001`, 20 requests per 60 s per address | Nothing; change `namespace_id` if your account already uses `1001`. |
+| `CUSTOM_HOSTNAMES` | Workflow `labkiosk-custom-hostnames` | Nothing: created on deploy. |
+| `CF_API_TOKEN` | Secret: an API token for the zone with **SSL and Certificates: Edit** (custom hostnames) | `npx wrangler secret put CF_API_TOKEN` |
+| `CF_ZONE_ID` | Secret: the zone id of your platform domain | `npx wrangler secret put CF_ZONE_ID` |
+
+**Custom domains (Cloudflare for SaaS).** When a super admin approves an organization's custom
+domain, the Workflow creates a custom hostname on your zone, waits for its certificate, and records
+`custom_hostname_status` (`pending`, then `active` or `failed`); removing the domain deletes it.
+Before the first approval, enable Cloudflare for SaaS on the zone, set a **fallback origin** (a
+proxied DNS record on your zone), and make sure the worker serves custom hostnames — Cloudflare's
+guide for using a Worker as the SaaS origin describes the catch-all route. Each organization then
+points its domain at the fallback origin with a CNAME.
+
+**Local development** needs none of this: `pnpm dev` (`wrangler dev`) runs every binding locally,
+and with `ALLOW_LOCAL_DB=1` a custom domain is marked `local` instead of provisioned. wrangler's
+local rate-limit simulator throws on every call; the worker logs that and keeps to the D1 lockouts.
+
+**The CI token.** `wrangler deploy` now also binds a queue, a bucket and a Workflow. If the deploy
+reports an authorization error, add the permission it names to `CLOUDFLARE_API_TOKEN`.
+
+---
+
 ## 3. Managing Environment Variables
 
 In accordance with production deployment standards, **never define a `vars` block in `wrangler.jsonc`**, because subsequent runs of `wrangler deploy` or GitHub Actions will overwrite environment variables configured in the Cloudflare dashboard.
 
 Configure production variables in the **Cloudflare Dashboard**:
+
 1. Go to **Workers & Pages** → Select `labkiosk-controller`.
 2. Navigate to **Settings** → **Variables and Secrets**.
 3. Under **Environment Variables**, configure:
@@ -93,10 +182,12 @@ Configure production variables in the **Cloudflare Dashboard**:
 
 ## 4. Wildcard DNS & Route Configuration
 
-Every registered school receives its own isolated subdomain (e.g. `greenwood.labkiosk.yourdomain.com`).
+Every registered organization receives its own isolated subdomain (e.g. `greenwood.labkiosk.yourdomain.com`).
 
 ### 1. Update Routes in `wrangler.jsonc`
+
 Update the `routes` block in `cloudflare-control/wrangler.jsonc` to match your domain zone:
+
 ```jsonc
 "routes": [
   { "pattern": "labkiosk.yourdomain.com/*", "zone_name": "yourdomain.com" },
@@ -105,28 +196,33 @@ Update the `routes` block in `cloudflare-control/wrangler.jsonc` to match your d
 ```
 
 ### 2. Configure Cloudflare DNS
+
 In your Cloudflare Dashboard under your domain's **DNS Records**:
+
 1. **Apex / Host Record:** Add a `CNAME` or `A` record for `labkiosk.yourdomain.com` pointing to the Worker (Proxied: Orange Cloud).
 2. **Wildcard Subdomain Record:** Add a `CNAME` record with Name `*` or `*.labkiosk` targeting `labkiosk.yourdomain.com` (Proxied: Orange Cloud).
-3. **Custom Domain Support:** When schools request custom domains (e.g. `kiosk.institution.edu`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
+3. **Custom Domain Support:** When organizations request custom domains (e.g. `kiosk.example.com`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
 
 ---
 
 ## 5. Deploying the Worker
 
 Run strict typechecks and the test suite locally first:
+
 ```bash
 pnpm --prefix cloudflare-control run typecheck
 pnpm --prefix cloudflare-control test
 ```
 
 Deploy the worker to the Cloudflare Edge network:
+
 ```bash
 cd cloudflare-control
 npx wrangler deploy
 ```
 
 Once deployed, visit your apex URL (e.g. `https://labkiosk.yourdomain.com/`):
+
 - The public SaaS landing page should load with HTTPS and hardened security headers.
 - Access `https://labkiosk.yourdomain.com/super` and sign in with your `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`.
 
@@ -135,15 +231,21 @@ Once deployed, visit your apex URL (e.g. `https://labkiosk.yourdomain.com/`):
 ## 6. Scheduled Background Housekeeping
 
 The worker defines an hourly cron trigger in `wrangler.jsonc`:
+
 ```jsonc
 "triggers": {
   "crons": ["0 * * * *"]
 }
 ```
+
 Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of every hour:
+
 - Purges expired user and admin sessions.
-- Deletes delivered and acknowledged commands from the command queue.
 - Cleans up stale rate-limiting and sign-in throttle rows.
+- Moves audit entries older than 180 days to the `labkiosk-audit-archive` R2 bucket (one NDJSON
+  file per run) and deletes them from D1.
+
+Queued commands are no longer in D1: each organization's OrgHub expires its own.
 
 ---
 
@@ -152,12 +254,16 @@ Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of
 The repository includes a production deployment workflow in `.github/workflows/deploy-cloudflare.yml`.
 
 ### Required GitHub Repository Secrets
+
 Under **Settings** → **Secrets and variables** → **Actions**, configure:
+
 - `CLOUDFLARE_API_TOKEN`: Cloudflare API Token with `Workers Scripts: Edit`, `D1: Edit`, and `Account Settings: Read` permissions.
 - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare Account ID (visible on Cloudflare Dashboard sidebar).
 
 ### Workflow Pipeline
+
 On every push to `main` modifying `cloudflare-control/**`:
+
 1. Installs dependencies via `pnpm` with frozen lockfile.
 2. Executes strict TypeScript typechecks (`tsc --noEmit`).
 3. Executes automated multi-tenant and negative security test suite.
@@ -166,17 +272,20 @@ On every push to `main` modifying `cloudflare-control/**`:
 
 ---
 
-## 8. School Lab Network & Firewall Deployment Requirements
+## 8. Workstation fleet Network & Firewall Deployment Requirements
 
 For workstations running Lab Kiosk OS to communicate reliably with the Cloudflare control plane:
 
 ### Outbound Firewall Rules (Egress)
-School firewalls should permit outbound connections for the following ports and hosts:
-- **HTTPS (`TCP 443`):** To `<school>.labkiosk.yourdomain.com` (telemetry, enrollment, and web lessons).
-- **DNS (`UDP/TCP 53`):** To school DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
+
+Organization firewalls should permit outbound connections for the following ports and hosts:
+
+- **HTTPS (`TCP 443`):** To `<organization>.labkiosk.yourdomain.com` (the control channel, enrollment, and web pages). The control channel is a long-lived WebSocket; a proxy that refuses WebSocket upgrades only costs efficiency, because the agent falls back to the 3-second HTTPS heartbeat after three failed attempts.
+- **DNS (`UDP/TCP 53`):** To organization DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
 - **Cloudflare Tunnel (`TCP 7844` / `UDP 7844` QUIC):** Optional, required only if remote desktop assistance via `cloudflared` is deployed.
 
 ### Network Addressing & Proxy Architecture
+
 - **Ethernet & Wi-Fi:** Workstations support standard DHCP (IPv4 & IPv6), Custom DNS overrides (`ignore-auto-dns yes`), or fixed Static IPs configured via the setup wizard.
-- **HTTP / HTTPS Proxy:** School districts operating transparent or explicit proxy servers (e.g. Squid, Lightspeed, Smoothwall, Fortinet) can specify the proxy host and port during setup. Settings are stored in `/etc/labkiosk/proxy.json` (persisted on the data partition), applied to the agent's own requests, and enforced in Chromium managed policy (`ProxySettings` with `ProxyMode: "fixed_servers"`). Loopback is always exempt.
+- **HTTP / HTTPS Proxy:** Organization districts operating transparent or explicit proxy servers (e.g. Squid, Lightspeed, Smoothwall, Fortinet) can specify the proxy host and port during setup. Settings are stored in `/etc/labkiosk/proxy.json` (persisted on the data partition), applied to the agent's own requests, and enforced in Chromium managed policy (`ProxySettings` with `ProxyMode: "fixed_servers"`). Loopback is always exempt.
 - **Persistence:** All network configurations and Wi-Fi credentials are saved to the persistent `LABKIOSK_DATA` partition and bind-mounted on boot, surviving `overlayroot="tmpfs"` reboots.

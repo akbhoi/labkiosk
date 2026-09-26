@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![License: Source-Available](https://img.shields.io/badge/License-Source--Available%20(Free%20for%20Schools)-blue.svg)](LICENSE)
+[![License: Source-Available](https://img.shields.io/badge/License-Source--Available%20(Free%20for%20Education)-blue.svg)](LICENSE)
 [![Co-Developed with AI](https://img.shields.io/badge/Co--Developed%20with-AI%20(Google%20DeepMind%20Antigravity)-7952b3.svg)](#ai-co-development-statement)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers%20%2B%20D1%20SQL-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![Debian 12](https://img.shields.io/badge/OS-Debian%2012%20(Bookworm)-A81D33?logo=debian&logoColor=white)](https://www.debian.org/)
@@ -10,7 +10,7 @@
 [![Tests](https://img.shields.io/badge/Tests-CI-success)](#automated-testing)
 
 **A next-generation, ultra-lightweight Linux Kiosk Operating System & Multi-Tenant Cloudflare Control Plane.**  
-*Tailored for school computer labs, thin clients (4 GB RAM, 12 GB SATA SSD), and remote classroom supervision.*
+*Tailored for organization workstation fleets, thin clients (4 GB RAM, 12 GB SATA SSD), and remote room supervision.*
 
 [Documentation Hub](#documentation-hub) • [Architecture](#architecture) • [5-Minute Quickstart](#5-minute-quickstart) • [Automated Testing](#automated-testing) • [AI Statement](#ai-co-development-statement) • [Licensing](#licensing--commercial-use)
 
@@ -21,11 +21,11 @@
 <a id="overview"></a><a id="-overview"></a>
 ## 🌟 Overview
 
-**Lab Kiosk** is an open, source-available operating system and edge cloud management platform engineered to replace expensive commercial kiosk software in educational institutions.
+**Lab Kiosk** is an open, source-available operating system and edge cloud management platform engineered to replace expensive commercial kiosk software in educational organizations.
 
-It provides schools, colleges, and training centers with an enterprise-grade thin client environment that boots completely in RAM, prevents flash storage degradation, blocks unauthorized web browsing, and empowers teachers with real-time visual control over student workstations.
+It provides organizations, and training centers with an enterprise-grade thin client environment that boots completely in RAM, prevents flash storage degradation, blocks unauthorized web browsing, and empowers operators with real-time visual control over user workstations.
 
-Every school receives its own isolated subdomain (e.g. `greenwood.labkiosk.institution.edu`), a customized **Student Learning Portal** with curated educational applications, and a live **Teacher Control Console** with sub-second screen telemetry and embedded remote control.
+Every organization receives its own isolated subdomain (e.g. `greenwood.labkiosk.example.com`), a customized **User Portal** with curated approved applications, and a live **Operator Control Console** with sub-second screen telemetry and embedded remote control.
 
 ---
 
@@ -43,7 +43,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 | **Remote Control & Tunnels** | Zero-exposure remote desktop architecture via loopback `websockify`, per-boot ephemeral passwords, and Cloudflare Tunnels. | [`docs/REMOTE_CONTROL.md`](docs/REMOTE_CONTROL.md) |
 | **REST API Specification** | Complete REST endpoint catalog, authentication schemes, tenant scoping rules, request/response schemas, and rate limits. | [`docs/API.md`](docs/API.md) |
 | **AI Architecture Codices** | Modular architectural specifications and code invariants for AI coding assistants: [Master (`AGENTS.md`)](AGENTS.md) • [Distro Builder (`distro-builder/AGENTS.md`)](distro-builder/AGENTS.md) • [Control Plane (`cloudflare-control/AGENTS.md`)](cloudflare-control/AGENTS.md). | [`AGENTS.md`](AGENTS.md) |
-| **AI Skills & Automation** | Standardized AI engineering skills for full-stack, distro, and edge control plane workflows. | [`skills/`](skills/) |
+| **AI Skills & Automation** | Standardized AI engineering skills for full-stack, distro, and edge control plane workflows. | [`.agents/skills/`](.agents/skills/) |
 | **Security Policy** | Vulnerability reporting procedures, cryptographic standards, and threat model. | [`SECURITY.md`](SECURITY.md) |
 | **Contribution Guidelines** | Community guidelines, coding standards, and pull request checklist. | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
@@ -56,11 +56,11 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 +---------------------------------------------------------------------------------------+
 |                               CLOUDFLARE EDGE SAAS LAYER                              |
 |                                                                                       |
-|   [ Public Visitors ]          [ Platform Owner ]           [ School Teachers ]       |
+|   [ Public Visitors ]          [ Platform Owner ]           [ Organization Operators ]       |
 |            │                           │                             │                |
 |            ▼                           ▼                             ▼                |
 |   labkiosk.domain.com       labkiosk.domain.com/super    greenwood.labkiosk.domain.com|
-|    (Landing Page & ISO)      (Master Admin Console)        (Teacher Lab Dashboard)    |
+|    (Landing Page & ISO)      (Master Admin Console)        (Operator Lab Dashboard)    |
 |            │                           │                             │                |
 |            +---------------------------+-----------------------------+                |
 |                                        │                                              |
@@ -72,10 +72,10 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 |                        ├── Nonce CSP + hardened headers on every HTML response        |
 |                        ├── Device Token Enrolment & Verification                      |
 |                        ├── scheduled(): hourly housekeeping (cron trigger)            |
-|                        └── Cloudflare D1 Database (+ memory telemetry cache)          |
+|                        └── Cloudflare D1 + one OrgHub Durable Object per organization |
 +---------------------------------------------------------------------------------------+
                                          ▲
-                                         │ (HTTPS Telemetry / Remote Commands)
+                                         │ (WebSocket control channel, HTTPS fallback)
 +---------------------------------------------------------------------------------------+
 |                      CLIENT WORKSTATION LAYER (Intel Thin Clients)                    |
 |                                                                                       |
@@ -91,7 +91,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 |                                                                                       |
 |   [ Local Python 3 Agent: agent.py ]                                                  |
 |         ├── First-Boot Enrolment Wizard (127.0.0.1:8888, loopback only)               |
-|         ├── Authenticated Heartbeat & Screen Thumbnails (device bearer token, 3s)     |
+|         ├── Control channel: WebSocket to OrgHub (frames only while watched)          |
 |         └── Chromium Policy Synchronisation & Remote Command Dispatch                 |
 |                                                                                       |
 |   [ Remote Control Gateway ]                                                          |
@@ -102,9 +102,9 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 <a id="key-platform-capabilities"></a><a id="-key-platform-capabilities"></a>
 ### 🛡️ Key Platform Invariants & Capabilities
 
-- **Native Top-Level Navigation & Coordinated Reloads**: Chromium runs in native kiosk mode without `<iframe>` embedding. Remote teacher commands such as `reload` are dispatched through an event-driven `reloadEpoch` handshake between the workstation agent (`agent.py`) and the browser extension (`content.js`), verified via `sessionStorage` to prevent infinite reload loops without relying on synthetic key injection (`xdotool`).
-- **International Keyboard & Multilingual Support**: Workstation lockdown removes OS-level shortcut keys while `content.js` intercepts unauthorized keystrokes. Crucially, `content.js` respects `AltGr` (`event.getModifierState("AltGraph")`) and dead keys (`Dead`), allowing international students to type accented characters, `@`, `€`, and language-specific glyphs seamlessly. Dynamic RTL/LTR layout direction is supported across the wizard and kiosk bar.
-- **Query-Aware Navigation**: Kiosk URL normalization strictly preserves search queries (`u.search`), ensuring web apps with room IDs or student session parameters (e.g. `?room=101&user=demo`) work properly and are not incorrectly detected as root broadcast URLs.
+- **Native Top-Level Navigation & Coordinated Reloads**: Chromium runs in native kiosk mode without `<iframe>` embedding. Remote operator commands such as `reload` are dispatched through an event-driven `reloadEpoch` handshake between the workstation agent (`agent.py`) and the browser extension (`content.js`), verified via `sessionStorage` to prevent infinite reload loops without relying on synthetic key injection (`xdotool`).
+- **International Keyboard & Multilingual Support**: Workstation lockdown removes OS-level shortcut keys while `content.js` intercepts unauthorized keystrokes. Crucially, `content.js` respects `AltGr` (`event.getModifierState("AltGraph")`) and dead keys (`Dead`), allowing international users to type accented characters, `@`, `€`, and language-specific glyphs seamlessly. Dynamic RTL/LTR layout direction is supported across the wizard and kiosk bar.
+- **Query-Aware Navigation**: Kiosk URL normalization strictly preserves search queries (`u.search`), ensuring web apps with room IDs or user session parameters (e.g. `?room=101&user=demo`) work properly and are not incorrectly detected as root broadcast URLs.
 - **Centralized Interface Catalogs (i18n)**: The Super Admin Console (`/super`) provides full management for global workstation interface catalogs (`/api/super/i18n`), allowing administrators to upload, inspect, and delete language packs served to unenrolled and enrolled kiosks alike.
 
 ---
@@ -125,12 +125,12 @@ pnpm dev
 ```
 The local control plane will be live on `http://localhost:8787`:
 - **Public Landing Page:** `http://localhost:8787/`
-- **Student Learning Portal:** `http://localhost:8787/?tenant=demo`
-- **Teacher Lab Dashboard:** `http://localhost:8787/admin?tenant=demo`
+- **User Portal:** `http://localhost:8787/home?tenant=docker-demo`
+- **Operator Console:** `http://localhost:8787/admin?tenant=docker-demo` (as the super admin, who may open the three demo organizations)
 - **Super Admin Console:** `http://localhost:8787/super`
 
 ### 2. Launch the Workstation Simulator
-Without requiring physical hardware, simulate an enrolled student workstation using Docker:
+Without requiring physical hardware, simulate an enrolled user workstation using Docker:
 ```bash
 # From repository root -- builds from your working tree
 docker compose up -d
@@ -138,8 +138,8 @@ docker compose up -d
 # ...or pull the published image instead of building
 docker compose pull && docker compose up -d
 ```
-- Open [http://localhost:6080/vnc.html](http://localhost:6080/vnc.html) (VNC password: `labkiosk`).
-- Complete the onboarding wizard using subdomain `demo` and the enrollment key from **Teacher Dashboard → Settings → Workstation Enrollment Key**.
+- Open [http://localhost:6080/vnc.html](http://localhost:6080/vnc.html) (the VNC password is generated per container and printed in `docker compose logs`).
+- Complete the onboarding wizard using subdomain `docker-demo` and the enrollment key from **docker-demo's console → Settings → Workstation Enrollment Key**.
 - See [`docker-test/README.md`](docker-test/README.md) for full simulation details.
 
 ---
@@ -160,7 +160,7 @@ pnpm --prefix cloudflare-control test
 | Area | What is asserted |
 | :--- | :--- |
 | **Authorization** | Every workstation-control and settings endpoint refuses anonymous callers. |
-| **Tenant Isolation** | Teachers at one school receive `403 Forbidden` for other schools' consoles, clients, and commands. |
+| **Tenant Isolation** | Operators at one organization receive `403 Forbidden` for other organizations' consoles, clients, and commands. |
 | **Device Enrolment** | Invalid enrollment keys are rejected; valid keys issue device tokens; decommissioning revokes them. |
 | **Telemetry Identity** | The device bearer token, never the request body, authoritatively dictates workstation identity. |
 | **Output Escaping** | Hostile strings in tenant names or app titles render safely escaped across all interfaces. |
@@ -176,9 +176,9 @@ pnpm --prefix cloudflare-control test
 
 This project is proudly and transparently **co-developed with Artificial Intelligence**.
 
-The entire software architecture, custom Debian live-build hooks, high-performance Cloudflare Worker router, serverless D1 schema, native Web Crypto implementation, and enterprise client extensions were iteratively designed, coded, and tested through pair-programming between the human maintainer and AI coding assistants, initially **Antigravity** (Google DeepMind) and subsequently Claude Code. The rules those agents follow live in [`AGENTS.md`](AGENTS.md), [`CLAUDE.md`](CLAUDE.md), and [`skills/labkiosk-core/SKILL.md`](skills/labkiosk-core/SKILL.md).
+The entire software architecture, custom Debian live-build hooks, high-performance Cloudflare Worker router, serverless D1 schema, native Web Crypto implementation, and enterprise client extensions were iteratively designed, coded, and tested through pair-programming between the human maintainer and AI coding assistants, initially **Antigravity** (Google DeepMind) and subsequently Claude Code. The rules those agents follow live in [`AGENTS.md`](AGENTS.md) and [`.agents/skills/labkiosk-core/SKILL.md`](.agents/skills/labkiosk-core/SKILL.md).
 
-We believe in open collaboration, transparent AI authorship, and leveraging artificial intelligence to build robust, secure, and accessible technology for classrooms around the world.
+We believe in open collaboration, transparent AI authorship, and leveraging artificial intelligence to build robust, secure, and accessible technology for rooms around the world.
 
 ---
 
@@ -188,6 +188,7 @@ We believe in open collaboration, transparent AI authorship, and leveraging arti
 Lab Kiosk is licensed under the **LabKiosk Software License (Source-Available, Educational & Commercial)**:
 
 - **Free for Schools & Non-Profits (Up to 45 Computers):** 100% free and unrestricted for all accredited public and private K-12 schools, colleges, universities, teachers, educational foundations, and personal non-commercial evaluation on **up to 45 workstations**.
+- **Companies & Other Organizations:** Businesses, government bodies and other organizations outside that educational grant use Lab Kiosk under a paid Commercial License or Subscriber License, whatever the number of computers.
 - **45+ Computer Commercial Threshold:** Any party (including educational, academic, and non-commercial organizations) deploying **more than 45 computers** is viewed and treated as commercial scale, requiring a separate paid Commercial License or active Subscription License.
 - **Commercial & MSP Restrictions:** Any commercial enterprise, for-profit corporate training academy, or Managed Service Provider (MSP) reselling Lab Kiosk as a paid commercial service, hosting it as a paid offering, or utilizing it for commercial gain must obtain a separate, paid Commercial License.
 - **Software License vs. Subscriber License:** This document is the Software License. Subscribers utilizing the hosted Cloudflare Worker control plane are supported in accordance with the **Subscriber License** available directly within the Cloudflare Worker.

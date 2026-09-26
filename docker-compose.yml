@@ -22,7 +22,7 @@ services:
       # Only the noVNC display is published, and only to this machine. Bound to
       # 127.0.0.1 because noVNC here is an unauthenticated-by-design endpoint
       # behind an 8-character RFB secret: on 0.0.0.0 anyone on the same network
-      # (a cafe, a school Wi-Fi) reaches a live desktop. To share it, put a proxy
+      # (a cafe, an organization Wi-Fi) reaches a live desktop. To share it, put a proxy
       # that authenticates in front, or use a Cloudflare Tunnel with Access.
       #
       # The agent's API stays loopback-only inside the container, as on a real

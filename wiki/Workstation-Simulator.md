@@ -16,7 +16,7 @@ A Docker container that behaves like an enrolled thin client — real agent, rea
 └── agent.py              status, screenshots via scrot, policy sync
 ```
 
-> The image is defined by the **repository-root `Dockerfile`**, not by anything in `docker-test/`. There used to be a near-identical `docker-test/Dockerfile`; it drifted out of step — it lost `alsa-utils`, so the teacher's `mute` command failed in that variant alone — and was removed. `docker-test/` holds the entrypoint and its docs.
+> The image is defined by the **repository-root `Dockerfile`**, not by anything in `docker-test/`. There used to be a near-identical `docker-test/Dockerfile`; it drifted out of step — it lost `alsa-utils`, so the operator's `mute` command failed in that variant alone — and was removed. `docker-test/` holds the entrypoint and its docs.
 
 ---
 
@@ -64,15 +64,15 @@ The container also mounts `./distro-builder/config/includes.chroot/opt/labkiosk`
 
 ## Enrolling the simulated workstation
 
-1. With the control plane running (`cd cloudflare-control && pnpm dev`), open `http://localhost:8787/admin?tenant=demo`.
+1. With the control plane running (`cd cloudflare-control && pnpm dev`), sign in as the super admin and open `http://localhost:8787/admin?tenant=docker-demo`.
 2. **Settings → Workstation Enrollment Key** → copy the key.
-3. In the noVNC window: subdomain `demo`, identifier `PC-01`, and that key.
+3. In the noVNC window: subdomain `docker-demo`, identifier `PC-01`, and that key.
 4. **Connect & Register Workstation.**
 
 What happens:
 
 - The agent posts to `http://host.docker.internal:8787/api/devices/enroll`.
-- The worker returns a device token and the school's portal URL.
+- The worker returns a device token and the organization's portal URL.
 - The agent writes `/etc/chromium/policies/managed/policies.json`.
 - The browser watchdog restarts Chromium once so it lands on the portal under the new policy.
 - The workstation appears on the dashboard with sub-second thumbnail telemetry.
@@ -118,7 +118,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/verify.png
 docker cp labkiosk-client-01:/tmp/verify.png .
 ```
 
-**Verify every UI change on a screenshot, not on a log line.** The agent logging a command as executed proves only that the agent ran; it does not prove the student saw anything.
+**Verify every UI change on a screenshot, not on a log line.** The agent logging a command as executed proves only that the agent ran; it does not prove the user saw anything.
 
 ---
 

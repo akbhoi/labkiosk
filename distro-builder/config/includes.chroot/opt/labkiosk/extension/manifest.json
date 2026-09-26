@@ -1,17 +1,18 @@
 {
   "name": "Lab Kiosk Navigation & Lockdown",
   "version": "2.1.0",
-  "description": "Auto-hiding kiosk navigation bar and teacher lock curtain for Lab Kiosk OS.",
+  "description": "Auto-hiding kiosk navigation bar and operator lock curtain for Lab Kiosk OS.",
   "manifest_version": 3,
 
   "_key_comment": "Public key only. It fixes this extension's ID to hfjmbeplebjipenkfabncgkpadnjmmoe, which keeps the extension's storage and identity stable across rebuilds and is a prerequisite for ever force-installing it by id as a packed .crx. Note that the managed policy does NOT carry a blanket extension block: one would make Chromium refuse --load-extension and silently disable this extension. See the _extension_comment entries in etc/chromium/policies/managed/policies.json.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAiCGcc1XRx+DQnPEZmm4etgcCPM7gCPv8EW5R5/cMD5PY6nwd7/V31372HEaeiwcS5wcr3DPSsIMhT+dGcxO0Kar+Lm6KTqkY3YPf0oPgGEt0JM57XIFFKJzLnIWy71MutPmcAsKCT55UIbaOvxfiicitvGPEU9PSq3L4ztLeC1qju+ZseEDq8oiO6gP2fh2xEr5J3dgVMTO+oGOP9G30e02MXcPy+smYkVU7pj1UXrPuqDv5T9dr4nfo/4k2CK94TBVaIQiHLx3vZ9aqNNAvntxsTj/dpVzAJlZnaHgX3ZtshFJqK3Qr6gGv4/wW1xtgGr9Qy7a0WhjgEdquvDy4RQIDAQAB",
 
-  "_permissions_comment": "The agent's API is a different origin from whatever page the student is on, so the fetch lives in the service worker (which host_permissions covers) rather than in the content script (whose fetches are subject to the page's CORS). That is what lets the agent refuse wildcard CORS.",
+  "_permissions_comment": "The agent's API is a different origin from whatever page the user is on, so the fetch lives in the service worker (which host_permissions covers) rather than in the content script (whose fetches are subject to the page's CORS). That is what lets the agent refuse wildcard CORS.",
   "host_permissions": ["http://127.0.0.1:8888/*"],
 
-  "_storage_comment": "chrome.storage.session holds the active broadcast epoch and URL. These used to live in the visited page's own sessionStorage, where that page's scripts could rewrite them to sit out a teacher's broadcast or re-enable Back at the broadcast root. Extension storage is in the extension's partition, so page script cannot reach it, and 'session' keeps the per-boot lifetime the kiosk wants.",
-  "permissions": ["storage"],
+  "_storage_comment": "chrome.storage.session holds the active broadcast epoch and URL. These used to live in the visited page's own sessionStorage, where that page's scripts could rewrite them to sit out an operator's broadcast or re-enable Back at the broadcast root. Extension storage is in the extension's partition, so page script cannot reach it, and 'session' keeps the per-boot lifetime the kiosk wants.",
+  "permissions": ["storage", "webNavigation"],
+  "_webNavigation_comment": "For webNavigation.onErrorOccurred only. A page the managed policy blocks, or one that fails to load, is a chrome-error:// page no extension runs on, so the bar (network status, clock, the way back to setup) could never appear there. background.js sends such a top-level failure to the agent's /blocked or /setup#offline page instead. chrome.tabs.update needs no permission of its own.",
 
   "background": {
     "service_worker": "background.js"
