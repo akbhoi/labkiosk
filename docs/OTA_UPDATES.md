@@ -15,15 +15,23 @@ The update model, as the product owner specified it:
 2. **Updates download on their own, in the background.** When a release is published, every
    installed workstation downloads and verifies it while the kiosk keeps working. The download
    is only stored, not installed.
-3. **Nothing installs without an admin.** In the console, the admin selects workstations and
-   clicks **Install update**. Only workstations that already hold the downloaded update act on
-   it.
-4. **Selected screens lock with a "Getting update" screen** while the install runs: verify →
+3. **Feature releases install only when an admin approves.** In the console, the admin selects
+   workstations and clicks **Install update**. Only workstations that already hold the
+   downloaded update act on it.
+4. **Small security fixes install at the next boot, with no approval.** A signed release marked
+   `security` (same features, only rebuilt Debian packages) is staged as soon as it's verified.
+   The next time the machine starts, whether that's the morning power-on or an operator reboot,
+   it boots the fixed image. The boot is the install, so there's no extra downtime and no lock
+   screen beyond a short "Finishing update".
+5. **Selected screens lock with a "Getting update" screen** while an approved install runs: verify →
    reboot into the new system → health check → unlock. The download is already done, so this
    takes a few minutes, not the length of a download. Measure the real time in phase 1.
-5. **A failed update rolls itself back.** The previous system image stays on disk. If the new
+6. **A failed update rolls itself back.** The previous system image stays on disk. If the new
    one doesn't pass its health check, the workstation boots the old one, unlocks, and the
    console shows "Update failed, rolled back".
+7. **Workstations on the same LAN share the download** (§5.9). One or two machines per site
+   fetch the update from the cloud, and the rest copy it from them over the local network.
+   Every piece is checked against the signed manifest, so a peer can't slip in a modified image.
 
 How it's built underneath:
 
@@ -174,7 +182,15 @@ existing keys must never be renamed or change meaning.
 
 - **Payload:** `filesystem.squashfs`, `vmlinuz` and `initrd.img` from the CI build's
   `binary/live/` (the same bits as the ISO), plus `manifest.json`:
-  `{version, channel, security, files: [{name, size, sha256}], securityFloor, builtAt}`.
+  `{version, channel, kind, baseVersion, files: [{name, size, sha256, chunkSize, chunks: [sha256…]}], securityFloor, builtAt}`.
+  - `kind` is `feature` or `security`.
+  - Per-chunk hashes (for example 8 MiB chunks) let a device check each piece it gets from a
+    LAN peer before it writes it (§5.9).
+- **What counts as a `security` release is decided by CI, never by the device or the Worker.**
+  CI marks a release `security` only when it is a rebuild of the **same source commit** as
+  `baseVersion` and differs only in Debian packages from the security or LTS archive. The kind
+  is inside the signed manifest, so the control plane can't relabel a feature release as a
+  security fix to skip approval.
 - **Signature:** CI signs `manifest.json` with an offline-held key kept in a GitHub secret. A
   build with no key fails (invariant 10). The public key, **plus the next rotation key**, is baked
   into the image at `/usr/share/labkiosk/update-keys/`.
@@ -198,10 +214,12 @@ from a timer and nudged when the hub announces a release.
 1. GET /api/devices/update         → the release offered to this organization, or nothing
 2. Already running or downloaded it → exit
 3. Fetch manifest + signature; verify; enforce securityFloor
-4. Remount ROOT rw; delete the image that isn't running; stream the files into images/<version>/
-   with HTTP Range resume, a bandwidth cap and a random start delay; fsync; remount ro
-5. Verify every sha256 again from disk; write images/<version>/.verified
-6. Report "downloaded <version>" on the control channel
+4. Remount ROOT rw; delete the image that isn't running; fetch chunks into images/<version>/
+   from LAN peers first (§5.9), then the cloud with HTTP Range resume, a bandwidth cap and a
+   random start delay; check each chunk's hash before writing it; fsync; remount ro
+5. Verify every file's sha256 again from disk; write images/<version>/.verified
+6. kind = security for the running line → stage it for the next boot (§5.5)
+   kind = feature                        → report "ready <version>" and wait for approval
 ```
 
 - **The kiosk keeps working throughout.** Nothing is locked, nothing reboots, and the running
@@ -224,7 +242,8 @@ from a timer and nudged when the hub announces a release.
 |---|---|
 | Up to date · 2.6.1 | nothing waiting |
 | Downloading 2.7.0 · 63 % | in progress, kiosk unaffected |
-| **Ready to install 2.7.0** | verified on disk, waiting for approval |
+| **Ready to install 2.7.0** | feature release verified on disk, waiting for approval |
+| **Installs at next restart · 2.7.1** | security release staged; takes effect at the next boot |
 | Installing… / Finishing… | the update screen is up |
 | Updated to 2.7.0 | success |
 | **Update failed — rolled back to 2.6.1** | new image failed its health check; old one running |
@@ -282,20 +301,39 @@ reports "updated to <v>"
   daily lock and navigate, isn't enough. Approvals go in the audit log (who, when, which
   machines, which version). *This choice is open for confirmation (§12).*
 
-**Security updates and approval.** Approval-only means a fix can wait on disk for weeks if no
-admin clicks. To limit that:
+**Security releases install at the next boot, without approval.**
 
-- The console shows a banner when a release marked `security` has been ready for more than
+- Once a `security` release for the running line is verified on disk, the root updater sets
+  `next=<v>`, `next_tries=1` in `grubenv` straight away. It writes nothing else and doesn't
+  reboot.
+- The machine keeps working on the current image until it next starts: the morning power-on,
+  an operator's `reboot`, or a power cut. GRUB then boots the fixed image once. The health
+  check and rollback in §5.6 apply exactly as for an approved install.
+- The agent shows a short "Finishing update" curtain until the health check passes. There's no
+  "Getting update" screen, because nothing needs to run before the reboot.
+- **The console shows "Installs at next restart · 2.7.1"** per machine. An admin who wants it
+  now can use the existing **Reboot** command on the selected workstations.
+- **Machines that never restart.** A kiosk left on for weeks never picks the fix up. The
+  console flags machines whose staged security release is older than N days, so the admin can
+  reboot them.
+- **Organization setting `security_updates`:** `next_boot` (default) or `approval`, for
+  organizations that want to approve every change. With `approval`, security releases behave
+  like feature releases, and the console shows a banner when one has been waiting more than
   N days.
-- Offer an organization setting, **off by default**, to install security releases
-  automatically in a nightly window.
+- **When a security fix and a feature release compete for the spare folder:** there's only one
+  spare image folder. A security fix for the running line takes it first and installs at the
+  next boot. After that, the feature release downloads into the spare folder, replacing the old
+  rollback image, and waits for approval as usual. A security fix never waits behind an
+  unapproved feature release.
+- **Which lines get security rebuilds:** CI rebuilds the **latest two** release lines (for
+  example 2.7.x and 2.8.x). An organization that hasn't approved 2.8 yet still gets fixes on 2.7.
 
 ### 5.6 Boot selection and rollback
 
 `grubenv` holds `current`, `previous`, `next`, `next_tries`:
 
 - **Normal boot:** boot `current`.
-- **After approval:** `next=<v>`, `next_tries=1`. GRUB decrements the counter and boots `next`
+- **After approval, or once a security release is staged:** `next=<v>`, `next_tries=1`. GRUB decrements the counter and boots `next`
   once. If it's already `0`, GRUB boots `current` and leaves `next` so the old image can report
   the failure.
 - **Health check passes:** `previous=current`, `current=next`, clear `next`.
@@ -309,15 +347,18 @@ admin clicks. To limit that:
 
 - **D1 (new migration 0015 and `SCHEMA_SQL`):**
   - on `client_devices`: `image_version`, `agent_version`, `update_version`, `update_state`,
-    `update_progress`, `update_error`, `update_state_at`;
-  - platform table `releases`: `version`, `channel`, `security`, `manifest`, `signature`,
-    `r2_prefix`, `size_bytes`, `published_at`, `revoked_at`;
+    `update_progress`, `update_error`, `update_state_at`, and for LAN sharing `lan_address`,
+    `egress_ip`, `peer_port`;
+  - platform table `releases`: `version`, `channel`, `kind`, `base_version`, `manifest`,
+    `signature`, `r2_prefix`, `size_bytes`, `published_at`, `revoked_at`;
   - organization settings: `update_channel` (`stable`/`beta`), `download_window`,
-    `download_rate_limit`, `auto_install_security` (default off).
+    `download_rate_limit`, `security_updates` (`next_boot` default, or `approval`),
+    `lan_sharing` (on or off; §5.9).
   - None of these are CHECK changes on a parent table. Confirm with `labkiosk-d1-schema`.
 - **Routes (each with a guard and negative tests):**
   - `GET /api/devices/update` (`requireDevice`): the release offered to this device's
-    organization.
+    organization, plus this device's role (`seed` or `peer`) and peer list for LAN sharing (§5.9).
+    The peer list only ever contains devices from the same organization.
   - `GET /api/devices/update/file/:name` (`requireDevice`): streams from R2 with `Range` support.
   - `POST /api/…/workstations/install-update` (`requireTenantPermission('settings')`): takes the
     selected ids (≤ 500, chunked). It sends `install-update` only to devices whose
@@ -337,6 +378,78 @@ admin clicks. To limit that:
 - The security rebuild pipeline in §7 produces patch releases marked `security`.
 - Make the squashfs as reproducible as live-build allows (`SOURCE_DATE_EPOCH`, stable file
   order). This matters only for delta updates later (§11).
+
+### 5.9 Sharing updates on the local network
+
+**Goal:** a site with 45 workstations fetches the update from the internet once or twice, not 45
+times. The rest travel over the LAN, which is usually 10 to 100 times faster than the uplink.
+
+**Finding peers — the Worker coordinates, no multicast.**
+
+- The agent reports its LAN address and prefix; today it works out the address but doesn't
+  send it. The Worker records the public IP each device connects from (`CF-Connecting-IP`,
+  which it already reads for other purposes).
+- Devices in the **same organization** with the **same public IP** and the **same LAN subnet**
+  count as one site.
+- mDNS or broadcast discovery is deliberately not used:
+  - the image ships without Avahi (removed to keep the ISO small);
+  - multicast often doesn't cross VLANs or managed Wi-Fi;
+  - it would let any device on the LAN pose as a peer.
+
+**Who downloads from where.**
+
+1. For each site, the Worker picks one or two **seeds**, preferring online, wired, idle
+   machines. Seeds download from the cloud as in §5.4.
+2. Every other machine is told it's a **peer** and given the site's peer list. It waits for a
+   seed to finish, then copies the image from the nearest machine that has it.
+3. **Every machine that finishes starts serving too**, so copies double each round:
+   1 → 2 → 4 → … 45 takes about six rounds.
+4. **Fallback to the cloud:** if no peer delivers within a couple of minutes, or peers can't
+   reach each other, the machine downloads from the cloud itself. Peers are often blocked by
+   Wi-Fi client isolation or VLAN rules. A machine is never stuck waiting on the LAN.
+
+**Speed, estimated rather than measured:** one 719 MiB copy takes about 7 s at full gigabit
+and about 70 s on 100 Mbit. In practice a slow disk or eMMC is often the limit. Allowing for
+that and the doubling, a whole site should finish in minutes once the seed has the image.
+Measure this in phase 5.
+
+**Security: the only new thing listening on the network.** Today every listener is
+loopback-only (invariant 8), so this needs its own guard rails:
+
+- **A separate, small server** (`labkiosk-share`), not the agent and not root. It runs as its
+  own unprivileged user with read access to the image folders only. It can't read `DATA`, so
+  device tokens, Wi-Fi keys and config never leave the machine.
+- **Only exact reads:** it answers only `GET /<version>/<file>/<chunk>` for a version that is
+  `.verified` on this machine. No listing, no other paths, no writes.
+- **LAN only:** it answers only private or link-local source addresses in its own subnet. Add
+  `nftables` to the image to enforce the same rule in the kernel. The image has no firewall
+  today, so this is a new package.
+- **Integrity doesn't depend on trusting peers.** Every chunk is checked against the hash in
+  the signed manifest before it's written. A broken or malicious peer can only waste time; it
+  gets dropped for that download, and the failure is reported.
+- **Nothing secret is served.** Images are the same bits as the public release ISO.
+- **Short-lived:** the server runs only while a release is spreading, meaning until every
+  machine on the site has it, or 48 hours at most. Otherwise the port is closed.
+- **Polite:** a few uploads at a time, at low I/O priority, so a machine that is serving
+  stays responsive for its user.
+
+**Start simple.** Machines serve only complete, verified images. Serving partial downloads
+chunk by chunk (BitTorrent-style) would only shave off the first round; add it only if
+measurements show the first round is the bottleneck. The per-chunk hashes are needed from the
+start anyway, to check what peers send.
+
+**Alternatives considered:**
+
+- **A BitTorrent client:** a large new daemon. Its local peer discovery is multicast, and
+  trackers and DHT would have to be disabled. The Worker already knows everything a tracker
+  would.
+- **aria2 with Metalink:** fetches from several HTTP mirrors in parallel with piece hashes. It
+  would be a reasonable download engine, but it's still a new package, and it's no help with
+  finding peers.
+- **The organization's HTTP proxy cache:** downloads are per-device, authenticated and over
+  HTTPS, so a shared proxy can't cache them.
+- **An on-site cache server:** works, but asks the organization to run a machine. Peer sharing
+  needs nothing extra.
 
 ---
 
@@ -380,8 +493,8 @@ admin clicks. To limit that:
    needed, because live-build fetches current packages on every build. *Check that the build
    pulls from the security archive:* `auto/config` relies on live-build's default.
 3. **Test.** Boot the new image in QEMU with the same health check as `labkiosk-boot-ok`.
-4. **Publish.** Workstations download it automatically. It installs when an admin approves, or
-   in the nightly window if the organization turned on automatic security installs.
+4. **Publish.** Workstations download it automatically (sharing it over the LAN, §5.9) and boot
+   it at their next start, unless the organization chose `approval` for security releases.
 5. **Report.** The console shows which workstations still run a vulnerable Chromium or kernel.
 
 ### Debian 12 is on LTS now
@@ -414,7 +527,8 @@ admin clicks. To limit that:
 | 1 | Image-store installer; §5.1 knock-on fixes; §5.2 state moves; GRUB one-try boot; `labkiosk-boot-ok` | QEMU + OVMF and SeaBIOS: install, switch images, force a failed health check, see the fallback; time a full install |
 | 2 | Signed manifest in CI; R2 upload; `labkiosk-update` download and install run by hand | QEMU: power cut mid-download, tampered signature, downgrade rejected |
 | 3 | D1 migration; device and approval routes with negative tests; console states and **Install update**; the update curtain in the extension; hub messages | `pnpm test`; drive the console in a browser; a two-VM approval against `pnpm dev` |
-| 4 | Security rebuild pipeline; "security update waiting" banner; optional nightly auto-install | a week of scheduled builds on a test organization |
+| 4 | Security rebuild pipeline (latest two lines); next-boot staging; "installs at next restart" and "not restarted in N days" console states | a week of scheduled builds on a test organization |
+| 5 | LAN sharing: LAN address reporting, site grouping and seed choice in the Worker, `labkiosk-share` with `nftables`, cloud fallback | 5–10 VMs on one virtual LAN with a throttled uplink; time the whole site; a peer that serves corrupted chunks; client isolation (peers unreachable) |
 
 The Docker simulator can't exercise GRUB, live-boot or image switching. It can exercise the
 download, the update curtain and the reporting against the dev server.
@@ -436,7 +550,7 @@ the full image, so measure before building this.
 1. Download windows and rate caps (already in §5.4).
 2. Chunk-level delta against the running image (casync-style, or RAUC's adaptive updates). This
    needs a reproducible squashfs; judge it on a measured delta between two real builds.
-3. A LAN cache: one workstation per site downloads, the others pull from it.
+3. LAN sharing is designed in §5.9. Chunk-level swarming is the next step after it, if needed.
 
 ---
 
@@ -444,6 +558,11 @@ the full image, so measure before building this.
 
 - **Approval permission.** `settings`, as proposed, or a new dedicated permission? A new
   permission changes staff delegation (invariant 5) and needs its own migration.
+- **LAN sharing default.** On by default, as proposed (with the port open only while a release
+  spreads), or opt-in per organization? It is the first listener on the LAN, so this is a
+  security posture decision.
+- **Security rebuilds for two release lines** double that CI job's runtime. Confirm two lines
+  is the right support window.
 - **Install duration.** "A few minutes" is an estimate: verifying about 700 MiB, one reboot,
   and the health-check hold. Measure it on a slow disk in phase 1.
 - **Squashfs size and minimum disk.** Two images at about 719 MiB each need about 1.5 GiB. The
