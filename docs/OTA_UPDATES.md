@@ -21,12 +21,21 @@ workstations without re-flashing the ISO. Written against `dev` at v2.5.0.
 4. **Don't start with an app-only update channel.** The agent, extension and wizard are only about
    420 KB, which makes a small app-only bundle tempting. But half of recent client changes touched
    the OS layer, and Chromium security fixes can only arrive through a new image. Add an app-only
-   channel later, and only if measured bandwidth shows you need it (§8).
+   channel later, and only if measured bandwidth shows you need it (§10).
+5. **This is Android's A/B ("seamless") update model** (§6). Slots, writing only the inactive
+   slot, a one-try boot, a "boot successful" mark and automatic fallback all map one-to-one. The
+   difference is only where the slots live: files on one partition rather than partitions.
+6. **Debian security fixes arrive as rebuilt images, not `apt` on the device** (§7). This is
+   also how Android ships its monthly security patch: the vendor rebuilds the image, and the
+   device never runs a package manager. A CI job watches the Debian security archive and
+   rebuilds whenever a package in the image has a fix.
 
 A correction to the premise: **feature releases are the lesser reason to build this.** Today an
-installed workstation runs the Chromium it was installed with, forever. Debian ships Chromium
-security fixes often, and none of them reach the fleet without a reinstall. Plan OTA as a
-security update channel that also carries features.
+installed workstation runs the Chromium, kernel and libraries it was installed with, forever.
+None of Debian's fixes reach the fleet without a reinstall. Plan OTA as a security update
+channel that also carries features. Debian 12 left regular security support in July 2026 and
+is now on LTS (§7), so the base should also move to Debian 13. That's another image, delivered
+over the same channel.
 
 ---
 
@@ -80,7 +89,7 @@ security update channel that also carries features.
 |---|---|---|---|---|
 | `apt` on device (unattended-upgrades) | none | yes | breaks invariant 2; drifts every device | **reject** |
 | rsync new rootfs onto today's ROOT (lower layer) | none | yes | undefined overlayfs behaviour while mounted; half-written root if power fails | **reject** |
-| App-only bundle (`/opt/labkiosk`, `/usr/local`) | easy | **no** | small; half of client changes don't fit | later, optional (§8) |
+| App-only bundle (`/opt/labkiosk`, `/usr/local`) | easy | **no** | small; half of client changes don't fit | later, optional (§10) |
 | **A/B slot files on ROOT ext4 + live-boot + GRUB env** | yes, automatic | yes | reuses ISO artifact and boot path; ROOT already spans the disk | **recommended** |
 | A/B partitions + RAUC | yes | yes | RAUC 1.8 is in bookworm (`rauc`, `rauc-service`) and has a GRUB backend. Fixed partition sizes and the GRUB integration still have to be written. File-backed slots are supported but less trodden | credible alternative |
 | OSTree | yes | yes | needs a different rootfs and boot layout, plus deploying via the ostree toolchain; not live-build shaped | too large a change |
@@ -92,7 +101,7 @@ health check, and those have to be written either way. What's left for an update
 a file, checking a signature, writing into the inactive slot, fsync, rename, and editing
 `grubenv`. That's a few hundred lines of Python in the style of `labkiosk-install`. RAUC mainly
 adds bundle formats and slot handlers aimed at partitions. **Revisit this** if streaming or block
-delta updates become necessary (§9), because that's where RAUC's maturity pays off. I have not
+delta updates become necessary (§11), because that's where RAUC's maturity pays off. I have not
 prototyped either approach.
 
 ---
@@ -107,8 +116,7 @@ Keep the four partitions exactly as they are. Only the contents of ROOT change:
 LABKIOSK_ROOT (ext4)
 ├── boot/grub/          grub.cfg, grubenv, 01_labkiosk_password material (outside every slot)
 ├── slots/a/            filesystem.squashfs  vmlinuz  initrd.img  manifest.json  manifest.sig
-├── slots/b/            (same; the inactive slot receives the next update)
-└── slots/.incoming/    partial download, renamed into the inactive slot only when complete
+└── slots/b/            (same; the inactive slot receives the next update)
 ```
 
 Each GRUB entry is `--unrestricted` (so boot never prompts) and boots, for example:
@@ -182,8 +190,8 @@ stdout, `\Z` regexes, explicit errors) run by `labkiosk-update.service` and a ti
 ```text
 1. GET /api/devices/update   (device bearer token from /etc/labkiosk/config.json, read as root)
 2. Nothing offered → exit.  Offered → download manifest + signature, verify, check the version rules
-3. Remount the live medium rw; stream each file to slots/.incoming with HTTP Range resume
-4. Verify every sha256; fsync; rename .incoming → inactive slot (atomic on ext4)
+3. Mark the inactive slot unbootable in grubenv FIRST; remount the live medium rw
+4. Stream each file straight into the inactive slot with HTTP Range resume; verify every sha256; fsync
 5. Regenerate grub.cfg; set grubenv so the new slot is next in ORDER with one try; remount ro
 6. Report "staged" (version, slot) on the control channel
 7. Reboot in the organization's maintenance window, or on the existing operator `reboot` command
@@ -193,10 +201,12 @@ stdout, `\Z` regexes, explicit errors) run by `labkiosk-update.service` and a ti
   `update-check` action, and the agent then starts the unit through one narrow rule: a sudo rule
   or polkit rule that allows only `systemctl start labkiosk-update.service`. The agent passes no
   arguments. It can't pick a URL, version or file.
-- **Space.** The updater overwrites the inactive slot, never the active one, so the disk needs
-  two slots plus the partial download. At 719 MiB per image that's about 1.5 GiB. The installer's
+- **Space.** The updater writes straight into the inactive slot, never the active one, as
+  Android's `update_engine` does. The disk needs exactly two slots and no staging copy. At
+  719 MiB per image that's about 1.5 GiB. While the download runs, the device has no rollback
+  target, but the active slot is the one already proven good. The installer's
   current 3 GB minimum leaves ROOT at about 1.9 GiB, which doesn't leave room for the image to
-  grow. **Raise the minimum to 8 GB.** Measure the real squashfs size first (see §10).
+  grow. **Raise the minimum to 8 GB.** Measure the real squashfs size first (see §12).
 
 ### 5.5 Boot counting and rollback
 
@@ -218,7 +228,9 @@ done
   roll back a healthy image.
 - A slot that never gets marked good is skipped on the next boot, which falls back to the other
   slot. The updater reports the rollback the next time it reaches the Worker.
-- A power cut during download leaves only `.incoming` behind, and the active slot is untouched.
+- A power cut during download leaves a half-written inactive slot that is already marked
+  unbootable, so GRUB never picks it. The next run starts that slot again, and the active slot
+  is untouched.
   A power cut during the `grubenv` write is covered by GRUB's fixed-size environment block
   (1 KiB, rewritten in place).
 
@@ -255,15 +267,106 @@ done
 
 - `build-iso.yml` also uploads the `binary/live/` files, `manifest.json` and the signature to R2
   and inserts the `releases` row (or leaves it for a super admin to promote).
-- Add a **scheduled rebuild** (for example weekly) that produces a security-only release with a
-  patch-level version. That's what actually gets Debian's Chromium and kernel fixes onto the
-  fleet.
+- Add the security rebuild pipeline in §7. That's what actually gets Debian's Chromium and
+  kernel fixes onto the fleet.
 - Make the squashfs as reproducible as live-build allows (`SOURCE_DATE_EPOCH`, stable file
-  order). This matters only for delta updates later (§9).
+  order). This matters only for delta updates later (§11).
 
 ---
 
-## 6. Moving the v2.5.0 fleet
+## 6. Relationship to Android A/B updates
+
+The design in §5 is Android's A/B update model on a PC. Mapping it piece by piece:
+
+| Android | Lab Kiosk equivalent | Adopt? |
+|---|---|---|
+| `system_a` / `system_b` partitions | `slots/a`, `slots/b` files on `LABKIOSK_ROOT` | **yes.** Files instead of partitions, so no repartitioning and no fixed slot size as the image grows |
+| `update_engine` streams the payload into the inactive slot while you keep working | `labkiosk-update` streams into the inactive slot while the kiosk keeps running | **yes** |
+| bootloader tries the new slot once (`boot_control` HAL, retry count) | GRUB `grubenv` `ORDER` / `X_TRY` | **yes** |
+| `markBootSuccessful()` after boot | `labkiosk-boot-ok.service` | **yes** |
+| automatic fallback to the old slot | GRUB skips a slot never marked OK | **yes** |
+| payload signed by the vendor, verified on device | signed `manifest.json`, key baked into the image | **yes** |
+| rollback index (anti-downgrade) | `securityFloor` in the signed manifest | **yes** |
+| monthly security patch = rebuilt image | security rebuild pipeline (§7) | **yes** |
+| staged rollout by percentage | rollout rings in the Worker | **yes** |
+| **delta payloads** (block diffs from the exact source build to the target) | full image first; delta later (§11) | **later**, once measured |
+| **dm-verity / Verified Boot** (every block hash-checked at read time) | not in the first release | **later**, see below |
+| **Virtual A/B** (copy-on-write snapshots so the second slot costs almost no space) | not planned | **no.** Needs snapshot-merge logic in the initramfs; two full slots fit on an 8 GB disk |
+
+**Why not copy Android more literally (real partitions, dm-verity, Virtual A/B)?**
+
+- **Real A/B partitions.** Every v2.5.0 disk would need repartitioning, and each slot's size
+  would be fixed forever. Chromium grows with each release. Slot files on ext4 give the same
+  atomicity guarantees, because the boot selection lives in `grubenv`, not in the filesystem.
+- **dm-verity.** This is worth doing, but as a second step. Android's verified boot rests on a
+  locked bootloader and a hardware root of trust. On PCs that means Secure Boot with our own
+  signed kernel and initramfs, which the project doesn't have yet (the image uses Debian's shim
+  and GRUB, and the installed disk's initramfs is built locally). Without that chain, a verity
+  root hash can be edited by anyone who can edit the boot entry. The GRUB password already
+  guards that, but the password isn't a hardware root of trust. The signed manifest covers
+  download integrity; dm-verity would add protection against tampering on the disk itself.
+- **Delta payloads.** Android can compute diffs because every device runs one of a few exact
+  builds. Here too, every device runs exactly one of our signed images, so deltas are possible
+  (`zstd --patch-from` or bsdiff of the squashfs against the previous release). But a delta only
+  helps if the squashfs builds reproducibly. Measure that first (§11).
+
+---
+
+## 7. Debian security updates
+
+### Why not `apt upgrade` on each workstation
+
+- **It doesn't persist.** The root is a RAM overlay (invariant 2). An upgrade vanishes at power
+  off, and would be downloaded again at every boot.
+- **Making the root writable to fix that** loses the property the product is built on. Every
+  workstation would then drift to its own mix of package versions.
+- **There's no rollback.** A `dpkg` run interrupted by a power cut, or a bad maintainer script,
+  leaves a half-upgraded system. Nothing would bring it back without someone at the keyboard,
+  which breaks invariant 9.
+- **The download isn't smaller.** 45 workstations would each fetch the same `.deb` files, and
+  none of the result would have been tested before it reached them.
+
+Android, ChromeOS and Fedora Silverblue all ship security fixes the same way: **the vendor
+rebuilds the image and the device swaps it in.** For Lab Kiosk that works like this.
+
+### The pipeline
+
+1. **Watch.** A scheduled CI job (daily) builds a list of the image's packages and versions.
+   live-build writes it as `chroot.packages.live`; publish it with every release. The job then
+   compares that list against the current Debian security archive's package index (and, for
+   Debian 12, the LTS archive). If any package in the image has a newer security version, a
+   rebuild is due.
+2. **Rebuild.** Run the same `build-iso.yml` build with a patch version (`2.6.0` → `2.6.1`). No
+   source change is needed: live-build fetches current packages every time it builds. *Check
+   that the build pulls from the security archive.* `auto/config` doesn't set `--security`, so
+   it relies on live-build's default, which should include it for Debian but isn't verified.
+3. **Test.** Boot the new image in QEMU. Check that the agent API answers and Chromium starts,
+   the same health check `labkiosk-boot-ok` uses.
+4. **Publish** to the `beta` ring, then `stable` through the normal rollout (§5.6). An
+   urgent Chromium fix can skip straight to a wide ring.
+5. **Report.** The Worker already knows each device's `image_version`. With the published
+   package list it can show which workstations still run a vulnerable Chromium or kernel.
+
+Chromium is the package that matters most. It's the whole attack surface a kiosk user can
+reach, and Chromium fixes arrive often.
+
+### Debian 12 is on LTS now
+
+Debian's news page of 12 July 2026 announces that security support for Bookworm was handed over
+to the LTS team. Reports put the end of LTS at June 2028. LTS covers a *subset* of packages, so
+some packages in the image may no longer get fixes. Search results show Chromium was still
+being patched for Debian 12 under LTS in July 2026 (DLA-4672-1). *I couldn't open Debian's
+sites from this environment to confirm the scope.* Check the LTS supported-packages list before
+relying on it.
+
+Either way, **move the base to Debian 13 (trixie).** It is the current stable release, with
+regular security support. With A/B images, that upgrade is simply another image with a larger
+test pass, not a reinstall. Without A/B images, it would mean re-flashing every workstation
+again.
+
+---
+
+## 8. Moving the v2.5.0 fleet
 
 1. Release N (the first OTA release) ships the updater, the slot-layout installer, the §5.2
    state moves, and the Worker routes.
@@ -278,7 +381,7 @@ The installer should keep refusing to repartition an installed disk. A separate,
 
 ---
 
-## 7. Phased plan
+## 9. Phased plan
 
 | Phase | Deliverable | Verify with |
 |---|---|---|
@@ -292,7 +395,7 @@ download, verify and report logic against the dev server.
 
 ---
 
-## 8. The app-only channel, if it is ever needed
+## 10. The app-only channel, if it is ever needed
 
 If one full image per release costs too much uplink (for example 45 workstations × 719 MiB ≈
 32 GiB per release), add a second, smaller channel for releases that touch only `/opt/labkiosk`
@@ -310,7 +413,7 @@ and `/usr/local`:
 
 ---
 
-## 9. Bandwidth, later
+## 11. Bandwidth, later
 
 In order of effort:
 
@@ -324,14 +427,17 @@ In order of effort:
 
 ---
 
-## 10. Open questions and unverified points
+## 12. Open questions and unverified points
 
 - **Squashfs size and install footprint.** 719 MiB is the ISO. Measure `binary/live/`
   directly before settling the minimum disk size.
 - **`gpgv` in the built image.** It is expected because of `apt`, but not checked.
-- **How often Debian ships Chromium security updates for bookworm.** This is from memory, not
-  checked here (Debian's sites were unreachable from this environment). Confirm on the Debian
-  security tracker; it sets the cadence of the scheduled rebuild.
+- **Debian 12 LTS scope, and Chromium within it.** This comes from search results, not from
+  Debian's own pages, which were unreachable from this environment. Confirm it on the Debian LTS
+  pages and security tracker. It decides how urgent the move to Debian 13 is.
+- **Whether live-build pulls from the security archive by default.** `auto/config` relies on
+  live-build's default. Confirm by checking a built image's `chroot.packages.live` against the
+  security archive.
 - **live-boot with `live-media=` pointing at an internal ext4 partition.** `live-media-path=`
   is documented, and GParted Live uses this pattern from a hard disk, but it hasn't been tested
   on this image. It is the first thing to prototype in phase 1.
@@ -355,3 +461,6 @@ In order of effort:
 - [Debian bug #1049923: request to include systemd-sysupdate](https://www.mail-archive.com/pkg-systemd-maintainers@alioth-lists.debian.net/msg08611.html)
 - [live-boot(7), bookworm](https://manpages.debian.org/bookworm/live-boot-doc/live-boot.7.en.html),
   [GParted Live on a hard disk](https://gparted.org/livehd.php)
+- [Debian news, 12 July 2026: security support for Bookworm handed over to the LTS team](https://www.debian.org/News/2026/20260712),
+  [Linuxiac: Debian 12 moves to LTS, support to 2028](https://linuxiac.com/debian-12-bookworm-moves-to-lts-extending-security-support-to-2028/),
+  [DLA-4672-1 chromium (Debian 12 LTS)](https://linuxsecurity.com/advisories/deblts/debian-dla-4672-1-chromium)
