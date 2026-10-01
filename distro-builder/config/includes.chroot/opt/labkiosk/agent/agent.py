@@ -2727,6 +2727,8 @@ def apply_control_update(data):
 
     if "whitelist" in data:
         sync_chromium_policies(data["whitelist"], force=target_changed)
+    elif target_changed:
+        sync_chromium_policies(list(cached_whitelist or []), force=True)
 
     srv_epoch = data.get("broadcastEpoch")
     if srv_epoch is not None and (isinstance(srv_epoch, bool) or not isinstance(srv_epoch, int)):

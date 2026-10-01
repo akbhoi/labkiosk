@@ -283,27 +283,36 @@ chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
 async function recoverMissedErrors() {
   const tabs = await chrome.tabs.query({});
   for (const tab of tabs) {
-    const frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
-    const top = (frames || []).find((frame) => frame.frameId === 0);
-    if (!top || !top.errorOccurred) continue;
-    let failed;
+    // A tab that closes meanwhile rejects; it must not cost the others their recovery.
     try {
-      failed = new URL(top.url);
-    } catch {
-      continue;
-    }
-    if (failed.origin === AGENT_ORIGIN || !["http:", "https:"].includes(failed.protocol)) continue;
-    let isOnline = false;
-    try {
-      isOnline = Boolean((await readStatus()).isOnline);
+      await recoverTab(tab.id);
     } catch (err) {
-      console.warn("Agent status unavailable while recovering a failed page:", err);
+      console.warn(`Could not recover tab ${tab.id}:`, err);
     }
-    const target = isOnline
-      ? `${BLOCKED_PAGE_URL}?host=${encodeURIComponent(failed.hostname)}&url=${encodeURIComponent(failed.href)}`
-      : OFFLINE_PAGE_URL;
-    await chrome.tabs.update(tab.id, { url: target });
   }
+}
+
+async function recoverTab(tabId) {
+  const frames = await chrome.webNavigation.getAllFrames({ tabId });
+  const top = (frames || []).find((frame) => frame.frameId === 0);
+  if (!top || !top.errorOccurred) return;
+  let failed;
+  try {
+    failed = new URL(top.url);
+  } catch {
+    return;
+  }
+  if (failed.origin === AGENT_ORIGIN || !["http:", "https:"].includes(failed.protocol)) return;
+  let isOnline = false;
+  try {
+    isOnline = Boolean((await readStatus()).isOnline);
+  } catch (err) {
+    console.warn("Agent status unavailable while recovering a failed page:", err);
+  }
+  const target = isOnline
+    ? `${BLOCKED_PAGE_URL}?host=${encodeURIComponent(failed.hostname)}&url=${encodeURIComponent(failed.href)}`
+    : OFFLINE_PAGE_URL;
+  await chrome.tabs.update(tabId, { url: target });
 }
 
 recoverMissedErrors().catch((err) => {

@@ -753,6 +753,20 @@ class ControlChannel(unittest.TestCase):
         agent.apply_control_update({"whitelist": ["docs.example"], "targetUrl": "https://new-name.labkiosk.example/"})
         self.assertEqual(seen[-1], ("https://new-name.labkiosk.example/", False), "an unchanged target forces nothing")
 
+    def test_a_new_target_without_an_allowlist_still_rewrites_the_policy(self):
+        calls = []
+        agent.sync_chromium_policies = lambda hosts, force=False: calls.append((list(hosts), force))
+        orig_cached = agent.cached_whitelist
+        try:
+            agent.cached_whitelist = ["docs.example"]
+            agent.state["targetUrl"] = "https://old-name.labkiosk.example/"
+            agent.apply_control_update({"targetUrl": "https://new-name.labkiosk.example/"})
+            self.assertEqual(calls, [(["docs.example"], True)], "the allowlist it has, for the new home page")
+            agent.apply_control_update({"commands": []})
+            self.assertEqual(len(calls), 1, "an update with no new target writes nothing")
+        finally:
+            agent.cached_whitelist = orig_cached
+
     def test_a_malformed_message_changes_nothing(self):
         ws, channel = self.channel()
         for text in ("not json", "[1, 2]", json.dumps({"type": "config", "broadcastEpoch": "soon"})):
@@ -1001,7 +1015,10 @@ class NoPageWithoutTheBar(unittest.TestCase):
         self.assertIn("async function recoverMissedErrors()", source)
         self.assertIn("chrome.webNavigation.getAllFrames", source)
         self.assertIn("top.errorOccurred", source)
-        body = source.split("async function recoverMissedErrors()", 1)[1].split("\n}\n", 1)[0]
+        loop = source.split("async function recoverMissedErrors()", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("await recoverTab(tab.id);", loop)
+        self.assertIn("} catch (err) {", loop, "a tab that closes meanwhile must not stop the others' recovery")
+        body = source.split("async function recoverTab(tabId)", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("failed.origin === AGENT_ORIGIN", body, "recovery pages are never redirected")
         self.assertIn('["http:", "https:"]', body)
         self.assertIn("\nrecoverMissedErrors().catch(", source, "it runs whenever the worker starts")

@@ -398,8 +398,15 @@ export class OrgHub {
     // no longer where its portal is, and the move there would be blocked.
     const whitelist = [...config.whitelist];
     for (const url of [active?.url, portalUrl]) {
-      const host = url ? new URL(url).hostname.toLowerCase() : "";
-      if (host && !whitelist.includes(host)) whitelist.push(host);
+      if (!url) continue;
+      // Both are validated absolute URLs; should one not parse, the workstation
+      // still gets the rest of its configuration rather than none.
+      try {
+        const host = new URL(url).hostname.toLowerCase();
+        if (host && !whitelist.includes(host)) whitelist.push(host);
+      } catch (err) {
+        console.error(`[OrgHub] Leaving an unparseable address out of the allowlist: ${url}`, err);
+      }
     }
     whitelist.sort();
     return {
