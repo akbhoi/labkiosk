@@ -2703,9 +2703,10 @@ def apply_control_update(data):
         log(f"Ignoring an update from the control plane that is not an object: {type(data).__name__}")
         return
 
-    if "whitelist" in data:
-        sync_chromium_policies(data["whitelist"])
-
+    # The target first, then the policy: the policy allows the target's host and
+    # names it as the home page, so writing it before a change of target (an
+    # organization's new subdomain) would block the very page the kiosk moves to.
+    target_changed = False
     new_target = safe_navigable_url(data.get("targetUrl"))
     if "targetUrl" in data and data["targetUrl"] and not new_target:
         log(f"Ignoring an unusable targetUrl from the control plane: {data['targetUrl']!r}")
@@ -2721,7 +2722,13 @@ def apply_control_update(data):
             old_target = state["targetUrl"]
             if old_target != new_target:
                 state["targetUrl"] = new_target
+                target_changed = True
                 log(f"Target URL updated from {old_target} to {new_target}")
+
+    if "whitelist" in data:
+        sync_chromium_policies(data["whitelist"], force=target_changed)
+    elif target_changed:
+        sync_chromium_policies(list(cached_whitelist or []), force=True)
 
     srv_epoch = data.get("broadcastEpoch")
     if srv_epoch is not None and (isinstance(srv_epoch, bool) or not isinstance(srv_epoch, int)):
@@ -3039,6 +3046,14 @@ def main():
         configured = state["isConfigured"]
 
     log(f"Starting Lab Kiosk Agent for {client_id} ({'enrolled' if configured else 'awaiting setup'})")
+
+    if configured:
+        # A reboot brings back the boot-time policy, which allows only loopback,
+        # and the launcher opens the home page as soon as the local API below
+        # answers -- usually before the network is up. Allow this workstation's
+        # own server and home page first, from the saved enrolment, or that page
+        # is blocked before the control channel can deliver the allowlist.
+        sync_chromium_policies([], force=True)
 
     threading.Thread(target=start_local_server, daemon=True).start()
 
