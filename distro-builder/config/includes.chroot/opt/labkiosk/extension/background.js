@@ -268,3 +268,44 @@ chrome.webNavigation.onErrorOccurred.addListener(async (details) => {
     console.warn("Could not leave the error page:", err);
   });
 });
+
+/**
+ * A failure from before this worker was listening never reaches the listener
+ * above. The kiosk's first page at boot is exactly that case: Chromium loads it
+ * while the extension is still starting, and after a reboot that page is
+ * blocked until the agent has restored the allowlist -- so the workstation sat
+ * on "This page is blocked" with no bar and nothing that would ever reload it.
+ * Whenever the worker starts, every tab still showing an error is sent where
+ * the listener would have sent it. The error code is not kept, so an online
+ * workstation gets /blocked, whose one retry and Try again suit a block and an
+ * unreachable site alike.
+ */
+async function recoverMissedErrors() {
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
+    const top = (frames || []).find((frame) => frame.frameId === 0);
+    if (!top || !top.errorOccurred) continue;
+    let failed;
+    try {
+      failed = new URL(top.url);
+    } catch {
+      continue;
+    }
+    if (failed.origin === AGENT_ORIGIN || !["http:", "https:"].includes(failed.protocol)) continue;
+    let isOnline = false;
+    try {
+      isOnline = Boolean((await readStatus()).isOnline);
+    } catch (err) {
+      console.warn("Agent status unavailable while recovering a failed page:", err);
+    }
+    const target = isOnline
+      ? `${BLOCKED_PAGE_URL}?host=${encodeURIComponent(failed.hostname)}&url=${encodeURIComponent(failed.href)}`
+      : OFFLINE_PAGE_URL;
+    await chrome.tabs.update(tab.id, { url: target });
+  }
+}
+
+recoverMissedErrors().catch((err) => {
+  console.warn("Could not recover a page that failed before the extension started:", err);
+});

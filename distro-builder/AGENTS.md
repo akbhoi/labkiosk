@@ -391,6 +391,21 @@ distro-builder/
   allowlists its site in the same heartbeat that sends the screen there, and Chromium rereads a
   changed policy only after a few seconds — then stays, with Try again, Back and Home.
 
+- **A reboot must not block the home page.** The RAM overlay brings back the boot-time policy
+  (loopback only), and the launcher opens the saved home page as soon as `/api/status` answers —
+  on real hardware, seconds before the network lets the agent reach the control plane. So an
+  enrolled agent writes the policy for its own server and home page from the saved enrolment
+  **before** it starts the local API (`main()`); the organization's full allowlist follows on the
+  first update. It used to wait for the control plane, and every reboot landed on "This page is
+  blocked".
+- **An error from before the extension started is still recovered.** That first navigation
+  fails while Chromium is starting, before the service worker listens, so `onErrorOccurred`
+  never fires for it. `recoverMissedErrors()` in `background.js` runs whenever the worker starts
+  and sends any tab whose top frame shows an error (`webNavigation.getAllFrames`,
+  `errorOccurred`) to `/blocked` or `/setup#offline`. Reproduce either in the simulator: put the
+  boot-time `policies.json` back, pause the control plane, and restart the agent and Chromium
+  together.
+
 ### Rule 6c: One Control Channel, With a Fallback That Always Works
 
 - The agent keeps **one WebSocket** to its organization's OrgHub (`/api/devices/ws`,
@@ -564,6 +579,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 | **Alt+Tab, Alt+F4 or a right-click desktop menu works on an installed workstation** | The stripped `rc.xml` was shipped to `/etc/openbox/rc.xml`, which `openbox-session` never reads; it looks in `~/.config/openbox` and `/etc/xdg/openbox`, and fell back to Debian's defaults. The simulator hid it by passing `--config-file`. | Install `rc.xml` to both paths Openbox reads (see Rule 1h), and strip the keymap with `labkiosk-lock-keys` so the keys do not exist in the first place. |
 | **Kiosk nav bar and lock curtain vanish** | Blanket extension block `ExtensionInstallBlocklist: ["*"]` prevents loading unpacked extensions. | Do not add blanket extension blocks. Chromium is already locked down via `--kiosk`, blocked `chrome://`, and wiped user profile. |
 | **Freshly enrolled kiosk shows "This page is blocked"** | Chromium reads its managed policy once at startup. | Agent sets `pendingBrowserRestart` and restarts the browser after the next policy sync. |
+| **Every reboot lands on "This page is blocked" with no top bar, though enrolment worked** | The boot-time policy allows only loopback, Chromium opened the home page before the agent could reach the control plane, and that first error happened before the extension's service worker was listening. | The agent allows its own server and home page before its API answers, and `recoverMissedErrors()` moves any tab already on an error page (Rule 6b). |
 | **A workstation shows "This page is blocked" with no top bar and no way back** | Its organization was deleted (or it was removed), the agent only logged the 401, and Chromium's block page is `chrome-error://`, where the extension never runs. | See Rule 6b: the agent retargets to `/setup#reenrol`, `/api/setup` re-enrols behind the admin password, and the extension replaces error pages with `/blocked` or `/setup#offline`. |
 | **A shell hook dies with `$'\r': command not found`** | The file was checked out or written with CRLF line endings. Windows git defaults to `core.autocrlf=true`, and Python's `Path.write_text` translates newlines on Windows. | `.gitattributes` pins every build and image file to `eol=lf`. Never write these files with a tool that rewrites newlines. |
 | **The Language & Region step is missing, or its lists are empty** | The `locales` package or tzdata's tables are absent, so `labkiosk-localization --list-options` has nothing to report. The wizard hides the step rather than showing empty menus. | Keep `locales`, `tzdata` and `xkb-data` in `kiosk.list.chroot` (and in the simulator's Dockerfile, which is where the step gets exercised). |

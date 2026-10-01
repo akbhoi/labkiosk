@@ -742,6 +742,17 @@ class ControlChannel(unittest.TestCase):
         self.assertEqual((agent.state["broadcastEpoch"], agent.state["broadcastUrl"]), (42, "https://docs.example/"))
         self.assertEqual(self.commands, [{"action": "lock"}, {"action": "reload"}], "only objects are commands")
 
+    def test_a_new_target_is_in_place_before_the_policy_is_written(self):
+        # The policy allows the target's host; written before a change of target
+        # (a renamed subdomain), it would block the very page the kiosk moves to.
+        seen = []
+        agent.sync_chromium_policies = lambda hosts, force=False: seen.append((agent.state["targetUrl"], force))
+        agent.state["targetUrl"] = "https://old-name.labkiosk.example/"
+        agent.apply_control_update({"whitelist": ["docs.example"], "targetUrl": "https://new-name.labkiosk.example/"})
+        self.assertEqual(seen, [("https://new-name.labkiosk.example/", True)], "rewritten even if the allowlist is unchanged")
+        agent.apply_control_update({"whitelist": ["docs.example"], "targetUrl": "https://new-name.labkiosk.example/"})
+        self.assertEqual(seen[-1], ("https://new-name.labkiosk.example/", False), "an unchanged target forces nothing")
+
     def test_a_malformed_message_changes_nothing(self):
         ws, channel = self.channel()
         for text in ("not json", "[1, 2]", json.dumps({"type": "config", "broadcastEpoch": "soon"})):
@@ -860,6 +871,63 @@ class ControlChannel(unittest.TestCase):
         self.assertIn("intranet.example", options["http_no_proxy"])
 
 
+class BootPolicyBeforeTheBrowser(unittest.TestCase):
+    """After a reboot the policy is the boot-time one (loopback only), and the
+    launcher opens the home page as soon as the local API answers. An enrolled
+    agent must allow its own server and home page before that API exists, or
+    the home page is blocked until the control plane is reachable."""
+
+    PATCHED = ("apply_proxy_to_environment", "apply_saved_localization", "load_config",
+               "sync_chromium_policies", "telemetry_loop", "log")
+
+    def setUp(self):
+        self.orig = {name: getattr(agent, name) for name in self.PATCHED}
+        self.orig_thread = agent.threading.Thread
+        self.orig_configured = agent.state["isConfigured"]
+        self.events = []
+        agent.apply_proxy_to_environment = lambda cfg: None
+        agent.apply_saved_localization = lambda: None
+        agent.load_config = lambda: None
+        agent.log = lambda message: None
+        agent.sync_chromium_policies = lambda hosts, force=False: self.events.append(("sync", list(hosts), force))
+
+        events = self.events
+
+        class RecordingThread:
+            def __init__(self, target=None, daemon=None):
+                self.target = target
+
+            def start(self):
+                events.append(("thread", self.target.__name__))
+
+        agent.threading.Thread = RecordingThread
+
+        def stop():
+            raise KeyboardInterrupt
+
+        agent.telemetry_loop = stop
+
+    def tearDown(self):
+        for name, value in self.orig.items():
+            setattr(agent, name, value)
+        agent.threading.Thread = self.orig_thread
+        agent.state["isConfigured"] = self.orig_configured
+
+    def run_main(self):
+        with self.assertRaises(SystemExit):
+            agent.main()
+
+    def test_an_enrolled_agent_writes_the_policy_before_its_api_answers(self):
+        agent.state["isConfigured"] = True
+        self.run_main()
+        self.assertEqual(self.events, [("sync", [], True), ("thread", "start_local_server")])
+
+    def test_an_unenrolled_agent_has_nothing_to_allow_yet(self):
+        agent.state["isConfigured"] = False
+        self.run_main()
+        self.assertEqual(self.events, [("thread", "start_local_server")])
+
+
 class ReenrolmentGating(unittest.TestCase):
     """Registering an enrolled workstation again replaces its enrolment, so it takes
     the administrator password on an installed workstation -- and is possible at
@@ -925,6 +993,18 @@ class NoPageWithoutTheBar(unittest.TestCase):
         self.assertIn("failed.origin === AGENT_ORIGIN", source, "a failure on the agent's own page must not loop")
         self.assertIn('"net::ERR_BLOCKED_BY_ADMINISTRATOR"', source)
         self.assertIn("${BLOCKED_PAGE_URL}?host=", source)
+
+    def test_a_failure_from_before_the_extension_started_is_recovered(self):
+        # The first page after a reboot fails while Chromium is still starting,
+        # before the service worker listens; onErrorOccurred never sees it.
+        source = self.read("opt/labkiosk/extension/background.js")
+        self.assertIn("async function recoverMissedErrors()", source)
+        self.assertIn("chrome.webNavigation.getAllFrames", source)
+        self.assertIn("top.errorOccurred", source)
+        body = source.split("async function recoverMissedErrors()", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("failed.origin === AGENT_ORIGIN", body, "recovery pages are never redirected")
+        self.assertIn('["http:", "https:"]', body)
+        self.assertIn("\nrecoverMissedErrors().catch(", source, "it runs whenever the worker starts")
 
     def test_the_blocked_page_is_safe_markup(self):
         import re

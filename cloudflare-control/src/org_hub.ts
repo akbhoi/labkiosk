@@ -392,15 +392,16 @@ export class OrgHub {
     const validated = winner.url ? safeHttpUrl(winner.url) : null;
     const active = validated ? { url: validated, epoch: winner.epoch } : null;
 
-    const whitelist = [...config.whitelist];
-    if (active) {
-      const host = new URL(active.url).hostname.toLowerCase();
-      if (host && !whitelist.includes(host)) {
-        whitelist.push(host);
-        whitelist.sort();
-      }
-    }
     const portalUrl = portalUrlFromContext(tenant, portal);
+    // An active broadcast's site, and the organization's own address: an agent
+    // allows the server it enrolled with, but after a subdomain change that is
+    // no longer where its portal is, and the move there would be blocked.
+    const whitelist = [...config.whitelist];
+    for (const url of [active?.url, portalUrl]) {
+      const host = url ? new URL(url).hostname.toLowerCase() : "";
+      if (host && !whitelist.includes(host)) whitelist.push(host);
+    }
+    whitelist.sort();
     return {
       whitelist,
       mode: tenant.mode,
