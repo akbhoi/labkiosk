@@ -602,10 +602,17 @@ def copy_regular_file(source, destination):
             print(f"[INSTALL] Skipped {source}: a symbolic link, not a file.", file=sys.stderr)
             return False
         raise
+    # fstat before fdopen: fdopen refuses a directory (system-connections sits
+    # beside the files) with "Is a directory", and that must be a skip.
+    try:
+        info = os.fstat(fd)
+    except OSError:
+        os.close(fd)
+        raise
+    if not stat.S_ISREG(info.st_mode):
+        os.close(fd)
+        return False
     with os.fdopen(fd, "rb") as src:
-        info = os.fstat(src.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            return False
         with open(destination, "wb") as dst:
             shutil.copyfileobj(src, dst)
         os.chmod(destination, stat.S_IMODE(info.st_mode))

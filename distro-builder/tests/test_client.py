@@ -1449,6 +1449,14 @@ class SeedingNeverFollowsLinks(unittest.TestCase):
             self.assertFalse(installer.copy_regular_file(link, dest))
             self.assertFalse(os.path.exists(dest))
 
+    def test_a_directory_is_skipped(self):
+        # /etc/labkiosk holds system-connections/ beside the enrolment files.
+        with tempfile.TemporaryDirectory() as tmp:
+            folder, dest = os.path.join(tmp, "system-connections"), os.path.join(tmp, "out")
+            os.mkdir(folder)
+            self.assertFalse(installer.copy_regular_file(folder, dest))
+            self.assertFalse(os.path.exists(dest))
+
     def test_a_fifo_is_skipped_without_blocking(self):
         with tempfile.TemporaryDirectory() as tmp:
             fifo, dest = os.path.join(tmp, "fifo"), os.path.join(tmp, "out")
