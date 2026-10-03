@@ -1,0 +1,16 @@
+[Unit]
+Description=Lab Kiosk: confirm a new system image, or roll it back
+Documentation=file:///usr/local/sbin/labkiosk-boot-slots
+# Only an installed disk boots images from its image store; the ISO has nothing
+# to confirm. On an ordinary boot this only records the boot state in /run.
+ConditionKernelCommandLine=labkiosk.installed=1
+After=local-fs.target nodm.service
+
+[Service]
+# Not oneshot: on a new image's one try the health check holds for minutes, and
+# nothing else should wait for it.
+Type=simple
+ExecStart=/usr/local/sbin/labkiosk-boot-slots check
+
+[Install]
+WantedBy=multi-user.target

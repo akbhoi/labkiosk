@@ -43,9 +43,12 @@ def load(name, path):
 agent = load("labkiosk_agent", os.path.join(CHROOT, "opt/labkiosk/agent/agent.py"))
 localization = load("labkiosk_localization", os.path.join(CHROOT, "usr/local/sbin/labkiosk-localization"))
 lockkeys = load("labkiosk_lock_keys", os.path.join(CHROOT, "usr/local/bin/labkiosk-lock-keys"))
+installer = load("labkiosk_install", os.path.join(CHROOT, "usr/local/bin/labkiosk-install"))
+bootslots = load("labkiosk_boot_slots", os.path.join(CHROOT, "usr/local/sbin/labkiosk-boot-slots"))
 
 agent.log = lambda message: None
 localization.log = lambda message: None
+bootslots.log = lambda message: None
 
 HAVE_ZONEINFO = os.path.isdir(localization.ZONEINFO_DIR)
 
@@ -275,6 +278,7 @@ class InterfaceLanguageTags(unittest.TestCase):
             "opt/labkiosk/agent/agent.py",
             "usr/local/bin/labkiosk-install",
             "usr/local/sbin/labkiosk-localization",
+            "usr/local/sbin/labkiosk-boot-slots",
         ]
         for rel in scripts:
             with self.subTest(script=rel):
@@ -1046,6 +1050,316 @@ class NoPageWithoutTheBar(unittest.TestCase):
             self.assertEqual(handler.sent, (200, "text/html; charset=utf-8"))
         finally:
             agent.BLOCKED_HTML_FILE = orig
+
+
+class BootEnvironment(unittest.TestCase):
+    """grubenv: the four values GRUB reads to choose a system image."""
+
+    def test_a_block_is_exactly_one_kibibyte_and_reads_back(self):
+        values = {"current": "2.6.0", "previous": "2.5.1", "next": "2.6.1", "next_tries": "1"}
+        data = bootslots.render_env(values)
+        self.assertEqual(len(data), 1024)
+        self.assertTrue(data.startswith(b"# GRUB Environment Block\n"))
+        self.assertEqual(bootslots.parse_env(data), values)
+
+    def test_nothing_grub_would_have_to_escape_is_written(self):
+        for bad in ({"current": "2.6.0\nnext=9.9.9"}, {"current": "../../etc"},
+                    {"next_tries": "2"}, {"current": "2.6.0", "timeout": "0"}):
+            with self.subTest(values=bad):
+                with self.assertRaises(ValueError):
+                    bootslots.render_env(bad)
+
+    def test_a_damaged_block_is_refused(self):
+        with self.assertRaises(ValueError):
+            bootslots.parse_env(b"# GRUB Environment Block\ncurrent=2.6.0\n")
+        with self.assertRaises(ValueError):
+            bootslots.parse_env(b"x" * 1024)
+
+    def test_the_file_is_replaced_whole(self):
+        with tempfile.TemporaryDirectory() as boot_dir:
+            bootslots.write_env(boot_dir, {"current": "2.6.0"})
+            bootslots.write_env(boot_dir, {"current": "2.6.0", "next": "2.6.1", "next_tries": "1"})
+            self.assertEqual(sorted(os.listdir(boot_dir)), ["grubenv"])
+            self.assertEqual(bootslots.read_env(boot_dir)["next"], "2.6.1")
+            self.assertEqual(os.stat(os.path.join(boot_dir, "grubenv")).st_size, 1024)
+
+    def test_the_installer_starts_with_one_current_image(self):
+        with tempfile.TemporaryDirectory() as boot_dir:
+            self.assertEqual(bootslots.cmd_init("2.6.0", boot_dir), {"current": "2.6.0"})
+            self.assertEqual(bootslots.read_env(boot_dir), {"current": "2.6.0"})
+
+
+class BootSelection(unittest.TestCase):
+    """What a boot was, and what confirming it changes."""
+
+    def test_each_kind_of_boot(self):
+        cases = [
+            ({"current": "2.6.0"}, "2.6.0", "running"),
+            ({"current": "2.6.0", "next": "2.6.1", "next_tries": "1"}, "2.6.0", "staged"),
+            ({"current": "2.6.0", "next": "2.6.1", "next_tries": "0"}, "2.6.1", "trial"),
+            ({"current": "2.6.0", "next": "2.6.1", "next_tries": "0"}, "2.6.0", "rolled-back"),
+            ({"current": "2.6.0", "previous": "2.5.1"}, "2.5.1", "fallback"),
+        ]
+        for env, running, expected in cases:
+            with self.subTest(env=env, running=running):
+                self.assertEqual(bootslots.classify(env, running), expected)
+
+    def test_a_confirmed_image_becomes_current_and_the_old_one_previous(self):
+        env = {"current": "2.6.0", "previous": "2.5.1", "next": "2.6.1", "next_tries": "0"}
+        self.assertEqual(bootslots.promote(env), {"current": "2.6.1", "previous": "2.6.0"})
+
+    def test_the_running_image_comes_from_the_command_line(self):
+        args = ["boot=live", "live-media-path=/images/2.6.1", "labkiosk.installed=1"]
+        self.assertTrue(bootslots.is_installed(args))
+        self.assertEqual(bootslots.running_version(args), "2.6.1")
+        self.assertFalse(bootslots.is_installed(["boot=live", "labkiosk.installed=10"]))
+
+    def test_a_media_path_outside_the_image_store_is_refused(self):
+        for bad in ("live-media-path=/live", "live-media-path=/images/../etc",
+                    "live-media-path=/images/2.6.1/x"):
+            with self.subTest(arg=bad):
+                with self.assertRaises(RuntimeError):
+                    bootslots.running_version([bad])
+
+    def test_only_a_complete_image_can_be_booted(self):
+        with tempfile.TemporaryDirectory() as root:
+            for version, files in (("2.6.0", bootslots.IMAGE_FILES), ("2.6.1", ("vmlinuz",))):
+                folder = os.path.join(root, "images", version)
+                os.makedirs(folder)
+                for name in files:
+                    open(os.path.join(folder, name), "w").close()
+            os.makedirs(os.path.join(root, "images", "not-a-version"))
+            self.assertTrue(bootslots.has_image(root, "2.6.0"))
+            self.assertFalse(bootslots.has_image(root, "2.6.1"))
+            self.assertFalse(bootslots.has_image(root, "../2.6.0"))
+            self.assertEqual(bootslots.complete_images(root), ["2.6.0"])
+
+
+class BootHealthCheck(unittest.TestCase):
+    """The one try passes only if the kiosk stays up, without a gap, for the hold."""
+
+    def run_check(self, healthy_at):
+        now = [0.0]
+        return bootslots.wait_until_healthy(
+            lambda: healthy_at(now[0]), clock=lambda: now[0],
+            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+            hold=60, deadline=600, poll=5)
+
+    def test_a_kiosk_that_comes_up_and_stays_up_passes(self):
+        self.assertTrue(self.run_check(lambda t: t >= 120))
+
+    def test_a_kiosk_that_never_comes_up_fails_at_the_deadline(self):
+        self.assertFalse(self.run_check(lambda t: False))
+
+    def test_a_kiosk_that_keeps_falling_over_fails(self):
+        self.assertFalse(self.run_check(lambda t: int(t) % 50 < 40))
+
+    def test_the_browser_is_recognised_by_its_profile(self):
+        with tempfile.TemporaryDirectory() as proc:
+            os.makedirs(os.path.join(proc, "100"))
+            with open(os.path.join(proc, "100", "cmdline"), "wb") as handle:
+                handle.write(b"/usr/lib/chromium/chromium\0--kiosk\0--user-data-dir=/tmp/other\0")
+            self.assertFalse(bootslots.browser_running(proc))
+            os.makedirs(os.path.join(proc, "101"))
+            with open(os.path.join(proc, "101", "cmdline"), "wb") as handle:
+                handle.write(b"/usr/lib/chromium/chromium\0--kiosk\0"
+                             + bootslots.BROWSER_PROFILE_ARG.encode() + b"\0")
+            self.assertTrue(bootslots.browser_running(proc))
+
+    def test_the_health_check_looks_for_the_browser_the_launchers_start(self):
+        self.assertEqual(bootslots.BROWSER_PROFILE_ARG, f"--user-data-dir={agent.BROWSER_PROFILE_DIR}")
+
+
+class InstalledBootMenu(unittest.TestCase):
+    """The grub.cfg every installed disk boots through."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(CHROOT, "usr/share/labkiosk/boot/grub.cfg"), encoding="utf-8") as handle:
+            cls.cfg = handle.read()
+        cls.entries = [line for line in cls.cfg.splitlines() if line.strip().startswith("menuentry ")]
+        cls.kernels = [line.strip() for line in cls.cfg.splitlines() if line.strip().startswith("linux ")]
+
+    def test_every_entry_boots_without_a_password(self):
+        self.assertTrue(self.entries)
+        for line in self.entries:
+            with self.subTest(entry=line):
+                self.assertIn("--unrestricted", line)
+
+    def test_the_try_is_spent_before_the_new_image_boots(self):
+        self.assertIn('if save_env --file "$prefix/grubenv" next_tries; then', self.cfg)
+        self.assertLess(self.cfg.index("save_env"), self.cfg.index('set slot="$next"'))
+
+    def test_the_command_line_marks_an_installed_disk_and_never_waits(self):
+        self.assertEqual(len(self.kernels), 2)
+        for line in self.kernels:
+            with self.subTest(line=line):
+                args = line.split()
+                for required in ("boot=live", "labkiosk.installed=1", "noeject", "panic=10",
+                                 "overlayroot=tmpfs:recurse=0", "username=kiosk"):
+                    self.assertIn(required, args)
+                # The organization's zone comes from localization.json; one here
+                # would be re-applied by live-config at every boot.
+                self.assertFalse([a for a in args if a.startswith("timezone=")])
+
+    def test_the_password_file_name_is_the_one_the_agent_reads(self):
+        self.assertIn(installer.GRUB_PASSWORD_FILE_NAME, self.cfg)
+        self.assertEqual(os.path.basename(agent.GRUB_PASSWORD_FILE), installer.GRUB_PASSWORD_FILE_NAME)
+
+    def test_the_installed_marker_is_one_spelling_everywhere(self):
+        self.assertEqual(installer.INSTALLED_ARG, bootslots.INSTALLED_ARG)
+        self.assertEqual(agent.INSTALLED_KERNEL_ARG, bootslots.INSTALLED_ARG)
+
+    def test_the_installer_and_the_boot_tool_agree_on_versions_and_files(self):
+        self.assertEqual(installer.IMAGE_VERSION_PATTERN.pattern, bootslots.VERSION_PATTERN.pattern)
+        self.assertEqual(installer.IMAGE_FILES, bootslots.IMAGE_FILES)
+
+
+class ImageVersion(unittest.TestCase):
+    def test_the_image_version_is_the_release_version(self):
+        with open(os.path.join(CHROOT, "usr/share/labkiosk/version"), encoding="utf-8") as handle:
+            version = handle.read().strip()
+        with open(os.path.join(CHROOT, "opt/labkiosk/extension/manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        self.assertRegex(version, bootslots.VERSION_PATTERN)
+        self.assertEqual(version, agent.AGENT_VERSION)
+        self.assertEqual(version, manifest["version"])
+
+
+class InstalledOrLive(unittest.TestCase):
+    """Both boot through live-boot now; only the installed menu says installed."""
+
+    def setUp(self):
+        self.orig_cmdline = agent.kernel_cmdline
+        self.orig_exists = agent.os.path.exists
+
+    def tearDown(self):
+        agent.kernel_cmdline = self.orig_cmdline
+        agent.os.path.exists = self.orig_exists
+
+    def boot(self, cmdline):
+        agent.kernel_cmdline = lambda: cmdline
+        agent.os.path.exists = lambda path: path == "/run/live" or self.orig_exists(path) and path != "/etc/labkiosk-installed"
+
+    def test_the_iso_is_live(self):
+        self.boot("boot=live components username=kiosk\n")
+        self.assertTrue(agent.is_live_session())
+
+    def test_an_installed_disk_is_not_live_though_it_boots_through_live_boot(self):
+        self.boot("boot=live components live-media-path=/images/2.6.0 labkiosk.installed=1 noeject\n")
+        self.assertFalse(agent.is_live_session())
+
+    def test_a_lookalike_argument_is_not_the_marker(self):
+        self.boot("boot=live labkiosk.installed=10\n")
+        self.assertTrue(agent.is_live_session())
+
+
+class AdministratorPasswordFile(unittest.TestCase):
+    """The digest lives on the boot partition; an unreadable one never opens the gate."""
+
+    def setUp(self):
+        self.orig = (agent.GRUB_PASSWORD_FILE, agent.GRUB_CONFIG_FILE, agent.is_live_session)
+        self.dir = tempfile.TemporaryDirectory()
+        agent.GRUB_PASSWORD_FILE = os.path.join(self.dir.name, "labkiosk-password.cfg")
+        agent.GRUB_CONFIG_FILE = os.path.join(self.dir.name, "grub.cfg")
+        agent.is_live_session = lambda: False
+
+    def tearDown(self):
+        agent.GRUB_PASSWORD_FILE, agent.GRUB_CONFIG_FILE, agent.is_live_session = self.orig
+        self.dir.cleanup()
+
+    def test_the_installed_digest_is_read(self):
+        digest = "grub.pbkdf2.sha512.10000." + "A" * 128 + "." + "B" * 128
+        with tempfile.TemporaryDirectory() as grub_dir:
+            installer.write_grub_password(grub_dir, digest)
+            agent.GRUB_PASSWORD_FILE = os.path.join(grub_dir, installer.GRUB_PASSWORD_FILE_NAME)
+            self.assertEqual(agent.read_admin_password_hash(), digest)
+
+    def test_an_installation_without_a_password_is_unlocked(self):
+        open(agent.GRUB_CONFIG_FILE, "w").close()
+        self.assertIsNone(agent.read_admin_password_hash())
+
+    def test_an_unreadable_boot_partition_keeps_the_gate_shut(self):
+        with self.assertRaises(ValueError):
+            agent.read_admin_password_hash()
+        status, _ = agent.issue_admin_session("anything")
+        self.assertNotEqual(status, 200)
+
+
+class LiveConfigNeverGrantsRoot(unittest.TestCase):
+    """live-config runs on installed disks too now; its sudo and polkit grants must not."""
+
+    def test_the_root_granting_components_are_pre_seeded(self):
+        with open(os.path.join(ROOT, "config/hooks/live/01-lockdown.hook.chroot"), encoding="utf-8") as handle:
+            hook = handle.read()
+        for component in ("sudo", "policykit"):
+            with self.subTest(component=component):
+                self.assertIn(f"touch /var/lib/live/config/{component}\n", hook)
+
+
+class BootConfirmation(unittest.TestCase):
+    """labkiosk-boot-slots check, against a boot partition in a temporary directory."""
+
+    def setUp(self):
+        import contextlib
+        self.tmp = tempfile.TemporaryDirectory()
+        self.medium = os.path.join(self.tmp.name, "medium")
+        self.boot_dir = os.path.join(self.medium, "boot", "grub")
+        os.makedirs(self.boot_dir)
+        self.saved = {name: getattr(bootslots, name) for name in (
+            "BOOT_MEDIUM", "STATUS_DIR", "STATUS_FILE", "kernel_args", "wait_until_healthy",
+            "run", "boot_partition_writable")}
+        bootslots.BOOT_MEDIUM = self.medium
+        bootslots.STATUS_DIR = os.path.join(self.tmp.name, "run")
+        bootslots.STATUS_FILE = os.path.join(bootslots.STATUS_DIR, "status.json")
+        bootslots.boot_partition_writable = contextlib.nullcontext
+        self.commands = []
+        bootslots.run = self.commands.append
+
+    def tearDown(self):
+        for name, value in self.saved.items():
+            setattr(bootslots, name, value)
+        self.tmp.cleanup()
+
+    def boot(self, version, env, healthy=True):
+        bootslots.write_env(self.boot_dir, env)
+        bootslots.kernel_args = lambda: ["boot=live", f"live-media-path=/images/{version}",
+                                         "labkiosk.installed=1"]
+        bootslots.wait_until_healthy = lambda probe: healthy
+        result = bootslots.cmd_check()
+        with open(bootslots.STATUS_FILE, encoding="utf-8") as handle:
+            status = json.load(handle)
+        return result, status, bootslots.read_env(self.boot_dir)
+
+    def test_a_healthy_try_becomes_current(self):
+        result, status, env = self.boot("2.6.1", {"current": "2.6.0", "next": "2.6.1", "next_tries": "0"})
+        self.assertEqual(result["state"], "installed")
+        self.assertEqual(status["state"], "installed")
+        self.assertEqual(env, {"current": "2.6.1", "previous": "2.6.0"})
+        self.assertEqual(self.commands, [])
+
+    def test_an_unhealthy_try_reboots_into_the_old_image(self):
+        before = {"current": "2.6.0", "next": "2.6.1", "next_tries": "0"}
+        result, status, env = self.boot("2.6.1", before, healthy=False)
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(env, before)
+        self.assertEqual(self.commands, [["systemctl", "reboot"]])
+
+    def test_the_old_image_reports_the_rollback_and_leaves_it_on_record(self):
+        before = {"current": "2.6.0", "next": "2.6.1", "next_tries": "0"}
+        _, status, env = self.boot("2.6.0", before)
+        self.assertEqual((status["state"], status["failed"]), ("rolled-back", "2.6.1"))
+        self.assertEqual(env, before)
+        self.assertEqual(self.commands, [])
+
+    def test_an_ordinary_boot_changes_nothing(self):
+        _, status, env = self.boot("2.6.0", {"current": "2.6.0", "previous": "2.5.1"})
+        self.assertEqual(status["state"], "running")
+        self.assertEqual(env, {"current": "2.6.0", "previous": "2.5.1"})
+
+    def test_the_live_iso_has_nothing_to_confirm(self):
+        bootslots.kernel_args = lambda: ["boot=live", "components"]
+        self.assertEqual(bootslots.cmd_check(), {"state": "live"})
 
 
 if __name__ == "__main__":

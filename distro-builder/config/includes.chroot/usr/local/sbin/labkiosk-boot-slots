@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""
+Choose, confirm and roll back the system image an installed workstation boots.
+
+An installed disk keeps whole system images as folders on LABKIOSK_ROOT
+(docs/OTA_UPDATES.md section 5.1):
+
+    LABKIOSK_ROOT/boot/grub/grub.cfg    the menu, shared by every image
+    LABKIOSK_ROOT/boot/grub/grubenv     current, previous, next, next_tries
+    LABKIOSK_ROOT/images/<version>/     vmlinuz, initrd.img, filesystem.squashfs
+
+GRUB boots `current`. A new image is given exactly one try by setting `next`
+and `next_tries=1`: GRUB spends the try before it boots `next`, so whatever
+happens after that -- a kernel panic, a hang that someone power-cycles, a
+health check that never passes -- the following boot is `current` again.
+
+    check            run at every boot by labkiosk-boot-ok.service. On the one
+                     try, wait for the agent and the browser to stay up, then
+                     make the new image current; if they never do, reboot into
+                     the old one. Otherwise only report what happened.
+    status           print the boot state as JSON.
+    try VERSION      give an image already on disk one try at the next boot.
+    init VERSION     write a fresh grubenv naming VERSION as current
+                     (the installer, with --boot-dir on the target disk).
+
+This program runs as root and nothing unprivileged can run it: there is no
+sudo rule for it. The agent may later ask a root unit to install an update,
+but never chooses what gets booted (section 5.5).
+
+Output: JSON on stdout, progress on stderr.
+"""
+
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+# live-boot mounts the partition it booted from here, read-only.
+BOOT_MEDIUM = "/run/live/medium"
+BOOT_DIR_NAME = os.path.join("boot", "grub")
+ENV_FILE_NAME = "grubenv"
+IMAGES_DIR_NAME = "images"
+IMAGE_FILES = ("vmlinuz", "initrd.img", "filesystem.squashfs")
+
+# What the boot leaves for the agent to report. /run is root's tmpfs: the
+# browser's own user can neither write it nor forge it, unlike LABKIOSK_DATA.
+STATUS_DIR = "/run/labkiosk-update"
+STATUS_FILE = os.path.join(STATUS_DIR, "status.json")
+LOCK_FILE = os.path.join(STATUS_DIR, "grubenv.lock")
+
+INSTALLED_ARG = "labkiosk.installed=1"
+MEDIA_PATH_ARG = "live-media-path="
+
+# A release version: 2.6.0, 2.6.1-rc1. It becomes a folder name and a GRUB
+# environment value, so nothing that could be a path or carry a newline.
+VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
+ENV_KEYS = ("current", "previous", "next", "next_tries")
+TRIES_PATTERN = re.compile(r"^[01]\Z")
+
+# GRUB's environment block: a 1 KiB file, this header, name=value lines, then
+# '#' padding to the full size. GRUB rewrites it in place when it spends a try,
+# which is why it must stay exactly this size.
+ENVBLK_SIZE = 1024
+ENVBLK_HEADER = b"# GRUB Environment Block\n"
+
+# The health check: the agent's API answers and the kiosk browser is running,
+# both continuously for HEALTH_HOLD_SECONDS, within HEALTH_DEADLINE_SECONDS of
+# the check starting. The deadline is generous on purpose: a slow thin client
+# regenerating its locale at first boot must not be rolled back for it.
+AGENT_STATUS_URL = "http://127.0.0.1:8888/api/status"
+# Must match --user-data-dir in the Openbox autostart, as BROWSER_PROFILE_DIR
+# in the agent does.
+BROWSER_PROFILE_ARG = "--user-data-dir=/tmp/chromium-profile"
+HEALTH_HOLD_SECONDS = 60
+HEALTH_DEADLINE_SECONDS = 600
+HEALTH_POLL_SECONDS = 5
+
+
+def log(message):
+    print(f"[BOOT-SLOTS] {message}", file=sys.stderr, flush=True)
+
+
+# --------------------------------------------------------------------------
+# The kernel command line
+# --------------------------------------------------------------------------
+
+def kernel_args(path="/proc/cmdline"):
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.read().split()
+
+
+def is_installed(args):
+    return INSTALLED_ARG in args
+
+
+def running_version(args):
+    """The image this boot came from, from live-media-path=/images/<version>."""
+    for arg in args:
+        if not arg.startswith(MEDIA_PATH_ARG):
+            continue
+        parts = arg[len(MEDIA_PATH_ARG):].strip("/").split("/")
+        if len(parts) == 2 and parts[0] == IMAGES_DIR_NAME and VERSION_PATTERN.match(parts[1]):
+            return parts[1]
+        raise RuntimeError(f"unrecognised {arg!r} on the kernel command line")
+    raise RuntimeError(f"no {MEDIA_PATH_ARG} on the kernel command line of an installed system")
+
+
+# --------------------------------------------------------------------------
+# The GRUB environment block
+# --------------------------------------------------------------------------
+
+def parse_env(data):
+    if len(data) != ENVBLK_SIZE or not data.startswith(ENVBLK_HEADER):
+        raise ValueError("not a GRUB environment block")
+    values = {}
+    for line in data[len(ENVBLK_HEADER):].decode("utf-8").split("\n"):
+        if not line or line.startswith("#"):
+            continue
+        name, sep, value = line.partition("=")
+        if not sep:
+            raise ValueError(f"malformed line in the GRUB environment block: {line!r}")
+        if name in ENV_KEYS:
+            values[name] = value
+    return values
+
+
+def validate_env(values):
+    """Refuse anything GRUB would have to escape, or that is not a slot."""
+    for name, value in values.items():
+        if name not in ENV_KEYS:
+            raise ValueError(f"unknown GRUB environment variable {name!r}")
+        pattern = TRIES_PATTERN if name == "next_tries" else VERSION_PATTERN
+        if not pattern.match(value):
+            raise ValueError(f"invalid value for {name}: {value!r}")
+
+
+def render_env(values):
+    validate_env(values)
+    body = "".join(f"{name}={values[name]}\n" for name in ENV_KEYS if name in values)
+    data = ENVBLK_HEADER + body.encode("utf-8")
+    if len(data) > ENVBLK_SIZE:
+        raise ValueError("the GRUB environment does not fit in its block")
+    return data + b"#" * (ENVBLK_SIZE - len(data))
+
+
+def read_env(boot_dir):
+    with open(os.path.join(boot_dir, ENV_FILE_NAME), "rb") as handle:
+        return parse_env(handle.read())
+
+
+def write_env(boot_dir, values):
+    """
+    Replace grubenv atomically: a new file, flushed, renamed over the old one.
+
+    A power cut leaves either the old block or the new one, never half of each.
+    GRUB later rewrites whichever file is there in place, which is safe because
+    it is always a full, unfragmented 1 KiB block.
+    """
+    data = render_env(values)
+    path = os.path.join(boot_dir, ENV_FILE_NAME)
+    temp = path + ".new"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, data)
+        os.fchmod(fd, 0o644)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temp, path)
+    dir_fd = os.open(boot_dir, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+# --------------------------------------------------------------------------
+# What this boot is
+# --------------------------------------------------------------------------
+
+def classify(env, running):
+    """
+    trial        this boot is the one try of `next`
+    rolled-back  `next` had its try and this is the old image again
+    staged       `next` waits for the next boot
+    fallback     `current` could not be booted, so GRUB picked another image
+    running      an ordinary boot of `current`
+    """
+    nxt = env.get("next", "")
+    tries = env.get("next_tries", "")
+    if nxt and tries == "0":
+        return "trial" if running == nxt else "rolled-back"
+    if nxt and tries == "1":
+        return "staged"
+    if env.get("current") != running:
+        return "fallback"
+    return "running"
+
+
+def promote(env):
+    """The try passed: the new image becomes current, the old one previous."""
+    promoted = {"current": env["next"]}
+    if env.get("current") and env["current"] != env["next"]:
+        promoted["previous"] = env["current"]
+    return promoted
+
+
+def has_image(root, version):
+    if not VERSION_PATTERN.match(version or ""):
+        return False
+    folder = os.path.join(root, IMAGES_DIR_NAME, version)
+    return all(os.path.isfile(os.path.join(folder, name)) for name in IMAGE_FILES)
+
+
+def complete_images(root):
+    folder = os.path.join(root, IMAGES_DIR_NAME)
+    try:
+        names = sorted(os.listdir(folder))
+    except FileNotFoundError:
+        return []
+    return [name for name in names if has_image(root, name)]
+
+
+# --------------------------------------------------------------------------
+# Writing to the boot partition
+# --------------------------------------------------------------------------
+
+def mount_options(mount_point, mounts_file="/proc/mounts"):
+    with open(mounts_file, "r", encoding="utf-8") as handle:
+        found = None
+        for line in handle:
+            fields = line.split()
+            if len(fields) >= 4 and fields[1] == mount_point:
+                found = fields[3].split(",")
+    if found is None:
+        raise RuntimeError(f"{mount_point} is not mounted")
+    return found
+
+
+def run(command):
+    proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{' '.join(command)} failed ({proc.returncode}): {proc.stderr.strip()}")
+
+
+@contextlib.contextmanager
+def boot_partition_writable(medium=BOOT_MEDIUM):
+    """
+    Hold the boot partition read-write for one change, one writer at a time.
+
+    The running image is a squashfs file on this partition, loop-mounted; the
+    ext4 itself is not an overlay layer, so remounting it changes nothing the
+    running system depends on (docs/OTA_UPDATES.md section 5.1).
+    """
+    os.makedirs(STATUS_DIR, mode=0o755, exist_ok=True)
+    with open(LOCK_FILE, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        was_read_only = "ro" in mount_options(medium)
+        if was_read_only:
+            run(["mount", "-o", "remount,rw", medium])
+        try:
+            yield
+        finally:
+            if was_read_only:
+                os.sync()
+                run(["mount", "-o", "remount,ro", medium])
+
+
+def write_status(state, **fields):
+    """The boot's outcome for the agent to show and report, written by root."""
+    os.makedirs(STATUS_DIR, mode=0o755, exist_ok=True)
+    payload = dict(fields, state=state, at=int(time.time()))
+    temp = STATUS_FILE + ".new"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    os.chmod(temp, 0o644)
+    os.replace(temp, STATUS_FILE)
+    log(f"status: {json.dumps(payload)}")
+
+
+# --------------------------------------------------------------------------
+# The health check
+# --------------------------------------------------------------------------
+
+def agent_answers():
+    try:
+        with urllib.request.urlopen(AGENT_STATUS_URL, timeout=3) as response:
+            return response.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def browser_running(proc_dir="/proc"):
+    try:
+        pids = [name for name in os.listdir(proc_dir) if name.isdigit()]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(os.path.join(proc_dir, pid, "cmdline"), "rb") as handle:
+                argv = handle.read().split(b"\0")
+        except OSError:
+            continue  # The process ended while the list was being read.
+        if argv and os.path.basename(argv[0].decode("utf-8", "replace")).startswith("chromium") \
+                and BROWSER_PROFILE_ARG.encode() in argv:
+            return True
+    return False
+
+
+def wait_until_healthy(probe, clock=time.monotonic, sleep=time.sleep,
+                       hold=HEALTH_HOLD_SECONDS, deadline=HEALTH_DEADLINE_SECONDS,
+                       poll=HEALTH_POLL_SECONDS):
+    """True once probe() has held for `hold` seconds without a gap; False at the deadline."""
+    start = clock()
+    healthy_since = None
+    while True:
+        now = clock()
+        if probe():
+            if healthy_since is None:
+                healthy_since = now
+                log("the agent and the browser are up; holding")
+            if now - healthy_since >= hold:
+                return True
+        elif healthy_since is not None:
+            log("the agent or the browser went away; starting the hold again")
+            healthy_since = None
+        if now - start >= deadline:
+            return False
+        sleep(poll)
+
+
+def system_is_healthy():
+    return agent_answers() and browser_running()
+
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+
+def installed_context():
+    args = kernel_args()
+    if not is_installed(args):
+        return None, None
+    return running_version(args), os.path.join(BOOT_MEDIUM, BOOT_DIR_NAME)
+
+
+def cmd_check():
+    running, boot_dir = installed_context()
+    if running is None:
+        log("not an installed system; nothing to check")
+        return {"state": "live"}
+
+    try:
+        env = read_env(boot_dir)
+    except (OSError, ValueError) as err:
+        # GRUB booted an image without a usable environment (its last-resort
+        # scan of images/). Say so; there is no try to confirm.
+        write_status("error", version=running, error=f"boot environment unreadable: {err}")
+        raise
+    kind = classify(env, running)
+    if kind == "rolled-back":
+        write_status("rolled-back", version=running, failed=env["next"])
+        return {"state": "rolled-back", "version": running, "failed": env["next"]}
+    if kind == "staged":
+        write_status("staged", version=running, staged=env["next"])
+        return {"state": "staged", "version": running, "staged": env["next"]}
+    if kind in ("running", "fallback"):
+        write_status(kind, version=running)
+        return {"state": kind, "version": running}
+
+    write_status("finishing", version=running, previous=env.get("current", ""))
+    if wait_until_healthy(system_is_healthy):
+        with boot_partition_writable():
+            env = read_env(boot_dir)
+            if classify(env, running) != "trial":
+                raise RuntimeError("the boot environment changed during the health check")
+            write_env(boot_dir, promote(env))
+        write_status("installed", version=running, previous=env.get("current", ""))
+        return {"state": "installed", "version": running}
+
+    write_status("failed", version=running, previous=env.get("current", ""))
+    log(f"{running} did not pass its health check; rebooting into {env.get('current', '')}")
+    run(["systemctl", "reboot"])
+    return {"state": "failed", "version": running}
+
+
+def cmd_status():
+    args = kernel_args()
+    if not is_installed(args):
+        return {"installed": False}
+    running = running_version(args)
+    boot_dir = os.path.join(BOOT_MEDIUM, BOOT_DIR_NAME)
+    env = read_env(boot_dir)
+    return {
+        "installed": True,
+        "running": running,
+        "boot": classify(env, running),
+        "env": env,
+        "images": complete_images(BOOT_MEDIUM),
+    }
+
+
+def cmd_try(version):
+    if not VERSION_PATTERN.match(version):
+        raise ValueError(f"{version!r} is not a release version")
+    running, boot_dir = installed_context()
+    if running is None:
+        raise RuntimeError("only an installed system boots images from its disk")
+    if version == running:
+        raise ValueError(f"{version} is the image running now")
+    if not has_image(BOOT_MEDIUM, version):
+        raise ValueError(f"{version} is not a complete image on this disk")
+    with boot_partition_writable():
+        env = read_env(boot_dir)
+        env["next"] = version
+        env["next_tries"] = "1"
+        write_env(boot_dir, env)
+    log(f"{version} gets one try at the next boot; {env.get('current', '')} stays the fallback")
+    return {"next": version, "current": env.get("current", "")}
+
+
+def cmd_init(version, boot_dir):
+    if not VERSION_PATTERN.match(version):
+        raise ValueError(f"{version!r} is not a release version")
+    if not os.path.isdir(boot_dir):
+        raise ValueError(f"{boot_dir} is not a directory")
+    write_env(boot_dir, {"current": version})
+    return {"current": version}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("check", help="confirm or roll back the image this boot came from")
+    sub.add_parser("status", help="print the boot state as JSON")
+    try_parser = sub.add_parser("try", help="boot an image on this disk once, at the next boot")
+    try_parser.add_argument("version")
+    init_parser = sub.add_parser("init", help="write a fresh grubenv (used by the installer)")
+    init_parser.add_argument("version")
+    init_parser.add_argument("--boot-dir", required=True)
+    args = parser.parse_args()
+
+    try:
+        if args.command != "status" and os.geteuid() != 0:
+            raise PermissionError("must run as root")
+        if args.command == "check":
+            result = cmd_check()
+        elif args.command == "status":
+            result = cmd_status()
+        elif args.command == "try":
+            result = cmd_try(args.version)
+        else:
+            result = cmd_init(args.version, args.boot_dir)
+    except (OSError, RuntimeError, ValueError) as err:
+        log(f"ERROR: {err}")
+        print(json.dumps({"error": str(err)}))
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

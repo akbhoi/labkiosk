@@ -1,6 +1,6 @@
 # Over-the-Air Updates — Research
 
-**Status:** research, nothing implemented. **Scope:** delivering new Lab Kiosk releases to installed
+**Status:** phase 1 (§9) implemented: the image-store installer, the §5.1 and §5.2 changes, GRUB's one-try boot and `labkiosk-boot-ok`. Phases 2–5 are research. **Scope:** delivering new Lab Kiosk releases to installed
 workstations without re-flashing the ISO. Written against `dev` at v2.5.0.
 
 ---
