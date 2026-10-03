@@ -1824,6 +1824,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await device.closeFromClient();
   });
 
+  test("The organization's own address is always in the pushed allowlist", async () => {
+    // A workstation enrolled under an earlier subdomain still connects to that
+    // host; its portal is now elsewhere, and only this allowlist entry lets the
+    // kiosk move there instead of landing on "This page is blocked".
+    const tenantId = await greenwoodId();
+    const req = new Request("https://former-name.labkiosk.akbhoi.com/api/devices/ws");
+    const portal = portalContextFrom(req, new URL(req.url), { ...mockEnv, DEFAULT_DOMAIN: "labkiosk.akbhoi.com" } as Env);
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-RENAMED", ip: "10.0.0.9", portal });
+    const config = ofType(device, "config").at(-1)!;
+    const portalHost = new URL(String(config.targetUrl)).hostname;
+    assert.notEqual(portalHost, "former-name.labkiosk.akbhoi.com", "the portal is at the organization's current address");
+    assert.ok(allowlistHas(config.whitelist, portalHost), `${portalHost} is allowed`);
+    await device.closeFromClient();
+  });
+
   test("The workstation and console sockets are guarded", async () => {
     assert.equal((await call("/api/devices/ws", { bearer: deviceToken })).status, 426, "an upgrade is required");
     assert.equal((await call("/api/devices/ws", { headers: { Upgrade: "websocket" } })).status, 401, "a token is required");
