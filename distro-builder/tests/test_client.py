@@ -1176,6 +1176,39 @@ class BootHealthCheck(unittest.TestCase):
         self.assertEqual(bootslots.BROWSER_PROFILE_ARG, f"--user-data-dir={agent.BROWSER_PROFILE_DIR}")
 
 
+    def test_the_agent_check_never_goes_through_a_proxy(self):
+        import http.server
+        import threading
+
+        class Status(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Status)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        saved_url = bootslots.AGENT_STATUS_URL
+        saved_env = {k: os.environ.get(k) for k in ("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY")}
+        try:
+            bootslots.AGENT_STATUS_URL = f"http://127.0.0.1:{server.server_port}/api/status"
+            for key in saved_env:
+                os.environ.pop(key, None)
+            os.environ["http_proxy"] = os.environ["HTTP_PROXY"] = "http://127.0.0.1:9/"
+            self.assertTrue(bootslots.agent_answers())
+        finally:
+            bootslots.AGENT_STATUS_URL = saved_url
+            for key, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            server.shutdown()
+            server.server_close()
+
 class InstalledBootMenu(unittest.TestCase):
     """The grub.cfg every installed disk boots through."""
 

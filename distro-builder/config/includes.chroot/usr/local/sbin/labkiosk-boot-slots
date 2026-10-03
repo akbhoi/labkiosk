@@ -291,9 +291,14 @@ def write_status(state, **fields):
 # The health check
 # --------------------------------------------------------------------------
 
+# The agent is on loopback: never route the check through a proxy, which
+# would fail it and roll back a healthy image.
+LOOPBACK_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def agent_answers():
     try:
-        with urllib.request.urlopen(AGENT_STATUS_URL, timeout=3) as response:
+        with LOOPBACK_OPENER.open(AGENT_STATUS_URL, timeout=3) as response:
             return response.status == 200
     except (urllib.error.URLError, OSError, ValueError):
         return False
