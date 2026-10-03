@@ -223,7 +223,9 @@ def complete_images(root):
     folder = os.path.join(root, IMAGES_DIR_NAME)
     try:
         names = sorted(os.listdir(folder))
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
+        # No image store here. Any other error (a failing disk, permissions)
+        # is not "no images" and propagates.
         return []
     return [name for name in names if has_image(root, name)]
 

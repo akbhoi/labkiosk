@@ -70,13 +70,13 @@ Removable drives are **not** hidden, because internal eMMC on some thin clients 
  7. copy the image to ROOT/images/<version>/, fsync each file
  8. carry network profiles, config.json, proxy.json and localization.json onto DATA; prove kiosk can write it
  9. grub-install x86_64-efi, x86_64-efi --removable, i386-pc, all with --boot-directory=ROOT/boot
-10. copy usr/share/labkiosk/boot/grub.cfg to ROOT/boot/grub/, write labkiosk-password.cfg if a hash was supplied
+10. copy usr/share/labkiosk/boot/grub.cfg to ROOT/boot/grub/, write labkiosk-password.cfg if a hash was supplied, and labkiosk-data.cfg with the DATA partition's UUID
 11. labkiosk-boot-slots init <version>: grubenv with current=<version>
 ```
 
 Nothing is written into the system image: an update replaces it whole. What used to be written onto the
-root filesystem moved (OTA §5.2): `/etc/fstab` became `etc-labkiosk.mount` and a bind-mount unit in the
-image, `/etc/labkiosk-installed` became `labkiosk.installed=1` on the command line, the boot password moved
+root filesystem moved (OTA §5.2): `/etc/fstab` became `etc-labkiosk.mount` (generated at boot from the DATA
+partition's UUID, which GRUB passes as `labkiosk.data=`; never by label) and a bind-mount unit in the image, `/etc/labkiosk-installed` became `labkiosk.installed=1` on the command line, the boot password moved
 to `boot/grub/`, and language and region are re-applied by the agent from `localization.json` at every start.
 
 ### Booting the image

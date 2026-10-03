@@ -67,6 +67,11 @@ distro-builder/
   *different* image's folder while the system runs (`docs/OTA_UPDATES.md` §5.1). Rule 8.
 - **The single exception on an installed disk is `/etc/labkiosk`**, which `etc-labkiosk.mount`
   mounts from the `LABKIOSK_DATA` partition so that a post-install enrolment survives a reboot.
+  That unit is generated at boot (`etc/systemd/system-generators/labkiosk-data-generator`)
+  from `labkiosk.data=<uuid>` on the command line, which `grub.cfg` takes from
+  `boot/grub/labkiosk-data.cfg` (written by the installer). **Never mount it by label**: any USB
+  stick can carry the label `LABKIOSK_DATA` and would hand the agent its enrolment, proxy and
+  Wi-Fi profiles. No valid UUID means no mount, and the agent reports it.
   Everything else, including `/etc/machine-id`, is regenerated every boot. Nothing is written into
   a system image after installation: anything that must survive an update lives on `DATA` or in
   `boot/grub/`, and config on `DATA` is shared by every image, so its keys may be added but never
@@ -83,8 +88,8 @@ distro-builder/
   so that path can still be unmounted when the repair service runs. Creating a writable directory
   there is the worst available outcome: the agent enrols into the RAM overlay and the organization's
   workstation forgets everything at the next power-off, with nothing on screen to say so. The
-  service therefore mounts the partition (`After=…etc-labkiosk.mount`, then mounts
-  `LABKIOSK_DATA` by label)
+  service therefore mounts the partition (`After=…etc-labkiosk.mount`, then mounts the
+  `labkiosk.data=` UUID)
   and, when it cannot, leaves the path exactly as it found it. `enrolment_is_persistent()` in the
   agent answers the same question for the UI: `persistentStorage` in `/api/status` and `persistent`
   in the enrolment reply, both of which the wizard renders as an amber warning rather than a

@@ -1134,6 +1134,12 @@ class BootSelection(unittest.TestCase):
             self.assertFalse(bootslots.has_image(root, "../2.6.0"))
             self.assertEqual(bootslots.complete_images(root), ["2.6.0"])
 
+    def test_no_image_store_means_no_images(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(bootslots.complete_images(root), [])
+            open(os.path.join(root, "images"), "w").close()
+            self.assertEqual(bootslots.complete_images(root), [])
+
 
 class BootHealthCheck(unittest.TestCase):
     """The one try passes only if the kiosk stays up, without a gap, for the hold."""
@@ -1295,6 +1301,95 @@ class LiveConfigNeverGrantsRoot(unittest.TestCase):
         for component in ("sudo", "policykit"):
             with self.subTest(component=component):
                 self.assertIn(f"touch /var/lib/live/config/{component}\n", hook)
+
+
+class DataPartitionPinnedByUuid(unittest.TestCase):
+    """/etc/labkiosk comes from this disk's data partition, never from a USB stick with its label."""
+
+    GENERATOR = os.path.join(CHROOT, "etc/systemd/system-generators/labkiosk-data-generator")
+    UUID = "0f3c2a51-7d4e-4b8a-9c1d-2e5f6a7b8c9d"
+
+    def generate(self, cmdline):
+        import subprocess
+        with open(self.GENERATOR, encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertEqual(script.count("CMDLINE_FILE=/proc/cmdline\n"), 1)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cmdline_file = os.path.join(tmp.name, "cmdline")
+        with open(cmdline_file, "w", encoding="utf-8") as handle:
+            handle.write(cmdline + "\n")
+        copy = os.path.join(tmp.name, "generator")
+        with open(copy, "w", encoding="utf-8") as handle:
+            handle.write(script.replace("CMDLINE_FILE=/proc/cmdline\n", f"CMDLINE_FILE={cmdline_file}\n"))
+        out = os.path.join(tmp.name, "out")
+        os.makedirs(out)
+        result = subprocess.run(["sh", copy, out, out, out], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return out
+
+    def test_the_installed_uuid_is_mounted(self):
+        out = self.generate(f"boot=live labkiosk.installed=1 labkiosk.data={self.UUID} noeject")
+        with open(os.path.join(out, "etc-labkiosk.mount"), encoding="utf-8") as handle:
+            unit = handle.read()
+        self.assertIn(f"What=/dev/disk/by-uuid/{self.UUID}\n", unit)
+        self.assertIn("Where=/etc/labkiosk\n", unit)
+        self.assertIn("nofail", unit)
+        self.assertEqual(os.readlink(os.path.join(out, "local-fs.target.wants", "etc-labkiosk.mount")),
+                         "../etc-labkiosk.mount")
+
+    def test_no_valid_uuid_mounts_nothing(self):
+        for value in ("", "LABKIOSK_DATA", "../../sda4", self.UUID.upper(), self.UUID + "0"):
+            with self.subTest(value=value):
+                out = self.generate(f"boot=live labkiosk.installed=1 labkiosk.data={value}")
+                self.assertEqual(os.listdir(out), [])
+
+    def test_a_live_session_mounts_nothing(self):
+        out = self.generate(f"boot=live components labkiosk.data={self.UUID}")
+        self.assertEqual(os.listdir(out), [])
+
+    def test_nothing_mounts_the_data_partition_by_label(self):
+        paths = (
+            os.path.join(ROOT, "config/hooks/live/01-lockdown.hook.chroot"),
+            os.path.join(CHROOT, "usr/share/labkiosk/boot/grub.cfg"),
+            self.GENERATOR,
+        )
+        for path in paths:
+            with self.subTest(path=path), open(path, encoding="utf-8") as handle:
+                text = handle.read()
+                self.assertNotIn("by-label/LABKIOSK_DATA", text)
+                # A static unit in /etc/systemd/system would override the generated one.
+                self.assertNotIn("/etc/systemd/system/etc-labkiosk.mount", text)
+
+    def test_every_installed_command_line_carries_the_uuid(self):
+        with open(os.path.join(CHROOT, "usr/share/labkiosk/boot/grub.cfg"), encoding="utf-8") as handle:
+            cfg = handle.read()
+        self.assertIn(installer.DATA_ID_FILE_NAME, cfg)
+        kernels = [line.split() for line in cfg.splitlines() if line.strip().startswith("linux ")]
+        self.assertTrue(kernels)
+        for args in kernels:
+            self.assertIn("labkiosk.data=$data_uuid", args)
+
+    def test_the_installer_records_the_uuid_for_grub(self):
+        orig = installer.run_cmd
+        self.addCleanup(setattr, installer, "run_cmd", orig)
+        with tempfile.TemporaryDirectory() as grub_dir:
+            installer.run_cmd = lambda cmd, check=True: self.UUID
+            installer.write_data_partition_id(grub_dir, "/dev/sda4")
+            with open(os.path.join(grub_dir, installer.DATA_ID_FILE_NAME), encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), f'set data_uuid="{self.UUID}"\n')
+
+    def test_the_installer_refuses_a_missing_uuid(self):
+        orig = installer.run_cmd
+        self.addCleanup(setattr, installer, "run_cmd", orig)
+        with tempfile.TemporaryDirectory() as grub_dir:
+            for answer in ("", 'x"; set superusers=""'):
+                with self.subTest(answer=answer):
+                    installer.run_cmd = lambda cmd, check=True, answer=answer: answer
+                    with self.assertRaises(RuntimeError):
+                        installer.write_data_partition_id(grub_dir, "/dev/sda4")
+                    self.assertFalse(os.path.exists(os.path.join(grub_dir, installer.DATA_ID_FILE_NAME)))
 
 
 class BootConfirmation(unittest.TestCase):

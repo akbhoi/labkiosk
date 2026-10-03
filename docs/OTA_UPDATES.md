@@ -159,8 +159,10 @@ initrd /images/$slot/initrd.img
 - The installed command line must not carry `timezone=Asia/Kolkata`. live-config applies it at
   every boot and would override the organization's choice.
 - `/etc/labkiosk` mount: the image's `fstab` no longer comes from the installer. Ship a systemd
-  mount unit for `LABKIOSK_DATA` by label, keeping `nofail`, plus the existing
-  `labkiosk-data-permissions` ordering and the `system-connections` bind mount.
+  mount unit for `LABKIOSK_DATA`, keeping `nofail`, plus the existing
+  `labkiosk-data-permissions` ordering and the `system-connections` bind mount. Pin it to this
+  disk's partition UUID (GRUB passes it as `labkiosk.data=`), never the label: a USB stick can
+  carry the label.
 
 ### 5.2 State that must survive an image swap
 

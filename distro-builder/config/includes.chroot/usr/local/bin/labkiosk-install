@@ -39,6 +39,10 @@ IMAGE_VERSION_FILE = "/usr/share/labkiosk/version"
 IMAGE_VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
 GRUB_CFG_TEMPLATE = "/usr/share/labkiosk/boot/grub.cfg"
 GRUB_PASSWORD_FILE_NAME = "labkiosk-password.cfg"
+# The data partition's UUID, for grub.cfg to pass as labkiosk.data=<uuid>.
+DATA_ID_FILE_NAME = "labkiosk-data.cfg"
+# What mkfs.ext4 writes; grub.cfg and labkiosk-data-generator accept only this.
+FS_UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 BOOT_SLOTS_HELPER = "/usr/local/sbin/labkiosk-boot-slots"
 TARGET_ROOT_MOUNT = "/mnt/target_kiosk"
 TARGET_ESP_MOUNT = "/mnt/target_kiosk_esp"
@@ -551,6 +555,7 @@ def install_to_disk(target_disk, grub_password_hash=None):
         shutil.copyfile(GRUB_CFG_TEMPLATE, os.path.join(grub_dir, "grub.cfg"))
         os.chmod(os.path.join(grub_dir, "grub.cfg"), 0o644)
         write_grub_password(grub_dir, grub_password_hash)
+        write_data_partition_id(grub_dir, part_data)
 
         proc = subprocess.run(
             [BOOT_SLOTS_HELPER, "init", version, "--boot-dir", grub_dir],
@@ -681,6 +686,27 @@ def write_grub_password(grub_dir, grub_password_hash):
             "can edit the GRUB entry and boot with init=/bin/sh.",
             file=sys.stderr,
         )
+
+
+def write_data_partition_id(grub_dir, part_data):
+    """
+    Pin /etc/labkiosk to THIS disk's data partition.
+
+    grub.cfg sources the file and passes labkiosk.data=<uuid> to the kernel;
+    labkiosk-data-generator mounts exactly that UUID. Mounting by label would
+    let any USB stick formatted as LABKIOSK_DATA supply the agent's enrolment,
+    proxy and Wi-Fi profiles. Like the boot password it lives in boot/grub,
+    outside every system image, so an update keeps it.
+    """
+    data_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_data])
+    if not FS_UUID_PATTERN.match(data_uuid):
+        raise RuntimeError(f"blkid returned no usable UUID for the data partition ({part_data}): {data_uuid!r}")
+    id_file = os.path.join(grub_dir, DATA_ID_FILE_NAME)
+    with open(id_file, "w") as handle:
+        handle.write(f'set data_uuid="{data_uuid}"\n')
+    os.chmod(id_file, 0o644)
+    print(f"[INSTALL] Data partition pinned by UUID {data_uuid}.", file=sys.stderr)
+
 
 if __name__ == "__main__":
     import argparse
