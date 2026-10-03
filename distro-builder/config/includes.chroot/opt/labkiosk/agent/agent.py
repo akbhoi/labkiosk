@@ -89,7 +89,15 @@ UI_LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}\Z")
 CATALOG_MAX_BYTES = 256 * 1024
 CATALOG_MAX_KEYS = 2000
 CATALOG_MAX_VALUE = 2000
-GRUB_PASSWORD_FILE = "/etc/grub.d/01_labkiosk_password"
+# The boot-menu password digest, which is also the administrator password. An
+# installed disk keeps it in boot/grub on LABKIOSK_ROOT, outside every system
+# image, and live-boot mounts that partition here read-only. On the ISO the same
+# path holds the build-time password, if one was pinned.
+BOOT_MEDIUM_GRUB_DIR = "/run/live/medium/boot/grub"
+GRUB_PASSWORD_FILE = os.path.join(BOOT_MEDIUM_GRUB_DIR, "labkiosk-password.cfg")
+GRUB_CONFIG_FILE = os.path.join(BOOT_MEDIUM_GRUB_DIR, "grub.cfg")
+# Only the installed boot menu passes this (/usr/share/labkiosk/boot/grub.cfg).
+INSTALLED_KERNEL_ARG = "labkiosk.installed=1"
 WIZARD_HTML_FILE = "/opt/labkiosk/setup/wizard.html"
 BLOCKED_HTML_FILE = "/opt/labkiosk/setup/blocked.html"
 CHROMIUM_POLICY_FILE = "/etc/chromium/policies/managed/policies.json"
@@ -977,10 +985,12 @@ def apply_saved_localization():
     """
     Re-apply the saved settings at every start.
 
-    On an installed workstation the timezone and the keyboard came back with the
-    root filesystem, but a locale generated after the installation lives in the
-    RAM overlay and is gone again by morning; the helper regenerates it and does
-    nothing when it is already there.
+    This is the only place an installed workstation gets them back: it boots a
+    system image under a RAM overlay, exactly as the ISO does, so the timezone,
+    the keyboard, the time server and any generated locale are the image's own
+    defaults again at every boot, and an update replaces the image altogether.
+    The choice itself lives on LABKIOSK_DATA (docs/OTA_UPDATES.md section 5.2).
+    The helper regenerates the locale and does nothing when it is already there.
     """
     cfg = load_localization_config()
     if not cfg:
@@ -1148,18 +1158,17 @@ def is_live_session():
     """
     Check if currently running from live installer media (USB/ISO).
     Returns False when booted from an installed internal drive.
+
+    An installed disk boots its system image through live-boot too, so
+    /run/live and boot=live are there either way; labkiosk.installed=1 on the
+    command line is what tells them apart. The marker file identifies a disk
+    installed before the image store, whose root is a copy of the live system.
     """
-    if os.path.exists("/etc/labkiosk-installed"):
+    if INSTALLED_KERNEL_ARG in kernel_cmdline().split() or os.path.exists("/etc/labkiosk-installed"):
         return False
     if os.path.exists("/run/live") or os.path.exists("/lib/live/mount"):
         return True
-    try:
-        with open("/proc/cmdline", "r") as f:
-            if "boot=live" in f.read():
-                return True
-    except Exception:
-        pass
-    return False
+    return "boot=live" in kernel_cmdline()
 
 
 def kernel_cmdline():
@@ -1843,7 +1852,12 @@ def read_admin_password_hash():
         with open(GRUB_PASSWORD_FILE, "r", encoding="utf-8") as handle:
             content = handle.read()
     except FileNotFoundError:
-        return None
+        # "No password" is only believable when the boot partition it would be
+        # on is readable. If it is not mounted, an installed workstation cannot
+        # tell, and the gate stays shut rather than opening for everyone.
+        if is_live_session() or os.path.isfile(GRUB_CONFIG_FILE):
+            return None
+        raise ValueError(f"{BOOT_MEDIUM_GRUB_DIR} is not readable, so the password cannot be checked")
     match = GRUB_PASSWORD_LINE.search(content)
     if not match:
         raise ValueError(f"{GRUB_PASSWORD_FILE} has no password_pbkdf2 entry")

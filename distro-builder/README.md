@@ -88,7 +88,7 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
   internal eMMC as removable) but are sorted last and labelled `REMOVABLE DRIVE` in the wizard.
 - **Dual Bootloader Deployment:** Automatically installs both **UEFI** (`x86_64-efi` with removable fallback `BOOTX64.EFI`) and **Legacy BIOS** (`i386-pc`) bootloaders, ensuring the hard drive boots on any virtual machine (Hyper-V Gen 1/2, VirtualBox) or physical PC.
 - **100% RAM Overlay on Disk:** Configures `/etc/overlayroot.conf` with `overlayroot="tmpfs"` on the installed drive, guaranteeing zero flash storage wear and clean resets on reboot even after permanent installation. The `LABKIOSK_DATA` partition above is the deliberate exception.
-- **Decoupled Transfer:** Transfers rootfs files via `rsync` without premature submounts, preventing filesystem deadlock errors (`EBUSY 16`).
+- **Image Store:** Copies the live medium's system image (squashfs, kernel, initrd) to `images/<version>/` and boots it through live-boot, giving each new image one try with automatic rollback (`docs/OTA_UPDATES.md`).
 
 ---
 
@@ -224,7 +224,7 @@ edit an entry or `c` for the GRUB shell.
 The setup wizard's **Install to Hard Disk** step collects a boot-menu password and derives the
 PBKDF2 hash **in the browser** with WebCrypto, posting only the digest. The plaintext therefore
 never reaches the agent's API, never appears in a process argument, and is never written to disk.
-`labkiosk-install` writes `/etc/grub.d/01_labkiosk_password` on the target before `update-grub`.
+`labkiosk-install` writes `boot/grub/labkiosk-password.cfg` on the installed disk's image store, which its `grub.cfg` sources.
 
 Each site — or each workstation, if you prefer — gets its own password, and the shipped ISO
 carries no secret at all. Use the wizard's **Generate** button for a random 20-character password,
@@ -249,7 +249,7 @@ fallback for a single organisation building an image for its own lab.
 
 | Target | Mechanism | Set by |
 | :--- | :--- | :--- |
-| **Installed disk** | `/etc/grub.d/01_labkiosk_password`, consumed by `update-grub` | The wizard, per installation (Route 1) |
+| **Installed disk** | `boot/grub/labkiosk-password.cfg` on `LABKIOSK_ROOT`, sourced by the installed `grub.cfg` | The wizard, per installation (Route 1) |
 | **Live ISO, UEFI** | `config/bootloaders/grub-pc/labkiosk-password.cfg`, sourced by `config.cfg` | `auto/config` from `LABKIOSK_GRUB_PBKDF2` or `grub.pin` (Route 2) |
 | **Live ISO, legacy BIOS** | `ALLOWOPTIONS 0` + `NOESCAPE 1` in `config/bootloaders/*/stdmenu.cfg` — **no password needed**: syslinux discards any kernel argument the user types | static config, always |
 

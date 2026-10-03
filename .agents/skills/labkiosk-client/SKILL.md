@@ -23,7 +23,9 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   `/api/reboot`, `/api/network/{status,interfaces,wifi/scan,configure,test}` (`test_connectivity()`
   caches 5 s; interfaces from `nmcli dev status`), `/api/admin/verify`, `/api/log`,
   `/api/localization/{options,configure,languages,language/download}`, `/i18n/<tag>.json`.
-- `is_live_session()`: `/etc/labkiosk-installed` ⇒ installed; `/run/live` or `boot=live` ⇒ live.
+- `is_live_session()`: `labkiosk.installed=1` on the command line (or the pre-image-store
+  `/etc/labkiosk-installed`) ⇒ installed, checked first because installed disks boot through
+  live-boot too; then `/run/live` or `boot=live` ⇒ live.
   Install endpoints refuse when `not is_live_session()` (`/api/install/disks` returns `[]`).
 - **Worker URL** (`validate_worker_url()`): `https`, or plain `http` only to loopback, container
   gateways, `*.internal`/`*.local`, or a private IPv4 literal (`is_private_ip_literal()`:

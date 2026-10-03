@@ -6,11 +6,13 @@ Installs the running Lab Kiosk OS to an internal hard drive, SSD, or NVMe disk.
 
 import sys
 import os
+import errno
 import json
 import subprocess
 import time
 import shutil
 import re
+import stat
 
 STATUS_FILE = "/tmp/labkiosk-install-status.json"
 
@@ -20,10 +22,6 @@ STATUS_FILE = "/tmp/labkiosk-install-status.json"
 # /etc/sudoers.d/50-labkiosk-install lets the kiosk user run this binary
 # directly with NOPASSWD, so the argument is re-validated here rather than
 # trusted. Keep the two patterns identical.
-# The one program that knows how to write a timezone, a locale and a keyboard
-# layout, used here with --root so the choice made in the wizard lands on the
-# disk being installed rather than on the live session.
-LOCALIZATION_HELPER = "/usr/local/sbin/labkiosk-localization"
 TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)\Z")
 
 # A grub-mkpasswd-pbkdf2 digest: grub.pbkdf2.sha512.<rounds>.<salt hex>.<hash hex>.
@@ -31,6 +29,34 @@ TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcb
 # browser with WebCrypto, so the plaintext boot-menu password is never sent over
 # the agent's API, never reaches a process argument, and is never written to disk.
 GRUB_PBKDF2_PATTERN = re.compile(r"^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+\Z")
+
+# The installed disk is an image store (docs/OTA_UPDATES.md section 5.1): the
+# live medium's squashfs, kernel and initrd are copied to images/<version>/ on
+# LABKIOSK_ROOT and booted through live-boot, exactly as the ISO boots them.
+LIVE_IMAGE_DIRS = ("/run/live/medium/live", "/lib/live/mount/medium/live")
+IMAGE_FILES = ("vmlinuz", "initrd.img", "filesystem.squashfs")
+IMAGE_COPY_CHUNK = 8 * 1024 * 1024
+IMAGE_VERSION_FILE = "/usr/share/labkiosk/version"
+# Kept identical to VERSION_PATTERN in /usr/local/sbin/labkiosk-boot-slots.
+IMAGE_VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
+GRUB_CFG_TEMPLATE = "/usr/share/labkiosk/boot/grub.cfg"
+GRUB_PASSWORD_FILE_NAME = "labkiosk-password.cfg"
+# The data partition's UUID, for grub.cfg to pass as labkiosk.data=<uuid>.
+DATA_ID_FILE_NAME = "labkiosk-data.cfg"
+# What mkfs.ext4 writes; grub.cfg and labkiosk-data-generator accept only this.
+FS_UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+BOOT_SLOTS_HELPER = "/usr/local/sbin/labkiosk-boot-slots"
+TARGET_ROOT_MOUNT = "/mnt/target_kiosk"
+TARGET_ESP_MOUNT = "/mnt/target_kiosk_esp"
+TARGET_DATA_MOUNT = "/mnt/target_kiosk_data"
+# Two system images side by side -- the running one and an update or the one
+# kept for rollback -- at about 720 MiB each today, with room for them to grow
+# (docs/OTA_UPDATES.md section 12 asks for 8 GB). Counted in GiB so that a
+# drive sold as "8 GB" (8 000 000 000 bytes, or an eMMC a little under that)
+# still qualifies.
+MIN_DISK_BYTES = 7 * 1024 * 1024 * 1024
+# On the kernel command line of every installed system (the boot menu adds it).
+INSTALLED_ARG = "labkiosk.installed=1"
 
 def write_status(state, step, progress, error=None):
     data = {
@@ -61,22 +87,35 @@ def run_cmd(cmd, check=True):
         raise RuntimeError(f"Command failed ({proc.returncode}): {' '.join(cmd)}\nStderr: {proc.stderr}")
     return proc.stdout.strip()
 
+def kernel_args():
+    try:
+        with open("/proc/cmdline", "r") as handle:
+            return handle.read().split()
+    except OSError:
+        return []
+
+
+def is_installed_system():
+    """
+    Booted from an installed disk rather than from the ISO.
+
+    Both now boot through live-boot, so /run/live and boot=live are present on
+    either; only the installed boot menu adds labkiosk.installed=1. The old
+    marker file still identifies a disk installed before the image store.
+    """
+    return INSTALLED_ARG in kernel_args() or os.path.exists("/etc/labkiosk-installed")
+
+
 def is_live_session():
     """
     Check if currently running from live installer media (USB/ISO).
     Returns False when booted from an installed internal drive.
     """
-    if os.path.exists("/etc/labkiosk-installed"):
+    if is_installed_system():
         return False
     if os.path.exists("/run/live") or os.path.exists("/lib/live/mount"):
         return True
-    try:
-        with open("/proc/cmdline", "r") as f:
-            if "boot=live" in f.read():
-                return True
-    except Exception:
-        pass
-    return False
+    return "boot=live" in kernel_args()
 
 # Mount points live-boot uses for the medium the system booted from. Anything
 # backed by one of these is the USB stick or optical disc running this very
@@ -192,8 +231,7 @@ def list_disks():
             except (ValueError, TypeError):
                 size_bytes = 0
 
-            # Allow drives >= 3 GB (handles compact 4GB virtual disks & thin clients)
-            if size_bytes < 3 * 1024 * 1024 * 1024:
+            if size_bytes < MIN_DISK_BYTES:
                 continue
 
             size_gb = round(size_bytes / (1024 * 1024 * 1024), 1)
@@ -228,7 +266,7 @@ def list_disks():
                 try:
                     sectors = int(open(size_file).read().strip())
                     size_bytes = sectors * 512
-                    if size_bytes < 3 * 1024 * 1024 * 1024:
+                    if size_bytes < MIN_DISK_BYTES:
                         continue
                     size_gb = round(size_bytes / (1024 * 1024 * 1024), 1)
                     model_file = os.path.join(dev_dir, "device", "model")
@@ -258,6 +296,53 @@ def list_disks():
     disks.sort(key=lambda d: (bool(d.get("removable")), d.get("name", "")))
     return disks
 
+def locate_running_image():
+    """
+    The system image this live session booted from, and its release version.
+
+    The installer copies these exact files onto the disk: the installed system
+    then boots the same squashfs, kernel and initrd as the ISO, through
+    live-boot, instead of an rsync of the running root (docs/OTA_UPDATES.md
+    section 5.1). Everything is checked here, before the disk is touched.
+    """
+    try:
+        with open(IMAGE_VERSION_FILE, "r", encoding="utf-8") as handle:
+            version = handle.read().strip()
+    except OSError as err:
+        raise RuntimeError(f"cannot read the image version from {IMAGE_VERSION_FILE}: {err}") from err
+    if not IMAGE_VERSION_PATTERN.match(version):
+        raise RuntimeError(f"{IMAGE_VERSION_FILE} holds {version!r}, which is not a release version")
+
+    for directory in LIVE_IMAGE_DIRS:
+        if all(os.path.isfile(os.path.join(directory, name)) for name in IMAGE_FILES):
+            return directory, version
+    raise RuntimeError(
+        "the live medium's system image was not found (looked for "
+        f"{', '.join(IMAGE_FILES)} in {', '.join(LIVE_IMAGE_DIRS)}). "
+        "If this session was started with 'toram', restart from the normal menu "
+        "entry to install."
+    )
+
+
+def copy_image_file(source, destination, report):
+    """Copy one image file and flush it to disk; report(done_bytes) as it goes."""
+    expected = os.path.getsize(source)
+    done = 0
+    with open(source, "rb") as src, open(destination, "wb") as dst:
+        while True:
+            chunk = src.read(IMAGE_COPY_CHUNK)
+            if not chunk:
+                break
+            dst.write(chunk)
+            done += len(chunk)
+            report(done)
+        dst.flush()
+        os.fsync(dst.fileno())
+    if done != expected:
+        raise RuntimeError(f"copied {done} of {expected} bytes of {source}")
+    os.chmod(destination, 0o644)
+
+
 def install_to_disk(target_disk, grub_password_hash=None):
     if os.geteuid() != 0:
         raise PermissionError("Installer must run as root")
@@ -282,18 +367,34 @@ def install_to_disk(target_disk, grub_password_hash=None):
             "session is running from. Choose the computer's internal drive."
         )
 
-    print(f"[INSTALL] Target disk selected: {target_disk}", file=sys.stderr)
+    size_bytes = disk_size_bytes(target_disk)
+    if size_bytes < MIN_DISK_BYTES:
+        raise ValueError(
+            f"Refusing to install to {target_disk}: {size_bytes // (1024 * 1024)} MiB is smaller than the "
+            f"{MIN_DISK_BYTES // (1024 ** 3)} GiB minimum, which holds two system images."
+        )
+
+    # Everything the new disk needs is found before anything is erased, so a
+    # broken medium fails here and not halfway through with a wiped disk.
+    image_dir, version = locate_running_image()
+    for required in (GRUB_CFG_TEMPLATE, BOOT_SLOTS_HELPER):
+        if not os.path.isfile(required):
+            raise RuntimeError(f"{required} is missing from this image; it cannot install a bootable disk.")
+
+    print(f"[INSTALL] Target disk selected: {target_disk}; system image {version} from {image_dir}",
+          file=sys.stderr)
     write_status("running", f"Preparing target disk {target_disk}...", 10)
 
     write_status("running", "Unmounting target partitions...", 15)
     run_cmd(["swapoff", "-a"], check=False)
-    run_cmd(["umount", "-R", "/mnt/target_kiosk"], check=False)
+    for mount_point in (TARGET_ROOT_MOUNT, TARGET_ESP_MOUNT, TARGET_DATA_MOUNT):
+        run_cmd(["umount", "-R", mount_point], check=False)
     for part in range(1, 16):
         p_name = f"{target_disk}p{part}" if ("nvme" in target_disk or "mmcblk" in target_disk) else f"{target_disk}{part}"
         if os.path.exists(p_name):
             run_cmd(["umount", "-f", p_name], check=False)
 
-    write_status("running", "Creating GPT partition table (BIOS & UEFI compatible)...", 25)
+    write_status("running", "Creating GPT partition table (BIOS & UEFI compatible)...", 20)
     run_cmd(["wipefs", "-a", "-f", target_disk], check=False)
     run_cmd(["parted", "-s", target_disk, "mklabel", "gpt"])
     # Partition 1: BIOS boot partition for legacy GRUB embedding (1MiB - 2MiB)
@@ -302,28 +403,31 @@ def install_to_disk(target_disk, grub_password_hash=None):
     # Partition 2: EFI System Partition (2MiB - 514MiB)
     run_cmd(["parted", "-s", target_disk, "mkpart", "ESP", "fat32", "2MiB", "514MiB"])
     run_cmd(["parted", "-s", target_disk, "set", "2", "esp", "on"])
-    # Partition 3: Linux Root Filesystem (514MiB - 513MiB from the end)
+    # Partition 3: the image store (514MiB - 513MiB from the end). It holds the
+    # boot menu and whole system images as files, never a root filesystem:
+    #   boot/grub/                grub.cfg, grubenv, the boot-menu password
+    #   images/<version>/         filesystem.squashfs, vmlinuz, initrd.img
     # The "--" is required, not stylistic: the end offset is negative (measured
     # back from the end of the disk) and parted's option parser otherwise reads
     # "-513MiB" as a bundle of single-letter flags and aborts.
     run_cmd(["parted", "-s", target_disk, "--", "mkpart", "ROOT", "ext4", "514MiB", "-513MiB"])
     # Partition 4: the only writable-across-reboots area on the machine.
     #
-    # The installed system runs with overlayroot="tmpfs", so every write to /
-    # lands in a RAM overlay and is gone at power-off. That is the whole point
-    # for user state, but it also silently discarded the device token: a
-    # workstation enrolled *after* installation came back unenrolled on the next
-    # boot, with nothing in the UI to say so. /etc/labkiosk is mounted from here
-    # instead, so the enrolment survives while the rest of the OS stays
-    # immutable. 512 MiB is far more than the config needs and keeps the
-    # partition comfortably alignable.
+    # The installed system runs from its squashfs under a RAM overlay, so every
+    # write to / is gone at power-off. That is the whole point for user state,
+    # but it would also discard the device token: a workstation enrolled *after*
+    # installation would come back unenrolled on the next boot, with nothing in
+    # the UI to say so. /etc/labkiosk is mounted from here instead (by
+    # etc-labkiosk.mount in the image), so the enrolment survives while the rest
+    # of the OS stays immutable. 512 MiB is far more than the config needs and
+    # keeps the partition comfortably alignable.
     run_cmd(["parted", "-s", target_disk, "--", "mkpart", "DATA", "ext4", "-512MiB", "100%"])
     time.sleep(2)
     run_cmd(["partprobe", target_disk], check=False)
     time.sleep(1)
 
     # Partition 1 is the bios_grub area: it holds no filesystem and is never
-    # mounted, so only the ESP and ROOT node names are needed here.
+    # mounted, so only the ESP, ROOT and DATA node names are needed here.
     is_p_style = "nvme" in target_disk or "mmcblk" in target_disk or target_disk[-1].isdigit()
     part_esp  = f"{target_disk}p2" if is_p_style else f"{target_disk}2"
     part_root = f"{target_disk}p3" if is_p_style else f"{target_disk}3"
@@ -334,294 +438,77 @@ def install_to_disk(target_disk, grub_password_hash=None):
             break
         time.sleep(0.5)
 
-    write_status("running", "Formatting file systems (FAT32 & ext4)...", 40)
+    write_status("running", "Formatting file systems (FAT32 & ext4)...", 25)
     run_cmd(["mkfs.vfat", "-F", "32", "-n", "ESP", part_esp])
     run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_ROOT", part_root])
     run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_DATA", part_data])
 
-    # Mount ROOT filesystem only (DO NOT mount EFI yet to prevent rsync mountpoint conflict)
-    mount_dir = "/mnt/target_kiosk"
-    efi_dir = os.path.join(mount_dir, "boot", "efi")
-    data_dir = os.path.join(mount_dir, "etc", "labkiosk")
-    os.makedirs(mount_dir, exist_ok=True)
-    run_cmd(["umount", "-R", mount_dir], check=False)
+    root_dir = TARGET_ROOT_MOUNT
+    esp_dir = TARGET_ESP_MOUNT
+    data_dir = TARGET_DATA_MOUNT
+    boot_dir = os.path.join(root_dir, "boot")
+    grub_dir = os.path.join(boot_dir, "grub")
 
     def cleanup_mounts():
         run_cmd(["sync"], check=False)
-        for pseudo in ["run", "sys", "proc", "dev"]:
-            target_p = os.path.join(mount_dir, pseudo)
-            run_cmd(["umount", "-R", target_p], check=False)
-            run_cmd(["umount", "-l", target_p], check=False)
-        run_cmd(["umount", "-R", data_dir], check=False)
-        run_cmd(["umount", "-l", data_dir], check=False)
-        run_cmd(["umount", "-R", efi_dir], check=False)
-        run_cmd(["umount", "-l", efi_dir], check=False)
-        run_cmd(["umount", "-R", mount_dir], check=False)
-        run_cmd(["umount", "-l", mount_dir], check=False)
+        for mount_point in (data_dir, esp_dir, root_dir):
+            run_cmd(["umount", "-R", mount_point], check=False)
+            run_cmd(["umount", "-l", mount_point], check=False)
         run_cmd(["sync"], check=False)
 
     try:
-        run_cmd(["mount", part_root, mount_dir])
+        for device, mount_point in ((part_root, root_dir), (part_esp, esp_dir), (part_data, data_dir)):
+            os.makedirs(mount_point, exist_ok=True)
+            run_cmd(["mount", device, mount_point])
 
-        write_status("running", "Copying Lab Kiosk OS files to internal drive...", 55)
-        exclude_args = [
-            "--exclude=/proc/**",
-            "--exclude=/sys/**",
-            "--exclude=/dev/**",
-            "--exclude=/run/**",
-            "--exclude=/tmp/**",
-            "--exclude=/mnt/**",
-            "--exclude=/media/**",
-            "--exclude=/lost+found",
-            "--exclude=/boot/efi/**",
-            "--exclude=/live/**",
-        ]
-        # Copy rootfs cleanly into fresh ext4 partition without --delete
-        rsync_cmd = ["rsync", "-aHAX"] + exclude_args + ["/", mount_dir + "/"]
-        run_cmd(rsync_cmd)
+        # Only root may change the image store; everyone may read it, which is
+        # how the agent reads the boot-menu password digest to check the
+        # administrator password.
+        os.chmod(root_dir, 0o755)
 
-        # Mount EFI partition into target AFTER rootfs copy completes
-        os.makedirs(efi_dir, exist_ok=True)
-        run_cmd(["mount", part_esp, efi_dir])
+        image_dest = os.path.join(root_dir, "images", version)
+        os.makedirs(image_dest, mode=0o755)
+        os.chmod(os.path.join(root_dir, "images"), 0o755)
+        total = sum(os.path.getsize(os.path.join(image_dir, name)) for name in IMAGE_FILES)
+        copied_before = 0
+        for name in IMAGE_FILES:
+            source = os.path.join(image_dir, name)
 
-        # Same ordering rule for the persistent data partition: mount it only after
-        # rsync, never before, or the copy trips over its own mount point.
-        #
-        # Seeding matters as much as mounting. rsync has just placed any existing
-        # enrolment at <target>/etc/labkiosk/config.json, and this partition is
-        # about to be mounted over exactly that path -- so without copying the
-        # config across, installing a workstation that was enrolled from the live
-        # session would produce a machine that boots up unenrolled.
-        os.makedirs(data_dir, exist_ok=True)
-        run_cmd(["mount", part_data, data_dir])
+            def report(done, base=copied_before):
+                percent = 30 + int(40 * (base + done) / max(total, 1))
+                write_status("running", f"Copying the Lab Kiosk OS {version} system image to the drive...", percent)
 
-        source_config_dir = "/etc/labkiosk"
-        data_conn_dir = os.path.join(data_dir, "system-connections")
-        os.makedirs(data_conn_dir, exist_ok=True)
-        os.chmod(data_conn_dir, 0o700)
-        os.chown(data_conn_dir, 0, 0)
+            copy_image_file(source, os.path.join(image_dest, name), report)
+            copied_before += os.path.getsize(source)
+        print(f"[INSTALL] Copied system image {version} ({total} bytes) to {image_dest}.", file=sys.stderr)
 
-        # Carry the NetworkManager profiles configured in the live session (Wi-Fi
-        # keys included) onto the data partition, which fstab bind-mounts over
-        # /etc/NetworkManager/system-connections: under overlayroot that is the
-        # only place a profile survives a reboot.
-        nm_dirs = ["/etc/NetworkManager/system-connections", os.path.join(source_config_dir, "system-connections")]
-        for nm_dir in nm_dirs:
-            if os.path.isdir(nm_dir):
-                for entry in os.listdir(nm_dir):
-                    src_conn = os.path.join(nm_dir, entry)
-                    if os.path.isfile(src_conn) and not os.path.islink(src_conn):
-                        dst_conn = os.path.join(data_conn_dir, entry)
-                        shutil.copy2(src_conn, dst_conn)
-                        os.chmod(dst_conn, 0o600)
-                        os.chown(dst_conn, 0, 0)
-                        print(f"[INSTALL] Carried NetworkManager connection {entry} onto data partition.",
-                              file=sys.stderr)
+        write_status("running", "Saving network and enrolment settings...", 72)
+        seed_data_partition(data_dir)
 
-        if os.path.isdir(source_config_dir):
-            stat_info = os.stat(source_config_dir)
-            for entry in os.listdir(source_config_dir):
-                src = os.path.join(source_config_dir, entry)
-                if not os.path.isfile(src):
-                    continue
-                dest = os.path.join(data_dir, entry)
-                shutil.copy2(src, dest)
-                # copy2 carries the mode (0600) but not the owner, and this runs as
-                # root -- so without this chown the agent, which runs as the kiosk
-                # user, could not read back the very config it just enrolled with.
-                os.chown(dest, stat_info.st_uid, stat_info.st_gid)
-                print(f"[INSTALL] Carried enrolment file {entry} onto the data partition.",
-                      file=sys.stderr)
-            os.chown(data_dir, stat_info.st_uid, stat_info.st_gid)
-        os.chmod(data_dir, 0o700)
-
-        # Prove the kiosk user can actually write here, rather than letting the
-        # workstation discover it at enrolment with a bare "Permission denied"
-        # on a machine that has no shell to investigate it from.
-        probe = os.path.join(data_dir, ".labkiosk-write-probe")
-        probe_result = subprocess.run(
-            ["runuser", "-u", "kiosk", "--", "touch", probe],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        if probe_result.returncode != 0:
-            owner = os.stat(data_dir)
-            raise RuntimeError(
-                f"the data partition mounted at /etc/labkiosk is not writable by the kiosk user "
-                f"(owned by {owner.st_uid}:{owner.st_gid}, mode {owner.st_mode & 0o777:04o}): "
-                f"{probe_result.stderr.strip()}"
-            )
-        os.unlink(probe)
-        print("[INSTALL] Verified the kiosk user can write to the data partition.", file=sys.stderr)
-
-        # Mount point for the system-connections bind mount declared in fstab.
-        #
-        # The proxy is deliberately not written into /etc/environment: proxy.json
-        # was carried onto this partition by the loop above, and the agent applies
-        # it to itself and to Chromium's policy at every start. A copy baked into
-        # the read-only root could never be switched off again from the wizard.
-        os.makedirs(os.path.join(mount_dir, "etc", "NetworkManager", "system-connections"), exist_ok=True)
-
-        write_status("running", "Configuring boot configuration and partitions...", 75)
-        root_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_root])
-        efi_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_esp])
-        data_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_data])
-
-        # An empty answer from blkid would be written as a bare "UUID=" line.
-        # With nofail on the data entry that failure is completely silent at
-        # boot: the workstation comes up, enrols into the RAM overlay and
-        # forgets it again at the next power-off. Refuse to produce that disk.
-        for name, value, device in (
-            ("root", root_uuid, part_root),
-            ("ESP", efi_uuid, part_esp),
-            ("data", data_uuid, part_data),
-        ):
-            if not value:
-                raise RuntimeError(
-                    f"blkid returned no UUID for the {name} partition ({device}); "
-                    "the installed system would not be able to mount it."
-                )
-
-        # nofail on /etc/labkiosk is deliberate: if that partition is ever missing or
-        # unreadable the workstation must still boot into the kiosk and fall back to
-        # the setup wizard, rather than drop the class into an emergency shell.
-        fstab_content = f"""# Lab Kiosk OS Persistent Disk fstab
-UUID={root_uuid}  /                                  ext4  errors=remount-ro                0  1
-UUID={efi_uuid}   /boot/efi                          vfat  umask=0077                       0  2
-UUID={data_uuid}  /etc/labkiosk                      ext4  defaults,nofail                  0  2
-/etc/labkiosk/system-connections  /etc/NetworkManager/system-connections  none  bind,nofail  0  0
-tmpfs             /tmp                               tmpfs defaults,noatime,mode=1777       0  0
-"""
-        fstab_path = os.path.join(mount_dir, "etc", "fstab")
-        with open(fstab_path, "w") as f:
-            f.write(fstab_content)
-
-        # Language, region, timezone and keyboard, as chosen in the wizard's
-        # first step. /etc/localtime, /etc/default/locale and
-        # /etc/default/keyboard live on the root filesystem rather than on
-        # LABKIOSK_DATA, so they have to be written while the target is still
-        # mounted; generating the locale here also keeps it off the RAM overlay,
-        # where it would have to be rebuilt at every boot.
-        localization_file = os.path.join(data_dir, "localization.json")
-        localization = {}
-        if os.path.isfile(localization_file):
-            try:
-                with open(localization_file, "r", encoding="utf-8") as handle:
-                    loaded = json.load(handle)
-                localization = loaded if isinstance(loaded, dict) else {}
-            except (OSError, ValueError) as err:
-                print(f"[INSTALL] WARNING: could not read {localization_file}: {err}", file=sys.stderr)
-
-        localization_args = []
-        for flag, key in (("--timezone", "timezone"), ("--locale", "locale"),
-                          ("--ui-language", "uiLanguage"), ("--keymap", "keymap"),
-                          ("--ntp-server", "ntpServer")):
-            value = str(localization.get(key, "") or "").strip()
-            if value:
-                localization_args += [flag, value]
-        if localization.get("keymap") and str(localization.get("keymapVariant", "") or "").strip():
-            localization_args += ["--keymap-variant", str(localization["keymapVariant"]).strip()]
-
-        if localization_args and os.path.isfile(LOCALIZATION_HELPER):
-            proc = subprocess.run(
-                [LOCALIZATION_HELPER, "--root", mount_dir] + localization_args,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
-            for line in proc.stderr.strip().splitlines():
-                print(f"[INSTALL] {line}", file=sys.stderr)
-            if proc.returncode != 0:
-                # Not fatal: a workstation with the wrong clock is recoverable
-                # from the wizard, an interrupted installation is not.
-                print(f"[INSTALL] WARNING: language and region were not applied to the target "
-                      f"({proc.stdout.strip() or proc.returncode}).", file=sys.stderr)
-            else:
-                print("[INSTALL] Applied the chosen language, region and timezone to the target.",
-                      file=sys.stderr)
-
-        overlayroot_conf = os.path.join(mount_dir, "etc", "overlayroot.conf")
-        with open(overlayroot_conf, "w") as f:
-            # recurse=0 has to travel inside the value. overlayroot reads only
-            # the "overlayroot" and "overlayroot_cfgdisk" variables from this
-            # file, and its default (recurse=1) rewrites every fstab entry into
-            # an overlay with a tmpfs upper layer -- LABKIOSK_DATA included, so
-            # the workstation would enrol into RAM and forget it at the next
-            # power-off while /etc/labkiosk still looked like a real mount.
-            f.write('overlayroot="tmpfs:recurse=0"\n')
-
-        # Ensure a clean machine-id on a fresh internal installation. systemd
-        # treats an *empty* /etc/machine-id as "uninitialised" and generates a new
-        # one on first boot; a file holding anything else, a bare newline included,
-        # is not that marker.
-        try:
-            with open(os.path.join(mount_dir, "etc", "machine-id"), "w") as f:
-                f.truncate(0)
-        except OSError as err:
-            print(f"[INSTALL] WARNING: could not reset machine-id: {err}", file=sys.stderr)
-
-        # Mark as permanently installed system
-        try:
-            with open(os.path.join(mount_dir, "etc", "labkiosk-installed"), "w") as f:
-                f.write("installed\n")
-        except Exception:
-            pass
-
-        # Boot-menu password for THIS installation.
-        #
-        # Deliberately applied here rather than baked into the ISO. A hash compiled
-        # into the image would be one password shared by every customer who ever
-        # received that ISO: a leak anywhere would compromise all of them, and it
-        # could not be rotated on machines already deployed. Applying it per
-        # installation keeps the image free of secrets and gives each site its own.
-        #
-        # Booting stays unattended either way: 02-security.hook.chroot marks every
-        # generated menu entry --unrestricted unconditionally, so `set superusers`
-        # here gates only the edit (`e`) and command-line (`c`) keys.
-        grub_password_file = os.path.join(mount_dir, "etc", "grub.d", "01_labkiosk_password")
-        if grub_password_hash:
-            os.makedirs(os.path.dirname(grub_password_file), exist_ok=True)
-            with open(grub_password_file, "w") as handle:
-                handle.write("#!/bin/sh\n")
-                handle.write("exec tail -n +3 $0\n")
-                handle.write('set superusers="labkiosk"\n')
-                handle.write(f"password_pbkdf2 labkiosk {grub_password_hash}\n")
-            os.chmod(grub_password_file, 0o755)
-            print("[INSTALL] Boot-menu password applied to the installed system.", file=sys.stderr)
-        else:
-            # Remove any password inherited from the live medium, so an unlocked
-            # install is visibly unlocked rather than silently carrying whatever
-            # hash the ISO happened to be built with.
-            if os.path.exists(grub_password_file):
-                os.unlink(grub_password_file)
-            print(
-                "[INSTALL] WARNING: no boot-menu password supplied. A user at the keyboard "
-                "can edit the GRUB entry and boot with init=/bin/sh.",
-                file=sys.stderr,
-            )
-
-        write_status("running", "Installing GRUB bootloader to internal storage...", 85)
-        for pseudo in ["dev", "proc", "sys", "run"]:
-            target_p = os.path.join(mount_dir, pseudo)
-            os.makedirs(target_p, exist_ok=True)
-            run_cmd(["mount", "--rbind", f"/{pseudo}", target_p])
-            run_cmd(["mount", "--make-rslave", target_p], check=False)
-
+        write_status("running", "Installing GRUB bootloader to internal storage...", 80)
         uefi_installed = False
         bios_installed = False
         bootloader_errors = []
 
-        # Install UEFI bootloader (both primary entry with --no-nvram and removable fallback)
+        # The boot loader is installed from this live session, which carries the
+        # same GRUB packages as every image; there is no root filesystem on the
+        # disk to chroot into any more. --boot-directory puts grub.cfg and the
+        # modules on the image store, outside every image.
         try:
             run_cmd([
-                "chroot", mount_dir, "grub-install",
+                "grub-install",
                 "--target=x86_64-efi",
-                "--efi-directory=/boot/efi",
+                f"--efi-directory={esp_dir}",
+                f"--boot-directory={boot_dir}",
                 "--bootloader-id=LabKiosk",
                 "--no-nvram",
                 "--recheck",
             ], check=True)
             run_cmd([
-                "chroot", mount_dir, "grub-install",
+                "grub-install",
                 "--target=x86_64-efi",
-                "--efi-directory=/boot/efi",
+                f"--efi-directory={esp_dir}",
+                f"--boot-directory={boot_dir}",
                 "--removable",
                 "--recheck",
             ], check=True)
@@ -634,8 +521,9 @@ tmpfs             /tmp                               tmpfs defaults,noatime,mode
         if not ("nvme" in target_disk or "mmcblk" in target_disk):
             try:
                 run_cmd([
-                    "chroot", mount_dir, "grub-install",
+                    "grub-install",
                     "--target=i386-pc",
+                    f"--boot-directory={boot_dir}",
                     target_disk,
                     "--recheck",
                 ], check=True)
@@ -646,7 +534,7 @@ tmpfs             /tmp                               tmpfs defaults,noatime,mode
 
         # Verify at least one bootloader succeeded, or verify boot files exist on ESP
         has_efi_files = False
-        efi_check_dir = os.path.join(efi_dir, "EFI")
+        efi_check_dir = os.path.join(esp_dir, "EFI")
         if os.path.isdir(efi_check_dir):
             for root, dirs, files in os.walk(efi_check_dir):
                 for f in files:
@@ -662,8 +550,23 @@ tmpfs             /tmp                               tmpfs defaults,noatime,mode
                 f"Details: {'; '.join(bootloader_errors)}"
             )
 
-        # Generate GRUB configuration
-        run_cmd(["chroot", mount_dir, "update-grub"])
+        write_status("running", "Configuring the boot menu...", 90)
+        # One menu for every image: it reads which one to boot from grubenv, so
+        # an update never has to regenerate it.
+        os.makedirs(grub_dir, exist_ok=True)
+        shutil.copyfile(GRUB_CFG_TEMPLATE, os.path.join(grub_dir, "grub.cfg"))
+        os.chmod(os.path.join(grub_dir, "grub.cfg"), 0o644)
+        write_grub_password(grub_dir, grub_password_hash)
+        write_data_partition_id(grub_dir, part_data)
+
+        proc = subprocess.run(
+            [BOOT_SLOTS_HELPER, "init", version, "--boot-dir", grub_dir],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for line in proc.stderr.strip().splitlines():
+            print(f"[INSTALL] {line}", file=sys.stderr)
+        if proc.returncode != 0:
+            raise RuntimeError(f"could not write the boot environment: {proc.stdout.strip() or proc.returncode}")
 
         write_status("running", "Finalizing and synchronizing storage...", 95)
     finally:
@@ -671,6 +574,174 @@ tmpfs             /tmp                               tmpfs defaults,noatime,mode
 
     write_status("completed", "Lab Kiosk OS successfully installed to internal drive!", 100)
     print("[INSTALL] SUCCESS! Installation complete.", file=sys.stderr)
+
+
+def disk_size_bytes(target_disk):
+    size_file = os.path.join("/sys/class/block", os.path.basename(target_disk), "size")
+    try:
+        with open(size_file, "r") as handle:
+            return int(handle.read().strip()) * 512
+    except (OSError, ValueError) as err:
+        raise RuntimeError(f"cannot read the size of {target_disk}: {err}") from err
+
+
+def copy_regular_file(source, destination):
+    """
+    Copy source if it is a regular file, never through a symlink.
+
+    This runs as root (kiosk may start the installer through sudo) over
+    /etc/labkiosk, which kiosk owns: a link planted there, say to /etc/shadow,
+    must not be read as root and handed back to kiosk on the data partition.
+    O_NOFOLLOW and fstat on the open file leave no window to swap one in.
+    Returns False for anything that is not a regular file.
+    """
+    try:
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as err:
+        if err.errno == errno.ELOOP:
+            print(f"[INSTALL] Skipped {source}: a symbolic link, not a file.", file=sys.stderr)
+            return False
+        raise
+    # fstat before fdopen: fdopen refuses a directory (system-connections sits
+    # beside the files) with "Is a directory", and that must be a skip.
+    try:
+        info = os.fstat(fd)
+    except OSError:
+        os.close(fd)
+        raise
+    if not stat.S_ISREG(info.st_mode):
+        os.close(fd)
+        return False
+    with os.fdopen(fd, "rb") as src:
+        with open(destination, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        os.chmod(destination, stat.S_IMODE(info.st_mode))
+        os.utime(destination, ns=(info.st_atime_ns, info.st_mtime_ns))
+    return True
+
+
+def seed_data_partition(data_dir):
+    """
+    Carry the live session's enrolment and network profiles onto LABKIOSK_DATA.
+
+    Without this, installing a workstation that was enrolled from the live
+    session would produce a machine that boots up unenrolled.
+    """
+    source_config_dir = "/etc/labkiosk"
+    data_conn_dir = os.path.join(data_dir, "system-connections")
+    os.makedirs(data_conn_dir, exist_ok=True)
+    os.chmod(data_conn_dir, 0o700)
+    os.chown(data_conn_dir, 0, 0)
+
+    # Carry the NetworkManager profiles configured in the live session (Wi-Fi
+    # keys included) onto the data partition, which the installed system
+    # bind-mounts over /etc/NetworkManager/system-connections: under the RAM
+    # overlay that is the only place a profile survives a reboot.
+    nm_dirs = ["/etc/NetworkManager/system-connections", os.path.join(source_config_dir, "system-connections")]
+    for nm_dir in nm_dirs:
+        if os.path.isdir(nm_dir):
+            for entry in os.listdir(nm_dir):
+                src_conn = os.path.join(nm_dir, entry)
+                dst_conn = os.path.join(data_conn_dir, entry)
+                if copy_regular_file(src_conn, dst_conn):
+                    os.chmod(dst_conn, 0o600)
+                    os.chown(dst_conn, 0, 0)
+                    print(f"[INSTALL] Carried NetworkManager connection {entry} onto data partition.",
+                          file=sys.stderr)
+
+    # The proxy is deliberately not written into /etc/environment: proxy.json
+    # is carried onto this partition here, and the agent applies it to itself
+    # and to Chromium's policy at every start. Language, region, timezone and
+    # keyboard travel the same way, in localization.json: the agent re-applies
+    # them at every start (apply_saved_localization()), so nothing is written
+    # into a system image, which an update replaces.
+    if os.path.isdir(source_config_dir):
+        stat_info = os.stat(source_config_dir)
+        for entry in os.listdir(source_config_dir):
+            src = os.path.join(source_config_dir, entry)
+            dest = os.path.join(data_dir, entry)
+            if not copy_regular_file(src, dest):
+                continue
+            # The copy carries the mode (0600) but not the owner, and this runs as
+            # root -- so without this chown the agent, which runs as the kiosk
+            # user, could not read back the very config it just enrolled with.
+            os.chown(dest, stat_info.st_uid, stat_info.st_gid)
+            print(f"[INSTALL] Carried enrolment file {entry} onto the data partition.",
+                  file=sys.stderr)
+        os.chown(data_dir, stat_info.st_uid, stat_info.st_gid)
+    os.chmod(data_dir, 0o700)
+
+    # Prove the kiosk user can actually write here, rather than letting the
+    # workstation discover it at enrolment with a bare "Permission denied"
+    # on a machine that has no shell to investigate it from.
+    probe = os.path.join(data_dir, ".labkiosk-write-probe")
+    probe_result = subprocess.run(
+        ["runuser", "-u", "kiosk", "--", "touch", probe],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if probe_result.returncode != 0:
+        owner = os.stat(data_dir)
+        raise RuntimeError(
+            f"the data partition is not writable by the kiosk user "
+            f"(owned by {owner.st_uid}:{owner.st_gid}, mode {owner.st_mode & 0o777:04o}): "
+            f"{probe_result.stderr.strip()}"
+        )
+    os.unlink(probe)
+    print("[INSTALL] Verified the kiosk user can write to the data partition.", file=sys.stderr)
+
+
+def write_grub_password(grub_dir, grub_password_hash):
+    """
+    Boot-menu password for THIS installation.
+
+    Deliberately applied here rather than baked into the ISO. A hash compiled
+    into the image would be one password shared by every customer who ever
+    received that ISO: a leak anywhere would compromise all of them, and it
+    could not be rotated on machines already deployed. Applying it per
+    installation keeps the image free of secrets and gives each site its own.
+
+    It lives in boot/grub on the image store, outside every system image, so an
+    update keeps it. grub.cfg sources it; the agent reads the same digest to
+    check the administrator password (GRUB_PASSWORD_FILE in agent.py).
+
+    Booting stays unattended either way: every entry in grub.cfg is
+    --unrestricted, so `set superusers` gates only the edit (`e`) and
+    command-line (`c`) keys.
+    """
+    password_file = os.path.join(grub_dir, GRUB_PASSWORD_FILE_NAME)
+    if grub_password_hash:
+        with open(password_file, "w") as handle:
+            handle.write('set superusers="labkiosk"\n')
+            handle.write(f"password_pbkdf2 labkiosk {grub_password_hash}\n")
+        os.chmod(password_file, 0o644)
+        print("[INSTALL] Boot-menu password applied to the installed system.", file=sys.stderr)
+    else:
+        print(
+            "[INSTALL] WARNING: no boot-menu password supplied. A user at the keyboard "
+            "can edit the GRUB entry and boot with init=/bin/sh.",
+            file=sys.stderr,
+        )
+
+
+def write_data_partition_id(grub_dir, part_data):
+    """
+    Pin /etc/labkiosk to THIS disk's data partition.
+
+    grub.cfg sources the file and passes labkiosk.data=<uuid> to the kernel;
+    labkiosk-data-generator mounts exactly that UUID. Mounting by label would
+    let any USB stick formatted as LABKIOSK_DATA supply the agent's enrolment,
+    proxy and Wi-Fi profiles. Like the boot password it lives in boot/grub,
+    outside every system image, so an update keeps it.
+    """
+    data_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_data])
+    if not FS_UUID_PATTERN.match(data_uuid):
+        raise RuntimeError(f"blkid returned no usable UUID for the data partition ({part_data}): {data_uuid!r}")
+    id_file = os.path.join(grub_dir, DATA_ID_FILE_NAME)
+    with open(id_file, "w") as handle:
+        handle.write(f'set data_uuid="{data_uuid}"\n')
+    os.chmod(id_file, 0o644)
+    print(f"[INSTALL] Data partition pinned by UUID {data_uuid}.", file=sys.stderr)
+
 
 if __name__ == "__main__":
     import argparse
