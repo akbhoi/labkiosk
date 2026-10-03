@@ -1392,6 +1392,38 @@ class DataPartitionPinnedByUuid(unittest.TestCase):
                     self.assertFalse(os.path.exists(os.path.join(grub_dir, installer.DATA_ID_FILE_NAME)))
 
 
+class SeedingNeverFollowsLinks(unittest.TestCase):
+    """The installer copies kiosk-owned /etc/labkiosk as root; a planted link must not leak root's files."""
+
+    def test_a_regular_file_is_copied_with_its_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dest = os.path.join(tmp, "config.json"), os.path.join(tmp, "out.json")
+            with open(src, "w", encoding="utf-8") as handle:
+                handle.write("{}")
+            os.chmod(src, 0o600)
+            self.assertTrue(installer.copy_regular_file(src, dest))
+            with open(dest, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "{}")
+            self.assertEqual(os.stat(dest).st_mode & 0o777, 0o600)
+
+    def test_a_symbolic_link_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = os.path.join(tmp, "shadow")
+            with open(secret, "w", encoding="utf-8") as handle:
+                handle.write("root:secret")
+            link, dest = os.path.join(tmp, "x"), os.path.join(tmp, "out")
+            os.symlink(secret, link)
+            self.assertFalse(installer.copy_regular_file(link, dest))
+            self.assertFalse(os.path.exists(dest))
+
+    def test_a_fifo_is_skipped_without_blocking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fifo, dest = os.path.join(tmp, "fifo"), os.path.join(tmp, "out")
+            os.mkfifo(fifo)
+            self.assertFalse(installer.copy_regular_file(fifo, dest))
+            self.assertFalse(os.path.exists(dest))
+
+
 class BootConfirmation(unittest.TestCase):
     """labkiosk-boot-slots check, against a boot partition in a temporary directory."""
 

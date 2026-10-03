@@ -6,11 +6,13 @@ Installs the running Lab Kiosk OS to an internal hard drive, SSD, or NVMe disk.
 
 import sys
 import os
+import errno
 import json
 import subprocess
 import time
 import shutil
 import re
+import stat
 
 STATUS_FILE = "/tmp/labkiosk-install-status.json"
 
@@ -583,6 +585,34 @@ def disk_size_bytes(target_disk):
         raise RuntimeError(f"cannot read the size of {target_disk}: {err}") from err
 
 
+def copy_regular_file(source, destination):
+    """
+    Copy source if it is a regular file, never through a symlink.
+
+    This runs as root (kiosk may start the installer through sudo) over
+    /etc/labkiosk, which kiosk owns: a link planted there, say to /etc/shadow,
+    must not be read as root and handed back to kiosk on the data partition.
+    O_NOFOLLOW and fstat on the open file leave no window to swap one in.
+    Returns False for anything that is not a regular file.
+    """
+    try:
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as err:
+        if err.errno == errno.ELOOP:
+            print(f"[INSTALL] Skipped {source}: a symbolic link, not a file.", file=sys.stderr)
+            return False
+        raise
+    with os.fdopen(fd, "rb") as src:
+        info = os.fstat(src.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            return False
+        with open(destination, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        os.chmod(destination, stat.S_IMODE(info.st_mode))
+        os.utime(destination, ns=(info.st_atime_ns, info.st_mtime_ns))
+    return True
+
+
 def seed_data_partition(data_dir):
     """
     Carry the live session's enrolment and network profiles onto LABKIOSK_DATA.
@@ -605,9 +635,8 @@ def seed_data_partition(data_dir):
         if os.path.isdir(nm_dir):
             for entry in os.listdir(nm_dir):
                 src_conn = os.path.join(nm_dir, entry)
-                if os.path.isfile(src_conn) and not os.path.islink(src_conn):
-                    dst_conn = os.path.join(data_conn_dir, entry)
-                    shutil.copy2(src_conn, dst_conn)
+                dst_conn = os.path.join(data_conn_dir, entry)
+                if copy_regular_file(src_conn, dst_conn):
                     os.chmod(dst_conn, 0o600)
                     os.chown(dst_conn, 0, 0)
                     print(f"[INSTALL] Carried NetworkManager connection {entry} onto data partition.",
@@ -623,11 +652,10 @@ def seed_data_partition(data_dir):
         stat_info = os.stat(source_config_dir)
         for entry in os.listdir(source_config_dir):
             src = os.path.join(source_config_dir, entry)
-            if not os.path.isfile(src):
-                continue
             dest = os.path.join(data_dir, entry)
-            shutil.copy2(src, dest)
-            # copy2 carries the mode (0600) but not the owner, and this runs as
+            if not copy_regular_file(src, dest):
+                continue
+            # The copy carries the mode (0600) but not the owner, and this runs as
             # root -- so without this chown the agent, which runs as the kiosk
             # user, could not read back the very config it just enrolled with.
             os.chown(dest, stat_info.st_uid, stat_info.st_gid)
