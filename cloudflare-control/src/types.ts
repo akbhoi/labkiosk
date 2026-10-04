@@ -157,6 +157,19 @@ export interface HomepageBlock {
   url: string | null;
 }
 
+/** An error or warning a workstation reported (`workstation_issues`, 0016). */
+export interface WorkstationIssue {
+  id: string;
+  client_id: string;
+  severity: "error" | "warning";
+  kind: string;
+  image_version?: string | null;
+  details?: string | null;
+  /** When the workstation recorded it, by its own clock. */
+  occurred_at: number;
+  created_at: number;
+}
+
 export interface AuditLogEntry {
   id: string;
   tenant_id?: string | null;

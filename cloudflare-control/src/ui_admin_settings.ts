@@ -48,6 +48,12 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
             Security &amp; Audit
           </span>
         </button>
+        <button type="button" class="sub-action-item" data-action="tab-issues">
+          <span class="row">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Errors &amp; Warnings
+          </span>
+        </button>
       </div>
 
       <div class="sub-section-title">Quick Shortcuts</div>
@@ -314,6 +320,30 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
         </div>
       </div>
     </div>
+
+    <!-- ============================================================== -->
+    <!-- TAB 5: ERRORS & WARNINGS                                       -->
+    <!-- ============================================================== -->
+    <div class="tab-pane" id="pane-issues">
+      <div class="card" id="section-issues">
+        <h2 class="card-title">Errors &amp; Warnings</h2>
+        <p class="card-sub">Problems workstations reported, such as a system update that failed its first start and was rolled back. Kept for 90 days.</p>
+        <div class="table-container table-scrollable">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Workstation</th>
+                <th>Problem</th>
+              </tr>
+            </thead>
+            <tbody id="workstation-issue-rows">
+              <tr><td colspan="3" class="table-empty">Loading\u2026</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -332,11 +362,12 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         "section-homepage": "homepage",
         "section-enrollment": "security",
         "section-password": "security",
-        "section-activity": "security"
+        "section-activity": "security",
+        "section-issues": "issues"
       };
 
       function switchTab(tabId) {
-        const validTabs = ["general", "domains", "homepage", "security"];
+        const validTabs = ["general", "domains", "homepage", "security", "issues"];
         if (!validTabs.includes(tabId)) tabId = "general";
 
         // Update Subpanel Tabs
@@ -658,6 +689,88 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         });
       }
 
+      const issueRows = document.getElementById("workstation-issue-rows");
+      if (issueRows) {
+        (async function loadWorkstationIssues() {
+          function placeholder(text) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 3;
+            cell.className = "table-empty";
+            cell.textContent = text;
+            row.appendChild(cell);
+            return row;
+          }
+          const labels = {
+            update_failed: "Update failed",
+            update_rolled_back: "Update rolled back",
+            boot_fallback: "Started a fallback image",
+            boot_error: "Boot record error"
+          };
+          const pad = (n) => String(n).padStart(2, "0");
+          try {
+            const res = await fetch(labkioskApi("/api/workstation-issues?limit=100"));
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            const data = await res.json();
+            const issues = Array.isArray(data.issues) ? data.issues : [];
+            issueRows.replaceChildren();
+            if (!issues.length) {
+              issueRows.appendChild(placeholder("No errors or warnings reported."));
+              return;
+            }
+            for (const issue of issues) {
+              const row = document.createElement("tr");
+
+              const when = document.createElement("td");
+              when.className = "mono text-xs nowrap";
+              // When the workstation recorded it; its clock is what the
+              // operator standing at it would have seen.
+              const date = new Date(issue.occurred_at * 1000);
+              if (isNaN(date.getTime())) {
+                when.textContent = "\u2014";
+              } else {
+                when.textContent = date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+                  " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+                when.title = date.toISOString();
+              }
+              row.appendChild(when);
+
+              const workstation = document.createElement("td");
+              const name = document.createElement("div");
+              name.className = "cell-title";
+              name.textContent = issue.client_id;
+              workstation.appendChild(name);
+              if (issue.image_version) {
+                const version = document.createElement("div");
+                version.className = "cell-sub mono";
+                version.textContent = issue.image_version;
+                workstation.appendChild(version);
+              }
+              row.appendChild(workstation);
+
+              const problem = document.createElement("td");
+              const badge = document.createElement("span");
+              badge.className = "badge " + (issue.severity === "error" ? "badge-red" : "badge-yellow");
+              badge.textContent = labels[issue.kind] || issue.kind;
+              problem.appendChild(badge);
+              if (issue.details) {
+                const detail = document.createElement("div");
+                detail.className = "cell-sub cell-detail";
+                detail.textContent = issue.details;
+                problem.appendChild(detail);
+              }
+              row.appendChild(problem);
+
+              issueRows.appendChild(row);
+            }
+          } catch (err) {
+            console.warn("Could not load errors and warnings:", err);
+            issueRows.replaceChildren();
+            issueRows.appendChild(placeholder("Could not load errors and warnings."));
+          }
+        })();
+      }
+
       const labAuditRows = document.getElementById("lab-audit-rows");
       if (labAuditRows) {
         (async function loadLabActivity() {
@@ -699,8 +812,8 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
 
               const action = document.createElement("td");
               const badge = document.createElement("span");
-              const removes = /suspend|reject|delete|remove|revoke|rotate|fail|rolled_back|error/.test(entry.action);
-              const grants = /approve|reactivate|create|add|installed/.test(entry.action);
+              const removes = /suspend|reject|delete|remove|revoke|rotate/.test(entry.action);
+              const grants = /approve|reactivate|create|add/.test(entry.action);
               badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
               // textContent throughout: details carries operator names, domains
               // and URLs that arrived from the console.

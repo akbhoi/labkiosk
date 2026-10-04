@@ -48,6 +48,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0013_retire_demo_tenant.sql` | Deletes the single `demo` organization and all its rows (data only); the worker now creates `web-demo`, `local-demo` and `docker-demo` at startup |
 | `0014_org_hub_live_state.sql` | Drops `commands`, `command_deliveries` and `client_devices.thumbnail` (live state moved to OrgHub); adds `tenants.online_workstations`, `custom_hostname_id`, `custom_hostname_status` |
 | `0015_workstation_boot_reports.sql` | `client_devices.image_version`, `update_state`, `update_error`, `update_state_at` (boot outcomes from `POST /api/devices/boot-report`) |
+| `0016_workstation_issues.sql` | `workstation_issues`: errors and warnings workstations report (Settings → Errors & Warnings), deleted after 90 days |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -155,6 +156,24 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 | `update_state` | TEXT | Last boot outcome reported: `installed`, `failed`, `rolled-back`, `fallback` or `error` |
 | `update_error` | TEXT | The reason, for `error` |
 | `update_state_at` | INTEGER | When the workstation recorded it; `0` = never. A report less than 60 s newer is ignored |
+
+### `workstation_issues`
+
+Errors and warnings workstations report, kept apart from `audit_logs` (which records what people
+did). Fed by `POST /api/devices/boot-report`; read by Settings → Errors & Warnings; the hourly cron
+deletes rows older than 90 days.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT PK | |
+| `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
+| `client_id` | TEXT | The workstation, from its device token |
+| `severity` | TEXT | `error` or `warning` (CHECK) |
+| `kind` | TEXT | `update_failed`, `update_rolled_back`, `boot_error`, `boot_fallback` |
+| `image_version` | TEXT | The image the workstation was running |
+| `details` | TEXT | One readable line; an `error`'s reason, cut to 300 characters |
+| `occurred_at` | INTEGER | When the workstation recorded it (its clock) |
+| `created_at` | INTEGER | When the Worker received it; indexed with `tenant_id` |
 
 ### `device_tokens`
 

@@ -352,8 +352,9 @@ reports "updated to <v>"
     sharing `lan_address`, `egress_ip`, `peer_port`. Phase 1 already added `image_version`,
     `update_state`, `update_error` and `update_state_at` (migration 0015), with
     `POST /api/devices/boot-report`: each installed boot's outcome (installed, failed, rolled
-    back, fallback, error) is kept there and written to the organization's audit log, so a failed
-    update is visible in the console before phase 3's update states exist;
+    back, fallback, error) is kept there, and problems are listed in `workstation_issues`
+    (migration 0016, Settings → Errors & Warnings), so a failed update is visible in the console
+    before phase 3's update states exist;
   - platform table `releases`: `version`, `channel`, `kind`, `base_version`, `manifest`,
     `signature`, `r2_prefix`, `size_bytes`, `published_at`, `revoked_at`;
   - organization settings: `update_channel` (`stable`/`beta`), `download_window`,

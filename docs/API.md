@@ -83,7 +83,8 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/enroll` | `POST` | Public / Key | Exchange organization enrollment key for persistent device token |
 | `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
-| `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error), written to the audit log |
+| `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
+| `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
 | `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending organization subdomain registration |
 | `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending organization registration |
@@ -375,10 +376,11 @@ any queued commands.
 
 What an installed workstation's last boot did with its system image, as `labkiosk-boot-slots
 check` recorded it in `/run/labkiosk-update/status.json`. The agent sends only the outcomes worth
-an administrator's attention; each new one is kept on the workstation (`client_devices.update_*`)
-and written to the organization's audit log (Settings → Security & Audit) as
-`workstation.update_installed`, `workstation.update_failed`, `workstation.update_rolled_back`,
-`workstation.boot_fallback` or `workstation.boot_error`.
+an administrator's attention; each new one is kept on the workstation (`client_devices.update_*`).
+A failure, rollback, fallback or error is also listed in `workstation_issues` (Settings → Errors &
+Warnings, `GET /api/workstation-issues`) as `update_failed`, `update_rolled_back`, `boot_error`
+(severity `error`) or `boot_fallback` (`warning`). None of it goes to the audit log, which records
+what people did.
 
 - **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
   organization and the workstation.

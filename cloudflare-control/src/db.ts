@@ -125,6 +125,18 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS workstation_issues (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('error', 'warning')),
+  kind TEXT NOT NULL,
+  image_version TEXT,
+  details TEXT,
+  occurred_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS device_tokens (
   id TEXT PRIMARY KEY,
   token_hash TEXT UNIQUE NOT NULL,
@@ -196,6 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_client_devices_tenant ON client_devices(tenant_id
 CREATE INDEX IF NOT EXISTS idx_device_tokens_tenant ON device_tokens(tenant_id, client_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_workstation_issues_tenant ON workstation_issues(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
@@ -345,6 +358,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1").run();
     // 0015: the outcome of each workstation's last boot.
     await db.prepare("SELECT image_version, update_state_at FROM client_devices LIMIT 1").run();
+    // 0016: errors and warnings workstations report.
+    await db.prepare("SELECT severity, occurred_at FROM workstation_issues LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

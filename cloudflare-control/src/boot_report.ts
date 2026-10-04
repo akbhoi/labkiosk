@@ -4,11 +4,12 @@
  * `labkiosk-boot-slots check` (root, on the workstation) writes the outcome to
  * /run/labkiosk-update/status.json; the agent sends it here with
  * POST /api/devices/boot-report. The latest outcome is kept on the
- * workstation's `client_devices` row and each new one goes to the
- * organization's audit log, so an administrator sees a failed update or a
- * rollback in Settings -> Security & Audit without touching the machine.
+ * workstation's `client_devices` row. A failure, a rollback, a fallback or an
+ * error is also kept in `workstation_issues`, so an administrator sees it in
+ * Settings -> Errors & Warnings without touching the machine. The audit log
+ * stays a record of what people did.
  */
-import { writeAuditLog } from "./db";
+import { WorkstationIssue } from "./types";
 
 /** The outcomes worth an administrator's attention; routine boots are not reported. */
 export const BOOT_REPORT_STATES = ["installed", "failed", "rolled-back", "fallback", "error"] as const;
@@ -39,13 +40,17 @@ export interface BootReport {
   at: number;
 }
 
-const AUDIT_ACTIONS: Record<BootReportState, string> = {
-  installed: "workstation.update_installed",
-  failed: "workstation.update_failed",
-  "rolled-back": "workstation.update_rolled_back",
-  fallback: "workstation.boot_fallback",
-  error: "workstation.boot_error"
+/** How each outcome is listed in Errors & Warnings; an installed update is not an issue. */
+const ISSUES: Partial<Record<BootReportState, { severity: "error" | "warning"; kind: string }>> = {
+  failed: { severity: "error", kind: "update_failed" },
+  "rolled-back": { severity: "error", kind: "update_rolled_back" },
+  error: { severity: "error", kind: "boot_error" },
+  fallback: { severity: "warning", kind: "boot_fallback" }
 };
+
+/** Issues older than this are deleted by the hourly cron. */
+export const WORKSTATION_ISSUE_RETENTION_DAYS = 90;
+const MAX_ISSUES_LISTED = 200;
 
 function optionalVersion(value: unknown, field: string): string | null {
   if (value === undefined || value === null || value === "") return null;
@@ -93,19 +98,26 @@ export function parseBootReport(input: unknown, now: number): BootReport {
   };
 }
 
-/** The audit entry's details, in the `key=value` form the other entries use. */
-export function describeBootReport(clientId: string, report: BootReport): string {
-  const parts = [`client=${clientId}`, `running=${report.version}`];
-  if (report.previous) parts.push(`previous=${report.previous}`);
-  if (report.failed) parts.push(`failed=${report.failed}`);
-  if (report.error) parts.push(`error=${report.error}`);
-  return parts.join(" ");
+/** One line an administrator can act on, for the Errors & Warnings list. */
+export function describeBootReport(report: BootReport): string {
+  switch (report.state) {
+    case "failed":
+      return `${report.version} failed its health check on its first boot; restarting into ${report.previous || "the previous image"}.`;
+    case "rolled-back":
+      return `${report.failed || "A new image"} failed its first boot; back on ${report.version}.`;
+    case "fallback":
+      return `Started ${report.version} because the image it should have started is missing or damaged.`;
+    case "error":
+      return report.error || "The boot record could not be read or written.";
+    default:
+      return `Running ${report.version}.`;
+  }
 }
 
 export type BootReportOutcome = "recorded" | "duplicate" | "unknown-workstation";
 
 /**
- * Keep the report on the workstation's row and audit it, once.
+ * Keep the report on the workstation's row and, when it is an issue, list it, once.
  *
  * The row is updated only by a report at least BOOT_REPORT_MIN_GAP_SECONDS
  * newer than the one it holds, so the agent re-sending after a lost reply, or
@@ -144,10 +156,46 @@ export async function recordBootReport(
       .first<{ id: string }>();
     return row ? "duplicate" : "unknown-workstation";
   }
-  await writeAuditLog(db, {
-    tenantId,
-    action: AUDIT_ACTIONS[report.state],
-    details: describeBootReport(clientId, report)
-  });
+  const issue = ISSUES[report.state];
+  if (issue) {
+    await db
+      .prepare(
+        `INSERT INTO workstation_issues (id, tenant_id, client_id, severity, kind, image_version, details, occurred_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        crypto.randomUUID(),
+        tenantId,
+        clientId,
+        issue.severity,
+        issue.kind,
+        report.version,
+        describeBootReport(report),
+        report.at,
+        now
+      )
+      .run();
+  }
   return "recorded";
+}
+
+/** An organization's errors and warnings, newest first. */
+export async function listWorkstationIssues(db: D1Database, tenantId: string, limit = 100): Promise<WorkstationIssue[]> {
+  const res = await db
+    .prepare(
+      `SELECT id, client_id, severity, kind, image_version, details, occurred_at, created_at
+         FROM workstation_issues WHERE tenant_id = ? ORDER BY created_at DESC, occurred_at DESC LIMIT ?`
+    )
+    .bind(tenantId, Math.min(Math.max(Math.floor(limit) || 1, 1), MAX_ISSUES_LISTED))
+    .all<WorkstationIssue>();
+  return res.results || [];
+}
+
+/** Delete issues past the retention period, for every organization. Returns how many. */
+export async function purgeOldWorkstationIssues(db: D1Database, now = Math.floor(Date.now() / 1000)): Promise<number> {
+  const res = await db
+    .prepare("DELETE FROM workstation_issues WHERE created_at < ?")
+    .bind(now - WORKSTATION_ISSUE_RETENTION_DAYS * 86400)
+    .run();
+  return res.meta.changes || 0;
 }

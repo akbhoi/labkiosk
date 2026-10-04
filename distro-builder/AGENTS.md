@@ -502,8 +502,8 @@ distro-builder/
   and `error` when `grubenv` cannot be read or the promotion cannot be written) to
   `/run/labkiosk-update/status.json`, root-written — never to `DATA`, which the browser's user can
   write. A write that fails still fails the command (fail closed); the agent sends `installed`,
-  `failed`, `rolled-back`, `fallback` and `error` to `POST /api/devices/boot-report`, which puts
-  them in the organization's audit log (`labkiosk-core` §2b).
+  `failed`, `rolled-back`, `fallback` and `error` to `POST /api/devices/boot-report`; problems
+  show in the console under Settings → Errors & Warnings (`labkiosk-core` §2b).
 - `labkiosk-boot-slots try <version>` gives an image already on disk its one try at the next boot
   (the primitive the updater will use). There is no sudo rule for it: the agent never chooses what
   boots.

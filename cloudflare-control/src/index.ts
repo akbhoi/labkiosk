@@ -117,7 +117,13 @@ import {
   rejectCrossSiteMutation,
   rejectCrossSiteSocket
 } from "./guard";
-import { parseBootReport, recordBootReport } from "./boot_report";
+import {
+  listWorkstationIssues,
+  parseBootReport,
+  purgeOldWorkstationIssues,
+  recordBootReport,
+  WORKSTATION_ISSUE_RETENTION_DAYS
+} from "./boot_report";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -379,6 +385,8 @@ async function handleWorkstationRequest(
  * a rollback). Like the heartbeat, the device token alone decides the
  * organization and the workstation.
  *
+ * A failure or warning is listed in Settings -> Errors & Warnings.
+ *
  * 200 recorded or already recorded; 400 malformed (the agent drops it);
  * 409 the workstation's row does not exist yet (the agent tries again).
  */
@@ -527,6 +535,8 @@ export default {
     useAuditQueue(env.AUDIT_QUEUE);
     await deleteExpiredSessions(db);
     await purgeStaleLoginAttempts(db);
+    const purgedIssues = await purgeOldWorkstationIssues(db);
+    if (purgedIssues) console.log(`[Worker] Deleted ${purgedIssues} workstation issues older than ${WORKSTATION_ISSUE_RETENTION_DAYS} days.`);
     // Commands expire inside each organization's OrgHub; the audit log is the
     // one table here that grows without bound, so old entries move to R2.
     if (env.AUDIT_ARCHIVE) {
@@ -1762,6 +1772,16 @@ export default {
     }
 
     // GET /api/audit-logs: recent activity for this organization
+    // GET /api/workstation-issues: errors and warnings workstations reported
+    // (Settings -> Errors & Warnings). Settings permission, like the audit log.
+    if (path === "/api/workstation-issues" && method === "GET") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const limit = Number(url.searchParams.get("limit") || 100);
+      const issues = await listWorkstationIssues(db, currentTenant!.id, Number.isFinite(limit) ? limit : 100);
+      return new Response(JSON.stringify({ issues }), { headers: jsonHeaders });
+    }
+
     if (path === "/api/audit-logs" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;

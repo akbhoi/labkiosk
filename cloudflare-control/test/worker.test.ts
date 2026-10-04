@@ -28,6 +28,7 @@ import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
 import { getDatabase } from "../src/database";
+import { purgeOldWorkstationIssues } from "../src/boot_report";
 import { HUB_PING, HUB_PONG } from "../src/org_hub";
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
@@ -1041,11 +1042,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------------ boot reports
 
-  const bootLog = async (cookie: string, tenant: string) => {
-    const { data } = await callJson(`/api/audit-logs?tenant=${tenant}&limit=200`, { cookie });
-    return (data.logs as Array<{ action: string; details: string | null }>).filter((entry) =>
-      /^workstation\.(update|boot)_/.test(entry.action)
-    );
+  const issuesOf = async (cookie: string, tenant: string) => {
+    const { res, data } = await callJson(`/api/workstation-issues?tenant=${tenant}`, { cookie });
+    assert.equal(res.status, 200);
+    return data.issues as Array<{ client_id: string; severity: string; kind: string; image_version: string; details: string }>;
   };
   const nowSeconds = () => Math.floor(Date.now() / 1000);
 
@@ -1054,7 +1054,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/devices/boot-report?tenant=greenwood", json(report))).status, 401);
     const forged = await call("/api/devices/boot-report", { ...json(report), bearer: "f".repeat(64) });
     assert.equal(forged.status, 401);
-    assert.equal((await bootLog(orgSessionCookie, "greenwood")).length, 0);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, 0);
   });
 
   test("Refuses a malformed boot report", async () => {
@@ -1075,7 +1075,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
     const unreadable = await call("/api/devices/boot-report", { method: "POST", body: "{", bearer: deviceToken });
     assert.equal(unreadable.status, 400);
-    assert.equal((await bootLog(orgSessionCookie, "greenwood")).length, 0);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, 0);
   });
 
   test("Records a rollback once, in the token's own organization", async () => {
@@ -1103,11 +1103,27 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(soon.data.recorded, false, "reports closer together than a boot are dropped");
 
-    const entries = await bootLog(orgSessionCookie, "greenwood");
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].action, "workstation.update_rolled_back");
-    assert.equal(entries[0].details, "client=PC-01 running=2.5.1 failed=2.6.0");
-    assert.equal((await bootLog(rivalSessionCookie, "riverside")).length, 0);
+    const issues = await issuesOf(orgSessionCookie, "greenwood");
+    assert.equal(issues.length, 1);
+    assert.deepEqual(
+      { ...issues[0], id: undefined, occurred_at: undefined, created_at: undefined },
+      {
+        id: undefined,
+        client_id: "PC-01",
+        severity: "error",
+        kind: "update_rolled_back",
+        image_version: "2.5.1",
+        details: "2.6.0 failed its first boot; back on 2.5.1.",
+        occurred_at: undefined,
+        created_at: undefined
+      }
+    );
+    assert.equal((await issuesOf(rivalSessionCookie, "riverside")).length, 0);
+    const { data: audit } = await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie });
+    assert.ok(
+      !audit.logs.some((entry: { action: string }) => entry.action.startsWith("workstation.")),
+      "workstation problems stay out of the audit log"
+    );
 
     const row = await getDatabase(mockEnv)
       .prepare("SELECT image_version, update_state, update_state_at FROM client_devices WHERE client_id = 'PC-01'")
@@ -1126,11 +1142,61 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       bearer: deviceToken
     });
     assert.equal(res.data.recorded, true);
-    const [latest] = await bootLog(orgSessionCookie, "greenwood");
-    assert.equal(latest.action, "workstation.boot_error");
-    assert.match(latest.details || "", /^client=PC-01 running=2\.5\.1 error=could not record the update: \[Errno 5\] Input\/output error x+$/);
-    assert.ok(!/[\u0000-\u001f]/.test(latest.details || ""));
-    assert.ok((latest.details || "").length < 400, "the reason is capped");
+    const [latest] = await issuesOf(orgSessionCookie, "greenwood");
+    assert.equal(latest.kind, "boot_error");
+    assert.equal(latest.severity, "error");
+    assert.match(latest.details, /^could not record the update: \[Errno 5\] Input\/output error x+$/);
+    assert.ok(!/[\u0000-\u001f]/.test(latest.details));
+    assert.ok(latest.details.length <= 300, "the reason is capped");
+  });
+
+  test("Lists an installed update on the workstation but not as a problem", async () => {
+    const before = (await issuesOf(orgSessionCookie, "greenwood")).length;
+    const res = await callJson("/api/devices/boot-report", {
+      ...json({ state: "installed", version: "2.6.0", previous: "2.5.1", at: nowSeconds() + 120 }),
+      bearer: deviceToken
+    });
+    assert.equal(res.data.recorded, true);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, before);
+    const row = await getDatabase(mockEnv)
+      .prepare("SELECT image_version, update_state FROM client_devices WHERE client_id = 'PC-01'")
+      .first<any>();
+    assert.deepEqual({ ...row }, { image_version: "2.6.0", update_state: "installed" });
+  });
+
+  test("Shows errors and warnings only to the organization's settings staff", async () => {
+    assert.ok([401, 403].includes((await call("/api/workstation-issues?tenant=greenwood")).status));
+    const rival = await call("/api/workstation-issues?tenant=greenwood", { cookie: rivalSessionCookie });
+    assert.ok([401, 403].includes(rival.status), "another organization is refused");
+    const { data: created } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      ...json({
+        name: "Wes Workstations",
+        email: "wes@greenwood.example",
+        password: "WesPassword123!",
+        role: "operator",
+        permissions: ["workstations"]
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(created.status, "ok");
+    const login = await call("/api/auth/login", json({ email: "wes@greenwood.example", password: "WesPassword123!" }));
+    const operatorCookie = login.headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await call("/api/workstation-issues?tenant=greenwood", { cookie: operatorCookie })).status, 403);
+    await callJson(`/api/tenant/staff/${created.operator.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+  });
+
+  test("Deletes errors and warnings past their retention", async () => {
+    const db = getDatabase(mockEnv);
+    const { id: tenantId } = (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant;
+    const old = nowSeconds() - 91 * 86400;
+    await db
+      .prepare(
+        "INSERT INTO workstation_issues (id, tenant_id, client_id, severity, kind, occurred_at, created_at) VALUES ('old-issue', ?, 'PC-01', 'warning', 'boot_fallback', ?, ?)"
+      )
+      .bind(tenantId, old, old)
+      .run();
+    assert.equal(await purgeOldWorkstationIssues(db), 1);
+    assert.ok((await issuesOf(orgSessionCookie, "greenwood")).length >= 2, "recent issues are kept");
   });
 
   test("Asks a workstation that has not checked in yet to report again later", async () => {
@@ -3670,6 +3736,7 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0012"))), /missing the current schema/);
     // 0015 adds the boot report columns; a Worker that writes them must refuse a database without them.
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0015"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0016"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 
