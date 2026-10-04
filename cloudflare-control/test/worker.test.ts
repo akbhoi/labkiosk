@@ -1459,7 +1459,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const ai = fakeAi((input) => {
       assert.deepEqual(input.existingReports.map((r: any) => [r.issue, r.title, r.status]), [[101, "Boot record could not be written", "open"]]);
-      return { decision: "existing", issue: 101 };
+      // Written as a string, as a model may.
+      return { decision: "existing", issue: "101" };
     });
     assert.deepEqual(await runBugs(ai, github), { filed: 0, matched: 1, linked: 0, refreshed: 1 });
     assert.equal(github.writes.length, 1);

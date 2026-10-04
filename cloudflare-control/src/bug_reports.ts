@@ -232,7 +232,8 @@ export async function triageWithAi(ai: WorkersAiBinding, facts: BugFacts, candid
   });
   const answer = parseModelJson(modelText(result));
   if (answer.decision === "existing") {
-    const match = candidates.find((c) => c.issue_number === answer.issue);
+    // A model may write the number as a string ("101").
+    const match = candidates.find((c) => c.issue_number === Number(answer.issue));
     if (!match) throw new Error(`the model named issue ${String(answer.issue)}, which it was not shown`);
     return { decision: "existing", candidate: match };
   }
@@ -321,7 +322,7 @@ async function github(
   });
   const expected = method === "POST" ? 201 : 200;
   if (res.status !== expected) {
-    throw new Error(`GitHub answered ${res.status} to ${method} ${new URL(url).pathname}: ${(await res.text()).slice(0, 200)}`);
+    throw new Error(`GitHub answered ${res.status} to ${method} ${url.replace(/^https:\/\/api\.github\.com/, "")}: ${(await res.text()).slice(0, 200)}`);
   }
   return res.json();
 }

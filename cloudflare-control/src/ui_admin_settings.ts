@@ -786,10 +786,10 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               optInHint.textContent = "The Automatic Bug Report Terms have changed. Nothing is sent until you accept version " +
                 state.termsVersion + ".";
             } else if (state.enabled === true) {
-              const accepted = new Date((state.termsAcceptedAt || 0) * 1000);
+              const accepted = state.termsAcceptedAt ? new Date(state.termsAcceptedAt * 1000) : null;
               optInHint.textContent = "Problems are filed as GitHub issues in " + state.repository +
                 ", where anyone may be able to read them. Terms version " + state.acceptedTermsVersion +
-                (isNaN(accepted.getTime()) ? "" : " accepted on " + accepted.toLocaleDateString()) + ".";
+                (!accepted || isNaN(accepted.getTime()) ? "" : " accepted on " + accepted.toLocaleDateString()) + ".";
             } else {
               optInHint.textContent = "New errors and warnings are filed as GitHub issues in " + state.repository +
                 ", where anyone may be able to read them. A report carries the kind of problem, the system image version " +
