@@ -101,6 +101,7 @@ docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akb
 | Hyper-V Gen 2 (UEFI) | GRUB EFI menu, live boot, disk detection, install to VHDX, standalone reboot. The host is reachable at the Default Switch address (e.g. `172.31.64.1`) for a local Worker. |
 | VirtualBox (BIOS) | ISOLINUX menu, install to VDI, legacy GRUB boot |
 | Docker simulator | agent, extension, telemetry — see `labkiosk-simulator` |
+| Build ISO workflow (KVM) | `tests/vm/boot-test.sh`: the ISO's own installer onto a virtual disk, then one try, promotion, broken-image and unhealthy-image rollback in QEMU + OVMF. Needs root and `/dev/kvm`, so not on Windows. |
 
 ```bash
 python3 distro-builder/tools/generate-chromium-policy.py --check
