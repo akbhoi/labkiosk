@@ -692,6 +692,23 @@ Rotates the organization's workstation enrollment key. Existing workstations ret
   }
   ```
 
+#### Errors & Warnings: `GET /api/workstation-issues`, `POST /api/settings/bug-reports`
+
+The **Errors & Warnings** sub-tab of Settings lists what workstations reported about themselves
+(failed or rolled-back updates and boot errors, from
+[`POST /api/devices/boot-report`](#post-apidevicesboot-report)), kept for 90 days and separate from
+the audit log. `GET /api/workstation-issues` returns the list and the organization's automatic bug
+report setting (fields in the [summary matrix](#-api-summary-matrix)). `POST
+/api/settings/bug-reports` turns automatic, redacted GitHub bug reports on or off; turning them on
+must name the current terms version (`/terms/bug-reports`), and the change is written to the
+audit log.
+
+- **Access:** Organization Admin (requires `settings` permission)
+- **Request Body:** `{ "enabled": true, "acceptTerms": "2026-10-04" }` or `{ "enabled": false }`
+- **Response `200 OK`:** `{ "status": "ok", "enabled": true }`; `400` when `enabled` is not a
+  boolean or the terms version is not the current one; `409` when the platform has not set up bug
+  reports.
+
 ---
 
 ### 7. Super Administrator Console (`/super`)
@@ -978,7 +995,8 @@ Forces a fresh connectivity check. Same shape as `connectivity` above.
 #### `POST /api/admin/verify`
 
 Verifies the administrator (boot-menu) password against the PBKDF2 digest in
-`/etc/grub.d/01_labkiosk_password` and issues a 10-minute token for `/api/network/configure`.
+`boot/grub/labkiosk-password.cfg` on `LABKIOSK_ROOT` (read at `/run/live/medium/boot/grub/`, where
+live-boot mounts it) and issues a 10-minute token for `/api/network/configure`.
 Attempts are serialised; after 5 failures the gate refuses all attempts for 60 s. When the
 installation has no password file (installed without one, after a warning), any password is
 accepted. A file that exists but cannot be parsed fails closed.
@@ -1003,7 +1021,10 @@ accepted. A file that exists but cannot be parsed fails closed.
 
 #### `POST /api/install`
 
-Triggers automated disk installation to the specified target drive.
+Triggers automated disk installation to the specified target drive. The disk is erased and becomes
+an image store (four partitions; the live medium's system image copied to
+`images/<version>/` on `LABKIOSK_ROOT`); disks under 7 GiB are refused. Answers `400` on an
+installed workstation (`labkiosk.installed=1` on the kernel command line).
 
 - **Request Body:**
 

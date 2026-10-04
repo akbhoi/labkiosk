@@ -48,9 +48,14 @@ pnpm dev
 
 The client side has its own quick checks, which CI runs too:
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \n  distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \n  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
+  distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests
+python3 distro-builder/tools/generate-chromium-policy.py --check
 shellcheck -S warning distro-builder/config/includes.chroot/etc/openbox/autostart distro-builder/docker-build.sh docker-test/entrypoint.sh
 ```
 
@@ -60,7 +65,8 @@ You do not need physical thin clients to test client OS modifications:
 # Launch the Docker Kiosk container (with `pnpm dev` already running)
 docker compose up -d
 ```
-Open `http://localhost:6080/vnc.html` (VNC password `labkiosk`) to see the workstation screen. It
+Open `http://localhost:6080/vnc.html` (the VNC password is generated per container and printed in
+`docker compose logs`) to see the workstation screen. It
 boots into the first-boot setup wizard; enrol it the way a real workstation is enrolled, with the
 organization subdomain, a workstation name, and the organization's **enrollment key** from the admin console
 under **Settings -> Workstation Enrollment Key**.
@@ -87,8 +93,9 @@ Here is the quick summary of non-negotiable standards:
    - Do not pull in heavy third-party routing or auth frameworks; maintain cold-start times under 10ms.
 
 2. **Authorization Is Not Optional:**
-   - Every route that reads or changes an organization's data calls `requireTenantAdmin()` from `src/guard.ts`.
-     Platform routes call `requireSuperAdmin()`; `/api/telemetry` calls `requireDevice()`.
+   - Every route that reads or changes an organization's data calls `requireTenantAdmin()` or
+     `requireTenantPermission()` from `src/guard.ts`. Platform routes call `requireSuperAdmin()`; device
+     routes (`/api/telemetry`, `/api/devices/ws`, `/api/devices/boot-report`) call `requireDevice()`.
    - Never resolve a tenant by hand. Call `resolveTenant()`: the `Host` header is authoritative, and a
      `?tenant=` override is honoured only for local dev, a super admin, a session that already owns
      that tenant, or an explicitly public route.
@@ -119,8 +126,11 @@ Here is the quick summary of non-negotiable standards:
      started as root, which it warns about.
 
 5. **RAM Overlay on Thin Clients (`toram` + `overlayroot="tmpfs"`):**
-   - The client runs as a live image copied into RAM; the root filesystem stays read-only so thin-client
-     SSDs are never written to.
+   - The client runs as a live image under a RAM overlay (`toram` is an opt-in boot entry); the root
+     filesystem stays read-only so thin-client SSDs are never written to. An installed disk boots the
+     same image through live-boot from its image store (`images/<version>/` on `LABKIOSK_ROOT`).
+   - Only the `LABKIOSK_DATA` partition at `/etc/labkiosk` persists, and every image reads it, so a
+     config key there may be added but never renamed or given a new meaning (a rollback reads it too).
    - Never write persistent logs to `/var/log` or disk; direct runtime data to `/tmp` (RAM).
 
 6. **Multi-Tenant Scoping:**

@@ -8,7 +8,7 @@ How `cloudflare-control/` is put together, and the rules for changing it.
 
 ```text
 cloudflare-control/
-├── migrations/             D1 SQL migrations 0001..0014
+├── migrations/             D1 SQL migrations 0001..0018
 ├── src/
 │   ├── index.ts            Router, REST endpoints, scheduled(), queue()
 │   ├── org_hub.ts          OrgHub: one Durable Object per organization
@@ -17,26 +17,28 @@ cloudflare-control/
 │   ├── escape.ts           HTML / attribute / JSON escaping, safe URLs
 │   ├── db.ts               D1 queries, SCHEMA_SQL, tenant seeding
 │   ├── auth.ts             Web Crypto PBKDF2, tokens, nonces, password policy
+│   ├── boot_report.ts      Workstation boot outcomes -> client_devices, Errors & Warnings
+│   ├── bug_reports.ts      Opt-in redacted GitHub bug reports, Workers AI triage
 │   ├── d1_adapter.ts       node:sqlite mock for local tests
 │   ├── ui.ts               Organization admin console router: selects page, wraps shell
 │   ├── ui_admin_shared.ts  Shared context panel actions & client scripts
 │   ├── ui_admin_workstations.ts Workstations fleet, groups & commands
 │   ├── ui_admin_apps_web.ts     Apps & Web: broadcast, portal & allowlist
 │   ├── ui_admin_staff.ts     Staff accounts, roles & permissions
-│   ├── ui_admin_settings.ts     Settings: 4 tab panes & scrollable audit
+│   ├── ui_admin_settings.ts     Settings: 5 tab panes (Errors & Warnings), scrollable audit
 │   ├── ui_tokens.ts        Design system tokens (colors, radii, easing)
 │   ├── ui_layout.ts        Shared multi-level shell, headers & styles
 │   ├── ui_landing.ts       Public SaaS landing page
 │   ├── ui_org_home.ts   Organization homepage at subdomain root (/)
 │   ├── ui_portal.ts        User Portal at /home
 │   ├── ui_super.ts         Super Admin console (/super)
-│   ├── ui_legal.ts         Legal compliance pages (/privacy, /terms)
+│   ├── ui_legal.ts         Legal compliance pages (/privacy, /terms, /terms/bug-reports)
 │   └── types.ts            Strict TypeScript interfaces
 ├── test/worker.test.ts     Multi-tenant integration and security suite
 ├── .dev.vars.example       Local secrets template
 ├── tsconfig.json           src/ against @cloudflare/workers-types alone
 ├── tsconfig.test.json      test/ against @types/node
-└── wrangler.jsonc          Routes, D1 binding, hourly cron
+└── wrangler.jsonc          Routes, D1 binding, hourly cron, AI binding
 ```
 
 **Zero runtime npm dependencies.** Everything in `package.json` is a `devDependency`: `wrangler`, `typescript`, `tsx`, and two type packages. Never add a routing library, an auth framework, or an ORM — cold start must stay under 10 ms, and the supply-chain surface is deliberately empty.
@@ -89,7 +91,7 @@ refuses any other (`409`). Tests run hubs in-process through `src/local_do.ts`.
 
 ### `scheduled()`
 
-Invoked hourly by the cron in `wrangler.jsonc`. Purges expired sessions and stale rate-limit rows, and moves audit entries older than 180 days to the `AUDIT_ARCHIVE` R2 bucket as NDJSON. Expired commands are the hubs' own business: each deletes its own when it next runs.
+Invoked hourly by the cron in `wrangler.jsonc`. Purges expired sessions and stale rate-limit rows, deletes `workstation_issues` older than 90 days (`WORKSTATION_ISSUE_RETENTION_DAYS`), and moves audit entries older than 180 days to the `AUDIT_ARCHIVE` R2 bucket as NDJSON. Then `processBugReports()` (`src/bug_reports.ts`) triages pending automatic bug reports, when `AI`, `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO` are all set: it redacts each problem, links a known signature to its issue, asks the Workers AI model `@cf/openai/gpt-oss-120b` whether a new one matches an open report (one comment on that issue) or drafts a new issue, makes at most 5 GitHub writes a run, and reads back the status of up to 10 filed issues. A GitHub or model failure leaves the rest for the next run. Expired commands are the hubs' own business: each deletes its own when it next runs.
 
 ### `queue()`
 

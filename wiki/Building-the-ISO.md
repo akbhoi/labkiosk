@@ -82,7 +82,7 @@ sudo bash build-iso.sh
 | Firmware | `intel-microcode`, `amd64-microcode`, `firmware-linux-free`, `firmware-misc-nonfree`, `firmware-realtek`, `firmware-iwlwifi` |
 | X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `xinit`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
 | Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji` |
-| Remote & network | `x11vnc`, `websockify`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `ca-certificates` |
+| Remote & network | `x11vnc`, `websockify`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
 
 ### Keeping the image small
 
@@ -101,12 +101,12 @@ sudo bash build-iso.sh
 
 | Hook | Does |
 | :--- | :--- |
-| `config/hooks/live/01-lockdown.hook.chroot` | Creates the `kiosk` user, configures nodm autologin and its PAM stack, masks every getty, writes the Xorg lockdown snippet, the polkit power rule, the sudoers rule, and generates the Chromium policy from its base |
+| `config/hooks/live/01-lockdown.hook.chroot` | Creates the `kiosk` user, configures nodm autologin and its PAM stack, masks every getty, writes the Xorg lockdown snippet, the polkit power rule, the sudoers rule, the units that mount `LABKIOSK_DATA` on an installed disk, enables `labkiosk-boot-ok.service`, pre-seeds live-config's `sudo` and `policykit` components away, ships an empty `/etc/machine-id`, and generates the Chromium policy from its base |
 | `config/hooks/live/02-security.hook.chroot` | sysctl hardening, disables core dumps, sets GRUB timeout and `consoleblank=0`, disables recovery mode, applies `--unrestricted` and any pinned boot password |
 
 ### Rootfs overlay
 
-`config/includes.chroot/` is injected verbatim into the image: the agent, the extension, the wizard, the installer, `overlayroot.conf`, the Openbox config, and the `cloudflared-kiosk.service` unit.
+`config/includes.chroot/` is injected verbatim into the image: the agent, the extension, the wizard, the installer, `labkiosk-boot-slots` and `labkiosk-boot-ok.service`, the installed disk's boot menu (`usr/share/labkiosk/boot/grub.cfg`), the image's version (`usr/share/labkiosk/version`), the `labkiosk-data-generator` systemd generator, `overlayroot.conf`, the Openbox config, and the `cloudflared-kiosk.service` unit.
 
 > **Line endings.** `.gitattributes` pins every script, hook, and config in this tree to `eol=lf`, because the repository builds a Linux image. A CRLF hook dies with `$'\r': command not found`. Never write these files with a tool that translates newlines — Python's `Path.write_text` does, on Windows.
 
@@ -148,7 +148,8 @@ Run these before packaging — CI runs them too:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
 
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
@@ -167,7 +168,7 @@ shellcheck -S warning \
 
 ## CI
 
-`.github/workflows/build-iso.yml` builds the ISO on version tags (`v*`), frees disk space on the runner first, warns when a release build has no GRUB password pinned, verifies the checksum, uploads the artifact, and creates a GitHub Release.
+`.github/workflows/build-iso.yml` builds the ISO on version tags (`v*`) and on manual dispatch, frees disk space on the runner first, warns when a release build has no GRUB password pinned, verifies the checksum, and uploads the artifact. It then boot-tests the ISO before any release: `distro-builder/tests/vm/boot-test.sh` installs it onto a virtual disk with the real installer and boots that disk in QEMU (UEFI, KVM) to prove the one-try boot, the promotion of a new image and both kinds of rollback. A failing scenario uploads VM screenshots, and no GitHub Release is created. → [Testing Guide](Testing-Guide#boot-test-of-the-installed-disk)
 
 `.github/workflows/ci.yml` runs on every push: both Docker images build (no push), the worker is typechecked and tested, and the client checks above all run.
 

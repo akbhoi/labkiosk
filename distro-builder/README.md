@@ -30,9 +30,12 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
   password rather than a locked one, because a locked account previously deadlocked nodm's PAM
   stack into a black screen on boot; what makes that safe is that no login path exists to use it —
   `getty@tty1..6`, `serial-getty` and `debug-shell` are all masked and no SSH server is installed.
-  `kiosk` holds exactly one sudo grant, `NOPASSWD` on `/usr/local/bin/labkiosk-install`
+  `kiosk` holds exactly two sudo grants, `NOPASSWD` on `/usr/local/bin/labkiosk-install`
   (`/etc/sudoers.d/50-labkiosk-install`), which is what lets the setup wizard run the guided disk
-  installer. There is no general sudo access.
+  installer, and on `/usr/local/sbin/labkiosk-localization` (`51-labkiosk-localization`) for the
+  Language & Region step. Both re-validate every argument. There is no general sudo access:
+  live-config's `sudo` and `policykit` components are pre-seeded away, and
+  `labkiosk-boot-slots` has no sudo rule, so the agent never chooses which image boots.
 - **Polkit Power Policy:** `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants the `kiosk` user
   reboot and power-off through logind, and nothing else. That grant is what makes the operator's
   remote shutdown command work — the agent runs as `kiosk`, so without it the command would be
@@ -58,8 +61,10 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
   user's live X session for `scrot` and `xdotool`, so it is started from `/etc/openbox/autostart`
   inside a `while true` supervisor loop that restarts it within ~2 s if it ever exits. Restart
   lines are written to `/tmp/lab-agent.log`.
-- **Telemetry Loop (Every 3s):** Authenticates to the Cloudflare control plane with a stored bearer
-  device token, transmits a screen thumbnail, receives pending operator commands, and checks
+- **Control Channel:** One WebSocket to the organization's OrgHub (`/api/devices/ws`), falling back
+  to the 3-second HTTP heartbeat (`POST /api/telemetry`) when that is unavailable. Authenticates to
+  the Cloudflare control plane with a stored bearer device token, transmits a screen thumbnail
+  (over the WebSocket only while an operator is watching; with every HTTP heartbeat), receives pending operator commands, and checks
   broadcast status. The thumbnail is produced by `scrot -t 20 -q 35` — pure Python standard
   library plus `scrot`, with **no PIL/Pillow dependency** — and a frame whose base64 payload
   exceeds 256 KB (`MAX_THUMBNAIL_BYTES`) is dropped rather than sent, so an oversized capture
@@ -68,7 +73,8 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
   stall the once-a-second status poll that drives the lock curtain.
 - **Dynamic Policy Synchronization:** Writes the tenant's approved domain allowlist into `/etc/chromium/policies/managed/policies.json`.
 - **Loopback API:** Binds strictly to `127.0.0.1:8888` to serve the first-boot onboarding wizard and health probes.
-- **Session State Awareness:** Distinguishes between live evaluation sessions (`boot=live` on USB/ISO) and permanent disk installations.
+- **Session State Awareness:** Distinguishes between live evaluation sessions (`boot=live` on USB/ISO) and permanent disk installations (`labkiosk.installed=1` on the kernel command line, checked first because an installed disk boots through live-boot too).
+- **Boot Reports:** On an installed disk the agent forwards the outcome `labkiosk-boot-slots` recorded in `/run/labkiosk-update/status.json` (`installed`, `failed`, `rolled-back`, `fallback`, `error`) to `POST /api/devices/boot-report`; problems appear in the console under **Settings → Errors & Warnings**.
 
 ### 5. Automated Hard Disk Installer (`labkiosk-install`)
 
@@ -76,19 +82,25 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **Universal Hybrid GPT Partitioning:**
   1. `bios_grub` (1 MiB – 2 MiB): Enables legacy BIOS GRUB embedding on GPT partitioned disks.
   2. `ESP` (2 MiB – 514 MiB, FAT32): Holds the UEFI bootloader and configuration.
-  3. `ROOT` (514 MiB – 513 MiB from the end, ext4, label `LABKIOSK_ROOT`): the immutable Debian 12
-     operating system.
-  4. `DATA` (last 512 MiB, ext4, label `LABKIOSK_DATA`): mounted at `/etc/labkiosk` with `nofail`.
+  3. `ROOT` (514 MiB – 513 MiB from the end, ext4, label `LABKIOSK_ROOT`): the image store —
+     `boot/grub/` (`grub.cfg`, `grubenv`, `labkiosk-password.cfg`, `labkiosk-data.cfg`) and whole
+     system images in `images/<version>/` (`vmlinuz`, `initrd.img`, `filesystem.squashfs`).
+  4. `DATA` (last 512 MiB, ext4, label `LABKIOSK_DATA`): mounted at `/etc/labkiosk` with `nofail`,
+     **by UUID, never by label** (GRUB passes `labkiosk.data=<uuid>` from `boot/grub/labkiosk-data.cfg`
+     and `labkiosk-data-generator` turns it into `etc-labkiosk.mount`; no `/etc/fstab` is written).
      This is the **only** part of an installed machine that survives a reboot, and it exists so
      that a workstation enrolled *after* installation stays enrolled — every other write goes to
      the RAM overlay and is discarded at power-off.
+- **Minimum Disk Size:** 7 GiB, so that two system images fit side by side (a drive sold as 8 GB qualifies).
 - **Refuses to erase the medium it is running from:** candidate disks are matched against the
   device backing `/run/live/medium`, and that disk is excluded from the list *and* rejected again
   immediately before `wipefs`. Removable drives are still offered (some thin clients expose
   internal eMMC as removable) but are sorted last and labelled `REMOVABLE DRIVE` in the wizard.
 - **Dual Bootloader Deployment:** Automatically installs both **UEFI** (`x86_64-efi` with removable fallback `BOOTX64.EFI`) and **Legacy BIOS** (`i386-pc`) bootloaders, ensuring the hard drive boots on any virtual machine (Hyper-V Gen 1/2, VirtualBox) or physical PC.
-- **100% RAM Overlay on Disk:** Configures `/etc/overlayroot.conf` with `overlayroot="tmpfs"` on the installed drive, guaranteeing zero flash storage wear and clean resets on reboot even after permanent installation. The `LABKIOSK_DATA` partition above is the deliberate exception.
-- **Image Store:** Copies the live medium's system image (squashfs, kernel, initrd) to `images/<version>/` and boots it through live-boot, giving each new image one try with automatic rollback (`docs/OTA_UPDATES.md`).
+- **100% RAM Overlay on Disk:** The installed drive boots its image through live-boot exactly like the ISO (`labkiosk.installed=1 noeject panic=10` on the command line), so the squashfs is the read-only lower layer and every write goes to RAM, guaranteeing zero flash storage wear and clean resets on reboot even after permanent installation. The `LABKIOSK_DATA` partition above is the deliberate exception; nothing is written into a system image after installation.
+- **Image Store:** Copies the live medium's system image (squashfs, kernel, initrd) to `images/<version>/` (the version from `/usr/share/labkiosk/version`) instead of copying a root filesystem, installs the shared `usr/share/labkiosk/boot/grub.cfg` verbatim, and runs `grub-install` with `--boot-directory` on `ROOT`. Everything is located before `wipefs`, so a medium that cannot produce a bootable disk fails before the disk is erased.
+- **One-Try Boot & Rollback:** `boot/grub/grubenv` holds `current`, `previous`, `next` and `next_tries`. GRUB spends the try before booting `next`, and any failure falls back to `current`. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every installed boot: it confirms a new image once the agent and browser have stayed up for a minute, and otherwise reboots into the old one. `labkiosk-boot-slots` (root only) also offers `status`, `try VERSION` and `init VERSION`. To test a slot on a kiosk with no shell, mount `LABKIOSK_ROOT` elsewhere and run `grub-editenv boot/grub/grubenv set next=VERSION next_tries=1`. This is phase 1 of over-the-air updates (`docs/OTA_UPDATES.md`); downloading, signing, approving and LAN-sharing updates are not implemented yet.
+- **Boot Test in CI:** `.github/workflows/build-iso.yml` runs `tests/vm/boot-test.sh` (QEMU, OVMF, KVM) after every ISO build: install, promotion, a broken squashfs, recovery and an unhealthy image. It needs root and `/dev/kvm`, so it does not run on Windows; legacy BIOS boot is covered only by the GRUB menu tests.
 
 ---
 
@@ -113,17 +125,28 @@ distro-builder/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Locked rc.xml and autostart script
 │       │   ├── overlayroot.conf        # tmpfs RAM overlay configuration
-│       │   └── systemd/system/         # cloudflared-kiosk.service (the only unit shipped here)
+│       │   ├── systemd/system/         # cloudflared-kiosk.service, labkiosk-boot-ok.service
+│       │   └── systemd/system-generators/ # labkiosk-data-generator (DATA mount by UUID)
 │       ├── opt/labkiosk/
 │       │   ├── setup/                  # First-boot onboarding & disk installation HTML wizard
 │       │   ├── extension/              # Manifest V3 extension (content.js, background.js, manifest.json)
 │       │   └── agent/                  # Python 3 telemetry daemon (agent.py)
 │       ├── usr/local/bin/
-│       │   └── labkiosk-install        # Automated Python hard disk installer
+│       │   ├── labkiosk-install        # Automated Python hard disk installer (image store, dual GRUB)
+│       │   └── labkiosk-lock-keys      # Strips blocked keys from the X keymap
+│       ├── usr/local/sbin/
+│       │   ├── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
+│       │   └── labkiosk-localization   # Timezone, locale and keyboard (sudo; re-validates every argument)
 │       └── usr/share/labkiosk/
+│           ├── boot/grub.cfg           # Every installed disk's boot menu, copied verbatim
 │           ├── chromium-policy-base.json # THE single declaration of the static Chromium policy
 │           ├── cloudflared.pin         # Pinned release version & SHA-256 for cloudflared binary
-│           └── grub.pin                # Pinned PBKDF2 hash for GRUB boot password
+│           ├── grub.pin                # Pinned PBKDF2 hash for GRUB boot password
+│           ├── novnc.pin               # Pinned noVNC release (installed by install-novnc.sh)
+│           └── version                 # The image's release (= AGENT_VERSION)
+├── tests/
+│   ├── test_client.py                  # Client unit tests (python3 -m unittest discover)
+│   └── vm/boot-test.sh                 # QEMU install, promotion and rollback test (CI, needs KVM)
 ├── tools/
 │   └── generate-chromium-policy.py     # Regenerates the boot-time policy from the base (--check in CI)
 └── out/                                # Generated ISO and SHA-256 artifacts

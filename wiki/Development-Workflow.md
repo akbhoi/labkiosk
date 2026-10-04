@@ -31,10 +31,12 @@ Run all three before you commit. CI runs the same checks, so a failure here is a
 pnpm --prefix cloudflare-control run typecheck
 pnpm --prefix cloudflare-control test
 
-# 2. Client syntax
+# 2. Client syntax and unit tests
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 python3 distro-builder/tools/generate-chromium-policy.py --check
@@ -83,7 +85,7 @@ docker cp labkiosk-client-01:/tmp/verify.png .
    ```
 
 4. Read `/tmp/lab-agent.log` and take a screenshot.
-5. For anything about booting, bootloaders, `overlayroot`, or the installer, build the ISO and test in a VM. The simulator cannot cover those.
+5. For anything about booting, bootloaders, `overlayroot`, or the installer, build the ISO and test in a VM. The simulator cannot cover those. On a Linux host with KVM, `sudo distro-builder/tests/vm/boot-test.sh <iso>` installs the ISO onto a virtual disk and checks the one-try boot and rollback, as `build-iso.yml` does. → [Testing Guide](Testing-Guide#boot-test-of-the-installed-disk)
 
 → [Workstation Simulator](Workstation-Simulator) · [Building the ISO](Building-the-ISO)
 
@@ -159,7 +161,7 @@ Lab Kiosk is openly co-developed with AI assistants, and contributions authored 
 | :--- | :--- | :--- |
 | Push to `main` touching `cloudflare-control/**` | `deploy-cloudflare.yml` | Typecheck → test → apply remote migrations → `wrangler deploy` |
 | Push to `main` or a `v*` tag | `docker-publish.yml` | Publishes `labkiosk` and `labkiosk-iso-builder` to GHCR |
-| A `v*` tag | `build-iso.yml` | Builds the ISO, verifies the checksum, creates a GitHub Release |
+| A `v*` tag, or manual dispatch | `build-iso.yml` | Builds the ISO, verifies the checksum, boot-tests the installed disk in QEMU, then (on a tag) creates a GitHub Release |
 | Any push | `ci.yml` | The full verification triangle |
 
 ---
@@ -173,6 +175,6 @@ Lab Kiosk is openly co-developed with AI assistants, and contributions authored 
 
 ## Licensing
 
-Contributions and code use are subject to the **LabKiosk Software License (Source-Available)**: free for accredited schools and non-profits, commercial license required for for-profit resale, SaaS hosting, or MSP use.
+Contributions and code use are subject to the **LabKiosk Software License (Source-Available)**: free only for accredited educational institutions and non-commercial evaluation, up to 45 computers; everyone else needs a commercial or subscriber license (see `LICENSE`).
 
 → [Testing Guide](Testing-Guide) · [Control Plane Internals](Control-Plane-Internals) · [Client Agent](Client-Agent)

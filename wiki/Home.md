@@ -43,7 +43,7 @@ These are invariants, not preferences. Every one of them is enforced by the test
 
 | Commitment | What it means in practice |
 | :--- | :--- |
-| **Zero SSD wear** | `overlayroot="tmpfs"` on live media *and* on installed disks. The only persistent write target on an installed machine is the 512 MiB `LABKIOSK_DATA` partition holding the enrolment token. |
+| **Zero SSD wear** | `overlayroot="tmpfs"` on live media *and* on installed disks. The only persistent write target on an installed machine is the 512 MiB `LABKIOSK_DATA` partition holding the enrolment token, plus GRUB's `grubenv` on `LABKIOSK_ROOT` when a new system image is tried or confirmed. |
 | **Zero npm at runtime** | The worker uses only Web APIs and Cloudflare primitives. No routing library, no auth framework, no ORM. |
 | **Zero placeholders** | No `TODO` stubs, no empty `catch` blocks, no mock data in production paths. |
 | **Fail closed** | Missing configuration is an error, never a weaker default. Unapplied migrations, absent super-admin secrets, and unverified build pins all refuse to proceed. |
@@ -54,7 +54,7 @@ These are invariants, not preferences. Every one of them is enforced by the test
 
 ## Project status and licensing
 
-Lab Kiosk is licensed under the **LabKiosk Software License (Source-Available)**: free and unrestricted for accredited schools, colleges, universities, teachers, and non-profits up to 45 computers; deployments with more than 45 computers are treated as commercial scale. A commercial license is required for for-profit resale, SaaS hosting, or MSP use. Subscribers utilizing the Cloudflare Worker platform are supported per the Subscriber License.
+Lab Kiosk is licensed under the **LabKiosk Software License (Source-Available)**: free only for accredited educational institutions and for non-commercial evaluation and research, up to 45 computers; any deployment of more than 45 computers is treated as commercial use. Everyone else, including for-profit use, resale, SaaS hosting and MSP use, needs a commercial or subscriber license. Subscribers utilizing the Cloudflare Worker platform are supported per the Subscriber License.
 
 The project is openly co-developed with AI coding assistants — first Antigravity (Google DeepMind), later Claude Code. The rules those agents follow are checked into the repository as `AGENTS.md` and the skills under `.agents/skills/`.
 

@@ -49,7 +49,8 @@ changed. To call agent functions in place, load the module in a separate interpr
   end-to-end run, put the control plane in a container on the simulator's network instead: a
   compose override with a fixed subnet, a `node:24` service that copies `cloudflare-control`
   without `node_modules` (the host's are Windows builds), installs the Linux `wrangler`, applies
-  the migrations with `--local --persist-to` and runs `wrangler dev --ip 0.0.0.0` with an
+  the migrations with `--local --persist-to` and runs `wrangler dev --local --ip 0.0.0.0` (without `--local`, the `AI` binding needs a
+  Cloudflare login) with an
   `--env-file` of throwaway super admin credentials — workerd, so OrgHub, its WebSockets, the queue,
   R2 and the Workflow all run for real (the Node `test/dev_server.ts` has no `WebSocketPair`, so
   agents fall back to HTTP there). Set `WORKER_URL=http://<its private IP>:8787` for the simulator —
@@ -69,6 +70,17 @@ changed. To call agent functions in place, load the module in a separate interpr
 - Podman copies an image's files into a tmpfs mounted over them (Docker mounts it empty), so a
   root-owned file baked under a tmpfs path is what the container starts with. Hand such files to
   `kiosk` in the Dockerfile — that is why `policies.json` is chowned.
+
+## What the simulator does not have
+
+It is not an installed disk: no GRUB, no image store, no `labkiosk-boot-slots` or
+`labkiosk-boot-ok.service`, and `/etc/labkiosk` is a tmpfs. It counts as installed only because
+neither `/run/live` nor `boot=live` is there. So no boot report is ever sent on its own; to see one
+reach Settings → Errors & Warnings, write the file as root (the agent ignores one `kiosk` owns):
+`docker exec -u 0 labkiosk-client-01 sh -c 'mkdir -p /run/labkiosk-update && printf …
+> /run/labkiosk-update/status.json'` with `{"state":"rolled-back","version":…,"failed":…,"at":<now>}`
+on an enrolled workstation; the agent sends it within 30 s. Image slots, rollback and the data
+mount are tested only by `distro-builder/tests/vm/boot-test.sh` (`labkiosk-distro`).
 
 ## Hardening (never loosen)
 

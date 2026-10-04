@@ -34,12 +34,22 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 4–5g and the root `
   page name). Panel commands click the page's own button — one code path per action. Header
   counters are filled on every page.
 - Tabs: Apps & Web (`broadcast | portal | whitelist`) and Settings (`general | domains | homepage |
-  security`) switch client-side through `window.labkioskSwitchTab()` (panel buttons use
+  security | issues`) switch client-side through `window.labkioskSwitchTab()` (panel buttons use
   `data-action="tab-<id>"`) and deep-link with `?tab=`; reloading onto a tab replaces `tab`
   with `url.searchParams.set`, never appends.
+- **Settings → Errors & Warnings** (`issues`) lists what workstations reported
+  (`GET /api/workstation-issues`); the audit log ("Recent activity", `security`) stays what people
+  did — never show a workstation problem there. The bug-report opt-in is shown only from that
+  route's `bugReports` state: disabled with a hint when the platform has no repository, and turning
+  it on (or re-accepting a new terms version) needs the terms checkbox linking `/terms/bug-reports`.
+  A reported row shows "New bug report #N" or "Already reported #N", a status badge and, for an open
+  PR, "View PR" (only `https://github.com/` links).
 - Other surfaces: `ui_super.ts` (`/super/organizations|approvals|catalogs|system`, one pane
   rendered), `ui_landing.ts`, `ui_portal.ts` (`/home`, User Portal), `ui_org_home.ts` (`/`),
-  `ui_legal.ts`.
+  `ui_legal.ts` (`/privacy`, `/terms`, `/terms/bug-reports`; no scripts). The Privacy Policy names
+  every Cloudflare product the Worker binds, GitHub and Google Fonts, and a test holds that list:
+  a new binding or outside service goes into both. Changing the bug report terms text means a new
+  `BUG_REPORT_TERMS_VERSION`.
 
 ## Design language
 

@@ -11,7 +11,7 @@
 cloudflare-control/
 ├── migrations/                         # Cloudflare D1 SQL migrations (0001..0018)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
-├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), hourly cron
+├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), AI, hourly cron
 ├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
 ├── src/
 │   ├── index.ts                        # Edge router, REST APIs, scheduled(), queue()
@@ -22,6 +22,8 @@ cloudflare-control/
 │   ├── portal_url.ts                   # A workstation's portal URL from its connection details
 │   ├── custom_hostnames.ts             # Cloudflare for SaaS custom hostname jobs
 │   ├── custom_hostname_workflow.ts     # The Workflow that runs those jobs with durable retries
+│   ├── boot_report.ts                  # Workstation boot reports, Errors & Warnings (Rule 2e)
+│   ├── bug_reports.ts                  # Opt-in automatic GitHub bug reports (Rule 2e)
 │   ├── guard.ts                        # Tenant resolution, authorization, CSRF origin guard (MANDATORY)
 │   ├── escape.ts                       # HTML / attribute / JSON escaping & safe URLs (MANDATORY)
 │   ├── db.ts                           # D1 Database queries, SCHEMA_SQL, tenant seeding, audit
@@ -78,7 +80,7 @@ cloudflare-control/
 - **Delegation Never Escalates**: a staff member holding `staff` who is not a co-administrator may only grant permissions they hold, may not appoint an `org_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Adding staff refuses an email that already has an account (`409`) rather than linking another organization's user, and removing staff ends that account's sessions.
 - **Customizable Subdomain & Settings**: Organization admins can customize their subdomain (`POST /api/tenant/subdomain`), default home route (`home_route`: e.g. `/` vs `/home`), and tunnel domain (`tunnel_domain` for per-organization Cloudflare Tunnels).
 - **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (who may then open only the platform-owned demos), for a session that already owns that tenant, or on an explicitly public route.
-- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry` and `/api/devices/ws` call `requireDevice()`. A route with no guard is a security vulnerability.
+- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry`, `/api/devices/ws` and `/api/devices/boot-report` call `requireDevice()`. A route with no guard is a security vulnerability.
 - A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims, and a WebSocket carries only the identity the Worker verified (`hubUpgrade()` builds a fresh request).
 - Only the `Host` header says where a request arrived. Never read `X-Forwarded-Host` (or any other caller-supplied header) to build a URL that is handed back to a workstation.
 
@@ -168,11 +170,39 @@ cloudflare-control/
   registration and enrolment; the D1 lockouts stay authoritative, and a limiter fault is logged,
   not fatal), `CUSTOM_HOSTNAMES` (a Workflow that creates, polls and deletes Cloudflare for SaaS
   hostnames) with the secrets `CF_API_TOKEN` and `CF_ZONE_ID`.
+- **Optional:** `AI` (Workers AI), the secret `GITHUB_ISSUES_TOKEN` and the variable
+  `GITHUB_ISSUES_REPO` (`owner/repo`) switch on automatic bug reports (Rule 2e); without all
+  three `bugReportRepository()` is `null` and no organization can turn them on. Never required.
 - **Tests** run a hub in-process: `LocalHubNamespace` (`src/local_do.ts`) implements the parts of
   the Durable Object runtime the hub uses on `node:sqlite`, and `tsconfig.runtime.json` maps
   `cloudflare:workers` to `test/shims/`. Real sockets need workerd: `pnpm dev` (`wrangler dev`) runs
   every binding locally, while the Node `test/dev_server.ts` has no `WebSocketPair`, so agents fall
   back to the HTTP heartbeat there.
+
+### Rule 2e: Errors & Warnings Are Not the Audit Log
+
+- **The audit log records what people did; `workstation_issues` (`0016`) records what went wrong
+  on a workstation.** A boot report (`POST /api/devices/boot-report`, `src/boot_report.ts`) keeps
+  the newest outcome on `client_devices.image_version` / `update_*` (`0015`) and writes a failure,
+  rollback, fallback or error to `workstation_issues` only — never `writeAuditLog()`. Settings →
+  Errors & Warnings reads them (`GET /api/workstation-issues`, `settings` permission). One report
+  per workstation per 60 s; the hourly cron deletes issues after 90 days.
+- **Automatic bug reports are opt-in per organization** (`POST /api/settings/bug-reports`,
+  `settings` permission, `{ enabled, acceptTerms }`). Turning them on requires `acceptTerms` equal
+  to `BUG_REPORT_TERMS_VERSION`; bumping that constant pauses every organization's reports until
+  an administrator accepts again, and any change to the text of `/terms/bug-reports` is a new version.
+  The opt-in change is audited (`settings.bug_reports`).
+- **The hourly cron** (`processBugReports()`) takes `pending` issues, redacts them
+  (`redactProblemText()`: URLs, hosts, addresses, e-mails, ids), links a repeat by `bug_signature`,
+  asks Workers AI (`BUG_REPORT_AI_MODEL`) whether an open report matches, and files or comments on
+  GitHub — at most 5 GitHub writes and 10 status read-backs per run. Nothing unredacted, and no
+  organization or workstation name, leaves the platform.
+- `bug_reports` has **no `tenant_id` on purpose**: one GitHub issue covers the same problem in
+  every organization, so it holds only redacted text and the issue's number, title and status.
+  Never add a tenant's name, workstation id or unredacted detail to it.
+- **Every outside service is disclosed.** `/privacy` names each Cloudflare product the Worker
+  binds plus GitHub and Google Fonts, and a test holds that list. Adding a binding or an outside
+  service means adding it to the Privacy Policy (`ui_legal.ts`) and to that test.
 
 ### Rule 3: The Schema Has Two Homes
 
@@ -258,7 +288,7 @@ cloudflare-control/
     - **Sidebar Subpanel**: Active **"Role"** filter section (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with live count badges that filter the authorized operators table instantly without page reload.
     - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
   - **Settings Page Layout (`/admin/settings`)**:
-    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 4 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`) with instant client-side switching and deep linking (`?tab=...`).
+    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 5 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`, `Errors & Warnings`) with instant client-side switching and deep linking (`?tab=...`).
     - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain & VNC Tunnel \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Activity).
     - **Scrollable Activity Table (`.table-scrollable`)**: Recent Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
   - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.

@@ -19,7 +19,7 @@ Before deploying to production, ensure you have:
 
 ## 1. Cloudflare D1 Database Provisioning
 
-The control plane requires Cloudflare D1 for durable multi-tenant persistence (organizations, admin users, sessions, portal apps, client devices, audit logs, and command queues).
+The control plane requires Cloudflare D1 for durable multi-tenant persistence (organizations, admin users, sessions, portal apps, client devices, audit logs, workstation errors and warnings, and bug reports).
 
 ### Step 1: Create the Remote Database
 
@@ -67,7 +67,7 @@ npx wrangler d1 migrations apply labkiosk-db --remote
 
 ### Upgrading an existing deployment
 
-Pending migrations are applied the same way. Two of them change existing data:
+Pending migrations are applied the same way. What some of them change:
 
 - **`0010_workstation_broadcast.sql`** adds per-workstation broadcast state. Deploy the Worker in the
   same release: the new Worker reads these columns on every heartbeat.
@@ -93,6 +93,13 @@ Pending migrations are applied the same way. Two of them change existing data:
   and deploy in the same release, because the old worker reads the dropped tables. Workstations
   from an older ISO keep working over the HTTP heartbeat; those with `python3-websocket` connect
   over a WebSocket.
+- **`0015_workstation_boot_reports.sql` … `0018_bug_report_triage.sql`** only add columns and two
+  tables (`workstation_issues`, behind Settings → Errors & Warnings, and `bug_reports`); nothing
+  existing is rebuilt or deleted. 0015 stores each installed workstation's last boot outcome
+  (`POST /api/devices/boot-report`); 0017 and 0018 hold the opt-in
+  [automatic bug reports](#automatic-bug-reports-optional), off until an organization opts in and
+  accepts the terms. The new worker refuses to serve until all four are applied, so apply them and
+  deploy in the same release.
 
 Back up, apply, then deploy:
 
@@ -156,7 +163,8 @@ proxied DNS record on your zone), and make sure the worker serves custom hostnam
 guide for using a Worker as the SaaS origin describes the catch-all route. Each organization then
 points its domain at the fallback origin with a CNAME.
 
-**Local development** needs none of this: `pnpm dev` (`wrangler dev`) runs every binding locally,
+**Local development** needs none of this: `pnpm dev` (`wrangler dev --local`) runs every binding
+locally except Workers AI, which it leaves out,
 and with `ALLOW_LOCAL_DB=1` a custom domain is marked `local` instead of provisioned. wrangler's
 local rate-limit simulator throws on every call; the worker logs that and keeps to the D1 lockouts.
 
@@ -177,7 +185,7 @@ unavailable to every organization until all three of these are set:
 
 | Setting | What it is | Set it |
 | :--- | :--- | :--- |
-| `AI` | Workers AI binding (reasoning model `@cf/openai/gpt-oss-120b`, effort `high`) | Already in `wrangler.jsonc`. Workers AI has no local simulator: under `wrangler dev` it calls your account. |
+| `AI` | Workers AI binding (reasoning model `@cf/openai/gpt-oss-120b`, effort `high`) | Already in `wrangler.jsonc`. Workers AI has no local simulator: `pnpm dev` runs with `--local`, which leaves it out (the option stays unavailable); plain `npx wrangler dev` calls your account and needs `wrangler login`. |
 | `GITHUB_ISSUES_TOKEN` | Secret: a fine-grained GitHub token for one repository with **Issues: Read and write** (and **Pull requests: Read** for a private repository) | `npx wrangler secret put GITHUB_ISSUES_TOKEN` |
 | `GITHUB_ISSUES_REPO` | Variable: the repository issues are filed in, `owner/repo` | Dashboard → Variables and Secrets (section 3) |
 

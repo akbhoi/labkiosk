@@ -38,7 +38,8 @@ assumed). Follow `0011_organization_vocabulary.sql`:
    `SCHEMA_SQL` because later migrations appended columns — mapping values in the `SELECT`.
 6. Drop the holding tables. Wrangler applies the file as one unit.
 
-Tables that reference neither (`login_attempts`, `ui_catalogs`) stay untouched.
+Tables that reference neither (`login_attempts`, `ui_catalogs`, `bug_reports`) stay untouched.
+`workstation_issues` references `tenants` (`ON DELETE CASCADE`), so a `tenants` rebuild holds it too.
 
 ## Test a migration before it ships
 
@@ -82,6 +83,17 @@ assistant | content_manager`; permissions JSON in `tenant_users.permissions`. Br
 `tenants.broadcast_url/epoch` and `client_devices.broadcast_url/epoch` (`0010`). Groups:
 `workstation_groups` + `client_devices.group_name` (by name). Catalogs: `ui_catalogs` has no
 `tenant_id` on purpose.
+
+**Boot reports and bug reports** (`0015`–`0018`). `client_devices.image_version`, `update_state`,
+`update_error`, `update_state_at` hold a workstation's last reported boot outcome.
+`workstation_issues` (tenant-scoped; `severity` `error | warning`, `kind`, `details`) backs
+Settings → Errors & Warnings, separate from `audit_logs`; the hourly cron deletes rows after
+90 days. Its `report_state` (`none | pending | sent`), `bug_signature` and `report_match`
+(`new | existing`) track the GitHub report. `tenants.bug_reports_enabled`,
+`bug_reports_terms_version`, `bug_reports_terms_accepted_at` record the opt-in. `bug_reports`
+(keyed by `signature`; `issue_number`, `issue_url`, `title`, `problem`, `status`
+`open | in_progress | pr_open | resolved | closed`, `pr_url`, `status_checked_at`) is platform-wide
+with **no `tenant_id` on purpose** and holds redacted text only.
 
 **Live state is not in D1** (`0014`). The command queue (`commands`, `command_deliveries`) and
 `client_devices.thumbnail` were dropped: queued commands, deliveries and who is connected live in

@@ -25,8 +25,8 @@ The installer writes a **hybrid GPT** layout so one disk image boots on legacy B
 | :-- | :--- | :--- | :--- | :--- |
 | 1 | `bios_grub` | 1 MiB – 2 MiB | none, flag `bios_grub on` | Lets legacy GRUB embed `core.img` on a GPT disk |
 | 2 | `ESP` | 2 MiB – 514 MiB | FAT32, flag `esp on` | UEFI bootloader files |
-| 3 | `ROOT` | 514 MiB – (end − 513 MiB) | ext4, label `LABKIOSK_ROOT` | The immutable Debian 12 system |
-| 4 | `DATA` | last 512 MiB | ext4, label `LABKIOSK_DATA` | Mounted at `/etc/labkiosk` with `nofail` |
+| 3 | `ROOT` | 514 MiB – (end − 513 MiB) | ext4, label `LABKIOSK_ROOT` | The image store: `boot/grub/` and the system images under `images/<version>/` |
+| 4 | `DATA` | last 512 MiB | ext4, label `LABKIOSK_DATA` | Mounted at `/etc/labkiosk` with `nofail`, by UUID |
 
 ### Why partition 4 exists
 
@@ -91,11 +91,11 @@ for a minute, or reboots into the old one. Details: `distro-builder/AGENTS.md` R
 
 | Command | Covers |
 | :--- | :--- |
-| `grub-install --target=x86_64-efi --efi-directory=<ESP> --boot-directory=<ROOT>/boot --bootloader-id=LabKiosk --no-nvram --recheck` | Normal UEFI boot entry |
+| `grub-install --target=x86_64-efi --efi-directory=<ESP> --boot-directory=<ROOT>/boot --bootloader-id=LabKiosk --no-nvram --recheck` | `EFI/LabKiosk/` on the ESP; `--no-nvram` leaves the firmware's boot variables untouched |
 | `grub-install --target=x86_64-efi --efi-directory=<ESP> --boot-directory=<ROOT>/boot --removable --recheck` | `EFI/BOOT/BOOTX64.EFI` fallback, for firmware that loses NVRAM boot variables |
 | `grub-install --target=i386-pc --boot-directory=<ROOT>/boot <disk> --recheck` | Legacy BIOS, embedding into the `bios_grub` partition |
 
-All three run on every install, so the drive boots regardless of the machine's firmware mode.
+All three run on every install to a SATA or virtio disk, so the drive boots regardless of the machine's firmware mode. On an NVMe or eMMC target the `i386-pc` install is skipped and the drive boots through UEFI only. The install fails only when no boot loader at all could be installed.
 
 ---
 

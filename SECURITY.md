@@ -55,10 +55,13 @@ Instead, please submit your findings privately via GitHub Security Advisories:
 5. **Protect the Enrollment Key:** It is the only thing standing between a stranger and your
    users' screens. Rotate it from **Settings -> Workstation Enrollment Key** if a workstation or
    USB drive goes missing; workstations already enrolled keep working.
-6. **Set a GRUB Password Before Building:** Record a `grub-mkpasswd-pbkdf2` hash in
-   `distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin`. Without it a user can edit
-   the kernel command line at boot and obtain a root shell, which defeats every protection above it.
-   The build warns when no password is pinned.
+6. **Set a GRUB Boot-Menu Password:** Without one a user can edit the kernel command line at boot
+   and obtain a root shell, which defeats every protection above it. Set it per installation in the
+   setup wizard's **Install to Hard Disk** step: it is written to `boot/grub/labkiosk-password.cfg`
+   on `LABKIOSK_ROOT`, outside every system image, so image updates and rollbacks keep it. To lock the
+   live USB menu as well, build a per-customer ISO with `LABKIOSK_GRUB_PBKDF2` (or `grub.pin` for a
+   single organization's own image); see `distro-builder/README.md`. Booting never prompts: only
+   editing an entry or opening the GRUB shell asks for the password.
 7. **Pin cloudflared:** The build installs the Cloudflare Tunnel binary only from a version and
    SHA-256 recorded in `cloudflared.pin`, and fails on a mismatch. Do not relax this to an unpinned
    "latest" download.
@@ -83,3 +86,10 @@ Instead, please submit your findings privately via GitHub Security Advisories:
    `--load-extension` and the workstation loses its navigation bar and lock curtain while continuing
    to report healthy telemetry. The policy file carries a comment explaining this; please read it
    before editing. Users cannot install extensions in any case.
+12. **Automatic Bug Reports Are Opt-In:** an organization's workstation errors are filed as GitHub
+    issues only when the deployment has set the `AI` binding, the `GITHUB_ISSUES_TOKEN` secret and
+    the `GITHUB_ISSUES_REPO` variable, **and** that organization's administrator has turned the option
+    on in **Settings → Errors & Warnings** after accepting the Automatic Bug Report Terms. Addresses,
+    host names and identifiers are masked before anything leaves the control plane, but issues in a
+    public repository are public: point `GITHUB_ISSUES_REPO` at a private repository if that matters,
+    and give the token access to that one repository only (`docs/DEPLOYMENT.md`).

@@ -81,7 +81,7 @@ In addition to navigation buttons, the top bar includes an interactive network i
 
 - **Visual status:** SVG network icon renders with a green stroke (`#10b981`) when online and red (`#ef4444`) when offline.
 - **Discoverability:** the bar slides into view for 2.5 seconds on the first page of each session, then hides itself. A bar that only appears when the pointer reaches the top edge is otherwise invisible to anyone who has not been told about it. The service worker hands out the one-shot flag (`labkiosk:intro-peek`, stored in `chrome.storage.session`), so it happens once per boot rather than on every navigation.
-- **Admin Authentication Modal (`#admin-modal`):** Because users must not tamper with network routes or IPs during class or assessments, clicking `#btn-network` renders an isolated password prompt inside the Shadow DOM.
+- **Admin Authentication Modal (`#admin-modal`):** Because users must not tamper with network routes or IPs during a session or an assessment, clicking `#btn-network` renders an isolated password prompt inside the Shadow DOM.
 - **Verification Bridge:** Entering the boot/admin password dispatches `askAgent({ type: "labkiosk:verify-admin", password })` to `background.js`, which invokes the agent's `/api/admin/verify`.
 - **Navigation:** Upon successful verification, the browser navigates to `http://127.0.0.1:8888/setup#network&admin=<token>`. The wizard keeps the short-lived token in memory and strips it from the address bar, so the password is asked only once.
 

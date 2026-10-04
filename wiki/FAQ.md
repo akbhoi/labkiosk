@@ -24,10 +24,10 @@ No. A workstation with no uplink keeps showing whatever it last loaded and backs
 ## Hardware
 
 **What are the minimum requirements?**
-2 GB RAM and a 3 GB disk will run it. The reference target is 4 GB RAM with a 12 GB SATA SSD, on an Intel x86_64 CPU.
+2 GB RAM and a 7 GiB disk (a drive sold as 8 GB qualifies) will run it; the installer needs room for two system images. The reference target is 4 GB RAM with a 12 GB SATA SSD, on an Intel x86_64 CPU.
 
 **Will it wear out my SSDs?**
-No — that is the point. `overlayroot="tmpfs"` mounts the root filesystem read-only and diverts every write to RAM, on live media and installed disks alike. The only exception is the 512 MiB `LABKIOSK_DATA` partition, written once at enrolment.
+No — that is the point. `overlayroot="tmpfs"` mounts the root filesystem read-only and diverts every write to RAM, on live media and installed disks alike. The only exceptions are the 512 MiB `LABKIOSK_DATA` partition, written at enrolment and when settings change, and the 1 KiB GRUB environment block that records which system image to boot.
 
 **BIOS or UEFI?**
 Both. The ISO boots via ISOLINUX on BIOS and GRUB EFI on UEFI, and the installer writes a hybrid GPT layout with three GRUB variants so the installed drive boots regardless of firmware mode.
@@ -53,6 +53,12 @@ Only for interactive remote control. Thumbnails, lock, broadcast, reload, reboot
 
 **How do I move a workstation to a different organization?**
 Remove it from the dashboard: within one heartbeat it shows the **Register this workstation again** form. Or, on the workstation, open the network page from the top bar and choose **Register with Another Organization…**. Either way, enter the administrator (boot) password, then the new organization's subdomain and key.
+
+**How do installed workstations get updated?**
+Not over the air yet. An installed disk is already an image store — whole system images under `images/<version>/`, booted through GRUB with a one-try boot and automatic rollback — but that is phase 1 of [docs/OTA_UPDATES.md](../docs/OTA_UPDATES.md). Downloading, signing, approving and LAN-sharing updates (phases 2–5) are not implemented. Today a new release means installing from the new ISO, which repartitions the disk, data partition included.
+
+**What happens if a new system image fails to boot?**
+It gets exactly one try. If it does not boot, or the agent and the browser do not stay up for a minute within ten minutes, the workstation reboots into the previous image by itself. The failure or rollback is reported to the control plane and listed under Settings → **Errors & Warnings**.
 
 **What happens if I rotate the enrollment key?**
 Nothing to enrolled workstations — they hold their own device tokens. Rotation only stops *new* enrolments with the old key.
@@ -102,7 +108,7 @@ Within one heartbeat — at most three seconds. Lock and unlock update the conso
 The agent runs under a supervisor loop that restarts it within about two seconds of any exit, and a Chromium watchdog relaunches the browser within a second. If a machine is genuinely stuck, `reboot` from the dashboard, or power-cycle it — nothing is lost.
 
 **Where are the logs?**
-`/tmp/lab-agent.log` on each workstation, in the RAM overlay. Administrative actions are in the organization's audit log in D1, which survives the tenant.
+`/tmp/lab-agent.log` on each workstation, in the RAM overlay. Administrative actions are in the organization's audit log in D1, which survives the tenant. Failed boots and rollbacks that installed workstations report are in Settings → **Errors & Warnings**, kept for 90 days. An organization can opt in there to having them filed as redacted GitHub issues, once its platform has automatic bug reports set up.
 
 ---
 

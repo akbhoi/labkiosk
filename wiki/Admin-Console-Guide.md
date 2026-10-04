@@ -129,7 +129,7 @@ Allows organization administrators to delegate lab control to colleagues with gr
 
 ## 5. Settings Module (`/admin/settings`)
 
-Structured into 4 semantic, deep-linkable tab panes (`?tab=...`) with horizontal 2-column card grouping (`grid-2col`):
+Structured into 5 semantic, deep-linkable tab panes (`?tab=...`) with horizontal 2-column card grouping (`grid-2col`):
 
 ### 1. General & Kiosk (`?tab=general`)
 
@@ -155,6 +155,28 @@ Structured into 4 semantic, deep-linkable tab panes (`?tab=...`) with horizontal
   - Capped with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) and sticky table headers (`th` pinned with `position: sticky; top: 0; z-index: 2;`).
   - Stays compact and neatly aligned with the left column cards.
 
+### 5. Errors & Warnings (`?tab=issues`)
+
+Problems workstations reported themselves, kept apart from Recent Activity (which records what people did) and deleted after 90 days. Today these are the outcomes of a system image update on an installed workstation, sent by the agent to `POST /api/devices/boot-report`:
+
+| Problem | Severity | Meaning |
+| :--- | :--- | :--- |
+| **Update failed** | Error | The new image started but failed its health check on that first boot; the workstation restarts into the previous image. |
+| **Update rolled back** | Error | The new image used its one try without being confirmed; the workstation is back on the previous image. |
+| **Started a fallback image** | Warning | The image it should have started is missing or damaged, so GRUB started another one. |
+| **Boot record error** | Error | The boot record could not be read or written; the details say why. |
+
+Each row shows when the workstation recorded it (its own clock), the workstation and image version, and the details.
+
+**Automatic bug reports (opt-in).** When the platform has set them up, the card offers **Send automatic bug reports**. To turn it on, tick **I accept the Automatic Bug Report Terms** (`/terms/bug-reports`) and then the option itself. From then on, new errors and warnings are filed as GitHub issues in the repository the hint names, where anyone may be able to read them. A report carries the kind of problem, the image version and the problem text with network addresses, host names and identifiers removed; never the organization's or its workstations' names. Problems listed before you turned it on are not sent. If the terms change, nothing is sent until you tick the box again to accept the new version. Untick the option to stop. When the platform has not set them up, the hint says so and the option cannot be turned on.
+
+Under each problem, the report line shows where it stands:
+
+- **Bug report queued**: waiting for the hourly run that files it.
+- **New bug report #N**: it opened GitHub issue #N.
+- **Already reported #N**: it matched an issue already filed, which received a comment instead.
+- A badge with that issue's status on GitHub: **In progress** (assigned or labelled "in progress"), **PR created** (a pull request references it, with a **View PR** link), **Resolved** (closed as completed) or **Closed** (closed for another reason). An open issue shows no badge.
+
 ---
 
 ## 6. Room Recipes
@@ -163,13 +185,13 @@ Structured into 4 semantic, deep-linkable tab panes (`?tab=...`) with horizontal
   1. In `Apps & Web → Broadcast`, enter the assessment URL and click Broadcast.
   2. In `Workstations`, click **Select All** &rarr; **Lock** with instructions while handing out assessment materials.
   3. When all users are seated, click **Unlock**.
-- **Regaining Class Attention**:
+- **Regaining Attention**:
   1. Click **Lock** on the selection toolbar with a brief message (*"Eyes to the front please"*).
   2. Keystrokes, mouse clicks, and shortcuts are suppressed until unlocked.
 - **End of a Session** (before the next group sits down):
   1. Click **Select All** on the Workstations toolbar (or select one group's checkbox).
   2. Open **Session & Power**, choose **Clear Session** and confirm.
-  3. Within a few seconds every browser restarts signed out: no Google or organization-portal login, history, cookies or cached pages from the previous class remain. The machines stay on, so the next class starts immediately.
+  3. Within a few seconds every browser restarts signed out: no Google or organization-portal login, history, cookies or cached pages from the previous session remain. The machines stay on, so the next group starts immediately.
 - **End of Day Lab Shutdown**:
   1. Click **Select All** on the Workstations toolbar.
   2. Open **Session & Power** and choose **Shutdown**.

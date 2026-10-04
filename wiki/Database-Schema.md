@@ -15,7 +15,7 @@ This is the single most important rule when touching the database, and the test 
 
 Both must be changed together. `test/worker.test.ts` compares them and fails on drift with `Columns of "x" differ between SCHEMA_SQL and migrations/`.
 
-**Never edit an applied migration.** Add a new numbered file — `0006_feature.sql` — and mirror the change in `SCHEMA_SQL`.
+**Never edit an applied migration.** Add a new numbered file — `0019_feature.sql` — and mirror the change in `SCHEMA_SQL`.
 
 ```bash
 # Local
@@ -49,8 +49,8 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0014_org_hub_live_state.sql` | Drops `commands`, `command_deliveries` and `client_devices.thumbnail` (live state moved to OrgHub); adds `tenants.online_workstations`, `custom_hostname_id`, `custom_hostname_status` |
 | `0015_workstation_boot_reports.sql` | `client_devices.image_version`, `update_state`, `update_error`, `update_state_at` (boot outcomes from `POST /api/devices/boot-report`) |
 | `0016_workstation_issues.sql` | `workstation_issues`: errors and warnings workstations report (Settings → Errors & Warnings), deleted after 90 days |
-| `0018_bug_report_triage.sql` | `tenants.bug_reports_terms_version` / `_accepted_at`, `bug_reports.title`, `problem`, `status`, `pr_url`, `status_checked_at`, `workstation_issues.report_match` |
 | `0017_bug_reports.sql` | `tenants.bug_reports_enabled`, `workstation_issues.report_state` and `bug_signature`, and the platform table `bug_reports`: opt-in automatic GitHub bug reports |
+| `0018_bug_report_triage.sql` | `tenants.bug_reports_terms_version` / `_accepted_at`, `bug_reports.title`, `problem`, `status`, `pr_url`, `status_checked_at`, `workstation_issues.report_match` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -298,6 +298,8 @@ idx_device_tokens_tenant           device_tokens(tenant_id, client_id)
 idx_tenant_whitelist_tenant        tenant_whitelist(tenant_id)
 idx_broadcast_presets_tenant       broadcast_presets(tenant_id)
 idx_audit_logs_tenant              audit_logs(tenant_id, created_at)
+idx_workstation_issues_tenant      workstation_issues(tenant_id, created_at)
+idx_bug_reports_issue              bug_reports(issue_number)   -- platform table, no tenant_id
 ```
 
 Every index leads with `tenant_id` wherever the table is tenant-scoped, matching the query shape that `db.ts` always uses.
@@ -306,7 +308,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0006_<description>.sql`. Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0019_<description>.sql` (the next number after `0018`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

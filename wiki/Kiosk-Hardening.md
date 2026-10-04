@@ -39,7 +39,7 @@ at reboot.
 
 The real root filesystem is mounted **read-only**, with a `tmpfs` overlay on top. Every write — browser cache, agent logs, downloads, user files, session state — lands in RAM and is gone at power-off.
 
-This holds on live media **and** on installed disks. Two consequences follow:
+This holds on live media **and** on installed disks. An installed disk boots the very same `filesystem.squashfs` the ISO carries, copied into its image store, through live-boot with the same overlay. Two consequences follow:
 
 - **Zero flash wear.** Thin-client SSDs as small as 12 GB with limited write cycles are never written to during operation.
 - **Every boot is a clean boot.** Nothing a user does survives a reboot, so there is no persistence for malware, no accumulated profile corruption, and no stale configuration.
@@ -71,7 +71,7 @@ The single exception on an installed disk is `/etc/labkiosk`, mounted from the `
 
 What makes an empty password safe here is that **no login path exists to use it**: nodm is pinned to `NODM_USER=kiosk` and starts a session for a fixed user with no password to check, every getty is masked, and no SSH server is installed. There is no prompt anywhere that would accept it.
 
-`kiosk` holds exactly one sudo grant — `NOPASSWD` on `/usr/local/bin/labkiosk-install`, via `/etc/sudoers.d/50-labkiosk-install` — which is what lets the setup wizard run the guided installer. There is no general sudo access.
+`kiosk` holds two narrow sudo grants — `NOPASSWD` on `/usr/local/bin/labkiosk-install` (`/etc/sudoers.d/50-labkiosk-install`), which is what lets the setup wizard run the guided installer, and on `/usr/local/sbin/labkiosk-localization` (`/etc/sudoers.d/51-labkiosk-localization`) for language and region. There is no general sudo access: live-config's `sudo` and `policykit` components, which would otherwise grant the live user `NOPASSWD: ALL` and every polkit action at every boot, are pre-seeded away — on the ISO and on installed disks, which boot through live-boot too. `labkiosk-boot-slots`, which chooses the image an installed disk boots, has no sudo rule at all.
 
 ### Polkit power policy
 
@@ -163,7 +163,7 @@ All of the above assumes an untampered kernel invocation. Someone with physical 
 
 ### The boot-menu password
 
-**A workstation always boots completely unattended.** Every menu entry is marked `--unrestricted`, applied unconditionally by `02-security.hook.chroot`, so powering on goes straight to the kiosk with no prompt. The password is asked for only when someone presses `e` to edit an entry, or `c` for the GRUB shell.
+**A workstation always boots completely unattended.** Every menu entry is marked `--unrestricted` — applied unconditionally by `02-security.hook.chroot`, and written into every entry of the installed disk's boot menu (`usr/share/labkiosk/boot/grub.cfg`, a test checks it) — so powering on goes straight to the kiosk with no prompt. The password is asked for only when someone presses `e` to edit an entry, or `c` for the GRUB shell.
 
 > **Do not commit a hash for an image you ship to more than one customer.** A hash compiled into the ISO is one boot-menu password shared by every deployment that image produced: a leak at any single site compromises all of them, it cannot be rotated on machines already in the field, and `grub.pin` is tracked in git, so the hash is permanent in history and open to offline cracking by anyone who can read the repository.
 
@@ -190,7 +190,7 @@ docker run --privileged --rm \
 
 | Target | Mechanism | Set by |
 | :--- | :--- | :--- |
-| Installed disk | `/etc/grub.d/01_labkiosk_password`, consumed by `update-grub` | The wizard, per installation (Route 1) |
+| Installed disk | `boot/grub/labkiosk-password.cfg` on `LABKIOSK_ROOT`, outside every system image so updates keep it, sourced by the installed `grub.cfg` | The wizard, per installation (Route 1) |
 | Live ISO, UEFI | `config/bootloaders/grub-pc/labkiosk-password.cfg`, sourced by `config.cfg` | `auto/config` from `LABKIOSK_GRUB_PBKDF2` or `grub.pin` (Route 2) |
 | Live ISO, legacy BIOS | `ALLOWOPTIONS 0` + `NOESCAPE 1` in `config/bootloaders/*/stdmenu.cfg` — **no password needed**, syslinux discards any kernel argument typed at the prompt | static config, always |
 
@@ -204,7 +204,7 @@ GRUB_CMDLINE_LINUX_DEFAULT="consoleblank=0"
 GRUB_DISABLE_RECOVERY="true"
 ```
 
-Recovery mode is a root shell by design and has no place on a kiosk. `consoleblank=0` — rather than `quiet loglevel=3` — is what resolved the black-screen boot deadlock; suppressing boot logs made a PAM autologin failure invisible.
+The installed disk's boot menu is the static `usr/share/labkiosk/boot/grub.cfg` rather than one generated from these settings, and it matches them: `timeout=3`, `consoleblank=0` on every kernel line, and no recovery entry. Recovery mode is a root shell by design and has no place on a kiosk. `consoleblank=0` — rather than `quiet loglevel=3` — is what resolved the black-screen boot deadlock; suppressing boot logs made a PAM autologin failure invisible.
 
 ### BIOS / UEFI firmware
 

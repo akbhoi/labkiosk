@@ -12,6 +12,9 @@ Every knob, where it is set, and what happens if it is wrong.
 | :--- | :--- | :--- |
 | `SUPER_ADMIN_EMAIL` | **Yes**, with a D1 binding | The worker refuses to serve |
 | `SUPER_ADMIN_PASSWORD` | **Yes**, with a D1 binding | The worker refuses to serve |
+| `CF_API_TOKEN` | For custom domains | Approving a custom domain cannot create its Cloudflare for SaaS custom hostname. An API token for the platform zone with **Zone · SSL and Certificates · Edit**. |
+| `CF_ZONE_ID` | For custom domains | As above. The zone id of the platform domain (zone **Overview** → *API* → *Zone ID*). |
+| `GITHUB_ISSUES_TOKEN` | No | Automatic bug reports stay unavailable to every organization. A fine-grained token for the one repository in `GITHUB_ISSUES_REPO` with **Issues: Read and write** (and **Pull requests: Read** for a private repository). |
 
 There is no default super admin in a production path. Changing `SUPER_ADMIN_EMAIL` migrates the account to the new address; rotate the password from inside `/super` instead, since that path verifies the current password and revokes the account's other sessions.
 
@@ -23,6 +26,7 @@ There is no default super admin in a production path. Changing `SUPER_ADMIN_EMAI
 | `ISO_DOWNLOAD_URL` | a GitHub Releases asset URL | Target of `/download` and `/iso` |
 | `TUNNEL_DOMAIN` | `labkiosk.yourdomain.com` | Base domain for remote-assistance tunnels. Defaults to `lab.example.com`. |
 | `DEFAULT_HOMEPAGE` | `https://labkiosk.yourdomain.com` | Fallback for non-enrolled clients |
+| `GITHUB_ISSUES_REPO` | `owner/repo` | Repository automatic bug reports are filed in. Unset or malformed: the option stays unavailable. |
 | `ALLOW_LOCAL_DB` | `1` | **Tests and local dev only.** Permits the in-memory database when no D1 binding exists. |
 
 > **Never define a `vars` block in `wrangler.jsonc`.** Every `wrangler deploy` — including every CI run — overwrites whatever is configured in the Cloudflare dashboard. Manage production values in the dashboard or with `wrangler secret`; use `.dev.vars` locally.
@@ -39,11 +43,14 @@ There is no default super admin in a production path. Changing `SUPER_ADMIN_EMAI
     { "pattern": "labkiosk.yourdomain.com/*",   "zone_name": "yourdomain.com" },
     { "pattern": "*.labkiosk.yourdomain.com/*", "zone_name": "yourdomain.com" }
   ],
-  "triggers": { "crons": ["0 * * * *"] }
+  "triggers": { "crons": ["0 * * * *"] },
+  "ai": { "binding": "AI" }
 }
 ```
 
 Both routes are needed: the apex for the landing page and `/super`, the wildcard for every organization.
+
+The `AI` binding (Workers AI, model `@cf/openai/gpt-oss-120b`) is used only by automatic bug reports and needs no token. `pnpm dev` runs `wrangler dev --local`, which leaves it out; plain `npx wrangler dev` calls your account and needs `wrangler login`. The option is offered to organizations only when `AI`, `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO` are all set.
 
 ### `.dev.vars` — local only
 
@@ -86,6 +93,7 @@ Configured by an organization admin in the dashboard; stored on the `tenants` ro
 | Custom domain | `custom_domain` | Requires super-admin approval; unique across the platform |
 | Allowlist | `tenant_whitelist` rows | Unioned with every portal app's host |
 | Broadcast presets | `broadcast_presets` rows | One-click shortcuts |
+| Automatic bug reports | `bug_reports_enabled`, `bug_reports_terms_version`, `bug_reports_terms_accepted_at` | Off by default. Sent only while the accepted terms version is the current `BUG_REPORT_TERMS_VERSION` |
 
 Rotating the enrollment key does **not** affect enrolled workstations — they hold their own device tokens.
 
@@ -123,13 +131,9 @@ Configured in Step 1 of the setup wizard or via `POST /api/network/configure`. A
 ### `/etc/labkiosk/system-connections/` — mode `0700`
 
 Contains NetworkManager connection keyfiles (`mode 0600`, owned by `root:root`).
-On installed disks, this directory is hosted on the persistent `LABKIOSK_DATA` partition and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab`:
+On installed disks, this directory is hosted on the persistent `LABKIOSK_DATA` partition and bind-mounted to `/etc/NetworkManager/system-connections` by a mount unit the image ships (`etc-NetworkManager-system-connections.mount`, `bind,nofail`, only with `labkiosk.installed=1`). It requires `etc-labkiosk.mount`, which `labkiosk-data-generator` creates from the `labkiosk.data=<uuid>` kernel argument; no `/etc/fstab` is written.
 
-```text
-/etc/labkiosk/system-connections /etc/NetworkManager/system-connections none bind,nofail 0 0
-```
-
-This guarantees Wi-Fi credentials and static IP configurations persist across `overlayroot="tmpfs"` reboots.
+This guarantees Wi-Fi credentials and static IP configurations persist across reboots, which otherwise discard the RAM overlay.
 
 ### `/etc/localtime` and `/etc/timezone`
 
@@ -204,15 +208,17 @@ Permits the unprivileged `kiosk` user to control NetworkManager and create/modif
 | `LOCAL_API_PORT` | `8888` | Loopback API port |
 | `MAX_THUMBNAIL_BYTES` | `256 * 1024` | Oversized frames are dropped, not shrunk |
 | `MAX_BACKOFF_SECONDS` | `60` | Ceiling on telemetry retry back-off |
-| `CLIENT_ID_PATTERN` | `^[A-Z0-9][A-Z0-9_-]{0,62}$` | |
-| `TARGET_DISK_PATTERN` | `^/dev/(sd[a-z]\|vd[a-z]\|nvme[0-9]+n[0-9]+\|mmcblk[0-9]+)$` | |
-| `GRUB_PBKDF2_PATTERN` | `^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+$` | |
+| `CLIENT_ID_PATTERN` | `^[A-Z0-9][A-Z0-9_-]{0,62}\Z` | |
+| `TARGET_DISK_PATTERN` | `^/dev/(sd[a-z]\|vd[a-z]\|nvme[0-9]+n[0-9]+\|mmcblk[0-9]+)\Z` | |
+| `GRUB_PBKDF2_PATTERN` | `^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+\Z` | |
 
 ### `/etc/overlayroot.conf`
 
 ```ini
 overlayroot="tmpfs:recurse=0"
 ```
+
+What provides the RAM overlay today is **live-boot**: the ISO and the installed `grub.cfg` (`usr/share/labkiosk/boot/grub.cfg`) both boot with `boot=live`, which mounts the read-only `filesystem.squashfs` under a `tmpfs` upper layer. The image still ships the `overlayroot` package and this file, and both command lines also pass `overlayroot=tmpfs:recurse=0`, so whichever reads it gets the same value.
 
 `recurse=0` has to be part of the value. overlayroot reads only the `overlayroot` and
 `overlayroot_cfgdisk` variables from this file, so a separate `overlayroot_options=` line

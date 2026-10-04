@@ -30,17 +30,21 @@ distro-builder/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Empty keybindings (rc.xml) & autostart script
 │       │   ├── overlayroot.conf        # RAM overlay (overlayroot="tmpfs", recurse=0)
-│       │   └── systemd/system/         # cloudflared-kiosk.service only; nodm is configured
-│       │                               #   through /etc/default/nodm in 01-lockdown.hook.chroot,
-│       │                               #   and the agent is started by the Openbox autostart
+│       │   ├── systemd/system/         # cloudflared-kiosk.service, labkiosk-boot-ok.service; nodm
+│       │   │                           #   is configured through /etc/default/nodm in
+│       │   │                           #   01-lockdown.hook.chroot, and the agent is started by
+│       │   │                           #   the Openbox autostart
+│       │   └── systemd/system-generators/labkiosk-data-generator   # etc-labkiosk.mount by UUID
 │       ├── opt/labkiosk/
 │       │   ├── setup/wizard.html       # Setup & Enrollment Wizard GUI (HTML/JS)
 │       │   ├── extension/              # Manifest V3: content.js (top bar & curtain) +
 │       │   │                           #   background.js (service worker; sole loopback caller)
 │       │   └── agent/agent.py          # Python 3 control-channel daemon & local loopback API
 │       ├── usr/local/bin/
-│       │   └── labkiosk-install        # Automated Python disk installer (GPT, ESP, image store, dual GRUB)
+│       │   ├── labkiosk-install        # Automated Python disk installer (GPT, ESP, image store, dual GRUB)
+│       │   └── labkiosk-lock-keys      # Strips blocked keys from the X keymap (Rule 1h)
 │       ├── usr/local/sbin/
+│       │   ├── labkiosk-localization   # The one program the agent may sudo (Rule 1e)
 │       │   └── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
 │                                       #   plus the cloudflared.pin, grub.pin & novnc.pin build
@@ -307,7 +311,7 @@ distro-builder/
     2. Partition 2: `ESP` (2 MiB – 514 MiB, FAT32, flag `esp on`) for UEFI bootloader files.
     3. Partition 3: `ROOT` (514 MiB – end − 513 MiB, ext4, label `LABKIOSK_ROOT`), the root-only image store: `boot/grub/` and `images/<version>/` (Rule 8).
     4. Partition 4: `DATA` (end − 512 MiB – 100%, ext4, label `LABKIOSK_DATA`) mounted at `/etc/labkiosk` with `nofail`, holding persistent credentials and `/etc/labkiosk/system-connections/`.
-  - The installer runs **both** `grub-install --target=x86_64-efi --removable` and `grub-install --target=i386-pc <disk>`, each with `--boot-directory` on `ROOT`, so the drive boots on any machine regardless of firmware mode.
+  - The installer runs `grub-install --target=x86_64-efi --bootloader-id=LabKiosk --no-nvram`, the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`, each with `--boot-directory` on `ROOT`, so the drive boots on any machine regardless of firmware mode.
 
 ### Rule 3: The Installer Copies the Image, Not the Root
 
@@ -330,7 +334,7 @@ distro-builder/
     checked first because an installed disk also has `/run/live` and `boot=live`.
   - Otherwise, if `/run/live` exists or `boot=live` in `/proc/cmdline`: **Live installer** (`isLive: true`).
 - **UI Behavior in `wizard.html`**:
-  - Live session: Shows sequential 2-step stepper (`Step 1: Network Setup` -> `Step 2: Choose Destination Mode [Install to Disk vs. Live Preview & Enroll]`) with badge `LIVE INSTALLER & SETUP`.
+  - Live session: Shows a sequential 3-step stepper (`Language & Region` -> `Network Setup` -> `Install or Preview` [Install to Disk vs. Live Preview & Enroll]) with badge `LIVE INSTALLER & SETUP`.
   - Installed drive: Displays badge `INSTALLED WORKSTATION`, hides the disk installer view **and the network step**, and opens directly on the enrolment form. The network was configured before the installation and came back with it, so showing it again on every boot only got in the way; it is reached from the network icon in the kiosk top bar (`/setup#network`), gated behind the administrator password modal.
   - **Wizard Responsiveness & Offline Resiliency**:
     - The setup wizard (`wizard.html`) enforces `.wizard-card { margin: auto; }` and `body { overflow-y: auto; }` within its flex container so that cards are centered on large screens while remaining fully scrollable without top-clipping on small viewports (e.g. 1024x768 or 800x600).
@@ -506,7 +510,12 @@ distro-builder/
   show in the console under Settings → Errors & Warnings (`labkiosk-core` §2b).
 - `labkiosk-boot-slots try <version>` gives an image already on disk its one try at the next boot
   (the primitive the updater will use). There is no sudo rule for it: the agent never chooses what
-  boots.
+  boots. The health check reaches the loopback agent with no proxy (an organization proxy must not
+  decide whether an image is healthy).
+- The installed kiosk has no shell (getty masked, no SSH). To try a slot by hand, mount
+  `LABKIOSK_ROOT` from another system and run `grub-editenv boot/grub/grubenv set next=<v> next_tries=1`.
+- Only phase 1 of `docs/OTA_UPDATES.md` §9 is built. Downloading, signing, an approval UI and LAN
+  sharing (phases 2–5) are research; never document or depend on them as features.
 
 ---
 
@@ -561,7 +570,10 @@ Always run before packaging or testing:
 # interpreter into the image.
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots
+sh -n distro-builder/config/includes.chroot/etc/systemd/system-generators/labkiosk-data-generator
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 
@@ -614,6 +626,18 @@ previously built ISO — over a gigabyte — and, worse, a stale `lb config`-gen
 whose `LB_BOOTAPPEND_LIVE` still contained the `quiet loglevel=3` that caused the black-screen boot
 deadlock.*
 
+### 2b. Installed-Disk Boot Test (QEMU)
+
+`.github/workflows/build-iso.yml` runs `distro-builder/tests/vm/boot-test.sh` on every built ISO:
+the ISO's own installer writes a virtual disk, which then boots under QEMU + OVMF (UEFI, KVM)
+through four scenarios — promote, broken squashfs, recover, unhealthy image — read back from
+`grubenv`. BIOS is covered only by the GRUB menu tests in `test_client.py`. It needs root and
+`/dev/kvm`, so it does not run on Windows:
+
+```bash
+sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso
+```
+
 ### 3. Rapid Live Debugging via Docker Test Simulator
 
 ```bash
@@ -649,7 +673,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 | **A shell hook dies with `$'\r': command not found`** | The file was checked out or written with CRLF line endings. Windows git defaults to `core.autocrlf=true`, and Python's `Path.write_text` translates newlines on Windows. | `.gitattributes` pins every build and image file to `eol=lf`. Never write these files with a tool that rewrites newlines. |
 | **The Language & Region step is missing, or its lists are empty** | The `locales` package or tzdata's tables are absent, so `labkiosk-localization --list-options` has nothing to report. The wizard hides the step rather than showing empty menus. | Keep `locales`, `tzdata` and `xkb-data` in `kiosk.list.chroot` (and in the simulator's Dockerfile, which is where the step gets exercised). |
 | **An enrolment is accepted and then forgotten at the next reboot, with no error anywhere** | `/etc/overlayroot.conf` set `overlayroot_options="recurse=0"`, a variable overlayroot never reads. At its default `recurse=1` it overlays every fstab entry, so `/etc/labkiosk` was an overlay on RAM rather than the data partition — mounted, writable, and empty again after a reboot. | `overlayroot="tmpfs:recurse=0"` (see Rule 1a), in the image, in what the installer writes, and on every boot command line. |
-| **Enrolment on an installed workstation is forgotten after a reboot** | `overlayroot="tmpfs"` sends every write to a RAM overlay, `/etc/labkiosk/config.json` included, unless the `LABKIOSK_DATA` partition is mounted there. The `nofail` fstab entry is not ordered before `local-fs.target`, so a boot-time helper that simply `mkdir -p`s the path turns a loud failure into silent data loss. | The installer creates and mounts the partition; `labkiosk-data-permissions` mounts it if the boot has not yet, and refuses to fabricate a directory when it cannot. The agent reports `persistentStorage: false` and the wizard warns before and after enrolling. On an image built before the partition existed, enrol from the live session *before* installing. |
+| **Enrolment on an installed workstation is forgotten after a reboot** | `overlayroot="tmpfs"` sends every write to a RAM overlay, `/etc/labkiosk/config.json` included, unless the `LABKIOSK_DATA` partition is mounted there. The `nofail` mount unit is not ordered before `local-fs.target`, so a boot-time helper that simply `mkdir -p`s the path turns a loud failure into silent data loss. | The installer creates and mounts the partition; `labkiosk-data-permissions` mounts it if the boot has not yet, and refuses to fabricate a directory when it cannot. The agent reports `persistentStorage: false` and the wizard warns before and after enrolling. On an image built before the partition existed, enrol from the live session *before* installing. |
 | **Installer offers the USB it booted from** | `--list-disks` recorded the `removable` flag but never filtered on it. | `live_medium_disks()` excludes the backing disk of `/run/live/medium`, both when listing and again immediately before `wipefs`. |
 | **Black screen on boot (Plymouth/NODM deadlock)** | `quiet loglevel=3` suppressed boot logs and PAM autologin was locked. | Pass `consoleblank=0` (remove `quiet loglevel=3`), unlock kiosk password (`passwd -d kiosk`), and pre-seed live-config markers. |
 | **Enrolment fails with `PermissionError ... /etc/labkiosk/config.json.tmp`** | The `LABKIOSK_DATA` partition mounted at `/etc/labkiosk` is owned by root, so the unprivileged agent cannot write its enrolment. Seen on disks written by an older installer. | `labkiosk-data-permissions.service` now corrects the ownership at every boot, and the installer verifies it before declaring success. The agent's error names the owner, the mode and its own uid. |

@@ -5,7 +5,7 @@ description: Lab Kiosk Cloudflare Worker back end — adding or changing API rou
 
 # Lab Kiosk — Worker routes, guards & tenancy
 
-Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2c, 6–7). This is the working checklist.
+Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2e, 6–7). This is the working checklist.
 
 ## Before writing a route
 
@@ -55,6 +55,20 @@ Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2c, 6–7). This
   hands the command to the hub (`hubJson(env, tenantId, "/enqueue", …)`). Commands and payloads:
   see `labkiosk-core`.
 
+## Workstation problems and bug reports (Rule 2e)
+
+- `POST /api/devices/boot-report` (`requireDevice()`, answered before sessions like `/api/telemetry`)
+  → `src/boot_report.ts`: validates, keeps the newest on `client_devices.update_*`, and writes a
+  failure/rollback/fallback/error to `workstation_issues`. **Never `writeAuditLog()` for a
+  workstation's problem**: the audit log is what people did.
+- `GET /api/workstation-issues` and `POST /api/settings/bug-reports` (`{ enabled, acceptTerms }`)
+  need `settings`. Turning reports on answers `409` when the platform has no repository and `400`
+  unless `acceptTerms === BUG_REPORT_TERMS_VERSION`; any change to the terms text at
+  `/terms/bug-reports` (public, `isPublicTenantRoute()`) bumps that constant.
+- `processBugReports()` (hourly cron) is the only code that talks to GitHub or Workers AI; it sends
+  redacted text only and caps GitHub writes per run. `bug_reports` is platform-wide (no
+  `tenant_id`), so only redacted, organization-free text goes in it.
+
 ## OrgHub (`src/org_hub.ts`) — one Durable Object per organization
 
 - Reached only through `src/hub.ts` (`hubRequest`, `hubJson`, `hubUpgrade`, `notifyConfigChanged`),
@@ -87,8 +101,12 @@ fall back to in-process stand-ins. Without it, `requiredBindingsProblem()` refus
 `CUSTOM_HOSTNAMES`, `CF_API_TOKEN` and `CF_ZONE_ID` are all present. `AUTH_RATE_LIMITER` is a coarse
 front layer on sign-in, registration and enrolment; the D1 lockouts behind it stay authoritative,
 and a limiter fault is logged rather than failing sign-in. Configuration (`DEFAULT_DOMAIN`,
-`ISO_DOWNLOAD_URL`, `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`) lives in the Cloudflare dashboard / `wrangler secret` and `.dev.vars` locally — never in
-`wrangler.jsonc` `vars` (deploy overwrites dashboard values).
+`ISO_DOWNLOAD_URL`, `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`, and the optional
+`GITHUB_ISSUES_TOKEN` + `GITHUB_ISSUES_REPO`) lives in the Cloudflare dashboard / `wrangler secret`
+and `.dev.vars` locally — never in `wrangler.jsonc` `vars` (deploy overwrites dashboard values).
+Automatic bug reports also need the `AI` binding (`wrangler.jsonc`); without all three
+`bugReportRepository()` is `null` and the feature is off. A new binding or outside service is
+also named in the Privacy Policy (`ui_legal.ts`), which a test checks.
 
 ## Tests — mandatory for every route
 
@@ -99,7 +117,8 @@ pnpm --prefix cloudflare-control run typecheck && pnpm --prefix cloudflare-contr
 Add negative tests: anonymous, cross-tenant (another organization's cookie), cross-site `Origin`,
 invalid input, and for staff routes a delegate exceeding their permissions. On a production host
 an anonymous request that names a tenant is refused with `403` before the route's `401`, so assert
-"refused" (`401` or `403`), not one status. Fixtures: `orgSessionCookie` (greenwood),
+"refused" (`401` or `403`), not one status. A device route needs a forged-token `401` and must
+ignore a `?tenant=` or client id the request claims. Fixtures: `orgSessionCookie` (greenwood),
 `rivalSessionCookie` (riverside), `superSessionCookie`.
 
 Then check the behaviour in a browser — see `labkiosk-console-ui` §Verify.
