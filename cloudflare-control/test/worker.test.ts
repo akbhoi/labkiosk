@@ -550,7 +550,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/?tenant=greenwood", undefined, false],
       ["/?tenant=no-such-organization", undefined, false],
       ["/privacy", undefined, false],
-      ["/terms", undefined, false]
+      ["/terms", undefined, false],
+      ["/terms/bug-reports", undefined, false]
     ];
     for (const [page, cookie, hasToggle] of pages) {
       const html = await (await call(page, cookie ? { cookie } : {})).text();
@@ -661,6 +662,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/home?tenant=greenwood", undefined],
       ["/privacy", undefined],
       ["/terms", undefined],
+      ["/terms/bug-reports", undefined],
       ["/admin/workstations?tenant=greenwood", orgSessionCookie],
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
@@ -3278,6 +3280,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(privHtml, /FERPA/);
     assert.match(privHtml, /COPPA/);
     assert.match(privHtml, /100% In-Memory RAM Overlay/);
+    // Every Cloudflare service the worker binds is disclosed, with Cloudflare's privacy terms.
+    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Cloudflare Tunnel", "Workers AI", "GitHub", "Google Fonts"]) {
+      assert.ok(privHtml.includes(`<strong>${service}`) || privHtml.includes(`and ${service}`), `the Privacy Policy names ${service}`);
+    }
+    assert.match(privHtml, /href="https:\/\/www\.cloudflare\.com\/cloudflare-customer-dpa\/"/);
+    assert.match(privHtml, /href="\/terms\/bug-reports"/);
     const privCsp = privRes.headers.get("Content-Security-Policy") || "";
     assert.match(privCsp, /script-src 'nonce-[^']+'/);
 
@@ -3290,6 +3298,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(termsHtml, /45-Computer/);
     assert.match(termsHtml, /Subscriber Licensing/);
     assert.match(termsHtml, /Organization Responsibilities/);
+    assert.match(termsHtml, /Third-Party Services/);
+    assert.match(termsHtml, /href="\/terms\/bug-reports"/);
     const termsCsp = termsRes.headers.get("Content-Security-Policy") || "";
     assert.match(termsCsp, /script-src 'nonce-[^']+'/);
   });

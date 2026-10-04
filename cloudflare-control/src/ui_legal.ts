@@ -157,7 +157,7 @@ export function renderPrivacyPolicyHtml(): string {
   <main>
     <div class="legal-card">
       <h1>Privacy &amp; Data Protection Policy</h1>
-      <div class="updated-date">Last updated: September 20, 2026 • Effective immediately</div>
+      <div class="updated-date">Last updated: October 4, 2026 • Effective immediately</div>
 
       <div class="highlight-box">
         <strong>100% In-Memory RAM Overlay Guarantee</strong>
@@ -180,17 +180,41 @@ export function renderPrivacyPolicyHtml(): string {
       <p>To enable operators and lab administrators to oversee room learning, the platform ingests minimal operational telemetry:</p>
       <ul>
         <li><strong>Workstation Identifiers:</strong> Workstation hostname (e.g. <code>PC-01</code>), internal IP address, and connection timestamp.</li>
-        <li><strong>Live Screen Thumbnails:</strong> Low-resolution preview frames captured at 3-second intervals solely for real-time room monitoring by the operator. These frames are held in memory during the active session and are never saved to long-term storage or shared.</li>
+        <li><strong>Live Screen Frames:</strong> Low-resolution preview frames, taken only while an operator has that workstation on screen and relayed to that operator. They are never saved to storage or shared.</li>
+        <li><strong>Errors &amp; Warnings:</strong> Problems a workstation reports about its own system, such as an update that failed and was rolled back, kept for 90 days for the organization's administrators.</li>
         <li><strong>Active Navigation Target:</strong> The current active page URL to reflect whether users are on the designated educational assignment.</li>
       </ul>
 
       <h2>4. Organization Administrator Accounts</h2>
       <p>Organization administrators and operators provide an email address, organization name, and password for administrative access. Passwords are cryptographically hashed using PBKDF2-HMAC-SHA256 (100,000 iterations). Administrative account details are stored securely in Cloudflare D1 and are never sold or shared.</p>
 
-      <h2>5. Super Administrator Privacy Restriction</h2>
+      <h2>5. Automatic Bug Reports (Optional)</h2>
+      <p>An organization's administrator may turn on Automatic Bug Reports. Only then, the workstation problems listed in Errors &amp; Warnings are sent, with network addresses, host names, e-mail addresses and identifiers masked, to an AI model on Cloudflare Workers AI for triage, and published as issues in a GitHub repository, which may be public. Organization names, workstation names, staff accounts, browsing and screen content are never sent. The <a href="/terms/bug-reports">Automatic Bug Report Terms</a> describe exactly what is sent and how to have a report removed.</p>
+
+      <h2>6. Service Providers</h2>
+      <p>The Platform runs on Cloudflare, Inc. ("Cloudflare"), which processes the data described in this policy as our service provider, under the <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare Privacy Policy</a> and the <a href="https://www.cloudflare.com/cloudflare-customer-dpa/">Cloudflare Customer Data Processing Addendum</a>. Cloudflare may process it in its data centers worldwide. The Cloudflare services we use, and what each one handles:</p>
+      <ul>
+        <li><strong>Cloudflare Workers:</strong> runs the Platform. Every request to the consoles, the User Portal and the workstation interface passes through it, and request logs (including IP addresses) are kept for a sample of about one in ten requests for troubleshooting.</li>
+        <li><strong>Cloudflare D1:</strong> the database: organization and staff accounts with hashed passwords, the workstation registry, allowlists, User Portal apps, settings, the audit log, and errors and warnings.</li>
+        <li><strong>Durable Objects:</strong> each organization's live state: which workstations are connected, the command queue (commands expire after 60 seconds), and the screen frames relayed to a watching operator, which are never stored.</li>
+        <li><strong>Queues:</strong> audit log entries on their way to the database.</li>
+        <li><strong>R2:</strong> audit log entries older than 180 days, archived.</li>
+        <li><strong>Workers Analytics Engine:</strong> counts of workstation connections and disconnections per organization.</li>
+        <li><strong>Rate Limiting:</strong> counts of requests per IP address in front of sign-in, registration and workstation enrollment.</li>
+        <li><strong>Workflows and Cloudflare for SaaS:</strong> an organization's custom domain name and its TLS certificate.</li>
+        <li><strong>Cloudflare Tunnel:</strong> carries the remote-control sessions an operator opens to a workstation.</li>
+        <li><strong>Workers AI:</strong> only for organizations that turned on Automatic Bug Reports, the masked problem reports described in section 5.</li>
+      </ul>
+      <p>Two other providers are involved:</p>
+      <ul>
+        <li><strong>GitHub, Inc.:</strong> only for organizations that turned on Automatic Bug Reports, the masked reports are published as GitHub issues under GitHub's own terms and privacy statement.</li>
+        <li><strong>Google Fonts:</strong> the consoles and public pages load the Inter and JetBrains Mono typefaces from Google, which receives the visitor's IP address and browser details when the fonts are requested.</li>
+      </ul>
+
+      <h2>7. Super Administrator Privacy Restriction</h2>
       <p>Platform Super Administrators are architecturally restricted from accessing individual organization consoles, user portal configurations, or live workstation telemetry. Super administrator privileges are restricted strictly to tenant approval, status management, and the platform's own demo organizations used for testing (<code>web-demo</code>, <code>local-demo</code> and <code>docker-demo</code>).</p>
 
-      <h2>6. Contact Us</h2>
+      <h2>8. Contact Us</h2>
       <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@akbhoi.com">privacy@akbhoi.com</a>.</p>
     </div>
   </main>
@@ -207,7 +231,7 @@ export function renderTermsOfServiceHtml(): string {
   <main>
     <div class="legal-card">
       <h1>Terms of Service</h1>
-      <div class="updated-date">Last updated: September 20, 2026 • Effective immediately</div>
+      <div class="updated-date">Last updated: October 4, 2026 • Effective immediately</div>
 
       <h2>1. Acceptance of Terms</h2>
       <p>By registering an organization workstation fleet, enrolling workstations, or accessing the Lab Kiosk OS platform, you agree to be bound by these Terms of Service. If you are entering into this agreement on behalf of an educational organization, you represent that you have the authority to bind such organization.</p>
@@ -234,10 +258,13 @@ export function renderTermsOfServiceHtml(): string {
         <li>Impersonate another educational organization or claim subdomains without authorization.</li>
       </ul>
 
-      <h2>5. Disclaimer &amp; Service Availability</h2>
+      <h2>5. Third-Party Services &amp; Optional Features</h2>
+      <p>The platform is hosted on Cloudflare and relies on the Cloudflare services listed in section 6 of the <a href="/privacy">Privacy Policy</a>, which Cloudflare provides under the <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare Privacy Policy</a> and the <a href="https://www.cloudflare.com/cloudflare-customer-dpa/">Cloudflare Customer Data Processing Addendum</a>. Automatic Bug Reports are optional and governed by the <a href="/terms/bug-reports">Automatic Bug Report Terms</a>, which an organization administrator accepts before turning them on.</p>
+
+      <h2>6. Disclaimer &amp; Service Availability</h2>
       <p>The platform is provided "as is" and "as available". While we strive for 99.9% uptime via Cloudflare's global edge network, we do not warrant that service will be uninterrupted or error-free.</p>
 
-      <h2>6. Inquiries &amp; Legal Notices</h2>
+      <h2>7. Inquiries &amp; Legal Notices</h2>
       <p>For legal inquiries, contact <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a>.</p>
     </div>
   </main>
@@ -293,7 +320,7 @@ export function renderBugReportTermsHtml(repository: string | null): string {
       <p>Reports are published in ${where}, which is operated by GitHub, Inc. under its own terms and privacy statement. If that repository is public, anyone can read, copy and index the reports, and copies may remain elsewhere after a report is edited or removed. Reports from different organizations about the same problem are combined, so a report may reflect problems seen by several organizations.</p>
 
       <h2>6. Processing by an AI Model</h2>
-      <p>To decide whether a problem has already been reported, and to write the title and summary of a new report, the masked report and the masked text of earlier reports are processed by an AI model hosted by Cloudflare (Cloudflare Workers AI), under Cloudflare's terms. Only the masked information listed in section 3 is given to the model. AI output can be wrong: a problem may be linked to a report that turns out to be unrelated, or reported twice. The report section of every issue is copied exactly by the Platform, not written by the model. The model is not used to make any decision about a person.</p>
+      <p>To decide whether a problem has already been reported, and to write the title and summary of a new report, the masked report and the masked text of earlier reports are processed by an AI model hosted by Cloudflare, Inc. (Cloudflare Workers AI), under the <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare Privacy Policy</a> and the <a href="https://www.cloudflare.com/cloudflare-customer-dpa/">Cloudflare Customer Data Processing Addendum</a>. The other Cloudflare services the Platform runs on are listed in the <a href="/privacy">Privacy Policy</a>. Only the masked information listed in section 3 is given to the model. AI output can be wrong: a problem may be linked to a report that turns out to be unrelated, or reported twice. The report section of every issue is copied exactly by the Platform, not written by the model. The model is not used to make any decision about a person.</p>
 
       <h2>7. Status Shown in Your Console</h2>
       <p>For each problem that was sent, your console shows whether it opened a new report or was matched to an existing one, and the report's status on GitHub: open, in progress, pull request created, resolved, or closed. The status is read from GitHub about once an hour and is for information only.</p>

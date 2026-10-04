@@ -184,6 +184,47 @@ unavailable to every organization until all three of these are set:
 Issues filed in a public repository are public. Each organization's administrator sees the
 repository name before turning the option on.
 
+### Creating the tokens
+
+**`GITHUB_ISSUES_TOKEN`** (GitHub, fine-grained personal access token):
+
+1. On GitHub: your avatar → **Settings** → **Developer settings** → **Personal access tokens** →
+   **Fine-grained tokens** → **Generate new token**.
+2. Name it (for example `labkiosk-bug-reports`) and pick an expiration. When it expires, the cron
+   logs `[BugReports] … GitHub answered 401` and reports wait until you set a new token.
+3. **Resource owner:** the account or organization that owns the repository. **Repository access:**
+   *Only select repositories* → the one repository in `GITHUB_ISSUES_REPO`.
+4. **Permissions → Repository permissions:** **Issues: Read and write**. For a private repository
+   also **Pull requests: Read-only**. (*Metadata: Read-only* is added automatically.) Nothing else.
+5. **Generate token**, copy it once, then from `cloudflare-control/`:
+   `npx wrangler secret put GITHUB_ISSUES_TOKEN` and paste it. Never put it in `wrangler.jsonc`,
+   `.dev.vars` committed to git, or a chat.
+
+Issues and comments appear as written by the account that owns the token. To keep them apart
+from your own activity, create the token on a separate bot account that has write access to the
+repository.
+
+**`GITHUB_ISSUES_REPO`:** Cloudflare dashboard → **Workers & Pages** → `labkiosk-controller` →
+**Settings** → **Variables and Secrets** → **Add** → type *Text*, name `GITHUB_ISSUES_REPO`,
+value `owner/repo` → **Deploy**.
+
+**`CF_API_TOKEN`** (custom domains): Cloudflare dashboard → **My Profile** → **API Tokens** →
+**Create Token** → **Create Custom Token**. Permissions: *Zone* · *SSL and Certificates* · *Edit*.
+Zone Resources: *Include* · *Specific zone* · your platform domain's zone. **Create Token**, then
+`npx wrangler secret put CF_API_TOKEN`. **`CF_ZONE_ID`** is on that zone's **Overview** page
+(right-hand column, *API* → *Zone ID*): `npx wrangler secret put CF_ZONE_ID`.
+
+Workers AI needs no token: the `AI` binding uses the account the Worker is deployed to.
+
+### Privacy and Cloudflare's terms
+
+The hosted platform's [Privacy Policy](../cloudflare-control/src/ui_legal.ts) (`/privacy`) names
+every Cloudflare service in `wrangler.jsonc` and what each one handles, and refers to the
+[Cloudflare Privacy Policy](https://www.cloudflare.com/privacypolicy/) and the
+[Cloudflare Customer Data Processing Addendum](https://www.cloudflare.com/cloudflare-customer-dpa/).
+If you add a binding, add it there too (a test checks the list). If you run your own deployment,
+you are the operator: review Cloudflare's DPA for your account and publish your own policy.
+
 ---
 
 ## 3. Managing Environment Variables
