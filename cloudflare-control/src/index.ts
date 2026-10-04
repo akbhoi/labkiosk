@@ -124,6 +124,7 @@ import {
   recordBootReport,
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
+import { bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -542,6 +543,10 @@ export default {
     if (env.AUDIT_ARCHIVE) {
       const archived = await archiveOldAuditLogs(db, env.AUDIT_ARCHIVE);
       if (archived) console.log(`[Worker] Archived ${archived} audit entries older than ${AUDIT_RETENTION_DAYS} days to R2.`);
+    }
+    const bugs = await processBugReports(db, env);
+    if (bugs.filed || bugs.linked) {
+      console.log(`[Worker] Bug reports: ${bugs.filed} GitHub issues filed, ${bugs.linked} problems added to existing ones.`);
     }
   },
 
@@ -1771,17 +1776,56 @@ export default {
       }
     }
 
-    // GET /api/audit-logs: recent activity for this organization
     // GET /api/workstation-issues: errors and warnings workstations reported
-    // (Settings -> Errors & Warnings). Settings permission, like the audit log.
+    // (Settings -> Errors & Warnings), and whether they become bug reports.
+    // Settings permission, like the audit log.
     if (path === "/api/workstation-issues" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
       const limit = Number(url.searchParams.get("limit") || 100);
       const issues = await listWorkstationIssues(db, currentTenant!.id, Number.isFinite(limit) ? limit : 100);
-      return new Response(JSON.stringify({ issues }), { headers: jsonHeaders });
+      const repository = bugReportRepository(env);
+      return new Response(
+        JSON.stringify({
+          issues,
+          bugReports: {
+            enabled: currentTenant!.bug_reports_enabled === 1,
+            available: repository !== null,
+            repository
+          }
+        }),
+        { headers: jsonHeaders }
+      );
     }
 
+    // POST /api/settings/bug-reports: opt this organization in to (or out of)
+    // automatic, redacted GitHub bug reports for its workstations' problems.
+    if (path === "/api/settings/bug-reports" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      let body: { enabled?: unknown };
+      try {
+        body = await request.json<{ enabled?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (typeof body?.enabled !== "boolean") {
+        return jsonError("enabled must be true or false", 400, jsonHeaders);
+      }
+      if (body.enabled && !bugReportRepository(env)) {
+        return jsonError("Automatic bug reports are not set up on this platform", 409, jsonHeaders);
+      }
+      await setBugReportsEnabled(db, currentTenant!.id, body.enabled, Math.floor(Date.now() / 1000));
+      await writeAuditLog(db, {
+        tenantId: currentTenant!.id,
+        userId: session!.user_id,
+        action: "settings.bug_reports",
+        details: body.enabled ? "on" : "off"
+      });
+      return new Response(JSON.stringify({ status: "ok", enabled: body.enabled }), { headers: jsonHeaders });
+    }
+
+    // GET /api/audit-logs: recent activity for this organization
     if (path === "/api/audit-logs" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;

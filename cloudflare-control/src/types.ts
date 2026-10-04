@@ -65,6 +65,8 @@ export interface Tenant {
   custom_hostname_status?: CustomHostnameStatus;
   created_at: number;
   updated_at: number;
+  /** 1 when the organization opted in to automatic bug reports (src/bug_reports.ts). */
+  bug_reports_enabled?: number;
 }
 
 export interface BroadcastPreset {
@@ -168,6 +170,10 @@ export interface WorkstationIssue {
   /** When the workstation recorded it, by its own clock. */
   occurred_at: number;
   created_at: number;
+  /** none, pending (waiting for the hourly bug report run) or sent. */
+  report_state?: "none" | "pending" | "sent";
+  /** The GitHub issue it was filed under, once sent. */
+  issue_url?: string | null;
 }
 
 export interface AuditLogEntry {
@@ -277,5 +283,20 @@ export interface Env {
   TUNNEL_DOMAIN?: string;
   /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.akbhoi.com. */
   DEFAULT_HOMEPAGE?: string;
+  /**
+   * Automatic bug reports (src/bug_reports.ts). Optional: without all three
+   * the feature is unavailable and organizations cannot turn it on.
+   * Workers AI drafts each issue's title and summary.
+   */
+  AI?: WorkersAiBinding;
+  /** Fine-grained GitHub token with Issues: Read and write on GITHUB_ISSUES_REPO (secret). */
+  GITHUB_ISSUES_TOKEN?: string;
+  /** "owner/repo" the issues are filed in. */
+  GITHUB_ISSUES_REPO?: string;
+}
+
+/** The one Workers AI method the Worker uses. */
+export interface WorkersAiBinding {
+  run(model: string, input: Record<string, unknown>): Promise<unknown>;
 }
 

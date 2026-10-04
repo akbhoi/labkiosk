@@ -49,6 +49,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0014_org_hub_live_state.sql` | Drops `commands`, `command_deliveries` and `client_devices.thumbnail` (live state moved to OrgHub); adds `tenants.online_workstations`, `custom_hostname_id`, `custom_hostname_status` |
 | `0015_workstation_boot_reports.sql` | `client_devices.image_version`, `update_state`, `update_error`, `update_state_at` (boot outcomes from `POST /api/devices/boot-report`) |
 | `0016_workstation_issues.sql` | `workstation_issues`: errors and warnings workstations report (Settings → Errors & Warnings), deleted after 90 days |
+| `0017_bug_reports.sql` | `tenants.bug_reports_enabled`, `workstation_issues.report_state` and `bug_signature`, and the platform table `bug_reports`: opt-in automatic GitHub bug reports |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -96,6 +97,7 @@ One row per organization. This table has accumulated the most columns because it
 | `custom_hostname_id` | TEXT | The Cloudflare for SaaS custom hostname id, once created |
 | `custom_hostname_status` | TEXT | `none` \| `pending` \| `active` \| `failed` \| `local` (no provisioning in local development) |
 | `online_workstations` | INTEGER | Kept by the organization's OrgHub, so the super admin list needs no query per organization |
+| `bug_reports_enabled` | INTEGER | `1` when the organization opted in to automatic bug reports; default `0` |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
@@ -174,6 +176,21 @@ deletes rows older than 90 days.
 | `details` | TEXT | One readable line; an `error`'s reason, cut to 300 characters |
 | `occurred_at` | INTEGER | When the workstation recorded it (its clock) |
 | `created_at` | INTEGER | When the Worker received it; indexed with `tenant_id` |
+| `report_state` | TEXT | `none`, `pending` (recorded while the organization had opted in) or `sent` (CHECK) |
+| `bug_signature` | TEXT | → `bug_reports.signature` once sent |
+
+### `bug_reports`
+
+One GitHub issue per distinct redacted problem, shared by every organization that reports it. A
+platform table with no organization or workstation data (`src/bug_reports.ts`).
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `signature` | TEXT PK | SHA-256 of the kind, image version and redacted problem text |
+| `kind` | TEXT | As in `workstation_issues` |
+| `image_version` | TEXT | |
+| `issue_number` / `issue_url` | INTEGER / TEXT | The GitHub issue |
+| `created_at` | INTEGER | When it was filed |
 
 ### `device_tokens`
 

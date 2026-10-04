@@ -158,21 +158,24 @@ export async function recordBootReport(
   }
   const issue = ISSUES[report.state];
   if (issue) {
+    // Waiting for the hourly bug report run only if the organization had
+    // opted in when it happened (src/bug_reports.ts).
     await db
       .prepare(
-        `INSERT INTO workstation_issues (id, tenant_id, client_id, severity, kind, image_version, details, occurred_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO workstation_issues (id, tenant_id, client_id, severity, kind, image_version, details, occurred_at, created_at, report_state)
+         SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, CASE WHEN bug_reports_enabled = 1 THEN 'pending' ELSE 'none' END
+           FROM tenants WHERE id = ?`
       )
       .bind(
         crypto.randomUUID(),
-        tenantId,
         clientId,
         issue.severity,
         issue.kind,
         report.version,
         describeBootReport(report),
         report.at,
-        now
+        now,
+        tenantId
       )
       .run();
   }
@@ -183,8 +186,10 @@ export async function recordBootReport(
 export async function listWorkstationIssues(db: D1Database, tenantId: string, limit = 100): Promise<WorkstationIssue[]> {
   const res = await db
     .prepare(
-      `SELECT id, client_id, severity, kind, image_version, details, occurred_at, created_at
-         FROM workstation_issues WHERE tenant_id = ? ORDER BY created_at DESC, occurred_at DESC LIMIT ?`
+      `SELECT i.id, i.client_id, i.severity, i.kind, i.image_version, i.details, i.occurred_at, i.created_at,
+              i.report_state, b.issue_url
+         FROM workstation_issues i LEFT JOIN bug_reports b ON b.signature = i.bug_signature
+        WHERE i.tenant_id = ? ORDER BY i.created_at DESC, i.occurred_at DESC LIMIT ?`
     )
     .bind(tenantId, Math.min(Math.max(Math.floor(limit) || 1, 1), MAX_ISSUES_LISTED))
     .all<WorkstationIssue>();

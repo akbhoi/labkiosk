@@ -328,6 +328,13 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
       <div class="card" id="section-issues">
         <h2 class="card-title">Errors &amp; Warnings</h2>
         <p class="card-sub">Problems workstations reported, such as a system update that failed its first start and was rolled back. Kept for 90 days.</p>
+        <div class="form-group" id="bug-report-optin" hidden>
+          <label class="form-checkbox-label">
+            <input type="checkbox" class="form-checkbox" id="bug-reports-enabled">
+            <span>Send automatic bug reports</span>
+          </label>
+          <p class="form-hint" id="bug-reports-hint"></p>
+        </div>
         <div class="table-container table-scrollable">
           <table>
             <thead>
@@ -708,11 +715,55 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             boot_error: "Boot record error"
           };
           const pad = (n) => String(n).padStart(2, "0");
+          const optIn = document.getElementById("bug-report-optin");
+          const optInBox = document.getElementById("bug-reports-enabled");
+          const optInHint = document.getElementById("bug-reports-hint");
+          let bugReportsAvailable = false;
+          function showBugReportOptIn(state) {
+            if (!optIn || !optInBox || !optInHint || !state) return;
+            optIn.hidden = false;
+            bugReportsAvailable = state.available === true && typeof state.repository === "string";
+            optInBox.checked = state.enabled === true;
+            if (bugReportsAvailable) {
+              optInBox.disabled = false;
+              optInHint.textContent = "New errors and warnings are filed as GitHub issues in " + state.repository +
+                ", where anyone may be able to read them. A report carries the kind of problem, the system image version " +
+                "and the problem text with network addresses, host names and identifiers removed; never this organization's " +
+                "or its workstations' names. Problems listed before you turn this on are not sent.";
+            } else {
+              // Turning it off stays possible; turning it on needs the platform set up.
+              optInBox.disabled = !optInBox.checked;
+              optInHint.textContent = "Automatic bug reports are not set up on this platform.";
+            }
+          }
+          if (optInBox) {
+            optInBox.addEventListener("change", async () => {
+              const enabled = optInBox.checked;
+              optInBox.disabled = true;
+              try {
+                const res = await fetch(labkioskApi("/api/settings/bug-reports"), {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ enabled })
+                });
+                const data = await res.json();
+                if (!res.ok || data.status !== "ok") throw new Error(data.error || ("HTTP " + res.status));
+                lkToast(enabled ? "Automatic bug reports turned on." : "Automatic bug reports turned off.", "success");
+              } catch (err) {
+                console.warn("Could not change automatic bug reports:", err);
+                optInBox.checked = !enabled;
+                lkToast("Could not change automatic bug reports: " + err.message, "error");
+              } finally {
+                optInBox.disabled = !bugReportsAvailable && !optInBox.checked;
+              }
+            });
+          }
           try {
             const res = await fetch(labkioskApi("/api/workstation-issues?limit=100"));
             if (!res.ok) throw new Error("HTTP " + res.status);
             const data = await res.json();
             const issues = Array.isArray(data.issues) ? data.issues : [];
+            showBugReportOptIn(data.bugReports);
             issueRows.replaceChildren();
             if (!issues.length) {
               issueRows.appendChild(placeholder("No errors or warnings reported."));
@@ -758,6 +809,23 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
                 detail.className = "cell-sub cell-detail";
                 detail.textContent = issue.details;
                 problem.appendChild(detail);
+              }
+              if (issue.report_state === "sent" && typeof issue.issue_url === "string" &&
+                  issue.issue_url.startsWith("https://github.com/")) {
+                const report = document.createElement("div");
+                report.className = "cell-sub";
+                const link = document.createElement("a");
+                link.href = issue.issue_url;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+                link.textContent = "Bug report";
+                report.appendChild(link);
+                problem.appendChild(report);
+              } else if (issue.report_state === "pending") {
+                const report = document.createElement("div");
+                report.className = "cell-sub";
+                report.textContent = "Bug report queued";
+                problem.appendChild(report);
               }
               row.appendChild(problem);
 

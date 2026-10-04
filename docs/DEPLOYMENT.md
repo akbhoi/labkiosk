@@ -163,6 +163,23 @@ local rate-limit simulator throws on every call; the worker logs that and keeps 
 **The CI token.** `wrangler deploy` now also binds a queue, a bucket and a Workflow. If the deploy
 reports an authorization error, add the permission it names to `CLOUDFLARE_API_TOKEN`.
 
+### Automatic bug reports (optional)
+
+Organizations can opt in, in Settings → Errors & Warnings, to having their workstations' errors and
+warnings filed as GitHub issues (`src/bug_reports.ts`). The hourly cron files each new problem once,
+with addresses, host names and identifiers masked and no organization or workstation names; Workers
+AI drafts the title and summary. The option stays unavailable to every organization until all three
+of these are set:
+
+| Setting | What it is | Set it |
+| :--- | :--- | :--- |
+| `AI` | Workers AI binding (model `@cf/meta/llama-3.1-8b-instruct-fast`) | Already in `wrangler.jsonc`. Workers AI has no local simulator: under `wrangler dev` it calls your account. |
+| `GITHUB_ISSUES_TOKEN` | Secret: a fine-grained GitHub token for one repository with **Issues: Read and write** | `npx wrangler secret put GITHUB_ISSUES_TOKEN` |
+| `GITHUB_ISSUES_REPO` | Variable: the repository issues are filed in, `owner/repo` | Dashboard → Variables and Secrets (section 3) |
+
+Issues filed in a public repository are public. Each organization's administrator sees the
+repository name before turning the option on.
+
 ---
 
 ## 3. Managing Environment Variables
@@ -177,6 +194,7 @@ Configure production variables in the **Cloudflare Dashboard**:
    - `DEFAULT_DOMAIN`: The primary apex platform domain (e.g. `labkiosk.yourdomain.com`).
    - `ISO_DOWNLOAD_URL`: Direct link to download the live bootable Debian 12 Kiosk ISO (e.g. GitHub Releases artifact).
    - `TUNNEL_DOMAIN`: Base domain for remote assistance tunnels (e.g. `labkiosk.yourdomain.com`).
+   - `GITHUB_ISSUES_REPO` (optional): `owner/repo` for automatic bug reports (see "Automatic bug reports").
 
 ---
 
@@ -244,6 +262,9 @@ Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of
 - Cleans up stale rate-limiting and sign-in throttle rows.
 - Moves audit entries older than 180 days to the `labkiosk-audit-archive` R2 bucket (one NDJSON
   file per run) and deletes them from D1.
+- Deletes workstation errors and warnings older than 90 days.
+- Files pending automatic bug reports as GitHub issues, when they are set up (at most 5 new issues a
+  run; a GitHub failure leaves the rest for the next run).
 
 Queued commands are no longer in D1: each organization's OrgHub expires its own.
 

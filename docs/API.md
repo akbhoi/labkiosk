@@ -84,7 +84,8 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
-| `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days |
+| `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, with each one's bug report state, and `bugReports: {enabled, available, repository}` |
+| `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true\|false}`: opt in to or out of automatic, redacted GitHub bug reports; `409` when the platform has not set them up |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
 | `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending organization subdomain registration |
 | `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending organization registration |

@@ -347,7 +347,7 @@ reports "updated to <v>"
 
 ### 5.7 Control plane
 
-- **D1 (migration 0016 and `SCHEMA_SQL`):**
+- **D1 (a new migration, 0018 or later, and `SCHEMA_SQL`):**
   - on `client_devices`: `agent_version`, `update_version`, `update_progress`, and for LAN
     sharing `lan_address`, `egress_ip`, `peer_port`. Phase 1 already added `image_version`,
     `update_state`, `update_error` and `update_state_at` (migration 0015), with

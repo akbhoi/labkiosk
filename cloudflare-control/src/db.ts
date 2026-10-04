@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   custom_hostname_id TEXT,
   custom_hostname_status TEXT NOT NULL DEFAULT 'none',
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  bug_reports_enabled INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -134,6 +135,17 @@ CREATE TABLE IF NOT EXISTS workstation_issues (
   image_version TEXT,
   details TEXT,
   occurred_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  report_state TEXT NOT NULL DEFAULT 'none' CHECK (report_state IN ('none', 'pending', 'sent')),
+  bug_signature TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bug_reports (
+  signature TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  image_version TEXT,
+  issue_number INTEGER NOT NULL,
+  issue_url TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
 
@@ -360,6 +372,10 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT image_version, update_state_at FROM client_devices LIMIT 1").run();
     // 0016: errors and warnings workstations report.
     await db.prepare("SELECT severity, occurred_at FROM workstation_issues LIMIT 1").run();
+    // 0017: opt-in automatic bug reports.
+    await db.prepare("SELECT bug_reports_enabled FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT report_state, bug_signature FROM workstation_issues LIMIT 1").run();
+    await db.prepare("SELECT signature, issue_url FROM bug_reports LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
