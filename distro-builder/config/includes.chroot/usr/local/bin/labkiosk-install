@@ -615,7 +615,8 @@ def copy_regular_file(source, destination):
     with os.fdopen(fd, "rb") as src:
         with open(destination, "wb") as dst:
             shutil.copyfileobj(src, dst)
-        os.chmod(destination, stat.S_IMODE(info.st_mode))
+        # Permission bits only: a kiosk-owned file must not hand setuid/setgid/sticky to root.
+        os.chmod(destination, stat.S_IMODE(info.st_mode) & 0o777)
         os.utime(destination, ns=(info.st_atime_ns, info.st_mtime_ns))
     return True
 

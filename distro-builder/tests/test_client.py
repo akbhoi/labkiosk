@@ -21,6 +21,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -1438,6 +1439,15 @@ class SeedingNeverFollowsLinks(unittest.TestCase):
             with open(dest, encoding="utf-8") as handle:
                 self.assertEqual(handle.read(), "{}")
             self.assertEqual(os.stat(dest).st_mode & 0o777, 0o600)
+
+    def test_setuid_setgid_and_sticky_bits_are_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dest = os.path.join(tmp, "tool"), os.path.join(tmp, "out")
+            with open(src, "w", encoding="utf-8") as handle:
+                handle.write("#!/bin/sh\n")
+            os.chmod(src, 0o7755)
+            self.assertTrue(installer.copy_regular_file(src, dest))
+            self.assertEqual(stat.S_IMODE(os.stat(dest).st_mode), 0o755)
 
     def test_a_symbolic_link_is_not_followed(self):
         with tempfile.TemporaryDirectory() as tmp:
