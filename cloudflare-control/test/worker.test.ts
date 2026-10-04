@@ -29,7 +29,15 @@ import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
 import { getDatabase } from "../src/database";
 import { purgeOldWorkstationIssues } from "../src/boot_report";
-import { BUG_REPORT_AI_MODEL, issueBody, processBugReports, redactProblemText } from "../src/bug_reports";
+import {
+  BUG_REPORT_AI_MODEL,
+  BUG_REPORT_TERMS_VERSION,
+  issueBody,
+  modelText,
+  processBugReports,
+  readIssueStatus,
+  redactProblemText
+} from "../src/bug_reports";
 import { HUB_PING, HUB_PONG } from "../src/org_hub";
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
@@ -1118,7 +1126,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         occurred_at: undefined,
         created_at: undefined,
         report_state: "none",
-        issue_url: null
+        report_match: null,
+        issue_url: null,
+        issue_number: null,
+        report_status: null,
+        pr_url: null
       }
     );
     assert.equal((await issuesOf(rivalSessionCookie, "riverside")).length, 0);
@@ -1213,26 +1225,53 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ---------------------------------------------------------- bug reports
 
-  const fakeAi = (reply: () => unknown) => ({
-    calls: 0,
-    async run(model: string, _input: Record<string, unknown>) {
-      this.calls++;
-      assert.equal(model, BUG_REPORT_AI_MODEL);
-      return reply();
-    }
-  });
-  const fakeGithub = (status = 201) => {
-    const calls: { url: string; init: RequestInit; body: { title: string; body: string } }[] = [];
+  /** A stand-in for Workers AI: answers in the Responses API shape gpt-oss uses. */
+  const fakeAi = (decide: (input: any) => unknown) => {
+    const ai = {
+      calls: [] as any[],
+      async run(model: string, input: Record<string, unknown>) {
+        assert.equal(model, BUG_REPORT_AI_MODEL);
+        assert.deepEqual(input.reasoning, { effort: "high" });
+        ai.calls.push(input);
+        const userTurn = (input.input as any[]).find((m) => m.role === "user");
+        const answer = decide(JSON.parse(userTurn.content));
+        return {
+          output: [
+            { type: "reasoning", content: [{ type: "reasoning_text", text: "thinking" }] },
+            { type: "message", content: [{ type: "output_text", text: typeof answer === "string" ? answer : JSON.stringify(answer) }] }
+          ]
+        };
+      }
+    };
+    return ai;
+  };
+  /** A stand-in for the GitHub REST API: issues, comments, issue state and timelines. */
+  let githubIssueCount = 100;
+  const githubStates = new Map<number, { issue: any; timeline: any[] }>();
+  const fakeGithub = (opts: { failWrites?: number } = {}) => {
+    const writes: { url: string; body: any }[] = [];
+    const states = githubStates;
     const impl = (async (url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body));
-      calls.push({ url, init, body });
-      if (status !== 201) return new Response("Bad credentials", { status });
-      const number = 100 + calls.length;
-      return new Response(JSON.stringify({ number, html_url: `https://github.com/akbhoi/labkiosk/issues/${number}` }), {
-        status: 201
-      });
+      const path = new URL(url).pathname;
+      const auth = new Headers(init.headers).get("Authorization");
+      assert.equal(auth, "Bearer github_pat_test");
+      if (init.method === "POST") {
+        if (opts.failWrites) return new Response("Bad credentials", { status: opts.failWrites });
+        const body = JSON.parse(String(init.body));
+        writes.push({ url: path, body });
+        if (path === "/repos/akbhoi/labkiosk/issues") {
+          const number = ++githubIssueCount;
+          return new Response(JSON.stringify({ number, html_url: `https://github.com/akbhoi/labkiosk/issues/${number}` }), { status: 201 });
+        }
+        if (/^\/repos\/akbhoi\/labkiosk\/issues\/\d+\/comments$/.test(path)) return new Response("{}", { status: 201 });
+        return new Response("not found", { status: 404 });
+      }
+      const m = path.match(/^\/repos\/akbhoi\/labkiosk\/issues\/(\d+)(\/timeline)?$/);
+      if (!m) return new Response("not found", { status: 404 });
+      const state = states.get(Number(m[1])) || { issue: { state: "open", assignees: [], labels: [] }, timeline: [] };
+      return new Response(JSON.stringify(m[2] ? state.timeline : state.issue), { status: 200 });
     }) as unknown as typeof fetch;
-    return { calls, impl };
+    return { impl, writes, states };
   };
   const bugEnv = (ai: Env["AI"]): Env => ({
     ...mockEnv,
@@ -1240,14 +1279,22 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     GITHUB_ISSUES_TOKEN: "github_pat_test",
     GITHUB_ISSUES_REPO: "akbhoi/labkiosk"
   });
-  const issueStates = async (clientId: string) =>
+  const issueRows = async (clientId: string) =>
     (
       await getDatabase(mockEnv)
-        .prepare("SELECT report_state, bug_signature FROM workstation_issues WHERE client_id = ? ORDER BY occurred_at")
+        .prepare("SELECT report_state, report_match, bug_signature FROM workstation_issues WHERE client_id = ? ORDER BY occurred_at")
         .bind(clientId)
-        .all<{ report_state: string; bug_signature: string | null }>()
+        .all<{ report_state: string; report_match: string | null; bug_signature: string | null }>()
     ).results;
+  const runBugs = (ai: Env["AI"], github: ReturnType<typeof fakeGithub>) =>
+    processBugReports(getDatabase(mockEnv), bugEnv(ai), nowSeconds(), github.impl);
   let bugToken = "";
+  let bugClock = 0;
+  /** Boot reports from PC-BUG, each a boot apart. */
+  const bugReport = (body: Record<string, unknown>) => {
+    bugClock += 600;
+    return call("/api/devices/boot-report", { ...json({ version: "2.5.1", ...body, at: bugClock }), bearer: bugToken });
+  };
 
   test("Masks addresses, host names and identifiers before a problem leaves the platform", () => {
     const masked = redactProblemText(
@@ -1277,112 +1324,204 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(body.includes("drafted by Workers AI"));
   });
 
-  test("Lets only the organization's settings staff turn bug reports on, and only when the platform has them set up", async () => {
-    assert.ok([401, 403].includes((await call("/api/settings/bug-reports?tenant=greenwood", json({ enabled: true }))).status));
-    const rival = await call("/api/settings/bug-reports?tenant=greenwood", { ...json({ enabled: true }), cookie: rivalSessionCookie });
+  test("Reads the text of every reply shape Workers AI documents, and refuses anything else", () => {
+    assert.equal(modelText({ output: [{ type: "reasoning" }, { type: "message", content: [{ type: "output_text", text: "a" }] }] }), "a");
+    assert.equal(modelText({ response: "b" }), "b");
+    assert.equal(modelText({ output_text: "c" }), "c");
+    assert.equal(modelText({ choices: [{ message: { content: "d" } }] }), "d");
+    assert.throws(() => modelText({ output: [{ type: "reasoning" }] }), /no text/);
+    assert.throws(() => modelText(null), /no text/);
+  });
+
+  test("Reads an issue's status from GitHub: open, in progress, PR created, resolved, closed", async () => {
+    const github = fakeGithub();
+    const status = (n: number) => readIssueStatus("akbhoi/labkiosk", "github_pat_test", n, github.impl);
+    github.states.set(1, { issue: { state: "open", assignees: [], labels: [] }, timeline: [] });
+    github.states.set(2, { issue: { state: "open", assignees: [{ login: "dev" }], labels: [] }, timeline: [] });
+    github.states.set(3, { issue: { state: "open", assignees: [], labels: [{ name: "In Progress" }] }, timeline: [] });
+    github.states.set(4, {
+      issue: { state: "open", assignees: [{ login: "dev" }], labels: [] },
+      timeline: [
+        { event: "cross-referenced", source: { issue: { pull_request: {}, html_url: "https://github.com/someone/else/pull/9" } } },
+        { event: "cross-referenced", source: { issue: { pull_request: {}, html_url: "https://github.com/akbhoi/labkiosk/pull/7" } } }
+      ]
+    });
+    github.states.set(5, { issue: { state: "closed", state_reason: "completed" }, timeline: [] });
+    github.states.set(6, { issue: { state: "closed", state_reason: "not_planned" }, timeline: [] });
+    assert.deepEqual(await status(1), { status: "open", prUrl: null });
+    assert.deepEqual(await status(2), { status: "in_progress", prUrl: null });
+    assert.deepEqual(await status(3), { status: "in_progress", prUrl: null });
+    assert.deepEqual(await status(4), { status: "pr_open", prUrl: "https://github.com/akbhoi/labkiosk/pull/7" }, "only this repository's pull requests count");
+    assert.deepEqual(await status(5), { status: "resolved", prUrl: null });
+    assert.deepEqual(await status(6), { status: "closed", prUrl: null });
+  });
+
+  test("Lets only the organization's settings staff turn bug reports on, only under the current terms, and only when the platform has them set up", async () => {
+    const on = { enabled: true, acceptTerms: BUG_REPORT_TERMS_VERSION };
+    assert.ok([401, 403].includes((await call("/api/settings/bug-reports?tenant=greenwood", json(on))).status));
+    const rival = await call("/api/settings/bug-reports?tenant=greenwood", { ...json(on), cookie: rivalSessionCookie });
     assert.ok([401, 403].includes(rival.status), "another organization is refused");
     for (const enabled of ["yes", 1, null]) {
       const res = await call("/api/settings/bug-reports?tenant=greenwood", { ...json({ enabled }), cookie: orgSessionCookie });
       assert.equal(res.status, 400, JSON.stringify(enabled));
     }
     // Fail closed: no AI binding, token or repository on this platform.
-    const unconfigured = await callJson("/api/settings/bug-reports?tenant=greenwood", { ...json({ enabled: true }), cookie: orgSessionCookie });
+    const unconfigured = await callJson("/api/settings/bug-reports?tenant=greenwood", { ...json(on), cookie: orgSessionCookie });
     assert.equal(unconfigured.res.status, 409);
     const { data: listed } = await callJson("/api/workstation-issues?tenant=greenwood", { cookie: orgSessionCookie });
-    assert.deepEqual(listed.bugReports, { enabled: false, available: false, repository: null });
+    assert.deepEqual(listed.bugReports, {
+      enabled: false,
+      available: false,
+      repository: null,
+      termsVersion: BUG_REPORT_TERMS_VERSION,
+      acceptedTermsVersion: null,
+      termsAcceptedAt: null
+    });
 
     const env = bugEnv(fakeAi(() => ({})));
-    const on = await worker.fetch(
-      request("/api/settings/bug-reports?tenant=greenwood", { ...json({ enabled: true }), cookie: orgSessionCookie }),
-      env
-    );
-    assert.equal(on.status, 200);
-    const shown = await worker.fetch(request("/api/workstation-issues?tenant=greenwood", { cookie: orgSessionCookie }), env);
-    assert.deepEqual(((await shown.json()) as any).bugReports, { enabled: true, available: true, repository: "akbhoi/labkiosk" });
+    const post = (body: unknown) =>
+      worker.fetch(request("/api/settings/bug-reports?tenant=greenwood", { ...json(body), cookie: orgSessionCookie }), env);
+    assert.equal((await post({ enabled: true })).status, 400, "turning it on without accepting the terms is refused");
+    assert.equal((await post({ enabled: true, acceptTerms: "2000-01-01" })).status, 400, "an old version of the terms is refused");
+    assert.equal((await post(on)).status, 200);
+    const shown = (await (await worker.fetch(request("/api/workstation-issues?tenant=greenwood", { cookie: orgSessionCookie }), env)).json()) as any;
+    assert.equal(shown.bugReports.enabled, true);
+    assert.equal(shown.bugReports.repository, "akbhoi/labkiosk");
+    assert.equal(shown.bugReports.acceptedTermsVersion, BUG_REPORT_TERMS_VERSION);
+    assert.ok(Math.abs(shown.bugReports.termsAcceptedAt - nowSeconds()) < 60);
     const { data: audit } = await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie });
-    assert.ok(audit.logs.some((entry: { action: string; details: string }) => entry.action === "settings.bug_reports" && entry.details === "on"));
+    assert.ok(
+      audit.logs.some((e: { action: string; details: string }) => e.action === "settings.bug_reports" && e.details.includes(BUG_REPORT_TERMS_VERSION)),
+      "the audit log records which terms were accepted"
+    );
   });
 
-  test("Files one redacted GitHub issue per distinct problem from an organization that opted in", async () => {
+  test("Serves the Automatic Bug Report Terms publicly, naming the repository", async () => {
+    const res = await worker.fetch(request("/terms/bug-reports"), bugEnv(fakeAi(() => ({}))));
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.ok(html.includes(`Version ${BUG_REPORT_TERMS_VERSION}`));
+    assert.ok(html.includes('href="https://github.com/akbhoi/labkiosk"'));
+    assert.ok(!/<script/i.test(html));
+    const unconfigured = await (await call("/terms/bug-reports")).text();
+    assert.ok(unconfigured.includes("the GitHub repository named in Settings"));
+  });
+
+  test("Files a new problem once and links its repeats, without names or addresses", async () => {
     const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-BUG" }));
     bugToken = data.deviceToken;
     assert.equal((await call("/api/telemetry", { ...json({}), bearer: bugToken })).status, 200);
-    const base = nowSeconds() - 6000;
-    const error = (at: number, host: string) =>
-      call("/api/devices/boot-report", {
-        ...json({ state: "error", version: "2.5.1", error: `could not record the update: ${host} 10.1.2.3 refused`, at }),
-        bearer: bugToken
-      });
-    assert.equal((await error(base, "boot.greenwood.example")).status, 200);
-    // The same problem on another host: masked to the same signature.
-    assert.equal((await error(base + 600, "nas.riverside.example")).status, 200);
-    assert.deepEqual((await issueStates("PC-BUG")).map((r) => r.report_state), ["pending", "pending"]);
+    bugClock = nowSeconds() - 3 * 86400;
+    const error = (host: string) => bugReport({ state: "error", error: `could not record the update: ${host} 10.1.2.3 refused` });
+    assert.equal((await error("boot.greenwood.example")).status, 200);
+    // The same problem on another host masks to the same signature.
+    assert.equal((await error("nas.riverside.example")).status, 200);
+    assert.deepEqual((await issueRows("PC-BUG")).map((r) => r.report_state), ["pending", "pending"]);
 
-    const ai = fakeAi(() => ({
-      response: 'Here you go: {"title": "Boot record could not be written", "summary": "The workstation could not record the outcome of its update. Look at the boot partition first."}'
-    }));
+    const ai = fakeAi((input) => {
+      assert.deepEqual(input.existingReports, [], "nothing of this kind is filed yet");
+      assert.equal(input.newProblem.problem, "could not record the update: <host> <ip> refused");
+      return 'Done: {"decision": "new", "title": "Boot record could not be written", "summary": "The workstation could not record the outcome of its update. Look at the boot partition first."}';
+    });
     const github = fakeGithub();
-    // Unconfigured platforms do nothing at all.
-    assert.deepEqual(await processBugReports(getDatabase(mockEnv), mockEnv, nowSeconds(), github.impl), { filed: 0, linked: 0 });
-    assert.deepEqual(await processBugReports(getDatabase(mockEnv), bugEnv(ai), nowSeconds(), github.impl), { filed: 1, linked: 1 });
-    assert.equal(github.calls.length, 1);
-    const [filed] = github.calls;
-    assert.equal(filed.url, "https://api.github.com/repos/akbhoi/labkiosk/issues");
-    assert.equal(new Headers(filed.init.headers).get("Authorization"), "Bearer github_pat_test");
+    // An unconfigured platform does nothing at all.
+    assert.deepEqual(await processBugReports(getDatabase(mockEnv), mockEnv, nowSeconds(), github.impl), { filed: 0, matched: 0, linked: 0, refreshed: 0 });
+    assert.deepEqual(await runBugs(ai, github), { filed: 1, matched: 0, linked: 1, refreshed: 1 });
+    assert.equal(ai.calls.length, 1, "a repeat of a filed signature needs no model");
+    assert.equal(github.writes.length, 1);
+    const [filed] = github.writes;
+    assert.equal(filed.url, "/repos/akbhoi/labkiosk/issues");
     assert.equal(filed.body.title, "[Workstation] Boot record could not be written");
     const sent = JSON.stringify(filed.body);
     for (const leak of ["PC-BUG", "greenwood", "Greenwood", "riverside", "10.1.2.3"]) {
       assert.ok(!sent.includes(leak), `${leak} must not leave the platform`);
     }
-    assert.ok(filed.body.body.includes("could not record the update: <host> <ip> refused"));
-
-    const states = await issueStates("PC-BUG");
-    assert.deepEqual(states.map((r) => r.report_state), ["sent", "sent"]);
-    assert.equal(states[0].bug_signature, states[1].bug_signature);
+    const rows = await issueRows("PC-BUG");
+    assert.deepEqual(rows.map((r) => [r.report_state, r.report_match]), [["sent", "new"], ["sent", "existing"]]);
     const listed = (await issuesOf(orgSessionCookie, "greenwood")) as any[];
-    assert.equal(listed.find((i) => i.client_id === "PC-BUG").issue_url, "https://github.com/akbhoi/labkiosk/issues/101");
-
-    // Nothing left to do: the next run files nothing.
-    assert.deepEqual(await processBugReports(getDatabase(mockEnv), bugEnv(ai), nowSeconds(), github.impl), { filed: 0, linked: 0 });
+    const mine = listed.filter((i) => i.client_id === "PC-BUG");
+    assert.ok(mine.every((i) => i.issue_url === "https://github.com/akbhoi/labkiosk/issues/101" && i.issue_number === 101 && i.report_status === "open"));
   });
 
-  test("Files from a template when Workers AI fails, and keeps the problem pending when GitHub does", async () => {
-    const report = (at: number, error: string) =>
-      call("/api/devices/boot-report", { ...json({ state: "error", version: "2.5.1", error, at }), bearer: bugToken });
-    const base = nowSeconds() - 4000;
-    assert.equal((await report(base, "grubenv is truncated")).status, 200);
-
-    const broken = bugEnv(fakeAi(() => { throw new Error("model unavailable"); }));
-    const down = fakeGithub(401);
-    assert.deepEqual(await processBugReports(getDatabase(mockEnv), broken, nowSeconds(), down.impl), { filed: 0, linked: 0 });
-    assert.equal(down.calls.length, 1);
-    assert.equal((await issueStates("PC-BUG")).at(-1)!.report_state, "pending", "GitHub refused: try again next run");
-
+  test("Matches a variant to an open report with a reasoning model, and refuses a match it was not shown", async () => {
+    assert.equal((await bugReport({ state: "error", error: "could not record the update: grubenv rename refused" })).status, 200);
     const github = fakeGithub();
-    assert.deepEqual(await processBugReports(getDatabase(mockEnv), broken, nowSeconds(), github.impl), { filed: 1, linked: 0 });
-    assert.equal(github.calls[0].body.title, "[Workstation] Boot record error (2.5.1)");
-    assert.ok(!github.calls[0].body.body.includes("Workers AI"), "a template report does not claim an AI summary");
+    // A match to an issue the model was not shown is refused; the problem waits.
+    const confused = fakeAi(() => ({ decision: "existing", issue: 999 }));
+    assert.deepEqual(await runBugs(confused, github), { filed: 0, matched: 0, linked: 0, refreshed: 1 });
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "pending");
+    // With open reports to compare against, a model failure does not file a possible duplicate.
+    const down = { async run() { throw new Error("model unavailable"); } };
+    assert.deepEqual(await runBugs(down, github), { filed: 0, matched: 0, linked: 0, refreshed: 1 });
+    assert.equal(github.writes.length, 0);
+
+    const ai = fakeAi((input) => {
+      assert.deepEqual(input.existingReports.map((r: any) => [r.issue, r.title, r.status]), [[101, "Boot record could not be written", "open"]]);
+      return { decision: "existing", issue: 101 };
+    });
+    assert.deepEqual(await runBugs(ai, github), { filed: 0, matched: 1, linked: 0, refreshed: 1 });
+    assert.equal(github.writes.length, 1);
+    assert.equal(github.writes[0].url, "/repos/akbhoi/labkiosk/issues/101/comments");
+    assert.ok(github.writes[0].body.body.includes("grubenv rename refused"));
+    const last = (await issueRows("PC-BUG")).at(-1)!;
+    assert.deepEqual([last.report_state, last.report_match], ["sent", "existing"]);
   });
 
-  test("Sends nothing for an organization that has not opted in, or has opted out", async () => {
-    const report = (at: number) =>
-      call("/api/devices/boot-report", {
-        ...json({ state: "fallback", version: "2.5.1", at }),
-        bearer: bugToken
-      });
-    const base = nowSeconds() - 2000;
-    assert.equal((await report(base)).status, 200);
-    assert.equal((await issueStates("PC-BUG")).at(-1)!.report_state, "pending");
+  test("Shows each report's progress on GitHub: PR created, then resolved", async () => {
+    assert.equal((await bugReport({ state: "failed", previous: "2.5.0", version: "2.5.1" })).status, 200);
+    const github = fakeGithub();
+    // No open report of this kind and no model: filed from the template.
+    const down = { async run() { throw new Error("model unavailable"); } };
+    assert.deepEqual(await runBugs(down, github), { filed: 1, matched: 0, linked: 0, refreshed: 2 });
+    assert.equal(github.writes[0].body.title, "[Workstation] System update failed its health check (2.5.1)");
+    assert.ok(!github.writes[0].body.body.includes("drafted by Workers AI"), "a template report does not claim an AI summary");
+
+    github.states.set(101, {
+      issue: { state: "open", assignees: [], labels: [] },
+      timeline: [{ event: "cross-referenced", source: { issue: { pull_request: {}, html_url: "https://github.com/akbhoi/labkiosk/pull/42" } } }]
+    });
+    github.states.set(102, { issue: { state: "closed", state_reason: "completed" }, timeline: [] });
+    assert.equal((await runBugs(fakeAi(() => ({})), github)).refreshed, 2);
+    const listed = ((await issuesOf(orgSessionCookie, "greenwood")) as any[]).filter((i) => i.client_id === "PC-BUG");
+    const byIssue = (n: number) => listed.filter((i) => i.issue_number === n);
+    assert.equal(byIssue(101).length, 3, "every problem on issue 101 shares its status");
+    assert.ok(byIssue(101).every((i) => i.report_status === "pr_open" && i.pr_url === "https://github.com/akbhoi/labkiosk/pull/42"));
+    assert.deepEqual(byIssue(102).map((i) => [i.report_status, i.report_match]), [["resolved", "new"]]);
+  });
+
+  test("Sends nothing under terms the organization has not accepted, and keeps it waiting when GitHub refuses", async () => {
+    const db = getDatabase(mockEnv);
+    const { id: tenantId } = (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant;
+    await db.prepare("UPDATE tenants SET bug_reports_terms_version = '2000-01-01' WHERE id = ?").bind(tenantId).run();
+    assert.equal((await bugReport({ state: "error", error: "disk full while writing grubenv" })).status, 200);
+    const github = fakeGithub();
+    const ai = fakeAi(() => ({ decision: "new", title: "Disk full while writing grubenv", summary: "The boot environment could not be written because the disk was full." }));
+    assert.equal((await runBugs(ai, github)).filed, 0, "older terms: nothing is sent");
+    assert.equal(ai.calls.length, 0);
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "pending");
+
+    await db.prepare("UPDATE tenants SET bug_reports_terms_version = ? WHERE id = ?").bind(BUG_REPORT_TERMS_VERSION, tenantId).run();
+    const refusing = fakeGithub({ failWrites: 401 });
+    assert.equal((await runBugs(ai, refusing)).filed, 0);
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "pending", "GitHub refused: try again next run");
+    assert.equal((await runBugs(ai, github)).filed, 1);
+  });
+
+  test("Sends nothing for an organization that has opted out", async () => {
+    assert.equal((await bugReport({ state: "fallback" })).status, 200);
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "pending");
 
     const off = await callJson("/api/settings/bug-reports?tenant=greenwood", { ...json({ enabled: false }), cookie: orgSessionCookie });
     assert.equal(off.res.status, 200, "turning it off works even where the platform is not set up");
-    assert.equal((await issueStates("PC-BUG")).at(-1)!.report_state, "none", "what was waiting is dropped");
-    assert.equal((await report(base + 600)).status, 200);
-    assert.equal((await issueStates("PC-BUG")).at(-1)!.report_state, "none");
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "none", "what was waiting is dropped");
+    assert.equal((await bugReport({ state: "fallback" })).status, 200);
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "none");
 
     const github = fakeGithub();
-    assert.deepEqual(await processBugReports(getDatabase(mockEnv), bugEnv(fakeAi(() => ({}))), nowSeconds(), github.impl), { filed: 0, linked: 0 });
-    assert.equal(github.calls.length, 0);
+    const ai = fakeAi(() => ({}));
+    assert.equal((await runBugs(ai, github)).filed, 0);
+    assert.equal(ai.calls.length, 0);
+    assert.equal(github.writes.length, 0);
   });
 
   test("Revokes the device token when a workstation is decommissioned", async () => {
@@ -3915,6 +4054,7 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0015"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0016"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0017"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0018"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

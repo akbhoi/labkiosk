@@ -166,15 +166,19 @@ reports an authorization error, add the permission it names to `CLOUDFLARE_API_T
 ### Automatic bug reports (optional)
 
 Organizations can opt in, in Settings → Errors & Warnings, to having their workstations' errors and
-warnings filed as GitHub issues (`src/bug_reports.ts`). The hourly cron files each new problem once,
-with addresses, host names and identifiers masked and no organization or workstation names; Workers
-AI drafts the title and summary. The option stays unavailable to every organization until all three
-of these are set:
+warnings filed as GitHub issues (`src/bug_reports.ts`), after accepting the Automatic Bug Report
+Terms (`/terms/bug-reports`, versioned by `BUG_REPORT_TERMS_VERSION`). The hourly cron masks
+addresses, host names and identifiers, links repeats of a known problem, asks a reasoning model
+whether a new problem matches an open report (matched: one comment on that issue; otherwise a new
+issue whose title and summary it drafts), and reads each issue's status back from GitHub (in
+progress: assigned or labelled "in progress"; PR created: referenced by a pull request in the same
+repository; resolved: closed as completed; closed: closed for another reason). The option stays
+unavailable to every organization until all three of these are set:
 
 | Setting | What it is | Set it |
 | :--- | :--- | :--- |
-| `AI` | Workers AI binding (model `@cf/meta/llama-3.1-8b-instruct-fast`) | Already in `wrangler.jsonc`. Workers AI has no local simulator: under `wrangler dev` it calls your account. |
-| `GITHUB_ISSUES_TOKEN` | Secret: a fine-grained GitHub token for one repository with **Issues: Read and write** | `npx wrangler secret put GITHUB_ISSUES_TOKEN` |
+| `AI` | Workers AI binding (reasoning model `@cf/openai/gpt-oss-120b`, effort `high`) | Already in `wrangler.jsonc`. Workers AI has no local simulator: under `wrangler dev` it calls your account. |
+| `GITHUB_ISSUES_TOKEN` | Secret: a fine-grained GitHub token for one repository with **Issues: Read and write** (and **Pull requests: Read** for a private repository) | `npx wrangler secret put GITHUB_ISSUES_TOKEN` |
 | `GITHUB_ISSUES_REPO` | Variable: the repository issues are filed in, `owner/repo` | Dashboard → Variables and Secrets (section 3) |
 
 Issues filed in a public repository are public. Each organization's administrator sees the
@@ -263,8 +267,9 @@ Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of
 - Moves audit entries older than 180 days to the `labkiosk-audit-archive` R2 bucket (one NDJSON
   file per run) and deletes them from D1.
 - Deletes workstation errors and warnings older than 90 days.
-- Files pending automatic bug reports as GitHub issues, when they are set up (at most 5 new issues a
-  run; a GitHub failure leaves the rest for the next run).
+- Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub
+  writes a run; a GitHub or model failure leaves the rest for the next run), and reads back the
+  status of up to 10 filed issues.
 
 Queued commands are no longer in D1: each organization's OrgHub expires its own.
 

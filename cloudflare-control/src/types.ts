@@ -67,6 +67,9 @@ export interface Tenant {
   updated_at: number;
   /** 1 when the organization opted in to automatic bug reports (src/bug_reports.ts). */
   bug_reports_enabled?: number;
+  /** The Automatic Bug Report Terms version the organization accepted, and when. */
+  bug_reports_terms_version?: string | null;
+  bug_reports_terms_accepted_at?: number | null;
 }
 
 export interface BroadcastPreset {
@@ -174,7 +177,15 @@ export interface WorkstationIssue {
   report_state?: "none" | "pending" | "sent";
   /** The GitHub issue it was filed under, once sent. */
   issue_url?: string | null;
+  issue_number?: number | null;
+  /** Whether it opened that issue or was matched to one already filed. */
+  report_match?: "new" | "existing" | null;
+  /** Where the issue stands on GitHub. */
+  report_status?: BugReportStatus | null;
+  pr_url?: string | null;
 }
+
+export type BugReportStatus = "open" | "in_progress" | "pr_open" | "resolved" | "closed";
 
 export interface AuditLogEntry {
   id: string;

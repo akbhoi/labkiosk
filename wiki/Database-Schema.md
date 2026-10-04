@@ -49,6 +49,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0014_org_hub_live_state.sql` | Drops `commands`, `command_deliveries` and `client_devices.thumbnail` (live state moved to OrgHub); adds `tenants.online_workstations`, `custom_hostname_id`, `custom_hostname_status` |
 | `0015_workstation_boot_reports.sql` | `client_devices.image_version`, `update_state`, `update_error`, `update_state_at` (boot outcomes from `POST /api/devices/boot-report`) |
 | `0016_workstation_issues.sql` | `workstation_issues`: errors and warnings workstations report (Settings → Errors & Warnings), deleted after 90 days |
+| `0018_bug_report_triage.sql` | `tenants.bug_reports_terms_version` / `_accepted_at`, `bug_reports.title`, `problem`, `status`, `pr_url`, `status_checked_at`, `workstation_issues.report_match` |
 | `0017_bug_reports.sql` | `tenants.bug_reports_enabled`, `workstation_issues.report_state` and `bug_signature`, and the platform table `bug_reports`: opt-in automatic GitHub bug reports |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
@@ -98,6 +99,7 @@ One row per organization. This table has accumulated the most columns because it
 | `custom_hostname_status` | TEXT | `none` \| `pending` \| `active` \| `failed` \| `local` (no provisioning in local development) |
 | `online_workstations` | INTEGER | Kept by the organization's OrgHub, so the super admin list needs no query per organization |
 | `bug_reports_enabled` | INTEGER | `1` when the organization opted in to automatic bug reports; default `0` |
+| `bug_reports_terms_version` / `bug_reports_terms_accepted_at` | TEXT / INTEGER | The Automatic Bug Report Terms version accepted, and when; reports are sent only under the current version |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
@@ -178,11 +180,13 @@ deletes rows older than 90 days.
 | `created_at` | INTEGER | When the Worker received it; indexed with `tenant_id` |
 | `report_state` | TEXT | `none`, `pending` (recorded while the organization had opted in) or `sent` (CHECK) |
 | `bug_signature` | TEXT | → `bug_reports.signature` once sent |
+| `report_match` | TEXT | `new` (opened its issue) or `existing` (linked to one already filed) (CHECK) |
 
 ### `bug_reports`
 
-One GitHub issue per distinct redacted problem, shared by every organization that reports it. A
-platform table with no organization or workstation data (`src/bug_reports.ts`).
+One row per distinct redacted problem (signature); several signatures may share one GitHub issue
+when the reasoning model matched them. Shared by every organization that reports them, with no
+organization or workstation data (`src/bug_reports.ts`).
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |
@@ -191,6 +195,10 @@ platform table with no organization or workstation data (`src/bug_reports.ts`).
 | `image_version` | TEXT | |
 | `issue_number` / `issue_url` | INTEGER / TEXT | The GitHub issue |
 | `created_at` | INTEGER | When it was filed |
+| `title` / `problem` | TEXT | The issue title and redacted problem text the model compares new problems with |
+| `status` | TEXT | `open`, `in_progress`, `pr_open`, `resolved`, `closed` (CHECK), read back from GitHub; indexed by `issue_number` |
+| `pr_url` | TEXT | The pull request that references the issue |
+| `status_checked_at` | INTEGER | When the status was last read |
 
 ### `device_tokens`
 

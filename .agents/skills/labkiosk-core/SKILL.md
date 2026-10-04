@@ -91,8 +91,10 @@ once per `(state, at)`. The Worker keeps the newest on `client_devices.update_*`
 ignores one less than 60 s after the last, and lists each failure, rollback, fallback or error in
 `workstation_issues` (0016) for Settings → Errors & Warnings (`GET /api/workstation-issues`,
 `settings` permission; the hourly cron deletes rows after 90 days). Not in the audit log. An
-organization that opted in (`tenants.bug_reports_enabled`, 0017) has new rows marked `pending`; the
-cron files them, redacted, as GitHub issues, one per signature (`src/bug_reports.ts`). `200` and `400`/`404` settle a
+organization that opted in under the current Automatic Bug Report Terms (`tenants.bug_reports_*`,
+0017/0018) has new rows marked `pending`; the cron redacts them, links a known signature, asks a
+reasoning model (`@cf/openai/gpt-oss-120b`) whether an open report matches, files or comments on
+GitHub, and reads each issue's status back (`src/bug_reports.ts`). `200` and `400`/`404` settle a
 report; `409` (row not written by the hub yet), `401`/`403` and network errors are retried.
 
 ## 3. Enrolment — wizard → agent `POST /api/setup` → Worker `POST /api/devices/enroll`

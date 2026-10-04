@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   custom_hostname_status TEXT NOT NULL DEFAULT 'none',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  bug_reports_enabled INTEGER NOT NULL DEFAULT 0
+  bug_reports_enabled INTEGER NOT NULL DEFAULT 0,
+  bug_reports_terms_version TEXT,
+  bug_reports_terms_accepted_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -137,7 +139,8 @@ CREATE TABLE IF NOT EXISTS workstation_issues (
   occurred_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   report_state TEXT NOT NULL DEFAULT 'none' CHECK (report_state IN ('none', 'pending', 'sent')),
-  bug_signature TEXT
+  bug_signature TEXT,
+  report_match TEXT CHECK (report_match IN ('new', 'existing'))
 );
 
 CREATE TABLE IF NOT EXISTS bug_reports (
@@ -146,7 +149,12 @@ CREATE TABLE IF NOT EXISTS bug_reports (
   image_version TEXT,
   issue_number INTEGER NOT NULL,
   issue_url TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  title TEXT,
+  problem TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'pr_open', 'resolved', 'closed')),
+  pr_url TEXT,
+  status_checked_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS device_tokens (
@@ -221,6 +229,7 @@ CREATE INDEX IF NOT EXISTS idx_device_tokens_tenant ON device_tokens(tenant_id, 
 CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_workstation_issues_tenant ON workstation_issues(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_issue ON bug_reports(issue_number);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
@@ -376,6 +385,10 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT bug_reports_enabled FROM tenants LIMIT 1").run();
     await db.prepare("SELECT report_state, bug_signature FROM workstation_issues LIMIT 1").run();
     await db.prepare("SELECT signature, issue_url FROM bug_reports LIMIT 1").run();
+    // 0018: bug report terms and triage.
+    await db.prepare("SELECT bug_reports_terms_version FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT status, status_checked_at FROM bug_reports LIMIT 1").run();
+    await db.prepare("SELECT report_match FROM workstation_issues LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0017)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0018)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), hourly cron
 ├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
@@ -42,7 +42,7 @@ cloudflare-control/
 │   ├── ui_org_home.ts                  # The organization homepage at the subdomain root (/)
 │   ├── ui_portal.ts                    # User Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
-│   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms)
+│   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /terms/bug-reports)
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   └── types.ts                        # Strict TypeScript interfaces
 └── test/

@@ -333,6 +333,12 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
             <input type="checkbox" class="form-checkbox" id="bug-reports-enabled">
             <span>Send automatic bug reports</span>
           </label>
+          <div id="bug-reports-terms-row" hidden>
+            <label class="form-checkbox-label">
+              <input type="checkbox" class="form-checkbox" id="bug-reports-terms">
+              <span>I accept the <a href="/terms/bug-reports" target="_blank" rel="noopener noreferrer">Automatic Bug Report Terms</a> for this organization</span>
+            </label>
+          </div>
           <p class="form-hint" id="bug-reports-hint"></p>
         </div>
         <div class="table-container table-scrollable">
@@ -715,46 +721,130 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             boot_error: "Boot record error"
           };
           const pad = (n) => String(n).padStart(2, "0");
+          // Where a sent problem stands: the issue it opened or joined, and that issue's status on GitHub.
+          const reportStatus = {
+            open: null,
+            in_progress: ["In progress", "badge-blue"],
+            pr_open: ["PR created", "badge-blue"],
+            resolved: ["Resolved", "badge-green"],
+            closed: ["Closed", "badge-neutral"]
+          };
+          function externalLink(href, text) {
+            const link = document.createElement("a");
+            link.href = href;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = text;
+            return link;
+          }
+          function bugReportLine(issue) {
+            const line = document.createElement("div");
+            line.className = "cell-sub";
+            const number = typeof issue.issue_number === "number" ? " #" + issue.issue_number : "";
+            line.appendChild(externalLink(issue.issue_url,
+              (issue.report_match === "existing" ? "Already reported" : "New bug report") + number));
+            const status = reportStatus[issue.report_status];
+            if (status) {
+              line.appendChild(document.createTextNode(" "));
+              const badge = document.createElement("span");
+              badge.className = "badge " + status[1];
+              badge.textContent = status[0];
+              line.appendChild(badge);
+            }
+            if (issue.report_status === "pr_open" && typeof issue.pr_url === "string" &&
+                issue.pr_url.startsWith("https://github.com/")) {
+              line.appendChild(document.createTextNode(" "));
+              line.appendChild(externalLink(issue.pr_url, "View PR"));
+            }
+            return line;
+          }
           const optIn = document.getElementById("bug-report-optin");
           const optInBox = document.getElementById("bug-reports-enabled");
+          const termsRow = document.getElementById("bug-reports-terms-row");
+          const termsBox = document.getElementById("bug-reports-terms");
           const optInHint = document.getElementById("bug-reports-hint");
-          let bugReportsAvailable = false;
+          let bugState = null;
+          function bugReportsAvailable() {
+            return !!bugState && bugState.available === true && typeof bugState.repository === "string";
+          }
+          function termsCurrent() {
+            return !!bugState && bugState.acceptedTermsVersion === bugState.termsVersion;
+          }
           function showBugReportOptIn(state) {
-            if (!optIn || !optInBox || !optInHint || !state) return;
+            if (!optIn || !optInBox || !termsRow || !termsBox || !optInHint || !state) return;
+            bugState = state;
             optIn.hidden = false;
-            bugReportsAvailable = state.available === true && typeof state.repository === "string";
             optInBox.checked = state.enabled === true;
-            if (bugReportsAvailable) {
-              optInBox.disabled = false;
+            // Turning it off stays possible; turning it on needs the platform set up.
+            optInBox.disabled = !bugReportsAvailable() && !optInBox.checked;
+            const needsTerms = bugReportsAvailable() && !(state.enabled === true && termsCurrent());
+            termsRow.hidden = !needsTerms;
+            termsBox.checked = false;
+            if (!bugReportsAvailable()) {
+              optInHint.textContent = "Automatic bug reports are not set up on this platform.";
+            } else if (state.enabled === true && !termsCurrent()) {
+              optInHint.textContent = "The Automatic Bug Report Terms have changed. Nothing is sent until you accept version " +
+                state.termsVersion + ".";
+            } else if (state.enabled === true) {
+              const accepted = new Date((state.termsAcceptedAt || 0) * 1000);
+              optInHint.textContent = "Problems are filed as GitHub issues in " + state.repository +
+                ", where anyone may be able to read them. Terms version " + state.acceptedTermsVersion +
+                (isNaN(accepted.getTime()) ? "" : " accepted on " + accepted.toLocaleDateString()) + ".";
+            } else {
               optInHint.textContent = "New errors and warnings are filed as GitHub issues in " + state.repository +
                 ", where anyone may be able to read them. A report carries the kind of problem, the system image version " +
                 "and the problem text with network addresses, host names and identifiers removed; never this organization's " +
                 "or its workstations' names. Problems listed before you turn this on are not sent.";
-            } else {
-              // Turning it off stays possible; turning it on needs the platform set up.
-              optInBox.disabled = !optInBox.checked;
-              optInHint.textContent = "Automatic bug reports are not set up on this platform.";
             }
           }
-          if (optInBox) {
+          async function saveBugReports(enabled) {
+            const body = enabled ? { enabled, acceptTerms: bugState.termsVersion } : { enabled };
+            const res = await fetch(labkioskApi("/api/settings/bug-reports"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body)
+            });
+            const data = await res.json();
+            if (!res.ok || data.status !== "ok") throw new Error(data.error || ("HTTP " + res.status));
+            bugState.enabled = enabled;
+            if (enabled) {
+              bugState.acceptedTermsVersion = bugState.termsVersion;
+              bugState.termsAcceptedAt = Math.floor(Date.now() / 1000);
+            }
+          }
+          if (optInBox && termsBox) {
             optInBox.addEventListener("change", async () => {
               const enabled = optInBox.checked;
+              if (enabled && !termsBox.checked) {
+                optInBox.checked = false;
+                lkToast("Accept the Automatic Bug Report Terms first.", "error");
+                return;
+              }
               optInBox.disabled = true;
               try {
-                const res = await fetch(labkioskApi("/api/settings/bug-reports"), {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ enabled })
-                });
-                const data = await res.json();
-                if (!res.ok || data.status !== "ok") throw new Error(data.error || ("HTTP " + res.status));
+                await saveBugReports(enabled);
                 lkToast(enabled ? "Automatic bug reports turned on." : "Automatic bug reports turned off.", "success");
               } catch (err) {
                 console.warn("Could not change automatic bug reports:", err);
-                optInBox.checked = !enabled;
+                bugState.enabled = !enabled;
                 lkToast("Could not change automatic bug reports: " + err.message, "error");
               } finally {
-                optInBox.disabled = !bugReportsAvailable && !optInBox.checked;
+                showBugReportOptIn(bugState);
+              }
+            });
+            termsBox.addEventListener("change", async () => {
+              // Already on under older terms: ticking the box accepts the current ones.
+              if (!termsBox.checked || !bugState || bugState.enabled !== true) return;
+              termsBox.disabled = true;
+              try {
+                await saveBugReports(true);
+                lkToast("Automatic Bug Report Terms accepted.", "success");
+              } catch (err) {
+                console.warn("Could not accept the Automatic Bug Report Terms:", err);
+                lkToast("Could not accept the terms: " + err.message, "error");
+              } finally {
+                termsBox.disabled = false;
+                showBugReportOptIn(bugState);
               }
             });
           }
@@ -812,15 +902,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               }
               if (issue.report_state === "sent" && typeof issue.issue_url === "string" &&
                   issue.issue_url.startsWith("https://github.com/")) {
-                const report = document.createElement("div");
-                report.className = "cell-sub";
-                const link = document.createElement("a");
-                link.href = issue.issue_url;
-                link.target = "_blank";
-                link.rel = "noopener noreferrer";
-                link.textContent = "Bug report";
-                report.appendChild(link);
-                problem.appendChild(report);
+                problem.appendChild(bugReportLine(issue));
               } else if (issue.report_state === "pending") {
                 const report = document.createElement("div");
                 report.className = "cell-sub";

@@ -12,7 +12,7 @@ import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
 import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
-import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import { renderStatusPageHtml } from "./ui_status";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
@@ -124,7 +124,7 @@ import {
   recordBootReport,
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
-import { bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
+import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -479,6 +479,7 @@ const output: Record<string, unknown> = Object.create(null);
 
 function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
+  if (path === "/terms/bug-reports") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
@@ -545,8 +546,10 @@ export default {
       if (archived) console.log(`[Worker] Archived ${archived} audit entries older than ${AUDIT_RETENTION_DAYS} days to R2.`);
     }
     const bugs = await processBugReports(db, env);
-    if (bugs.filed || bugs.linked) {
-      console.log(`[Worker] Bug reports: ${bugs.filed} GitHub issues filed, ${bugs.linked} problems added to existing ones.`);
+    if (bugs.filed || bugs.matched || bugs.linked || bugs.refreshed) {
+      console.log(
+        `[Worker] Bug reports: ${bugs.filed} filed, ${bugs.matched} matched to existing issues, ${bugs.linked} repeats, ${bugs.refreshed} statuses read.`
+      );
     }
   },
 
@@ -1791,7 +1794,10 @@ export default {
           bugReports: {
             enabled: currentTenant!.bug_reports_enabled === 1,
             available: repository !== null,
-            repository
+            repository,
+            termsVersion: BUG_REPORT_TERMS_VERSION,
+            acceptedTermsVersion: currentTenant!.bug_reports_terms_version ?? null,
+            termsAcceptedAt: currentTenant!.bug_reports_terms_accepted_at ?? null
           }
         }),
         { headers: jsonHeaders }
@@ -1800,12 +1806,13 @@ export default {
 
     // POST /api/settings/bug-reports: opt this organization in to (or out of)
     // automatic, redacted GitHub bug reports for its workstations' problems.
+    // Turning it on accepts the current Automatic Bug Report Terms, by version.
     if (path === "/api/settings/bug-reports" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
-      let body: { enabled?: unknown };
+      let body: { enabled?: unknown; acceptTerms?: unknown };
       try {
-        body = await request.json<{ enabled?: unknown }>();
+        body = await request.json<{ enabled?: unknown; acceptTerms?: unknown }>();
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -1815,12 +1822,19 @@ export default {
       if (body.enabled && !bugReportRepository(env)) {
         return jsonError("Automatic bug reports are not set up on this platform", 409, jsonHeaders);
       }
+      if (body.enabled && body.acceptTerms !== BUG_REPORT_TERMS_VERSION) {
+        return jsonError(
+          `Accept the Automatic Bug Report Terms (version ${BUG_REPORT_TERMS_VERSION}) to turn this on`,
+          400,
+          jsonHeaders
+        );
+      }
       await setBugReportsEnabled(db, currentTenant!.id, body.enabled, Math.floor(Date.now() / 1000));
       await writeAuditLog(db, {
         tenantId: currentTenant!.id,
         userId: session!.user_id,
         action: "settings.bug_reports",
-        details: body.enabled ? "on" : "off"
+        details: body.enabled ? `on, terms ${BUG_REPORT_TERMS_VERSION} accepted` : "off"
       });
       return new Response(JSON.stringify({ status: "ok", enabled: body.enabled }), { headers: jsonHeaders });
     }
@@ -2642,6 +2656,9 @@ export default {
     }
     if (path === "/terms") {
       return new Response(renderTermsOfServiceHtml(), { headers: htmlHeaders });
+    }
+    if (path === "/terms/bug-reports") {
+      return new Response(renderBugReportTermsHtml(bugReportRepository(env)), { headers: htmlHeaders });
     }
 
     // 1. Organization Admin Dashboard (/admin and /admin/*)

@@ -187,7 +187,7 @@ export async function listWorkstationIssues(db: D1Database, tenantId: string, li
   const res = await db
     .prepare(
       `SELECT i.id, i.client_id, i.severity, i.kind, i.image_version, i.details, i.occurred_at, i.created_at,
-              i.report_state, b.issue_url
+              i.report_state, i.report_match, b.issue_url, b.issue_number, b.status AS report_status, b.pr_url
          FROM workstation_issues i LEFT JOIN bug_reports b ON b.signature = i.bug_signature
         WHERE i.tenant_id = ? ORDER BY i.created_at DESC, i.occurred_at DESC LIMIT ?`
     )

@@ -1,5 +1,5 @@
 /**
- * Privacy Policy & Terms of Service.
+ * Privacy Policy, Terms of Service and the Automatic Bug Report Terms.
  *
  * Educational compliance (FERPA, COPPA) and the RAM overlay privacy guarantee.
  * Both pages share one shell: they used to be two complete HTML documents with
@@ -8,6 +8,7 @@
  */
 
 import { escapeHtml } from "./escape";
+import { BUG_REPORT_TERMS_VERSION } from "./bug_reports";
 import { FONT_LINKS, rootTokensCss, LEGACY_LEGAL_ALIASES } from "./ui_tokens";
 
 /** The chrome both legal pages sit inside. */
@@ -238,6 +239,82 @@ export function renderTermsOfServiceHtml(): string {
 
       <h2>6. Inquiries &amp; Legal Notices</h2>
       <p>For legal inquiries, contact <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a>.</p>
+    </div>
+  </main>
+`
+  });
+}
+
+/**
+ * The Automatic Bug Report Terms an organization accepts before its
+ * workstations' problems are filed as GitHub issues (src/bug_reports.ts).
+ * Their version is BUG_REPORT_TERMS_VERSION; any change to the text below is a
+ * new version, which pauses reports until an administrator accepts it again.
+ */
+export function renderBugReportTermsHtml(repository: string | null): string {
+  const where = repository
+    ? `the GitHub repository <a href="https://github.com/${escapeHtml(repository)}">${escapeHtml(repository)}</a>`
+    : "the GitHub repository named in Settings &rarr; Errors &amp; Warnings";
+  return renderLegalShell({
+    title: "Automatic Bug Report Terms - Lab Kiosk OS",
+    siblingHref: "/terms",
+    siblingLabel: "Terms of Service",
+    mainHtml: `
+  <main>
+    <div class="legal-card">
+      <h1>Automatic Bug Report Terms</h1>
+      <div class="updated-date">Version ${escapeHtml(BUG_REPORT_TERMS_VERSION)} &bull; Applies from the moment an organization accepts it</div>
+
+      <div class="highlight-box">
+        <strong>Off unless you turn it on</strong>
+        Automatic bug reports are optional. Nothing described here happens until an administrator of your organization accepts these terms and turns the option on in Settings &rarr; Errors &amp; Warnings. You can turn it off at any time.
+      </div>
+
+      <h2>1. What These Terms Cover</h2>
+      <p>These terms apply to the Automatic Bug Reports option of Lab Kiosk OS ("Platform", "we", "us", operated by Akbhoi Innovations). They add to the <a href="/terms">Terms of Service</a> and the <a href="/privacy">Privacy Policy</a>; where they differ on bug reports, these terms apply. By turning the option on, the administrator accepts these terms on behalf of their organization ("you").</p>
+
+      <h2>2. What the Option Does</h2>
+      <p>When a workstation of yours reports a problem that is listed in Errors &amp; Warnings (for example, a system update that failed its first start and was rolled back), the Platform checks once an hour whether the same problem has already been reported. If it has, the problem is linked to the existing report. If it has not, a new report is published as an issue in ${where}. Your console then shows where each problem stands.</p>
+
+      <h2>3. What Is Sent, and What Is Not</h2>
+      <p>A report contains only:</p>
+      <ul>
+        <li>the kind of problem (for example, "update rolled back");</li>
+        <li>the version of the Lab Kiosk system image involved;</li>
+        <li>the problem text the workstation recorded, after network addresses, host names, web addresses, e-mail addresses and long identifiers have been automatically replaced with placeholders such as <code>&lt;ip&gt;</code>;</li>
+        <li>a short fingerprint of that text, used to recognise repeats.</li>
+      </ul>
+      <p>A report never contains your organization's name, subdomain or domain, workstation names, staff accounts, the pages users visit, screen images, or anything a user types.</p>
+
+      <h2>4. Masking Is Automatic and Best Effort</h2>
+      <p>The masking is done by software before anything leaves the Platform. We designed it to remove identifying details, but no automatic filter can be guaranteed to catch everything. If you find a detail in a published report that identifies your organization or a person, write to <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a> with a link to the report and we will edit or remove it.</p>
+
+      <h2>5. Where Reports Are Published</h2>
+      <p>Reports are published in ${where}, which is operated by GitHub, Inc. under its own terms and privacy statement. If that repository is public, anyone can read, copy and index the reports, and copies may remain elsewhere after a report is edited or removed. Reports from different organizations about the same problem are combined, so a report may reflect problems seen by several organizations.</p>
+
+      <h2>6. Processing by an AI Model</h2>
+      <p>To decide whether a problem has already been reported, and to write the title and summary of a new report, the masked report and the masked text of earlier reports are processed by an AI model hosted by Cloudflare (Cloudflare Workers AI), under Cloudflare's terms. Only the masked information listed in section 3 is given to the model. AI output can be wrong: a problem may be linked to a report that turns out to be unrelated, or reported twice. The report section of every issue is copied exactly by the Platform, not written by the model. The model is not used to make any decision about a person.</p>
+
+      <h2>7. Status Shown in Your Console</h2>
+      <p>For each problem that was sent, your console shows whether it opened a new report or was matched to an existing one, and the report's status on GitHub: open, in progress, pull request created, resolved, or closed. The status is read from GitHub about once an hour and is for information only.</p>
+
+      <h2>8. No Support or Fix Commitment</h2>
+      <p>Bug reports are a voluntary contribution to improving Lab Kiosk OS. Sending one does not open a support request, create a service-level commitment, or oblige us to respond, fix the problem, or fix it within any time. Support you are entitled to under a Commercial or Subscriber License is unaffected.</p>
+
+      <h2>9. Permission to Publish</h2>
+      <p>You allow Akbhoi Innovations, without charge and without time limit, to publish, edit, combine and use the content of the reports sent under these terms for maintaining and improving Lab Kiosk OS. You confirm that turning the option on does not breach any obligation your organization has to others.</p>
+
+      <h2>10. Turning the Option Off</h2>
+      <p>An administrator can turn the option off at any time in Settings &rarr; Errors &amp; Warnings. Problems recorded after that are not sent, and problems still waiting to be sent are dropped. Reports already published stay published; you can ask for one to be edited or removed as described in section 4.</p>
+
+      <h2>11. Who Can Accept These Terms</h2>
+      <p>Only an administrator with the Settings permission can turn the option on, and by doing so confirms they have the authority to accept these terms for the organization. The Platform records who accepted which version, and when, in your organization's audit log.</p>
+
+      <h2>12. Changes to These Terms</h2>
+      <p>If these terms change, they get a new version and date at the top of this page. Reports stop being sent until an administrator of your organization accepts the new version. Nothing is sent under a version your organization has not accepted.</p>
+
+      <h2>13. Contact</h2>
+      <p>For questions about these terms, contact <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a>.</p>
     </div>
   </main>
 `
