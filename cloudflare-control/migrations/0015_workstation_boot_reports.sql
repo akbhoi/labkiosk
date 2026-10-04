@@ -2,8 +2,8 @@
 --
 -- An installed workstation boots a new image once and keeps it only if the
 -- health check passes (docs/OTA_UPDATES.md §5.6). The agent reports the outcome
--- with POST /api/devices/boot-report; the latest one is kept here and each new
--- one is written to the organization's audit log.
+-- with POST /api/devices/boot-report; the latest one is kept here, and a
+-- failure is listed in workstation_issues (0016), never in the audit log.
 --
 --   image_version     the image the workstation is running
 --   update_state      installed | failed | rolled-back | fallback | error

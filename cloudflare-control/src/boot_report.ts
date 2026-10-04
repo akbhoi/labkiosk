@@ -25,7 +25,7 @@ const MAX_CLOCK_AHEAD_SECONDS = 300;
 /**
  * Reports from one workstation at least this far apart. A boot reports once,
  * and boots are minutes apart, so a real workstation never meets this limit;
- * one replaying invented reports cannot flood the audit log.
+ * one replaying invented reports cannot flood Errors & Warnings.
  */
 export const BOOT_REPORT_MIN_GAP_SECONDS = 60;
 

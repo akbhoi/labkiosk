@@ -106,7 +106,8 @@ jobs:
           PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m py_compile \
             distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
             distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
-            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots
           if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
             echo "::error::__pycache__ was written into the image overlay"
             exit 1

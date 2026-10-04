@@ -103,7 +103,7 @@ INSTALLED_KERNEL_ARG = "labkiosk.installed=1"
 # /run/labkiosk-update is root's; the browser's user cannot write a report here.
 BOOT_STATUS_FILE = "/run/labkiosk-update/status.json"
 MAX_BOOT_STATUS_BYTES = 4096
-# Outcomes the organization's audit log should show; routine boots are not sent.
+# Outcomes Settings -> Errors & Warnings should show; routine boots are not sent.
 BOOT_REPORT_STATES = frozenset({"installed", "failed", "rolled-back", "fallback", "error"})
 BOOT_REPORT_FIELDS = ("version", "previous", "failed", "error")
 BOOT_REPORT_INTERVAL_SECONDS = 30
@@ -2735,7 +2735,7 @@ def post_boot_report(report):
 
 def report_boot_outcome(settled):
     """
-    Send this boot's outcome to the organization's audit log, once.
+    Send this boot's outcome to the organization's console, once.
 
     `settled` is the (state, at) of the last report the control plane answered
     for good; the new one is returned. Anything else -- offline, a token being

@@ -1478,7 +1478,7 @@ class SeedingNeverFollowsLinks(unittest.TestCase):
 
 
 class BootOutcomeReporting(unittest.TestCase):
-    """The agent sends what labkiosk-boot-slots recorded to the organization's audit log."""
+    """The agent sends what labkiosk-boot-slots recorded to the organization's console."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
