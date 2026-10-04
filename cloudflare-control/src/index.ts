@@ -117,6 +117,7 @@ import {
   rejectCrossSiteMutation,
   rejectCrossSiteSocket
 } from "./guard";
+import { parseBootReport, recordBootReport } from "./boot_report";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -373,6 +374,41 @@ async function handleWorkstationRequest(
 }
 
 /**
+ * POST /api/devices/boot-report: an installed workstation reports what its last
+ * boot did with its system image (a new image installed, a failed first boot,
+ * a rollback). Like the heartbeat, the device token alone decides the
+ * organization and the workstation.
+ *
+ * 200 recorded or already recorded; 400 malformed (the agent drops it);
+ * 409 the workstation's row does not exist yet (the agent tries again).
+ */
+async function handleBootReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+  const now = Math.floor(Date.now() / 1000);
+
+  let report;
+  try {
+    report = parseBootReport(await request.json(), now);
+  } catch (err: any) {
+    return jsonError(`Boot report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const outcome = await recordBootReport(db, device.tenant_id, device.client_id, report, now);
+  if (outcome === "unknown-workstation") {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok", recorded: outcome === "recorded" }), {
+    status: 200,
+    headers: jsonHeaders
+  });
+}
+
+/**
  * Routes that may name a tenant without a session, either because they are
  * public and read-only (the user portal, the wizard status probe) or because
  * they carry their own credential (`/api/telemetry` uses a device token, and
@@ -535,6 +571,9 @@ export default {
 
     if ((path === "/api/telemetry" && method === "POST") || (path === "/api/devices/ws" && method === "GET")) {
       return handleWorkstationRequest(request, url, env, db, jsonHeaders);
+    }
+    if (path === "/api/devices/boot-report" && method === "POST") {
+      return handleBootReport(request, db, jsonHeaders);
     }
 
     // The console stylesheet: one immutable file per version instead of ~50 KB

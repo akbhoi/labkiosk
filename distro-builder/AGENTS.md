@@ -498,9 +498,12 @@ distro-builder/
   try it waits until the agent's API answers and Chromium (`--user-data-dir=/tmp/chromium-profile`)
   runs, continuously for 60 s within 10 minutes, then makes `next` current and the old image
   `previous`; if that never happens it reboots, and GRUB boots the old image. Every boot writes
-  the outcome (`running`, `staged`, `finishing`, `installed`, `failed`, `rolled-back`, `fallback`)
-  to `/run/labkiosk-update/status.json`, root-written, for the agent to report — never to `DATA`,
-  which the browser's user can write.
+  the outcome (`running`, `staged`, `finishing`, `installed`, `failed`, `rolled-back`, `fallback`,
+  and `error` when `grubenv` cannot be read or the promotion cannot be written) to
+  `/run/labkiosk-update/status.json`, root-written — never to `DATA`, which the browser's user can
+  write. A write that fails still fails the command (fail closed); the agent sends `installed`,
+  `failed`, `rolled-back`, `fallback` and `error` to `POST /api/devices/boot-report`, which puts
+  them in the organization's audit log (`labkiosk-core` §2b).
 - `labkiosk-boot-slots try <version>` gives an image already on disk its one try at the next boot
   (the primitive the updater will use). There is no sudo rule for it: the agent never chooses what
   boots.

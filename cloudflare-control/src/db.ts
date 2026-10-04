@@ -109,7 +109,11 @@ CREATE TABLE IF NOT EXISTS client_devices (
   broadcast_url TEXT,
   broadcast_epoch INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  image_version TEXT,
+  update_state TEXT,
+  update_error TEXT,
+  update_state_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -339,6 +343,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     }
     // 0014: live state moved to OrgHub; the organization carries its online count.
     await db.prepare("SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1").run();
+    // 0015: the outcome of each workstation's last boot.
+    await db.prepare("SELECT image_version, update_state_at FROM client_devices LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

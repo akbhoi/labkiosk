@@ -116,6 +116,13 @@ export interface ClientDevice {
   broadcast_epoch?: number;
   created_at: number;
   updated_at: number;
+  /** The system image the workstation reported running (0015). */
+  image_version?: string | null;
+  /** Its last boot outcome: installed, failed, rolled-back, fallback or error. */
+  update_state?: string | null;
+  update_error?: string | null;
+  /** When the workstation recorded that outcome, by its own clock; 0 = never. */
+  update_state_at?: number;
 }
 
 export interface WorkstationGroup {

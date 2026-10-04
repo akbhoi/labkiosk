@@ -384,11 +384,18 @@ def cmd_check():
 
     write_status("finishing", version=running, previous=env.get("current", ""))
     if wait_until_healthy(system_is_healthy):
-        with boot_partition_writable():
-            env = read_env(boot_dir)
-            if classify(env, running) != "trial":
-                raise RuntimeError("the boot environment changed during the health check")
-            write_env(boot_dir, promote(env))
+        try:
+            with boot_partition_writable():
+                env = read_env(boot_dir)
+                if classify(env, running) != "trial":
+                    raise RuntimeError("the boot environment changed during the health check")
+                write_env(boot_dir, promote(env))
+        except (OSError, RuntimeError, ValueError) as err:
+            # The image is healthy but its promotion is not known to be on disk.
+            # Say so, for the agent to report to the organization, and fail: the
+            # next boot is whatever grubenv really holds.
+            write_status("error", version=running, error=f"could not record the update: {err}")
+            raise
         write_status("installed", version=running, previous=env.get("current", ""))
         return {"state": "installed", "version": running}
 

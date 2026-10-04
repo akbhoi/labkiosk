@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0014)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0015)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), hourly cron
 ├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/

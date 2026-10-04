@@ -26,6 +26,7 @@ except ImportError:
     pwd = None
 import re
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -98,6 +99,17 @@ GRUB_PASSWORD_FILE = os.path.join(BOOT_MEDIUM_GRUB_DIR, "labkiosk-password.cfg")
 GRUB_CONFIG_FILE = os.path.join(BOOT_MEDIUM_GRUB_DIR, "grub.cfg")
 # Only the installed boot menu passes this (/usr/share/labkiosk/boot/grub.cfg).
 INSTALLED_KERNEL_ARG = "labkiosk.installed=1"
+# What labkiosk-boot-slots check (root) recorded about this boot's system image.
+# /run/labkiosk-update is root's; the browser's user cannot write a report here.
+BOOT_STATUS_FILE = "/run/labkiosk-update/status.json"
+MAX_BOOT_STATUS_BYTES = 4096
+# Outcomes the organization's audit log should show; routine boots are not sent.
+BOOT_REPORT_STATES = frozenset({"installed", "failed", "rolled-back", "fallback", "error"})
+BOOT_REPORT_FIELDS = ("version", "previous", "failed", "error")
+BOOT_REPORT_INTERVAL_SECONDS = 30
+# Answers after which a report is settled: recorded (200), or one the control
+# plane will never take (400 malformed, 404 a Worker without the route).
+BOOT_REPORT_SETTLED_STATUSES = (200, 400, 404)
 WIZARD_HTML_FILE = "/opt/labkiosk/setup/wizard.html"
 BLOCKED_HTML_FILE = "/opt/labkiosk/setup/blocked.html"
 CHROMIUM_POLICY_FILE = "/etc/chromium/policies/managed/policies.json"
@@ -2662,6 +2674,113 @@ def post_telemetry():
         return json.loads(response.read().decode("utf-8"))
 
 
+def read_boot_report(path=BOOT_STATUS_FILE, owner_uid=0):
+    """
+    This boot's outcome as labkiosk-boot-slots recorded it, when it is one to
+    report: a new image installed, a failed first boot, a rollback, a fallback
+    or an error. None when there is nothing to report (a live session, a routine
+    boot, a check still running). ValueError when the file is not what root wrote.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as err:
+        raise ValueError(f"{path} could not be opened: {err}") from err
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid:
+            raise ValueError(f"{path} is not a file written by root")
+        raw = handle.read(MAX_BOOT_STATUS_BYTES + 1)
+    if len(raw) > MAX_BOOT_STATUS_BYTES:
+        raise ValueError(f"{path} is larger than {MAX_BOOT_STATUS_BYTES} bytes")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise ValueError(f"{path} is not valid JSON: {err}") from err
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} does not hold a JSON object")
+    if data.get("state") not in BOOT_REPORT_STATES:
+        return None
+    at = data.get("at")
+    if not isinstance(at, int) or isinstance(at, bool):
+        raise ValueError(f"{path} has no time")
+    report = {"state": data["state"], "at": at}
+    for field in BOOT_REPORT_FIELDS:
+        if isinstance(data.get(field), str) and data[field]:
+            report[field] = data[field]
+    return report
+
+
+def post_boot_report(report):
+    """Send one boot report. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}/api/devices/boot-report",
+        data=json.dumps(report).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=8) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_boot_outcome(settled):
+    """
+    Send this boot's outcome to the organization's audit log, once.
+
+    `settled` is the (state, at) of the last report the control plane answered
+    for good; the new one is returned. Anything else -- offline, a token being
+    replaced, a workstation the hub has not written yet (409) -- is tried again
+    on the next round. The Worker drops a report it already holds, so sending
+    one twice after a restart records it once.
+    """
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return settled
+    try:
+        report = read_boot_report()
+    except ValueError as err:
+        problem = ("unreadable", str(err))
+        if settled != problem:
+            log(f"Boot outcome not reported: {err}")
+        return problem
+    if report is None:
+        return settled
+    key = (report["state"], report["at"])
+    if key == settled:
+        return settled
+    try:
+        status = post_boot_report(report)
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        log(f"Boot outcome not sent yet: {err}")
+        return settled
+    if status == 200:
+        log(f"Reported this boot's outcome to the organization: {report['state']} {report.get('version', '')}".rstrip())
+        return key
+    if status in BOOT_REPORT_SETTLED_STATUSES:
+        log(f"The control plane did not take the boot outcome (HTTP {status}); not sending it again.")
+        return key
+    log(f"Boot outcome not recorded yet (HTTP {status}); trying again.")
+    return settled
+
+
+def boot_report_loop():
+    settled = None
+    while True:
+        settled = report_boot_outcome(settled)
+        time.sleep(BOOT_REPORT_INTERVAL_SECONDS)
+
+
 def mark_enrolment_rejected():
     """
     React, once, to the control plane refusing this workstation's device token.
@@ -3070,6 +3189,7 @@ def main():
         sync_chromium_policies([], force=True)
 
     threading.Thread(target=start_local_server, daemon=True).start()
+    threading.Thread(target=boot_report_loop, daemon=True).start()
 
     try:
         telemetry_loop()

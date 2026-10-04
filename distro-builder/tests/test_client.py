@@ -21,6 +21,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -939,12 +940,13 @@ class BootPolicyBeforeTheBrowser(unittest.TestCase):
     def test_an_enrolled_agent_writes_the_policy_before_its_api_answers(self):
         agent.state["isConfigured"] = True
         self.run_main()
-        self.assertEqual(self.events, [("sync", [], True), ("thread", "start_local_server")])
+        self.assertEqual(self.events, [("sync", [], True), ("thread", "start_local_server"),
+                                       ("thread", "boot_report_loop")])
 
     def test_an_unenrolled_agent_has_nothing_to_allow_yet(self):
         agent.state["isConfigured"] = False
         self.run_main()
-        self.assertEqual(self.events, [("thread", "start_local_server")])
+        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop")])
 
 
 class ReenrolmentGating(unittest.TestCase):
@@ -1475,6 +1477,127 @@ class SeedingNeverFollowsLinks(unittest.TestCase):
             self.assertFalse(os.path.exists(dest))
 
 
+class BootOutcomeReporting(unittest.TestCase):
+    """The agent sends what labkiosk-boot-slots recorded to the organization's audit log."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "status.json")
+        self.saved = {name: getattr(agent, name) for name in ("read_boot_report", "post_boot_report")}
+        self.saved_state = dict(agent.state)
+        agent.state["isConfigured"] = True
+        self.sent = []
+        self.answer = 200
+        agent.read_boot_report = lambda: self.saved["read_boot_report"](self.path, owner_uid=os.getuid())
+
+        def post(report):
+            self.sent.append(report)
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+        agent.post_boot_report = post
+
+    def tearDown(self):
+        for name, value in self.saved.items():
+            setattr(agent, name, value)
+        agent.state.clear()
+        agent.state.update(self.saved_state)
+        self.tmp.cleanup()
+
+    def write(self, payload):
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write(payload if isinstance(payload, str) else json.dumps(payload))
+
+    def test_a_rollback_is_sent_once(self):
+        self.write({"state": "rolled-back", "version": "2.6.0", "failed": "2.6.1", "at": 1000})
+        settled = agent.report_boot_outcome(None)
+        settled = agent.report_boot_outcome(settled)
+        self.assertEqual(self.sent, [{"state": "rolled-back", "at": 1000, "version": "2.6.0", "failed": "2.6.1"}])
+
+    def test_a_routine_boot_or_a_check_in_progress_sends_nothing(self):
+        for state in ("running", "staged", "finishing"):
+            self.write({"state": state, "version": "2.6.0", "at": 1000})
+            self.assertIsNone(agent.report_boot_outcome(None))
+        os.remove(self.path)
+        self.assertIsNone(agent.report_boot_outcome(None))
+        self.assertEqual(self.sent, [])
+
+    def test_an_unenrolled_workstation_sends_nothing(self):
+        agent.state["isConfigured"] = False
+        self.write({"state": "error", "version": "2.6.0", "error": "x", "at": 1000})
+        agent.report_boot_outcome(None)
+        self.assertEqual(self.sent, [])
+
+    def test_the_outcome_after_the_health_check_is_sent_too(self):
+        self.write({"state": "finishing", "version": "2.6.1", "previous": "2.6.0", "at": 1000})
+        settled = agent.report_boot_outcome(None)
+        self.write({"state": "installed", "version": "2.6.1", "previous": "2.6.0", "at": 1070})
+        settled = agent.report_boot_outcome(settled)
+        self.assertEqual([r["state"] for r in self.sent], ["installed"])
+        self.assertEqual(settled, ("installed", 1070))
+
+    def test_offline_or_not_yet_known_is_tried_again(self):
+        self.write({"state": "error", "version": "2.6.0", "error": "could not record the update", "at": 1000})
+        self.answer = agent.URLError("offline")
+        settled = agent.report_boot_outcome(None)
+        self.answer = 409
+        settled = agent.report_boot_outcome(settled)
+        self.answer = 200
+        settled = agent.report_boot_outcome(settled)
+        agent.report_boot_outcome(settled)
+        self.assertEqual(len(self.sent), 3)
+        self.assertEqual(settled, ("error", 1000))
+
+    def test_a_report_the_control_plane_refuses_is_not_sent_again(self):
+        self.write({"state": "fallback", "version": "2.6.0", "at": 1000})
+        self.answer = 404  # a Worker without the route
+        settled = agent.report_boot_outcome(None)
+        agent.report_boot_outcome(settled)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_only_a_root_written_regular_file_is_read(self):
+        reader = self.saved["read_boot_report"]
+        self.write({"state": "installed", "version": "2.6.1", "at": 1000})
+        with self.assertRaises(ValueError):
+            reader(self.path, owner_uid=os.getuid() + 1)
+        link = os.path.join(self.tmp.name, "link.json")
+        os.symlink(self.path, link)
+        with self.assertRaises(ValueError):
+            reader(link, owner_uid=os.getuid())
+        for bad in ("not json", "[]", json.dumps({"state": "installed", "version": "2.6.1"}),
+                    json.dumps({"state": "installed", "at": True}), " " * (agent.MAX_BOOT_STATUS_BYTES + 1)):
+            self.write(bad)
+            with self.assertRaises(ValueError, msg=bad[:40]):
+                reader(self.path, owner_uid=os.getuid())
+
+    def test_an_unreadable_status_is_reported_in_the_log_once(self):
+        logged = []
+        saved_log = agent.log
+        agent.log = logged.append
+        try:
+            self.write("not json")
+            settled = agent.report_boot_outcome(None)
+            agent.report_boot_outcome(settled)
+        finally:
+            agent.log = saved_log
+        self.assertEqual(len(logged), 1)
+        self.assertEqual(self.sent, [])
+
+    def test_the_reported_states_agree_across_the_three_programs(self):
+        with open(os.path.join(CHROOT, "usr/local/sbin/labkiosk-boot-slots"), encoding="utf-8") as handle:
+            source = handle.read()
+        written = set(re.findall(r'write_status\("([a-z-]+)"', source))
+        # cmd_check passes classify()'s own name for these two.
+        passed_through = re.search(r'if kind in \(([^)]*)\):\n\s+write_status\(kind', source)
+        written |= set(re.findall(r'"([a-z-]+)"', passed_through.group(1)))
+        self.assertLessEqual(set(agent.BOOT_REPORT_STATES), written, "every reported state is one boot-slots writes")
+        worker = os.path.join(os.path.dirname(ROOT), "cloudflare-control", "src", "boot_report.ts")
+        with open(worker, encoding="utf-8") as handle:
+            declared = re.search(r"BOOT_REPORT_STATES = \[([^\]]*)\]", handle.read()).group(1)
+        self.assertEqual(set(re.findall(r'"([a-z-]+)"', declared)), set(agent.BOOT_REPORT_STATES))
+
+
 class BootConfirmation(unittest.TestCase):
     """labkiosk-boot-slots check, against a boot partition in a temporary directory."""
 
@@ -1534,6 +1657,29 @@ class BootConfirmation(unittest.TestCase):
         _, status, env = self.boot("2.6.0", {"current": "2.6.0", "previous": "2.5.1"})
         self.assertEqual(status["state"], "running")
         self.assertEqual(env, {"current": "2.6.0", "previous": "2.5.1"})
+
+    def test_a_promotion_that_cannot_be_written_is_reported_as_an_error(self):
+        before = {"current": "2.6.0", "next": "2.6.1", "next_tries": "0"}
+        bootslots.write_env(self.boot_dir, before)
+        bootslots.kernel_args = lambda: ["boot=live", "live-media-path=/images/2.6.1", "labkiosk.installed=1"]
+        bootslots.wait_until_healthy = lambda probe: True
+        real_write_env = bootslots.write_env
+
+        def failing_write_env(boot_dir, values):
+            raise OSError(5, "Input/output error")
+
+        bootslots.write_env = failing_write_env
+        try:
+            with self.assertRaises(OSError):
+                bootslots.cmd_check()
+        finally:
+            bootslots.write_env = real_write_env
+        with open(bootslots.STATUS_FILE, encoding="utf-8") as handle:
+            status = json.load(handle)
+        self.assertEqual(status["state"], "error")
+        self.assertIn("could not record the update", status["error"])
+        self.assertIn("Input/output error", status["error"])
+        self.assertEqual(bootslots.read_env(self.boot_dir), before)
 
     def test_the_live_iso_has_nothing_to_confirm(self):
         bootslots.kernel_args = lambda: ["boot=live", "components"]

@@ -347,10 +347,13 @@ reports "updated to <v>"
 
 ### 5.7 Control plane
 
-- **D1 (new migration 0015 and `SCHEMA_SQL`):**
-  - on `client_devices`: `image_version`, `agent_version`, `update_version`, `update_state`,
-    `update_progress`, `update_error`, `update_state_at`, and for LAN sharing `lan_address`,
-    `egress_ip`, `peer_port`;
+- **D1 (migration 0016 and `SCHEMA_SQL`):**
+  - on `client_devices`: `agent_version`, `update_version`, `update_progress`, and for LAN
+    sharing `lan_address`, `egress_ip`, `peer_port`. Phase 1 already added `image_version`,
+    `update_state`, `update_error` and `update_state_at` (migration 0015), with
+    `POST /api/devices/boot-report`: each installed boot's outcome (installed, failed, rolled
+    back, fallback, error) is kept there and written to the organization's audit log, so a failed
+    update is visible in the console before phase 3's update states exist;
   - platform table `releases`: `version`, `channel`, `kind`, `base_version`, `manifest`,
     `signature`, `r2_prefix`, `size_bytes`, `published_at`, `revoked_at`;
   - organization settings: `update_channel` (`stable`/`beta`), `download_window`,

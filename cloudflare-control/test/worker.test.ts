@@ -1039,6 +1039,109 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(!thumb || thumb.length < 300 * 1024, "an oversized thumbnail must not be persisted");
   });
 
+  // ------------------------------------------------------------ boot reports
+
+  const bootLog = async (cookie: string, tenant: string) => {
+    const { data } = await callJson(`/api/audit-logs?tenant=${tenant}&limit=200`, { cookie });
+    return (data.logs as Array<{ action: string; details: string | null }>).filter((entry) =>
+      /^workstation\.(update|boot)_/.test(entry.action)
+    );
+  };
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+  test("Refuses a boot report without a valid device token", async () => {
+    const report = { state: "rolled-back", version: "2.5.1", failed: "2.6.0", at: nowSeconds() };
+    assert.equal((await call("/api/devices/boot-report?tenant=greenwood", json(report))).status, 401);
+    const forged = await call("/api/devices/boot-report", { ...json(report), bearer: "f".repeat(64) });
+    assert.equal(forged.status, 401);
+    assert.equal((await bootLog(orgSessionCookie, "greenwood")).length, 0);
+  });
+
+  test("Refuses a malformed boot report", async () => {
+    const at = nowSeconds();
+    const bad: unknown[] = [
+      [],
+      { state: "running", version: "2.5.1", at },
+      { state: "rolled-back", version: "2.5.1; rm -rf /", at },
+      { state: "rolled-back", version: "2.5.1", failed: "../../x", at },
+      { state: "error", version: "2.5.1", error: { nested: true }, at },
+      { state: "installed", version: "2.5.1", at: at + 3600 },
+      { state: "installed", version: "2.5.1", at: at - 8 * 86400 },
+      { state: "installed", version: "2.5.1", at: "soon" }
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/boot-report", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    const unreadable = await call("/api/devices/boot-report", { method: "POST", body: "{", bearer: deviceToken });
+    assert.equal(unreadable.status, 400);
+    assert.equal((await bootLog(orgSessionCookie, "greenwood")).length, 0);
+  });
+
+  test("Records a rollback once, in the token's own organization", async () => {
+    const at = nowSeconds() - 600;
+    const report = {
+      state: "rolled-back",
+      version: "2.5.1",
+      failed: "2.6.0",
+      at,
+      // Ignored: the token decides the organization and the workstation.
+      tenant: "riverside",
+      clientId: "PC-EVIL"
+    };
+    const first = await callJson("/api/devices/boot-report", { ...json(report), bearer: deviceToken });
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.recorded, true);
+
+    // The agent re-sends after a lost reply or a restart in the same boot.
+    const again = await callJson("/api/devices/boot-report", { ...json(report), bearer: deviceToken });
+    assert.equal(again.res.status, 200);
+    assert.equal(again.data.recorded, false);
+    const soon = await callJson("/api/devices/boot-report", {
+      ...json({ ...report, at: at + 10 }),
+      bearer: deviceToken
+    });
+    assert.equal(soon.data.recorded, false, "reports closer together than a boot are dropped");
+
+    const entries = await bootLog(orgSessionCookie, "greenwood");
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].action, "workstation.update_rolled_back");
+    assert.equal(entries[0].details, "client=PC-01 running=2.5.1 failed=2.6.0");
+    assert.equal((await bootLog(rivalSessionCookie, "riverside")).length, 0);
+
+    const row = await getDatabase(mockEnv)
+      .prepare("SELECT image_version, update_state, update_state_at FROM client_devices WHERE client_id = 'PC-01'")
+      .first<any>();
+    assert.deepEqual({ ...row }, { image_version: "2.5.1", update_state: "rolled-back", update_state_at: at });
+  });
+
+  test("Records a boot error with its reason, cleaned of control characters", async () => {
+    const res = await callJson("/api/devices/boot-report", {
+      ...json({
+        state: "error",
+        version: "2.5.1",
+        error: "could not record the update:\n[Errno 5] Input/output error\u0000" + "x".repeat(400),
+        at: nowSeconds()
+      }),
+      bearer: deviceToken
+    });
+    assert.equal(res.data.recorded, true);
+    const [latest] = await bootLog(orgSessionCookie, "greenwood");
+    assert.equal(latest.action, "workstation.boot_error");
+    assert.match(latest.details || "", /^client=PC-01 running=2\.5\.1 error=could not record the update: \[Errno 5\] Input\/output error x+$/);
+    assert.ok(!/[\u0000-\u001f]/.test(latest.details || ""));
+    assert.ok((latest.details || "").length < 400, "the reason is capped");
+  });
+
+  test("Asks a workstation that has not checked in yet to report again later", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-FRESH" }));
+    const res = await call("/api/devices/boot-report", {
+      ...json({ state: "installed", version: "2.6.0", previous: "2.5.1", at: nowSeconds() }),
+      bearer: data.deviceToken
+    });
+    assert.equal(res.status, 409);
+  });
+
   test("Revokes the device token when a workstation is decommissioned", async () => {
     const { res: removeRes } = await callJson("/api/clients/remove?tenant=greenwood", {
       ...json({ clientId: "PC-01" }),
@@ -3565,6 +3668,8 @@ describe("Schema sources agree", () => {
   test("A worker refuses a database that has not had 0011 or 0012 applied, and accepts one that has", async () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0011"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0012"))), /missing the current schema/);
+    // 0015 adds the boot report columns; a Worker that writes them must refuse a database without them.
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0015"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

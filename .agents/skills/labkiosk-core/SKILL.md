@@ -81,6 +81,17 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
   workstations at once and keeps them 60 s for the rest; a command for `"all"` records a delivery
   per workstation, so each gets it once.
 
+## 2b. Boot reports — agent → Worker `POST /api/devices/boot-report`
+
+On an installed disk, `labkiosk-boot-slots check` (root) writes this boot's outcome to
+`/run/labkiosk-update/status.json`. The agent (`report_boot_outcome()`, every 30 s) reads it only
+from a root-owned regular file and sends the reportable states (`installed`, `failed`,
+`rolled-back`, `fallback`, `error`, the same list in `agent.py`, `src/boot_report.ts` and a test)
+once per `(state, at)`. The Worker keeps the newest on `client_devices.update_*` (migration 0015),
+ignores one less than 60 s after the last, and audits each new one as `workstation.update_*` /
+`workstation.boot_*` so it shows in Settings → Security & Audit. `200` and `400`/`404` settle a
+report; `409` (row not written by the hub yet), `401`/`403` and network errors are retried.
+
 ## 3. Enrolment — wizard → agent `POST /api/setup` → Worker `POST /api/devices/enroll`
 
 - Payload `{ subdomain, clientId, enrollmentKey, customDomain }`; reply carries the device token,

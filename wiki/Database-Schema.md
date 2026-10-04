@@ -47,6 +47,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0012_unique_workstation_group_names.sql` | Unique index on `workstation_groups(tenant_id, name COLLATE NOCASE)`; merges existing duplicates into the oldest group first |
 | `0013_retire_demo_tenant.sql` | Deletes the single `demo` organization and all its rows (data only); the worker now creates `web-demo`, `local-demo` and `docker-demo` at startup |
 | `0014_org_hub_live_state.sql` | Drops `commands`, `command_deliveries` and `client_devices.thumbnail` (live state moved to OrgHub); adds `tenants.online_workstations`, `custom_hostname_id`, `custom_hostname_status` |
+| `0015_workstation_boot_reports.sql` | `client_devices.image_version`, `update_state`, `update_error`, `update_state_at` (boot outcomes from `POST /api/devices/boot-report`) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -150,6 +151,10 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 | `broadcast_url` | TEXT | Last broadcast addressed to this workstation alone; NULL with a non-zero epoch records a reset to the portal |
 | `broadcast_epoch` | INTEGER | Orders the above against `tenants.broadcast_epoch`; the newer wins |
 | `created_at` / `updated_at` | INTEGER | |
+| `image_version` | TEXT | System image the last boot report named (installed disks) |
+| `update_state` | TEXT | Last boot outcome reported: `installed`, `failed`, `rolled-back`, `fallback` or `error` |
+| `update_error` | TEXT | The reason, for `error` |
+| `update_state_at` | INTEGER | When the workstation recorded it; `0` = never. A report less than 60 s newer is ignored |
 
 ### `device_tokens`
 

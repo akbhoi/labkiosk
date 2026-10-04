@@ -303,11 +303,10 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
                   <tr>
                     <th>When</th>
                     <th>Action</th>
-                    <th>Detail</th>
                   </tr>
                 </thead>
                 <tbody id="lab-audit-rows">
-                  <tr><td colspan="3" class="table-empty">Loading\u2026</td></tr>
+                  <tr><td colspan="2" class="table-empty">Loading\u2026</td></tr>
                 </tbody>
               </table>
             </div>
@@ -665,7 +664,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
           function placeholder(text) {
             const row = document.createElement("tr");
             const cell = document.createElement("td");
-            cell.colSpan = 3;
+            cell.colSpan = 2;
             cell.className = "table-empty";
             cell.textContent = text;
             row.appendChild(cell);
@@ -700,19 +699,23 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
 
               const action = document.createElement("td");
               const badge = document.createElement("span");
-              const removes = /suspend|reject|delete|remove|revoke|rotate/.test(entry.action);
-              const grants = /approve|reactivate|create|add/.test(entry.action);
+              const removes = /suspend|reject|delete|remove|revoke|rotate|fail|rolled_back|error/.test(entry.action);
+              const grants = /approve|reactivate|create|add|installed/.test(entry.action);
               badge.className = "badge " + (removes ? "badge-red" : grants ? "badge-green" : "badge-blue");
               // textContent throughout: details carries operator names, domains
               // and URLs that arrived from the console.
               badge.textContent = entry.action;
               action.appendChild(badge);
+              // The detail sits under its action: this card is too narrow for a
+              // third column, which squeezed the detail out of view -- and a
+              // failed update's reason is the part an administrator needs.
+              if (entry.details) {
+                const detail = document.createElement("div");
+                detail.className = "cell-sub cell-detail";
+                detail.textContent = entry.details;
+                action.appendChild(detail);
+              }
               row.appendChild(action);
-
-              const detail = document.createElement("td");
-              detail.className = "text-muted text-xs cell-detail";
-              detail.textContent = entry.details || "\u2014";
-              row.appendChild(detail);
 
               labAuditRows.appendChild(row);
             }
