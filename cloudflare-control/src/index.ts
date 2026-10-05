@@ -12,7 +12,7 @@ import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
 import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
-import { renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import { renderStatusPageHtml } from "./ui_status";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
@@ -117,6 +117,14 @@ import {
   rejectCrossSiteMutation,
   rejectCrossSiteSocket
 } from "./guard";
+import {
+  listWorkstationIssues,
+  parseBootReport,
+  purgeOldWorkstationIssues,
+  recordBootReport,
+  WORKSTATION_ISSUE_RETENTION_DAYS
+} from "./boot_report";
+import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -373,6 +381,43 @@ async function handleWorkstationRequest(
 }
 
 /**
+ * POST /api/devices/boot-report: an installed workstation reports what its last
+ * boot did with its system image (a new image installed, a failed first boot,
+ * a rollback). Like the heartbeat, the device token alone decides the
+ * organization and the workstation.
+ *
+ * A failure or warning is listed in Settings -> Errors & Warnings.
+ *
+ * 200 recorded or already recorded; 400 malformed (the agent drops it);
+ * 409 the workstation's row does not exist yet (the agent tries again).
+ */
+async function handleBootReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+  const now = Math.floor(Date.now() / 1000);
+
+  let report;
+  try {
+    report = parseBootReport(await request.json(), now);
+  } catch (err: any) {
+    return jsonError(`Boot report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const outcome = await recordBootReport(db, device.tenant_id, device.client_id, report, now);
+  if (outcome === "unknown-workstation") {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok", recorded: outcome === "recorded" }), {
+    status: 200,
+    headers: jsonHeaders
+  });
+}
+
+/**
  * Routes that may name a tenant without a session, either because they are
  * public and read-only (the user portal, the wizard status probe) or because
  * they carry their own credential (`/api/telemetry` uses a device token, and
@@ -434,6 +479,7 @@ const output: Record<string, unknown> = Object.create(null);
 
 function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
+  if (path === "/terms/bug-reports") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
@@ -491,11 +537,19 @@ export default {
     useAuditQueue(env.AUDIT_QUEUE);
     await deleteExpiredSessions(db);
     await purgeStaleLoginAttempts(db);
+    const purgedIssues = await purgeOldWorkstationIssues(db);
+    if (purgedIssues) console.log(`[Worker] Deleted ${purgedIssues} workstation issues older than ${WORKSTATION_ISSUE_RETENTION_DAYS} days.`);
     // Commands expire inside each organization's OrgHub; the audit log is the
     // one table here that grows without bound, so old entries move to R2.
     if (env.AUDIT_ARCHIVE) {
       const archived = await archiveOldAuditLogs(db, env.AUDIT_ARCHIVE);
       if (archived) console.log(`[Worker] Archived ${archived} audit entries older than ${AUDIT_RETENTION_DAYS} days to R2.`);
+    }
+    const bugs = await processBugReports(db, env);
+    if (bugs.filed || bugs.matched || bugs.linked || bugs.refreshed) {
+      console.log(
+        `[Worker] Bug reports: ${bugs.filed} filed, ${bugs.matched} matched to existing issues, ${bugs.linked} repeats, ${bugs.refreshed} statuses read.`
+      );
     }
   },
 
@@ -535,6 +589,9 @@ export default {
 
     if ((path === "/api/telemetry" && method === "POST") || (path === "/api/devices/ws" && method === "GET")) {
       return handleWorkstationRequest(request, url, env, db, jsonHeaders);
+    }
+    if (path === "/api/devices/boot-report" && method === "POST") {
+      return handleBootReport(request, db, jsonHeaders);
     }
 
     // The console stylesheet: one immutable file per version instead of ~50 KB
@@ -1722,6 +1779,66 @@ export default {
       }
     }
 
+    // GET /api/workstation-issues: errors and warnings workstations reported
+    // (Settings -> Errors & Warnings), and whether they become bug reports.
+    // Settings permission, like the audit log.
+    if (path === "/api/workstation-issues" && method === "GET") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const limit = Number(url.searchParams.get("limit") || 100);
+      const issues = await listWorkstationIssues(db, currentTenant!.id, Number.isFinite(limit) ? limit : 100);
+      const repository = bugReportRepository(env);
+      return new Response(
+        JSON.stringify({
+          issues,
+          bugReports: {
+            enabled: currentTenant!.bug_reports_enabled === 1,
+            available: repository !== null,
+            repository,
+            termsVersion: BUG_REPORT_TERMS_VERSION,
+            acceptedTermsVersion: currentTenant!.bug_reports_terms_version ?? null,
+            termsAcceptedAt: currentTenant!.bug_reports_terms_accepted_at ?? null
+          }
+        }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // POST /api/settings/bug-reports: opt this organization in to (or out of)
+    // automatic, redacted GitHub bug reports for its workstations' problems.
+    // Turning it on accepts the current Automatic Bug Report Terms, by version.
+    if (path === "/api/settings/bug-reports" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      let body: { enabled?: unknown; acceptTerms?: unknown };
+      try {
+        body = await request.json<{ enabled?: unknown; acceptTerms?: unknown }>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (typeof body?.enabled !== "boolean") {
+        return jsonError("enabled must be true or false", 400, jsonHeaders);
+      }
+      if (body.enabled && !bugReportRepository(env)) {
+        return jsonError("Automatic bug reports are not set up on this platform", 409, jsonHeaders);
+      }
+      if (body.enabled && body.acceptTerms !== BUG_REPORT_TERMS_VERSION) {
+        return jsonError(
+          `Accept the Automatic Bug Report Terms (version ${BUG_REPORT_TERMS_VERSION}) to turn this on`,
+          400,
+          jsonHeaders
+        );
+      }
+      await setBugReportsEnabled(db, currentTenant!.id, body.enabled, Math.floor(Date.now() / 1000));
+      await writeAuditLog(db, {
+        tenantId: currentTenant!.id,
+        userId: session!.user_id,
+        action: "settings.bug_reports",
+        details: body.enabled ? `on, terms ${BUG_REPORT_TERMS_VERSION} accepted` : "off"
+      });
+      return new Response(JSON.stringify({ status: "ok", enabled: body.enabled }), { headers: jsonHeaders });
+    }
+
     // GET /api/audit-logs: recent activity for this organization
     if (path === "/api/audit-logs" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
@@ -2539,6 +2656,9 @@ export default {
     }
     if (path === "/terms") {
       return new Response(renderTermsOfServiceHtml(), { headers: htmlHeaders });
+    }
+    if (path === "/terms/bug-reports") {
+      return new Response(renderBugReportTermsHtml(bugReportRepository(env)), { headers: htmlHeaders });
     }
 
     // 1. Organization Admin Dashboard (/admin and /admin/*)

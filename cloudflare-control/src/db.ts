@@ -69,7 +69,10 @@ CREATE TABLE IF NOT EXISTS tenants (
   custom_hostname_id TEXT,
   custom_hostname_status TEXT NOT NULL DEFAULT 'none',
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  bug_reports_enabled INTEGER NOT NULL DEFAULT 0,
+  bug_reports_terms_version TEXT,
+  bug_reports_terms_accepted_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -109,7 +112,11 @@ CREATE TABLE IF NOT EXISTS client_devices (
   broadcast_url TEXT,
   broadcast_epoch INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  image_version TEXT,
+  update_state TEXT,
+  update_error TEXT,
+  update_state_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -119,6 +126,35 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   action TEXT NOT NULL,
   details TEXT,
   created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workstation_issues (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('error', 'warning')),
+  kind TEXT NOT NULL,
+  image_version TEXT,
+  details TEXT,
+  occurred_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  report_state TEXT NOT NULL DEFAULT 'none' CHECK (report_state IN ('none', 'pending', 'sent')),
+  bug_signature TEXT,
+  report_match TEXT CHECK (report_match IN ('new', 'existing'))
+);
+
+CREATE TABLE IF NOT EXISTS bug_reports (
+  signature TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  image_version TEXT,
+  issue_number INTEGER NOT NULL,
+  issue_url TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  title TEXT,
+  problem TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'pr_open', 'resolved', 'closed')),
+  pr_url TEXT,
+  status_checked_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS device_tokens (
@@ -192,6 +228,8 @@ CREATE INDEX IF NOT EXISTS idx_client_devices_tenant ON client_devices(tenant_id
 CREATE INDEX IF NOT EXISTS idx_device_tokens_tenant ON device_tokens(tenant_id, client_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_workstation_issues_tenant ON workstation_issues(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_issue ON bug_reports(issue_number);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
@@ -339,6 +377,18 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     }
     // 0014: live state moved to OrgHub; the organization carries its online count.
     await db.prepare("SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1").run();
+    // 0015: the outcome of each workstation's last boot.
+    await db.prepare("SELECT image_version, update_state_at FROM client_devices LIMIT 1").run();
+    // 0016: errors and warnings workstations report.
+    await db.prepare("SELECT severity, occurred_at FROM workstation_issues LIMIT 1").run();
+    // 0017: opt-in automatic bug reports.
+    await db.prepare("SELECT bug_reports_enabled FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT report_state, bug_signature FROM workstation_issues LIMIT 1").run();
+    await db.prepare("SELECT signature, issue_url FROM bug_reports LIMIT 1").run();
+    // 0018: bug report terms and triage.
+    await db.prepare("SELECT bug_reports_terms_version FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT status, status_checked_at FROM bug_reports LIMIT 1").run();
+    await db.prepare("SELECT report_match FROM workstation_issues LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

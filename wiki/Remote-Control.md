@@ -113,7 +113,7 @@ The agent parses the first `hostname:` under `ingress:` and reports it as `remot
 | Strategy | Approach | Suits |
 | :--- | :--- | :--- |
 | **A — Per-lab overlay** | Build a site-specific ISO with `/etc/cloudflared/` pre-populated | A lab imaged all at once |
-| **B — Persistence partition** | A second ext4 partition labelled `labkiosk-data` on the boot USB holding `/etc/cloudflared/` | Live-USB deployments |
+| **B — Persistence partition** | Not supported by the stock image: it mounts no partition by label, and an installed disk mounts only its own `LABKIOSK_DATA` by UUID. Persisting `/etc/cloudflared/` there needs an image change | — |
 | **C — Dynamic enrolment** | Script first-boot to fetch tunnel tokens with a deployment secret | Large or growing fleets |
 
 `LABKIOSK_REMOTE_HOST` overrides the parsed hostname, which is what the simulator uses.
@@ -133,7 +133,7 @@ This is worth stating clearly, because the tunnel is the fiddliest part of a dep
 | Allowlist and policy sync | No |
 | **Interactive remote control** | **Yes** |
 
-Deploy a whole lab, run it for a term, and add tunnels later if you find you want them.
+Deploy a whole lab, run it for a while, and add tunnels later if you find you want them.
 
 ---
 

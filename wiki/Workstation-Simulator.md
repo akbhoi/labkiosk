@@ -154,8 +154,9 @@ Back to an un-enrolled first-boot state. All ephemeral state — browser profile
 | Bootloaders, BIOS vs UEFI | Hyper-V Gen 2 and VirtualBox VMs |
 | `overlayroot="tmpfs"` behaviour | A real live boot |
 | The disk installer | A VM with a spare virtual disk |
+| Image switching: the one-try boot, `labkiosk-boot-ok` and rollback, and the boot reports they produce | `distro-builder/tests/vm/boot-test.sh` (QEMU + KVM), which `build-iso.yml` runs after every ISO build |
 | TTY masking, VT switching, polkit | Real hardware or a full VM |
-| Chromium's sandbox | The real image — the simulator disables it |
+| Chromium's sandbox outside a container | The real image — the simulator keeps the sandbox on, but inside a container |
 | Cloudflare Tunnel | A provisioned tunnel |
 
 Use it for the agent, the extension, telemetry, the wizard, and anything about the control plane. For anything about booting, use a VM.

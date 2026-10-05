@@ -72,6 +72,12 @@ Pending migrations are applied the same way. Two of them change existing data:
   workstations into `web-demo` afterwards. Before deploying, check nobody already holds one of the
   new names — a row there not owned by the super admin is left alone and is not a demo:
   `npx wrangler d1 execute labkiosk-db --remote --command "SELECT subdomain, user_id FROM tenants WHERE subdomain IN ('web-demo','local-demo','docker-demo')"`
+- **`0015_workstation_boot_reports.sql`** to **`0018_bug_report_triage.sql`** are additive and must
+  all be applied before the Worker that uses them is deployed: `0015` adds the boot-report columns
+  on `client_devices` (`image_version`, `update_state`, `update_error`, `update_state_at`), `0016`
+  the `workstation_issues` table behind Settings → Errors & Warnings, `0017` and `0018` the opt-in,
+  terms acceptance and triage state of automatic bug reports. Without them `assertSchemaCurrent()`
+  refuses to serve.
 
 Back up, apply, then deploy:
 
@@ -113,8 +119,21 @@ Configure these in **Workers & Pages → `labkiosk-controller` → Settings → 
 | `ISO_DOWNLOAD_URL` | a GitHub Releases asset URL | Target of `/download` and `/iso` |
 | `TUNNEL_DOMAIN` | `labkiosk.yourdomain.com` | Base domain for remote-assistance tunnels |
 | `DEFAULT_HOMEPAGE` | `https://labkiosk.yourdomain.com` | Fallback for non-enrolled clients |
+| `GITHUB_ISSUES_REPO` | `owner/repo` | Optional: the repository automatic bug reports are filed in |
 
 Use `.dev.vars` for local development only; it is not read in production.
+
+### Optional: automatic bug reports
+
+Organizations can opt in, under Settings → Errors & Warnings, to having their workstations' errors and warnings filed as redacted GitHub issues, after accepting the Automatic Bug Report Terms (`/terms/bug-reports`). The option stays unavailable to every organization until all three are set:
+
+| Setting | What it is |
+| :--- | :--- |
+| `AI` | Workers AI binding, already in `wrangler.jsonc` |
+| `GITHUB_ISSUES_TOKEN` | Secret: a fine-grained token for that one repository with **Issues: Read and write** (plus **Pull requests: Read** for a private repository) — `npx wrangler secret put GITHUB_ISSUES_TOKEN` |
+| `GITHUB_ISSUES_REPO` | Variable: `owner/repo`, set in the dashboard as above |
+
+Issues filed in a public repository are public. Token creation, the hourly triage and what Cloudflare's terms say about it: [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md).
 
 → [Configuration Reference](Configuration-Reference)
 
@@ -174,7 +193,7 @@ If the worker will not start, it is almost always one of: missing super-admin se
 "triggers": { "crons": ["0 * * * *"] }
 ```
 
-At minute 0 of every hour Cloudflare calls `scheduled()`, which purges expired sessions, deletes delivered commands, and cleans stale rate-limit rows. Nothing needs to be provisioned for this beyond the trigger.
+At minute 0 of every hour Cloudflare calls `scheduled()`, which purges expired sessions, deletes delivered commands, cleans stale rate-limit rows, deletes workstation issues older than 90 days, and — when automatic bug reports are set up — triages pending issues into GitHub (at most five GitHub writes per run) and reads back the status of up to ten filed issues. Nothing needs to be provisioned for this beyond the trigger.
 
 ---
 
@@ -199,7 +218,7 @@ Pipeline:
 
 Migrations are applied **before** the deploy, which is the right order: the new worker asserts the schema is current on its first request.
 
-The other workflows: `ci.yml` on every push (both images build, worker typechecks and tests, client syntax and policy checks), `build-iso.yml` on `v*` tags, `docker-publish.yml` on `main` and tags.
+The other workflows: `ci.yml` on every push (both images build, worker typechecks and tests, client syntax and policy checks), `build-iso.yml` on `v*` tags and manual dispatch (it boot-tests the installed disk in QEMU before releasing), `docker-publish.yml` on `main` and tags.
 
 ---
 
@@ -215,6 +234,7 @@ The worker is stateless, so scaling is Cloudflare's problem. The things that gro
 | `commands` | Short-lived | Hourly cron + opportunistic purge |
 | `audit_logs` | Monotonic | Nothing yet — plan a retention policy for a large deployment |
 | `sessions` | Bounded by active users | Hourly cron |
+| `workstation_issues` | One row per failed boot, rollback, fallback or boot error | Hourly cron, after 90 days |
 
 A thumbnail can be up to 256 KB, and the newest one per device is stored on its row. Budget roughly 256 KB × workstation count as the upper bound for that column.
 

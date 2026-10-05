@@ -31,18 +31,20 @@ Nothing else is required. There is no per-organization server, no on-premise app
 |                        |-- db.ts      D1 queries, SCHEMA_SQL, tenant seeding          |
 |                        |-- ui*.ts     Server-rendered consoles, nonce CSP             |
 |                        |-- org_hub.ts One Durable Object per organization             |
+|                        |-- boot_report.ts Boot outcomes -> Errors & Warnings          |
+|                        |-- bug_reports.ts Opt-in redacted GitHub bug reports          |
 |                        `-- scheduled() Hourly housekeeping cron                       |
 |                                        |                                              |
 |                                        v                                              |
 |                          [ Cloudflare D1 (SQLite at the edge) ]                       |
-|             + Queue (audit), R2 (audit archive), Analytics Engine, Workflow           |
+|     + Queue (audit), R2 (audit archive), Analytics Engine, Workflow, Workers AI       |
 +---------------------------------------------------------------------------------------+
                                          ^
                                          | WebSocket: status up, config and commands down
 +---------------------------------------------------------------------------------------+
 |                      CLIENT WORKSTATION LAYER (Intel thin clients)                    |
 |                                                                                       |
-|   Debian 12, Linux 6.1, overlayroot="tmpfs" (every write lands in RAM)                |
+|   Debian 12, Linux 6.1, live-boot squashfs + tmpfs overlay (every write lands in RAM) |
 |   Xorg + Openbox, empty keybinding table, VT switching disabled, TTYs masked          |
 |                                                                                       |
 |   [ Chromium --kiosk ] <----- MV3 extension (--load-extension, unpacked)              |
@@ -107,7 +109,7 @@ That one channel delivers everything: fleet liveness, screen frames, operator co
 
 ### 3. Client — immutable by construction
 
-The client's defining property is that **it does not keep anything**. `overlayroot="tmpfs"` mounts the real root filesystem read-only and layers a RAM overlay on top. Browser profiles, caches, logs, downloads, and user artefacts all land in that overlay and are gone at power-off.
+The client's defining property is that **it does not keep anything**. Live media and installed disks alike boot a read-only squashfs image through live-boot (`boot=live`), which layers a RAM (`tmpfs`) overlay on top. Browser profiles, caches, logs, downloads, and user artefacts all land in that overlay and are gone at power-off.
 
 The one deliberate exception exists because enrolment has to survive a reboot: `labkiosk-install` creates a 512 MiB `LABKIOSK_DATA` partition and mounts it at `/etc/labkiosk`, which is where the device token lives. Without it, an installed workstation would forget its enrolment on the next boot.
 
@@ -130,7 +132,7 @@ labkiosk.example.edu            ->  platform apex: landing page, no tenant
 - the request arrived on a development host (`localhost`, `127.0.0.1`, `host.docker.internal`, …), or
 - the caller holds an active `super_admin` session, or
 - the caller's session already owns that tenant, or
-- the route is explicitly public (`/`, `/home`, `/api/status`, `/api/portal-sites`, `/api/devices/enroll`, `/api/telemetry`).
+- the route is explicitly public (`/`, `/home`, `/privacy`, `/terms`, `/terms/bug-reports`, `/api/status`, `/api/portal-sites`, `/api/devices/enroll`, `/api/telemetry`, and `GET` `/api/i18n` and `/i18n/<tag>.json`, the interface catalogs a workstation reads before it is enrolled).
 
 `X-Forwarded-Host` is never read. A set of [reserved slugs](Configuration-Reference#reserved-subdomains) — `www`, `super`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `labkiosk`, `root` — can be neither registered nor resolved as an organization.
 

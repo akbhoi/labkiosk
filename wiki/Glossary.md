@@ -4,11 +4,19 @@
 
 ### Agent
 
-`agent.py`, the Python 3 daemon on each workstation. Serves the loopback setup API, runs the three-second telemetry heartbeat, syncs the Chromium policy, and executes operator commands. Started from the Openbox autostart under a supervisor loop, not as a systemd service — it needs the kiosk user's X session. → [Client Agent](Client-Agent)
+`agent.py`, the Python 3 daemon on each workstation. Serves the loopback setup API, holds one WebSocket to its organization's OrgHub (`/api/devices/ws`) for status, frames, configuration and commands — falling back to the three-second `POST /api/telemetry` heartbeat when it cannot — syncs the Chromium policy, and executes operator commands. Started from the Openbox autostart under a supervisor loop, not as a systemd service — it needs the kiosk user's X session. → [Client Agent](Client-Agent)
 
 ### Allowlist
 
 The set of domains a workstation's Chromium may load. Chromium blocks everything by default (`URLBlocklist` deny-all) and `URLAllowlist` re-permits. The **effective** allowlist is the organization's permanent list unioned with every portal app's host and the active broadcast's host, computed per heartbeat by `buildEffectiveWhitelist()`.
+
+### Automatic bug report
+
+An opt-in, per organization: a workstation's error or warning, redacted (no addresses, host names, identifiers, or organization or workstation names), filed by the hourly cron as a GitHub issue in the platform's `GITHUB_ISSUES_REPO`, or linked to a matching issue already filed. Requires accepting the current Automatic Bug Report Terms (`/terms/bug-reports`). → [Admin Console Guide](Admin-Console-Guide#5-errors--warnings-tabissues)
+
+### Boot report
+
+What an installed workstation's last boot did with its system image (`installed`, `failed`, `rolled-back`, `fallback`, `error`), recorded by `labkiosk-boot-slots check` in `/run/labkiosk-update/status.json` and posted by the agent to `POST /api/devices/boot-report`. Kept on the workstation's `client_devices` row; anything but `installed` is also listed in **Errors & Warnings**.
 
 ### Broadcast
 
@@ -44,15 +52,19 @@ Cloudflare's SQLite-at-the-edge database. Lab Kiosk's only durable store.
 
 ### Device token
 
-A 32-byte random hex bearer token issued to a workstation at enrolment. Only its SHA-256 is stored. It — never the request body — determines a workstation's identity and tenant on `/api/telemetry`.
+A 32-byte random hex bearer token issued to a workstation at enrolment. Only its SHA-256 is stored. It — never the request body — determines a workstation's identity and tenant on `/api/devices/ws`, `/api/telemetry` and `/api/devices/boot-report`.
 
 ### Enrollment key
 
 A per-organization shared secret a new workstation exchanges once for its own device token. **Empty by default**, and an empty key authenticates nothing. Rotating it does not affect already-enrolled workstations.
 
+### Errors & Warnings
+
+The Settings sub-tab (`?tab=issues`) listing problems an organization's workstations reported themselves, such as a system update that failed its first boot and was rolled back. Kept in `workstation_issues` for 90 days, apart from the audit log, which records what people did. Also where automatic bug reports are turned on.
+
 ### ESP
 
-EFI System Partition. Partition 2 of the installed layout (2 MiB – 514 MiB, FAT32), holding the UEFI bootloader. Mounted at `/boot/efi` **only after** `rsync` completes.
+EFI System Partition. Partition 2 of the installed layout (2 MiB – 514 MiB, FAT32), holding the UEFI bootloader. GRUB's modules, `grub.cfg` and `grubenv` live on `LABKIOSK_ROOT` under `boot/grub/` instead (`--boot-directory`).
 
 ### Fail closed
 
@@ -66,9 +78,13 @@ A function in `src/guard.ts` enforcing authorization before a handler runs: `res
 
 The installer's four-partition layout — `bios_grub`, `ESP`, `ROOT`, `DATA` — that boots on both legacy BIOS and UEFI machines. → [Disk Installer](Disk-Installer#partition-layout)
 
+### Image store
+
+What an installed disk's `LABKIOSK_ROOT` is: no root filesystem, but `images/<version>/` (`vmlinuz`, `initrd.img`, `filesystem.squashfs`, copied from the live medium) plus `boot/grub/`. The installed system boots the chosen image through live-boot, exactly as the ISO does. Two images fit, so an update can be tried and rolled back. → [Disk Installer](Disk-Installer)
+
 ### `is_live_session()`
 
-The check, implemented identically in the agent and the installer, deciding whether the machine booted from removable media (`/run/live`, `boot=live`) or from an installed disk (`/etc/labkiosk-installed`).
+The check, implemented identically in the agent and the installer, deciding whether the machine booted from removable media (`/run/live`, `boot=live`) or from an installed disk. An installed disk boots through live-boot too, so `labkiosk.installed=1` on the kernel command line is what tells them apart (or `/etc/labkiosk-installed` on a disk installed before the image store).
 
 ### Kiosk user
 
@@ -80,7 +96,7 @@ The 512 MiB ext4 partition at the end of an installed disk, mounted at `/etc/lab
 
 ### `LABKIOSK_ROOT`
 
-The ext4 partition holding the Debian system, mounted read-only under the RAM overlay.
+The ext4 partition of an installed disk that holds the **image store** and `boot/grub/` (`grub.cfg`, `grubenv`, the boot password in `labkiosk-password.cfg`, the DATA partition's UUID in `labkiosk-data.cfg`). The running system is the squashfs image under a RAM overlay, so nothing on it changes in normal use.
 
 ### Live-build
 
@@ -114,13 +130,17 @@ A random per-response value stamped on every `<script>` and named in the Content
 
 The HTML5 VNC client `websockify` serves, embedded in the admin console for remote control.
 
+### One-try boot
+
+How an installed workstation tries a new system image: `grubenv` names `current`, `previous`, `next` and `next_tries`. GRUB spends the try before booting `next`, so any failure (a hang, a panic, a power cut) ends with `current` on the following boot. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check`, which confirms the new image once the agent and the browser stay up for about a minute, or reboots into the old one. See **Rollback**.
+
 ### Openbox
 
 The window manager, running with a deliberately **empty** keybinding table so Alt+Tab, Alt+F4, and Ctrl+Alt+Del are inert.
 
 ### `overlayroot`
 
-The Debian package providing the read-only root with a RAM overlay. Configured as `overlayroot="tmpfs"` on live media and installed disks alike. The project's core guarantee.
+The Debian package for a read-only root with a RAM overlay. Still shipped in the image with `overlayroot="tmpfs:recurse=0"` in `/etc/overlayroot.conf` and on every boot command line, but the RAM overlay itself now comes from live-boot (`boot=live`), on live media and installed disks alike: a read-only squashfs under a `tmpfs` layer. That overlay is the project's core guarantee.
 
 ### PBKDF2
 
@@ -133,6 +153,10 @@ An application card on the User Portal. Adding one implicitly authorises its dom
 ### Reserved slug
 
 A subdomain the platform keeps for itself: `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`. Neither registerable nor resolvable as an organization.
+
+### Rollback
+
+The return to the previous system image when a new one does not confirm its **one-try boot**. Reported as `rolled-back` (or `failed`, when the health check failed on that boot) and shown in **Errors & Warnings**.
 
 ### Shadow DOM
 
@@ -152,7 +176,7 @@ The platform operator, distinct from an organization's organization admin. Appro
 
 ### Telemetry
 
-The three-second heartbeat carrying the whole client–server relationship: state and a thumbnail up, commands, allowlist, mode, target, and broadcast down.
+The workstation's state flowing up to the control plane, and configuration and commands flowing down. The main channel is the WebSocket to the OrgHub (`/api/devices/ws`): status on change, frames only while an operator watches; allowlist, mode, target, broadcast and commands pushed as they change. The three-second `POST /api/telemetry` heartbeat is the fallback for agents without the WebSocket client, carrying the same in one request and reply.
 
 ### Tenant
 
@@ -160,7 +184,7 @@ One organization. Every query touching devices, commands, sessions, or portal ap
 
 ### Thumbnail
 
-A base64 JPEG captured with `scrot -t 20 -q 35` and sent in the heartbeat. Dropped — not shrunk — when it would exceed 256 KB.
+A base64 JPEG captured with `scrot -t 20 -q 35`: sent as a frame over the WebSocket only while an operator is watching that workstation, or with every HTTP heartbeat on the fallback path. Dropped — not shrunk — when it would exceed 256 KB.
 
 ### `toram`
 

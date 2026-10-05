@@ -92,6 +92,26 @@ jobs:
           retention-days: 14
           compression-level: 0 # The ISO is already gzip-compressed internally.
 
+      # Over-the-air updates, phase 1, on a real install: the ISO's own
+      # installer writes a virtual disk, which then boots in QEMU with KVM to
+      # prove the one try, the promotion and both kinds of rollback. Before
+      # the release step, so an ISO that cannot roll back is never published.
+      - name: Boot-test the installed disk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf xorriso squashfs-tools
+          sudo distro-builder/tests/vm/boot-test.sh \
+            distro-builder/out/labkiosk-debian12-amd64.iso "$RUNNER_TEMP/boot-test"
+
+      - name: Upload boot-test screenshots
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: boot-test-screenshots
+          path: ${{ runner.temp }}/boot-test/*.ppm
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
         uses: softprops/action-gh-release@v3

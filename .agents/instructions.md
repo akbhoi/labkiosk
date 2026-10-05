@@ -34,7 +34,7 @@ The repository is partitioned into two independent subsystems plus a workstation
    - Debian 12 (Bookworm) Live-Build pipeline; only packages named in `kiosk.list.chroot` ship (no recommends).
    - Hybrid UEFI (GRUB EFI) + BIOS (ISOLINUX) boot menus; installed disks get both bootloaders.
    - 100% RAM overlay protection (`overlayroot="tmpfs:recurse=0"`); only the `LABKIOSK_DATA` partition at `/etc/labkiosk` persists.
-   - Automated disk installer (`/usr/local/bin/labkiosk-install`): JSON on stdout, logs on stderr.
+   - Automated disk installer (`/usr/local/bin/labkiosk-install`): JSON on stdout, logs on stderr. It copies the live medium's image into an image store (`images/<version>/` on `LABKIOSK_ROOT`, at least 7 GiB) that boots through live-boot; `labkiosk-boot-slots` (root only) gives a new image one try and rolls back to the old one if it does not come up.
    - Python 3 agent (`agent.py`), standard library only, binding strictly to loopback `127.0.0.1:8888`.
    - Chromium Manifest V3 extension: `content.js` (top bar & lock curtain in Shadow DOM) talks only to `background.js`, the sole loopback caller.
    - Detailed specification: [`distro-builder/AGENTS.md`](../distro-builder/AGENTS.md)
@@ -42,11 +42,12 @@ The repository is partitioned into two independent subsystems plus a workstation
 
 2. **Cloudflare SaaS Control Plane (`cloudflare-control/`)**:
    - Cloudflare Workers edge control plane (`src/index.ts`).
-   - Cloudflare D1 SQL database with numbered migrations (`migrations/0001..0014`) mirrored in `SCHEMA_SQL`.
+   - Cloudflare D1 SQL database with numbered migrations (`migrations/0001..0018`) mirrored in `SCHEMA_SQL`.
    - Pure Web Crypto `PBKDF2-HMAC-SHA256` authentication (0 runtime npm dependencies).
    - Strict multi-tenant authorization guards (`src/guard.ts`).
    - Nonce-based Content Security Policy (CSP) and output escaping (`src/escape.ts`).
    - Organization console: 4-module rail (Workstations, Apps & Web, Staff, Settings), one `ui_admin_<page>.ts` per page, design tokens declared once in `ui_tokens.ts`.
+   - Workstation boot reports (`src/boot_report.ts`) are listed under Settings → Errors & Warnings; optional, per-organization automatic GitHub bug reports (`src/bug_reports.ts`) run from the hourly cron.
    - Detailed specification: [`cloudflare-control/AGENTS.md`](../cloudflare-control/AGENTS.md)
    - Specialized skill: [`.agents/skills/labkiosk-control/SKILL.md`](skills/labkiosk-control/SKILL.md)
 
@@ -100,7 +101,8 @@ pnpm --prefix cloudflare-control test
 # 2. Client Distro & Installer Syntax (PYTHONPYCACHEPREFIX keeps __pycache__ out of the image)
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 

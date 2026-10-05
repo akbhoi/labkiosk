@@ -1,6 +1,6 @@
 # Over-the-Air Updates — Research
 
-**Status:** research, nothing implemented. **Scope:** delivering new Lab Kiosk releases to installed
+**Status:** phase 1 (§9) implemented: the image-store installer, the §5.1 and §5.2 changes, GRUB's one-try boot and `labkiosk-boot-ok`. Phases 2–5 are research. **Scope:** delivering new Lab Kiosk releases to installed
 workstations without re-flashing the ISO. Written against `dev` at v2.5.0.
 
 ---
@@ -54,19 +54,20 @@ security update channel that also carries features.
 | Fact | Where |
 |---|---|
 | Installed disk: `bios_grub`, ESP (512 MiB), `ROOT` ext4 (the rest of the disk minus 513 MiB), `DATA` ext4 (512 MiB) | `labkiosk-install` `install_to_disk()` |
-| ROOT is an **rsync of the running live rootfs**, not an image. It boots as a normal ext4 root under `overlayroot="tmpfs:recurse=0"` | `labkiosk-install`, `etc/overlayroot.conf` |
-| Reinstalling is refused on an installed disk (`is_live_session()`), and `POST /api/install` returns 400 | `labkiosk-install`, `agent.py` |
-| The agent runs as the unprivileged `kiosk` user, restarted in a loop by the Openbox autostart. Its only root paths are two single-binary sudo rules (installer, localization) | `etc/openbox/autostart`, `01-lockdown.hook.chroot` |
+| ROOT is an **image store** (§5.1): the installer copies the live medium's `vmlinuz`, `initrd.img` and `filesystem.squashfs` to `images/<version>/` (the version from `/usr/share/labkiosk/version`), and the installed system boots that squashfs through live-boot with `labkiosk.installed=1 noeject panic=10`. Disks installed by earlier releases hold an rsync of the live rootfs instead | `labkiosk-install`, `usr/share/labkiosk/boot/grub.cfg` |
+| One-try boot: `boot/grub/grubenv` holds `current`, `previous`, `next`, `next_tries`; GRUB spends the try before it boots `next`. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every boot: it makes `next` current once the agent and browser stay up, or reboots into the old image, and writes the outcome to `/run/labkiosk-update/status.json`. The agent posts failures, rollbacks and successful installs to `POST /api/devices/boot-report` | `labkiosk-boot-slots`, `agent.py`, `src/boot_report.ts` |
+| Reinstalling is refused on an installed disk (`is_live_session()`, keyed on `labkiosk.installed=1` or the legacy `/etc/labkiosk-installed`), and `POST /api/install` returns 400 | `labkiosk-install`, `agent.py` |
+| The agent runs as the unprivileged `kiosk` user, restarted in a loop by the Openbox autostart. Its only root paths are two single-binary sudo rules (installer, localization). `labkiosk-boot-slots` has no sudo rule | `etc/openbox/autostart`, `01-lockdown.hook.chroot` |
 | The command set is `lock/unlock/navigate/reload/reboot/shutdown/clear-session/mute`. There is no update or exec path | `agent.py` `execute_command()` |
 | Commands already go to **selected workstations or groups** as batches (≤ 500 ids). The extension already draws a full-screen **lock curtain** with a message, in a Shadow DOM | `labkiosk-control` skill; `extension/content.js` |
-| The agent version appears only in the `User-Agent` string. D1 stores no agent or image version for a device | `agent.py` `AGENT_VERSION`; `src/db.ts` `client_devices` |
-| At install time these are written onto ROOT: `/etc/fstab`, `/etc/overlayroot.conf`, `/etc/labkiosk-installed`, an empty `/etc/machine-id`, `/etc/grub.d/01_labkiosk_password`, and localization (`/etc/localtime`, `/etc/default/locale`, `/etc/default/keyboard`, the timesyncd drop-in, generated locales) | `labkiosk-install`, `labkiosk-localization --root` |
-| `DATA` is mounted at `/etc/labkiosk`, **owned by `kiosk`**, mode 0700 | `labkiosk-data-permissions` |
-| The kernel command line pins `timezone=Asia/Kolkata username=kiosk` for live-config | `distro-builder/auto/config` |
+| The agent version appears only in the `User-Agent` string. D1 stores the image version a boot report names (`client_devices.image_version`, with `update_state`, `update_error`, `update_state_at`), but no agent version | `agent.py` `AGENT_VERSION`; `src/db.ts` `client_devices` |
+| At install time nothing is written into a system image. ROOT gets only `boot/grub/` (`grub.cfg` copied verbatim, `grubenv`, `labkiosk-password.cfg` for the boot-menu password, `labkiosk-data.cfg` with the DATA partition's UUID) and `images/<version>/`. The empty `/etc/machine-id` ships in the image; localization lives in `localization.json` on DATA and the agent re-applies it (regenerating the locale) at every start | `labkiosk-install`, `01-lockdown.hook.chroot`, `agent.py` `apply_saved_localization()` |
+| `DATA` is mounted at `/etc/labkiosk` by the partition UUID GRUB passes as `labkiosk.data=`, never by label, **owned by `kiosk`**, mode 0700. NetworkManager profiles are bind-mounted from it | `labkiosk-data-generator`, `labkiosk-data-permissions` |
+| The live kernel command line pins `timezone=Asia/Kolkata username=kiosk` for live-config; the installed boot menu leaves `timezone=` out | `distro-builder/auto/config`, `usr/share/labkiosk/boot/grub.cfg` |
 | v2.5.0 ISO: 753 926 144 bytes (719 MiB). CI publishes it as a GitHub Release on `v*` tags | Release `v2.5.0`, `.github/workflows/build-iso.yml` |
 | App layer (`/opt/labkiosk` + `/usr/local`): about 420 KB in source | `du` on `includes.chroot` |
 | Of the 39 commits that touched `distro-builder/config`, 20 changed only `/opt/labkiosk` or `/usr/local`. The other 19 changed hooks, package lists, bootloaders, Chromium policy base or Openbox config | `git log` over this repo |
-| Worker already binds R2 (`labkiosk-audit-archive`) and D1 (migrations 0001–0014) | `wrangler.jsonc`, `migrations/` |
+| Worker already binds R2 (`labkiosk-audit-archive`) and D1 (migrations 0001–0018) | `wrangler.jsonc`, `migrations/` |
 
 ---
 
@@ -74,8 +75,8 @@ security update channel that also carries features.
 
 - **Invariant 2 (RAM overlay, read-only root)** rules out `apt upgrade` on the device. It would
   write into tmpfs and disappear at power-off.
-- **Updating today's layout in place is unsafe.** On an installed disk the ext4 ROOT is the
-  overlayfs *lower* layer. The kernel documentation says changes to an underlying filesystem
+- **Updating the old rsync layout in place is unsafe.** On a disk installed before the image
+  store, the ext4 ROOT is the overlayfs *lower* layer. The kernel documentation says changes to an underlying filesystem
   while the overlay is mounted are not allowed and give undefined behaviour. An rsync onto
   `/media/root-ro` while the system runs is exactly that. It also has no rollback. That's why
   the design stores images as files and switches between them at boot.
@@ -159,20 +160,22 @@ initrd /images/$slot/initrd.img
 - The installed command line must not carry `timezone=Asia/Kolkata`. live-config applies it at
   every boot and would override the organization's choice.
 - `/etc/labkiosk` mount: the image's `fstab` no longer comes from the installer. Ship a systemd
-  mount unit for `LABKIOSK_DATA` by label, keeping `nofail`, plus the existing
-  `labkiosk-data-permissions` ordering and the `system-connections` bind mount.
+  mount unit for `LABKIOSK_DATA`, keeping `nofail`, plus the existing
+  `labkiosk-data-permissions` ordering and the `system-connections` bind mount. Pin it to this
+  disk's partition UUID (GRUB passes it as `labkiosk.data=`), never the label: a USB stick can
+  carry the label.
 
 ### 5.2 State that must survive an image swap
 
-Anything the installer writes onto ROOT today would be lost on the first update. It must move:
+Anything the old installer wrote onto ROOT would be lost on the first update. Phase 1 moved it:
 
-| Today on ROOT | Moves to |
+| Was on ROOT | Now |
 |---|---|
-| `/etc/fstab`, `/etc/overlayroot.conf` | mount unit in the image; overlay from live-boot |
+| `/etc/fstab`, `/etc/overlayroot.conf` | `labkiosk-data-generator` in the image mounts DATA by UUID; overlay from live-boot |
 | `/etc/labkiosk-installed` | `labkiosk.installed=1` on the command line |
-| `/etc/grub.d/01_labkiosk_password` | `boot/grub/` on ROOT, outside every image; the updater regenerates `grub.cfg` and keeps it |
-| Timezone, locale, keyboard, NTP (written with `--root`) | apply at boot from `DATA/localization.json` with `labkiosk-localization` (it already supports `/`). Pre-generate the supported locales at build time so boot doesn't run `localedef` |
-| empty `/etc/machine-id` | unchanged: regenerated into RAM at every boot, as today |
+| `/etc/grub.d/01_labkiosk_password` | `boot/grub/labkiosk-password.cfg` on ROOT, outside every image. `grub.cfg` is one fixed file that sources it, so nothing regenerates the menu |
+| Timezone, locale, keyboard, NTP (written with `--root`) | the agent applies them at every start from `DATA/localization.json` with `labkiosk-localization`, which regenerates the chosen locale when it is missing |
+| empty `/etc/machine-id` | shipped empty in the image; regenerated into RAM at every boot |
 
 Config on `DATA` is shared by every image, so **after a rollback the older release will read
 config written by the newer one.** Config changes must be additive: new keys may be added, but
@@ -345,10 +348,14 @@ reports "updated to <v>"
 
 ### 5.7 Control plane
 
-- **D1 (new migration 0015 and `SCHEMA_SQL`):**
-  - on `client_devices`: `image_version`, `agent_version`, `update_version`, `update_state`,
-    `update_progress`, `update_error`, `update_state_at`, and for LAN sharing `lan_address`,
-    `egress_ip`, `peer_port`;
+- **D1 (a new migration, 0019 or later, and `SCHEMA_SQL`):**
+  - on `client_devices`: `agent_version`, `update_version`, `update_progress`, and for LAN
+    sharing `lan_address`, `egress_ip`, `peer_port`. Phase 1 already added `image_version`,
+    `update_state`, `update_error` and `update_state_at` (migration 0015), with
+    `POST /api/devices/boot-report`: each installed boot's outcome (installed, failed, rolled
+    back, fallback, error) is kept there, and problems are listed in `workstation_issues`
+    (migration 0016, Settings → Errors & Warnings), so a failed update is visible in the console
+    before phase 3's update states exist;
   - platform table `releases`: `version`, `channel`, `kind`, `base_version`, `manifest`,
     `signature`, `r2_prefix`, `size_bytes`, `published_at`, `revoked_at`;
   - organization settings: `update_channel` (`stable`/`beta`), `download_window`,
@@ -524,7 +531,7 @@ start anyway, to check what peers send.
 
 | Phase | Deliverable | Verify with |
 |---|---|---|
-| 1 | Image-store installer; §5.1 knock-on fixes; §5.2 state moves; GRUB one-try boot; `labkiosk-boot-ok` | QEMU + OVMF and SeaBIOS: install, switch images, force a failed health check, see the fallback; time a full install |
+| 1 | **Done.** Image-store installer; §5.1 knock-on fixes; §5.2 state moves; GRUB one-try boot; `labkiosk-boot-ok`; boot reports to the console | `distro-builder/tests/vm/boot-test.sh` in `build-iso.yml` after every ISO build (QEMU + OVMF + KVM): install, promote a new image, a broken squashfs, recovery, an image whose kiosk never comes up. BIOS boot is covered only by the GRUB menu unit tests; a full install has not been timed |
 | 2 | Signed manifest in CI; R2 upload; `labkiosk-update` download and install run by hand | QEMU: power cut mid-download, tampered signature, downgrade rejected |
 | 3 | D1 migration; device and approval routes with negative tests; console states and **Install update**; the update curtain in the extension; hub messages | `pnpm test`; drive the console in a browser; a two-VM approval against `pnpm dev` |
 | 4 | Security rebuild pipeline (latest two lines); next-boot staging; "installs at next restart" and "not restarted in N days" console states | a week of scheduled builds on a test organization |
@@ -564,24 +571,26 @@ the full image, so measure before building this.
 - **Security rebuilds for two release lines** double that CI job's runtime. Confirm two lines
   is the right support window.
 - **Install duration.** "A few minutes" is an estimate: verifying about 700 MiB, one reboot,
-  and the health-check hold. Measure it on a slow disk in phase 1.
-- **Squashfs size and minimum disk.** Two images at about 719 MiB each need about 1.5 GiB. The
-  installer's current 3 GB minimum leaves ROOT at about 1.9 GiB, with no room for growth, so
-  **raise the minimum to 8 GB**. Measure `binary/live/` first.
+  and the health-check hold. Phase 1 did not measure it; time it on a slow disk.
+- **Squashfs size and minimum disk.** Answered in phase 1: the installer now refuses disks
+  under **7 GiB**, counted in GiB so that a drive sold as "8 GB" still qualifies. Two images at
+  about 720 MiB each fit with room to grow; the CI boot test installs onto an 8 GiB disk.
 - **`gpgv` in the built image.** Expected because of `apt`, but not checked.
 - **Debian 12 LTS scope, and Chromium within it.** This comes from search results, not from
   Debian's pages. It decides how urgent the move to Debian 13 is.
 - **Whether live-build pulls from the security archive by default.** Confirm against a built
   image's `chroot.packages.live`.
-- **live-boot with `live-media=` pointing at an internal ext4 partition.** `live-media-path=`
-  is documented and GParted Live uses this pattern from a hard disk, but it's untested on this
-  image. Prototype it first.
+- **live-boot with `live-media=` pointing at an internal ext4 partition.** Answered in
+  phase 1: installed disks boot this way (by the partition's UUID, the label only as a
+  fallback), and the CI boot test exercises it under UEFI after every ISO build.
 
 ---
 
 ## Sources
 
 - Repository: `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install`,
+  `…/usr/local/sbin/labkiosk-boot-slots`, `…/usr/share/labkiosk/boot/grub.cfg`,
+  `…/etc/systemd/system-generators/labkiosk-data-generator`, `distro-builder/tests/vm/boot-test.sh`,
   `…/opt/labkiosk/agent/agent.py`, `…/opt/labkiosk/extension/content.js`,
   `…/etc/openbox/autostart`, `…/etc/overlayroot.conf`,
   `distro-builder/config/hooks/live/01-lockdown.hook.chroot`, `distro-builder/auto/config`,

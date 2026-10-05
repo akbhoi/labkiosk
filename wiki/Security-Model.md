@@ -104,8 +104,13 @@ Cache-Control: no-store                 (API responses)
 | Super-admin secrets unset | `bootstrap()` refuses to serve |
 | Migrations unapplied | `assertSchemaCurrent()` refuses to serve; tables are never created at runtime |
 | A build pin unset or wrong | Warns, or fails the build |
+| Automatic bug reports without the `AI` binding, `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO` | Unavailable to every organization |
 
 Missing configuration is an error, never a reason to fall back to something weaker.
+
+### Automatic bug reports
+
+Off for every organization until one of its administrators accepts the Automatic Bug Report Terms (`/terms/bug-reports`) and turns them on in Settings → Errors & Warnings; a new terms version pauses reports until it is accepted again. What leaves the platform is the kind of problem, the image version and the problem text with addresses, host names, e-mail addresses and identifiers masked — never the organization, the workstation or anything a person typed. At most five GitHub writes per hourly run. → [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md)
 
 ---
 
@@ -123,6 +128,8 @@ Missing configuration is an error, never a reason to fall back to something weak
 | `AllowFileSelectionDialogs: false` | A file-picker used as a file manager |
 | Closed Shadow DOM + capture-phase event swallowing | A page tampering with the kiosk UI or evading the curtain |
 | GRUB `--unrestricted` + install-time password | Editing the kernel command line |
+| One-try boot of a new image, confirmed by `labkiosk-boot-slots` (root only, no sudo rule) | A bad system image stranding a workstation: it falls back to the old one |
+| Data partition mounted by UUID (`labkiosk.data=`), never by label | A USB stick labelled `LABKIOSK_DATA` standing in for the machine's own data |
 
 ### The loopback boundary
 
@@ -145,6 +152,8 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 **An unprotected tunnel.** `websockify` serves the full noVNC UI on the tunnel hostname. Without a Cloudflare Access policy, an 8-character RFB secret — about 32 bits, capped by the RFB protocol — is all that stands between the internet and a live room desktop. → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
 
 **Screen content in transit and at rest.** Thumbnails are base64 JPEGs stored in D1 and served to authenticated operators over HTTPS. They are not end-to-end encrypted. Anyone with database access can see the latest frame from every workstation.
+
+**Boot reports are the workstation's word.** `POST /api/devices/boot-report` takes what an enrolled device says about its last boot. The agent reads it from a root-owned file in `/run` that the kiosk user cannot write, and the Worker validates versions and timestamps and records a report only when it is at least a minute newer than the last one it holds — but a compromised workstation can still report a false outcome about itself.
 
 **A malicious operator.** An organization admin can broadcast anything, read every screen, and take remote control. That is the product working as intended; the audit log records it, it does not prevent it.
 

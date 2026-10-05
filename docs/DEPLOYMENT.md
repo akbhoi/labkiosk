@@ -19,7 +19,7 @@ Before deploying to production, ensure you have:
 
 ## 1. Cloudflare D1 Database Provisioning
 
-The control plane requires Cloudflare D1 for durable multi-tenant persistence (organizations, admin users, sessions, portal apps, client devices, audit logs, and command queues).
+The control plane requires Cloudflare D1 for durable multi-tenant persistence (organizations, admin users, sessions, portal apps, client devices, audit logs, workstation errors and warnings, and bug reports).
 
 ### Step 1: Create the Remote Database
 
@@ -67,7 +67,7 @@ npx wrangler d1 migrations apply labkiosk-db --remote
 
 ### Upgrading an existing deployment
 
-Pending migrations are applied the same way. Two of them change existing data:
+Pending migrations are applied the same way. What some of them change:
 
 - **`0010_workstation_broadcast.sql`** adds per-workstation broadcast state. Deploy the Worker in the
   same release: the new Worker reads these columns on every heartbeat.
@@ -93,6 +93,13 @@ Pending migrations are applied the same way. Two of them change existing data:
   and deploy in the same release, because the old worker reads the dropped tables. Workstations
   from an older ISO keep working over the HTTP heartbeat; those with `python3-websocket` connect
   over a WebSocket.
+- **`0015_workstation_boot_reports.sql` … `0018_bug_report_triage.sql`** only add columns and two
+  tables (`workstation_issues`, behind Settings → Errors & Warnings, and `bug_reports`); nothing
+  existing is rebuilt or deleted. 0015 stores each installed workstation's last boot outcome
+  (`POST /api/devices/boot-report`); 0017 and 0018 hold the opt-in
+  [automatic bug reports](#automatic-bug-reports-optional), off until an organization opts in and
+  accepts the terms. The new worker refuses to serve until all four are applied, so apply them and
+  deploy in the same release.
 
 Back up, apply, then deploy:
 
@@ -156,12 +163,75 @@ proxied DNS record on your zone), and make sure the worker serves custom hostnam
 guide for using a Worker as the SaaS origin describes the catch-all route. Each organization then
 points its domain at the fallback origin with a CNAME.
 
-**Local development** needs none of this: `pnpm dev` (`wrangler dev`) runs every binding locally,
+**Local development** needs none of this: `pnpm dev` (`wrangler dev --local`) runs every binding
+locally except Workers AI, which it leaves out,
 and with `ALLOW_LOCAL_DB=1` a custom domain is marked `local` instead of provisioned. wrangler's
 local rate-limit simulator throws on every call; the worker logs that and keeps to the D1 lockouts.
 
 **The CI token.** `wrangler deploy` now also binds a queue, a bucket and a Workflow. If the deploy
 reports an authorization error, add the permission it names to `CLOUDFLARE_API_TOKEN`.
+
+### Automatic bug reports (optional)
+
+Organizations can opt in, in Settings → Errors & Warnings, to having their workstations' errors and
+warnings filed as GitHub issues (`src/bug_reports.ts`), after accepting the Automatic Bug Report
+Terms (`/terms/bug-reports`, versioned by `BUG_REPORT_TERMS_VERSION`). The hourly cron masks
+addresses, host names and identifiers, links repeats of a known problem, asks a reasoning model
+whether a new problem matches an open report (matched: one comment on that issue; otherwise a new
+issue whose title and summary it drafts), and reads each issue's status back from GitHub (in
+progress: assigned or labelled "in progress"; PR created: referenced by a pull request in the same
+repository; resolved: closed as completed; closed: closed for another reason). The option stays
+unavailable to every organization until all three of these are set:
+
+| Setting | What it is | Set it |
+| :--- | :--- | :--- |
+| `AI` | Workers AI binding (reasoning model `@cf/openai/gpt-oss-120b`, effort `high`) | Already in `wrangler.jsonc`. Workers AI has no local simulator: `pnpm dev` runs with `--local`, which leaves it out (the option stays unavailable); plain `npx wrangler dev` calls your account and needs `wrangler login`. |
+| `GITHUB_ISSUES_TOKEN` | Secret: a fine-grained GitHub token for one repository with **Issues: Read and write** (and **Pull requests: Read** for a private repository) | `npx wrangler secret put GITHUB_ISSUES_TOKEN` |
+| `GITHUB_ISSUES_REPO` | Variable: the repository issues are filed in, `owner/repo` | Dashboard → Variables and Secrets (section 3) |
+
+Issues filed in a public repository are public. Each organization's administrator sees the
+repository name before turning the option on.
+
+### Creating the tokens
+
+**`GITHUB_ISSUES_TOKEN`** (GitHub, fine-grained personal access token):
+
+1. On GitHub: your avatar → **Settings** → **Developer settings** → **Personal access tokens** →
+   **Fine-grained tokens** → **Generate new token**.
+2. Name it (for example `labkiosk-bug-reports`) and pick an expiration. When it expires, the cron
+   logs `[BugReports] … GitHub answered 401` and reports wait until you set a new token.
+3. **Resource owner:** the account or organization that owns the repository. **Repository access:**
+   *Only select repositories* → the one repository in `GITHUB_ISSUES_REPO`.
+4. **Permissions → Repository permissions:** **Issues: Read and write**. For a private repository
+   also **Pull requests: Read-only**. (*Metadata: Read-only* is added automatically.) Nothing else.
+5. **Generate token**, copy it once, then from `cloudflare-control/`:
+   `npx wrangler secret put GITHUB_ISSUES_TOKEN` and paste it. Never put it in `wrangler.jsonc`,
+   `.dev.vars` committed to git, or a chat.
+
+Issues and comments appear as written by the account that owns the token. To keep them apart
+from your own activity, create the token on a separate bot account that has write access to the
+repository.
+
+**`GITHUB_ISSUES_REPO`:** Cloudflare dashboard → **Workers & Pages** → `labkiosk-controller` →
+**Settings** → **Variables and Secrets** → **Add** → type *Text*, name `GITHUB_ISSUES_REPO`,
+value `owner/repo` → **Deploy**.
+
+**`CF_API_TOKEN`** (custom domains): Cloudflare dashboard → **My Profile** → **API Tokens** →
+**Create Token** → **Create Custom Token**. Permissions: *Zone* · *SSL and Certificates* · *Edit*.
+Zone Resources: *Include* · *Specific zone* · your platform domain's zone. **Create Token**, then
+`npx wrangler secret put CF_API_TOKEN`. **`CF_ZONE_ID`** is on that zone's **Overview** page
+(right-hand column, *API* → *Zone ID*): `npx wrangler secret put CF_ZONE_ID`.
+
+Workers AI needs no token: the `AI` binding uses the account the Worker is deployed to.
+
+### Privacy and Cloudflare's terms
+
+The hosted platform's [Privacy Policy](../cloudflare-control/src/ui_legal.ts) (`/privacy`) names
+every Cloudflare service in `wrangler.jsonc` and what each one handles, and refers to the
+[Cloudflare Privacy Policy](https://www.cloudflare.com/privacypolicy/) and the
+[Cloudflare Customer Data Processing Addendum](https://www.cloudflare.com/cloudflare-customer-dpa/).
+If you add a binding, add it there too (a test checks the list). If you run your own deployment,
+you are the operator: review Cloudflare's DPA for your account and publish your own policy.
 
 ---
 
@@ -177,6 +247,7 @@ Configure production variables in the **Cloudflare Dashboard**:
    - `DEFAULT_DOMAIN`: The primary apex platform domain (e.g. `labkiosk.yourdomain.com`).
    - `ISO_DOWNLOAD_URL`: Direct link to download the live bootable Debian 12 Kiosk ISO (e.g. GitHub Releases artifact).
    - `TUNNEL_DOMAIN`: Base domain for remote assistance tunnels (e.g. `labkiosk.yourdomain.com`).
+   - `GITHUB_ISSUES_REPO` (optional): `owner/repo` for automatic bug reports (see "Automatic bug reports").
 
 ---
 
@@ -244,6 +315,10 @@ Cloudflare automatically calls the worker's `scheduled()` handler at minute 0 of
 - Cleans up stale rate-limiting and sign-in throttle rows.
 - Moves audit entries older than 180 days to the `labkiosk-audit-archive` R2 bucket (one NDJSON
   file per run) and deletes them from D1.
+- Deletes workstation errors and warnings older than 90 days.
+- Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub
+  writes a run; a GitHub or model failure leaves the rest for the next run), and reads back the
+  status of up to 10 filed issues.
 
 Queued commands are no longer in D1: each organization's OrgHub expires its own.
 

@@ -30,19 +30,26 @@ distro-builder/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Empty keybindings (rc.xml) & autostart script
 │       │   ├── overlayroot.conf        # RAM overlay (overlayroot="tmpfs", recurse=0)
-│       │   └── systemd/system/         # cloudflared-kiosk.service only; nodm is configured
-│       │                               #   through /etc/default/nodm in 01-lockdown.hook.chroot,
-│       │                               #   and the agent is started by the Openbox autostart
+│       │   ├── systemd/system/         # cloudflared-kiosk.service, labkiosk-boot-ok.service; nodm
+│       │   │                           #   is configured through /etc/default/nodm in
+│       │   │                           #   01-lockdown.hook.chroot, and the agent is started by
+│       │   │                           #   the Openbox autostart
+│       │   └── systemd/system-generators/labkiosk-data-generator   # etc-labkiosk.mount by UUID
 │       ├── opt/labkiosk/
 │       │   ├── setup/wizard.html       # Setup & Enrollment Wizard GUI (HTML/JS)
 │       │   ├── extension/              # Manifest V3: content.js (top bar & curtain) +
 │       │   │                           #   background.js (service worker; sole loopback caller)
 │       │   └── agent/agent.py          # Python 3 control-channel daemon & local loopback API
 │       ├── usr/local/bin/
-│       │   └── labkiosk-install        # Automated Python disk installer (GPT, ESP, ext4, dual GRUB)
+│       │   ├── labkiosk-install        # Automated Python disk installer (GPT, ESP, image store, dual GRUB)
+│       │   └── labkiosk-lock-keys      # Strips blocked keys from the X keymap (Rule 1h)
+│       ├── usr/local/sbin/
+│       │   ├── labkiosk-localization   # The one program the agent may sudo (Rule 1e)
+│       │   └── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
 │                                       #   plus the cloudflared.pin, grub.pin & novnc.pin build
-│                                       #   pins and install-novnc.sh
+│                                       #   pins, install-novnc.sh, version (the image's release)
+│                                       #   and boot/grub.cfg (every installed disk's boot menu)
 └── out/                                # Generated ISO & SHA-256 artifacts
 ```
 
@@ -56,9 +63,23 @@ distro-builder/
   (`overlayroot="tmpfs"`, on live media and internal drives alike). `toram` — copying the entire
   image into RAM up front — is an **additional, opt-in boot menu entry**, not what the default
   entry does; `auto/config`'s `--bootappend-live` contains no `toram`.
-- **The single exception on an installed disk is `/etc/labkiosk`**, which the installer mounts from
-  the `LABKIOSK_DATA` partition so that a post-install enrolment survives a reboot. Everything
-  else, including `/etc/machine-id`, is regenerated every boot.
+- **An installed disk boots exactly like the ISO.** It is an image store, not a root filesystem:
+  `LABKIOSK_ROOT` holds `boot/grub/` and whole system images in `images/<version>/`
+  (`filesystem.squashfs`, `vmlinuz`, `initrd.img`, copied from the live medium), and the boot
+  menu starts one through live-boot with `labkiosk.installed=1` on the command line. The RAM
+  overlay comes from live-boot, and its lower layer is the squashfs, so an update can write a
+  *different* image's folder while the system runs (`docs/OTA_UPDATES.md` §5.1). Rule 8.
+- **The single exception on an installed disk is `/etc/labkiosk`**, which `etc-labkiosk.mount`
+  mounts from the `LABKIOSK_DATA` partition so that a post-install enrolment survives a reboot.
+  That unit is generated at boot (`etc/systemd/system-generators/labkiosk-data-generator`)
+  from `labkiosk.data=<uuid>` on the command line, which `grub.cfg` takes from
+  `boot/grub/labkiosk-data.cfg` (written by the installer). **Never mount it by label**: any USB
+  stick can carry the label `LABKIOSK_DATA` and would hand the agent its enrolment, proxy and
+  Wi-Fi profiles. No valid UUID means no mount, and the agent reports it.
+  Everything else, including `/etc/machine-id`, is regenerated every boot. Nothing is written into
+  a system image after installation: anything that must survive an update lives on `DATA` or in
+  `boot/grub/`, and config on `DATA` is shared by every image, so its keys may be added but never
+  renamed or given a new meaning (a rollback reads what the newer release wrote).
 - That partition **must be owned by the `kiosk` user**: the agent runs unprivileged and writes
   `config.json` there at enrolment. Three things keep it that way, and all three should stay:
   the installer chowns the mounted partition and then *proves* the kiosk user can write to it
@@ -67,11 +88,12 @@ distro-builder/
   uid when a write fails, because the workstation has no shell to investigate from.
   `system-connections` inside it stays root-only — those keyfiles hold Wi-Fi passphrases.
 - **A directory at `/etc/labkiosk` is not a substitute for the partition, and nothing may pretend
-  otherwise.** The fstab entry is `nofail`, which means systemd does not order the boot behind it,
+  otherwise.** The mount unit is `nofail`, which means systemd does not order the boot behind it,
   so that path can still be unmounted when the repair service runs. Creating a writable directory
   there is the worst available outcome: the agent enrols into the RAM overlay and the organization's
   workstation forgets everything at the next power-off, with nothing on screen to say so. The
-  service therefore mounts the partition (`After=…etc-labkiosk.mount`, then `mount /etc/labkiosk`)
+  service therefore mounts the partition (`After=…etc-labkiosk.mount`, then mounts the
+  `labkiosk.data=` UUID)
   and, when it cannot, leaves the path exactly as it found it. `enrolment_is_persistent()` in the
   agent answers the same question for the UI: `persistentStorage` in `/api/status` and `persistent`
   in the enrolment reply, both of which the wizard renders as an amber warning rather than a
@@ -105,14 +127,15 @@ distro-builder/
   the build default is only what an unconfigured image comes up with.
 - Everything runs on that default until then: the live session, an installed workstation, the
   workstation simulator and the ISO builder image.
-- An installed disk takes it from `/etc/localtime` and `/etc/timezone` as built, written by
-  `01-lockdown.hook.chroot` — live-config never runs there, because the installed system boots
-  without `boot=live`.
-- A **live** session does run live-config, and its `0070-tzdata` component rewrites `/etc/timezone`
-  on every boot, defaulting to `Etc/UTC` when nothing on the kernel command line says otherwise.
-  That is why `timezone=Asia/Kolkata` is on `--bootappend-live`, on `--bootappend-live-failsafe`,
-  and on the hardcoded failsafe entry in all three boot menus (`isolinux`, `syslinux`, `grub-pc`),
-  which do not inherit `@APPEND_LIVE@`.
+- Every boot through live-boot runs live-config, and its `0070-tzdata` component rewrites
+  `/etc/timezone` on every boot, defaulting to `Etc/UTC` when nothing on the kernel command line
+  says otherwise. That is why `timezone=Asia/Kolkata` is on `--bootappend-live`, on
+  `--bootappend-live-failsafe`, and on the hardcoded failsafe entry in all three ISO boot menus
+  (`isolinux`, `syslinux`, `grub-pc`), which do not inherit `@APPEND_LIVE@`.
+- An **installed** disk boots through live-boot too, and its menu
+  (`usr/share/labkiosk/boot/grub.cfg`) deliberately carries **no** `timezone=`: the organization's
+  zone is in `localization.json` on `LABKIOSK_DATA`, the agent re-applies it at every start, and
+  a zone on the command line would be re-applied by live-config at every boot and fight it.
 - Change one and change the other, or a workstation and the USB stick it was installed from will
   disagree about the time. `systemd-timesyncd` keeps the clock itself correct.
 
@@ -123,8 +146,15 @@ distro-builder/
   in this repository and the password is applied at **installation** time
   (`labkiosk-install --grub-password-hash`), or per customer at build time via
   `LABKIOSK_GRUB_PBKDF2`.
-- **`--unrestricted` must stay unconditional.** `02-security.hook.chroot` marks every generated
-  menu entry `--unrestricted` whether or not a password is pinned. It is a no-op without
+- **The installed password lives outside every image**, in `boot/grub/labkiosk-password.cfg` on
+  `LABKIOSK_ROOT`, which the installed `grub.cfg` sources and the agent reads (as
+  `/run/live/medium/boot/grub/labkiosk-password.cfg`) to check the administrator password. A
+  missing file means "no password" only when that `grub.cfg` is readable beside it; otherwise the
+  gate stays shut.
+- **`--unrestricted` must stay unconditional.** Every entry in the installed
+  `usr/share/labkiosk/boot/grub.cfg` and the ISO's `grub-pc/grub.cfg` carries it (a test checks
+  the installed one), and `02-security.hook.chroot` marks every `update-grub` entry the same way
+  whether or not a password is pinned. It is a no-op without
   `superusers`, but because the password now usually arrives at install time, making it
   conditional again would give an installed disk `set superusers` with no unrestricted entry —
   and every workstation would stop at a password prompt on every boot instead of coming up into
@@ -141,8 +171,14 @@ distro-builder/
   had just been installed rebooted straight back into the installer ISO. `eject` goes with it.
 - `01-lockdown.hook.chroot` adds `/lib/systemd/system-shutdown/labkiosk-medium.shutdown` for the one
   case `live-tools` skips: a USB stick, which it refuses to eject because that needs a cold reboot.
-  Both scripts exit immediately unless `boot=live` is on the command line, so an operator's remote
+  Both scripts exit immediately unless `boot=live` is on the command line. An installed disk boots
+  with `boot=live` too, so its menu also passes `noeject` (which both scripts honour), and
+  `labkiosk-medium.shutdown` additionally exits on `labkiosk.installed=1` — an operator's remote
   reboot of an installed workstation never waits for a keypress.
+- **live-config's `sudo` and `policykit` components are pre-seeded away** in
+  `01-lockdown.hook.chroot`, like `nodm` and `user-setup`. Left alone they give the live user
+  (`kiosk`) `NOPASSWD: ALL` and every polkit action at every boot — on the ISO, and on every
+  installed disk now that it boots through live-boot.
 
 ### Rule 1e: Language & Region Comes Before the Network, and Owns One Privileged Program
 
@@ -158,12 +194,12 @@ distro-builder/
   agent does not run as root. `/usr/local/sbin/labkiosk-localization` is the only program it may
   run through sudo, and **it re-validates every argument against those same tables** — the caller
   is not a trust boundary, exactly as with `labkiosk-install`.
-- The same program applies settings to a *target* root with `--root`, which is how the installer
-  carries the choice onto the disk: `/etc/localtime`, `/etc/default/locale` and
-  `/etc/default/keyboard` live on the root filesystem, not on `LABKIOSK_DATA`. Generating the
-  locale there too keeps it off the RAM overlay, where it would be rebuilt at every boot.
 - The choice itself is persisted in `/etc/labkiosk/localization.json`, and `apply_saved_localization()`
-  re-applies it at every agent start.
+  re-applies it at every agent start. On an installed disk that is the only way it comes back:
+  the system image is the same for every organization and an update replaces it, so the installer
+  carries `localization.json` onto `LABKIOSK_DATA` and writes nothing into the image. A locale
+  other than the image's own is regenerated into RAM at every start. `--root` still exists for
+  applying settings to another root, but the installer no longer uses it.
 - **No zone is pre-picked.** Continent, country and time zone open on "Select…" until the operator
   chooses; only a *saved* choice (`saved.timezone`) is shown, never the image's build default, and
   Continue refuses while the zone is empty. A country with exactly one zone selects it. The build
@@ -252,7 +288,7 @@ distro-builder/
 - In Python, `$` matches at the end of the string **and immediately before a trailing newline**.
   Every validation pattern in this project used `$`, so a workstation name, a disk path, a locale,
   a timezone and — worst of the set — the **GRUB password digest** all accepted a value ending in
-  `\n`. That digest is written into `/etc/grub.d/01_labkiosk_password` as
+  `\n`. That digest is written into `boot/grub/labkiosk-password.cfg` as
   `password_pbkdf2 labkiosk <digest>`, so a trailing newline would have carried whatever followed
   it into that file as a second GRUB directive.
 - All fifteen are now anchored with `\Z` — written `\Z` inside a raw string, **never `\\Z`**: in
@@ -273,25 +309,32 @@ distro-builder/
   - The installer partitions target drives with a **Hybrid GPT layout**:
     1. Partition 1: `bios_grub` (1 MiB – 2 MiB, flag `bios_grub on`) for legacy GRUB `i386-pc` MBR embedding on GPT.
     2. Partition 2: `ESP` (2 MiB – 514 MiB, FAT32, flag `esp on`) for UEFI bootloader files.
-    3. Partition 3: `ROOT` (514 MiB – end − 513 MiB, ext4, label `LABKIOSK_ROOT`) for the immutable Debian 12 operating system.
+    3. Partition 3: `ROOT` (514 MiB – end − 513 MiB, ext4, label `LABKIOSK_ROOT`), the root-only image store: `boot/grub/` and `images/<version>/` (Rule 8).
     4. Partition 4: `DATA` (end − 512 MiB – 100%, ext4, label `LABKIOSK_DATA`) mounted at `/etc/labkiosk` with `nofail`, holding persistent credentials and `/etc/labkiosk/system-connections/`.
-  - The installer runs **both** `grub-install --target=x86_64-efi --removable` and `grub-install --target=i386-pc <disk>` so the drive boots on any machine regardless of firmware mode.
+  - The installer runs `grub-install --target=x86_64-efi --bootloader-id=LabKiosk --no-nvram`, the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`, each with `--boot-directory` on `ROOT`, so the drive boots on any machine regardless of firmware mode.
 
-### Rule 3: Decoupled Rootfs Transfer (No `EBUSY` Mount Deadlocks)
+### Rule 3: The Installer Copies the Image, Not the Root
 
-- When installing to an internal drive, `part_root` must be mounted alone during `rsync`.
-- **Never mount the EFI partition (`/boot/efi`) before or during `rsync`**, and **never run `rsync` with `--delete` into a freshly formatted filesystem**.
-- Violating this causes `rsync: delete_file: rmdir(boot/efi) failed: Device or resource busy (16) (code 23)`.
-- Mount `part_esp` at `/boot/efi` **only after** `rsync` completes.
+- The installer no longer `rsync`s the running root. It copies the live medium's
+  `live/filesystem.squashfs`, `vmlinuz` and `initrd.img` into `images/<version>/` on `ROOT`, with
+  the version from `/usr/share/labkiosk/version` (kept equal to `AGENT_VERSION` and the extension's
+  version by a test), and installs GRUB from the live session itself with `--boot-directory`.
+- **Everything is located before `wipefs`**: the image files, the version, the `grub.cfg`
+  template and `labkiosk-boot-slots`. A medium that cannot produce a bootable disk fails before
+  the disk is erased; a `toram` session that no longer has the medium's files is told to restart
+  from the normal entry.
+- ROOT, the ESP and DATA are mounted at three separate directories, never inside one another.
 
 ### Rule 4: Dynamic Runtime Session Differentiation (`is_live_session()`)
 
 - The system must authoritatively know whether it is running from the **Live ISO / USB installer** or from an **installed internal drive**.
 - Detection criteria in `agent.py` and `labkiosk-install`:
-  - If `/etc/labkiosk-installed` exists: **Installed drive** (`isLive: false`).
-  - If `/run/live` exists or `boot=live` in `/proc/cmdline`: **Live installer** (`isLive: true`).
+  - If `labkiosk.installed=1` is on the kernel command line (or, for a disk installed before the
+    image store, `/etc/labkiosk-installed` exists): **Installed drive** (`isLive: false`). This is
+    checked first because an installed disk also has `/run/live` and `boot=live`.
+  - Otherwise, if `/run/live` exists or `boot=live` in `/proc/cmdline`: **Live installer** (`isLive: true`).
 - **UI Behavior in `wizard.html`**:
-  - Live session: Shows sequential 2-step stepper (`Step 1: Network Setup` -> `Step 2: Choose Destination Mode [Install to Disk vs. Live Preview & Enroll]`) with badge `LIVE INSTALLER & SETUP`.
+  - Live session: Shows a sequential 3-step stepper (`Language & Region` -> `Network Setup` -> `Install or Preview` [Install to Disk vs. Live Preview & Enroll]) with badge `LIVE INSTALLER & SETUP`.
   - Installed drive: Displays badge `INSTALLED WORKSTATION`, hides the disk installer view **and the network step**, and opens directly on the enrolment form. The network was configured before the installation and came back with it, so showing it again on every boot only got in the way; it is reached from the network icon in the kiosk top bar (`/setup#network`), gated behind the administrator password modal.
   - **Wizard Responsiveness & Offline Resiliency**:
     - The setup wizard (`wizard.html`) enforces `.wizard-card { margin: auto; }` and `body { overflow-y: auto; }` within its flex container so that cards are centered on large screens while remaining fully scrollable without top-clipping on small viewports (e.g. 1024x768 or 800x600).
@@ -431,16 +474,48 @@ distro-builder/
 
 - Network profiles configured during setup (Ethernet or Wi-Fi) are created via NetworkManager.
 - Because `overlayroot="tmpfs"` reverts all rootfs modifications upon reboot, NetworkManager keyfiles in `/etc/NetworkManager/system-connections` would be wiped on power-off.
-- The installer creates `/etc/labkiosk/system-connections` on the persistent `LABKIOSK_DATA` partition and configures an `/etc/fstab` bind mount:
-  `/etc/labkiosk/system-connections /etc/NetworkManager/system-connections none bind,nofail 0 0`
+- The installer creates `/etc/labkiosk/system-connections` on the persistent `LABKIOSK_DATA` partition, and the image's `etc-NetworkManager-system\x2dconnections.mount` (written by `01-lockdown.hook.chroot`, conditional on `labkiosk.installed=1`, ordered before NetworkManager) bind-mounts it over `/etc/NetworkManager/system-connections`.
 - Network keyfiles are copied to `/etc/labkiosk/system-connections` with permissions `0600` (root:root) and directory `0700`.
 - The unprivileged `kiosk` user is granted Polkit rules (`/etc/polkit-1/rules.d/50-labkiosk-network.rules`) so `agent.py` can invoke `nmcli` without sudo passwords.
-- Post-install network administration via `/setup#network` requires authentication against the GRUB PBKDF2 hash stored in `/etc/grub.d/01_labkiosk_password`. The agent enforces it: `/api/admin/verify` returns a short-lived token, and `/api/network/configure` rejects an installed workstation's request that lacks it. An installation made without a password is deliberately left unlocked (the wizard warns); a password file that cannot be parsed fails closed.
+- Post-install network administration via `/setup#network` requires authentication against the GRUB PBKDF2 hash stored in `boot/grub/labkiosk-password.cfg` on `LABKIOSK_ROOT`. The agent enforces it: `/api/admin/verify` returns a short-lived token, and `/api/network/configure` rejects an installed workstation's request that lacks it. An installation made without a password is deliberately left unlocked (the wizard warns); a password file that cannot be parsed, or a boot partition that cannot be read, fails closed.
 - `configure_network()` validates every field (addresses via `ipaddress`, adapter names against `nmcli`, proxy host/port/bypass) **before** touching NetworkManager, then creates the profile in a single `nmcli connection add`, so a typo never leaves the workstation without a profile.
 - The proxy lives only in `/etc/labkiosk/proxy.json` (persisted on `LABKIOSK_DATA`). The agent applies it to its own requests and to Chromium's `ProxySettings` policy at every start; nothing is written to `/etc/environment`.
 - The extension (`content.js`) monitors network connectivity, updating top-bar icon state and redirecting to `/setup#offline` when offline for more than 6 s (never from a locked screen). The wizard returns to the page once the connection is back.
 - `GET /api/network/status` returns a `profile` object (mode, address, gateway, DNS per family, Wi-Fi SSID, adapter) read back from the saved NetworkManager profile, and the wizard renders the form from it. Without it the page always showed its defaults and looked as though nothing had ever been configured.
 - An empty Wi-Fi password field means *keep the saved passphrase*: `configure_network()` replaces the profile outright, and the passphrase is never sent back to the page, so changing a DNS server would otherwise force retyping the Wi-Fi key.
+
+### Rule 8: One Try for a New Image, Then Roll Back on Its Own
+
+- `LABKIOSK_ROOT/boot/grub/grubenv` holds `current`, `previous`, `next` and `next_tries`, written
+  only by root (`labkiosk-boot-slots`, atomically: new file, fsync, rename) and by GRUB itself.
+- The installed `grub.cfg` (copied from `usr/share/labkiosk/boot/grub.cfg`, the same for every
+  machine and release) boots `current`. With `next` set and `next_tries=1` it **spends the try
+  first** (`save_env next_tries` = 0) and boots `next` only if that write succeeded; then it falls
+  back to `current`, `previous`, and finally any complete image in `images/`, so a damaged
+  `grubenv` never leaves the machine at a menu. Every entry is `--unrestricted`.
+- The command line is `boot=live components … live-media=/dev/disk/by-uuid/<ROOT> live-media-path=/images/<v>
+  labkiosk.installed=1 noeject panic=10`, with no `timezone=` (Rule 1d). By UUID, not label: a
+  second disk that was once a Lab Kiosk install has the same label (the label is only the fallback
+  if GRUB's `probe` is unavailable). `panic=10` turns a panic,
+  including live-boot failing to find its image, into a reboot, which GRUB answers with the old image.
+- `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every installed boot. On the one
+  try it waits until the agent's API answers and Chromium (`--user-data-dir=/tmp/chromium-profile`)
+  runs, continuously for 60 s within 10 minutes, then makes `next` current and the old image
+  `previous`; if that never happens it reboots, and GRUB boots the old image. Every boot writes
+  the outcome (`running`, `staged`, `finishing`, `installed`, `failed`, `rolled-back`, `fallback`,
+  and `error` when `grubenv` cannot be read or the promotion cannot be written) to
+  `/run/labkiosk-update/status.json`, root-written — never to `DATA`, which the browser's user can
+  write. A write that fails still fails the command (fail closed); the agent sends `installed`,
+  `failed`, `rolled-back`, `fallback` and `error` to `POST /api/devices/boot-report`; problems
+  show in the console under Settings → Errors & Warnings (`labkiosk-core` §2b).
+- `labkiosk-boot-slots try <version>` gives an image already on disk its one try at the next boot
+  (the primitive the updater will use). There is no sudo rule for it: the agent never chooses what
+  boots. The health check reaches the loopback agent with no proxy (an organization proxy must not
+  decide whether an image is healthy).
+- The installed kiosk has no shell (getty masked, no SSH). To try a slot by hand, mount
+  `LABKIOSK_ROOT` from another system and run `grub-editenv boot/grub/grubenv set next=<v> next_tries=1`.
+- Only phase 1 of `docs/OTA_UPDATES.md` §9 is built. Downloading, signing, an approval UI and LAN
+  sharing (phases 2–5) are research; never document or depend on them as features.
 
 ---
 
@@ -451,28 +526,28 @@ Located at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 ### Execution Flags
 
 - `--grub-password-hash <grub.pbkdf2.sha512...>`: optional, used with `--target`. Writes
-  `/etc/grub.d/01_labkiosk_password` on the installed system before `update-grub`, giving that
-  installation its own boot-menu password. Only a **digest** is accepted — the setup wizard
-  derives it in the browser with WebCrypto, so the plaintext never crosses the agent's API. When
-  omitted, any password inherited from the live medium is removed, so an unlocked install is
-  visibly unlocked. The value is re-validated here against `GRUB_PBKDF2_PATTERN`, not trusted
-  from the caller.
-- `--list-disks`: Scans candidate physical/virtual block devices (>= 3 GB) and returns pure JSON on
+  `boot/grub/labkiosk-password.cfg` on `ROOT`, giving that installation its own boot-menu
+  password; it sits outside every image, so updates keep it. Only a **digest** is accepted — the
+  setup wizard derives it in the browser with WebCrypto, so the plaintext never crosses the
+  agent's API. When omitted, no password file is written, so an unlocked install is visibly
+  unlocked. The value is re-validated here against `GRUB_PBKDF2_PATTERN`, not trusted from the
+  caller.
+- `--list-disks`: Scans candidate physical/virtual block devices (>= 7 GiB, so a drive sold as 8 GB qualifies: two system images side by side) and returns pure JSON on
   `sys.stdout`. **The disk backing the live medium is excluded** (matched via `/proc/mounts`
   against `/run/live/medium` and friends, then resolved to its parent disk through `/sys`), because
   offering it meant a click could repartition the USB the installer was running from. Removable
   drives are *not* hidden — internal eMMC on some thin clients reports as removable — but they sort
   last and the wizard labels them, so the default selection is always an internal disk.
 - `--status`: Reads `/tmp/labkiosk-install-status.json` and returns current installation state and progress percentage.
-- `--target /dev/sdX`: Runs full partition, format, rootfs rsync, and GRUB deployment as root.
+- `--target /dev/sdX`: Runs full partition, format, image copy, and GRUB deployment as root.
 
 ### Critical Implementation Standards
 
 1. **Zero Stdout Pollution**: All logging, traces, and debugging strings MUST write to `file=sys.stderr`. `sys.stdout` must strictly contain valid JSON so agent parsing cannot fail with `JSONDecodeError`.
 2. **Kernel Fallback**: If `lsblk -J` is unavailable or returns an empty list, the installer falls back to `/sys/block` sysfs enumeration.
-3. **Machine ID Reset**: The installer truncates `/etc/machine-id` on the target rootfs to a
-   genuinely **empty** file, which is the marker systemd reads as "uninitialised" and replaces on
-   first boot. A file containing anything else — a bare newline included — is not that marker.
+3. **Machine ID**: `01-lockdown.hook.chroot` empties `/etc/machine-id` in the image, the marker
+   systemd reads as "uninitialised", so every boot generates one in RAM. The installer writes
+   nothing into the image; an id baked into the squashfs would be shared by every workstation.
 4. **Negative parted offsets need `--`**: the ROOT and DATA partitions are sized from the end of the
    disk (`-513MiB`, `-512MiB`), and without a `--` separator parted parses those as bundled
    single-letter options and aborts the install.
@@ -495,7 +570,10 @@ Always run before packaging or testing:
 # interpreter into the image.
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots
+sh -n distro-builder/config/includes.chroot/etc/systemd/system-generators/labkiosk-data-generator
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 
@@ -548,6 +626,18 @@ previously built ISO — over a gigabyte — and, worse, a stale `lb config`-gen
 whose `LB_BOOTAPPEND_LIVE` still contained the `quiet loglevel=3` that caused the black-screen boot
 deadlock.*
 
+### 2b. Installed-Disk Boot Test (QEMU)
+
+`.github/workflows/build-iso.yml` runs `distro-builder/tests/vm/boot-test.sh` on every built ISO:
+the ISO's own installer writes a virtual disk, which then boots under QEMU + OVMF (UEFI, KVM)
+through four scenarios — promote, broken squashfs, recover, unhealthy image — read back from
+`grubenv`. BIOS is covered only by the GRUB menu tests in `test_client.py`. It needs root and
+`/dev/kvm`, so it does not run on Windows:
+
+```bash
+sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso
+```
+
 ### 3. Rapid Live Debugging via Docker Test Simulator
 
 ```bash
@@ -572,7 +662,6 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 
 | Issue | Root Cause | Solution |
 | :--- | :--- | :--- |
-| **`rsync: rmdir(boot/efi) failed: Device or resource busy (16)`** | `part_esp` was mounted to `/mnt/target_kiosk/boot/efi` before `rsync --delete` ran. | Mount only `part_root` during `rsync`; remove `--delete`; mount `part_esp` to `/boot/efi` only after `rsync` completes. |
 | **No candidate internal drives detected** | Installer printed `[INSTALL] Executing: ...` to `sys.stdout`, corrupting JSON output parsed by `agent.py`. | Redirect all logging to `file=sys.stderr`. Reserve `sys.stdout` exclusively for `json.dumps()`. |
 | **Legacy BIOS fails to boot installed GPT disk** | Legacy GRUB requires a BIOS Boot Partition to embed `core.img` on GPT disks. | Create Partition 1: `bios_grub` (1MiB-2MiB) with `set 1 bios_grub on`. |
 | **UEFI boot entry missing after reboot** | UEFI firmware lost NVRAM or does not store dynamic boot variables. | Always invoke `grub-install --target=x86_64-efi --removable` to create `/boot/efi/EFI/BOOT/BOOTX64.EFI`. |
@@ -584,7 +673,7 @@ docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 | **A shell hook dies with `$'\r': command not found`** | The file was checked out or written with CRLF line endings. Windows git defaults to `core.autocrlf=true`, and Python's `Path.write_text` translates newlines on Windows. | `.gitattributes` pins every build and image file to `eol=lf`. Never write these files with a tool that rewrites newlines. |
 | **The Language & Region step is missing, or its lists are empty** | The `locales` package or tzdata's tables are absent, so `labkiosk-localization --list-options` has nothing to report. The wizard hides the step rather than showing empty menus. | Keep `locales`, `tzdata` and `xkb-data` in `kiosk.list.chroot` (and in the simulator's Dockerfile, which is where the step gets exercised). |
 | **An enrolment is accepted and then forgotten at the next reboot, with no error anywhere** | `/etc/overlayroot.conf` set `overlayroot_options="recurse=0"`, a variable overlayroot never reads. At its default `recurse=1` it overlays every fstab entry, so `/etc/labkiosk` was an overlay on RAM rather than the data partition — mounted, writable, and empty again after a reboot. | `overlayroot="tmpfs:recurse=0"` (see Rule 1a), in the image, in what the installer writes, and on every boot command line. |
-| **Enrolment on an installed workstation is forgotten after a reboot** | `overlayroot="tmpfs"` sends every write to a RAM overlay, `/etc/labkiosk/config.json` included, unless the `LABKIOSK_DATA` partition is mounted there. The `nofail` fstab entry is not ordered before `local-fs.target`, so a boot-time helper that simply `mkdir -p`s the path turns a loud failure into silent data loss. | The installer creates and mounts the partition; `labkiosk-data-permissions` mounts it if the boot has not yet, and refuses to fabricate a directory when it cannot. The agent reports `persistentStorage: false` and the wizard warns before and after enrolling. On an image built before the partition existed, enrol from the live session *before* installing. |
+| **Enrolment on an installed workstation is forgotten after a reboot** | `overlayroot="tmpfs"` sends every write to a RAM overlay, `/etc/labkiosk/config.json` included, unless the `LABKIOSK_DATA` partition is mounted there. The `nofail` mount unit is not ordered before `local-fs.target`, so a boot-time helper that simply `mkdir -p`s the path turns a loud failure into silent data loss. | The installer creates and mounts the partition; `labkiosk-data-permissions` mounts it if the boot has not yet, and refuses to fabricate a directory when it cannot. The agent reports `persistentStorage: false` and the wizard warns before and after enrolling. On an image built before the partition existed, enrol from the live session *before* installing. |
 | **Installer offers the USB it booted from** | `--list-disks` recorded the `removable` flag but never filtered on it. | `live_medium_disks()` excludes the backing disk of `/run/live/medium`, both when listing and again immediately before `wipefs`. |
 | **Black screen on boot (Plymouth/NODM deadlock)** | `quiet loglevel=3` suppressed boot logs and PAM autologin was locked. | Pass `consoleblank=0` (remove `quiet loglevel=3`), unlock kiosk password (`passwd -d kiosk`), and pre-seed live-config markers. |
 | **Enrolment fails with `PermissionError ... /etc/labkiosk/config.json.tmp`** | The `LABKIOSK_DATA` partition mounted at `/etc/labkiosk` is owned by root, so the unprivileged agent cannot write its enrolment. Seen on disks written by an older installer. | `labkiosk-data-permissions.service` now corrects the ownership at every boot, and the installer verifies it before declaring success. The agent's error names the owner, the mode and its own uid. |

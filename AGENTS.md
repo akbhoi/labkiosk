@@ -36,11 +36,12 @@ labkiosk/
 ├── distro-builder/          Debian 12 live-build image, installer, hooks, Chromium policy
 │   └── config/includes.chroot/
 │       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
-│       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization
+│       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0014 (never edit an applied one)
+│   ├── migrations/          0001..0018 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
+│   │                        boot_report.ts, bug_reports.ts (Errors & Warnings, opt-in GitHub bug reports),
 │   │                        ui_*.ts (one module per page), ui_tokens.ts, ui_layout.ts
 │   └── test/                worker.test.ts, dump_admin_html.ts, dev_server.ts
 ├── Dockerfile, docker-compose.yml, docker-test/   workstation simulator
@@ -54,8 +55,10 @@ state and commands (`lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`
 `mute`) as they change and asks for screen frames only while an operator is watching. Agents
 without it post the older 3-second heartbeat (`POST /api/telemetry`), which carries the same.
 D1 is the registry the hubs write back to, never per heartbeat. Enrolment exchanges
-an organization's enrollment key for the device token. Remote control is loopback VNC →
-websockify → Cloudflare Tunnel. Full contracts: `labkiosk-core`.
+an organization's enrollment key for the device token. An installed disk's agent reports what each
+boot did with its system image (`POST /api/devices/boot-report`), shown under Settings → Errors &
+Warnings. Remote control is loopback VNC → websockify → Cloudflare Tunnel. Full contracts:
+`labkiosk-core`.
 
 ## 2. Invariants (zero exceptions)
 
@@ -104,7 +107,8 @@ pnpm --prefix cloudflare-control test
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests

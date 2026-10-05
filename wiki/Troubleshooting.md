@@ -55,7 +55,7 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 | A Chromium policy rule is silently ignored | An invalid pattern like `http://localhost:*` or `127.0.0.1:*` | Use the bare host: `localhost`, `127.0.0.1`, `host.containers.internal`. Omitting the port matches all ports |
 | A policy key you added has vanished | It was added to only one of the two consumers of the policy base | Edit `usr/share/labkiosk/chromium-policy-base.json`, never the generated file; verify with `generate-chromium-policy.py --check` |
 | Black screen on boot | `quiet loglevel=3` suppressed boot logs and PAM autologin was locked | `consoleblank=0` instead, `passwd -d kiosk`, pre-seed live-config markers |
-| Boots to a GRUB password prompt every time | `set superusers` present with no `--unrestricted` entry | `--unrestricted` must stay unconditional in `02-security.hook.chroot` |
+| Boots to a GRUB password prompt every time | `set superusers` present with no `--unrestricted` entry | `--unrestricted` must stay unconditional in `02-security.hook.chroot` and on every entry of `usr/share/labkiosk/boot/grub.cfg` |
 | `mute` does nothing | `alsa-utils` missing from the image | It is in `kiosk.list.chroot`; a drifted variant image caused this once |
 | Remote shutdown accepted but nothing happens | The polkit power rule is missing; the agent runs as `kiosk` | `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants exactly reboot and power-off |
 
@@ -65,13 +65,19 @@ Symptoms, root causes, and fixes, grouped by where the problem shows up. Nearly 
 
 | Symptom | Root cause | Fix |
 | :--- | :--- | :--- |
-| `rsync: delete_file: rmdir(boot/efi) failed: Device or resource busy (16)` | The ESP was mounted at `/boot/efi` before `rsync --delete` ran | Mount only `part_root` during `rsync`; drop `--delete`; mount the ESP afterwards |
+| `rsync: delete_file: rmdir(boot/efi) failed: Device or resource busy (16)` | An older installer mounted the ESP at `/boot/efi` before `rsync --delete` ran | Install from a current ISO: the installer no longer copies a root filesystem with `rsync`, it copies the system image into the image store and mounts ROOT, ESP and DATA at three separate directories |
+| A disk is not offered by the installer | It is under 7 GiB, the minimum that holds two system images (a drive sold as 8 GB qualifies) | Use a larger disk |
+| The installer reports a missing system image or `grub.cfg` | It was not started from the Lab Kiosk live medium, so `live/{vmlinuz,initrd.img,filesystem.squashfs}`, `/usr/share/labkiosk/version` or the `grub.cfg` template is missing | Boot the ISO and install from there; nothing is erased before these are found |
 | No candidate internal drives detected | The installer printed a log line to `sys.stdout`, corrupting the JSON the agent parses | All logging goes to `file=sys.stderr`; stdout is JSON only |
 | The installer offers the USB it booted from | `--list-disks` recorded `removable` but never filtered on the live medium | `live_medium_disks()` excludes it when listing *and* again before `wipefs` |
 | parted aborts on the ROOT or DATA partition | Negative offsets (`-513MiB`) parsed as bundled options | Pass `--` before them |
 | Legacy BIOS will not boot the installed GPT disk | No BIOS Boot Partition for GRUB to embed `core.img` | Partition 1: `bios_grub`, 1–2 MiB, `set 1 bios_grub on` |
 | UEFI boot entry missing after a reboot | Firmware lost NVRAM boot variables | `grub-install --target=x86_64-efi --removable` also runs, creating `/boot/efi/EFI/BOOT/BOOTX64.EFI` |
-| Every installed machine shares a machine ID | `/etc/machine-id` was truncated to a newline, not to empty | It must be a genuinely **empty** file — that is the marker systemd replaces |
+| Every installed machine shares a machine ID | `/etc/machine-id` was truncated to a newline, not to empty | It must be a genuinely **empty** file — that is the marker systemd replaces. The lockdown hook now ships it empty in the image itself, since an installed disk boots that very squashfs |
+| An installed workstation is back on its previous version after an update | The new image got its one try and failed it: it did not boot (a panic reboots after 10 s), or the agent and the browser did not stay up for a minute within the 10-minute health window, so `labkiosk-boot-ok.service` rebooted into the old image | Settings → **Errors & Warnings** lists the failed or rolled-back image. The workstation is running the last good image; fix the image before giving it another try |
+| An installed workstation booted an image other than `current`, reported as a fallback | `current` in `boot/grub/grubenv` names an image that is missing or incomplete, so GRUB booted `previous` or any complete image | Listed as a warning in Errors & Warnings. Reinstall, or mount `LABKIOSK_ROOT` from another system and check `images/` and `grubenv` |
+| An installed workstation stops at *"Please remove the live-medium … press ENTER"* on every reboot | It is booting the USB stick rather than its disk (the firmware boot order still prefers USB), or the disk's `grub.cfg` is not the shipped template and lacks `noeject` / `labkiosk.installed=1` | Remove the stick and make the internal drive the first boot target. The installed menu must be `usr/share/labkiosk/boot/grub.cfg` verbatim |
+| Enrolment and Wi-Fi forgotten after a reboot, and the boot log says *"no valid labkiosk.data=<uuid> on the kernel command line"* | `boot/grub/labkiosk-data.cfg` on `LABKIOSK_ROOT` is missing or damaged, or the data partition was reformatted and its UUID changed. `/etc/labkiosk` is mounted only by that UUID, never by label, so it stays unmounted and `persistentStorage` is `false` | Reinstall from a current ISO, or mount `LABKIOSK_ROOT` from another system and write `set data_uuid="<uuid>"` (from `blkid` of the `LABKIOSK_DATA` partition) to `boot/grub/labkiosk-data.cfg` |
 | Installing fails with `'en-US' is not a language tag` | `labkiosk-localization` anchored its language-tag check with `\\Z` in a raw string, which no tag can match | Fixed; rebuild the ISO |
 
 ---
@@ -129,7 +135,9 @@ pnpm --prefix cloudflare-control test
 # Client syntax
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 python3 distro-builder/tools/generate-chromium-policy.py --check
@@ -139,10 +147,9 @@ docker exec labkiosk-client-01 tail -n 50 /tmp/lab-agent.log
 docker exec -e DISPLAY=:0 labkiosk-client-01 scrot -o /tmp/screen.png
 docker cp labkiosk-client-01:/tmp/screen.png .
 
-# On a real workstation
-systemctl status cloudflared-kiosk
-cat /tmp/lab-agent.log
-cat /etc/chromium/policies/managed/policies.json
+# A real workstation has no shell (every getty is masked, no SSH): read the agent log in the
+# setup wizard's Agent Log & Diagnostics. The same checks inside the simulator:
+docker exec labkiosk-client-01 cat /etc/chromium/policies/managed/policies.json
 ```
 
 ---
@@ -151,7 +158,7 @@ cat /etc/chromium/policies/managed/policies.json
 
 1. Read the agent log — it is the single most informative artefact on the client side.
 2. Take a screenshot. A log line proving the agent ran does not prove the user saw anything.
-3. Check the organization's audit log for what actually changed and who changed it.
+3. Check the organization's audit log for what actually changed and who changed it, and Settings → **Errors & Warnings** for failed boots and rollbacks reported by installed workstations.
 4. Search existing [issues](https://github.com/akbhoi/labkiosk/issues), then open one with the ISO or worker version, the platform, and the exact error.
 
 **Do not open a public issue for a security vulnerability.** → [Security Model](Security-Model#reporting-a-vulnerability)

@@ -126,6 +126,13 @@
 			"class_name": "CustomHostnameWorkflow"
 		}
 	],
+	// Optional: automatic bug reports (src/bug_reports.ts). Workers AI drafts the
+	// title and summary of each GitHub issue. The feature stays unavailable to
+	// organizations until GITHUB_ISSUES_TOKEN (secret) and GITHUB_ISSUES_REPO
+	// (variable, "owner/repo") are set as well -- see docs/DEPLOYMENT.md.
+	"ai": {
+		"binding": "AI"
+	},
 	// Every invocation used to be logged; a tenth is plenty to debug with.
 	"observability": {
 		"enabled": true,

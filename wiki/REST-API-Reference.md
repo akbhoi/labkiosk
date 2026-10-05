@@ -18,8 +18,8 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
 | **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Operator Lab Dashboard, Super Admin console |
-| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/telemetry` |
-| **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, sign-in, registration, user portal, enrolment, health probe |
+| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry` and `/api/devices/boot-report` |
+| **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
 Session tokens are random 32-byte hex strings; only their SHA-256 hash is stored in D1. Device tokens are handled the same way — the plaintext token exists only on the workstation that was issued it.
 
@@ -30,9 +30,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Guard | Rejects with | Applies to |
 | :--- | :--- | :--- |
 | `resolveTenant()` | `404` | every tenant-scoped route |
-| `requireTenantAdmin()` | `401` anonymous, `403` wrong tenant | all `/api/settings/*`, `/api/clients*`, `/api/command`, `/api/whitelist`, `/api/audit-logs`, mutating `/api/portal-sites*` and `/api/broadcast-presets*` |
+| `requireTenantAdmin()` | `401` anonymous, `400` no organization, `403` wrong tenant (and a super admin outside its own demos) | `GET /api/broadcast-presets`, `GET /api/whitelist`, the `/admin` pages |
+| `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*`, `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
 | `requireSuperAdmin()` | `401` / `403` | all `/api/super/*` |
-| `requireDevice()` | `401` | `/api/telemetry` |
+| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report` |
 | `rejectCrossSiteMutation()` | `403` | every cookie-authenticated `POST`/`DELETE` under `/api/` |
 
 ### Rate limiting
@@ -45,7 +46,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 - **Thumbnails:** capped at 256 KB. Anything larger, or not prefixed `data:image/jpeg;base64,` or `data:image/png;base64,`, is dropped server-side. The agent drops oversized frames before sending, so the heartbeat still lands.
 - **Lock messages:** truncated to 280 characters.
 - **VNC passwords:** truncated to 64 characters (x11vnc itself uses only the first 8 — see [Remote Control](Remote-Control#why-eight-characters)).
-- **Client identifiers:** must match `^[A-Z0-9][A-Z0-9_-]{0,62}$`.
+- **Client identifiers:** must match `^[A-Z0-9][A-Z0-9_-]{0,63}$` (enrolment in `index.ts`, the hub in `org_hub.ts`). The agent is stricter, `{0,62}`, so a wizard-chosen id always passes.
 - **URLs:** every navigable URL passes `safeHttpUrl()`, which accepts only `http:`/`https:` and prepends `https://` to scheme-less domains.
 
 ---
@@ -94,6 +95,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/settings/enrollment-key` | `GET` `POST` | View or rotate the enrollment key |
 | `/api/settings/custom-domain` | `POST` `DELETE` | Request or disconnect a custom domain |
 | `/api/audit-logs` | `GET` | Paginated organization audit log |
+| `/api/workstation-issues` | `GET` | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, with each one's bug report state; plus the organization's automatic bug report settings (requires `settings`) |
+| `/api/settings/bug-reports` | `POST` | Opt in to or out of automatic, redacted GitHub bug reports; turning them on accepts the current terms version (requires `settings`) |
 
 ### Device
 
@@ -101,6 +104,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | :--- | :--- | :--- |
 | `/api/devices/ws` | `GET` (WebSocket) | The control channel: status and frames up; configuration, commands and frame requests down |
 | `/api/telemetry` | `POST` | The HTTP fallback: a three-second heartbeat carrying the same |
+| `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
 
 ### Super admin
 
@@ -124,6 +128,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/admin` | Operator Lab Dashboard |
 | `/super` | Super Admin Master Console |
 | `/login`, `/register`, `/contact` | Landing-page sections |
+| `/privacy`, `/terms` | Privacy Policy and Terms of Service |
+| `/terms/bug-reports` | The Automatic Bug Report Terms (public) |
 | `/download`, `/iso` | Redirect to `ISO_DOWNLOAD_URL` |
 
 ---
@@ -256,6 +262,64 @@ There is **no `currentUrl` key and no `metrics` object.** The agent collects no 
 | `broadcastUrl` / `broadcastEpoch` | The authoritative synchronised page. The epoch is a monotonic marker letting a workstation distinguish a new broadcast from a replayed one. |
 
 **`403`** if the organization is not `active` — a suspended organization's workstations stop receiving commands and policy.
+
+---
+
+### `POST /api/devices/boot-report`
+
+What an installed workstation's last boot did with its system image, as `labkiosk-boot-slots check` recorded it in `/run/labkiosk-update/status.json`. The agent sends only the outcomes worth an administrator's attention; the latest is kept on the workstation's row (`client_devices.image_version`, `update_state`, `update_error`, `update_state_at`). A failure, rollback, fallback or error is also listed in `workstation_issues` (Settings → Errors & Warnings) as `update_failed`, `update_rolled_back`, `boot_error` (severity `error`) or `boot_fallback` (`warning`). None of it goes to the audit log, which records what people did.
+
+**Access:** `Authorization: Bearer <deviceToken>`; the token decides the organization and the workstation.
+
+**Request:** `state` (`installed` | `failed` | `rolled-back` | `fallback` | `error`), `version` (the image running), `at` (when the workstation recorded it, Unix seconds, within the last 7 days); optional `previous`, `failed` (release versions) and `error` (text, cut to 300 characters).
+
+```json
+{ "state": "rolled-back", "version": "2.5.1", "failed": "2.6.0", "at": 1791100000 }
+```
+
+**`200 OK`** → `{ "status": "ok", "recorded": true }`; `recorded: false` for a report the workstation already sent (or one less than 60 s after the last). **`400`** malformed, not sent again. **`409`** the workstation has not checked in yet, sent again later.
+
+---
+
+### `GET /api/workstation-issues`
+
+Errors and warnings the organization's workstations reported, newest first (`?limit=`, default 100, at most 200; rows older than 90 days are deleted by the hourly cron).
+
+**Access:** organization admin or staff with the `settings` permission.
+
+Each issue carries `id`, `client_id`, `severity`, `kind`, `image_version`, `details`, `occurred_at`, `created_at`, `report_state` (`none` | `pending` | `sent`), `report_match` (`new` | `existing`), and, once sent, `issue_url`, `issue_number`, `report_status` (`open` | `in_progress` | `pr_open` | `resolved` | `closed`) and `pr_url`. The response also carries the organization's opt-in state:
+
+```json
+{
+  "issues": [ … ],
+  "bugReports": {
+    "enabled": false,
+    "available": true,
+    "repository": "owner/repo",
+    "termsVersion": "2026-10-04",
+    "acceptedTermsVersion": null,
+    "termsAcceptedAt": null
+  }
+}
+```
+
+`available` is false, and `repository` null, unless the platform has set up the `AI` binding, `GITHUB_ISSUES_TOKEN` and a valid `GITHUB_ISSUES_REPO`.
+
+### `POST /api/settings/bug-reports`
+
+Opts the organization in to or out of automatic, redacted GitHub bug reports. Turning them on accepts the current Automatic Bug Report Terms (`/terms/bug-reports`), by version.
+
+**Access:** organization admin or staff with the `settings` permission.
+
+```json
+{ "enabled": true, "acceptTerms": "2026-10-04" }
+```
+
+```json
+{ "enabled": false }
+```
+
+**`200 OK`** → `{ "status": "ok", "enabled": true }`, with an audit-log row (`settings.bug_reports`). **`400`** when `enabled` is not a boolean, or when turning on without the current terms version. **`409`** when the platform has not set automatic bug reports up.
 
 ---
 
@@ -471,7 +535,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | `/api/network/configure` | `POST` | Configures and connects interface (Ethernet/Wi-Fi) with IPv4/IPv6 mode (`auto`, `custom_dns`, `manual`), DNS, and optional HTTP proxy. |
 | `/api/network/test` | `POST` | Probes DNS resolution and internet route reachability (`1.1.1.1:53` / `8.8.8.8:53`). |
 | `/api/log` | `GET` | Tail of `/tmp/lab-agent.log` (max 64 KB, `text/plain`). Needs the `X-LabKiosk-Admin` token on an installed workstation. Shown by the wizard's **Agent Log & Diagnostics** panel. |
-| `/api/admin/verify` | `POST` | Verifies administrator password against the GRUB PBKDF2 hash (`/etc/grub.d/01_labkiosk_password`) and returns a 10-minute token for `/api/network/configure` (header `X-LabKiosk-Admin`, required on installed systems). Throttled: 5 failures lock it for 60 s. |
+| `/api/admin/verify` | `POST` | Verifies administrator password against the GRUB PBKDF2 hash (`/run/live/medium/boot/grub/labkiosk-password.cfg`: `boot/grub` on the installed disk's `LABKIOSK_ROOT`, outside every system image) and returns a 10-minute token for `/api/network/configure` (header `X-LabKiosk-Admin`, required on installed systems). Throttled: 5 failures lock it for 60 s. |
 | `/api/install/disks` | `GET` | Candidate target disks. Returns `[]` when not a live session. |
 | `/api/install/status` | `GET` | Installation state and progress percentage. |
 | `/api/install` | `POST` | Starts the disk install. `400` when the system is already installed. |
@@ -480,7 +544,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 
 `POST /api/install` takes `targetDisk` (re-validated against `TARGET_DISK_PATTERN`) and an optional `grubPasswordHash` (re-validated against `GRUB_PBKDF2_PATTERN`). Only a *digest* is accepted: the wizard derives PBKDF2 in the browser with WebCrypto, so the plaintext boot-menu password never crosses the agent's API, never appears in a process argument, and is never written to disk.
 
-`POST /api/network/configure` manages NetworkManager connections. On installed machines, connection keyfiles are persisted in `LABKIOSK_DATA` (`/etc/labkiosk/system-connections/`) and bind-mounted to `/etc/NetworkManager/system-connections` via `/etc/fstab` so configurations persist across `overlayroot="tmpfs"` reboots.
+`POST /api/network/configure` manages NetworkManager connections. On installed machines, connection keyfiles are persisted in `LABKIOSK_DATA` (`/etc/labkiosk/system-connections/`) and bind-mounted to `/etc/NetworkManager/system-connections` by a mount unit in the image (no `/etc/fstab` is written) so configurations persist across `overlayroot="tmpfs"` reboots.
 
 → [Client Agent](Client-Agent) · [Disk Installer](Disk-Installer)
 

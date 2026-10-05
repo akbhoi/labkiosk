@@ -37,7 +37,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 | Guide | Description | Path |
 | :--- | :--- | :--- |
 | **Cloudflare Control Plane** | Edge SaaS worker architecture, native Web Crypto PBKDF2 authentication, D1 schema migrations, and local dev server. | [`cloudflare-control/README.md`](cloudflare-control/README.md) |
-| **Kiosk Distro Builder** | Debian 12 live-build image, automated disk installer, 100% RAM overlay (`overlayroot="tmpfs"`), hybrid BIOS/UEFI bootloaders, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
+| **Kiosk Distro Builder** | Debian 12 live-build image, image-store disk installer with one-try boot and automatic rollback, 100% RAM overlay (`overlayroot="tmpfs"`), hybrid BIOS/UEFI bootloaders, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
 | **Local Workstation Simulator** | Docker-based workstation simulator with embedded HTML5 noVNC display for rapid testing without physical thin clients. | [`docker-test/README.md`](docker-test/README.md) |
 | **Production Deployment** | Step-by-step production manual: Cloudflare D1 provisioning, remote migrations, secrets, wildcard DNS, and automated CI/CD. | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | **Remote Control & Tunnels** | Zero-exposure remote desktop architecture via loopback `websockify`, per-boot ephemeral passwords, and Cloudflare Tunnels. | [`docs/REMOTE_CONTROL.md`](docs/REMOTE_CONTROL.md) |
@@ -105,6 +105,8 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 - **Native Top-Level Navigation & Coordinated Reloads**: Chromium runs in native kiosk mode without `<iframe>` embedding. Remote operator commands such as `reload` are dispatched through an event-driven `reloadEpoch` handshake between the workstation agent (`agent.py`) and the browser extension (`content.js`), verified via `sessionStorage` to prevent infinite reload loops without relying on synthetic key injection (`xdotool`).
 - **International Keyboard & Multilingual Support**: Workstation lockdown removes OS-level shortcut keys while `content.js` intercepts unauthorized keystrokes. Crucially, `content.js` respects `AltGr` (`event.getModifierState("AltGraph")`) and dead keys (`Dead`), allowing international users to type accented characters, `@`, `€`, and language-specific glyphs seamlessly. Dynamic RTL/LTR layout direction is supported across the wizard and kiosk bar.
 - **Query-Aware Navigation**: Kiosk URL normalization strictly preserves search queries (`u.search`), ensuring web apps with room IDs or user session parameters (e.g. `?room=101&user=demo`) work properly and are not incorrectly detected as root broadcast URLs.
+- **Image Store, One-Try Boot & Rollback**: An installed disk keeps whole system images in `images/<version>/` on `LABKIOSK_ROOT` and boots them through live-boot. A new image gets exactly one try (`labkiosk-boot-slots`, GRUB `grubenv`); if the agent and browser do not stay up, the workstation reboots into the image it ran before. This is phase 1 of over-the-air updates ([`docs/OTA_UPDATES.md`](docs/OTA_UPDATES.md)); downloading, signing and approving updates are not implemented yet.
+- **Errors & Warnings and Optional Bug Reports**: Installed workstations report boot outcomes (`POST /api/devices/boot-report`), and failures appear in the console under **Settings → Errors & Warnings**. An organization can opt in, after accepting the Automatic Bug Report Terms, to having those problems filed as redacted GitHub issues; the feature is off for every organization until the deployment configures it ([`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)).
 - **Centralized Interface Catalogs (i18n)**: The Super Admin Console (`/super`) provides full management for global workstation interface catalogs (`/api/super/i18n`), allowing administrators to upload, inspect, and delete language packs served to unenrolled and enrolled kiosks alike.
 
 ---
@@ -153,7 +155,7 @@ The control plane includes a comprehensive integration suite covering the multi-
 # Strict TypeScript Typecheck (Worker runtime and Node test runner)
 pnpm --prefix cloudflare-control run typecheck
 
-# Automated Integration & Security Tests (60+ passing tests)
+# Automated Integration & Security Tests (168 passing tests)
 pnpm --prefix cloudflare-control test
 ```
 

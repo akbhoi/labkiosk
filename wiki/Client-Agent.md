@@ -42,7 +42,7 @@ docker exec labkiosk-client-01 tail -n 50 /tmp/lab-agent.log
 }
 ```
 
-**Where that file actually lives matters.** On live media it is in the RAM overlay and disappears at power-off — correct, because the workstation is meant to be installed rather than run from USB permanently. On an installed disk, `/etc/labkiosk` is a mount point for the `LABKIOSK_DATA` partition created by `labkiosk-install`, which is what makes a post-install enrolment persist. Without that partition, `overlayroot="tmpfs"` would discard the token on the next reboot.
+**Where that file actually lives matters.** On live media it is in the RAM overlay and disappears at power-off — correct, because the workstation is meant to be installed rather than run from USB permanently. On an installed disk, `/etc/labkiosk` is a mount point for the `LABKIOSK_DATA` partition created by `labkiosk-install` — mounted by `etc-labkiosk.mount`, which `labkiosk-data-generator` pins to the partition UUID GRUB passes as `labkiosk.data=`, never by label — which is what makes a post-install enrolment persist. Without that partition, `overlayroot="tmpfs"` would discard the token on the next reboot.
 
 Environment overrides, useful in the simulator:
 
@@ -149,7 +149,7 @@ The agent incorporates a full network management subsystem communicating with Ne
 
 ### 5. Administrator Verification (`/api/admin/verify`)
 
-Post-installation network management is locked behind `verify_admin_password()`. When `/etc/grub.d/01_labkiosk_password` exists, the agent parses the GRUB PBKDF2 line:
+Post-installation network management is locked behind `verify_admin_password()`. The digest is read from `labkiosk-password.cfg` in `/run/live/medium/boot/grub` — on an installed disk that is `boot/grub` on `LABKIOSK_ROOT`, outside every system image, which live-boot mounts there read-only; on the ISO it holds the build-time password, if one was pinned. When the file exists, the agent parses the GRUB PBKDF2 line:
 
 ```text
 password_pbkdf2 <user> grub.pbkdf2.sha512.<rounds>.<salt_hex>.<hash_hex>
@@ -230,8 +230,10 @@ Input is re-validated here rather than trusted from the caller, because `/etc/su
 
 | Signal | Meaning |
 | :--- | :--- |
-| `/etc/labkiosk-installed` exists | Installed drive |
-| `/run/live` exists, or `boot=live` in `/proc/cmdline` | Live installer |
+| `labkiosk.installed=1` on the kernel command line (or `/etc/labkiosk-installed`, on a disk installed before the image store) | Installed drive, checked first |
+| otherwise `/run/live` exists, or `boot=live` in `/proc/cmdline` | Live installer |
+
+Both of the latter are true on an installed disk as well, because it boots its system image through live-boot; only the installed boot menu passes `labkiosk.installed=1`.
 
 This drives two behaviours:
 
@@ -244,13 +246,27 @@ It also reports **`persistentStorage`**. That is false when `/etc/labkiosk` is n
 
 ---
 
+## Saved language and region
+
+An installed workstation boots a system image under a RAM overlay, so the timezone, keyboard, time server and generated locale are the image's defaults again at every boot, and an update replaces the image altogether. The image ships no `locales-all`: `apply_saved_localization()` re-applies the choice saved in `/etc/labkiosk/localization.json` on `LABKIOSK_DATA` at every start, through `labkiosk-localization`, which regenerates the locale when it is missing. A failure is logged and never stops the agent.
+
+---
+
+## Boot reports
+
+On an installed disk, `labkiosk-boot-slots check` (root, run by `labkiosk-boot-ok.service`) records what this boot did with its system image in `/run/labkiosk-update/status.json`. `boot_report_loop()` reads it — refusing a file not owned by root or over 4 KiB — and posts the outcomes worth an administrator's attention to `POST /api/devices/boot-report` with the device token: `installed`, `failed`, `rolled-back`, `fallback` and `error`. Routine boots are not sent.
+
+A report is retried every 30 s until the control plane answers it for good (`200`, or `400`/`404`, which are not resent); the Worker drops a report it already holds. The latest outcome is kept on the workstation's row, and a failure, rollback, fallback or error is listed under Settings → **Errors & Warnings** in the admin console.
+
+---
+
 ## Enrolment
 
 `enroll()` posts to `POST /api/devices/enroll` on the control plane and, on success, writes the config file, syncs the Chromium policy, and flags a browser restart. `validate_worker_url()` and `probe_worker_url()` check the target before anything is stored, so a typo in the subdomain fails loudly at the wizard instead of producing a workstation that silently never checks in.
 
 The server must be `https`. Plain `http` is accepted only for a local test server: `localhost`, a loopback address, the container gateways (`host.docker.internal`, `host.containers.internal`, `*.internal`, `*.local`), or a private IPv4 literal in `10.0.0.0/8`, `172.16.0.0/12` or `192.168.0.0/16` (the set the control plane treats as a dev host). That covers a test VM reaching `pnpm dev` on its host, e.g. `http://172.31.64.1:8787` over the Hyper-V Default Switch. Public, link-local (`169.254.x.x`) and IPv6 addresses, and any hostname, still need `https`, because the device token travels in every heartbeat.
 
-Re-enrolment is refused with `409` while a token is present. To move a workstation to another organization, decommission it from the admin console (`POST /api/clients/remove`) and reboot — on live media the config is gone with the RAM overlay; on an installed disk, clear `/etc/labkiosk/config.json`.
+Re-enrolment is refused with `409` while a token is present. To move a workstation to another organization, decommission it from the admin console (`POST /api/clients/remove`): the next refused heartbeat sends the screen to the wizard's re-enrolment form (`/setup#reenrol`), where registering with the new organization's key needs the administrator password on an installed disk. On live media a reboot also forgets the old configuration with the RAM overlay.
 
 ---
 

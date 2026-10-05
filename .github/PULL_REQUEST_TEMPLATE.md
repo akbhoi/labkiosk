@@ -29,7 +29,7 @@ Closes #(issue_number)
 
 ### If you added or changed an API route
 
-- [ ] It calls `requireTenantAdmin()`, `requireSuperAdmin()` or `requireDevice()` from `src/guard.ts`
+- [ ] It calls `requireTenantAdmin()`, `requireTenantPermission()`, `requireSuperAdmin()` or `requireDevice()` from `src/guard.ts`
 - [ ] It resolves its tenant through `resolveTenant()`, never by reading the host or query itself
 - [ ] A **negative test** covers it: anonymous access and, where relevant, cross-tenant access
 
@@ -55,5 +55,9 @@ Closes #(issue_number)
 - [ ] Extension changes keep the agent `fetch` in the service worker, not the content script
 - [ ] Telemetry contract changes (new fields the agent sends) are reflected in `/api/telemetry`,
       `docs/API.md`, and `AGENTS.md`
+- [ ] Installer or boot changes (`labkiosk-install`, `labkiosk-boot-slots`, `usr/share/labkiosk/boot/grub.cfg`)
+      keep one-try boot and rollback working: `distro-builder/tests/vm/boot-test.sh` (run by the ISO
+      build workflow) passes, and anything that must survive an update lives on `LABKIOSK_DATA` or in
+      `boot/grub/`, never inside a system image
 - [ ] Verified in the Docker simulator with a **screenshot** — a log line saying the command ran is
       not evidence that anything appeared on screen — and described how in the Description above

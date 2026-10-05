@@ -27,6 +27,7 @@ The simulator closely mirrors the production live Debian 12 kiosk environment (`
 1. **Gateway Binding:** `websockify` binds to `0.0.0.0:6080` *inside* the container so you can view the simulated display, but the port is published only on the host's `127.0.0.1`. In the physical ISO, `websockify` binds strictly to `127.0.0.1:6080` and is reachable only through a per-workstation Cloudflare Tunnel.
 2. **Sandboxing:** the same as the real image — Chromium runs sandboxed as the unprivileged `kiosk` user. `--no-sandbox` is used only if someone starts the container as root, and the entrypoint warns when that happens.
 3. **Loopback Preservation:** The agent's local API (`127.0.0.1:8888`) remains bound to loopback inside the container, exactly as on physical hardware. You drive the setup wizard from the simulated noVNC screen rather than your host browser.
+4. **No Installed Disk:** the container never boots through GRUB, so it has no image store, no one-try boot or rollback (`labkiosk-boot-slots`), and no `/run/labkiosk-update/status.json`; the agent therefore sends no boot reports and the console's **Settings → Errors & Warnings** stays empty for it. Those paths are tested by `distro-builder/tests/vm/boot-test.sh` (QEMU with KVM), which CI runs after every ISO build.
 
 ---
 

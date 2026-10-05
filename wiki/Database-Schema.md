@@ -15,7 +15,7 @@ This is the single most important rule when touching the database, and the test 
 
 Both must be changed together. `test/worker.test.ts` compares them and fails on drift with `Columns of "x" differ between SCHEMA_SQL and migrations/`.
 
-**Never edit an applied migration.** Add a new numbered file — `0006_feature.sql` — and mirror the change in `SCHEMA_SQL`.
+**Never edit an applied migration.** Add a new numbered file — `0019_feature.sql` — and mirror the change in `SCHEMA_SQL`.
 
 ```bash
 # Local
@@ -47,6 +47,10 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0012_unique_workstation_group_names.sql` | Unique index on `workstation_groups(tenant_id, name COLLATE NOCASE)`; merges existing duplicates into the oldest group first |
 | `0013_retire_demo_tenant.sql` | Deletes the single `demo` organization and all its rows (data only); the worker now creates `web-demo`, `local-demo` and `docker-demo` at startup |
 | `0014_org_hub_live_state.sql` | Drops `commands`, `command_deliveries` and `client_devices.thumbnail` (live state moved to OrgHub); adds `tenants.online_workstations`, `custom_hostname_id`, `custom_hostname_status` |
+| `0015_workstation_boot_reports.sql` | `client_devices.image_version`, `update_state`, `update_error`, `update_state_at` (boot outcomes from `POST /api/devices/boot-report`) |
+| `0016_workstation_issues.sql` | `workstation_issues`: errors and warnings workstations report (Settings → Errors & Warnings), deleted after 90 days |
+| `0017_bug_reports.sql` | `tenants.bug_reports_enabled`, `workstation_issues.report_state` and `bug_signature`, and the platform table `bug_reports`: opt-in automatic GitHub bug reports |
+| `0018_bug_report_triage.sql` | `tenants.bug_reports_terms_version` / `_accepted_at`, `bug_reports.title`, `problem`, `status`, `pr_url`, `status_checked_at`, `workstation_issues.report_match` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -94,6 +98,8 @@ One row per organization. This table has accumulated the most columns because it
 | `custom_hostname_id` | TEXT | The Cloudflare for SaaS custom hostname id, once created |
 | `custom_hostname_status` | TEXT | `none` \| `pending` \| `active` \| `failed` \| `local` (no provisioning in local development) |
 | `online_workstations` | INTEGER | Kept by the organization's OrgHub, so the super admin list needs no query per organization |
+| `bug_reports_enabled` | INTEGER | `1` when the organization opted in to automatic bug reports; default `0` |
+| `bug_reports_terms_version` / `bug_reports_terms_accepted_at` | TEXT / INTEGER | The Automatic Bug Report Terms version accepted, and when; reports are sent only under the current version |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
@@ -150,6 +156,49 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 | `broadcast_url` | TEXT | Last broadcast addressed to this workstation alone; NULL with a non-zero epoch records a reset to the portal |
 | `broadcast_epoch` | INTEGER | Orders the above against `tenants.broadcast_epoch`; the newer wins |
 | `created_at` / `updated_at` | INTEGER | |
+| `image_version` | TEXT | System image the last boot report named (installed disks) |
+| `update_state` | TEXT | Last boot outcome reported: `installed`, `failed`, `rolled-back`, `fallback` or `error` |
+| `update_error` | TEXT | The reason, for `error` |
+| `update_state_at` | INTEGER | When the workstation recorded it; `0` = never. A report less than 60 s newer is ignored |
+
+### `workstation_issues`
+
+Errors and warnings workstations report, kept apart from `audit_logs` (which records what people
+did). Fed by `POST /api/devices/boot-report`; read by Settings → Errors & Warnings; the hourly cron
+deletes rows older than 90 days.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT PK | |
+| `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
+| `client_id` | TEXT | The workstation, from its device token |
+| `severity` | TEXT | `error` or `warning` (CHECK) |
+| `kind` | TEXT | `update_failed`, `update_rolled_back`, `boot_error`, `boot_fallback` |
+| `image_version` | TEXT | The image the workstation was running |
+| `details` | TEXT | One readable line; an `error`'s reason, cut to 300 characters |
+| `occurred_at` | INTEGER | When the workstation recorded it (its clock) |
+| `created_at` | INTEGER | When the Worker received it; indexed with `tenant_id` |
+| `report_state` | TEXT | `none`, `pending` (recorded while the organization had opted in) or `sent` (CHECK) |
+| `bug_signature` | TEXT | → `bug_reports.signature` once sent |
+| `report_match` | TEXT | `new` (opened its issue) or `existing` (linked to one already filed) (CHECK) |
+
+### `bug_reports`
+
+One row per distinct redacted problem (signature); several signatures may share one GitHub issue
+when the reasoning model matched them. Shared by every organization that reports them, with no
+organization or workstation data (`src/bug_reports.ts`).
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `signature` | TEXT PK | SHA-256 of the kind, image version and redacted problem text |
+| `kind` | TEXT | As in `workstation_issues` |
+| `image_version` | TEXT | |
+| `issue_number` / `issue_url` | INTEGER / TEXT | The GitHub issue |
+| `created_at` | INTEGER | When it was filed |
+| `title` / `problem` | TEXT | The issue title and redacted problem text the model compares new problems with |
+| `status` | TEXT | `open`, `in_progress`, `pr_open`, `resolved`, `closed` (CHECK), read back from GitHub; indexed by `issue_number` |
+| `pr_url` | TEXT | The pull request that references the issue |
+| `status_checked_at` | INTEGER | When the status was last read |
 
 ### `device_tokens`
 
@@ -249,6 +298,8 @@ idx_device_tokens_tenant           device_tokens(tenant_id, client_id)
 idx_tenant_whitelist_tenant        tenant_whitelist(tenant_id)
 idx_broadcast_presets_tenant       broadcast_presets(tenant_id)
 idx_audit_logs_tenant              audit_logs(tenant_id, created_at)
+idx_workstation_issues_tenant      workstation_issues(tenant_id, created_at)
+idx_bug_reports_issue              bug_reports(issue_number)   -- platform table, no tenant_id
 ```
 
 Every index leads with `tenant_id` wherever the table is tenant-scoped, matching the query shape that `db.ts` always uses.
@@ -257,7 +308,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0006_<description>.sql`. Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0019_<description>.sql` (the next number after `0018`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

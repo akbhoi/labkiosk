@@ -13,9 +13,9 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | Approve or reject organization registrations | Anyone can register; nothing works until a human approves |
 | Suspend or reactivate an organization | The platform's kill switch |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
-| Act on any tenant via `?tenant=` | Support, without an organization sharing credentials |
+| Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 
-A super-admin session may use `?tenant=<slug>` and `X-Tenant` on any host — one of only four cases where the `Host` header is not the sole authority. → [Architecture Overview](Architecture-Overview#tenant-resolution)
+A super-admin session may use `?tenant=<slug>` and `X-Tenant` on any host — one of only four cases where the `Host` header is not the sole authority — but `requireTenantAdmin()` then lets it into an organization's console or API **only** for one of the three demos it owns (`isDemoTenant()` in `src/demo.ts`: a demo slug *and* owned by the super admin). Any other organization answers `403` ("Platform administrators cannot access individual organization consoles"), and its `/admin` page explains the privacy isolation and points to `/super`. Opening `/admin/*` with no organization named lands in `local-demo` on a development host and `web-demo` otherwise. The demo slugs, and the retired `demo`, cannot be registered by an organization. → [Architecture Overview](Architecture-Overview#tenant-resolution)
 
 A super admin cannot read organization passwords. They are PBKDF2 digests with per-user salts.
 
@@ -134,10 +134,23 @@ An organization can request a different subdomain (`POST /api/settings/subdomain
 | :--- | :--- | :--- |
 | `SUPER_ADMIN_EMAIL` | `wrangler secret put` | Changing it **migrates** the super-admin account to the new address |
 | `SUPER_ADMIN_PASSWORD` | `wrangler secret put` | Bootstrap credential; rotate it from inside `/super` afterwards |
+| `GITHUB_ISSUES_TOKEN` | `wrangler secret put` | Optional. Fine-grained GitHub token for automatic bug reports (below) |
 
 Once signed in, use the authenticated password-change form rather than the secret — it verifies the current password and revokes the account's other sessions.
 
 **Never put these in a `vars` block in `wrangler.jsonc`.** A `vars` block overrides Cloudflare dashboard variables on every deploy. → [Configuration Reference](Configuration-Reference)
+
+### Automatic bug reports
+
+Organizations can opt in, under Settings → Errors & Warnings, to having their workstations' errors and warnings filed as redacted GitHub issues, after accepting the Automatic Bug Report Terms (`/terms/bug-reports`). The option stays unavailable to every organization until all three are set:
+
+| Setting | What it is |
+| :--- | :--- |
+| `AI` | Workers AI binding, already in `wrangler.jsonc` (reasoning model `@cf/openai/gpt-oss-120b`) |
+| `GITHUB_ISSUES_TOKEN` | Secret: a fine-grained token for one repository with **Issues: Read and write** (and **Pull requests: Read** for a private repository) |
+| `GITHUB_ISSUES_REPO` | Dashboard variable: the repository issues are filed in, `owner/repo` |
+
+Issues filed in a public repository are public; each organization's administrator sees the repository name before turning the option on. The terms are versioned by `BUG_REPORT_TERMS_VERSION` in `src/bug_reports.ts`: publishing a new version pauses every organization's reports until its administrator accepts it. → [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) for creating the token.
 
 ---
 
@@ -154,10 +167,12 @@ These can be neither registered nor resolved as an organization. Add one to `RES
 A cron trigger (`"0 * * * *"` in `wrangler.jsonc`) calls the worker's `scheduled()` handler at the top of every hour:
 
 - Purges expired sessions.
-- Deletes delivered and acknowledged commands.
 - Cleans stale rate-limit and sign-in throttle rows.
+- Moves audit entries older than 180 days to the `labkiosk-audit-archive` R2 bucket.
+- Deletes workstation errors and warnings older than 90 days.
+- Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub writes a run), and reads back the status of up to 10 filed issues.
 
-Command rows are short-lived by design and are also purged opportunistically on dispatch, so the queue does not depend on the cron alone.
+Commands are not in D1: each organization's OrgHub expires its own after 60 seconds.
 
 ---
 
@@ -167,8 +182,9 @@ Command rows are short-lived by design and are also purged opportunistically on 
 | :--- | :--- |
 | Worker is serving | `GET /api/status` on the apex |
 | Migrations are current | The worker refuses to serve otherwise — a failure to boot after deploy usually means this |
-| An organization's fleet is healthy | Sign in with `?tenant=<slug>` and look at `last_seen` across the grid |
+| An organization's fleet is healthy | Ask its administrator: a super admin cannot open a real organization's console. The demos open with `?tenant=web-demo` (or `local-demo`, `docker-demo`) |
 | Something changed unexpectedly | The organization's audit log |
+| A workstation's system update failed or rolled back | The organization's Settings → Errors & Warnings (not the audit log) |
 
 ### Two failure modes worth recognising
 

@@ -107,14 +107,14 @@ The Python agent inspects `/etc/cloudflared/config.yml`, parses the first `hostn
 
 ### 4. Provisioning Strategies for Production Labs
 
-Since the live image boots from a read-only USB or network boot target:
+Since the live image boots from a read-only USB or network boot target, and an installed disk boots a copy of the same read-only system image (`images/<version>/` on `LABKIOSK_ROOT`):
 
-- **Strategy A: Per-Lab Site Overlay:** Build a site-specific ISO or USB drive with `/etc/cloudflared/` pre-populated for that lab's machines.
-- **Strategy B: Persistence Partition:** Create a second, small ext4 partition on the bootable USB drive labeled `labkiosk-data` to persist `/etc/cloudflared/`.
+- **Strategy A: Per-Lab Site Overlay:** Build a site-specific ISO or USB drive with `/etc/cloudflared/` pre-populated for that lab's machines. Installing from that ISO copies its system image, so the configuration carries onto the installed disk.
+- **Strategy B: Persistence Partition:** Not supported by the stock image. Lab Kiosk mounts no partition by label: a live session mounts none, and an installed workstation mounts only its own `LABKIOSK_DATA`, by the UUID GRUB passes as `labkiosk.data=`, at `/etc/labkiosk`. Persisting `/etc/cloudflared/` there needs an image change (a bind mount from the data partition, like the NetworkManager profiles).
 - **Strategy C: Dynamic Tunnel Enrolment:** Script the first-boot onboarding to fetch tunnel tokens securely using an automated organization deployment secret.
 
 > [!NOTE]
-> Without a Cloudflare Tunnel configured, all other operator features function normally: live 3-second thumbnails, screen freeze lock curtains, broadcast URLs, browser reload, and remote shutdown. Only the interactive remote control session requires the tunnel.
+> Without a Cloudflare Tunnel configured, all other operator features function normally: live screen thumbnails, screen freeze lock curtains, broadcast URLs, browser reload, and remote shutdown. Only the interactive remote control session requires the tunnel.
 
 ---
 

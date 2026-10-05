@@ -28,6 +28,16 @@ import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
 import { getDatabase } from "../src/database";
+import { purgeOldWorkstationIssues } from "../src/boot_report";
+import {
+  BUG_REPORT_AI_MODEL,
+  BUG_REPORT_TERMS_VERSION,
+  issueBody,
+  modelText,
+  processBugReports,
+  readIssueStatus,
+  redactProblemText
+} from "../src/bug_reports";
 import { HUB_PING, HUB_PONG } from "../src/org_hub";
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
@@ -540,7 +550,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/?tenant=greenwood", undefined, false],
       ["/?tenant=no-such-organization", undefined, false],
       ["/privacy", undefined, false],
-      ["/terms", undefined, false]
+      ["/terms", undefined, false],
+      ["/terms/bug-reports", undefined, false]
     ];
     for (const [page, cookie, hasToggle] of pages) {
       const html = await (await call(page, cookie ? { cookie } : {})).text();
@@ -651,6 +662,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/home?tenant=greenwood", undefined],
       ["/privacy", undefined],
       ["/terms", undefined],
+      ["/terms/bug-reports", undefined],
       ["/admin/workstations?tenant=greenwood", orgSessionCookie],
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
@@ -1037,6 +1049,482 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
     const thumb = data.clients["PC-01"].thumbnail;
     assert.ok(!thumb || thumb.length < 300 * 1024, "an oversized thumbnail must not be persisted");
+  });
+
+  // ------------------------------------------------------------ boot reports
+
+  const issuesOf = async (cookie: string, tenant: string) => {
+    const { res, data } = await callJson(`/api/workstation-issues?tenant=${tenant}`, { cookie });
+    assert.equal(res.status, 200);
+    return data.issues as Array<{ client_id: string; severity: string; kind: string; image_version: string; details: string }>;
+  };
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+  test("Refuses a boot report without a valid device token", async () => {
+    const report = { state: "rolled-back", version: "2.5.1", failed: "2.6.0", at: nowSeconds() };
+    assert.equal((await call("/api/devices/boot-report?tenant=greenwood", json(report))).status, 401);
+    const forged = await call("/api/devices/boot-report", { ...json(report), bearer: "f".repeat(64) });
+    assert.equal(forged.status, 401);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, 0);
+  });
+
+  test("Refuses a malformed boot report", async () => {
+    const at = nowSeconds();
+    const bad: unknown[] = [
+      [],
+      { state: "running", version: "2.5.1", at },
+      { state: "rolled-back", version: "2.5.1; rm -rf /", at },
+      { state: "rolled-back", version: "2.5.1", failed: "../../x", at },
+      { state: "error", version: "2.5.1", error: { nested: true }, at },
+      { state: "installed", version: "2.5.1", at: at + 3600 },
+      { state: "installed", version: "2.5.1", at: at - 8 * 86400 },
+      { state: "installed", version: "2.5.1", at: "soon" }
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/boot-report", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    const unreadable = await call("/api/devices/boot-report", { method: "POST", body: "{", bearer: deviceToken });
+    assert.equal(unreadable.status, 400);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, 0);
+  });
+
+  test("Records a rollback once, in the token's own organization", async () => {
+    const at = nowSeconds() - 600;
+    const report = {
+      state: "rolled-back",
+      version: "2.5.1",
+      failed: "2.6.0",
+      at,
+      // Ignored: the token decides the organization and the workstation.
+      tenant: "riverside",
+      clientId: "PC-EVIL"
+    };
+    const first = await callJson("/api/devices/boot-report", { ...json(report), bearer: deviceToken });
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.recorded, true);
+
+    // The agent re-sends after a lost reply or a restart in the same boot.
+    const again = await callJson("/api/devices/boot-report", { ...json(report), bearer: deviceToken });
+    assert.equal(again.res.status, 200);
+    assert.equal(again.data.recorded, false);
+    const soon = await callJson("/api/devices/boot-report", {
+      ...json({ ...report, at: at + 10 }),
+      bearer: deviceToken
+    });
+    assert.equal(soon.data.recorded, false, "reports closer together than a boot are dropped");
+
+    const issues = await issuesOf(orgSessionCookie, "greenwood");
+    assert.equal(issues.length, 1);
+    assert.deepEqual(
+      { ...issues[0], id: undefined, occurred_at: undefined, created_at: undefined },
+      {
+        id: undefined,
+        client_id: "PC-01",
+        severity: "error",
+        kind: "update_rolled_back",
+        image_version: "2.5.1",
+        details: "2.6.0 failed its first boot; back on 2.5.1.",
+        occurred_at: undefined,
+        created_at: undefined,
+        report_state: "none",
+        report_match: null,
+        issue_url: null,
+        issue_number: null,
+        report_status: null,
+        pr_url: null
+      }
+    );
+    assert.equal((await issuesOf(rivalSessionCookie, "riverside")).length, 0);
+    const { data: audit } = await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie });
+    assert.ok(
+      !audit.logs.some((entry: { action: string }) => entry.action.startsWith("workstation.")),
+      "workstation problems stay out of the audit log"
+    );
+
+    const row = await getDatabase(mockEnv)
+      .prepare("SELECT image_version, update_state, update_state_at FROM client_devices WHERE client_id = 'PC-01'")
+      .first<any>();
+    assert.deepEqual({ ...row }, { image_version: "2.5.1", update_state: "rolled-back", update_state_at: at });
+  });
+
+  test("Records a boot error with its reason, cleaned of control characters", async () => {
+    const res = await callJson("/api/devices/boot-report", {
+      ...json({
+        state: "error",
+        version: "2.5.1",
+        error: "could not record the update:\n[Errno 5] Input/output error\u0000" + "x".repeat(400),
+        at: nowSeconds()
+      }),
+      bearer: deviceToken
+    });
+    assert.equal(res.data.recorded, true);
+    const [latest] = await issuesOf(orgSessionCookie, "greenwood");
+    assert.equal(latest.kind, "boot_error");
+    assert.equal(latest.severity, "error");
+    assert.match(latest.details, /^could not record the update: \[Errno 5\] Input\/output error x+$/);
+    assert.ok(!/[\u0000-\u001f]/.test(latest.details));
+    assert.ok(latest.details.length <= 300, "the reason is capped");
+  });
+
+  test("Lists an installed update on the workstation but not as a problem", async () => {
+    const before = (await issuesOf(orgSessionCookie, "greenwood")).length;
+    const res = await callJson("/api/devices/boot-report", {
+      ...json({ state: "installed", version: "2.6.0", previous: "2.5.1", at: nowSeconds() + 120 }),
+      bearer: deviceToken
+    });
+    assert.equal(res.data.recorded, true);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, before);
+    const row = await getDatabase(mockEnv)
+      .prepare("SELECT image_version, update_state FROM client_devices WHERE client_id = 'PC-01'")
+      .first<any>();
+    assert.deepEqual({ ...row }, { image_version: "2.6.0", update_state: "installed" });
+  });
+
+  test("Shows errors and warnings only to the organization's settings staff", async () => {
+    assert.ok([401, 403].includes((await call("/api/workstation-issues?tenant=greenwood")).status));
+    const rival = await call("/api/workstation-issues?tenant=greenwood", { cookie: rivalSessionCookie });
+    assert.ok([401, 403].includes(rival.status), "another organization is refused");
+    const { data: created } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      ...json({
+        name: "Wes Workstations",
+        email: "wes@greenwood.example",
+        password: "WesPassword123!",
+        role: "operator",
+        permissions: ["workstations"]
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(created.status, "ok");
+    const login = await call("/api/auth/login", json({ email: "wes@greenwood.example", password: "WesPassword123!" }));
+    const operatorCookie = login.headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await call("/api/workstation-issues?tenant=greenwood", { cookie: operatorCookie })).status, 403);
+    await callJson(`/api/tenant/staff/${created.operator.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+  });
+
+  test("Deletes errors and warnings past their retention", async () => {
+    const db = getDatabase(mockEnv);
+    const { id: tenantId } = (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant;
+    const old = nowSeconds() - 91 * 86400;
+    await db
+      .prepare(
+        "INSERT INTO workstation_issues (id, tenant_id, client_id, severity, kind, occurred_at, created_at) VALUES ('old-issue', ?, 'PC-01', 'warning', 'boot_fallback', ?, ?)"
+      )
+      .bind(tenantId, old, old)
+      .run();
+    assert.equal(await purgeOldWorkstationIssues(db), 1);
+    assert.ok((await issuesOf(orgSessionCookie, "greenwood")).length >= 2, "recent issues are kept");
+  });
+
+  test("Asks a workstation that has not checked in yet to report again later", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-FRESH" }));
+    const res = await call("/api/devices/boot-report", {
+      ...json({ state: "installed", version: "2.6.0", previous: "2.5.1", at: nowSeconds() }),
+      bearer: data.deviceToken
+    });
+    assert.equal(res.status, 409);
+  });
+
+  // ---------------------------------------------------------- bug reports
+
+  /** A stand-in for Workers AI: answers in the Responses API shape gpt-oss uses. */
+  const fakeAi = (decide: (input: any) => unknown) => {
+    const ai = {
+      calls: [] as any[],
+      async run(model: string, input: Record<string, unknown>) {
+        assert.equal(model, BUG_REPORT_AI_MODEL);
+        assert.deepEqual(input.reasoning, { effort: "high" });
+        ai.calls.push(input);
+        const userTurn = (input.input as any[]).find((m) => m.role === "user");
+        const answer = decide(JSON.parse(userTurn.content));
+        return {
+          output: [
+            { type: "reasoning", content: [{ type: "reasoning_text", text: "thinking" }] },
+            { type: "message", content: [{ type: "output_text", text: typeof answer === "string" ? answer : JSON.stringify(answer) }] }
+          ]
+        };
+      }
+    };
+    return ai;
+  };
+  /** A stand-in for the GitHub REST API: issues, comments, issue state and timelines. */
+  let githubIssueCount = 100;
+  const githubStates = new Map<number, { issue: any; timeline: any[] }>();
+  const fakeGithub = (opts: { failWrites?: number } = {}) => {
+    const writes: { url: string; body: any }[] = [];
+    const states = githubStates;
+    const impl = (async (url: string, init: RequestInit) => {
+      const path = new URL(url).pathname;
+      const auth = new Headers(init.headers).get("Authorization");
+      assert.equal(auth, "Bearer github_pat_test");
+      if (init.method === "POST") {
+        if (opts.failWrites) return new Response("Bad credentials", { status: opts.failWrites });
+        const body = JSON.parse(String(init.body));
+        writes.push({ url: path, body });
+        if (path === "/repos/akbhoi/labkiosk/issues") {
+          const number = ++githubIssueCount;
+          return new Response(JSON.stringify({ number, html_url: `https://github.com/akbhoi/labkiosk/issues/${number}` }), { status: 201 });
+        }
+        if (/^\/repos\/akbhoi\/labkiosk\/issues\/\d+\/comments$/.test(path)) return new Response("{}", { status: 201 });
+        return new Response("not found", { status: 404 });
+      }
+      const m = path.match(/^\/repos\/akbhoi\/labkiosk\/issues\/(\d+)(\/timeline)?$/);
+      if (!m) return new Response("not found", { status: 404 });
+      const state = states.get(Number(m[1])) || { issue: { state: "open", assignees: [], labels: [] }, timeline: [] };
+      return new Response(JSON.stringify(m[2] ? state.timeline : state.issue), { status: 200 });
+    }) as unknown as typeof fetch;
+    return { impl, writes, states };
+  };
+  const bugEnv = (ai: Env["AI"]): Env => ({
+    ...mockEnv,
+    AI: ai,
+    GITHUB_ISSUES_TOKEN: "github_pat_test",
+    GITHUB_ISSUES_REPO: "akbhoi/labkiosk"
+  });
+  const issueRows = async (clientId: string) =>
+    (
+      await getDatabase(mockEnv)
+        .prepare("SELECT report_state, report_match, bug_signature FROM workstation_issues WHERE client_id = ? ORDER BY occurred_at")
+        .bind(clientId)
+        .all<{ report_state: string; report_match: string | null; bug_signature: string | null }>()
+    ).results;
+  const runBugs = (ai: Env["AI"], github: ReturnType<typeof fakeGithub>) =>
+    processBugReports(getDatabase(mockEnv), bugEnv(ai), nowSeconds(), github.impl);
+  let bugToken = "";
+  let bugClock = 0;
+  /** Boot reports from PC-BUG, each a boot apart. */
+  const bugReport = (body: Record<string, unknown>) => {
+    bugClock += 600;
+    return call("/api/devices/boot-report", { ...json({ version: "2.5.1", ...body, at: bugClock }), bearer: bugToken });
+  };
+
+  test("Masks addresses, host names and identifiers before a problem leaves the platform", () => {
+    const masked = redactProblemText(
+      "could not reach https://files.greenwood.example/img?k=1 from 10.0.4.17 or fe80::1c2b:3aff:fe4d:12 " +
+        "for ops@greenwood.example on pc01.lab.greenwood.example, disk 3f2a9c1e-55aa-4c3e-9e1d-0123456789ab, " +
+        "key 0123456789abcdef0123; writing /boot/grub/grubenv for 2.6.0-rc.1"
+    );
+    for (const leak of ["greenwood", "10.0.4.17", "fe80", "3f2a9c1e", "0123456789abcdef", "ops@"]) {
+      assert.ok(!masked.includes(leak), `${leak} is masked in: ${masked}`);
+    }
+    assert.match(masked, /<url> from <ip> or <ip> for <email> on <host>, disk <uuid>, key <hex>;/);
+    assert.ok(masked.includes("/boot/grub/grubenv") && masked.includes("2.6.0-rc.1"), "paths and versions stay");
+  });
+
+  test("Writes the AI's summary into an issue as inert text, and the facts in a fence nothing closes", () => {
+    const facts = { kind: "boot_error", imageVersion: "2.5.1", problem: "broke ~~~ here\n# not a heading", signature: "a".repeat(64) };
+    const body = issueBody(
+      facts,
+      { title: "t", summary: "Ping @akbhoi, see [this](https://evil.example) ![x](https://evil.example/p.png) <img src=x> #1" },
+      "ai"
+    );
+    const summary = body.split("\n### Report")[0];
+    assert.ok(!/(^|[^\\])\[/.test(summary) && !/(^|[^\\])</.test(summary), "no live links or HTML");
+    assert.ok(summary.includes("@​akbhoi"), "no mention");
+    assert.ok(summary.includes("\\#1"), "no issue reference");
+    assert.ok(body.includes("~~~~text\nbroke ~~~ here"), "the fence is longer than any run inside it");
+    assert.ok(body.includes("drafted by Workers AI"));
+  });
+
+  test("Reads the text of every reply shape Workers AI documents, and refuses anything else", () => {
+    assert.equal(modelText({ output: [{ type: "reasoning" }, { type: "message", content: [{ type: "output_text", text: "a" }] }] }), "a");
+    assert.equal(modelText({ response: "b" }), "b");
+    assert.equal(modelText({ output_text: "c" }), "c");
+    assert.equal(modelText({ choices: [{ message: { content: "d" } }] }), "d");
+    assert.throws(() => modelText({ output: [{ type: "reasoning" }] }), /no text/);
+    assert.throws(() => modelText(null), /no text/);
+  });
+
+  test("Reads an issue's status from GitHub: open, in progress, PR created, resolved, closed", async () => {
+    const github = fakeGithub();
+    const status = (n: number) => readIssueStatus("akbhoi/labkiosk", "github_pat_test", n, github.impl);
+    github.states.set(1, { issue: { state: "open", assignees: [], labels: [] }, timeline: [] });
+    github.states.set(2, { issue: { state: "open", assignees: [{ login: "dev" }], labels: [] }, timeline: [] });
+    github.states.set(3, { issue: { state: "open", assignees: [], labels: [{ name: "In Progress" }] }, timeline: [] });
+    github.states.set(4, {
+      issue: { state: "open", assignees: [{ login: "dev" }], labels: [] },
+      timeline: [
+        { event: "cross-referenced", source: { issue: { pull_request: {}, html_url: "https://github.com/someone/else/pull/9" } } },
+        { event: "cross-referenced", source: { issue: { pull_request: {}, html_url: "https://github.com/akbhoi/labkiosk/pull/7" } } }
+      ]
+    });
+    github.states.set(5, { issue: { state: "closed", state_reason: "completed" }, timeline: [] });
+    github.states.set(6, { issue: { state: "closed", state_reason: "not_planned" }, timeline: [] });
+    assert.deepEqual(await status(1), { status: "open", prUrl: null });
+    assert.deepEqual(await status(2), { status: "in_progress", prUrl: null });
+    assert.deepEqual(await status(3), { status: "in_progress", prUrl: null });
+    assert.deepEqual(await status(4), { status: "pr_open", prUrl: "https://github.com/akbhoi/labkiosk/pull/7" }, "only this repository's pull requests count");
+    assert.deepEqual(await status(5), { status: "resolved", prUrl: null });
+    assert.deepEqual(await status(6), { status: "closed", prUrl: null });
+  });
+
+  test("Lets only the organization's settings staff turn bug reports on, only under the current terms, and only when the platform has them set up", async () => {
+    const on = { enabled: true, acceptTerms: BUG_REPORT_TERMS_VERSION };
+    assert.ok([401, 403].includes((await call("/api/settings/bug-reports?tenant=greenwood", json(on))).status));
+    const rival = await call("/api/settings/bug-reports?tenant=greenwood", { ...json(on), cookie: rivalSessionCookie });
+    assert.ok([401, 403].includes(rival.status), "another organization is refused");
+    for (const enabled of ["yes", 1, null]) {
+      const res = await call("/api/settings/bug-reports?tenant=greenwood", { ...json({ enabled }), cookie: orgSessionCookie });
+      assert.equal(res.status, 400, JSON.stringify(enabled));
+    }
+    // Fail closed: no AI binding, token or repository on this platform.
+    const unconfigured = await callJson("/api/settings/bug-reports?tenant=greenwood", { ...json(on), cookie: orgSessionCookie });
+    assert.equal(unconfigured.res.status, 409);
+    const { data: listed } = await callJson("/api/workstation-issues?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.deepEqual(listed.bugReports, {
+      enabled: false,
+      available: false,
+      repository: null,
+      termsVersion: BUG_REPORT_TERMS_VERSION,
+      acceptedTermsVersion: null,
+      termsAcceptedAt: null
+    });
+
+    const env = bugEnv(fakeAi(() => ({})));
+    const post = (body: unknown) =>
+      worker.fetch(request("/api/settings/bug-reports?tenant=greenwood", { ...json(body), cookie: orgSessionCookie }), env);
+    assert.equal((await post({ enabled: true })).status, 400, "turning it on without accepting the terms is refused");
+    assert.equal((await post({ enabled: true, acceptTerms: "2000-01-01" })).status, 400, "an old version of the terms is refused");
+    assert.equal((await post(on)).status, 200);
+    const shown = (await (await worker.fetch(request("/api/workstation-issues?tenant=greenwood", { cookie: orgSessionCookie }), env)).json()) as any;
+    assert.equal(shown.bugReports.enabled, true);
+    assert.equal(shown.bugReports.repository, "akbhoi/labkiosk");
+    assert.equal(shown.bugReports.acceptedTermsVersion, BUG_REPORT_TERMS_VERSION);
+    assert.ok(Math.abs(shown.bugReports.termsAcceptedAt - nowSeconds()) < 60);
+    const { data: audit } = await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie });
+    assert.ok(
+      audit.logs.some((e: { action: string; details: string }) => e.action === "settings.bug_reports" && e.details.includes(BUG_REPORT_TERMS_VERSION)),
+      "the audit log records which terms were accepted"
+    );
+  });
+
+  test("Serves the Automatic Bug Report Terms publicly, naming the repository", async () => {
+    const res = await worker.fetch(request("/terms/bug-reports"), bugEnv(fakeAi(() => ({}))));
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.ok(html.includes(`Version ${BUG_REPORT_TERMS_VERSION}`));
+    assert.ok(html.includes('href="https://github.com/akbhoi/labkiosk"'));
+    assert.ok(!/<script/i.test(html));
+    const unconfigured = await (await call("/terms/bug-reports")).text();
+    assert.ok(unconfigured.includes("the GitHub repository named in Settings"));
+  });
+
+  test("Files a new problem once and links its repeats, without names or addresses", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-BUG" }));
+    bugToken = data.deviceToken;
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: bugToken })).status, 200);
+    bugClock = nowSeconds() - 3 * 86400;
+    const error = (host: string) => bugReport({ state: "error", error: `could not record the update: ${host} 10.1.2.3 refused` });
+    assert.equal((await error("boot.greenwood.example")).status, 200);
+    // The same problem on another host masks to the same signature.
+    assert.equal((await error("nas.riverside.example")).status, 200);
+    assert.deepEqual((await issueRows("PC-BUG")).map((r) => r.report_state), ["pending", "pending"]);
+
+    const ai = fakeAi((input) => {
+      assert.deepEqual(input.existingReports, [], "nothing of this kind is filed yet");
+      assert.equal(input.newProblem.problem, "could not record the update: <host> <ip> refused");
+      return 'Done: {"decision": "new", "title": "Boot record could not be written", "summary": "The workstation could not record the outcome of its update. Look at the boot partition first."}';
+    });
+    const github = fakeGithub();
+    // An unconfigured platform does nothing at all.
+    assert.deepEqual(await processBugReports(getDatabase(mockEnv), mockEnv, nowSeconds(), github.impl), { filed: 0, matched: 0, linked: 0, refreshed: 0 });
+    assert.deepEqual(await runBugs(ai, github), { filed: 1, matched: 0, linked: 1, refreshed: 1 });
+    assert.equal(ai.calls.length, 1, "a repeat of a filed signature needs no model");
+    assert.equal(github.writes.length, 1);
+    const [filed] = github.writes;
+    assert.equal(filed.url, "/repos/akbhoi/labkiosk/issues");
+    assert.equal(filed.body.title, "[Workstation] Boot record could not be written");
+    const sent = JSON.stringify(filed.body);
+    for (const leak of ["PC-BUG", "greenwood", "Greenwood", "riverside", "10.1.2.3"]) {
+      assert.ok(!sent.includes(leak), `${leak} must not leave the platform`);
+    }
+    const rows = await issueRows("PC-BUG");
+    assert.deepEqual(rows.map((r) => [r.report_state, r.report_match]), [["sent", "new"], ["sent", "existing"]]);
+    const listed = (await issuesOf(orgSessionCookie, "greenwood")) as any[];
+    const mine = listed.filter((i) => i.client_id === "PC-BUG");
+    assert.ok(mine.every((i) => i.issue_url === "https://github.com/akbhoi/labkiosk/issues/101" && i.issue_number === 101 && i.report_status === "open"));
+  });
+
+  test("Matches a variant to an open report with a reasoning model, and refuses a match it was not shown", async () => {
+    assert.equal((await bugReport({ state: "error", error: "could not record the update: grubenv rename refused" })).status, 200);
+    const github = fakeGithub();
+    // A match to an issue the model was not shown is refused; the problem waits.
+    const confused = fakeAi(() => ({ decision: "existing", issue: 999 }));
+    assert.deepEqual(await runBugs(confused, github), { filed: 0, matched: 0, linked: 0, refreshed: 1 });
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "pending");
+    // With open reports to compare against, a model failure does not file a possible duplicate.
+    const down = { async run() { throw new Error("model unavailable"); } };
+    assert.deepEqual(await runBugs(down, github), { filed: 0, matched: 0, linked: 0, refreshed: 1 });
+    assert.equal(github.writes.length, 0);
+
+    const ai = fakeAi((input) => {
+      assert.deepEqual(input.existingReports.map((r: any) => [r.issue, r.title, r.status]), [[101, "Boot record could not be written", "open"]]);
+      // Written as a string, as a model may.
+      return { decision: "existing", issue: "101" };
+    });
+    assert.deepEqual(await runBugs(ai, github), { filed: 0, matched: 1, linked: 0, refreshed: 1 });
+    assert.equal(github.writes.length, 1);
+    assert.equal(github.writes[0].url, "/repos/akbhoi/labkiosk/issues/101/comments");
+    assert.ok(github.writes[0].body.body.includes("grubenv rename refused"));
+    const last = (await issueRows("PC-BUG")).at(-1)!;
+    assert.deepEqual([last.report_state, last.report_match], ["sent", "existing"]);
+  });
+
+  test("Shows each report's progress on GitHub: PR created, then resolved", async () => {
+    assert.equal((await bugReport({ state: "failed", previous: "2.5.0", version: "2.5.1" })).status, 200);
+    const github = fakeGithub();
+    // No open report of this kind and no model: filed from the template.
+    const down = { async run() { throw new Error("model unavailable"); } };
+    assert.deepEqual(await runBugs(down, github), { filed: 1, matched: 0, linked: 0, refreshed: 2 });
+    assert.equal(github.writes[0].body.title, "[Workstation] System update failed its health check (2.5.1)");
+    assert.ok(!github.writes[0].body.body.includes("drafted by Workers AI"), "a template report does not claim an AI summary");
+
+    github.states.set(101, {
+      issue: { state: "open", assignees: [], labels: [] },
+      timeline: [{ event: "cross-referenced", source: { issue: { pull_request: {}, html_url: "https://github.com/akbhoi/labkiosk/pull/42" } } }]
+    });
+    github.states.set(102, { issue: { state: "closed", state_reason: "completed" }, timeline: [] });
+    assert.equal((await runBugs(fakeAi(() => ({})), github)).refreshed, 2);
+    const listed = ((await issuesOf(orgSessionCookie, "greenwood")) as any[]).filter((i) => i.client_id === "PC-BUG");
+    const byIssue = (n: number) => listed.filter((i) => i.issue_number === n);
+    assert.equal(byIssue(101).length, 3, "every problem on issue 101 shares its status");
+    assert.ok(byIssue(101).every((i) => i.report_status === "pr_open" && i.pr_url === "https://github.com/akbhoi/labkiosk/pull/42"));
+    assert.deepEqual(byIssue(102).map((i) => [i.report_status, i.report_match]), [["resolved", "new"]]);
+  });
+
+  test("Sends nothing under terms the organization has not accepted, and keeps it waiting when GitHub refuses", async () => {
+    const db = getDatabase(mockEnv);
+    const { id: tenantId } = (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant;
+    await db.prepare("UPDATE tenants SET bug_reports_terms_version = '2000-01-01' WHERE id = ?").bind(tenantId).run();
+    assert.equal((await bugReport({ state: "error", error: "disk full while writing grubenv" })).status, 200);
+    const github = fakeGithub();
+    const ai = fakeAi(() => ({ decision: "new", title: "Disk full while writing grubenv", summary: "The boot environment could not be written because the disk was full." }));
+    assert.equal((await runBugs(ai, github)).filed, 0, "older terms: nothing is sent");
+    assert.equal(ai.calls.length, 0);
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "pending");
+
+    await db.prepare("UPDATE tenants SET bug_reports_terms_version = ? WHERE id = ?").bind(BUG_REPORT_TERMS_VERSION, tenantId).run();
+    const refusing = fakeGithub({ failWrites: 401 });
+    assert.equal((await runBugs(ai, refusing)).filed, 0);
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "pending", "GitHub refused: try again next run");
+    assert.equal((await runBugs(ai, github)).filed, 1);
+  });
+
+  test("Sends nothing for an organization that has opted out", async () => {
+    assert.equal((await bugReport({ state: "fallback" })).status, 200);
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "pending");
+
+    const off = await callJson("/api/settings/bug-reports?tenant=greenwood", { ...json({ enabled: false }), cookie: orgSessionCookie });
+    assert.equal(off.res.status, 200, "turning it off works even where the platform is not set up");
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "none", "what was waiting is dropped");
+    assert.equal((await bugReport({ state: "fallback" })).status, 200);
+    assert.equal((await issueRows("PC-BUG")).at(-1)!.report_state, "none");
+
+    const github = fakeGithub();
+    const ai = fakeAi(() => ({}));
+    assert.equal((await runBugs(ai, github)).filed, 0);
+    assert.equal(ai.calls.length, 0);
+    assert.equal(github.writes.length, 0);
   });
 
   test("Revokes the device token when a workstation is decommissioned", async () => {
@@ -2793,6 +3281,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(privHtml, /FERPA/);
     assert.match(privHtml, /COPPA/);
     assert.match(privHtml, /100% In-Memory RAM Overlay/);
+    // Every Cloudflare service the worker binds is disclosed, with Cloudflare's privacy terms.
+    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Cloudflare Tunnel", "Workers AI", "GitHub", "Google Fonts"]) {
+      assert.ok(privHtml.includes(`<strong>${service}`) || privHtml.includes(`and ${service}`), `the Privacy Policy names ${service}`);
+    }
+    assert.match(privHtml, /href="https:\/\/www\.cloudflare\.com\/cloudflare-customer-dpa\/"/);
+    assert.match(privHtml, /href="\/terms\/bug-reports"/);
     const privCsp = privRes.headers.get("Content-Security-Policy") || "";
     assert.match(privCsp, /script-src 'nonce-[^']+'/);
 
@@ -2805,6 +3299,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(termsHtml, /45-Computer/);
     assert.match(termsHtml, /Subscriber Licensing/);
     assert.match(termsHtml, /Organization Responsibilities/);
+    assert.match(termsHtml, /Third-Party Services/);
+    assert.match(termsHtml, /href="\/terms\/bug-reports"/);
     const termsCsp = termsRes.headers.get("Content-Security-Policy") || "";
     assert.match(termsCsp, /script-src 'nonce-[^']+'/);
   });
@@ -3565,6 +4061,11 @@ describe("Schema sources agree", () => {
   test("A worker refuses a database that has not had 0011 or 0012 applied, and accepts one that has", async () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0011"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0012"))), /missing the current schema/);
+    // 0015 adds the boot report columns; a Worker that writes them must refuse a database without them.
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0015"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0016"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0017"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0018"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

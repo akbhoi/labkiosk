@@ -10,7 +10,7 @@ What is tested, how to run it, and what you must add when you change something.
 # Strict typecheck: src/ against Workers types, test/ against Node types
 pnpm --prefix cloudflare-control run typecheck
 
-# 62 integration and security tests
+# 168 integration and security tests
 pnpm --prefix cloudflare-control test
 ```
 
@@ -40,6 +40,14 @@ The typecheck deliberately runs twice, against two TypeScript projects. `tsconfi
 - An oversized thumbnail is dropped rather than stored.
 - An enrolled workstation is pointed at its own organization whatever host it used.
 - Enrolment works via a custom domain, and via a custom server URL or IP.
+- A boot report without a valid device token, or a malformed one, is refused; failures, rollbacks, fallbacks and errors are listed in Errors & Warnings, not the audit log.
+
+### Automatic bug reports
+
+- Only the organization's settings staff can turn them on, only under the current terms version, and only when the platform has the `AI` binding, `GITHUB_ISSUES_TOKEN` and `GITHUB_ISSUES_REPO`.
+- The model's summary is written into an issue as inert text; the facts go in a fence nothing can close.
+- An issue's status is read back from GitHub: open, in progress, PR created, resolved, closed.
+- The Automatic Bug Report Terms are served publicly and name the repository.
 
 ### Command delivery
 
@@ -121,12 +129,15 @@ The CSP test renders every page. If you add a `<script>` without a nonce or an `
 
 ## Client-side checks
 
-There is no unit-test harness for the client; it is verified by syntax checks, static analysis, and visual inspection.
+The client is verified by syntax checks, the `distro-builder/tests` unit tests, static analysis, a boot test of the installed disk, and visual inspection.
 
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
-  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
+  distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests
 
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
@@ -140,6 +151,27 @@ shellcheck -S warning \
 ```
 
 CI additionally validates that `manifest.json` and the Chromium policy are well-formed JSON.
+
+The unit tests (`distro-builder/tests/test_client.py`) cover the agent's loopback boundary, enrolment and control channel, and the installed disk: the GRUB environment and the one-try boot, the installed boot menu (every entry `--unrestricted`, the try spent before the new image boots, `labkiosk.installed=1` and `noeject`), the health check that confirms or rolls back a new image, the data partition pinned by UUID and never by label, seeding that never follows links, and boot-outcome reporting.
+
+### Boot test of the installed disk
+
+`distro-builder/tests/vm/boot-test.sh` installs a built ISO onto a virtual disk with the real installer, then boots that disk in QEMU (UEFI via OVMF, KVM) and reads the results from `boot/grub/grubenv`:
+
+| Scenario | Proves |
+| :--- | :--- |
+| `promote` | A good new image boots once, passes the health check and becomes current; the old one becomes previous |
+| `broken` | An image with a damaged squashfs fails to boot, reboots by itself (`panic=10`), and the try is spent |
+| `recover` | The next boot is the current image again, and it stays up |
+| `unhealthy` | An image that boots but whose kiosk never comes up is rebooted away from after the 10-minute health deadline |
+
+```bash
+sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso [workdir]
+```
+
+It needs root, `/dev/kvm`, `qemu-system-x86`, `ovmf`, `xorriso`, `squashfs-tools`, `e2fsprogs`, `fdisk` and `python3`, so it does not run on Windows. A screenshot of the VM is saved for every scenario that fails. Legacy BIOS boot of the installed disk is covered only by the GRUB menu unit tests.
+
+An installed kiosk has no shell (getty masked, no SSH). To try a slot by hand, mount `LABKIOSK_ROOT` from another system and run `grub-editenv boot/grub/grubenv set next=<version> next_tries=1`.
 
 ### Visual verification
 
@@ -172,7 +204,9 @@ The simulator cannot test bootloaders, `overlayroot`, the installer, TTY masking
 | :--- | :--- |
 | `images` | Builds both `labkiosk` and `labkiosk-iso-builder` (no push) |
 | `worker` | Node 22, pnpm, typecheck, integration tests |
-| `client` | Python compile, `node --check`, shellcheck, JSON validity, Chromium policy drift |
+| `client` | Python compile, client unit tests, `node --check`, shellcheck, JSON validity, Chromium policy drift |
+
+`build-iso.yml` (version tags and manual dispatch) builds the ISO, then runs the boot test above before any GitHub Release is created; a failing scenario uploads the VM screenshots.
 
 `deploy-cloudflare.yml` re-runs the typecheck and the suite before applying migrations and deploying — a failing test never reaches production.
 

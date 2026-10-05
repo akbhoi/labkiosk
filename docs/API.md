@@ -83,6 +83,10 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/enroll` | `POST` | Public / Key | Exchange organization enrollment key for persistent device token |
 | `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
+| `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
+| `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, each with `report_state`, `report_match` (`new`/`existing`), `issue_url`, `issue_number`, `report_status` (`open`, `in_progress`, `pr_open`, `resolved`, `closed`) and `pr_url`; plus `bugReports: {enabled, available, repository, termsVersion, acceptedTermsVersion, termsAcceptedAt}` |
+| `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
+| `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
 | `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending organization subdomain registration |
 | `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending organization registration |
@@ -369,6 +373,31 @@ any queued commands.
     "broadcastEpoch": 0
   }
   ```
+
+#### `POST /api/devices/boot-report`
+
+What an installed workstation's last boot did with its system image, as `labkiosk-boot-slots
+check` recorded it in `/run/labkiosk-update/status.json`. The agent sends only the outcomes worth
+an administrator's attention; each new one is kept on the workstation (`client_devices.update_*`).
+A failure, rollback, fallback or error is also listed in `workstation_issues` (Settings → Errors &
+Warnings, `GET /api/workstation-issues`) as `update_failed`, `update_rolled_back`, `boot_error`
+(severity `error`) or `boot_fallback` (`warning`). None of it goes to the audit log, which records
+what people did.
+
+- **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
+  organization and the workstation.
+- **Request Body:** `state` (`installed` | `failed` | `rolled-back` | `fallback` | `error`),
+  `version` (the image running), `at` (when the workstation recorded it, Unix seconds, within the
+  last 7 days); optional `previous`, `failed` (release versions) and `error` (text, cut to 300
+  characters).
+
+  ```json
+  { "state": "rolled-back", "version": "2.5.1", "failed": "2.6.0", "at": 1791100000 }
+  ```
+
+- **Responses:** `200 {"status":"ok","recorded":true}`; `recorded: false` for a report the
+  workstation already sent (or one less than 60 s after the last); `400` malformed, not sent again;
+  `409` the workstation has not checked in yet, sent again later.
 
 ---
 
@@ -663,6 +692,23 @@ Rotates the organization's workstation enrollment key. Existing workstations ret
   }
   ```
 
+#### Errors & Warnings: `GET /api/workstation-issues`, `POST /api/settings/bug-reports`
+
+The **Errors & Warnings** sub-tab of Settings lists what workstations reported about themselves
+(failed or rolled-back updates and boot errors, from
+[`POST /api/devices/boot-report`](#post-apidevicesboot-report)), kept for 90 days and separate from
+the audit log. `GET /api/workstation-issues` returns the list and the organization's automatic bug
+report setting (fields in the [summary matrix](#-api-summary-matrix)). `POST
+/api/settings/bug-reports` turns automatic, redacted GitHub bug reports on or off; turning them on
+must name the current terms version (`/terms/bug-reports`), and the change is written to the
+audit log.
+
+- **Access:** Organization Admin (requires `settings` permission)
+- **Request Body:** `{ "enabled": true, "acceptTerms": "2026-10-04" }` or `{ "enabled": false }`
+- **Response `200 OK`:** `{ "status": "ok", "enabled": true }`; `400` when `enabled` is not a
+  boolean or the terms version is not the current one; `409` when the platform has not set up bug
+  reports.
+
 ---
 
 ### 7. Super Administrator Console (`/super`)
@@ -949,7 +995,8 @@ Forces a fresh connectivity check. Same shape as `connectivity` above.
 #### `POST /api/admin/verify`
 
 Verifies the administrator (boot-menu) password against the PBKDF2 digest in
-`/etc/grub.d/01_labkiosk_password` and issues a 10-minute token for `/api/network/configure`.
+`boot/grub/labkiosk-password.cfg` on `LABKIOSK_ROOT` (read at `/run/live/medium/boot/grub/`, where
+live-boot mounts it) and issues a 10-minute token for `/api/network/configure`.
 Attempts are serialised; after 5 failures the gate refuses all attempts for 60 s. When the
 installation has no password file (installed without one, after a warning), any password is
 accepted. A file that exists but cannot be parsed fails closed.
@@ -974,7 +1021,10 @@ accepted. A file that exists but cannot be parsed fails closed.
 
 #### `POST /api/install`
 
-Triggers automated disk installation to the specified target drive.
+Triggers automated disk installation to the specified target drive. The disk is erased and becomes
+an image store (four partitions; the live medium's system image copied to
+`images/<version>/` on `LABKIOSK_ROOT`); disks under 7 GiB are refused. Answers `400` on an
+installed workstation (`labkiosk.installed=1` on the kernel command line).
 
 - **Request Body:**
 

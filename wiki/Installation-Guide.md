@@ -13,7 +13,7 @@ End-to-end, from a blank thin client to a workstation live on an operator's dash
 | A registered, **approved** organization on a Lab Kiosk control plane | Either your own deployment or a hosted one. → [Production Deployment](Production-Deployment) |
 | Your organization's **enrollment key** | Admin console → Settings → Workstation Enrollment Key. Organizations start with an empty key, which authenticates nothing — generate one first. It is four groups of five characters; the setup wizard inserts the hyphens as you type, and a pasted key is accepted with or without them, in any case, and even with a label copied along with it. |
 | The **ISO**, on a USB stick of 2 GB or more | Download it, or → [Building the ISO](Building-the-ISO) |
-| Thin clients with at least **2 GB RAM and a 3 GB disk** | 4 GB RAM and a 12 GB SSD is the reference target |
+| Thin clients with at least **2 GB RAM and a 7 GiB disk** (a drive sold as 8 GB qualifies) | 4 GB RAM and a 12 GB SSD is the reference target |
 
 ---
 
@@ -83,7 +83,7 @@ In the wizard, select the **Install to Hard Disk** tab.
 
 ### Choose the target disk
 
-The list shows candidate disks of at least 3 GB. **The USB stick you booted from is excluded** — the installer matches it through `/proc/mounts` and `/sys` and refuses it both when listing and again immediately before wiping.
+The list shows candidate disks of at least 7 GiB — room for two system images side by side. **The USB stick you booted from is excluded** — the installer matches it through `/proc/mounts` and `/sys` and refuses it both when listing and again immediately before wiping.
 
 Removable drives are still shown and labelled `REMOVABLE DRIVE`, because internal eMMC on some thin clients reports as removable. They sort last, so the default selection is always an internal disk. Read the label before you continue.
 
@@ -98,12 +98,13 @@ Use **Generate** for a random 20-character password, or type your own.
 Click **Install Lab Kiosk to Drive**. The installer:
 
 1. Partitions the disk as hybrid GPT — `bios_grub`, `ESP`, `ROOT`, `DATA`.
-2. Formats filesystems and `rsync`s the rootfs across.
-3. Copies NetworkManager profiles to `/etc/labkiosk/system-connections` on `LABKIOSK_DATA` and adds an `/etc/fstab` bind mount (`/etc/labkiosk/system-connections /etc/NetworkManager/system-connections none bind,nofail 0 0`).
-4. Carries the proxy setting (`proxy.json`) onto the data partition; the agent applies it at every boot.
-5. Truncates `/etc/machine-id` so systemd generates a fresh ID on first boot.
-6. Configures `overlayroot="tmpfs"` on the installed drive.
-7. Installs dual GRUB variants (UEFI `x86_64-efi`, UEFI removable, and legacy BIOS `i386-pc`).
+2. Formats filesystems and copies the medium's system image (`vmlinuz`, `initrd.img`, `filesystem.squashfs`) to `images/<version>/` on `ROOT`. The installed drive is an image store: it boots that same squashfs through live-boot, under the same RAM overlay as the USB stick.
+3. Copies NetworkManager profiles to `/etc/labkiosk/system-connections` on `LABKIOSK_DATA`; a unit in the image bind-mounts them over `/etc/NetworkManager/system-connections` at every boot.
+4. Carries the enrolment, the proxy setting (`proxy.json`) and the language and region (`localization.json`) onto the data partition; the agent re-applies them at every start.
+5. Installs GRUB for UEFI `x86_64-efi`, UEFI removable, and legacy BIOS `i386-pc` (skipped on NVMe and eMMC targets), with the boot menu on `ROOT`.
+6. Writes this installation's boot password and the data partition's UUID next to the boot menu, and names the image as the one to boot.
+
+Details: [Disk Installer](Disk-Installer).
 
 ### Reboot
 
@@ -117,7 +118,7 @@ Please remove the live-medium, close the tray (if any) and press ENTER to contin
 Remove the USB stick — or detach the ISO, in a VM — and press ENTER; otherwise the firmware boots the
 installer again. systemd caps this wait, so an unattended machine carries on by itself.
 
-The workstation then boots into the installed OS, and the wizard displays `INSTALLED WORKSTATION`.
+The workstation then boots into the installed OS, and the wizard displays `INSTALLED WORKSTATION`. An installed disk never shows the remove-the-medium prompt on later reboots: its boot menu passes `noeject` and `labkiosk.installed=1`.
 
 ---
 
@@ -200,7 +201,7 @@ Rotating the enrollment key does **not** affect already-enrolled workstations �
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
-| No candidate drives listed | Disk under 3 GB, or the only disk is the live medium | Check the disk size; install to a different machine |
+| No candidate drives listed | Disk under 7 GiB, or the only disk is the live medium | Check the disk size; install to a different machine |
 | Enrolment rejected | Empty or stale key, or the organization is `pending`/`suspended` | Generate a key; have a super admin approve the organization |
 | "This page is blocked" after enrolling | Chromium has not reloaded policy | Wait for the automatic restart; if it persists, check `/tmp/lab-agent.log` |
 | "This site isn't allowed on this workstation" (with the top bar) | The site is not on the allowlist, or a broadcast arrived before Chromium reloaded its policy | It retries once by itself after a few seconds; otherwise add the domain to the allowlist |

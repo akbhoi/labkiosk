@@ -65,6 +65,11 @@ export interface Tenant {
   custom_hostname_status?: CustomHostnameStatus;
   created_at: number;
   updated_at: number;
+  /** 1 when the organization opted in to automatic bug reports (src/bug_reports.ts). */
+  bug_reports_enabled?: number;
+  /** The Automatic Bug Report Terms version the organization accepted, and when. */
+  bug_reports_terms_version?: string | null;
+  bug_reports_terms_accepted_at?: number | null;
 }
 
 export interface BroadcastPreset {
@@ -116,6 +121,13 @@ export interface ClientDevice {
   broadcast_epoch?: number;
   created_at: number;
   updated_at: number;
+  /** The system image the workstation reported running (0015). */
+  image_version?: string | null;
+  /** Its last boot outcome: installed, failed, rolled-back, fallback or error. */
+  update_state?: string | null;
+  update_error?: string | null;
+  /** When the workstation recorded that outcome, by its own clock; 0 = never. */
+  update_state_at?: number;
 }
 
 export interface WorkstationGroup {
@@ -149,6 +161,31 @@ export interface HomepageBlock {
   /** An http(s) link, already validated by safeHttpUrl. */
   url: string | null;
 }
+
+/** An error or warning a workstation reported (`workstation_issues`, 0016). */
+export interface WorkstationIssue {
+  id: string;
+  client_id: string;
+  severity: "error" | "warning";
+  kind: string;
+  image_version?: string | null;
+  details?: string | null;
+  /** When the workstation recorded it, by its own clock. */
+  occurred_at: number;
+  created_at: number;
+  /** none, pending (waiting for the hourly bug report run) or sent. */
+  report_state?: "none" | "pending" | "sent";
+  /** The GitHub issue it was filed under, once sent. */
+  issue_url?: string | null;
+  issue_number?: number | null;
+  /** Whether it opened that issue or was matched to one already filed. */
+  report_match?: "new" | "existing" | null;
+  /** Where the issue stands on GitHub. */
+  report_status?: BugReportStatus | null;
+  pr_url?: string | null;
+}
+
+export type BugReportStatus = "open" | "in_progress" | "pr_open" | "resolved" | "closed";
 
 export interface AuditLogEntry {
   id: string;
@@ -257,5 +294,20 @@ export interface Env {
   TUNNEL_DOMAIN?: string;
   /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.akbhoi.com. */
   DEFAULT_HOMEPAGE?: string;
+  /**
+   * Automatic bug reports (src/bug_reports.ts). Optional: without all three
+   * the feature is unavailable and organizations cannot turn it on.
+   * Workers AI drafts each issue's title and summary.
+   */
+  AI?: WorkersAiBinding;
+  /** Fine-grained GitHub token with Issues: Read and write on GITHUB_ISSUES_REPO (secret). */
+  GITHUB_ISSUES_TOKEN?: string;
+  /** "owner/repo" the issues are filed in. */
+  GITHUB_ISSUES_REPO?: string;
+}
+
+/** The one Workers AI method the Worker uses. */
+export interface WorkersAiBinding {
+  run(model: string, input: Record<string, unknown>): Promise<unknown>;
 }
 

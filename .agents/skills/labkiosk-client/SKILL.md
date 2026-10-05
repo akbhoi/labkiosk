@@ -23,7 +23,9 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   `/api/reboot`, `/api/network/{status,interfaces,wifi/scan,configure,test}` (`test_connectivity()`
   caches 5 s; interfaces from `nmcli dev status`), `/api/admin/verify`, `/api/log`,
   `/api/localization/{options,configure,languages,language/download}`, `/i18n/<tag>.json`.
-- `is_live_session()`: `/etc/labkiosk-installed` ⇒ installed; `/run/live` or `boot=live` ⇒ live.
+- `is_live_session()`: `labkiosk.installed=1` on the command line (or the pre-image-store
+  `/etc/labkiosk-installed`) ⇒ installed, checked first because installed disks boot through
+  live-boot too; then `/run/live` or `boot=live` ⇒ live.
   Install endpoints refuse when `not is_live_session()` (`/api/install/disks` returns `[]`).
 - **Worker URL** (`validate_worker_url()`): `https`, or plain `http` only to loopback, container
   gateways, `*.internal`/`*.local`, or a private IPv4 literal (`is_private_ip_literal()`:
@@ -38,6 +40,12 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   someone watches. Every reply goes through `apply_control_update()`. `heartbeat_wakeup` (set by a
   new enrolment) closes the socket so the new token connects at once. The proxy from
   `load_proxy_config()` is passed to websocket-client explicitly. Contracts: `labkiosk-core` §1.
+- **Boot reports** (`boot_report_loop()`, every 30 s): `read_boot_report()` opens
+  `/run/labkiosk-update/status.json` with `O_NOFOLLOW` and accepts only a root-owned regular file;
+  `report_boot_outcome()` posts the reportable states to `POST /api/devices/boot-report` once per
+  `(state, at)`. `200`/`400`/`404` settle it; `409`, `401`/`403` and network errors retry. Keep
+  `BOOT_REPORT_STATES` equal to `src/boot_report.ts` (tested). It lands in Settings → Errors &
+  Warnings, not the audit log. Contract: `labkiosk-core` §2b.
 - Enrolment reply names the organization via `organization_name()` (`organizationName`, falling
   back to the deprecated `schoolName`). Persistence is reported, not assumed:
   `enrolment_is_persistent()` checks the **filesystem type** at `/etc/labkiosk`.
@@ -63,6 +71,13 @@ language tag against `UI_LANGUAGE_PATTERN`, which must equal the agent's). A loc
 spellings (`en_IN`, `en_IN.UTF-8`, `en_IN.utf8`): compare with `canonical_locale()`/`locale_key()`,
 never `==`. Missing `timedatectl`/`localectl`/`hwclock`/`setxkbmap` means "declined", never a crash
 (`run(..., check=False)`). `--root <dir>` applies to the installer's target.
+
+**Re-applied at every start.** An installed disk boots a system image under a RAM overlay, so the
+zone, keymap, NTP drop-in and generated locale are the image's defaults again each boot (there is
+no `locales-all`). `main()` calls `apply_saved_localization()` first, which replays
+`/etc/labkiosk/localization.json` (on `LABKIOSK_DATA`) through the helper; the helper regenerates a
+missing locale and does nothing for one already there. A setting that is not in that file does not
+survive a reboot or an update.
 
 Wizard steps (live): Language & Region → Network Setup → Install or Preview. An installed
 workstation opens on enrolment; `#network` / `#locale` (behind the admin modal) are the way back.
@@ -101,7 +116,7 @@ and `labkiosk-lock-keys` (`xkbcomp`: F keys, Super, menu, Print, Pause, Scroll L
 ## Verify
 
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests
