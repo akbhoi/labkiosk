@@ -99,7 +99,8 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **Dual Bootloader Deployment:** Automatically installs both **UEFI** (`x86_64-efi` with removable fallback `BOOTX64.EFI`) and **Legacy BIOS** (`i386-pc`) bootloaders, ensuring the hard drive boots on any virtual machine (Hyper-V Gen 1/2, VirtualBox) or physical PC.
 - **100% RAM Overlay on Disk:** The installed drive boots its image through live-boot exactly like the ISO (`labkiosk.installed=1 noeject panic=10` on the command line), so the squashfs is the read-only lower layer and every write goes to RAM, guaranteeing zero flash storage wear and clean resets on reboot even after permanent installation. The `LABKIOSK_DATA` partition above is the deliberate exception; nothing is written into a system image after installation.
 - **Image Store:** Copies the live medium's system image (squashfs, kernel, initrd) to `images/<version>/` (the version from `/usr/share/labkiosk/version`) instead of copying a root filesystem, installs the shared `usr/share/labkiosk/boot/grub.cfg` verbatim, and runs `grub-install` with `--boot-directory` on `ROOT`. Everything is located before `wipefs`, so a medium that cannot produce a bootable disk fails before the disk is erased.
-- **One-Try Boot & Rollback:** `boot/grub/grubenv` holds `current`, `previous`, `next` and `next_tries`. GRUB spends the try before booting `next`, and any failure falls back to `current`. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every installed boot: it confirms a new image once the agent and browser have stayed up for a minute, and otherwise reboots into the old one. `labkiosk-boot-slots` (root only) also offers `status`, `try VERSION` and `init VERSION`. To test a slot on a kiosk with no shell, mount `LABKIOSK_ROOT` elsewhere and run `grub-editenv boot/grub/grubenv set next=VERSION next_tries=1`. This is phase 1 of over-the-air updates (`docs/OTA_UPDATES.md`); downloading, signing, approving and LAN-sharing updates are not implemented yet.
+- **One-Try Boot & Rollback:** `boot/grub/grubenv` holds `current`, `previous`, `next` and `next_tries`. GRUB spends the try before booting `next`, and any failure falls back to `current`. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every installed boot: it confirms a new image once the agent and browser have stayed up for a minute, and otherwise reboots into the old one. `labkiosk-boot-slots` (root only) also offers `status`, `try VERSION` and `init VERSION`. To test a slot on a kiosk with no shell, mount `LABKIOSK_ROOT` elsewhere and run `grub-editenv boot/grub/grubenv set next=VERSION next_tries=1`.
+- **Signed Downloads (run by hand):** `labkiosk-update download URL` fetches a signed release (see [Over-the-air releases](#-over-the-air-releases)), verifies its manifest with `gpgv` against the keys in `/usr/share/labkiosk/update-keys/`, refuses anything below `/usr/share/labkiosk/security-floor`, and resumes an interrupted download chunk by chunk. It downloads into `downloads/<version>/` and moves the folder into `images/` only once every file is verified; `labkiosk-update install VERSION` then gives it the one try. Nothing runs it automatically yet: approving updates from the console is phase 3 of `docs/OTA_UPDATES.md`, and LAN sharing is phase 5.
 - **Boot Test in CI:** `.github/workflows/build-iso.yml` runs `tests/vm/boot-test.sh` (QEMU, OVMF, KVM) after every ISO build: install, promotion, a broken squashfs, recovery and an unhealthy image. It needs root and `/dev/kvm`, so it does not run on Windows; legacy BIOS boot is covered only by the GRUB menu tests.
 
 ---
@@ -221,6 +222,25 @@ sudo apt-get update && sudo apt-get install -y live-build debootstrap
 cd distro-builder
 sudo bash build-iso.sh
 ```
+
+---
+
+## 📡 Over-the-air releases
+
+Every tagged release is also an over-the-air update. After the boot test passes, `build-iso.yml` extracts `live/` from the ISO, writes `manifest.json` with `tools/make-release-manifest.py` (size, sha256 and 8 MiB chunk hashes of `vmlinuz`, `initrd.img` and `filesystem.squashfs`, plus the version and the security floor), signs it, checks the signature against the keys the image carries, and uploads the five files to R2 under `releases/<version>/`. A version already in R2 is never overwritten.
+
+It needs, before the first tag:
+
+| Where | Name | What |
+| :--- | :--- | :--- |
+| Repository | `config/includes.chroot/usr/share/labkiosk/update-keys/current.gpg`, `next.gpg` | The release-signing public keys. **The ISO build fails without both.** How to make them: [`update-keys/README.md`](config/includes.chroot/usr/share/labkiosk/update-keys/README.md) |
+| Actions secret | `UPDATE_SIGNING_KEY` | The armored secret key matching `current.gpg` |
+| Actions secret | `UPDATE_SIGNING_PASSPHRASE` | Its passphrase, if it has one |
+| Actions secret | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | An R2 API token with Object Read & Write on the releases bucket |
+| Actions secret | `CLOUDFLARE_ACCOUNT_ID` | Already set for the Worker deploy; it names the R2 endpoint |
+| Actions variable | `R2_RELEASES_BUCKET` | The R2 bucket the releases go to |
+
+A tag must equal `usr/share/labkiosk/version`; a pre-release tag (`v2.7.0-rc1`) is published on the `beta` channel, any other on `stable`. When a release fixes a security hole, raise `usr/share/labkiosk/security-floor` to its version: workstations running it then refuse every older release, however validly signed.
 
 ---
 

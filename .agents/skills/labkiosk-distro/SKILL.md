@@ -75,8 +75,12 @@ Paths are under `distro-builder/`. Authoritative detail: `distro-builder/AGENTS.
   (`labkiosk-core` §2b). The health check talks to the loopback agent with no proxy, ever.
 - The installed kiosk has no shell (getty masked, no SSH). To test a slot by hand, mount
   LABKIOSK_ROOT from elsewhere and `grub-editenv boot/grub/grubenv set next=X next_tries=1`.
-- Only phase 1 of `docs/OTA_UPDATES.md` exists: download, signing, approval UI and LAN sharing are
-  research, not code. Never describe them as features.
+- `labkiosk-update download URL | install VERSION | status` (root only, phase 2) is run by hand:
+  gpgv against `usr/share/labkiosk/update-keys/*.gpg`, the floor in `usr/share/labkiosk/security-floor`,
+  downloads in `downloads/<v>/`, renamed into `images/<v>/` only once verified. Never write a
+  download inside `images/` (GRUB's last resort boots any complete folder there). The build
+  fails without two public keys in `update-keys/`. Tests: `tests/test_update.py`, boot-test
+  scenarios 5–9. Phases 3–5 (automatic trigger, approval UI, LAN sharing) are research, not code.
 
 ## Build the ISO
 

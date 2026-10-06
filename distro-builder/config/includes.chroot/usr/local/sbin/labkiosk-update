@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+"""
+Download and install a signed system image on an installed workstation.
+
+Over-the-air updates, phase 2 (docs/OTA_UPDATES.md sections 5.3 to 5.5). A
+release is five files under one URL, published by build-iso.yml:
+
+    manifest.json        version, kind, security floor, and the size, sha256
+                         and per-chunk sha256 of every file below
+    manifest.json.sig    a detached OpenPGP signature of manifest.json
+    vmlinuz, initrd.img, filesystem.squashfs
+
+    download URL     verify the manifest's signature with the keys this image
+                     carries, refuse a release below the security floor, then
+                     fetch the files into LABKIOSK_ROOT/downloads/<version>/,
+                     resuming with HTTP Range and checking every chunk before it
+                     is written. Once every file's sha256 is verified again from
+                     disk, the folder moves to images/<version>/.
+    install VERSION  verify a downloaded image again (signature, sha256 of every
+                     file, the floor) and give it one try at the next boot, as
+                     `labkiosk-boot-slots try` does.
+    status           print what is downloaded, in progress and staged, as JSON.
+
+A download is never inside images/ until it is complete and verified: GRUB's
+last resort boots any folder there that has the three files, and a half-written
+squashfs has them.
+
+Nothing triggers this yet: it runs as root, by hand. Phase 3 adds the timer, the
+release offer from the control plane and the organization's approval.
+
+Output: JSON on stdout, progress on stderr.
+"""
+
+import argparse
+import hashlib
+import http.client
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+def load_boot_slots():
+    """labkiosk-boot-slots owns grubenv and the boot partition; reuse it, never copy it."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labkiosk-boot-slots")
+    loader = importlib.machinery.SourceFileLoader("labkiosk_boot_slots", path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+slots = load_boot_slots()
+
+# The release-signing public keys this image trusts: the current key and the
+# next one, so the signing key can be rotated without stranding a workstation.
+KEYRING_DIR = "/usr/share/labkiosk/update-keys"
+# The lowest version this image accepts. A release raises it when it fixes a
+# security hole; a validly signed but older, vulnerable release is then refused.
+SECURITY_FLOOR_FILE = "/usr/share/labkiosk/security-floor"
+
+DOWNLOADS_DIR_NAME = "downloads"
+MANIFEST_NAME = "manifest.json"
+SIGNATURE_NAME = "manifest.json.sig"
+VERIFIED_NAME = ".verified"
+
+MANIFEST_KEYS = {"version", "channel", "kind", "baseVersion", "files", "securityFloor", "builtAt"}
+FILE_KEYS = {"name", "size", "sha256", "chunkSize", "chunks"}
+CHANNELS = ("stable", "beta")
+KINDS = ("feature", "security")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}\Z")
+BUILT_AT_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
+
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_SIGNATURE_BYTES = 64 * 1024
+MAX_FILE_BYTES = 8 * 1024 ** 3
+MIN_CHUNK_BYTES = 1024 * 1024
+MAX_CHUNK_BYTES = 64 * 1024 * 1024
+# Left free on LABKIOSK_ROOT after a download: grubenv rewrites and the next
+# promotion must never meet a full disk.
+FREE_SPACE_MARGIN = 64 * 1024 * 1024
+MAX_URL_LENGTH = 2048
+HTTP_TIMEOUT = 60
+READ_BLOCK = 1024 * 1024
+
+GPGV = "/usr/bin/gpgv"
+
+
+def log(message):
+    print(f"[UPDATE] {message}", file=sys.stderr, flush=True)
+
+
+class UpdateError(RuntimeError):
+    """A release that must not be downloaded or installed, and why."""
+
+
+# --------------------------------------------------------------------------
+# Versions
+# --------------------------------------------------------------------------
+
+def version_key(version):
+    """
+    Order versions as Semantic Versioning does: 2.6.0-rc1 < 2.6.0 < 2.6.1.
+
+    Pre-release identifiers compare one dot-separated part at a time; numbers
+    numerically and below words, words in ASCII order, a shorter list first.
+    """
+    if not slots.VERSION_PATTERN.match(version or ""):
+        raise UpdateError(f"{version!r} is not a release version")
+    core, _, pre = version.partition("-")
+    numbers = tuple(int(part) for part in core.split("."))
+    if not pre:
+        return numbers, (1,)
+    parts = []
+    for part in pre.split("."):
+        if not part:
+            raise UpdateError(f"{version!r} has an empty pre-release identifier")
+        parts.append((0, int(part), "") if part.isdigit() else (1, 0, part))
+    return numbers, (0, tuple(parts))
+
+
+def read_security_floor(path=SECURITY_FLOOR_FILE):
+    with open(path, "r", encoding="utf-8") as handle:
+        floor = handle.read().strip()
+    version_key(floor)
+    return floor
+
+
+# --------------------------------------------------------------------------
+# The manifest and its signature
+# --------------------------------------------------------------------------
+
+def keyrings(keyring_dir):
+    try:
+        names = sorted(name for name in os.listdir(keyring_dir) if name.endswith(".gpg"))
+    except FileNotFoundError:
+        names = []
+    paths = [os.path.join(keyring_dir, name) for name in names]
+    paths = [path for path in paths if os.path.isfile(path) and os.path.getsize(path) > 0]
+    if not paths:
+        raise UpdateError(f"no release-signing keys in {keyring_dir}: this image cannot verify an update")
+    return paths
+
+
+def verify_signature(manifest_path, signature_path, keyring_dir, gpgv=GPGV):
+    """
+    Check the detached signature with gpgv against the image's keyrings only.
+
+    gpgv exits 0 for a good signature by any key in the given keyrings; the
+    VALIDSIG status line is required as well, so a change in how gpgv reports
+    an expired or revoked key cannot pass as success.
+    """
+    command = [gpgv, "--status-fd", "1"]
+    for path in keyrings(keyring_dir):
+        command += ["--keyring", os.path.abspath(path)]
+    command += [signature_path, manifest_path]
+    # An empty GNUPGHOME: gpgv must not fall back to a trustedkeys.kbx of root's.
+    with tempfile.TemporaryDirectory(prefix="labkiosk-gpgv-") as home:
+        env = {"GNUPGHOME": home, "PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env=env, timeout=60)
+    valid = [line.split()[2] for line in proc.stdout.splitlines()
+             if line.startswith("[GNUPG:] VALIDSIG ") and len(line.split()) > 2]
+    if proc.returncode != 0 or not valid:
+        detail = proc.stderr.strip().splitlines()[-1:] or ["no valid signature"]
+        raise UpdateError(f"the release signature does not verify: {detail[0]}")
+    return valid[0]
+
+
+def validate_manifest(data):
+    """Parse manifest.json strictly. Every field is checked, nothing is defaulted."""
+    try:
+        manifest = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as err:
+        raise UpdateError(f"manifest.json is not JSON: {err}") from err
+    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS:
+        raise UpdateError(f"manifest.json must have exactly the fields {sorted(MANIFEST_KEYS)}")
+    version = manifest["version"]
+    floor = manifest["securityFloor"]
+    if not isinstance(version, str) or not isinstance(floor, str):
+        raise UpdateError("version and securityFloor must be strings")
+    if version_key(floor) > version_key(version):
+        raise UpdateError(f"the release {version} declares a security floor above itself ({floor})")
+    if manifest["channel"] not in CHANNELS:
+        raise UpdateError(f"unknown channel {manifest['channel']!r}")
+    if manifest["kind"] not in KINDS:
+        raise UpdateError(f"unknown kind {manifest['kind']!r}")
+    base = manifest["baseVersion"]
+    if base is not None and (not isinstance(base, str) or not slots.VERSION_PATTERN.match(base)):
+        raise UpdateError(f"baseVersion {base!r} is not a release version")
+    if manifest["kind"] == "security" and base is None:
+        raise UpdateError("a security release must name the release it rebuilds (baseVersion)")
+    if not isinstance(manifest["builtAt"], str) or not BUILT_AT_PATTERN.match(manifest["builtAt"]):
+        raise UpdateError(f"builtAt {manifest['builtAt']!r} is not a UTC timestamp")
+
+    files = manifest["files"]
+    if not isinstance(files, list) or not all(isinstance(entry, dict) for entry in files) \
+            or sorted(str(entry.get("name")) for entry in files) != sorted(slots.IMAGE_FILES):
+        raise UpdateError(f"manifest.json must list exactly {', '.join(slots.IMAGE_FILES)}")
+    for entry in files:
+        if set(entry) != FILE_KEYS:
+            raise UpdateError(f"{entry['name']} must have exactly the fields {sorted(FILE_KEYS)}")
+        size, chunk, chunks = entry["size"], entry["chunkSize"], entry["chunks"]
+        if type(size) is not int or not 0 < size <= MAX_FILE_BYTES:
+            raise UpdateError(f"{entry['name']}: size {size!r} is out of range")
+        if type(chunk) is not int or not MIN_CHUNK_BYTES <= chunk <= MAX_CHUNK_BYTES:
+            raise UpdateError(f"{entry['name']}: chunkSize {chunk!r} is out of range")
+        if not isinstance(entry["sha256"], str) or not SHA256_PATTERN.match(entry["sha256"]):
+            raise UpdateError(f"{entry['name']}: sha256 is not a lowercase hex digest")
+        if not isinstance(chunks, list) or len(chunks) != -(-size // chunk):
+            raise UpdateError(f"{entry['name']}: expected {-(-size // chunk)} chunk hashes")
+        if not all(isinstance(value, str) and SHA256_PATTERN.match(value) for value in chunks):
+            raise UpdateError(f"{entry['name']}: a chunk hash is not a lowercase hex digest")
+    return manifest
+
+
+def check_release(manifest, floor, running, env, root):
+    """
+    Refuse a release this disk must not take, before anything is written.
+
+    True when it is already downloaded and verified: there is nothing to do.
+    """
+    version = manifest["version"]
+    if version_key(version) < version_key(floor):
+        raise UpdateError(f"{version} is below this workstation's security floor {floor}")
+    if version in (running, env.get("current")):
+        raise UpdateError(f"{version} is already the image this workstation boots")
+    folder = os.path.join(root, slots.IMAGES_DIR_NAME, version)
+    if os.path.isfile(os.path.join(folder, VERIFIED_NAME)):
+        return True
+    if os.path.lexists(folder):
+        raise UpdateError(f"{version} is already on this disk, but not as a verified download")
+    return False
+
+
+# --------------------------------------------------------------------------
+# Files on disk
+# --------------------------------------------------------------------------
+
+def fsync_dir(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_file(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def read_file(path, limit):
+    with open(path, "rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise UpdateError(f"{path} is larger than {limit} bytes")
+    return data
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(READ_BLOCK), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def remove_tree(path):
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        os.unlink(path)
+
+
+def verified_chunks(path, entry):
+    """
+    How many leading chunks of a partial file match the manifest.
+
+    The rest of the file -- a chunk cut short by a power cut, or one the disk
+    damaged -- is truncated away, so a resumed download never builds on bytes
+    it has not checked.
+    """
+    if not os.path.isfile(path):
+        return 0
+    chunk = entry["chunkSize"]
+    good = 0
+    with open(path, "rb") as handle:
+        while good < len(entry["chunks"]):
+            data = handle.read(chunk)
+            expected = min(chunk, entry["size"] - good * chunk)
+            if len(data) != expected or hashlib.sha256(data).hexdigest() != entry["chunks"][good]:
+                break
+            good += 1
+    if os.path.getsize(path) != min(good * chunk, entry["size"]):
+        with open(path, "r+b") as handle:
+            handle.truncate(min(good * chunk, entry["size"]))
+            handle.flush()
+            os.fsync(handle.fileno())
+    return good
+
+
+# --------------------------------------------------------------------------
+# HTTP
+# --------------------------------------------------------------------------
+
+def release_url(base_url, name):
+    if len(base_url) > MAX_URL_LENGTH:
+        raise UpdateError("the release URL is too long")
+    parts = urllib.parse.urlsplit(base_url)
+    if parts.scheme not in ("https", "http") or not parts.hostname or parts.username or parts.password \
+            or parts.query or parts.fragment:
+        raise UpdateError(f"{base_url!r} is not an http(s) release URL")
+    # The signature and the hashes carry the integrity, not the transport.
+    return base_url.rstrip("/") + "/" + name
+
+
+def fetch_small(opener, url, limit):
+    try:
+        with opener.open(url, timeout=HTTP_TIMEOUT) as response:
+            data = response.read(limit + 1)
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
+        raise UpdateError(f"could not fetch {url}: {err}") from err
+    if len(data) > limit:
+        raise UpdateError(f"{url} is larger than {limit} bytes")
+    return data
+
+
+def fetch_file(opener, url, path, entry, start_chunk, progress):
+    """Append chunks start_chunk.. to path, checking each one before it is written."""
+    chunk = entry["chunkSize"]
+    offset = start_chunk * chunk
+    request = urllib.request.Request(url)
+    if offset:
+        request.add_header("Range", f"bytes={offset}-")
+    try:
+        response = opener.open(request, timeout=HTTP_TIMEOUT)
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
+        raise UpdateError(f"could not fetch {url}: {err}") from err
+    with response:
+        if offset:
+            expected_range = f"bytes {offset}-{entry['size'] - 1}/{entry['size']}"
+            if response.status != 206 or response.headers.get("Content-Range") != expected_range:
+                raise UpdateError(f"{url} did not resume at byte {offset} "
+                                  f"(HTTP {response.status}, {response.headers.get('Content-Range')!r})")
+        elif response.status != 200:
+            raise UpdateError(f"{url} answered HTTP {response.status}")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            for index in range(start_chunk, len(entry["chunks"])):
+                expected = min(chunk, entry["size"] - index * chunk)
+                try:
+                    data = response.read(expected)
+                except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
+                    raise UpdateError(f"{entry['name']}: the download stopped: {err}") from err
+                if len(data) != expected:
+                    raise UpdateError(f"{entry['name']}: the download stopped at chunk {index}")
+                if hashlib.sha256(data).hexdigest() != entry["chunks"][index]:
+                    raise UpdateError(f"{entry['name']}: chunk {index} does not match the signed manifest")
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+                progress(len(data))
+        finally:
+            os.close(fd)
+
+
+# --------------------------------------------------------------------------
+# Commands, against an image store at `root`
+# --------------------------------------------------------------------------
+
+def free_old_images(root, boot_dir, env, keep):
+    """
+    Delete every image but the ones in `keep`, and forget them in grubenv.
+
+    Only one update ever waits (section 5.4): a newer release replaces a
+    downloaded or staged one, and the rollback image makes room for it.
+    """
+    images = os.path.join(root, slots.IMAGES_DIR_NAME)
+    removed = []
+    for name in sorted(os.listdir(images)):
+        if name not in keep:
+            remove_tree(os.path.join(images, name))
+            removed.append(name)
+    changed = dict(env)
+    if changed.get("previous") and changed["previous"] not in keep:
+        del changed["previous"]
+    if changed.get("next") and changed["next"] not in keep:
+        changed.pop("next")
+        changed.pop("next_tries", None)
+    if changed != env:
+        slots.write_env(boot_dir, changed)
+    if removed:
+        fsync_dir(images)
+        log(f"removed {', '.join(removed)} to make room")
+    return removed
+
+
+def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV):
+    """
+    Fetch, verify and store a signed release in root/images/<version>.
+
+    `root` is the image store, written to directly: the caller makes it
+    writable and serializes access (boot_partition_writable on a workstation).
+    """
+    opener = opener or urllib.request.build_opener()
+    boot_dir = os.path.join(root, slots.BOOT_DIR_NAME)
+    env = slots.read_env(boot_dir)
+    if slots.classify(env, running) == "trial":
+        raise UpdateError(f"{running} is on its one try and not yet confirmed; download after the boot check")
+
+    with tempfile.TemporaryDirectory(prefix="labkiosk-release-") as scratch:
+        manifest_path = os.path.join(scratch, MANIFEST_NAME)
+        signature_path = os.path.join(scratch, SIGNATURE_NAME)
+        manifest_data = fetch_small(opener, release_url(base_url, MANIFEST_NAME), MAX_MANIFEST_BYTES)
+        signature_data = fetch_small(opener, release_url(base_url, SIGNATURE_NAME), MAX_SIGNATURE_BYTES)
+        write_file(manifest_path, manifest_data)
+        write_file(signature_path, signature_data)
+        signer = verify_signature(manifest_path, signature_path, keyring_dir, gpgv)
+    manifest = validate_manifest(manifest_data)
+    version = manifest["version"]
+    log(f"{version} ({manifest['kind']}, {manifest['channel']}) is signed by {signer}")
+    if check_release(manifest, floor, running, env, root):
+        log(f"{version} is already downloaded and verified")
+        return {"downloaded": version, "kind": manifest["kind"], "channel": manifest["channel"],
+                "signer": signer, "already": True}
+
+    free_old_images(root, boot_dir, env, keep={running, env.get("current")})
+
+    downloads = os.path.join(root, DOWNLOADS_DIR_NAME)
+    os.makedirs(downloads, mode=0o755, exist_ok=True)
+    for name in os.listdir(downloads):
+        if name != version:
+            remove_tree(os.path.join(downloads, name))
+            log(f"discarded the unfinished download of {name}")
+    folder = os.path.join(downloads, version)
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    stored = os.path.join(folder, MANIFEST_NAME)
+    if os.path.isfile(stored) and read_file(stored, MAX_MANIFEST_BYTES) != manifest_data:
+        # The same version, published twice: nothing already on disk is known good.
+        for name in os.listdir(folder):
+            remove_tree(os.path.join(folder, name))
+        log(f"the manifest of {version} changed; starting its download again")
+    write_file(stored, manifest_data)
+    write_file(os.path.join(folder, SIGNATURE_NAME), signature_data)
+    fsync_dir(folder)
+
+    have = {}
+    for entry in manifest["files"]:
+        have[entry["name"]] = verified_chunks(os.path.join(folder, entry["name"]), entry)
+    remaining = sum(entry["size"] - min(have[entry["name"]] * entry["chunkSize"], entry["size"])
+                    for entry in manifest["files"])
+    usage = shutil.disk_usage(folder)
+    if usage.free < remaining + FREE_SPACE_MARGIN:
+        raise UpdateError(f"{remaining} bytes to download but only {usage.free} free on the image store")
+    resumed = sum(have.values())
+    log(f"downloading {remaining} bytes" + (f", resuming after {resumed} verified chunks" if resumed else ""))
+
+    done = [0]
+
+    def progress(count):
+        before = done[0] * 10 // max(remaining, 1)
+        done[0] += count
+        if done[0] * 10 // max(remaining, 1) != before:
+            log(f"{done[0] * 100 // max(remaining, 1)}% of {remaining} bytes")
+
+    for entry in manifest["files"]:
+        if have[entry["name"]] < len(entry["chunks"]):
+            fetch_file(opener, release_url(base_url, entry["name"]), os.path.join(folder, entry["name"]),
+                       entry, have[entry["name"]], progress)
+
+    for entry in manifest["files"]:
+        path = os.path.join(folder, entry["name"])
+        if os.path.getsize(path) != entry["size"] or sha256_file(path) != entry["sha256"]:
+            remove_tree(path)
+            raise UpdateError(f"{entry['name']} does not match its sha256 once on disk; it was discarded")
+    write_file(os.path.join(folder, VERIFIED_NAME), (hashlib.sha256(manifest_data).hexdigest() + "\n").encode())
+    fsync_dir(folder)
+    target = os.path.join(root, slots.IMAGES_DIR_NAME, version)
+    os.rename(folder, target)
+    fsync_dir(downloads)
+    fsync_dir(os.path.join(root, slots.IMAGES_DIR_NAME))
+    log(f"{version} is downloaded and verified")
+    return {"downloaded": version, "kind": manifest["kind"], "channel": manifest["channel"],
+            "signer": signer, "already": False}
+
+
+def verify_image(root, version, floor, keyring_dir, gpgv=GPGV):
+    """Check a downloaded image again: its signature, every file's sha256, the floor."""
+    if not slots.VERSION_PATTERN.match(version or ""):
+        raise UpdateError(f"{version!r} is not a release version")
+    folder = os.path.join(root, slots.IMAGES_DIR_NAME, version)
+    manifest_path = os.path.join(folder, MANIFEST_NAME)
+    marker = os.path.join(folder, VERIFIED_NAME)
+    if not os.path.isfile(marker) or not os.path.isfile(manifest_path):
+        raise UpdateError(f"{version} is not a verified download on this disk")
+    manifest_data = read_file(manifest_path, MAX_MANIFEST_BYTES)
+    if read_file(marker, 128).decode("ascii", "replace").strip() != hashlib.sha256(manifest_data).hexdigest():
+        raise UpdateError(f"{version} was not verified with the manifest stored beside it")
+    verify_signature(manifest_path, os.path.join(folder, SIGNATURE_NAME), keyring_dir, gpgv)
+    manifest = validate_manifest(manifest_data)
+    if manifest["version"] != version:
+        raise UpdateError(f"the folder {version} holds the release {manifest['version']}")
+    if version_key(version) < version_key(floor):
+        raise UpdateError(f"{version} is below this workstation's security floor {floor}")
+    for entry in manifest["files"]:
+        path = os.path.join(folder, entry["name"])
+        if not os.path.isfile(path) or os.path.getsize(path) != entry["size"] \
+                or sha256_file(path) != entry["sha256"]:
+            raise UpdateError(f"{version}/{entry['name']} no longer matches its signed sha256")
+    return manifest
+
+
+def install(root, version, running, floor, keyring_dir, gpgv=GPGV):
+    """Give a verified download its one try at the next boot."""
+    if version == running:
+        raise UpdateError(f"{version} is the image running now")
+    verify_image(root, version, floor, keyring_dir, gpgv)
+    boot_dir = os.path.join(root, slots.BOOT_DIR_NAME)
+    env = slots.read_env(boot_dir)
+    env["next"] = version
+    env["next_tries"] = "1"
+    slots.write_env(boot_dir, env)
+    log(f"{version} gets one try at the next boot; {env.get('current', '')} stays the fallback")
+    return {"next": version, "current": env.get("current", "")}
+
+
+def status(root, running):
+    env = slots.read_env(os.path.join(root, slots.BOOT_DIR_NAME))
+    images = {}
+    for name in slots.complete_images(root):
+        images[name] = os.path.isfile(os.path.join(root, slots.IMAGES_DIR_NAME, name, VERIFIED_NAME))
+    downloading = {}
+    downloads = os.path.join(root, DOWNLOADS_DIR_NAME)
+    if os.path.isdir(downloads):
+        for name in sorted(os.listdir(downloads)):
+            folder = os.path.join(downloads, name)
+            downloading[name] = sum(os.path.getsize(os.path.join(folder, file))
+                                    for file in slots.IMAGE_FILES
+                                    if os.path.isfile(os.path.join(folder, file)))
+    return {
+        "running": running,
+        "env": env,
+        "images": [{"version": name, "verified": verified} for name, verified in images.items()],
+        "downloading": [{"version": name, "bytes": size} for name, size in downloading.items()],
+    }
+
+
+# --------------------------------------------------------------------------
+# The workstation
+# --------------------------------------------------------------------------
+
+def workstation():
+    running, _ = slots.installed_context()
+    if running is None:
+        raise UpdateError("only an installed system keeps images on its disk; a live session updates by re-flashing")
+    return running
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    download_parser = sub.add_parser("download", help="download and verify a signed release")
+    download_parser.add_argument("url", help="the release folder, holding manifest.json")
+    install_parser = sub.add_parser("install", help="boot a downloaded release once, at the next boot")
+    install_parser.add_argument("version")
+    sub.add_parser("status", help="print what is downloaded and staged as JSON")
+    args = parser.parse_args()
+
+    try:
+        if os.geteuid() != 0:
+            raise PermissionError("must run as root")
+        running = workstation()
+        if args.command == "status":
+            result = status(slots.BOOT_MEDIUM, running)
+        else:
+            floor = read_security_floor()
+            with slots.boot_partition_writable():
+                if args.command == "download":
+                    result = download(slots.BOOT_MEDIUM, args.url, running, floor, KEYRING_DIR)
+                else:
+                    result = install(slots.BOOT_MEDIUM, args.version, running, floor, KEYRING_DIR)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as err:
+        log(f"ERROR: {err}")
+        print(json.dumps({"error": str(err)}))
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

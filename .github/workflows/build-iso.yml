@@ -47,6 +47,33 @@ jobs:
             echo "::warning file=distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin::No GRUB password is pinned. This release ISO boots with an editable boot menu; see distro-builder/README.md 'Securing the Boot Chain'."
           fi
 
+      # Over-the-air updates, phase 2: a release is also a signed update in R2.
+      # Checked before the 15-minute build, so a release missing its key or
+      # its bucket fails in seconds rather than after the boot test.
+      - name: Check the over-the-air release settings (on tag)
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_RELEASES_BUCKET: ${{ vars.R2_RELEASES_BUCKET }}
+        run: |
+          missing=""
+          for name in UPDATE_SIGNING_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY CLOUDFLARE_ACCOUNT_ID R2_RELEASES_BUCKET; do
+            if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::A release is signed and uploaded to R2, and these are not set:$missing. See distro-builder/README.md 'Over-the-air releases'."
+            exit 1
+          fi
+          version="$(tr -d '[:space:]' < distro-builder/config/includes.chroot/usr/share/labkiosk/version)"
+          tag="${GITHUB_REF_NAME#[vV]}"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME does not match usr/share/labkiosk/version ($version)."
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -111,6 +138,78 @@ jobs:
           path: ${{ runner.temp }}/boot-test/*.ppm
           if-no-files-found: ignore
           retention-days: 7
+
+      # The manifest names every file's size, sha256 and 8 MiB chunk hashes; its
+      # detached signature is what a workstation checks with gpgv before it
+      # downloads a byte (docs/OTA_UPDATES.md section 5.3). The signature is
+      # verified here against the keys the image carries, so a secret that does
+      # not match them can never publish a release no workstation would take.
+      - name: Sign the over-the-air release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_SIGNING_PASSPHRASE: ${{ secrets.UPDATE_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          share=distro-builder/config/includes.chroot/usr/share/labkiosk
+          version="$(tr -d '[:space:]' < "$share/version")"
+          case "$version" in *-*) channel=beta ;; *) channel=stable ;; esac
+          release="$RUNNER_TEMP/release"
+          rm -rf "$release"
+          mkdir -p "$release"
+          xorriso -osirrox on -indev distro-builder/out/labkiosk-debian12-amd64.iso \
+            -extract /live/vmlinuz "$release/vmlinuz" \
+            -extract /live/initrd.img "$release/initrd.img" \
+            -extract /live/filesystem.squashfs "$release/filesystem.squashfs" >/dev/null 2>&1
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" python3 distro-builder/tools/make-release-manifest.py \
+            --live "$release" --version "$version" \
+            --security-floor "$(tr -d '[:space:]' < "$share/security-floor")" \
+            --channel "$channel" --out "$release/manifest.json"
+
+          GNUPGHOME="$(mktemp -d)"
+          export GNUPGHOME
+          trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" | gpg --batch --import
+          printf '%s' "${UPDATE_SIGNING_PASSPHRASE:-}" | gpg --batch --yes --pinentry-mode loopback \
+            --passphrase-fd 0 --detach-sign --output "$release/manifest.json.sig" "$release/manifest.json"
+
+          keyrings=()
+          for keyring in "$share"/update-keys/*.gpg; do keyrings+=(--keyring "$PWD/$keyring"); done
+          GNUPGHOME="$(mktemp -d)" gpgv "${keyrings[@]}" "$release/manifest.json.sig" "$release/manifest.json"
+          ls -l "$release"
+
+      # Each release is a folder of its own, written once: a manifest that
+      # changed under a workstation halfway through its download would make it
+      # start again. The manifest goes last, so a release is never visible
+      # before its files are.
+      - name: Upload the over-the-air release to R2 (on tag)
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # R2 does not accept the default CRC checksums of newer AWS CLIs.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_RELEASES_BUCKET: ${{ vars.R2_RELEASES_BUCKET }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < distro-builder/config/includes.chroot/usr/share/labkiosk/version)"
+          endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="releases/$version"
+          if found="$(aws s3api head-object --endpoint-url "$endpoint" --bucket "$R2_RELEASES_BUCKET" \
+                        --key "$prefix/manifest.json" 2>&1)"; then
+            echo "::error::$prefix is already published in R2. A release is never overwritten; bump the version."
+            exit 1
+          elif ! printf '%s' "$found" | grep -q '(404)'; then
+            echo "::error::Could not check R2 for $prefix: $found"
+            exit 1
+          fi
+          for name in vmlinuz initrd.img filesystem.squashfs manifest.json.sig manifest.json; do
+            aws s3 cp --no-progress --endpoint-url "$endpoint" \
+              "$RUNNER_TEMP/release/$name" "s3://$R2_RELEASES_BUCKET/$prefix/$name"
+          done
 
       - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')

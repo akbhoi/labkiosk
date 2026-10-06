@@ -129,6 +129,7 @@ The menu offers a default entry, a **Load into RAM (toram)** entry, an **Install
 config/includes.chroot/usr/share/labkiosk/cloudflared.pin   release tag + SHA-256
 config/includes.chroot/usr/share/labkiosk/grub.pin          PBKDF2 boot-menu hash
 config/includes.chroot/usr/share/labkiosk/novnc.pin         noVNC version + SHA-256
+config/includes.chroot/usr/share/labkiosk/update-keys/      release-signing public keys (current + next)
 ```
 
 | Pin | Unset | Wrong |
@@ -136,6 +137,7 @@ config/includes.chroot/usr/share/labkiosk/novnc.pin         noVNC version + SHA-
 | `cloudflared.pin` | Builds without the tunnel binary | **Build fails** |
 | `grub.pin` | Builds with a loud warning; live menu stays editable | **Build fails** |
 | `novnc.pin` | **Build fails** — remote control needs the client | **Build fails** |
+| `update-keys/*.gpg` | **Build fails** — the image could never verify an update | **Build fails** (not a binary public key) |
 
 Never invent a value to make a build go green. → [Kiosk Hardening](Kiosk-Hardening#build-pins-fail-closed)
 
@@ -149,7 +151,9 @@ Run these before packaging — CI runs them too:
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-update
 
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
@@ -168,7 +172,7 @@ shellcheck -S warning \
 
 ## CI
 
-`.github/workflows/build-iso.yml` builds the ISO on version tags (`v*`) and on manual dispatch, frees disk space on the runner first, warns when a release build has no GRUB password pinned, verifies the checksum, and uploads the artifact. It then boot-tests the ISO before any release: `distro-builder/tests/vm/boot-test.sh` installs it onto a virtual disk with the real installer and boots that disk in QEMU (UEFI, KVM) to prove the one-try boot, the promotion of a new image and both kinds of rollback. A failing scenario uploads VM screenshots, and no GitHub Release is created. → [Testing Guide](Testing-Guide#boot-test-of-the-installed-disk)
+`.github/workflows/build-iso.yml` builds the ISO on version tags (`v*`) and on manual dispatch, frees disk space on the runner first, warns when a release build has no GRUB password pinned, verifies the checksum, and uploads the artifact. It then boot-tests the ISO before any release: `distro-builder/tests/vm/boot-test.sh` installs it onto a virtual disk with the real installer and boots that disk in QEMU (UEFI, KVM) to prove the one-try boot, the promotion of a new image and both kinds of rollback. It then downloads a release signed with a throwaway key onto that disk with the image's own `labkiosk-update`: a download killed halfway is never booted and resumes, a tampered manifest and a signed downgrade are refused, and the finished download installs and is promoted. A failing scenario uploads VM screenshots, and no GitHub Release is created. On a tag, the release is then signed and uploaded to R2 as an over-the-air update ([distro-builder README](https://github.com/akbhoi/labkiosk/blob/main/distro-builder/README.md#-over-the-air-releases)). → [Testing Guide](Testing-Guide#boot-test-of-the-installed-disk)
 
 `.github/workflows/ci.yml` runs on every push: both Docker images build (no push), the worker is typechecked and tested, and the client checks above all run.
 
