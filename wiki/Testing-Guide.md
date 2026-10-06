@@ -152,7 +152,7 @@ shellcheck -S warning \
 
 CI additionally validates that `manifest.json` and the Chromium policy are well-formed JSON.
 
-The unit tests (`distro-builder/tests/test_client.py`) cover the agent's loopback boundary, enrolment and control channel, and the installed disk: the GRUB environment and the one-try boot, the installed boot menu (every entry `--unrestricted`, the try spent before the new image boots, `labkiosk.installed=1` and `noeject`), the health check that confirms or rolls back a new image, the data partition pinned by UUID and never by label, seeding that never follows links, and boot-outcome reporting.
+The unit tests (`distro-builder/tests/test_client.py`) cover the agent's loopback boundary, enrolment and control channel, and the installed disk: the GRUB environment and the one-try boot, the installed boot menu (every entry `--unrestricted`, the try spent before the new image boots, `labkiosk.installed=1` and `noeject`), the health check that confirms or rolls back a new image, the data partition pinned by UUID and never by label, seeding that never follows links, and boot-outcome reporting. `distro-builder/tests/test_update.py` covers the signed download (`labkiosk-update`) against a release served on loopback and signed with a key made for the run: resuming after a cut connection, a damaged partial, a chunk that does not match, tampered and foreign signatures, the security floor, and install re-verifying everything. It needs `gpg` and `gpgv`.
 
 ### Boot test of the installed disk
 
@@ -164,12 +164,19 @@ The unit tests (`distro-builder/tests/test_client.py`) cover the agent's loopbac
 | `broken` | An image with a damaged squashfs fails to boot, reboots by itself (`panic=10`), and the try is spent |
 | `recover` | The next boot is the current image again, and it stays up |
 | `unhealthy` | An image that boots but whose kiosk never comes up is rebooted away from after the 10-minute health deadline |
+| `cut` | A download killed partway through the squashfs leaves nothing in `images/`, and the disk still boots its image |
+| `tampered` | A manifest changed after signing is refused, and nothing on the disk changes |
+| `downgrade` | A validly signed release below the security floor is refused, and nothing on the disk changes |
+| `resume` | The killed download continues from its last good chunk and is verified |
+| `update` | The download installs, gets its one try and becomes current |
+
+The last five run the ISO's own `labkiosk-update` from the host against the mounted disk (the kiosk has no shell), with a release signed by a throwaway key; `cut` kills that process rather than the VM's power.
 
 ```bash
 sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso [workdir]
 ```
 
-It needs root, `/dev/kvm`, `qemu-system-x86`, `ovmf`, `xorriso`, `squashfs-tools`, `e2fsprogs`, `fdisk` and `python3`, so it does not run on Windows. A screenshot of the VM is saved for every scenario that fails. Legacy BIOS boot of the installed disk is covered only by the GRUB menu unit tests.
+It needs root, `/dev/kvm`, `qemu-system-x86`, `ovmf`, `xorriso`, `squashfs-tools`, `e2fsprogs`, `fdisk`, `python3`, `gpg` and `gpgv`, so it does not run on Windows. A screenshot of the VM is saved for every scenario that fails. Legacy BIOS boot of the installed disk is covered only by the GRUB menu unit tests.
 
 An installed kiosk has no shell (getty masked, no SSH). To try a slot by hand, mount `LABKIOSK_ROOT` from another system and run `grub-editenv boot/grub/grubenv set next=<version> next_tries=1`.
 

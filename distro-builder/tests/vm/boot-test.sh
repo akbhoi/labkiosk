@@ -12,12 +12,27 @@
 #   4. unhealthy an image that boots but whose kiosk never comes up is
 #                rebooted away from after the 10-minute health deadline
 #
+# Then the signed download of phase 2. The kiosk has no shell, so the ISO's
+# own labkiosk-update runs from the host on the disk's mounted image store,
+# against a release signed with a key made for this run, served on loopback:
+#
+#   5. cut       the download is killed (SIGKILL) partway through the squashfs:
+#                nothing reaches images/, and the disk still boots its image
+#   6. tampered  a manifest changed after signing is refused; nothing changes
+#   7. downgrade a validly signed release below the security floor is refused
+#   8. resume    the download continues where it stopped and is verified
+#   9. update    installed, the download gets its one try and becomes current
+#
+# Scenario 5 kills the process, not the VM's power. What it proves is what a
+# power cut leaves behind: an unfinished download is never booted, and the
+# next run resumes it.
+#
 # The results are read from boot/grub/grubenv on the virtual disk, the same
 # file GRUB and labkiosk-boot-slots use. A screenshot of the VM is saved for
 # every scenario that fails.
 #
 # Needs root, /dev/kvm (GitHub's Linux runners have it) and:
-#   qemu-system-x86 ovmf xorriso squashfs-tools e2fsprogs fdisk python3
+#   qemu-system-x86 ovmf xorriso squashfs-tools e2fsprogs fdisk python3 gpg gpgv
 #
 # Usage: sudo distro-builder/tests/vm/boot-test.sh path/to/labkiosk-debian12-amd64.iso [workdir]
 set -euo pipefail
@@ -40,8 +55,11 @@ DISK="$WORK/disk.img"
 ROOTFS="$WORK/rootfs"
 LIVE="$WORK/live"
 STAGE="$WORK/stage"
+RELEASES="$WORK/releases"
 VM_PID=""
 LOOP=""
+SERVER_PID=""
+DOWNLOAD_PID=""
 FAILED=0
 
 log() { printf '[boot-test] %s\n' "$*"; }
@@ -51,6 +69,14 @@ pass() { printf '[boot-test] PASS %s\n' "$*"; }
 
 cleanup() {
     stop_vm
+    for pid in "$DOWNLOAD_PID" "$SERVER_PID"; do
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+        fi
+    done
+    if [ -d "$WORK/gnupg" ]; then
+        gpgconf --homedir "$WORK/gnupg" --kill gpg-agent
+    fi
     for mount_point in "$STAGE" "$ROOTFS/run/live/medium/live" "$ROOTFS/run" "$ROOTFS/tmp" \
                        "$ROOTFS/sys" "$ROOTFS/proc" "$ROOTFS/dev"; do
         if mountpoint -q "$mount_point"; then
@@ -66,7 +92,7 @@ trap cleanup EXIT
 [ "$(id -u)" = 0 ] || die "run as root: it partitions a loop device and chroots into the image"
 [ -f "$ISO" ] || die "no ISO at $ISO"
 [ -w /dev/kvm ] || die "/dev/kvm is not available: without KVM the kiosk cannot come up inside the 10-minute health window"
-for tool in qemu-system-x86_64 xorriso unsquashfs mksquashfs debugfs sfdisk losetup python3; do
+for tool in qemu-system-x86_64 xorriso unsquashfs mksquashfs debugfs sfdisk losetup python3 gpg gpgv gpgconf; do
     command -v "$tool" >/dev/null || die "$tool is not installed"
 done
 [ -f "$OVMF_CODE" ] && [ -f "$OVMF_VARS" ] || die "OVMF firmware not found under /usr/share/OVMF"
@@ -315,6 +341,159 @@ else
     fail "unhealthy: still running after $UNHEALTHY_TIMEOUT s"
     stop_vm
 fi
+
+# --------------------------------------------------------------------------
+# Phase 2: a signed release, downloaded by the image's own labkiosk-update
+# --------------------------------------------------------------------------
+UPDATE="$ROOTFS/usr/local/sbin/labkiosk-update"
+FLOOR="$(tr -d '[:space:]' < "$ROOTFS/usr/share/labkiosk/security-floor")"
+IFS=. read -r major minor patch <<< "$BASE"
+V_OTA="$major.$minor.$((patch + 1))"
+V_OLD="0.0.1"
+KEYS="$WORK/update-keys"
+log "Release $V_OTA signed with a key made for this run; security floor $FLOOR"
+
+export GNUPGHOME="$WORK/gnupg"
+mkdir -m 0700 "$GNUPGHOME"
+mkdir "$KEYS"
+gpg --batch --pinentry-mode loopback --passphrase '' \
+    --quick-gen-key "Lab Kiosk boot test <boot-test@example.invalid>" ed25519 sign never 2>/dev/null
+gpg --batch --export > "$KEYS/current.gpg"
+
+# publish VERSION FLOOR: a signed release folder under $RELEASES. The image
+# files are hard links: the version lives in the signed manifest, as on R2.
+publish() {
+    mkdir -p "$RELEASES/$1"
+    for name in vmlinuz initrd.img filesystem.squashfs; do
+        ln "$LIVE/$name" "$RELEASES/$1/$name"
+    done
+    python3 "$HERE/../../tools/make-release-manifest.py" --live "$RELEASES/$1" --version "$1" \
+        --security-floor "$2" --channel stable --out "$RELEASES/$1/manifest.json"
+    gpg --batch --yes --detach-sign --output "$RELEASES/$1/manifest.json.sig" "$RELEASES/$1/manifest.json"
+}
+publish "$V_OTA" "$FLOOR"
+publish "$V_OLD" "$V_OLD"
+mkdir "$RELEASES/tampered"
+cp "$RELEASES/$V_OTA/manifest.json.sig" "$RELEASES/tampered/"
+sed 's/"stable"/"beta"/' "$RELEASES/$V_OTA/manifest.json" > "$RELEASES/tampered/manifest.json"
+if cmp -s "$RELEASES/$V_OTA/manifest.json" "$RELEASES/tampered/manifest.json"; then
+    die "the tampered manifest is no different from the signed one"
+fi
+
+# 50 MB/s: the whole release in well under a minute, slow enough to be cut.
+python3 "$HERE/release_server.py" "$RELEASES" --rate 50000000 > "$WORK/server.port" &
+SERVER_PID=$!
+for _ in $(seq 50); do
+    [ -s "$WORK/server.port" ] && break
+    sleep 0.2
+done
+[ -s "$WORK/server.port" ] || die "the release server did not start"
+URL="http://127.0.0.1:$(cat "$WORK/server.port")"
+
+# update COMMAND TARGET: labkiosk-update on the mounted image store, as the
+# disk's current image would run it.
+update() {
+    python3 "$HERE/update_on_disk.py" "$UPDATE" "$1" "$STAGE" "$2" "$V_GOOD" "$FLOOR" "$KEYS"
+}
+
+# Every path, size and time in the image store: a refusal changes none of them.
+store_listing() { (cd "$STAGE" && find . -printf '%p %s %T@\n' | sort); }
+
+log "5. cut: the download of $V_OTA is killed partway through"
+mount_root
+# Started directly, not through update(), so that the PID is python's own.
+python3 "$HERE/update_on_disk.py" "$UPDATE" download "$STAGE" "$URL/$V_OTA" "$V_GOOD" "$FLOOR" "$KEYS" \
+    > "$WORK/download.json" &
+DOWNLOAD_PID=$!
+partial="$STAGE/downloads/$V_OTA/filesystem.squashfs"
+deadline=$((SECONDS + 300))
+while [ "$SECONDS" -lt "$deadline" ] && kill -0 "$DOWNLOAD_PID" 2>/dev/null; do
+    if [ "$(stat -c %s "$partial" 2>/dev/null || echo 0)" -ge $((64 * 1024 * 1024)) ]; then
+        break
+    fi
+    sleep 0.2
+done
+if kill -9 "$DOWNLOAD_PID" 2>/dev/null; then
+    # A SIGKILLed process exits 137 by definition; there is nothing to check.
+    wait "$DOWNLOAD_PID" 2>/dev/null || true
+    DOWNLOAD_PID=""
+    if [ -e "$STAGE/images/$V_OTA" ]; then
+        fail "cut: images/$V_OTA exists after the download was killed"
+    else
+        pass "cut: killed with $(stat -c %s "$partial") bytes of the squashfs on disk, outside images/"
+    fi
+else
+    wait "$DOWNLOAD_PID" 2>/dev/null || true
+    DOWNLOAD_PID=""
+    fail "cut: the download ended before it could be killed: $(cat "$WORK/download.json")"
+fi
+umount_root
+# The download made room: the rollback image and the failed try are gone.
+expect_env "cut" "current=$V_GOOD"
+start_vm
+if wait_for_exit "$RECOVER_SECONDS"; then
+    fail "cut: the VM rebooted within $RECOVER_SECONDS s"
+else
+    expect_env "cut (booted)" "current=$V_GOOD"
+fi
+stop_vm
+
+# refused NUMBER NAME TARGET REASON: a release labkiosk-update must turn down
+# before it writes anything.
+refused() {
+    log "$1. $2: $3 must be refused"
+    mount_root
+    local before
+    before="$(store_listing)"
+    if update download "$3" > "$WORK/$2.json"; then
+        fail "$2: accepted: $(cat "$WORK/$2.json")"
+    elif ! grep -qF "$4" "$WORK/$2.json"; then
+        fail "$2: refused for another reason: $(cat "$WORK/$2.json")"
+    elif [ "$(store_listing)" != "$before" ]; then
+        fail "$2: refused, but the image store changed"
+    else
+        pass "$2: refused ($4), nothing written"
+    fi
+    umount_root
+}
+refused 6 tampered "$URL/tampered" "signature does not verify"
+refused 7 downgrade "$URL/$V_OLD" "below this workstation's security floor"
+
+log "8. resume: the download of $V_OTA continues and is verified"
+mount_root
+if update download "$URL/$V_OTA" > "$WORK/download.json"; then
+    if [ -f "$STAGE/images/$V_OTA/.verified" ] && [ ! -e "$STAGE/downloads/$V_OTA" ]; then
+        pass "resume: $(cat "$WORK/download.json")"
+    else
+        fail "resume: reported success, but images/$V_OTA is not a verified download"
+    fi
+else
+    fail "resume: $(cat "$WORK/download.json")"
+fi
+
+log "9. update: $V_OTA is installed, gets its one try and becomes current"
+if update install "$V_OTA" > "$WORK/install.json"; then
+    pass "update: $(cat "$WORK/install.json")"
+else
+    fail "update: install refused: $(cat "$WORK/install.json")"
+fi
+umount_root
+expect_env "update (staged)" "current=$V_GOOD next=$V_OTA next_tries=1"
+start_vm
+promoted="current=$V_OTA previous=$V_GOOD"
+deadline=$((SECONDS + PROMOTE_TIMEOUT))
+while [ "$SECONDS" -lt "$deadline" ] && vm_running && [ "$(env_now)" != "$promoted" ]; do
+    sleep 10
+done
+if [ "$(env_now)" = "$promoted" ]; then
+    pass "update: grubenv $promoted"
+elif vm_running; then
+    screenshot update
+    fail "update: not promoted within $PROMOTE_TIMEOUT s; grubenv '$(env_now)'"
+else
+    fail "update: the VM rebooted instead (health check failed?); grubenv '$(env_now)'"
+fi
+stop_vm
 
 if [ "$FAILED" -ne 0 ]; then
     log "Some scenarios failed; screenshots (if any) are in $WORK"

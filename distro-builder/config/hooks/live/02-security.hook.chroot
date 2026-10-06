@@ -82,4 +82,33 @@ if [ -f /etc/grub.d/10_linux ]; then
     sed -i 's/^CLASS="\(.*\)"$/CLASS="\1 --unrestricted"/' /etc/grub.d/10_linux || true
 fi
 
+# 6. The keys that sign over-the-air updates (docs/OTA_UPDATES.md section 5.3).
+#    labkiosk-update trusts exactly the keyrings in this folder. An image built
+#    without them can never verify an update, so the build fails instead: the
+#    current release key and the next one, each a binary `gpg --export`. See
+#    the README in that folder for how they are made.
+UPDATE_KEY_DIR=/usr/share/labkiosk/update-keys
+update_keys=0
+for keyring in "$UPDATE_KEY_DIR"/*.gpg; do
+    [ -f "$keyring" ] || continue
+    # A binary OpenPGP public key starts with a public-key packet header: 0x98
+    # or 0x99 (old format) or 0xc6 (new). Armored text and secret keys do not.
+    case "$(od -An -tx1 -N1 "$keyring" | tr -d ' \n')" in
+        98|99|c6) update_keys=$((update_keys + 1)) ;;
+        *)
+            echo "[Hook] ERROR: $keyring is not a binary OpenPGP public key (gpg --export, never --armor or a secret key)." >&2
+            exit 1
+            ;;
+    esac
+    chown root:root "$keyring"
+    chmod 0644 "$keyring"
+done
+if [ "$update_keys" -lt 2 ]; then
+    echo "[Hook] ERROR: $UPDATE_KEY_DIR needs two release-signing public keys, the current one" >&2
+    echo "[Hook] and the next rotation key; it has $update_keys. Without them this image can" >&2
+    echo "[Hook] never verify an over-the-air update. See $UPDATE_KEY_DIR/README.md." >&2
+    exit 1
+fi
+echo "[Hook] $update_keys release-signing keys for over-the-air updates."
+
 echo "[Hook] Hardening complete."

@@ -136,6 +136,7 @@ chmod +x /opt/labkiosk/agent/agent.py || true
 chmod +x /usr/local/bin/labkiosk-install || true
 chmod +x /usr/local/sbin/labkiosk-localization || true
 chmod +x /usr/local/sbin/labkiosk-boot-slots || true
+chmod +x /usr/local/sbin/labkiosk-update || true
 # Not "|| true": without it nothing mounts the data partition on an installed disk.
 chmod 0755 /etc/systemd/system-generators/labkiosk-data-generator
 chmod +x /usr/local/bin/labkiosk-lock-keys || true

@@ -108,7 +108,8 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-update
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests

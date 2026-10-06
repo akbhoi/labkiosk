@@ -514,8 +514,17 @@ distro-builder/
   decide whether an image is healthy).
 - The installed kiosk has no shell (getty masked, no SSH). To try a slot by hand, mount
   `LABKIOSK_ROOT` from another system and run `grub-editenv boot/grub/grubenv set next=<v> next_tries=1`.
-- Only phase 1 of `docs/OTA_UPDATES.md` §9 is built. Downloading, signing, an approval UI and LAN
-  sharing (phases 2–5) are research; never document or depend on them as features.
+- `labkiosk-update` (root only, no sudo rule; phase 2) downloads a signed release by hand:
+  `download URL` verifies `manifest.json.sig` with `gpgv` against
+  `/usr/share/labkiosk/update-keys/*.gpg` only, refuses a version below
+  `/usr/share/labkiosk/security-floor`, fetches into `LABKIOSK_ROOT/downloads/<v>/` (HTTP Range
+  resume, every chunk hashed before it is written) and renames to `images/<v>/` only after every
+  file's sha256 is re-verified and `.verified` is written. A download is **never** written inside
+  `images/`: GRUB's last resort boots any complete folder there. `install VERSION` re-verifies and
+  sets `next`; `status` prints JSON. The ISO build fails without two release-signing public keys
+  in `update-keys/` (`02-security.hook.chroot`).
+- Phases 3–5 of `docs/OTA_UPDATES.md` §9 (the automatic trigger, approval UI, curtain, security
+  rebuilds and LAN sharing) are research; never document or depend on them as features.
 
 ---
 

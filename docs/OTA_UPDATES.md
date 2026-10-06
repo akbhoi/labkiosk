@@ -217,10 +217,11 @@ from a timer and nudged when the hub announces a release.
 1. GET /api/devices/update         → the release offered to this organization, or nothing
 2. Already running or downloaded it → exit
 3. Fetch manifest + signature; verify; enforce securityFloor
-4. Remount ROOT rw; delete the image that isn't running; fetch chunks into images/<version>/
+4. Remount ROOT rw; delete the image that isn't running; fetch chunks into downloads/<version>/
    from LAN peers first (§5.9), then the cloud with HTTP Range resume, a bandwidth cap and a
    random start delay; check each chunk's hash before writing it; fsync; remount ro
-5. Verify every file's sha256 again from disk; write images/<version>/.verified
+5. Verify every file's sha256 again from disk; write .verified; rename the folder to
+   images/<version>/
 6. kind = security for the running line → stage it for the next boot (§5.5)
    kind = feature                        → report "ready <version>" and wait for approval
 ```
@@ -232,8 +233,10 @@ from a timer and nudged when the hub announces a release.
 - **The uplink is spread out.** A random start delay, an optional per-organization download
   window (for example 18:00–07:00), and a rate cap stop 45 machines from saturating the line
   at once.
-- **A power cut mid-download** leaves an unverified folder. GRUB never boots it, because only
-  approval can point `next` at it, and approval requires `.verified`. The next run restarts it.
+- **A power cut mid-download** leaves an unverified folder in `downloads/`. GRUB never boots it:
+  only approval can point `next` at an image, approval requires `.verified`, and GRUB's last
+  resort, which boots any complete folder in `images/`, never sees `downloads/`. The next run
+  re-checks the chunks already on disk and resumes after the last good one.
 - **Live USB sessions** don't download. They have no image store. The console shows them as
   "live session, update by re-flashing".
 
@@ -532,7 +535,7 @@ start anyway, to check what peers send.
 | Phase | Deliverable | Verify with |
 |---|---|---|
 | 1 | **Done.** Image-store installer; §5.1 knock-on fixes; §5.2 state moves; GRUB one-try boot; `labkiosk-boot-ok`; boot reports to the console | `distro-builder/tests/vm/boot-test.sh` in `build-iso.yml` after every ISO build (QEMU + OVMF + KVM): install, promote a new image, a broken squashfs, recovery, an image whose kiosk never comes up. BIOS boot is covered only by the GRUB menu unit tests; a full install has not been timed |
-| 2 | Signed manifest in CI; R2 upload; `labkiosk-update` download and install run by hand | QEMU: power cut mid-download, tampered signature, downgrade rejected |
+| 2 | **Built.** Signed manifest in CI; R2 upload; `labkiosk-update` download and install run by hand | `distro-builder/tests/test_update.py` (resume, a damaged partial, tampered and foreign signatures, the floor, install re-verification); `boot-test.sh` scenarios 5–9: a download killed mid-squashfs is never booted and resumes, a tampered manifest and a signed downgrade are refused with nothing written, the finished download installs and is promoted. The download runs from the host against the mounted disk (the kiosk has no shell), so the "power cut" is a killed process, not a VM power cut |
 | 3 | D1 migration; device and approval routes with negative tests; console states and **Install update**; the update curtain in the extension; hub messages | `pnpm test`; drive the console in a browser; a two-VM approval against `pnpm dev` |
 | 4 | Security rebuild pipeline (latest two lines); next-boot staging; "installs at next restart" and "not restarted in N days" console states | a week of scheduled builds on a test organization |
 | 5 | LAN sharing: LAN address reporting, site grouping and seed choice in the Worker, `labkiosk-share` with `nftables`, cloud fallback | 5–10 VMs on one virtual LAN with a throttled uplink; time the whole site; a peer that serves corrupted chunks; client isolation (peers unreachable) |

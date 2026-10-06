@@ -89,6 +89,9 @@ wireless-regdb
 rfkill
 curl
 python3
+# labkiosk-update verifies the signature of every system image it downloads with
+# gpgv. apt depends on it today, but the update path must not rest on that.
+gpgv
 # The agent's control channel: one WebSocket to the organization's hub. Without it
 # the agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
 python3-websocket
