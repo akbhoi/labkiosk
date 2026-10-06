@@ -24,6 +24,7 @@ cloudflare-control/
 │   ├── custom_hostname_workflow.ts     # The Workflow that runs those jobs with durable retries
 │   ├── boot_report.ts                  # Workstation boot reports, Errors & Warnings (Rule 2e)
 │   ├── bug_reports.ts                  # Opt-in automatic GitHub bug reports (Rule 2e)
+│   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
 │   ├── guard.ts                        # Tenant resolution, authorization, CSRF origin guard (MANDATORY)
 │   ├── escape.ts                       # HTML / attribute / JSON escaping & safe URLs (MANDATORY)
 │   ├── db.ts                           # D1 Database queries, SCHEMA_SQL, tenant seeding, audit

@@ -19,6 +19,53 @@
 
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
+import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
+
+const PAGE_TITLE = "Lab Kiosk OS - Secure Browser Workstations for Any Organization";
+const PAGE_DESCRIPTION =
+  "Turn any computer into a secure browser workstation. Central management for companies, public services, libraries and schools: 100% RAM overlay, one-click screen lock, allowlist-only browsing, zero SSD wear, on Cloudflare's edge.";
+
+/**
+ * Social previews and structured data for the canonical landing page. Only the
+ * canonical page gets them: the dialog views (/login, /register, ...) are
+ * noindex copies of it.
+ */
+function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: string): string {
+  const origin = new URL(canonicalUrl).origin;
+  const structuredData = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": `${origin}/#organization`,
+        name: "Akbhoi Innovations",
+        url: `${origin}/`,
+        logo: `${origin}${FAVICON_PATH}`,
+        email: contactEmail
+      },
+      {
+        "@type": "WebSite",
+        "@id": `${origin}/#website`,
+        name: "Lab Kiosk OS",
+        url: `${origin}/`,
+        description: PAGE_DESCRIPTION,
+        inLanguage: "en",
+        publisher: { "@id": `${origin}/#organization` }
+      }
+    ]
+  };
+  return `${canonicalLinkHtml(canonicalUrl)}  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Lab Kiosk OS">
+  <meta property="og:title" content="${escapeAttr(PAGE_TITLE)}">
+  <meta property="og:description" content="${escapeAttr(PAGE_DESCRIPTION)}">
+  <meta property="og:url" content="${escapeAttr(canonicalUrl)}">
+  <meta property="og:locale" content="en_US">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="${escapeAttr(PAGE_TITLE)}">
+  <meta name="twitter:description" content="${escapeAttr(PAGE_DESCRIPTION)}">
+  <script type="application/ld+json" nonce="${escapeAttr(nonce)}">${escapeJson(structuredData)}</script>
+`;
+}
 
 export interface LandingOptions {
   /** Message shown in a banner above the hero, e.g. after a rejected redirect. */
@@ -31,6 +78,8 @@ export interface LandingOptions {
   baseDomain?: string;
   /** Primary contact email (defaults to contact@akbhoi.com). */
   contactEmail?: string;
+  /** This page on the canonical host; set only where the page may be indexed (src/seo.ts). */
+  canonicalUrl?: string;
   /** Per-response CSP nonce; the page's single <script> must carry it. */
   nonce: string;
 }
@@ -61,9 +110,9 @@ export function renderLandingHtml(data: LandingOptions): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lab Kiosk OS - Secure Browser Workstations for Any Organization</title>
-  <meta name="description" content="Turn any computer into a secure browser workstation. Central management for companies, public services, libraries and schools: 100% RAM overlay, one-click screen lock, allowlist-only browsing, zero SSD wear, on Cloudflare's edge.">
-  <meta name="theme-color" media="(prefers-color-scheme: light)" content="${PALETTE["--bg-base"][0]}">
+  <title>${escapeHtml(PAGE_TITLE)}</title>
+  <meta name="description" content="${escapeAttr(PAGE_DESCRIPTION)}">
+${FAVICON_LINK_HTML}${data.canonicalUrl ? landingSeoHeadHtml(data.canonicalUrl, contactEmail, data.nonce) : ""}  <meta name="theme-color" media="(prefers-color-scheme: light)" content="${PALETTE["--bg-base"][0]}">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="${PALETTE["--bg-base"][1]}">
 ${themeHeadHtml(data.nonce)}
 ${FONT_LINKS}

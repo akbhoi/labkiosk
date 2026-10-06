@@ -7,26 +7,32 @@
  * a third palette while the consoles were on a fourth.
  */
 
-import { escapeHtml } from "./escape";
+import { escapeHtml, escapeAttr } from "./escape";
 import { BUG_REPORT_TERMS_VERSION } from "./bug_reports";
 import { FONT_LINKS, rootTokensCss, LEGACY_LEGAL_ALIASES } from "./ui_tokens";
+import { FAVICON_LINK_HTML, canonicalLinkHtml } from "./seo";
 
 /** The chrome both legal pages sit inside. */
 function renderLegalShell(options: {
   title: string;
+  /** The search-result snippet. */
+  description: string;
+  /** This page on the canonical host, when it has one. */
+  canonicalUrl?: string;
   /** The other legal page, linked from the nav. */
   siblingHref: string;
   siblingLabel: string;
   mainHtml: string;
 }): string {
-  const { title, siblingHref, siblingLabel, mainHtml } = options;
+  const { title, description, canonicalUrl, siblingHref, siblingLabel, mainHtml } = options;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(title)}</title>
-  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="${escapeAttr(description)}">
+${canonicalLinkHtml(canonicalUrl)}${FAVICON_LINK_HTML}  <meta name="color-scheme" content="light dark">
 ${FONT_LINKS}
   <style>
 ${rootTokensCss(LEGACY_LEGAL_ALIASES)}
@@ -148,16 +154,23 @@ ${mainHtml}
  * used to take one anyway, which implied a contract the pages do not have.
  * The response still gets its nonce-based CSP from buildHtmlHeaders.
  */
-export function renderPrivacyPolicyHtml(): string {
+export interface LegalPageOptions {
+  /** This page on the canonical host (src/seo.ts). */
+  canonicalUrl?: string;
+}
+
+export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string {
   return renderLegalShell({
     title: "Privacy Policy - Lab Kiosk OS",
+    description: "How Lab Kiosk OS handles workstation, operator and website visitor data: an in-memory RAM overlay, minimal fleet telemetry, and the service providers involved.",
+    canonicalUrl: options.canonicalUrl,
     siblingHref: "/terms",
     siblingLabel: "Terms of Service",
     mainHtml: `
   <main>
     <div class="legal-card">
       <h1>Privacy &amp; Data Protection Policy</h1>
-      <div class="updated-date">Last updated: October 4, 2026 • Effective immediately</div>
+      <div class="updated-date">Last updated: October 6, 2026 • Effective immediately</div>
 
       <div class="highlight-box">
         <strong>100% In-Memory RAM Overlay Guarantee</strong>
@@ -204,17 +217,24 @@ export function renderPrivacyPolicyHtml(): string {
         <li><strong>Workflows and Cloudflare for SaaS:</strong> an organization's custom domain name and its TLS certificate.</li>
         <li><strong>Cloudflare Tunnel:</strong> carries the remote-control sessions an operator opens to a workstation.</li>
         <li><strong>Workers AI:</strong> only for organizations that turned on Automatic Bug Reports, the masked problem reports described in section 5.</li>
+        <li><strong>Cloudflare Web Analytics:</strong> counts page views and page load times without cookies or a visitor identifier.</li>
+        <li><strong>Cloudflare Zaraz:</strong> runs Google Analytics on the public website pages described in section 8, after the visitor consents.</li>
       </ul>
       <p>Two other providers are involved:</p>
       <ul>
         <li><strong>GitHub, Inc.:</strong> only for organizations that turned on Automatic Bug Reports, the masked reports are published as GitHub issues under GitHub's own terms and privacy statement.</li>
         <li><strong>Google Fonts:</strong> the consoles and public pages load the Inter and JetBrains Mono typefaces from Google, which receives the visitor's IP address and browser details when the fonts are requested.</li>
+        <li><strong>Google Analytics:</strong> only on the public website pages described in section 8, and only after the visitor consents.</li>
       </ul>
 
       <h2>7. Super Administrator Privacy Restriction</h2>
       <p>Platform Super Administrators are architecturally restricted from accessing individual organization consoles, user portal configurations, or live workstation telemetry. Super administrator privileges are restricted strictly to tenant approval, status management, and the platform's own demo organizations used for testing (<code>web-demo</code>, <code>local-demo</code> and <code>docker-demo</code>).</p>
 
-      <h2>8. Contact Us</h2>
+      <h2>8. Visitors to This Website</h2>
+      <p>The public pages of this website (the home page with its sign-in, registration, download and contact views, and these legal pages, on the platform's own domain) measure how they are used with Google Analytics, provided by Google LLC and run through Cloudflare Zaraz. A consent dialog asks first, and nothing is sent to Google unless you accept; you can change your choice later from the same dialog. If you accept, Google receives the address and title of each page you open, the page that referred you, your browser, device and screen size, and a random identifier stored in a cookie, and estimates your approximate location from the request. We use the aggregate reports Google makes from this to understand how the website is found and used. It is not used for advertising, and Google signals are not used to build audiences.</p>
+      <p>Google Analytics never runs on workstations, the User Portal, organization homepages, organization subdomains or custom domains, or the consoles: the Platform's Content Security Policy blocks it there.</p>
+
+      <h2>9. Contact Us</h2>
       <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@akbhoi.com">privacy@akbhoi.com</a>.</p>
     </div>
   </main>
@@ -222,9 +242,11 @@ export function renderPrivacyPolicyHtml(): string {
   });
 }
 
-export function renderTermsOfServiceHtml(): string {
+export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string {
   return renderLegalShell({
     title: "Terms of Service - Lab Kiosk OS",
+    description: "The terms for using the Lab Kiosk OS platform: licensing, the 45-computer threshold, organization responsibilities and prohibited uses.",
+    canonicalUrl: options.canonicalUrl,
     siblingHref: "/privacy",
     siblingLabel: "Privacy Policy",
     mainHtml: `
@@ -278,12 +300,14 @@ export function renderTermsOfServiceHtml(): string {
  * Their version is BUG_REPORT_TERMS_VERSION; any change to the text below is a
  * new version, which pauses reports until an administrator accepts it again.
  */
-export function renderBugReportTermsHtml(repository: string | null): string {
+export function renderBugReportTermsHtml(repository: string | null, options: LegalPageOptions = {}): string {
   const where = repository
     ? `the GitHub repository <a href="https://github.com/${escapeHtml(repository)}">${escapeHtml(repository)}</a>`
     : "the GitHub repository named in Settings &rarr; Errors &amp; Warnings";
   return renderLegalShell({
     title: "Automatic Bug Report Terms - Lab Kiosk OS",
+    description: "What the optional Automatic Bug Reports send, how reports are masked and published, and how to turn the option off.",
+    canonicalUrl: options.canonicalUrl,
     siblingHref: "/terms",
     siblingLabel: "Terms of Service",
     mainHtml: `
