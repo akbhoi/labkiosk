@@ -245,6 +245,10 @@ Configure production variables in the **Cloudflare Dashboard**:
 2. Navigate to **Settings** → **Variables and Secrets**.
 3. Under **Environment Variables**, configure:
    - `DEFAULT_DOMAIN`: The primary apex platform domain (e.g. `labkiosk.yourdomain.com`).
+   - `CANONICAL_HOST` (optional, set as a secret like `DEFAULT_DOMAIN`): the host search engines
+     should list the public pages under, when the zone redirects the apex to it (e.g.
+     `www.labkiosk.yourdomain.com`). It must be `DEFAULT_DOMAIN` or a host under it; without it the
+     apex is canonical.
    - `ISO_DOWNLOAD_URL`: Direct link to download the live bootable Debian 12 Kiosk ISO (e.g. GitHub Releases artifact).
    - `TUNNEL_DOMAIN`: Base domain for remote assistance tunnels (e.g. `labkiosk.yourdomain.com`).
    - `GITHUB_ISSUES_REPO` (optional): `owner/repo` for automatic bug reports (see "Automatic bug reports").
@@ -273,6 +277,20 @@ In your Cloudflare Dashboard under your domain's **DNS Records**:
 1. **Apex / Host Record:** Add a `CNAME` or `A` record for `labkiosk.yourdomain.com` pointing to the Worker (Proxied: Orange Cloud).
 2. **Wildcard Subdomain Record:** Add a `CNAME` record with Name `*` or `*.labkiosk` targeting `labkiosk.yourdomain.com` (Proxied: Orange Cloud).
 3. **Custom Domain Support:** When organizations request custom domains (e.g. `kiosk.example.com`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
+
+### 3. Search engines and website analytics
+
+Only the platform's public pages are meant for search results: `/`, `/privacy`, `/terms` and
+`/terms/bug-reports` on the platform host. The worker serves `/robots.txt` and `/sitemap.xml`
+there, and sends `X-Robots-Tag: noindex, nofollow` with every other page: organization
+subdomains, custom domains, the consoles, the User Portal and the `workers.dev` address.
+
+Website analytics are optional and run through Cloudflare Zaraz, which injects its snippet at the
+edge. The worker's Content Security Policy lets Zaraz's loader (`/cdn-cgi/zaraz/s.js`) run only on
+the public pages of the platform host, so no analytics tool can run on a workstation or a console.
+Scripts injected without the page's nonce (Google tag gateway, for example) stay blocked: use
+Zaraz. If you turn Zaraz on, describe it in the Privacy Policy (`src/ui_legal.ts`, section 8) and
+put the analytics tool behind Zaraz consent.
 
 ---
 

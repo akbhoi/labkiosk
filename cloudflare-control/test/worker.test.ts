@@ -685,6 +685,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         if (opens < 0 || closes < 0) continue;
         const body = chunk.slice(opens + 1, closes);
         if (!body.trim()) continue;
+        // Structured data is a JSON data block, not code: it must be valid JSON.
+        if (/type="application\/ld\+json"/.test(chunk.slice(0, opens))) {
+          assert.doesNotThrow(() => JSON.parse(body), `${page} has structured data that is not valid JSON`);
+          parsed++;
+          continue;
+        }
         try {
           new Function(body);
         } catch (err) {
@@ -3282,7 +3288,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(privHtml, /COPPA/);
     assert.match(privHtml, /100% In-Memory RAM Overlay/);
     // Every Cloudflare service the worker binds is disclosed, with Cloudflare's privacy terms.
-    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Cloudflare Tunnel", "Workers AI", "GitHub", "Google Fonts"]) {
+    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Cloudflare Tunnel", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
       assert.ok(privHtml.includes(`<strong>${service}`) || privHtml.includes(`and ${service}`), `the Privacy Policy names ${service}`);
     }
     assert.match(privHtml, /href="https:\/\/www\.cloudflare\.com\/cloudflare-customer-dpa\/"/);
@@ -3906,6 +3912,185 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       const hit = html.match(wrong);
       assert.equal(hit, null, `${path} still says "${hit?.[0]}" near: ${hit ? html.slice(Math.max(0, hit.index! - 80), hit.index! + 40) : ""}`);
     }
+  });
+
+  // ------------------------------------------------- search engines, analytics
+
+  /** A request on a given host, with the zone's apex-to-www redirect configured. */
+  const seoEnv: Env = { ...mockEnv, CANONICAL_HOST: "www.labkiosk.org" };
+  const onHost = (host: string, path: string, init: RequestInit & { cookie?: string } = {}) => {
+    const headers = new Headers({ host });
+    if (init.cookie) headers.set("Cookie", init.cookie);
+    return worker.fetch(new Request(`https://${host}${path}`, { headers }), seoEnv);
+  };
+
+  test("robots.txt lets crawlers into the platform's public pages and names the sitemap", async () => {
+    const res = await onHost("www.labkiosk.org", "/robots.txt");
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("Content-Type"), "text/plain; charset=utf-8");
+    const body = await res.text();
+    assert.match(body, /^User-agent: \*$/m);
+    assert.match(body, /^Allow: \/$/m);
+    for (const path of ["/api/", "/admin", "/super"]) {
+      assert.ok(body.split("\n").includes(`Disallow: ${path}`), `robots.txt keeps crawlers off ${path}`);
+    }
+    assert.match(body, /^Sitemap: https:\/\/www\.labkiosk\.org\/sitemap\.xml$/m);
+
+    // An organization's host lets crawlers read its pages (and their noindex), names no sitemap.
+    const tenant = await (await onHost("greenwood.labkiosk.org", "/robots.txt")).text();
+    assert.equal(tenant, "User-agent: *\nDisallow: /api/\n");
+  });
+
+  test("sitemap.xml lists exactly the indexable pages on the canonical host, and only there", async () => {
+    const res = await onHost("labkiosk.org", "/sitemap.xml");
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("Content-Type"), "application/xml; charset=utf-8");
+    const xml = await res.text();
+    assert.match(xml, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
+    const locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+    assert.deepEqual(locs, [
+      "https://www.labkiosk.org/",
+      "https://www.labkiosk.org/privacy",
+      "https://www.labkiosk.org/terms",
+      "https://www.labkiosk.org/terms/bug-reports"
+    ]);
+    // Every listed page really is served, indexable, on the canonical host.
+    for (const loc of locs) {
+      const page = await onHost("www.labkiosk.org", new URL(loc).pathname);
+      assert.equal(page.status, 200, `${loc} is served`);
+      assert.equal(page.headers.get("X-Robots-Tag"), null, `${loc} may be indexed`);
+    }
+    assert.equal((await onHost("greenwood.labkiosk.org", "/sitemap.xml")).status, 404);
+    assert.equal((await onHost("labkiosk-controller.example.workers.dev", "/sitemap.xml")).status, 404);
+  });
+
+  test("Only the platform's public pages may be indexed; every other page says noindex", async () => {
+    const indexable: [string, string][] = [
+      ["www.labkiosk.org", "/"],
+      ["www.labkiosk.org", "/?login=1"],
+      ["labkiosk.org", "/privacy"],
+      ["www.labkiosk.org", "/terms"],
+      ["www.labkiosk.org", "/terms/bug-reports"]
+    ];
+    for (const [host, path] of indexable) {
+      const res = await onHost(host, path);
+      assert.equal(res.status, 200, `${host}${path} is served`);
+      assert.equal(res.headers.get("X-Robots-Tag"), null, `${host}${path} may be indexed`);
+    }
+    const hidden: [string, string, string | undefined][] = [
+      ["www.labkiosk.org", "/login", undefined],
+      ["www.labkiosk.org", "/register", undefined],
+      ["www.labkiosk.org", "/download", undefined],
+      ["www.labkiosk.org", "/?tenant=greenwood", undefined],
+      ["www.labkiosk.org", "/super/organizations", superSessionCookie],
+      ["greenwood.labkiosk.org", "/", undefined],
+      ["greenwood.labkiosk.org", "/home", undefined],
+      ["greenwood.labkiosk.org", "/privacy", undefined],
+      ["greenwood.labkiosk.org", "/admin/workstations", orgSessionCookie],
+      ["no-such-organization.labkiosk.org", "/", undefined],
+      ["labkiosk-controller.example.workers.dev", "/", undefined]
+    ];
+    for (const [host, path, cookie] of hidden) {
+      const res = await onHost(host, path, cookie ? { cookie } : {});
+      assert.ok((res.headers.get("Content-Type") || "").startsWith("text/html"), `${host}${path} is a page`);
+      assert.equal(res.headers.get("X-Robots-Tag"), "noindex, nofollow", `${host}${path} says noindex`);
+    }
+  });
+
+  test("Canonical links point at the canonical host, and only indexable pages carry one", async () => {
+    const canonical = (html: string) => html.match(/<link rel="canonical" href="([^"]+)">/)?.[1] ?? null;
+
+    const landing = await (await onHost("www.labkiosk.org", "/")).text();
+    assert.equal(canonical(landing), "https://www.labkiosk.org/");
+    assert.match(landing, /<meta property="og:url" content="https:\/\/www\.labkiosk\.org\/">/);
+    assert.match(landing, /<meta property="og:title" content="Lab Kiosk OS - /);
+    assert.match(landing, /<meta name="twitter:card" content="summary">/);
+    assert.match(landing, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
+    const ld = landing.match(/<script type="application\/ld\+json" nonce="[^"]+">([\s\S]*?)<\/script>/);
+    assert.ok(ld, "the landing page carries structured data with the nonce");
+    const graph = JSON.parse(ld[1])["@graph"] as { "@type": string; url: string }[];
+    assert.deepEqual(graph.map((node) => [node["@type"], node.url]), [
+      ["Organization", "https://www.labkiosk.org/"],
+      ["WebSite", "https://www.labkiosk.org/"]
+    ]);
+
+    // A legal page served on an organization's host points at the platform's copy.
+    const legal = await (await onHost("greenwood.labkiosk.org", "/privacy")).text();
+    assert.equal(canonical(legal), "https://www.labkiosk.org/privacy");
+    assert.match(legal, /<meta name="description" content="[^"]{50,}">/);
+
+    for (const [host, path] of [["www.labkiosk.org", "/login"], ["www.labkiosk.org", "/?tenant=greenwood"], ["greenwood.labkiosk.org", "/"]]) {
+      const html = await (await onHost(host, path)).text();
+      assert.equal(canonical(html), null, `${host}${path} has no canonical link`);
+      assert.doesNotMatch(html, /og:url|application\/ld\+json/, `${host}${path} has no social preview or structured data`);
+    }
+
+    // Without CANONICAL_HOST the platform domain itself is canonical.
+    const apex = await (await worker.fetch(request("/"), mockEnv)).text();
+    assert.equal(canonical(apex), "https://labkiosk.org/");
+  });
+
+  test("A CANONICAL_HOST outside the platform domain is refused, not published", async () => {
+    for (const bad of ["www.example.com", "evil.org/labkiosk.org", "https://www.labkiosk.org"]) {
+      await assert.rejects(
+        () => worker.fetch(request("/"), { ...mockEnv, CANONICAL_HOST: bad }),
+        /CANONICAL_HOST/,
+        `${bad} is refused`
+      );
+    }
+  });
+
+  test("The Zaraz analytics loader may run on the platform's public pages and nowhere else", async () => {
+    const scriptSrc = (res: Response) =>
+      (res.headers.get("Content-Security-Policy") || "").split("; ").find((d) => d.startsWith("script-src ")) || "";
+    for (const path of ["/", "/privacy", "/terms", "/login", "/download", "/contact"]) {
+      const src = scriptSrc(await onHost("www.labkiosk.org", path));
+      assert.match(src, /^script-src 'nonce-[^']+' https:\/\/www\.labkiosk\.org\/cdn-cgi\/zaraz\/s\.js$/, `www${path} allows exactly the Zaraz loader`);
+    }
+    const blocked: [string, string, string | undefined][] = [
+      ["www.labkiosk.org", "/super/organizations", superSessionCookie],
+      ["www.labkiosk.org", "/?tenant=greenwood", undefined],
+      ["greenwood.labkiosk.org", "/", undefined],
+      ["greenwood.labkiosk.org", "/home", undefined],
+      ["greenwood.labkiosk.org", "/privacy", undefined],
+      ["greenwood.labkiosk.org", "/admin/workstations", orgSessionCookie],
+      ["labkiosk-controller.example.workers.dev", "/", undefined]
+    ];
+    for (const [host, path, cookie] of blocked) {
+      const src = scriptSrc(await onHost(host, path, cookie ? { cookie } : {}));
+      assert.match(src, /^script-src 'nonce-[^']+'$/, `${host}${path} allows only its own nonce`);
+    }
+  });
+
+  test("Without DEFAULT_DOMAIN no host is substituted: nothing is indexable but a development host", async () => {
+    const bare: Env = { ...mockEnv, DEFAULT_DOMAIN: undefined };
+    const fetchOn = (host: string, path: string) =>
+      worker.fetch(new Request(`https://${host}${path}`, { headers: { host } }), bare);
+
+    const landing = await fetchOn("labkiosk.org", "/");
+    assert.equal(landing.headers.get("X-Robots-Tag"), "noindex, nofollow");
+    assert.doesNotMatch(landing.headers.get("Content-Security-Policy") || "", /zaraz/);
+    assert.doesNotMatch(await landing.text(), /rel="canonical"/);
+    assert.equal(await (await fetchOn("labkiosk.org", "/robots.txt")).text(), "User-agent: *\nDisallow: /api/\n");
+    assert.equal((await fetchOn("labkiosk.org", "/sitemap.xml")).status, 404);
+
+    // A local run still links to itself.
+    const local = await worker.fetch(new Request("http://localhost:8787/sitemap.xml", { headers: { host: "localhost:8787" } }), bare);
+    assert.match(await local.text(), /<loc>http:\/\/localhost:8787\/<\/loc>/);
+
+    await assert.rejects(
+      () => worker.fetch(request("/"), { ...bare, CANONICAL_HOST: "www.labkiosk.org" }),
+      /CANONICAL_HOST is set but DEFAULT_DOMAIN is not/
+    );
+  });
+
+  test("Serves the site icon", async () => {
+    const res = await onHost("www.labkiosk.org", "/favicon.svg");
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("Content-Type"), "image/svg+xml");
+    const svg = await res.text();
+    assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    assert.ok(svg.includes(`fill="${PALETTE["--accent"][0]}"`), "the icon uses the accent colour");
   });
 });
 

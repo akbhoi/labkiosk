@@ -13,6 +13,17 @@ import { renderOrgHomeHtml } from "./ui_org_home";
 import { renderSuperAdminHtml } from "./ui_super";
 import { renderLandingHtml } from "./ui_landing";
 import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import {
+  FAVICON_PATH,
+  ZARAZ_LOADER_PATH,
+  allowsAnalytics,
+  canonicalUrlFor,
+  faviconSvg,
+  isIndexable,
+  isPlatformHost,
+  robotsTxt,
+  sitemapXml
+} from "./seo";
 import { renderStatusPageHtml } from "./ui_status";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
@@ -131,6 +142,7 @@ import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsP
 import { LiveStatus } from "./org_hub";
 import { startCustomHostnameJob } from "./custom_hostnames";
 import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
+import { PALETTE } from "./ui_tokens";
 
 // The Durable Object and Workflow classes wrangler binds (wrangler.jsonc).
 export { OrgHub } from "./org_hub";
@@ -494,11 +506,21 @@ function isPublicTenantRoute(path: string, method: string): boolean {
  * Headers every HTML response carries. The CSP allows scripts only when they
  * carry this response's nonce, so no template may use an inline event handler
  * or a `<script>` without `nonce="..."`; the test suite asserts both.
+ *
+ * `analyticsOrigin` is set only on the platform's public marketing pages: it
+ * lets Cloudflare Zaraz's loader script, which Zaraz's own (nonced) inline
+ * snippet adds without a nonce, load from this origin. `indexable` false adds
+ * `X-Robots-Tag: noindex` (see src/seo.ts).
  */
-function buildHtmlHeaders(nonce: string, options: { hsts: boolean }): Record<string, string> {
+function buildHtmlHeaders(
+  nonce: string,
+  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null }
+): Record<string, string> {
+  const scriptSources = [`'nonce-${nonce}'`];
+  if (options.analyticsOrigin) scriptSources.push(`${options.analyticsOrigin}${ZARAZ_LOADER_PATH}`);
   const csp = [
     "default-src 'self'",
-    `script-src 'nonce-${nonce}'`,
+    `script-src ${scriptSources.join(" ")}`,
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
@@ -522,6 +544,7 @@ function buildHtmlHeaders(nonce: string, options: { hsts: boolean }): Record<str
     "Cache-Control": "no-store"
   };
   if (options.hsts) headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
+  if (!options.indexable) headers["X-Robots-Tag"] = "noindex, nofollow";
   return headers;
 }
 
@@ -608,6 +631,26 @@ export default {
       });
     }
 
+    // --- Search engines -----------------------------------------------------
+    if (method === "GET" || method === "HEAD") {
+      if (path === "/robots.txt") {
+        return new Response(robotsTxt(request, url, env), {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff" }
+        });
+      }
+      if (path === "/sitemap.xml") {
+        if (!isPlatformHost(request, env)) return jsonError("Not Found", 404, jsonHeaders);
+        return new Response(sitemapXml(request, url, env), {
+          headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff" }
+        });
+      }
+      if (path === FAVICON_PATH) {
+        return new Response(faviconSvg(PALETTE["--accent"][0], PALETTE["--accent-fg"][0]), {
+          headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff" }
+        });
+      }
+    }
+
     // --- Identity -----------------------------------------------------------
     const cookies = parseCookies(request.headers.get("cookie"));
     const authHeader = request.headers.get("authorization");
@@ -655,7 +698,12 @@ export default {
 
     // Every HTML response carries the same hardened headers and a fresh CSP nonce.
     const nonce = generateNonce();
-    const htmlHeaders = buildHtmlHeaders(nonce, { hsts: isHttps && !isDev });
+    const htmlHeaders = buildHtmlHeaders(nonce, {
+      hsts: isHttps && !isDev,
+      indexable: isIndexable(request, url, env),
+      analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null
+    });
+    const canonicalUrl = canonicalUrlFor(request, url, env);
     const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.org";
 
     // A cookie-authenticated mutation must come from this site.
@@ -2652,13 +2700,13 @@ export default {
     // ==========================================
     // Legal & Compliance Pages
     if (path === "/privacy") {
-      return new Response(renderPrivacyPolicyHtml(), { headers: htmlHeaders });
+      return new Response(renderPrivacyPolicyHtml({ canonicalUrl }), { headers: htmlHeaders });
     }
     if (path === "/terms") {
-      return new Response(renderTermsOfServiceHtml(), { headers: htmlHeaders });
+      return new Response(renderTermsOfServiceHtml({ canonicalUrl }), { headers: htmlHeaders });
     }
     if (path === "/terms/bug-reports") {
-      return new Response(renderBugReportTermsHtml(bugReportRepository(env)), { headers: htmlHeaders });
+      return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });
     }
 
     // 1. Organization Admin Dashboard (/admin and /admin/*)
@@ -2983,6 +3031,7 @@ export default {
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
           baseDomain,
           contactEmail: "contact@akbhoi.com",
+          canonicalUrl,
           nonce
         }),
         { headers: htmlHeaders }

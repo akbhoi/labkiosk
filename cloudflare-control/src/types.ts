@@ -284,6 +284,11 @@ export interface Env {
   SUPER_ADMIN_PASSWORD?: string;
   DEFAULT_DOMAIN?: string; // e.g. "labkiosk.org"
   /**
+   * The host the public pages are listed under in search results, when the zone
+   * redirects the apex to it (e.g. "www.labkiosk.org"). Defaults to DEFAULT_DOMAIN.
+   */
+  CANONICAL_HOST?: string;
+  /**
    * Opt-in to the ephemeral in-memory database (tests & local dev only).
    * Without it a missing DB binding is a hard failure rather than silent data loss.
    */
