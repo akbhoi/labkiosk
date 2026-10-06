@@ -48,3 +48,5 @@ distro-builder/config/source                                text eol=lf
 *.iso  binary
 *.img  binary
 *.pf2  binary
+# Release-signing public keys (gpg --export): a line-ending rewrite breaks the key.
+*.gpg  binary
