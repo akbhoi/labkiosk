@@ -33,15 +33,22 @@ export const ZARAZ_LOADER_PATH = "/cdn-cgi/zaraz/s.js";
 const HOSTNAME_PATTERN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 /**
- * The host search engines should list the public pages under.
+ * The host search engines should list the public pages under, or null when
+ * DEFAULT_DOMAIN is unset (local development and the simulator, where no host
+ * is canonical and none is substituted).
  *
  * `CANONICAL_HOST` names it when the zone redirects the apex elsewhere (labkiosk.org
  * redirects to www.labkiosk.org); otherwise it is the platform domain itself.
- * A value that is not a host name under DEFAULT_DOMAIN is a configuration error.
+ * A value that is not a host name under DEFAULT_DOMAIN, or one set without
+ * DEFAULT_DOMAIN, is a configuration error.
  */
-export function canonicalHost(env: Env): string {
-  const base = (env.DEFAULT_DOMAIN || "labkiosk.org").replace(/^\./, "").toLowerCase();
+export function canonicalHost(env: Env): string | null {
+  const base = (env.DEFAULT_DOMAIN || "").replace(/^\./, "").toLowerCase();
   const configured = (env.CANONICAL_HOST || "").trim().toLowerCase();
+  if (!base) {
+    if (configured) throw new Error("CANONICAL_HOST is set but DEFAULT_DOMAIN is not; set DEFAULT_DOMAIN too");
+    return null;
+  }
   if (!configured) return base;
   if (!HOSTNAME_PATTERN.test(configured) || (configured !== base && !configured.endsWith("." + base))) {
     throw new Error(`CANONICAL_HOST "${configured}" must be ${base} or a host name under it`);
@@ -49,20 +56,26 @@ export function canonicalHost(env: Env): string {
   return configured;
 }
 
-/** True for the hosts that serve the platform's public pages: the apex, www and the canonical host. */
+/**
+ * True for the hosts that serve the platform's public pages: the apex, www and
+ * the canonical host. Without DEFAULT_DOMAIN only a development host qualifies.
+ */
 export function isPlatformHost(request: Request, env: Env): boolean {
   if (isDevHost(request)) return true;
+  const canonical = canonicalHost(env);
+  if (!canonical || !env.DEFAULT_DOMAIN) return false;
   const host = hostname(request);
-  const base = (env.DEFAULT_DOMAIN || "labkiosk.org").replace(/^\./, "").toLowerCase();
-  return host === base || host === `www.${base}` || host === canonicalHost(env);
+  const base = env.DEFAULT_DOMAIN.replace(/^\./, "").toLowerCase();
+  return host === base || host === `www.${base}` || host === canonical;
 }
 
 /**
- * The origin canonical links and the sitemap use. A development host keeps its
- * own origin so a local run links to itself.
+ * The origin canonical links and the sitemap use. A development host, or a
+ * deployment without DEFAULT_DOMAIN, keeps the request's own origin.
  */
 export function siteOrigin(request: Request, url: URL, env: Env): string {
-  return isDevHost(request) ? url.origin : `https://${canonicalHost(env)}`;
+  const canonical = canonicalHost(env);
+  return isDevHost(request) || !canonical ? url.origin : `https://${canonical}`;
 }
 
 /**

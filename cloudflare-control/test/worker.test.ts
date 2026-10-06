@@ -4062,6 +4062,28 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Without DEFAULT_DOMAIN no host is substituted: nothing is indexable but a development host", async () => {
+    const bare: Env = { ...mockEnv, DEFAULT_DOMAIN: undefined };
+    const fetchOn = (host: string, path: string) =>
+      worker.fetch(new Request(`https://${host}${path}`, { headers: { host } }), bare);
+
+    const landing = await fetchOn("labkiosk.org", "/");
+    assert.equal(landing.headers.get("X-Robots-Tag"), "noindex, nofollow");
+    assert.doesNotMatch(landing.headers.get("Content-Security-Policy") || "", /zaraz/);
+    assert.doesNotMatch(await landing.text(), /rel="canonical"/);
+    assert.equal(await (await fetchOn("labkiosk.org", "/robots.txt")).text(), "User-agent: *\nDisallow: /api/\n");
+    assert.equal((await fetchOn("labkiosk.org", "/sitemap.xml")).status, 404);
+
+    // A local run still links to itself.
+    const local = await worker.fetch(new Request("http://localhost:8787/sitemap.xml", { headers: { host: "localhost:8787" } }), bare);
+    assert.match(await local.text(), /<loc>http:\/\/localhost:8787\/<\/loc>/);
+
+    await assert.rejects(
+      () => worker.fetch(request("/"), { ...bare, CANONICAL_HOST: "www.labkiosk.org" }),
+      /CANONICAL_HOST is set but DEFAULT_DOMAIN is not/
+    );
+  });
+
   test("Serves the site icon", async () => {
     const res = await onHost("www.labkiosk.org", "/favicon.svg");
     assert.equal(res.status, 200);
