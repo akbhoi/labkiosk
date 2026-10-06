@@ -121,7 +121,7 @@ export function hostSubdomain(request: Request, baseDomain?: string): string | n
     const suffix = "." + baseDomain.replace(/^\./, "").toLowerCase();
     if (!host.endsWith(suffix)) return null;
     const prefix = host.slice(0, -suffix.length);
-    // Only a single label counts; `a.b.labkiosk.akbhoi.com` is not the organization "a".
+    // Only a single label counts; `a.b.labkiosk.org` is not the organization "a".
     if (!prefix || prefix.includes(".")) return null;
     slug = cleanSubdomain(prefix);
   } else {

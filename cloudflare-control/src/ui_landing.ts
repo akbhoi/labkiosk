@@ -1,6 +1,6 @@
 /**
  * Public SaaS Landing Page
- * Hosted at labkiosk.akbhoi.com
+ * Hosted at labkiosk.org
  *
  * Dedicated experiences for:
  *   - IT & operations teams who run the workstations
@@ -27,7 +27,7 @@ export interface LandingOptions {
   openModal?: "login" | "register" | "iso" | "contact";
   /** Public download URL for the built ISO, if configured. */
   isoDownloadUrl?: string;
-  /** Apex / base domain for organization subdomains (defaults to labkiosk.akbhoi.com). */
+  /** Apex / base domain for organization subdomains (defaults to labkiosk.org). */
   baseDomain?: string;
   /** Primary contact email (defaults to contact@akbhoi.com). */
   contactEmail?: string;
@@ -36,7 +36,7 @@ export interface LandingOptions {
 }
 
 export function renderLandingHtml(data: LandingOptions): string {
-  const baseDomain = (data.baseDomain || "labkiosk.akbhoi.com").toLowerCase().replace(/^\./, "");
+  const baseDomain = (data.baseDomain || "labkiosk.org").toLowerCase().replace(/^\./, "");
   const contactEmail = (data.contactEmail || "contact@akbhoi.com").toLowerCase();
 
   const banner = data.error

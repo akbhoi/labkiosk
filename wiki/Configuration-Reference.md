@@ -288,7 +288,7 @@ Sets the kernel command line, `--bootappend-live`, distribution, and package lis
 | Variable | Default |
 | :--- | :--- |
 | `WORKER_URL` | `http://host.docker.internal:8787` |
-| `LABKIOSK_DOMAIN` | `labkiosk.akbhoi.com` |
+| `LABKIOSK_DOMAIN` | `labkiosk.org` |
 | `VNC_PASSWORD` | random per container |
 | `LABKIOSK_REMOTE_HOST` | *(empty)* |
 

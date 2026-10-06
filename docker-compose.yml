@@ -42,7 +42,7 @@ services:
       # elsewhere run the same image on its own clock without rebuilding.
       - TZ=${TZ:-Asia/Kolkata}
       - WORKER_URL=${WORKER_URL:-http://host.docker.internal:8787}
-      - LABKIOSK_DOMAIN=${LABKIOSK_DOMAIN:-labkiosk.akbhoi.com}
+      - LABKIOSK_DOMAIN=${LABKIOSK_DOMAIN:-labkiosk.org}
       # Left empty on purpose: the entrypoint then generates a random password
       # per container and prints it in the log. A fixed default would be a
       # published password on a port that grants keyboard and mouse control.

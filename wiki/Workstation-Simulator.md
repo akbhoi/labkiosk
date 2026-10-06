@@ -130,7 +130,7 @@ Set in `docker-compose.yml`:
 | :--- | :--- | :--- |
 | `TZ` | `Asia/Kolkata` | Container timezone (IST). Baked into the image; override here to run the simulator on another clock. |
 | `WORKER_URL` | `http://host.docker.internal:8787` | Control plane target. Point it at a deployed worker to test against staging. |
-| `LABKIOSK_DOMAIN` | `labkiosk.akbhoi.com` | Base platform domain shown in the wizard |
+| `LABKIOSK_DOMAIN` | `labkiosk.org` | Base platform domain shown in the wizard |
 | `VNC_PASSWORD` | random per container | The noVNC session password; printed in the startup log when generated |
 | `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional hostname to report as `remoteHost`, exercising the Remote Control button |
 
