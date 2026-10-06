@@ -658,6 +658,46 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       text-align: center;
     }
 
+    /*
+     * Website analytics consent: a bar along the bottom that leaves the page
+     * usable while the visitor decides, unlike Zaraz's own modal dialog.
+     */
+    .cookie-banner {
+      position: fixed;
+      left: 16px;
+      right: 16px;
+      bottom: 16px;
+      z-index: 900;
+      max-width: 960px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 12px 20px;
+      flex-wrap: wrap;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      padding: 14px 18px;
+      font-size: 0.875rem;
+      line-height: 1.5;
+      color: var(--text-muted);
+    }
+    .cookie-banner[hidden] { display: none; }
+    .cookie-banner p { flex: 1 1 320px; min-width: 0; }
+    .cookie-banner a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+    .cookie-banner-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .footer-link-button {
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+    }
+    .footer-link-button[hidden] { display: none; }
+    .footer-link-button:hover { color: var(--text-main); }
+
     /* The small illustrations inside the audience and simulator panels. */
     .demo-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
     .demo-row-head { border-bottom: 1px solid var(--border); padding-bottom: 12px; }
@@ -1799,10 +1839,19 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <a href="/register" data-action="open-modal" data-modal="register">Register Organization</a>
         <a href="/privacy">Privacy Policy</a>
         <a href="/terms">Terms of Service</a>
+        <button type="button" class="footer-link-button" id="cookie-settings-link" data-action="cookie-settings" hidden>Cookie Settings</button>
         <a href="#security">Security</a>
       </div>
     </div>
   </footer>
+
+  <div class="cookie-banner" id="cookie-banner" role="region" aria-label="Cookie choice" hidden>
+    <p>We use Google Analytics to count visits to these pages. Nothing is sent to Google unless you accept. See our <a href="/privacy">Privacy Policy</a>.</p>
+    <div class="cookie-banner-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="cookie-reject">Reject</button>
+      <button type="button" class="btn btn-primary btn-sm" data-action="cookie-accept">Accept</button>
+    </div>
+  </div>
 
   <script nonce="${escapeAttr(data.nonce)}">
     function openModal(id) {
@@ -1868,8 +1917,41 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         alert(target.dataset.message);
       } else if (action === 'toggle-faq') {
         toggleFaq(target);
+      } else if (action === 'cookie-accept') {
+        recordCookieChoice(true);
+      } else if (action === 'cookie-reject') {
+        recordCookieChoice(false);
+      } else if (action === 'cookie-settings') {
+        document.getElementById('cookie-banner').hidden = false;
       }
     });
+
+    // Website analytics consent. Zaraz is injected only on the public pages
+    // (src/seo.ts) and its own modal is turned off in the dashboard, so this
+    // bar asks instead, through the Zaraz Consent API, without blocking the
+    // page. Where Zaraz is absent the bar and its footer link stay hidden.
+    function zarazConsent() {
+      const consent = window.zaraz && window.zaraz.consent;
+      return consent && consent.APIReady ? consent : null;
+    }
+    function recordCookieChoice(accepted) {
+      const consent = zarazConsent();
+      if (!consent) return;
+      consent.setAll(accepted);
+      consent.sendQueuedEvents();
+      document.getElementById('cookie-banner').hidden = true;
+    }
+    function initCookieConsent() {
+      const consent = zarazConsent();
+      if (!consent) return;
+      document.getElementById('cookie-settings-link').hidden = false;
+      // consent.getAll() reports false for an undecided purpose, so the
+      // choice cookie (named in Zaraz's consent settings) says whether one was made.
+      const decided = document.cookie.split('; ').some((c) => c.startsWith('zaraz-consent='));
+      if (!decided && !consent.modal) document.getElementById('cookie-banner').hidden = false;
+    }
+    if (zarazConsent()) initCookieConsent();
+    else document.addEventListener('zarazConsentAPIReady', initCookieConsent, { once: true });
     document.getElementById('contact-form').addEventListener('submit', handleContactSubmit);
 
     // Escape key closes modals and mobile drawer
