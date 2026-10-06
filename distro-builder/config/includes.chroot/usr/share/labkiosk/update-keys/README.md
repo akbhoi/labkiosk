@@ -27,9 +27,32 @@ gpg --list-keys --with-colons | awk -F: '$1 == "fpr" { print $10 }'   # two fing
 
 gpg --export KEY1 > distro-builder/config/includes.chroot/usr/share/labkiosk/update-keys/current.gpg
 gpg --export KEY2 > distro-builder/config/includes.chroot/usr/share/labkiosk/update-keys/next.gpg
-gpg --armor --export-secret-keys KEY1 > release-key-1.asc   # becomes the UPDATE_SIGNING_KEY secret
-gpg --armor --export-secret-keys KEY2 > release-key-2.asc   # store offline; needed only to rotate
+gpg --armor --export-secret-keys KEY1 > ~/release-key-1.asc  # becomes the UPDATE_SIGNING_KEY secret
+gpg --armor --export-secret-keys KEY2 > ~/release-key-2.asc  # store offline; needed only to rotate
 ```
+
+On Windows (PowerShell, Gpg4win), from the repository root. Write the key files with
+`--output`, never `>`: PowerShell's redirection re-encodes the output and corrupts a binary key.
+
+```powershell
+$env:GNUPGHOME = Join-Path $env:TEMP ("lk-release-" + [guid]::NewGuid())
+New-Item -ItemType Directory $env:GNUPGHOME | Out-Null
+gpg --quick-gen-key "Lab Kiosk release key 1" ed25519 sign never
+gpg --quick-gen-key "Lab Kiosk release key 2" ed25519 sign never
+
+$keys = "distro-builder\config\includes.chroot\usr\share\labkiosk\update-keys"
+gpg --output "$keys\current.gpg" --export "=Lab Kiosk release key 1"
+gpg --output "$keys\next.gpg" --export "=Lab Kiosk release key 2"
+gpg --armor --output "$HOME\release-key-1.asc" --export-secret-keys "=Lab Kiosk release key 1"
+gpg --armor --output "$HOME\release-key-2.asc" --export-secret-keys "=Lab Kiosk release key 2"
+
+gpgconf --kill gpg-agent
+Remove-Item -Recurse -Force $env:GNUPGHOME
+Remove-Item Env:GNUPGHOME
+```
+
+The temporary `GNUPGHOME` keeps these keys apart from any personal keyring or smartcard
+(YubiKey) setup: a key held on a smartcard cannot sign in CI.
 
 Then, in the repository's **Settings → Secrets and variables → Actions**:
 
