@@ -38,7 +38,7 @@ export interface SuperAdminOptions {
 }
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
-  const { superAdminEmail, superAdminId, tenants, baseDomain = "labkiosk.akbhoi.com", activeTab = "organizations", nonce } = data;
+  const { superAdminEmail, superAdminId, tenants, baseDomain = "labkiosk.org", activeTab = "organizations", nonce } = data;
 
   const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);

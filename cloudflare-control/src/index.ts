@@ -289,7 +289,7 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
 const DEFAULT_CONFIG: LabConfig = {
   version: 3,
   updatedAt: new Date().toISOString(),
-  defaultHomepage: "https://labkiosk.akbhoi.com",
+  defaultHomepage: "https://labkiosk.org",
   tunnelDomain: "",
   whitelist: [],
   scheduledShutdown: "17:00"
@@ -656,7 +656,7 @@ export default {
     // Every HTML response carries the same hardened headers and a fresh CSP nonce.
     const nonce = generateNonce();
     const htmlHeaders = buildHtmlHeaders(nonce, { hsts: isHttps && !isDev });
-    const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.akbhoi.com";
+    const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.org";
 
     // A cookie-authenticated mutation must come from this site.
     if (path.startsWith("/api/")) {

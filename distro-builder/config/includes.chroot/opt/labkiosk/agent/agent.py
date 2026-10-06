@@ -128,7 +128,7 @@ KIOSK_EXTENSION_ORIGIN = f"chrome-extension://{KIOSK_EXTENSION_ID}"
 # Origins already named in the agent log, so a page in a loop cannot flood it.
 _rejected_origins = set()
 _rejected_origins_lock = threading.Lock()
-DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.akbhoi.com")
+DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.org")
 
 # Remote control. The Openbox autostart (and the simulator's entrypoint) writes
 # the plaintext x11vnc password it generated for this boot here, mode 600, so

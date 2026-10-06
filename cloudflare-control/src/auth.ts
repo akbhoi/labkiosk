@@ -172,8 +172,8 @@ export function createSessionCookie(
     "HttpOnly",
     "SameSite=Lax"
   ];
-  // Scope to the parent domain so a session created on labkiosk.akbhoi.com is still sent
-  // to greenwood.labkiosk.akbhoi.com, which is where the admin console actually lives.
+  // Scope to the parent domain so a session created on labkiosk.org is still sent
+  // to greenwood.labkiosk.org, which is where the admin console actually lives.
   if (domain) parts.push(`Domain=.${domain.replace(/^\./, "")}`);
   if (secure) parts.push("Secure");
   return parts.join("; ");

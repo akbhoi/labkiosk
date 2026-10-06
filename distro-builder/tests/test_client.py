@@ -104,7 +104,7 @@ class WorkerUrls(unittest.TestCase):
         self.assertFalse(agent.validate_worker_url("http://organization.example"))
 
     def test_https_is_accepted(self):
-        self.assertTrue(agent.validate_worker_url("https://organization.labkiosk.akbhoi.com"))
+        self.assertTrue(agent.validate_worker_url("https://organization.labkiosk.org"))
 
     def test_http_is_accepted_only_for_loopback_and_the_container_gateway(self):
         for url in ("http://127.0.0.1:8787", "http://host.docker.internal:8787"):

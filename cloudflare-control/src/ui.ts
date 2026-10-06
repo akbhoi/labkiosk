@@ -42,7 +42,7 @@ export interface DashboardOptions {
    * There is no organization subdomain there, so the tenant has to travel as
    * ?tenant=<slug> on every link and every API call. Only the request knows
    * this; it used to be guessed from the configured base domain, which is
-   * "labkiosk.akbhoi.com" in local development too -- so the guess said
+   * "labkiosk.org" in local development too -- so the guess said
    * "production", the parameter was dropped, and every call answered 400.
    */
   isDevHost?: boolean;
@@ -67,7 +67,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     config,
     tenant,
     sites = [],
-    baseDomain = "labkiosk.akbhoi.com",
+    baseDomain = "labkiosk.org",
     presets = [],
     staff = [],
     activePage = "workstations",

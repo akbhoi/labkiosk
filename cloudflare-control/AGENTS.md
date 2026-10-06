@@ -361,7 +361,7 @@ cloudflare-control/
   is what made the entire dashboard untestable with `pnpm dev`.
 - Whether this is a dev host is a property of the **request** (`isDevHost()` in
   `guard.ts`, passed to the renderer as `isDevHost`), never of the configured
-  `DEFAULT_DOMAIN`: that is `labkiosk.akbhoi.com` in local development too.
+  `DEFAULT_DOMAIN`: that is `labkiosk.org` in local development too.
 - Loopback and RFC 1918 addresses count as dev hosts, because `pnpm dev` listens on
   `0.0.0.0` and the simulator reaches it by LAN address. A deployed worker never sees
   such a `Host` (Cloudflare routes only configured hostnames), which is what keeps that

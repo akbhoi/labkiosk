@@ -48,13 +48,13 @@ import { PALETTE } from "../src/ui_tokens";
  * deployment refuses to use unless ALLOW_LOCAL_DB is set explicitly.
  */
 const mockEnv: Env = {
-  DEFAULT_DOMAIN: "labkiosk.akbhoi.com",
+  DEFAULT_DOMAIN: "labkiosk.org",
   SUPER_ADMIN_EMAIL: "admin@akbhoi.com",
   SUPER_ADMIN_PASSWORD: "SuperAdminPassword2026!",
   ALLOW_LOCAL_DB: "1"
 };
 
-const BASE = "https://labkiosk.akbhoi.com";
+const BASE = "https://labkiosk.org";
 
 function request(path: string, init: RequestInit & { cookie?: string; bearer?: string } = {}) {
   const headers = new Headers(init.headers);
@@ -152,10 +152,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const cookie = res.headers.get("Set-Cookie");
     assert.ok(cookie && cookie.includes("labkiosk_session="));
     // Session cookies must be Secure, HttpOnly, and scoped to the parent domain
-    // so they survive the hop to greenwood.labkiosk.akbhoi.com.
+    // so they survive the hop to greenwood.labkiosk.org.
     assert.match(cookie!, /HttpOnly/);
     assert.match(cookie!, /Secure/);
-    assert.match(cookie!, /Domain=\.labkiosk\.akbhoi\.com/);
+    assert.match(cookie!, /Domain=\.labkiosk\.org/);
     orgSessionCookie = cookie!.split(";")[0];
   });
 
@@ -430,7 +430,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /Greenwood Holdings/);
-    assert.match(html, /greenwood\.labkiosk\.akbhoi\.com/);
+    assert.match(html, /greenwood\.labkiosk\.org/);
     assert.match(html, /Apps &amp; Web/);
     assert.match(html, /Settings/);
   });
@@ -740,7 +740,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // about: these paths are somewhere a link, or a workstation, is pinned.
     // On the organization's own host, which is where the console lives in production
     // and what its host-relative links are written against.
-    const host = "greenwood.labkiosk.akbhoi.com";
+    const host = "greenwood.labkiosk.org";
     const open = (path: string) => call(path, { cookie: orgSessionCookie, headers: { host } });
     const pages = [
       "/admin/workstations",
@@ -1012,14 +1012,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Reset broadcast to portal
     const { res: resetRes } = await callJson("/api/command?tenant=greenwood", {
-      ...json({ target: "all", action: "navigate", url: "https://greenwood.labkiosk.akbhoi.com/", resetPortal: true }),
+      ...json({ target: "all", action: "navigate", url: "https://greenwood.labkiosk.org/", resetPortal: true }),
       cookie: orgSessionCookie
     });
     assert.equal(resetRes.status, 200);
 
     const telemAfter = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     assert.equal(telemAfter.res.status, 200);
-    assert.equal(telemAfter.data.targetUrl, "https://greenwood.labkiosk.akbhoi.com/");
+    assert.equal(telemAfter.data.targetUrl, "https://greenwood.labkiosk.org/");
     assert.equal(telemAfter.data.broadcastUrl, "");
     // The reset command sends the workstation to its own portal, not to wherever
     // the operator reached the console: a console on http://localhost once sent
@@ -1036,7 +1036,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const delivered = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     const reset = delivered.data.commands.find((c: any) => c.action === "navigate");
     assert.ok(reset, "the reset is delivered as a navigate command");
-    assert.equal(reset.url, "https://greenwood.labkiosk.akbhoi.com/");
+    assert.equal(reset.url, "https://greenwood.labkiosk.org/");
     assert.equal(reset.url, delivered.data.targetUrl);
     assert.equal(reset.portal, undefined, "the internal marker is not sent to the agent");
   });
@@ -1580,8 +1580,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // enrolment response must still send it to its organization's portal rather than
     // to the public landing page.
     const expectations: Array<[string, RegExp]> = [
-      ["greenwood.labkiosk.akbhoi.com", /^https:\/\/greenwood\.labkiosk\.akbhoi\.com\/$/],
-      ["labkiosk.akbhoi.com", /^https:\/\/greenwood\.labkiosk\.akbhoi\.com\/$/],
+      ["greenwood.labkiosk.org", /^https:\/\/greenwood\.labkiosk\.org\/$/],
+      ["labkiosk.org", /^https:\/\/greenwood\.labkiosk\.org\/$/],
       ["host.docker.internal", /\?tenant=greenwood$/],
       ["my-worker.acct.workers.dev", /\?tenant=greenwood$/]
     ];
@@ -1609,14 +1609,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // at `my-worker.acct.workers.dev` serves its own landing page, not an organization
     // called "my-worker". Both previously rendered "Organization Subdomain Not Found".
     for (const host of ["host.docker.internal", "my-worker.acct.workers.dev", "127.0.0.1"]) {
-      const res = await worker.fetch(new Request("https://labkiosk.akbhoi.com/", { headers: { host } }), mockEnv);
+      const res = await worker.fetch(new Request("https://labkiosk.org/", { headers: { host } }), mockEnv);
       assert.equal(res.status, 200, `${host} should serve the landing page`);
       assert.match(await res.text(), /Turn Any Computer Into a/);
     }
 
     // A real organization subdomain under the configured base domain still resolves.
     const organization = await worker.fetch(
-      new Request("https://labkiosk.akbhoi.com/", { headers: { host: "greenwood.labkiosk.akbhoi.com" } }),
+      new Request("https://labkiosk.org/", { headers: { host: "greenwood.labkiosk.org" } }),
       mockEnv
     );
     assert.equal(organization.status, 200);
@@ -1939,7 +1939,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const sameSite = await call("/api/command?tenant=greenwood", {
       ...json({ target: "all", action: "unlock" }),
       cookie: orgSessionCookie,
-      headers: { Origin: "https://greenwood.labkiosk.akbhoi.com" }
+      headers: { Origin: "https://greenwood.labkiosk.org" }
     });
     assert.equal(sameSite.status, 200);
 
@@ -2067,7 +2067,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Checks domain boundaries case-insensitively with isHostUnder", () => {
     assert.equal(isHostUnder("Organization.LabKiosk.com", "labkiosk.com"), true);
     assert.equal(isHostUnder("ORGANIZATION.LABKIOSK.COM", ".LabKiosk.COM"), true);
-    assert.equal(isHostUnder("greenwood.labkiosk.akbhoi.com", "labkiosk.akbhoi.com"), true);
+    assert.equal(isHostUnder("greenwood.labkiosk.org", "labkiosk.org"), true);
     assert.equal(isHostUnder("not-labkiosk.com", "labkiosk.com"), false);
     assert.equal(isHostUnder("fakelabkiosk.com", "labkiosk.com"), false);
     assert.equal(isHostUnder("labkiosk.com", undefined), false);
@@ -2317,12 +2317,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // host; its portal is now elsewhere, and only this allowlist entry lets the
     // kiosk move there instead of landing on "This page is blocked".
     const tenantId = await greenwoodId();
-    const req = new Request("https://former-name.labkiosk.akbhoi.com/api/devices/ws");
-    const portal = portalContextFrom(req, new URL(req.url), { ...mockEnv, DEFAULT_DOMAIN: "labkiosk.akbhoi.com" } as Env);
+    const req = new Request("https://former-name.labkiosk.org/api/devices/ws");
+    const portal = portalContextFrom(req, new URL(req.url), { ...mockEnv, DEFAULT_DOMAIN: "labkiosk.org" } as Env);
     const device = await hubs().connectDevice({ tenantId, clientId: "WS-RENAMED", ip: "10.0.0.9", portal });
     const config = ofType(device, "config").at(-1)!;
     const portalHost = new URL(String(config.targetUrl)).hostname;
-    assert.notEqual(portalHost, "former-name.labkiosk.akbhoi.com", "the portal is at the organization's current address");
+    assert.notEqual(portalHost, "former-name.labkiosk.org", "the portal is at the organization's current address");
     assert.ok(allowlistHas(config.whitelist, portalHost), `${portalHost} is allowed`);
     await device.closeFromClient();
   });
@@ -2554,7 +2554,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Refuses to run without a database binding unless explicitly allowed", async () => {
     await assert.rejects(
-      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com" } as Env),
+      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.org" } as Env),
       /No D1 database bound/
     );
   });
@@ -2562,7 +2562,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Refuses to serve a bound database that has not been migrated", async () => {
     const empty = createLocalD1Database();
     await assert.rejects(
-      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: empty, SUPER_ADMIN_EMAIL: "a@b.co", SUPER_ADMIN_PASSWORD: "x" } as Env),
+      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.org", DB: empty, SUPER_ADMIN_EMAIL: "a@b.co", SUPER_ADMIN_PASSWORD: "x" } as Env),
       /migrations apply/
     );
   });
@@ -2571,17 +2571,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const migrated = createLocalD1Database();
     await initSchema(migrated);
     await assert.rejects(
-      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: migrated } as Env),
+      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.org", DB: migrated } as Env),
       /SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set/
     );
     await assert.rejects(
-      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.akbhoi.com", DB: migrated, SUPER_ADMIN_EMAIL: "owner@example.com" } as Env),
+      () => worker.fetch(request("/"), { DEFAULT_DOMAIN: "labkiosk.org", DB: migrated, SUPER_ADMIN_EMAIL: "owner@example.com" } as Env),
       /must both be set/
     );
     // Both secrets are not enough: production also needs its platform bindings,
     // and the refusal names every one that is missing.
     const secrets = {
-      DEFAULT_DOMAIN: "labkiosk.akbhoi.com",
+      DEFAULT_DOMAIN: "labkiosk.org",
       DB: migrated,
       SUPER_ADMIN_EMAIL: "owner@example.com",
       SUPER_ADMIN_PASSWORD: "OwnerPassword2026!"
@@ -2766,9 +2766,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.notEqual(retired.status, 200, "there is no `demo` organization any more");
 
     const directory = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
-    for (const slug of DEMO_SLUGS) assert.match(directory, new RegExp(`${slug}\\.labkiosk\\.akbhoi\\.com`));
+    for (const slug of DEMO_SLUGS) assert.match(directory, new RegExp(`${slug}\\.labkiosk\\.org`));
     assert.equal((directory.match(/>Open Console</g) || []).length, 3, "one Open Console per demo");
-    assert.doesNotMatch(directory, />demo\.labkiosk\.akbhoi\.com/);
+    assert.doesNotMatch(directory, />demo\.labkiosk\.org/);
   });
 
   test("The local demos have no domain and no tunnel, even when the deployment sets one", async () => {
@@ -2782,7 +2782,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal(tunnelOf(html), "", `${slug} has no tunnel domain`);
       assert.match(html, /<input type="text" class="form-input" id="setting-custom-domain" placeholder=/, `${slug} has no custom domain`);
     }
-    assert.equal(tunnelOf(await settings("web-demo", superSessionCookie)), "demo.labkiosk.akbhoi.com", "the hosted demo keeps its own tunnel");
+    assert.equal(tunnelOf(await settings("web-demo", superSessionCookie)), "demo.labkiosk.org", "the hosted demo keeps its own tunnel");
     assert.equal(tunnelOf(await settings("greenwood", orgSessionCookie)), "tunnels.example.com", "an ordinary organization still inherits it");
   });
 
@@ -2804,7 +2804,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(renameDemo.status, 400);
 
     const directory = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
-    const row = directory.slice(directory.indexOf("web-demo.labkiosk.akbhoi.com"));
+    const row = directory.slice(directory.indexOf("web-demo.labkiosk.org"));
     const demoId = row.match(/data-tenant="([^"]+)"/)![1];
     const suspend = await call("/api/super/tenants/suspend", { ...json({ tenantId: demoId }), cookie: superSessionCookie });
     assert.equal(suspend.status, 400);
@@ -2875,15 +2875,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((onApex as { redirect: string }).redirect, "/super");
 
     // On the demo subdomain, they belong in the console they were looking at.
-    const onDemo = await (await login(superCreds, { host: "web-demo.labkiosk.akbhoi.com" })).json();
+    const onDemo = await (await login(superCreds, { host: "web-demo.labkiosk.org" })).json();
     assert.equal(
       (onDemo as { redirect: string }).redirect,
-      "https://web-demo.labkiosk.akbhoi.com/admin",
+      "https://web-demo.labkiosk.org/admin",
       "a super admin signing in on demo must land on the demo console"
     );
 
     // On any other organization, Rule 2 applies: they may not open it, so /super.
-    const onGreenwood = await (await login(superCreds, { host: "greenwood.labkiosk.akbhoi.com" })).json();
+    const onGreenwood = await (await login(superCreds, { host: "greenwood.labkiosk.org" })).json();
     assert.equal(
       (onGreenwood as { redirect: string }).redirect,
       "/super",
@@ -2893,9 +2893,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // An organization admin still lands on their own console wherever they signed in.
     const asOrganization = await (await login(
       { email: "operator@greenwood.example", password: "OrganizationPassword123!" },
-      { host: "labkiosk.akbhoi.com" }
+      { host: "labkiosk.org" }
     )).json();
-    assert.equal((asOrganization as { redirect: string }).redirect, "https://greenwood.labkiosk.akbhoi.com/admin");
+    assert.equal((asOrganization as { redirect: string }).redirect, "https://greenwood.labkiosk.org/admin");
   });
 
   test("Sign-in honours the organization the page was showing, not just the host", async () => {
@@ -2916,7 +2916,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const viaBody = await (await login({ ...creds, tenant: "web-demo" })).json();
     assert.equal(
       (viaBody as { redirect: string }).redirect,
-      "https://web-demo.labkiosk.akbhoi.com/admin",
+      "https://web-demo.labkiosk.org/admin",
       "the page said it was showing demo, so that is where the sign-in belongs"
     );
 
@@ -2936,7 +2936,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     })).json();
     assert.equal(
       (operator as { redirect: string }).redirect,
-      "https://greenwood.labkiosk.akbhoi.com/admin",
+      "https://greenwood.labkiosk.org/admin",
       "an organization admin goes to their own console whatever the page claimed"
     );
   });
@@ -2946,7 +2946,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // each one on its own looked fine.
 
     // 1. /admin while signed out redirects to the sign-in page, naming the organization.
-    const bounced = await call("/admin", { headers: { host: "web-demo.labkiosk.akbhoi.com" } });
+    const bounced = await call("/admin", { headers: { host: "web-demo.labkiosk.org" } });
     assert.equal(bounced.status, 302);
     const target = bounced.headers.get("Location")!;
     assert.match(target, /login=1/);
@@ -2969,29 +2969,29 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Redirects /admin on apex domain to appropriate tenant subdomain or super console", async () => {
-    // Organization admin without tenant query param on apex -> 302 to https://greenwood.labkiosk.akbhoi.com/admin
+    // Organization admin without tenant query param on apex -> 302 to https://greenwood.labkiosk.org/admin
     const organizationRes = await call("/admin", { cookie: orgSessionCookie });
     assert.equal(organizationRes.status, 302);
-    assert.equal(organizationRes.headers.get("Location"), "https://greenwood.labkiosk.akbhoi.com/admin");
+    assert.equal(organizationRes.headers.get("Location"), "https://greenwood.labkiosk.org/admin");
 
-    // Super admin without tenant query param on apex -> 302 to https://labkiosk.akbhoi.com/super
+    // Super admin without tenant query param on apex -> 302 to https://labkiosk.org/super
     const superRes = await call("/admin", { cookie: superSessionCookie });
     assert.equal(superRes.status, 302);
-    assert.equal(superRes.headers.get("Location"), "https://labkiosk.akbhoi.com/super");
+    assert.equal(superRes.headers.get("Location"), "https://labkiosk.org/super");
 
     // Super admin accessing organization admin sub-routes (/admin/workstations, /admin/broadcast, etc.)
     // without tenant query param -> 302 to demo organization console (NOT to /super)
     const superWorkstationsRes = await call("/admin/workstations", { cookie: superSessionCookie });
     assert.equal(superWorkstationsRes.status, 302);
-    assert.equal(superWorkstationsRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/workstations?tenant=web-demo");
+    assert.equal(superWorkstationsRes.headers.get("Location"), "https://labkiosk.org/admin/workstations?tenant=web-demo");
 
     const superAppsWebRes = await call("/admin/apps-web", { cookie: superSessionCookie });
     assert.equal(superAppsWebRes.status, 302);
-    assert.equal(superAppsWebRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tenant=web-demo");
+    assert.equal(superAppsWebRes.headers.get("Location"), "https://labkiosk.org/admin/apps-web?tenant=web-demo");
 
     const superLegacyBroadcastRes = await call("/admin/broadcast", { cookie: superSessionCookie });
     assert.equal(superLegacyBroadcastRes.status, 302);
-    assert.equal(superLegacyBroadcastRes.headers.get("Location"), "https://labkiosk.akbhoi.com/admin/apps-web?tab=broadcast");
+    assert.equal(superLegacyBroadcastRes.headers.get("Location"), "https://labkiosk.org/admin/apps-web?tab=broadcast");
 
     // Super admin on dev host visiting /admin/workstations without tenant param -> 302 to ?tenant=web-demo
     const devReq = new Request("http://localhost:8787/admin/workstations", {
@@ -3193,14 +3193,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Unauthenticated /admin on subdomain redirects to landing page with tenant param", async () => {
-    // Simulated subdomain request: Host = greenwood.labkiosk.akbhoi.com
-    const req = new Request("https://greenwood.labkiosk.akbhoi.com/admin", {
-      headers: { Host: "greenwood.labkiosk.akbhoi.com" }
+    // Simulated subdomain request: Host = greenwood.labkiosk.org
+    const req = new Request("https://greenwood.labkiosk.org/admin", {
+      headers: { Host: "greenwood.labkiosk.org" }
     });
     const res = await worker.fetch(req, mockEnv);
     assert.equal(res.status, 302);
     const loc = res.headers.get("Location") || "";
-    assert.equal(loc, "https://labkiosk.akbhoi.com/?login=1&tenant=greenwood");
+    assert.equal(loc, "https://labkiosk.org/?login=1&tenant=greenwood");
   });
 
   test("Allows organization admin to update subdomain and enforces slug validation", async () => {

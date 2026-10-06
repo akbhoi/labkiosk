@@ -30,7 +30,7 @@ export type DemoSlug = keyof typeof DEMO_TENANTS;
 export const DEMO_SLUGS = Object.keys(DEMO_TENANTS) as DemoSlug[];
 
 /** The Cloudflare Tunnel domain the hosted demo's workstations have always used. */
-export const WEB_DEMO_TUNNEL_DOMAIN = "demo.labkiosk.akbhoi.com";
+export const WEB_DEMO_TUNNEL_DOMAIN = "demo.labkiosk.org";
 
 /**
  * The tunnel domain a demo falls back to when it has none of its own. Only the

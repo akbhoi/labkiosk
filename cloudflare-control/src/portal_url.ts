@@ -28,7 +28,7 @@ export interface PortalContext {
   host: string;
   /** Organization slug the host names, if it is a subdomain of the platform domain. */
   hostSlug: string | null;
-  /** The platform domain, e.g. `labkiosk.akbhoi.com`. */
+  /** The platform domain, e.g. `labkiosk.org`. */
   baseDomain: string;
 }
 

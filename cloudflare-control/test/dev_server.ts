@@ -3,7 +3,7 @@ import worker from "../src/index";
 import { Env } from "../src/types";
 
 const env: Env = {
-  DEFAULT_DOMAIN: "labkiosk.akbhoi.com",
+  DEFAULT_DOMAIN: "labkiosk.org",
   SUPER_ADMIN_EMAIL: "admin@akbhoi.com",
   SUPER_ADMIN_PASSWORD: "SuperAdminPassword2026!",
   ALLOW_LOCAL_DB: "1"

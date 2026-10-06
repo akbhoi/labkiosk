@@ -193,8 +193,8 @@ Configure these in `docker-compose.yml` or via shell exports:
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `TZ` | `Asia/Kolkata` | Container timezone (IST). Baked into the image; override here to run the simulator on another clock. |
-| `WORKER_URL` | `http://host.docker.internal:8787` | Target Cloudflare Worker control plane. Set to your production URL (e.g. `https://labkiosk.akbhoi.com`) to test remote staging. |
-| `LABKIOSK_DOMAIN` | `labkiosk.akbhoi.com` | Base platform domain. |
+| `WORKER_URL` | `http://host.docker.internal:8787` | Target Cloudflare Worker control plane. Set to your production URL (e.g. `https://labkiosk.org`) to test remote staging. |
+| `LABKIOSK_DOMAIN` | `labkiosk.org` | Base platform domain. |
 | `VNC_PASSWORD` | random per container | Password for the local noVNC session; printed in the startup log when generated. |
 | `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional public hostname (e.g. Cloudflare Tunnel) that routes to port 6080. If set, reported to the admin console for remote assistance. |
 

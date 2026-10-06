@@ -5,18 +5,20 @@
 	"compatibility_date": "2026-09-01",
 	"compatibility_flags": ["nodejs_compat"],
 	// Multi-tenant routing: every organization is a subdomain of the zone, and the
-	// apex serves the public landing page and the /super console.
-	// Replace `labkiosk.akbhoi.com` with your own zone before deploying, and make sure a
-	// wildcard DNS record (CNAME *) points at the worker.
+	// apex serves the public landing page and the /super console. DEFAULT_DOMAIN
+	// (set in the dashboard) names the platform domain these routes serve.
+	// Every zone named here must already be active on the deploying account, or
+	// `wrangler deploy` fails. Each hostname also needs a proxied DNS record: the
+	// apex and a wildcard (`*`), e.g. AAAA 100:: with the orange cloud on.
 	"workers_dev": true,
 	"routes": [
 		{
-			"pattern": "labkiosk.akbhoi.com/*",
-			"zone_name": "akbhoi.com"
+			"pattern": "labkiosk.org/*",
+			"zone_name": "labkiosk.org"
 		},
 		{
-			"pattern": "*.labkiosk.akbhoi.com/*",
-			"zone_name": "akbhoi.com"
+			"pattern": "*.labkiosk.org/*",
+			"zone_name": "labkiosk.org"
 		}
 	],
 	// Create the database once with:

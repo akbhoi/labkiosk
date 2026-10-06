@@ -796,7 +796,7 @@ on live media, which keeps nothing by design.
     "broadcastUrl": "",
     "broadcastEpoch": 0,
     "isConfigured": true,
-    "baseDomain": "labkiosk.akbhoi.com",
+    "baseDomain": "labkiosk.org",
     "isLive": false,
     "isInstalled": true,
     "isOnline": true,

@@ -282,7 +282,7 @@ export interface Env {
   CF_ZONE_ID?: string;
   SUPER_ADMIN_EMAIL?: string;
   SUPER_ADMIN_PASSWORD?: string;
-  DEFAULT_DOMAIN?: string; // e.g. "labkiosk.akbhoi.com"
+  DEFAULT_DOMAIN?: string; // e.g. "labkiosk.org"
   /**
    * Opt-in to the ephemeral in-memory database (tests & local dev only).
    * Without it a missing DB binding is a hard failure rather than silent data loss.
@@ -292,7 +292,7 @@ export interface Env {
   ISO_DOWNLOAD_URL?: string;
   /** Cloudflare Tunnel domain for remote management (VNC). Defaults to lab.example.com. */
   TUNNEL_DOMAIN?: string;
-  /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.akbhoi.com. */
+  /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.org. */
   DEFAULT_HOMEPAGE?: string;
   /**
    * Automatic bug reports (src/bug_reports.ts). Optional: without all three
