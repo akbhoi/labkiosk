@@ -292,6 +292,12 @@ Scripts injected without the page's nonce (Google tag gateway, for example) stay
 Zaraz. If you turn Zaraz on, describe it in the Privacy Policy (`src/ui_legal.ts`, section 8) and
 put the analytics tool behind Zaraz consent.
 
+The home page asks for that consent itself, with a bar along the bottom that leaves the page usable
+(Zaraz's own consent dialog is modal and blocks the whole page). In **Zaraz → Consent**, keep the
+cookie name `zaraz-consent` and turn on **Hide modal by default**. A Configuration Rule that turns
+Zaraz off outside the public pages must still let `/cdn-cgi/zaraz/*` through, or the loader
+answers 404 and nothing loads.
+
 ---
 
 ## 5. Deploying the Worker
