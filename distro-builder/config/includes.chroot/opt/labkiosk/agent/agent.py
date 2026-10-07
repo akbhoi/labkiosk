@@ -139,7 +139,7 @@ VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
 CLOUDFLARED_CONFIG_FILE = "/etc/cloudflared/config.yml"
 REMOTE_HOST_PATTERN = re.compile(r"^\s*-?\s*hostname:\s*['\"]?([A-Za-z0-9.-]+)['\"]?\s*$", re.MULTILINE)
 
-AGENT_VERSION = "2.6.0"
+AGENT_VERSION = "2.7.0"
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8888
 HEARTBEAT_SECONDS = 3

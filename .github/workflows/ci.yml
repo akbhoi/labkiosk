@@ -48,8 +48,22 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
           push: false
+          load: true
+          tags: ci/${{ matrix.name }}:pr
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      # The same gate docker-publish.yml applies after pushing, run here so a
+      # fixed critical in the base image fails the pull request instead of the
+      # release tag.
+      - name: Scan ${{ matrix.name }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ci/${{ matrix.name }}:pr
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
   worker:
     name: Cloudflare Worker Typecheck & Tests
     runs-on: ubuntu-latest
