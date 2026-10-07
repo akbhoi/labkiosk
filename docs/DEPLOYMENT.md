@@ -195,13 +195,29 @@ repository name before turning the option on.
 ### Optional: automatic Remote Control tunnels
 
 Organizations can let the platform create a Cloudflare Tunnel, DNS record and Access application
-for each workstation in **their own** Cloudflare account (Settings → Domains → Automatic Remote
-Control Tunnels; `src/remote_tunnels.ts`). Their API token and every workstation's run token are
-stored sealed with AES-GCM under one platform secret. Without it the option is unavailable:
+for each workstation (Settings → Domains → Automatic Remote Control Tunnels;
+`src/remote_tunnels.ts`), either in **their own** Cloudflare account and domain, or, for an
+organization with no domain, on the **platform's remote-control domain** as
+`<organization>-<workstation>.<domain>`. Organizations' API tokens and every workstation's run
+token are stored sealed with AES-GCM under one platform secret. Without it the option is
+unavailable; without the four `REMOTE_TUNNEL_PLATFORM_*` settings only the organization's own
+domain is offered:
 
 | Setting | What it is | Set it |
 | :--- | :--- | :--- |
 | `REMOTE_TUNNEL_KEY` | Secret: 32 random bytes, base64 | `openssl rand -base64 32 \| npx wrangler secret put REMOTE_TUNNEL_KEY` |
+| `REMOTE_TUNNEL_PLATFORM_DOMAIN` | The platform's remote-control zone, e.g. `labkiosk.dev` | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_DOMAIN` |
+| `REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID` | The Cloudflare account that zone is on | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID` |
+| `REMOTE_TUNNEL_PLATFORM_ZONE_ID` | That zone's id (**Overview** → *API* → *Zone ID*) | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ZONE_ID` |
+| `REMOTE_TUNNEL_PLATFORM_TOKEN` | Secret: API token for it (below) | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_TOKEN` |
+
+The platform's remote-control domain must be **a zone of its own, never `DEFAULT_DOMAIN` or a
+name under it** (the Worker refuses one that is, and logs why): the console's session cookie is
+set for `.<DEFAULT_DOMAIN>`, so a browser would send it to every workstation address there, and
+those addresses are served by the workstations themselves. Give the zone **no Worker routes**, or
+the Worker answers the workstation addresses instead of the tunnels. Each workstation is one label
+under the zone, so the zone's free Universal SSL certificate covers it. Every operator who signs
+in through Cloudflare Access on it takes a Zero Trust seat in the platform's account.
 
 Changing or losing the key makes every stored token unreadable: organizations then have to turn
 the tunnels off in their own Cloudflare dashboard and on again here. Images must ship cloudflared
@@ -236,6 +252,14 @@ value `owner/repo` → **Deploy**.
 Zone Resources: *Include* · *Specific zone* · your platform domain's zone. **Create Token**, then
 `npx wrangler secret put CF_API_TOKEN`. **`CF_ZONE_ID`** is on that zone's **Overview** page
 (right-hand column, *API* → *Zone ID*): `npx wrangler secret put CF_ZONE_ID`.
+
+**`REMOTE_TUNNEL_PLATFORM_TOKEN`** (the platform's remote-control domain): Cloudflare dashboard →
+**My Profile** → **API Tokens** → **Create Token** → **Create Custom Token**. Permissions:
+*Account* · *Cloudflare Tunnel* · *Edit*; *Account* · *Access: Apps and Policies* · *Edit*;
+*Zone* · *DNS* · *Edit*. Account Resources: *Include* · the account the zone is on. Zone
+Resources: *Include* · *Specific zone* · the remote-control zone only. Zero Trust must be set up
+on that account (**Zero Trust** → pick a team name and plan). **Create Token**, then
+`npx wrangler secret put REMOTE_TUNNEL_PLATFORM_TOKEN`.
 
 Workers AI needs no token: the `AI` binding uses the account the Worker is deployed to.
 

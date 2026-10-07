@@ -1,9 +1,18 @@
 /**
- * Remote Control tunnels in an organization's own Cloudflare account.
+ * Automatic Remote Control tunnels, in one of two places an organization picks:
  *
- * An organization administrator gives the platform a Cloudflare API token for
- * their own account and a domain on it. For each workstation that asks
- * (GET /api/devices/tunnel), the Worker then creates, in that account:
+ *   own       its own Cloudflare account and a domain on it: the administrator
+ *             gives the platform an API token for that account, and a
+ *             workstation is `<workstation>.<domain>`;
+ *   platform  the platform's remote-control domain, a zone of its own (e.g.
+ *             labkiosk.dev) in the platform's account, for organizations with
+ *             no domain: a workstation is `<organization>-<workstation>.<domain>`.
+ *             It is never under the console's domain, whose session cookie the
+ *             browser would send to every host there -- and a host there is
+ *             served by the workstation itself.
+ *
+ * For each workstation that asks (GET /api/devices/tunnel), the Worker then
+ * creates, in that account:
  *
  *   - a remotely managed Cloudflare Tunnel whose only public hostname is
  *     `<workstation>.<domain>`, forwarding to the workstation's loopback noVNC
@@ -15,16 +24,17 @@
  *     defence for a public endpoint);
  *
  * and hands the workstation the tunnel's run token. The certificate is the
- * organization's own zone certificate at Cloudflare's edge, so a workstation
- * one label under the zone (`pc-01.example.com`) is covered by the free
- * Universal SSL certificate.
+ * zone's own at Cloudflare's edge, so a workstation one label under the zone
+ * (`pc-01.example.com`) is covered by the free Universal SSL certificate.
  *
- * Both the API token and every run token are sealed with AES-GCM under the
- * REMOTE_TUNNEL_KEY secret before they reach D1, bound to the organization (and
- * workstation) they belong to. Without that secret the feature is unavailable.
+ * An organization's API token and every run token are sealed with AES-GCM under
+ * the REMOTE_TUNNEL_KEY secret before they reach D1, bound to the organization
+ * (and workstation) they belong to. Without that secret the feature is
+ * unavailable; without the REMOTE_TUNNEL_PLATFORM_* settings only `own` is.
  */
 
 import { cleanCustomDomain } from "./escape";
+import { isHostUnder } from "./guard";
 import { Env, Tenant } from "./types";
 
 const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -46,12 +56,16 @@ const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/;
 const API_TOKEN_PATTERN = /^[A-Za-z0-9_.-]{20,256}$/;
 const EMAIL_PATTERN = /^[a-z0-9._%+-]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
+export type RemoteTunnelMode = "own" | "platform";
+
 export interface RemoteTunnelAccount {
   tenant_id: string;
+  mode: RemoteTunnelMode;
   account_id: string;
   zone_id: string;
   domain: string;
-  api_token: string;
+  /** Sealed; NULL in `platform` mode, which uses the platform's own token. */
+  api_token: string | null;
   access_rules: string;
   access_policy_id: string;
   created_at: number;
@@ -141,6 +155,46 @@ export async function openSecret(env: Env, sealed: string, context: string): Pro
 }
 
 const accountContext = (tenantId: string) => `remote-tunnel-account:${tenantId}`;
+
+// --- The platform's remote-control domain -------------------------------------
+
+export interface PlatformTunnelConfig {
+  accountId: string;
+  zoneId: string;
+  domain: string;
+  apiToken: string;
+}
+
+/**
+ * The platform's remote-control zone, or null when this server does not offer
+ * one. Refused outright under the console's own domain (see the top of this file).
+ */
+export function platformTunnelConfig(env: Env): PlatformTunnelConfig | null {
+  if (!remoteTunnelsAvailable(env)) return null;
+  const domain = cleanCustomDomain(env.REMOTE_TUNNEL_PLATFORM_DOMAIN);
+  const accountId = cleanAccountId(env.REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID);
+  const zoneId = cleanAccountId(env.REMOTE_TUNNEL_PLATFORM_ZONE_ID);
+  const apiToken = cleanApiToken(env.REMOTE_TUNNEL_PLATFORM_TOKEN);
+  if (!domain || !accountId || !zoneId || !apiToken) return null;
+  if (env.DEFAULT_DOMAIN && (isHostUnder(domain, env.DEFAULT_DOMAIN) || isHostUnder(env.DEFAULT_DOMAIN, domain))) {
+    console.error(
+      `[RemoteTunnel] REMOTE_TUNNEL_PLATFORM_DOMAIN ${domain} shares ${env.DEFAULT_DOMAIN}, whose session cookie would reach every workstation; platform tunnels are off`
+    );
+    return null;
+  }
+  return { accountId, zoneId, domain, apiToken };
+}
+
+/** The API token that acts for an organization's tunnels. */
+async function accountApiToken(env: Env, account: RemoteTunnelAccount): Promise<string> {
+  if (account.mode === "platform") {
+    const platform = platformTunnelConfig(env);
+    if (!platform) throw new Error("This server no longer offers its remote-control domain (REMOTE_TUNNEL_PLATFORM_*)");
+    return platform.apiToken;
+  }
+  if (!account.api_token) throw new Error("No Cloudflare API token is stored for this organization");
+  return openSecret(env, account.api_token, accountContext(account.tenant_id));
+}
 const tunnelContext = (tenantId: string, clientId: string) => `remote-tunnel:${tenantId}:${clientId}`;
 
 // --- Validating what an administrator enters --------------------------------
@@ -175,17 +229,39 @@ export function parseAccessRules(raw: unknown): string[] | null {
   return rules.length > 0 && rules.length <= MAX_ACCESS_RULES ? rules : null;
 }
 
-/** The hostname a workstation gets: its id as one DNS label under the domain. */
-export function workstationHostname(clientId: string, domain: string): string | null {
-  const label = clientId
+function dnsLabel(value: string): string {
+  return value
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+/, "")
     .slice(0, 63)
     .replace(/-+$/, "");
+}
+
+/** The hostname a workstation gets on an organization's own domain: its id as one DNS label. */
+export function workstationHostname(clientId: string, domain: string): string | null {
+  const label = dnsLabel(clientId);
   if (!label) return null;
   const host = `${label}.${domain}`;
   return host.length <= 253 ? host : null;
+}
+
+/**
+ * The hostname on the platform's shared domain: `<organization>-<workstation>`,
+ * still one label so the zone's certificate covers it. Null when that is longer
+ * than a DNS label allows, rather than cutting it into someone else's name.
+ */
+export function platformWorkstationHostname(subdomain: string, clientId: string, domain: string): string | null {
+  const org = dnsLabel(subdomain);
+  const pc = dnsLabel(clientId);
+  if (!org || !pc || org.length + 1 + pc.length > 63) return null;
+  return `${org}-${pc}.${domain}`;
+}
+
+function tunnelHostname(account: RemoteTunnelAccount, tenant: Pick<Tenant, "subdomain">, clientId: string): string | null {
+  return account.mode === "platform"
+    ? platformWorkstationHostname(tenant.subdomain, clientId, account.domain)
+    : workstationHostname(clientId, account.domain);
 }
 
 // --- The Cloudflare API, as the organization ---------------------------------
@@ -284,13 +360,16 @@ export class RemoteTunnelSetupError extends Error {
   }
 }
 
-export interface RemoteTunnelSettings {
-  accountId: string;
-  domain: string;
-  /** null keeps the stored token (only while the account stays the same). */
-  apiToken: string | null;
-  accessRules: string[];
-}
+export type RemoteTunnelSettings =
+  | {
+      mode: "own";
+      accountId: string;
+      domain: string;
+      /** null keeps the stored token (only while the account stays the same). */
+      apiToken: string | null;
+      accessRules: string[];
+    }
+  | { mode: "platform"; accessRules: string[] };
 
 function accessPolicyBody(tenant: Pick<Tenant, "subdomain">, rules: string[]): Record<string, unknown> {
   return {
@@ -301,11 +380,11 @@ function accessPolicyBody(tenant: Pick<Tenant, "subdomain">, rules: string[]): R
 }
 
 /**
- * Turn automatic tunnels on, or change them. The token is checked against the
- * account before anything is stored, and the organization's Access policy is
- * created or updated so existing workstations follow a change of who may connect
- * at once. The account and domain cannot change while workstations still have
- * tunnels in the old one.
+ * Turn automatic tunnels on, or change them. An organization's own token is
+ * checked against its account before anything is stored, and the
+ * organization's Access policy is created or updated so existing workstations
+ * follow a change of who may connect at once. Where the tunnels live cannot
+ * change while workstations still have tunnels in the old place.
  */
 export async function configureRemoteTunnels(
   env: Env,
@@ -313,13 +392,42 @@ export async function configureRemoteTunnels(
   tenant: Pick<Tenant, "id" | "subdomain">,
   settings: RemoteTunnelSettings,
   now: number
-): Promise<{ zoneName: string }> {
+): Promise<{ domain: string; zoneName: string }> {
   if (!remoteTunnelsAvailable(env)) {
     throw new RemoteTunnelSetupError("Automatic Remote Control tunnels are not available on this server", 409);
   }
   const existing = await getRemoteTunnelAccount(db, tenant.id);
-  const sameAccount = existing !== null && existing.account_id === settings.accountId;
-  if (existing && (!sameAccount || existing.domain !== settings.domain)) {
+
+  let accountId: string;
+  let domain: string;
+  let apiToken: string;
+  let zone: { zoneId: string; zoneName: string };
+  if (settings.mode === "platform") {
+    const platform = platformTunnelConfig(env);
+    if (!platform) {
+      throw new RemoteTunnelSetupError("This server does not offer workstation addresses of its own; use your own Cloudflare domain", 409);
+    }
+    ({ accountId, domain, apiToken } = platform);
+    zone = { zoneId: platform.zoneId, zoneName: platform.domain };
+  } else {
+    accountId = settings.accountId;
+    domain = settings.domain;
+    const keepToken = existing?.mode === "own" && existing.account_id === accountId;
+    const token = settings.apiToken ?? (keepToken ? await accountApiToken(env, existing!) : null);
+    if (!token) throw new RemoteTunnelSetupError("A Cloudflare API token is required", 400);
+    apiToken = token;
+    try {
+      zone = await checkAccountAccess(apiToken, accountId, domain);
+    } catch (err) {
+      if (err instanceof CloudflareApiError) {
+        throw new RemoteTunnelSetupError(`Cloudflare refused the token: ${err.message}`, 400);
+      }
+      throw err;
+    }
+  }
+
+  const samePlace = existing !== null && existing.mode === settings.mode && existing.account_id === accountId;
+  if (existing && (!samePlace || existing.domain !== domain)) {
     const { total } = await countRemoteTunnels(db, tenant.id);
     if (total > 0) {
       throw new RemoteTunnelSetupError(
@@ -328,26 +436,12 @@ export async function configureRemoteTunnels(
       );
     }
   }
-  const apiToken = settings.apiToken ?? (sameAccount ? await openSecret(env, existing!.api_token, accountContext(tenant.id)) : null);
-  if (!apiToken) {
-    throw new RemoteTunnelSetupError("A Cloudflare API token is required", 400);
-  }
 
-  let zone: { zoneId: string; zoneName: string };
-  try {
-    zone = await checkAccountAccess(apiToken, settings.accountId, settings.domain);
-  } catch (err) {
-    if (err instanceof CloudflareApiError) {
-      throw new RemoteTunnelSetupError(`Cloudflare refused the token: ${err.message}`, 400);
-    }
-    throw err;
-  }
-
-  const accountPath = `/accounts/${encodeURIComponent(settings.accountId)}`;
+  const accountPath = `/accounts/${encodeURIComponent(accountId)}`;
   const body = accessPolicyBody(tenant, settings.accessRules);
   let policyId: string;
   try {
-    policyId = sameAccount
+    policyId = samePlace
       ? (await cfApi<{ id: string }>(apiToken, "PUT", `${accountPath}/access/policies/${encodeURIComponent(existing!.access_policy_id)}`, body)).id
       : (await cfApi<{ id: string }>(apiToken, "POST", `${accountPath}/access/policies`, body)).id;
   } catch (err) {
@@ -357,30 +451,30 @@ export async function configureRemoteTunnels(
     throw err;
   }
 
-  if (existing && !sameAccount) {
-    // The old account's policy is no longer used by anything. Its token may
-    // already be revoked, which must not stop the move, so the failure is
-    // logged for the administrator's own clean-up rather than thrown.
+  if (existing && !samePlace) {
+    // The old policy is no longer used by anything. Its token may already be
+    // revoked, which must not stop the move, so the failure is logged for the
+    // administrator's own clean-up rather than thrown.
     try {
-      const oldToken = await openSecret(env, existing.api_token, accountContext(tenant.id));
+      const oldToken = await accountApiToken(env, existing);
       await cfDelete(oldToken, `/accounts/${encodeURIComponent(existing.account_id)}/access/policies/${encodeURIComponent(existing.access_policy_id)}`);
     } catch (err) {
       console.error(`[RemoteTunnel] ${tenant.subdomain}: could not delete the old Access policy ${existing.access_policy_id}: ${(err as Error).message}`);
     }
   }
 
-  const sealed = await sealSecret(env, apiToken, accountContext(tenant.id));
+  const sealed = settings.mode === "own" ? await sealSecret(env, apiToken, accountContext(tenant.id)) : null;
   await db
     .prepare(
-      `INSERT INTO remote_tunnel_accounts (tenant_id, account_id, zone_id, domain, api_token, access_rules, access_policy_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(tenant_id) DO UPDATE SET account_id = excluded.account_id, zone_id = excluded.zone_id,
+      `INSERT INTO remote_tunnel_accounts (tenant_id, mode, account_id, zone_id, domain, api_token, access_rules, access_policy_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tenant_id) DO UPDATE SET mode = excluded.mode, account_id = excluded.account_id, zone_id = excluded.zone_id,
          domain = excluded.domain, api_token = excluded.api_token, access_rules = excluded.access_rules,
          access_policy_id = excluded.access_policy_id, updated_at = excluded.updated_at`
     )
-    .bind(tenant.id, settings.accountId, zone.zoneId, settings.domain, sealed, JSON.stringify(settings.accessRules), policyId, now, now)
+    .bind(tenant.id, settings.mode, accountId, zone.zoneId, domain, sealed, JSON.stringify(settings.accessRules), policyId, now, now)
     .run();
-  return { zoneName: zone.zoneName };
+  return { domain, zoneName: zone.zoneName };
 }
 
 export async function countRemoteTunnels(db: D1Database, tenantId: string): Promise<{ total: number; active: number; failed: number }> {
@@ -465,8 +559,11 @@ export async function workstationTunnel(
     };
   }
 
-  const hostname = workstationHostname(clientId, account.domain);
-  if (!hostname) return { state: "none" };
+  const hostname = tunnelHostname(account, tenant, clientId);
+  if (!hostname) {
+    console.error(`[RemoteTunnel] ${tenant.subdomain}/${clientId}: no valid address under ${account.domain}`);
+    return { state: "none" };
+  }
 
   const claim = await db
     .prepare(
@@ -482,7 +579,7 @@ export async function workstationTunnel(
 
   const row = (await getTunnelRow(db, tenant.id, clientId))!;
   try {
-    const apiToken = await openSecret(env, account.api_token, accountContext(tenant.id));
+    const apiToken = await accountApiToken(env, account);
     const token = await provision(apiToken, account, tenant, clientId, hostname, row, db, now);
     const sealed = await sealSecret(env, token, tunnelContext(tenant.id, clientId));
     await db
@@ -511,6 +608,16 @@ async function provision(
   const accountPath = `/accounts/${encodeURIComponent(account.account_id)}`;
   const zonePath = `/zones/${encodeURIComponent(account.zone_id)}`;
 
+  // 0. An address another workstation holds -- on the platform domain, possibly
+  //    another organization's ("a-b" + "c" and "a" + "b-c") -- is never shared.
+  const holder = await db
+    .prepare("SELECT tenant_id FROM remote_tunnels WHERE hostname = ? AND NOT (tenant_id = ? AND client_id = ?) LIMIT 1")
+    .bind(hostname, tenant.id, clientId)
+    .first<{ tenant_id: string }>();
+  if (holder) {
+    throw new Error(`${hostname} is already another workstation's address; rename this workstation`);
+  }
+
   // 1. The tunnel, named after the workstation so a lost id is found again.
   let tunnelId = row.tunnel_id;
   if (!tunnelId) {
@@ -536,7 +643,9 @@ async function provision(
     }
   });
 
-  // 3. The DNS record. One this module did not create is never taken over.
+  // 3. The DNS record. Only one pointing at this very tunnel (left by an
+  //    attempt that died before saving its id) is reused; any other record,
+  //    including another workstation's, is never taken over.
   const target = `${tunnelId}.cfargotunnel.com`;
   if (!row.dns_record_id) {
     const records = await cfApi<Array<{ id: string; type: string; content: string; comment?: string | null }>>(
@@ -544,7 +653,7 @@ async function provision(
       "GET",
       `${zonePath}/dns_records?name=${encodeURIComponent(hostname)}`
     );
-    const ours = records.find((r) => r.type === "CNAME" && r.comment === DNS_RECORD_COMMENT);
+    const ours = records.find((r) => r.type === "CNAME" && r.comment === DNS_RECORD_COMMENT && r.content === target);
     const foreign = records.find((r) => r !== ours);
     if (foreign) {
       throw new Error(`${hostname} already has a ${foreign.type} record that Lab Kiosk did not create; remove it or rename the workstation`);
@@ -596,7 +705,7 @@ export async function deprovisionWorkstationTunnel(
   if (!row) return false;
   const account = await getRemoteTunnelAccount(db, tenantId);
   if (!account) throw new Error("This organization's Cloudflare account is no longer configured");
-  const apiToken = await openSecret(env, account.api_token, accountContext(tenantId));
+  const apiToken = await accountApiToken(env, account);
   const accountPath = `/accounts/${encodeURIComponent(account.account_id)}`;
 
   if (row.access_app_id) {
@@ -630,7 +739,7 @@ export async function turnOffRemoteTunnels(env: Env, db: D1Database, tenantId: s
   if (total === 0) {
     const account = await getRemoteTunnelAccount(db, tenantId);
     if (account) {
-      const apiToken = await openSecret(env, account.api_token, accountContext(tenantId));
+      const apiToken = await accountApiToken(env, account);
       await cfDelete(apiToken, `/accounts/${encodeURIComponent(account.account_id)}/access/policies/${encodeURIComponent(account.access_policy_id)}`);
       await db.prepare("DELETE FROM remote_tunnel_accounts WHERE tenant_id = ?").bind(tenantId).run();
     }

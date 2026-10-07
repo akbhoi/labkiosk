@@ -145,10 +145,11 @@ CREATE TABLE IF NOT EXISTS workstation_issues (
 
 CREATE TABLE IF NOT EXISTS remote_tunnel_accounts (
   tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL CHECK (mode IN ('own', 'platform')),
   account_id TEXT NOT NULL,
   zone_id TEXT NOT NULL,
   domain TEXT NOT NULL,
-  api_token TEXT NOT NULL,
+  api_token TEXT,
   access_rules TEXT NOT NULL,
   access_policy_id TEXT NOT NULL,
   created_at INTEGER NOT NULL,
@@ -256,6 +257,7 @@ CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenan
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_workstation_issues_tenant ON workstation_issues(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_issue ON bug_reports(issue_number);
+CREATE INDEX IF NOT EXISTS idx_remote_tunnels_hostname ON remote_tunnels(hostname);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);

@@ -116,8 +116,10 @@ Tunnel to `<pc>.<tunnel_domain>`. No LAN listener. The console's noVNC frame get
 domain is refused (`usableTunnelDomain()`): two labels down it has no certificate.
 
 **Automatic tunnels** (`src/remote_tunnels.ts`, migration 0019, secret `REMOTE_TUNNEL_KEY`): an
-organization stores a Cloudflare API token for its own account; `GET /api/devices/tunnel` creates
-that workstation's tunnel, CNAME and Access application there on first request and returns
+organization either stores a Cloudflare API token for its own account (`mode` `own`, `<pc>.<domain>`)
+or uses the platform's remote-control zone (`platform`, `<org>-<pc>.<REMOTE_TUNNEL_PLATFORM_DOMAIN>`,
+never under `DEFAULT_DOMAIN` because the console cookie is `Domain=.<DEFAULT_DOMAIN>`);
+`GET /api/devices/tunnel` creates that workstation's tunnel, CNAME and Access application there on first request and returns
 `{tunnel: {hostname, token}}`, `{tunnel: null, pending: true}` (keep what runs) or `{tunnel: null,
 pending: false}` (stop). The agent (`remote_tunnel_loop()`, every 5 minutes) writes
 `/etc/labkiosk/tunnel.token` and `tunnel.host`; `cloudflared-labkiosk.path` restarts

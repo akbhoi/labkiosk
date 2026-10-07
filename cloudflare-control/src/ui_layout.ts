@@ -1393,6 +1393,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
       user-select: none;
     }
     .btn svg { flex-shrink: 0; width: 15px; height: 15px; }
+    .btn[hidden] { display: none; }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-primary { background: var(--accent); color: var(--accent-fg); box-shadow: var(--shadow-sm); }
     .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }

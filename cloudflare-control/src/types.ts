@@ -303,6 +303,16 @@ export interface Env {
    * it automatic Remote Control tunnels are unavailable.
    */
   REMOTE_TUNNEL_KEY?: string;
+  /**
+   * The platform's remote-control domain for organizations without one
+   * (src/remote_tunnels.ts): a zone of its own, never under DEFAULT_DOMAIN, with
+   * no Worker routes. All four, or platform tunnels are not offered.
+   */
+  REMOTE_TUNNEL_PLATFORM_DOMAIN?: string;
+  REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID?: string;
+  REMOTE_TUNNEL_PLATFORM_ZONE_ID?: string;
+  /** Secret: Cloudflare Tunnel Edit and Access Apps and Policies Edit on the account, DNS Edit on the zone. */
+  REMOTE_TUNNEL_PLATFORM_TOKEN?: string;
   /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.org. */
   DEFAULT_HOMEPAGE?: string;
   /**

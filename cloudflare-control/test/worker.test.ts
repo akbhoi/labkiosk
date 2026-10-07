@@ -24,7 +24,7 @@ import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
 import { isHostUnder } from "../src/guard";
-import { openSecret, sealSecret, workstationHostname } from "../src/remote_tunnels";
+import { openSecret, platformTunnelConfig, platformWorkstationHostname, sealSecret, workstationHostname } from "../src/remote_tunnels";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
@@ -107,10 +107,21 @@ const validTunnelSettings = {
   apiToken: CF_TOKEN,
   accessRules: "it@example.com\n@staff.example.com"
 };
+const PLATFORM_ACCOUNT = "fedcba9876543210fedcba9876543210";
+const PLATFORM_ZONE = "00112233445566778899aabbccddeeff";
+const PLATFORM_TOKEN = "cf-platform-token-0123456789abcdef";
+const platformTunnelEnv = {
+  REMOTE_TUNNEL_PLATFORM_DOMAIN: "labkiosk.dev",
+  REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID: PLATFORM_ACCOUNT,
+  REMOTE_TUNNEL_PLATFORM_ZONE_ID: PLATFORM_ZONE,
+  REMOTE_TUNNEL_PLATFORM_TOKEN: PLATFORM_TOKEN
+};
 
 function fakeCloudflare() {
   const calls: Array<{ method: string; path: string; body?: unknown }> = [];
-  const state = { forbid: false, foreignRecord: "" };
+  // foreignRecord: a name with an A record Lab Kiosk did not create.
+  // staleRecord: a name with a Lab Kiosk CNAME pointing at some other tunnel.
+  const state = { forbid: false, foreignRecord: "", staleRecord: "" };
   let tunnels = 0, records = 0, apps = 0;
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -119,7 +130,8 @@ function fakeCloudflare() {
     const path = url.pathname.replace("/client/v4", "") + url.search;
     const method = init?.method || "GET";
     calls.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-    assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${CF_TOKEN}`);
+    const platform = path.startsWith(`/accounts/${PLATFORM_ACCOUNT}`) || path.startsWith(`/zones/${PLATFORM_ZONE}`);
+    assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${platform ? PLATFORM_TOKEN : CF_TOKEN}`, path);
     const ok = (result: unknown) => new Response(JSON.stringify({ success: true, errors: [], result }), { status: 200 });
     if (state.forbid) {
       return new Response(JSON.stringify({ success: false, errors: [{ code: 9109, message: "Unauthorized to access requested resource" }], result: null }), { status: 403 });
@@ -128,9 +140,13 @@ function fakeCloudflare() {
     if (method === "GET" && bare === "/zones") {
       return ok(url.searchParams.get("name") === "example.com" && url.searchParams.get("account.id") === ACCOUNT ? [{ id: "zone-1", name: "example.com" }] : []);
     }
-    if (method === "GET" && bare === "/zones/zone-1/dns_records") {
+    if (method === "GET" && /^\/zones\/[^/]+\/dns_records$/.test(bare)) {
       const name = url.searchParams.get("name");
-      return ok(name && name === state.foreignRecord ? [{ id: "theirs", type: "A", content: "192.0.2.1", comment: null }] : []);
+      if (name && name === state.foreignRecord) return ok([{ id: "theirs", type: "A", content: "192.0.2.1", comment: null }]);
+      if (name && name === state.staleRecord) {
+        return ok([{ id: "stale", type: "CNAME", content: "someone-else.cfargotunnel.com", comment: "Lab Kiosk Remote Control" }]);
+      }
+      return ok([]);
     }
     if (method === "GET" && bare.endsWith("/token")) return ok(`tunnel-run-token-for-${bare.split("/")[4]}-0123456789`);
     if (method === "GET") return ok([]);
@@ -145,6 +161,7 @@ function fakeCloudflare() {
     calls,
     set forbid(value: boolean) { state.forbid = value; },
     set foreignRecord(value: string) { state.foreignRecord = value; },
+    set staleRecord(value: string) { state.staleRecord = value; },
     restore() { globalThis.fetch = realFetch; }
   };
 }
@@ -3879,6 +3896,96 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(workstationHostname("PC-VM-101", "example.com"), "pc-vm-101.example.com");
     assert.equal(workstationHostname("--Lab 3 / PC_01--", "example.com"), "lab-3-pc-01.example.com");
     assert.equal(workstationHostname("***", "example.com"), null);
+  });
+
+  test("Automatic Remote Control tunnels: organizations without a domain get <organization>-<workstation> on the platform's own", async () => {
+    const tunnelEnv = { ...mockEnv, REMOTE_TUNNEL_KEY: TUNNEL_KEY, ...platformTunnelEnv } as Env;
+    const db = getDatabase(mockEnv);
+    const settingsCall = (init: RequestInit & { cookie?: string } = {}, env: Env = tunnelEnv) =>
+      worker.fetch(request("/api/settings/remote-tunnels?tenant=greenwood", init), env);
+    const platformSettings = { mode: "platform", accessRules: "it@example.com" };
+
+    // Offered only when fully configured, and never on the console's own domain,
+    // whose session cookie the browser would send to every workstation there.
+    assert.equal((await (await settingsCall({ cookie: orgSessionCookie }, { ...mockEnv, REMOTE_TUNNEL_KEY: TUNNEL_KEY } as Env)).json<any>()).platformDomain, null);
+    for (const domain of ["vnc.labkiosk.org", "labkiosk.org", "org"]) {
+      const sharing = { ...tunnelEnv, REMOTE_TUNNEL_PLATFORM_DOMAIN: domain } as Env;
+      assert.equal(platformTunnelConfig(sharing), null, domain);
+      assert.equal((await settingsCall({ ...json(platformSettings), cookie: orgSessionCookie }, sharing)).status, 409, domain);
+    }
+    assert.equal((await (await settingsCall({ cookie: orgSessionCookie })).json<any>()).platformDomain, "labkiosk.dev");
+
+    // It is not an "own" domain, nor a manual tunnel domain.
+    const asOwn = await settingsCall({ ...json({ ...validTunnelSettings, domain: "pcs.labkiosk.dev" }), cookie: orgSessionCookie });
+    assert.equal(asOwn.status, 400);
+    assert.match((await asOwn.json<any>()).error, /platform's own remote-control domain/);
+    const manual = await worker.fetch(
+      request("/api/tenant/settings?tenant=greenwood", { ...json({ tunnelDomain: "labkiosk.dev" }), cookie: orgSessionCookie }),
+      tunnelEnv
+    );
+    assert.equal(manual.status, 400);
+    assert.equal((await settingsCall({ ...json({ ...platformSettings, mode: "elsewhere" }), cookie: orgSessionCookie })).status, 400);
+    assert.equal((await settingsCall({ ...json({ ...platformSettings, accessRules: "" }), cookie: orgSessionCookie })).status, 400);
+
+    const enrolFrom = (clientId: string, ip: string) =>
+      callJson("/api/devices/enroll", { ...json({ subdomain: "greenwood", enrollmentKey, clientId }), headers: { "CF-Connecting-IP": ip } });
+    const deviceTunnel = (bearer: string) => worker.fetch(request("/api/devices/tunnel", { bearer }), tunnelEnv);
+
+    const cf = fakeCloudflare();
+    try {
+      const saved = await settingsCall({ ...json(platformSettings), cookie: orgSessionCookie });
+      assert.equal(saved.status, 200);
+      assert.deepEqual(await saved.json(), { status: "ok", mode: "platform", domain: "labkiosk.dev", zone: "labkiosk.dev" });
+      assert.ok(!cf.calls.some((c) => c.path.startsWith("/zones?")), "the platform's zone is configured, not looked up");
+      const stored = await db.prepare("SELECT mode, account_id, zone_id, domain, api_token FROM remote_tunnel_accounts").first<any>();
+      assert.deepEqual({ ...stored }, { mode: "platform", account_id: PLATFORM_ACCOUNT, zone_id: PLATFORM_ZONE, domain: "labkiosk.dev", api_token: null });
+      const status = await (await settingsCall({ cookie: orgSessionCookie })).json<any>();
+      assert.equal(status.mode, "platform");
+      assert.equal(status.accountId, null, "the platform's account is not shown to organizations");
+      const tenantRow = await db.prepare("SELECT tunnel_domain FROM tenants WHERE subdomain = 'greenwood'").first<any>();
+      assert.equal(tenantRow.tunnel_domain, null, "<workstation>.labkiosk.dev is not an address, so no fallback domain is set");
+
+      const { data: enrol } = await enrolFrom("PC-PLATFORM", "198.51.100.73");
+      const first = await (await deviceTunnel(enrol.deviceToken)).json<any>();
+      assert.deepEqual(first.tunnel?.hostname, "greenwood-pc-platform.labkiosk.dev");
+      const dns = cf.calls.find((c) => c.method === "POST" && c.path === `/zones/${PLATFORM_ZONE}/dns_records`);
+      assert.equal((dns!.body as any).name, "greenwood-pc-platform.labkiosk.dev");
+      assert.ok(cf.calls.some((c) => c.method === "POST" && c.path === `/accounts/${PLATFORM_ACCOUNT}/cfd_tunnel`));
+
+      // An address another organization already holds is refused, not shared.
+      const riverside = await db.prepare("SELECT id FROM tenants WHERE subdomain = 'riverside'").first<{ id: string }>();
+      await db
+        .prepare("INSERT INTO remote_tunnels (tenant_id, client_id, hostname, status, updated_at) VALUES (?, 'X', 'greenwood-pc-taken2.labkiosk.dev', 'active', 0)")
+        .bind(riverside!.id)
+        .run();
+      const { data: taken } = await enrolFrom("PC-TAKEN2", "198.51.100.74");
+      assert.deepEqual(await (await deviceTunnel(taken.deviceToken)).json(), { tunnel: null, pending: true });
+      const refused = await db.prepare("SELECT status, error, tunnel_id FROM remote_tunnels WHERE client_id = 'PC-TAKEN2'").first<any>();
+      assert.equal(refused.status, "failed");
+      assert.match(refused.error, /already another workstation's address/);
+      assert.equal(refused.tunnel_id, null, "nothing was created for it");
+      await db.prepare("DELETE FROM remote_tunnels WHERE tenant_id = ?").bind(riverside!.id).run();
+
+      // A Lab Kiosk record pointing at another tunnel is someone else's.
+      const { data: stale } = await enrolFrom("PC-STALE", "198.51.100.75");
+      cf.staleRecord = "greenwood-pc-stale.labkiosk.dev";
+      assert.deepEqual(await (await deviceTunnel(stale.deviceToken)).json(), { tunnel: null, pending: true });
+      assert.ok(!cf.calls.some((c) => c.method === "PUT" && c.path.endsWith("/dns_records/stale")), "it is never overwritten");
+
+      cf.calls.length = 0;
+      const off = await worker.fetch(request("/api/settings/remote-tunnels/off?tenant=greenwood", { method: "POST", cookie: orgSessionCookie }), tunnelEnv);
+      assert.deepEqual(await off.json(), { status: "ok", remaining: 0 });
+      assert.deepEqual(cf.calls.at(-1), { method: "DELETE", path: `/accounts/${PLATFORM_ACCOUNT}/access/policies/policy-1`, body: undefined });
+      assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM remote_tunnel_accounts").first<number>("n"), 0);
+    } finally {
+      cf.restore();
+    }
+  });
+
+  test("Platform workstation addresses stay one DNS label", () => {
+    assert.equal(platformWorkstationHostname("greenwood", "PC-01", "labkiosk.dev"), "greenwood-pc-01.labkiosk.dev");
+    assert.equal(platformWorkstationHostname("a".repeat(40), "b".repeat(30), "labkiosk.dev"), null, "too long is refused, not cut");
+    assert.equal(platformWorkstationHostname("greenwood", "***", "labkiosk.dev"), null);
   });
 
   test("Workstation groups are rendered on the Workstations page", async () => {

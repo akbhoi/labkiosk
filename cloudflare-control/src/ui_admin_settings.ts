@@ -182,13 +182,22 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
             </form>
           </div>
 
-          <!-- Card 6: Automatic tunnels in the organization's own Cloudflare account -->
+          <!-- Card 6: Automatic tunnels, on the platform's remote-control domain or the organization's own -->
           <div class="card" id="section-remote-tunnels">
             <h2 class="card-title">Automatic Remote Control Tunnels</h2>
-            <p class="card-sub">Lab Kiosk creates a Cloudflare Tunnel, DNS record and Access application for each workstation in <strong>your own</strong> Cloudflare account, at <code>&lt;workstation&gt;.&lt;your domain&gt;</code>.</p>
+            <p class="card-sub">Lab Kiosk creates a Cloudflare Tunnel, DNS record and Access application for each workstation, so Remote Control works without setting up tunnels by hand.</p>
             <p class="form-hint" id="remote-tunnels-status">Loading…</p>
 
             <form id="form-remote-tunnels">
+              <div class="form-group">
+                <label class="form-label" for="remote-tunnels-mode">Workstation addresses</label>
+                <select class="form-select" id="remote-tunnels-mode">
+                  <option value="platform" id="remote-tunnels-mode-platform">Lab Kiosk's remote-control domain</option>
+                  <option value="own">My own Cloudflare domain</option>
+                </select>
+                <div class="form-hint" id="remote-tunnels-mode-hint"></div>
+              </div>
+              <div id="remote-tunnels-own-fields">
               <div class="form-group">
                 <label class="form-label" for="remote-tunnels-domain">Domain</label>
                 <input type="text" class="form-input" id="remote-tunnels-domain" placeholder="e.g. example.com" autocomplete="off">
@@ -202,6 +211,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
                 <label class="form-label" for="remote-tunnels-token">API token</label>
                 <input type="password" class="form-input mono" id="remote-tunnels-token" autocomplete="new-password" spellcheck="false">
                 <div class="form-hint">Permissions: Account · Cloudflare Tunnel · Edit; Account · Access: Apps and Policies · Edit; Zone · DNS · Edit and Zone · Zone · Read for this domain. Stored encrypted and never shown again.</div>
+              </div>
               </div>
               <div class="form-group">
                 <label class="form-label" for="remote-tunnels-access">Who may connect</label>
@@ -601,12 +611,28 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       (function remoteTunnels() {
         const form = document.getElementById("form-remote-tunnels");
         const statusLine = document.getElementById("remote-tunnels-status");
+        const modeSelect = document.getElementById("remote-tunnels-mode");
+        const platformOption = document.getElementById("remote-tunnels-mode-platform");
+        const modeHint = document.getElementById("remote-tunnels-mode-hint");
+        const ownFields = document.getElementById("remote-tunnels-own-fields");
+        let platformDomain = null;
+        let configuredMode = null;
         const domainInput = document.getElementById("remote-tunnels-domain");
         const accountInput = document.getElementById("remote-tunnels-account");
         const tokenInput = document.getElementById("remote-tunnels-token");
         const accessInput = document.getElementById("remote-tunnels-access");
         const saveBtn = document.getElementById("btn-remote-tunnels-save");
         const offBtn = document.getElementById("btn-remote-tunnels-off");
+
+        function showMode() {
+          const own = modeSelect.value === "own";
+          ownFields.hidden = !own;
+          tokenInput.required = own && configuredMode !== "own";
+          modeHint.textContent = own
+            ? "Workstations are <workstation>.<your domain>, in your own Cloudflare account and Zero Trust seats."
+            : "Workstations are <organization>-<workstation>." + platformDomain + ". No domain or Cloudflare account needed.";
+        }
+        modeSelect.addEventListener("change", showMode);
 
         async function load() {
           const res = await fetch(labkioskApi("/api/settings/remote-tunnels"));
@@ -620,13 +646,20 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             for (const el of form.querySelectorAll("input, textarea, button")) el.disabled = true;
             return;
           }
+          platformDomain = data.platformDomain || null;
+          configuredMode = data.configured ? data.mode : null;
+          platformOption.disabled = !platformDomain;
+          platformOption.hidden = !platformDomain;
+          modeSelect.value = configuredMode || (platformDomain ? "platform" : "own");
           offBtn.hidden = !data.configured;
           saveBtn.textContent = data.configured ? "Save Changes" : "Turn On";
-          tokenInput.required = !data.configured;
-          tokenInput.placeholder = data.configured ? "Saved; leave blank to keep it" : "";
+          tokenInput.placeholder = configuredMode === "own" ? "Saved; leave blank to keep it" : "";
+          showMode();
           if (data.configured) {
-            domainInput.value = data.domain || "";
-            accountInput.value = data.accountId || "";
+            if (data.mode === "own") {
+              domainInput.value = data.domain || "";
+              accountInput.value = data.accountId || "";
+            }
             accessInput.value = (data.accessRules || []).join("\\n");
             const w = data.workstations || {};
             statusLine.textContent = "On for " + data.domain + ". Workstations with a tunnel: " + (w.active || 0) +
@@ -643,12 +676,17 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             const res = await fetch(labkioskApi("/api/settings/remote-tunnels"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                domain: domainInput.value.trim(),
-                accountId: accountInput.value.trim(),
-                apiToken: tokenInput.value.trim(),
-                accessRules: accessInput.value
-              })
+              body: JSON.stringify(
+                modeSelect.value === "own"
+                  ? {
+                      mode: "own",
+                      domain: domainInput.value.trim(),
+                      accountId: accountInput.value.trim(),
+                      apiToken: tokenInput.value.trim(),
+                      accessRules: accessInput.value
+                    }
+                  : { mode: "platform", accessRules: accessInput.value }
+              )
             });
             const data = await res.json();
             if (data.status === "ok") {
@@ -668,7 +706,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         offBtn.addEventListener("click", async () => {
           const agreed = await lkConfirm({
             title: "Turn Remote Control tunnels off?",
-            message: "This deletes every workstation's tunnel, DNS record and Access application from your Cloudflare account.",
+            message: "This deletes every workstation's tunnel, DNS record and Access application, and Remote Control stops working until it is turned on again.",
             confirmLabel: "Turn Off",
             tone: "danger"
           });
