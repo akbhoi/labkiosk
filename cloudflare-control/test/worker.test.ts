@@ -682,6 +682,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     assert.doesNotMatch(htmlToText("<scr<script>x</script>ipt>alert(1)</script><p>Hi</p>"), /<script/i, "nested tags do not survive");
     assert.equal(htmlToText("a &lt;b&gt; &amp; c"), "a <b> & c", "entities become characters");
+    assert.doesNotMatch(htmlToText("before <!-- never closed <script"), /[<>]/, "an unclosed fragment leaves no bracket");
 
     assert.deepEqual(parseAddress("Lab Kiosk <Support@Email.LabKiosk.org>"), { email: "support@email.labkiosk.org", name: "Lab Kiosk" });
     assert.deepEqual(parseAddress('"Doe, J" <j@x.example>'), { email: "j@x.example", name: "Doe, J" });

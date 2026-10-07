@@ -177,8 +177,10 @@ export function htmlToText(html: string): string {
       .replace(/<li\b[^>]*>/gi, "- ")
       .replace(/<[^>]+>/g, "");
   }
+  // A bracket left over is the start of an unclosed tag, never prose (prose writes `&lt;`).
   // Whatever is left is text; a decoded `&lt;` stays a character, shown with textContent.
   return text
+    .replace(/[<>]/g, "")
     .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, code: string) => {
       if (code[0] === "#") {
         const n = code[1].toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
