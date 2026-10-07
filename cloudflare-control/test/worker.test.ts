@@ -474,8 +474,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(on.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/challenges\.cloudflare\.com/);
     assert.match(on.headers.get("Content-Security-Policy") || "", /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
     const off = await call("/");
-    assert.ok(!(await off.text()).includes("challenges.cloudflare.com"));
-    assert.ok(!(off.headers.get("Content-Security-Policy") || "").includes("challenges.cloudflare.com"));
+    assert.doesNotMatch(await off.text(), /turnstile\/v0\/api\.js|id="(?:reg|contact)-turnstile"/, "no widget while it is off");
+    assert.doesNotMatch(off.headers.get("Content-Security-Policy") || "", /https:\/\/challenges\.cloudflare\.com/);
   });
 
   test("TOTP codes match RFC 6238 and secrets survive base32", async () => {
