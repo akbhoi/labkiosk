@@ -2138,8 +2138,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(cleanCustomDomain("https://Kiosk.Example.com:8443/path/to/page"), "kiosk.example.com");
     assert.equal(cleanCustomDomain("pc-01.labkiosk.example.com"), "pc-01.labkiosk.example.com");
     assert.equal(cleanCustomDomain("not a domain"), null);
-    // A run of "/" made the old path pattern quadratic (CodeQL js/polynomial-redos),
-    // and a workstation's remoteHost reaches this function.
+    // A run of "/" made the old path pattern quadratic (CodeQL js/polynomial-redos).
     const started = performance.now();
     assert.equal(cleanCustomDomain("/".repeat(200_000)), null);
     assert.equal(cleanCustomDomain("kiosk.example.com" + "/".repeat(2000)), "kiosk.example.com");
@@ -2157,7 +2156,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // --------------------------------------------------------- remote control
 
-  test("Stores the remote-control details a workstation reports and shows them to its operator", async () => {
+  test("Stores the VNC password a workstation reports and shows it to its operator", async () => {
+    // An older agent still sends remoteHost; it is ignored and never shown.
     const reported = await callJson("/api/telemetry", {
       ...json({ vncPassword: "s3cr3t42", remoteHost: "PC-02.lab.greenwood.example" }),
       bearer: deviceToken
@@ -2166,13 +2166,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     let { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
     assert.equal(data.clients["PC-02"].vncPassword, "s3cr3t42");
-    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.example");
+    assert.equal(data.clients["PC-02"].remoteHost, undefined);
 
-    // A heartbeat that omits them keeps what is known; a garbage host is ignored.
-    await callJson("/api/telemetry", { ...json({ remoteHost: "not a host!" }), bearer: deviceToken });
+    // A heartbeat that omits it keeps what is known.
+    await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     ({ data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie }));
     assert.equal(data.clients["PC-02"].vncPassword, "s3cr3t42");
-    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.example");
 
     // Another organization's operator never sees them.
     const rival = await call("/api/clients?tenant=greenwood", { cookie: rivalSessionCookie });
@@ -3024,19 +3023,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.doesNotMatch(directory, />demo\.labkiosk\.org/);
   });
 
-  test("The local demos have no domain and no tunnel, even when the deployment sets one", async () => {
-    const withTunnel = { ...mockEnv, TUNNEL_DOMAIN: "tunnels.example.com" } as Env;
-    const settings = async (tenant: string, cookie: string) =>
-      (await worker.fetch(request(`/admin/settings?tenant=${tenant}&tab=domains`, { cookie }), withTunnel)).text();
-    const tunnelOf = (html: string) => html.match(/id="setting-tunnel-domain" value="([^"]*)"/)![1];
-
+  test("The local demos have no custom domain", async () => {
     for (const slug of ["local-demo", "docker-demo"]) {
-      const html = await settings(slug, superSessionCookie);
-      assert.equal(tunnelOf(html), "", `${slug} has no tunnel domain`);
+      const html = await (await call(`/admin/settings?tenant=${slug}&tab=domains`, { cookie: superSessionCookie })).text();
       assert.match(html, /<input type="text" class="form-input" id="setting-custom-domain" placeholder=/, `${slug} has no custom domain`);
+      assert.doesNotMatch(html, /setting-tunnel-domain/, "Settings has no tunnel domain");
     }
-    assert.equal(tunnelOf(await settings("web-demo", superSessionCookie)), "demo.labkiosk.org", "the hosted demo keeps its own tunnel");
-    assert.equal(tunnelOf(await settings("greenwood", orgSessionCookie)), "tunnels.example.com", "an ordinary organization still inherits it");
   });
 
   test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
@@ -3497,12 +3489,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
   });
 
-  test("Updates Settings including custom home route and tunnel domain", async () => {
+  test("Updates Settings including custom home route", async () => {
     // 1. Update settings
     const { res: setRes, data: setData } = await callJson("/api/tenant/settings?tenant=greenwood", {
       ...json({
         homeRoute: "/home",
-        tunnelDomain: "custom-tunnel.example.com",
+        tunnelDomain: "ignored.example.com",
         portalTitle: "Greenwood STEM Portal"
       }),
       cookie: orgSessionCookie
@@ -3510,7 +3502,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(setRes.status, 200);
     assert.equal(setData.status, "ok");
     assert.equal(setData.updates.home_route, "/home");
-    assert.equal(setData.updates.tunnel_domain, "custom-tunnel.example.com");
+    assert.equal(setData.updates.tunnel_domain, undefined, "the retired tunnel domain is not stored");
 
     // 2. /home route serves the user portal
     const homeRes = await call("/home?tenant=greenwood");
@@ -3520,7 +3512,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Reset settings
     await callJson("/api/tenant/settings?tenant=greenwood", {
-      ...json({ homeRoute: "/", tunnelDomain: "" }),
+      ...json({ homeRoute: "/" }),
       cookie: orgSessionCookie
     });
   });
@@ -3535,13 +3527,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(privHtml, /COPPA/);
     assert.match(privHtml, /100% In-Memory RAM Overlay/);
     // Every Cloudflare service the worker binds is disclosed, with Cloudflare's privacy terms.
-    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Cloudflare Tunnel", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
+    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
       assert.ok(privHtml.includes(`<strong>${service}`) || privHtml.includes(`and ${service}`), `the Privacy Policy names ${service}`);
     }
     assert.match(privHtml, /href="https:\/\/www\.cloudflare\.com\/cloudflare-customer-dpa\/"/);
     assert.match(privHtml, /href="\/terms\/bug-reports"/);
     const privCsp = privRes.headers.get("Content-Security-Policy") || "";
     assert.match(privCsp, /script-src 'nonce-[^']+'/);
+    assert.doesNotMatch(privHtml, /Cloudflare Tunnel/, "remote control no longer uses a tunnel");
 
     // /terms
     const termsRes = await call("/terms");
@@ -3877,23 +3870,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
   });
 
-  test("Remote Control never borrows the demo tunnel or puts the VNC password in a query string", async () => {
-    // An organization without a tunnel of its own used to fall back to the demo
-    // organization's, sending its VNC password to <pc>.demo.<domain>.
+  test("Remote Control opens the relay viewer on the console's own address, password in the fragment", async () => {
     const ws = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.doesNotMatch(ws, /TUNNEL_DOMAIN = "demo\./, "another organization's tunnel is never the default");
-    assert.doesNotMatch(ws, /params\.set\("password"/, "the password goes in the fragment, never the query");
-    const settings = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
-    assert.match(settings, /id="setting-tunnel-domain" value=""/, "no tunnel domain is pre-filled");
-  });
-
-  test("Remote Control never builds a workstation address", async () => {
-    // The console opens the relay viewer on its own address, whatever tunnel
-    // domain the organization or deployment has.
-    const underPlatform = { ...mockEnv, TUNNEL_DOMAIN: "remote.labkiosk.org" } as Env;
-    const ws = await (await worker.fetch(request("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie }), underPlatform)).text();
-    assert.doesNotMatch(ws, /remote\.labkiosk\.org/);
     assert.match(ws, /labkioskApi\("\/console\/remote\?"/);
+    assert.doesNotMatch(ws, /TUNNEL_DOMAIN|remoteHost|:6080/, "no workstation address is built");
+    assert.doesNotMatch(ws, /params\.set\("password"/, "the password goes in the fragment, never the query");
   });
 
   test("Workstation groups are rendered on the Workstations page", async () => {

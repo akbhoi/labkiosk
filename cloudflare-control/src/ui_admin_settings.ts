@@ -79,13 +79,12 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
   const customDomain = tenant?.custom_domain || "";
   const customDomainStatus = tenant?.custom_domain_status || "none";
   const homeRoute = tenant?.home_route || "/home";
-  const tunnelDomain = tenant?.tunnel_domain || config?.tunnelDomain || "";
 
   return `
     <div class="page-head">
       <div>
         <h1 class="page-title">Settings</h1>
-        <p class="page-desc">Organization profile, kiosk behaviour, addresses and remote access, the homepage, and security.</p>
+        <p class="page-desc">Organization profile, kiosk behaviour, addresses, the homepage, and security.</p>
       </div>
     </div>
 
@@ -164,21 +163,6 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
                 <div class="form-hint text-warning">Changing your subdomain takes effect immediately. Previously enrolled thin clients will need to be updated with the new address.</div>
               </div>
               <button type="submit" class="btn btn-secondary">Update Subdomain</button>
-            </form>
-          </div>
-
-          <!-- Card 5: VNC & Remote Control Tunnel -->
-          <div class="card" id="section-vnc">
-            <h2 class="card-title">Remote Control &amp; VNC Tunnel</h2>
-            <p class="card-sub">Cloudflare Tunnel hostname for live remote screen control.</p>
-
-            <form id="form-tunnel-settings">
-              <div class="form-group">
-                <label class="form-label" for="setting-tunnel-domain">Tunnel Domain</label>
-                <input type="text" class="form-input" id="setting-tunnel-domain" value="${escapeAttr(tunnelDomain)}" placeholder="e.g. remote.example.com">
-                <div class="form-hint">Thin clients forward loopback noVNC port 6080 to this tunnel egress domain.</div>
-              </div>
-              <button type="submit" class="btn btn-secondary">Update Tunnel Domain</button>
             </form>
           </div>
         </div>
@@ -371,7 +355,6 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         "section-routing": "general",
         "section-subdomain": "domains",
         "section-custom-domain": "domains",
-        "section-vnc": "domains",
         "section-homepage": "homepage",
         "section-enrollment": "security",
         "section-password": "security",
@@ -539,26 +522,6 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             lkToast("Routing saved.", "success");
           } else {
             lkToast(data.error || "Failed to save routing", "error");
-          }
-        } catch (err) {
-          lkToast("Network error: " + err.message, "error");
-        }
-      });
-
-      document.getElementById("form-tunnel-settings").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const tunnelDomain = document.getElementById("setting-tunnel-domain").value.trim();
-        try {
-          const res = await fetch(labkioskApi("/api/tenant/settings"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tunnelDomain })
-          });
-          const data = await res.json();
-          if (data.status === "ok") {
-            lkToast("Tunnel domain updated.", "success");
-          } else {
-            lkToast(data.error || "Failed to update tunnel", "error");
           }
         } catch (err) {
           lkToast("Network error: " + err.message, "error");

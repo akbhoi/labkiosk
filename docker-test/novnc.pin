@@ -1,4 +1,6 @@
-# Pinned noVNC web client for the kiosk image and the Docker simulator.
+# Pinned noVNC web client for the Docker simulator's local screen view
+# (localhost:6080). The kiosk image ships none: Remote Control runs through the
+# console's relay, whose noVNC is cloudflare-control's pinned @novnc/novnc.
 #
 # Debian's `novnc` package depends on Node.js and a stack of OpenStack Python
 # libraries (~130 MB installed) that the browser client never uses: noVNC is
@@ -12,8 +14,7 @@
 #   curl -fsSLo novnc.tar.gz "https://github.com/novnc/noVNC/archive/refs/tags/v${VERSION}.tar.gz"
 #   sha256sum novnc.tar.gz
 #
-# The admin console opens /vnc.html?autoconnect=true&resize=scale&password=...
-# on the workstation, so check those query parameters still work after a bump.
+# The simulator's README opens /vnc.html, so check it still loads after a bump.
 
 VERSION=1.7.0
 SHA256=b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6

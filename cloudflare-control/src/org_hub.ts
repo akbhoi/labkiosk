@@ -39,7 +39,7 @@ import {
   setTenantOnlineCount,
   DeviceRegistryRow
 } from "./db";
-import { safeHttpUrl, cleanCustomDomain } from "./escape";
+import { safeHttpUrl } from "./escape";
 import { PortalContext, isPortalContext, portalUrlFromContext } from "./portal_url";
 
 /** Text a workstation sends to prove it is alive; answered without waking the object. */
@@ -101,7 +101,6 @@ interface DeviceAttachment {
   isLocked: boolean;
   ip: string;
   vncPassword?: string;
-  remoteHost?: string;
   portal: PortalContext;
   connectedAt: number;
   /** Whether this workstation has been asked to send frames. */
@@ -125,7 +124,6 @@ interface HttpClient {
   isLocked: boolean;
   ip: string;
   vncPassword?: string;
-  remoteHost?: string;
   portal: PortalContext;
   lastSeen: number;
   dirty: boolean;
@@ -140,7 +138,6 @@ export interface LiveStatus {
   isLocked: boolean;
   ip: string;
   vncPassword?: string;
-  remoteHost?: string;
   online: boolean;
   lastSeen: number;
   transport: "websocket" | "http";
@@ -182,7 +179,6 @@ export interface HeartbeatInput {
     isLocked?: unknown;
     thumbnail?: unknown;
     vncPassword?: unknown;
-    remoteHost?: unknown;
   };
 }
 
@@ -459,7 +455,6 @@ export class OrgHub {
       isLocked: previous?.isLocked ?? false,
       ip: meta.ip,
       vncPassword: previous?.vncPassword,
-      remoteHost: previous?.remoteHost,
       portal: meta.portal,
       connectedAt: now,
       streaming: false,
@@ -502,8 +497,7 @@ export class OrgHub {
       previous.isLocked !== status.isLocked ||
       previous.clientNum !== status.clientNum ||
       previous.ip !== String(input.ip || "") ||
-      previous.vncPassword !== status.vncPassword ||
-      previous.remoteHost !== status.remoteHost;
+      previous.vncPassword !== status.vncPassword;
     const client: HttpClient = {
       ...status,
       ip: String(input.ip || ""),
@@ -535,21 +529,18 @@ export class OrgHub {
   /** Workstation-reported state, validated; unset fields keep what was known. */
   private normalizeStatus(
     payload: Record<string, unknown>,
-    previous?: { clientNum: number; activeUrl: string; isLocked: boolean; vncPassword?: string; remoteHost?: string }
+    previous?: { clientNum: number; activeUrl: string; isLocked: boolean; vncPassword?: string }
   ) {
     const clientNum = Number(payload.clientNum);
     const vncPassword =
       typeof payload.vncPassword === "string" && payload.vncPassword.trim()
         ? payload.vncPassword.trim().slice(0, MAX_VNC_PASSWORD_LENGTH)
         : previous?.vncPassword;
-    const remoteHost =
-      typeof payload.remoteHost === "string" ? cleanCustomDomain(payload.remoteHost) || previous?.remoteHost : previous?.remoteHost;
     return {
       clientNum: Number.isInteger(clientNum) && clientNum > 0 && clientNum < 100_000 ? clientNum : previous?.clientNum ?? 1,
       activeUrl: safeHttpUrl(payload.activeUrl) || previous?.activeUrl || "",
       isLocked: typeof payload.isLocked === "boolean" ? payload.isLocked : previous?.isLocked ?? false,
-      vncPassword,
-      remoteHost
+      vncPassword
     };
   }
 
@@ -579,8 +570,7 @@ export class OrgHub {
         next.activeUrl !== attachment.activeUrl ||
         next.isLocked !== attachment.isLocked ||
         next.clientNum !== attachment.clientNum ||
-        next.vncPassword !== attachment.vncPassword ||
-        next.remoteHost !== attachment.remoteHost;
+        next.vncPassword !== attachment.vncPassword;
       if (changed) {
         const updated: DeviceAttachment = { ...attachment, ...next, dirty: true };
         ws.serializeAttachment(updated);
@@ -893,7 +883,6 @@ export class OrgHub {
       isLocked: a.isLocked,
       ip: a.ip,
       vncPassword: a.vncPassword,
-      remoteHost: a.remoteHost,
       online,
       lastSeen,
       transport: "websocket"
@@ -908,7 +897,6 @@ export class OrgHub {
       isLocked: c.isLocked,
       ip: c.ip,
       vncPassword: c.vncPassword,
-      remoteHost: c.remoteHost,
       online: now - c.lastSeen < HTTP_ONLINE_MS,
       lastSeen: c.lastSeen,
       transport: "http"
@@ -939,7 +927,7 @@ export class OrgHub {
   // -------------------------------------------------------- write-back to D1
 
   private registryRow(
-    a: { clientId: string; clientNum: number; ip: string; isLocked: boolean; activeUrl: string; vncPassword?: string; remoteHost?: string },
+    a: { clientId: string; clientNum: number; ip: string; isLocked: boolean; activeUrl: string; vncPassword?: string },
     lastSeenMs: number
   ): DeviceRegistryRow {
     return {
@@ -950,7 +938,6 @@ export class OrgHub {
       isLocked: a.isLocked,
       activeUrl: a.activeUrl || null,
       vncPassword: a.vncPassword ?? null,
-      remoteHost: a.remoteHost ?? null,
       lastSeen: Math.floor(lastSeenMs / 1000)
     };
   }

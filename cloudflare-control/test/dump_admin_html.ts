@@ -21,7 +21,6 @@ const tenant = {
   enrollment_key: "KEY123",
   created_at: 1700000000,
   home_route: "/",
-  tunnel_domain: "greenwood.labkiosk.org",
   broadcast_url: null,
   broadcast_epoch: 0,
   custom_domain: null,

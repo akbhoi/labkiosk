@@ -81,7 +81,7 @@ VNC_PASSWD_FILE=/tmp/labkiosk/vnc.pass
 # Random per container unless one is supplied. A fixed default would be a
 # published password on an endpoint that grants full keyboard and mouse control;
 # the RFB protocol caps it at 8 characters, so it is weak by construction and the
-# proxy or tunnel in front of it has to carry the real authentication.
+# console relay or a proxy in front of it has to carry the real authentication.
 VNC_SECRET="${VNC_PASSWORD:-$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n' | cut -c1-8)}"
 echo "VNC password: $VNC_SECRET"
 x11vnc -storepasswd "$VNC_SECRET" "$VNC_PASSWD_FILE" >/dev/null 2>&1
@@ -92,9 +92,10 @@ x11vnc -display :0 -forever -shared -rfbport 5900 -localhost \
   -rfbauth "$VNC_PASSWD_FILE" -quiet -bg
 echo "      VNC password for this container: $VNC_SECRET"
 
-# 4. noVNC gateway. Published on 0.0.0.0 only because this is a throwaway test
-#    container you view from the host; the real image binds it to loopback and
-#    exposes it through the Cloudflare Tunnel instead.
+# 4. noVNC gateway, so you can watch the simulated screen from the host. Published
+#    on 0.0.0.0 only because this is a throwaway test container; the real image
+#    has no gateway at all, and the console's Remote Control reaches x11vnc
+#    through the agent and the console's relay, here as there.
 echo "[4/5] Starting in-browser noVNC gateway on port 6080..."
 websockify --web=/usr/share/novnc/ 0.0.0.0:6080 localhost:5900 >/tmp/websockify.log 2>&1 &
 
@@ -112,10 +113,6 @@ fi
 if [ -n "${LABKIOSK_DOMAIN:-}" ]; then
   echo "      Base domain: $LABKIOSK_DOMAIN"
   export LABKIOSK_DOMAIN
-fi
-if [ -n "${LABKIOSK_REMOTE_HOST:-}" ]; then
-  echo "      Remote-control hostname reported to the console: $LABKIOSK_REMOTE_HOST"
-  export LABKIOSK_REMOTE_HOST
 fi
 
 (

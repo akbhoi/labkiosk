@@ -157,7 +157,7 @@ import { PALETTE } from "./ui_tokens";
 export { OrgHub } from "./org_hub";
 export { RemoteRelay } from "./remote_relay";
 export { CustomHostnameWorkflow } from "./custom_hostname_workflow";
-import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, demoTunnelFallback, isDemoSlug, isDemoTenant } from "./demo";
+import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
 
 /** Commands an admin console is allowed to dispatch. */
 const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "clear-session", "mute"]);
@@ -312,7 +312,6 @@ const DEFAULT_CONFIG: LabConfig = {
   version: 3,
   updatedAt: new Date().toISOString(),
   defaultHomepage: "https://labkiosk.org",
-  tunnelDomain: "",
   whitelist: [],
   scheduledShutdown: "17:00"
 };
@@ -2143,7 +2142,7 @@ export default {
       }
     }
 
-    // POST /api/tenant/settings: update Settings (mode, home_route, tunnel_domain, profile)
+    // POST /api/tenant/settings: update Settings (mode, home_route, profile)
     // POST /api/tenant/homepage: the organization homepage served at the subdomain
     // root. Guarded by the same `settings` permission as the rest of the lab
     // configuration, and every field is normalised here rather than trusted:
@@ -2194,7 +2193,6 @@ export default {
           defaultUrl?: string;
           defaultLockMessage?: string;
           homeRoute?: string;
-          tunnelDomain?: string;
           portalTitle?: string;
           portalSubtitle?: string;
           portalDescription?: string;
@@ -2221,9 +2219,6 @@ export default {
             ? String(body.homeRoute).trim()
             : "/" + String(body.homeRoute).trim();
           updates.home_route = cleanRoute;
-        }
-        if (body.tunnelDomain !== undefined) {
-          updates.tunnel_domain = cleanCustomDomain(body.tunnelDomain) || null;
         }
         if (body.portalTitle !== undefined) {
           updates.portal_title = String(body.portalTitle).trim().slice(0, 100) || null;
@@ -2396,7 +2391,6 @@ export default {
           lastSeen: new Date(lastSeenMs).toISOString(),
           online: Boolean(status?.online),
           vncPassword: status?.vncPassword || row?.vnc_password || undefined,
-          remoteHost: status?.remoteHost || row?.remote_host || undefined,
           groupName: row?.group_name || undefined
         };
       };
@@ -3015,14 +3009,6 @@ export default {
 
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
-        // The hosted demo's tunnel belongs to web-demo only. Handed to anyone
-        // else it sent their Remote Control -- VNC password included -- to
-        // <pc>.demo.<domain>, a host in another organization's namespace. The
-        // local demos take no fallback at all (demoTunnelFallback).
-        tunnelDomain: tenant.tunnel_domain ||
-          (isDemoTenant(tenant, session.user_id)
-            ? demoTunnelFallback(tenant.subdomain as DemoSlug, env.TUNNEL_DOMAIN)
-            : env.TUNNEL_DOMAIN || ""),
         defaultHomepage: env.DEFAULT_HOMEPAGE || DEFAULT_CONFIG.defaultHomepage,
         homeRoute: tenant.home_route || "/",
         whitelist

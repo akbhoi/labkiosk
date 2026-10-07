@@ -26,7 +26,7 @@ import {
   generateDeviceToken,
   generateEnrollmentKey
 } from "./auth";
-import { DEMO_SLUGS, DEMO_TENANTS, WEB_DEMO_TUNNEL_DOMAIN } from "./demo";
+import { DEMO_SLUGS, DEMO_TENANTS } from "./demo";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -426,7 +426,6 @@ export async function ensureDemoTenants(db: D1Database, superAdminId: string): P
         mode: "portal"
       });
       const seeded: Partial<Tenant> = { homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}` };
-      if (slug === "web-demo") seeded.tunnel_domain = WEB_DEMO_TUNNEL_DOMAIN;
       await updateTenant(db, tenant.id, seeded);
       demos.push({ ...tenant, ...seeded });
       continue;
@@ -703,7 +702,6 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "broadcast_url",
   "broadcast_epoch",
   "home_route",
-  "tunnel_domain",
   "homepage_headline",
   "homepage_intro",
   "homepage_blocks"
@@ -1185,7 +1183,6 @@ export interface DeviceRegistryRow {
   isLocked: boolean;
   activeUrl: string | null;
   vncPassword: string | null;
-  remoteHost: string | null;
   /** Unix seconds. */
   lastSeen: number;
 }
@@ -1202,8 +1199,8 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
   if (!rows.length) return;
   const now = Math.floor(Date.now() / 1000);
   const statement = db.prepare(
-    `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password, remote_host, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        client_num = excluded.client_num,
        ip = excluded.ip,
@@ -1211,7 +1208,6 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
        is_locked = excluded.is_locked,
        active_url = COALESCE(excluded.active_url, client_devices.active_url),
        vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
-       remote_host = COALESCE(excluded.remote_host, client_devices.remote_host),
        updated_at = excluded.updated_at`
   );
   await db.batch(
@@ -1226,7 +1222,6 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
         row.isLocked ? 1 : 0,
         row.activeUrl,
         row.vncPassword,
-        row.remoteHost,
         now,
         now
       )

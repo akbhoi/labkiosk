@@ -12,9 +12,9 @@
 # docker-test/ keeps the entrypoint and the documentation, not a second image.
 # ==============================================================================
 # ------------------------------------------------------------------------------
-# Stage 1: the noVNC web client, from the same pinned, checksum-verified release
-# the ISO ships (distro-builder/config/includes.chroot/usr/share/labkiosk/
-# novnc.pin). Debian's novnc package would add Node.js and OpenStack Python
+# Stage 1: the noVNC web client, from a pinned, checksum-verified release
+# (docker-test/novnc.pin), so you can watch the simulated screen at
+# localhost:6080. Debian's novnc package would add Node.js and OpenStack Python
 # libraries (~130 MB) to the final image; this stage also keeps curl's download
 # of it out of the final layers.
 # ------------------------------------------------------------------------------
@@ -22,8 +22,7 @@ FROM debian:bookworm-slim AS novnc
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-COPY distro-builder/config/includes.chroot/usr/share/labkiosk/novnc.pin \
-     distro-builder/config/includes.chroot/usr/share/labkiosk/install-novnc.sh /tmp/novnc/
+COPY docker-test/novnc.pin docker-test/install-novnc.sh /tmp/novnc/
 RUN sh /tmp/novnc/install-novnc.sh /tmp/novnc/novnc.pin /opt/novnc
 
 # ------------------------------------------------------------------------------

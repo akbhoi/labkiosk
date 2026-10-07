@@ -23,7 +23,8 @@ services:
       # 127.0.0.1 because noVNC here is an unauthenticated-by-design endpoint
       # behind an 8-character RFB secret: on 0.0.0.0 anyone on the same network
       # (a cafe, an organization Wi-Fi) reaches a live desktop. To share it, put a proxy
-      # that authenticates in front, or use a Cloudflare Tunnel with Access.
+      # that authenticates in front. Remote Control from the console needs no port:
+      # it goes through the console's relay, as on a real workstation.
       #
       # The agent's API stays loopback-only inside the container, as on a real
       # workstation, so drive the setup wizard from the noVNC screen.
@@ -47,10 +48,6 @@ services:
       # per container and prints it in the log. A fixed default would be a
       # published password on a port that grants keyboard and mouse control.
       - VNC_PASSWORD=${VNC_PASSWORD:-}
-      # Optional: a public hostname (e.g. a Cloudflare Tunnel) that reaches this
-      # container's noVNC port. The agent reports it so the console's "Remote
-      # Control" opens it instead of assuming <pc>.<tunnel-domain>.
-      - LABKIOSK_REMOTE_HOST=${LABKIOSK_REMOTE_HOST:-}
 
     volumes:
       # Live-edit the client without rebuilding: these shadow the image's copies,

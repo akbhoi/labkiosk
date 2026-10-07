@@ -133,11 +133,8 @@ DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.org")
 # Remote control. The Openbox autostart (and the simulator's entrypoint) writes
 # the plaintext x11vnc password it generated for this boot here, mode 600, so
 # the agent can hand it to the admin console over the authenticated
-# telemetry channel. The tunnel hostname comes from LABKIOSK_REMOTE_HOST or, on
-# the real image, from the first ingress hostname in cloudflared's config.
+# telemetry channel.
 VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
-CLOUDFLARED_CONFIG_FILE = "/etc/cloudflared/config.yml"
-REMOTE_HOST_PATTERN = re.compile(r"^\s*-?\s*hostname:\s*['\"]?([A-Za-z0-9.-]+)['\"]?\s*$", re.MULTILINE)
 
 AGENT_VERSION = "2.7.0"
 LOCAL_API_HOST = "127.0.0.1"
@@ -202,8 +199,6 @@ LOCAL_WORKER_HOSTS = {
     "host.containers.internal",
 }
 
-HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\Z")
-
 # Kept in step with the maxlength="64" on the wizard's identifier input.
 CLIENT_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,62}\Z")
 
@@ -257,7 +252,6 @@ state = {
     "broadcastUrl": "",
     "broadcastEpoch": 0,
     "reloadEpoch": 0,
-    "vncPort": 6080,
     # Set at enrolment. Chromium reads its managed policy at startup, so a
     # workstation that just enrolled is still running under the boot-time
     # allowlist and would show "This page is blocked" on its new home page until
@@ -463,7 +457,6 @@ def _read_cached_file(path, cache, parse):
 
 
 _vnc_secret_cache = {}
-_remote_host_cache = {}
 
 
 def read_vnc_password():
@@ -471,23 +464,6 @@ def read_vnc_password():
     return _read_cached_file(
         VNC_SECRET_FILE, _vnc_secret_cache, lambda text: text.strip()[:64]
     )
-
-
-def detect_remote_host():
-    """Hostname the noVNC gateway is reachable on through the tunnel, if any."""
-    candidate = os.environ.get("LABKIOSK_REMOTE_HOST", "").strip().lower()
-    if not candidate:
-        def _first_ingress_hostname(text):
-            match = REMOTE_HOST_PATTERN.search(text)
-            return match.group(1).lower() if match else ""
-
-        candidate = _read_cached_file(
-            CLOUDFLARED_CONFIG_FILE, _remote_host_cache, _first_ingress_hostname
-        )
-    if candidate and not HOSTNAME_PATTERN.match(candidate):
-        log(f"Ignoring remote host {candidate!r}: not a valid hostname")
-        return ""
-    return candidate
 
 
 def derive_default_client_id():
@@ -2654,14 +2630,11 @@ def current_status():
             "activeUrl": state["targetUrl"],
             "isLocked": state["isLocked"],
         }
-    # Remote-control details, sent only when the workstation actually has them
-    # so the control plane keeps whatever it already knows otherwise.
+    # The VNC password, sent only when the workstation actually has one so the
+    # control plane keeps whatever it already knows otherwise.
     vnc_password = read_vnc_password()
     if vnc_password:
         status["vncPassword"] = vnc_password
-    remote_host = detect_remote_host()
-    if remote_host:
-        status["remoteHost"] = remote_host
     return status
 
 

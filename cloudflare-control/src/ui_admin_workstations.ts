@@ -802,7 +802,6 @@ function renderWorkstationsScripts(
         c.ip = status.ip || c.ip;
         c.online = status.online;
         c.vncPassword = status.vncPassword || c.vncPassword;
-        c.remoteHost = status.remoteHost || c.remoteHost;
         if (!status.online) c.thumbnail = undefined;
         clientsData[status.clientId] = c;
       }
