@@ -164,26 +164,47 @@ function decodeTransfer(body: string, encoding: string): Uint8Array {
 /** HTML read for the text view: well past MAX_BODY_CHARS of text, short of a costly regex pass. */
 const MAX_HTML_CHARS = 200_000;
 
+const SKIPPED_ELEMENTS = new Set(["script", "style", "head", "title"]);
+const BLOCK_ELEMENTS = new Set(["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote"]);
+
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 
 /** HTML reduced to readable text. The result is shown with textContent, never as markup. */
 export function htmlToText(html: string): string {
-  let text = html;
-  // Until nothing changes: removing one piece must not leave another behind (`<scr<script>ipt>`).
-  for (let previous = ""; previous !== text; ) {
-    previous = text;
-    text = text
-      .replace(/<(script|style|head|title)\b[\s\S]*?<\/\1\s*>/gi, "")
-      .replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)\s*>/gi, "\n")
-      .replace(/<li\b[^>]*>/gi, "- ")
-      .replace(/<[^>]+>/g, "");
+  // One pass over the markup, no tag-removing patterns: nothing removed can reassemble.
+  let text = "";
+  let i = 0;
+  while (i < html.length) {
+    const open = html.indexOf("<", i);
+    if (open < 0) {
+      text += html.slice(i);
+      break;
+    }
+    text += html.slice(i, open);
+    if (html.startsWith("<!--", open)) {
+      const close = html.indexOf("-->", open + 4);
+      i = close < 0 ? html.length : close + 3;
+      continue;
+    }
+    const close = html.indexOf(">", open + 1);
+    if (close < 0) break; // An unclosed tag: the rest is markup, not text.
+    const name = /^\/?([a-z][a-z0-9]*)/.exec(html.slice(open + 1, Math.min(close, open + 40)).toLowerCase())?.[1] ?? "";
+    const closing = html[open + 1] === "/";
+    i = close + 1;
+    if (!closing && SKIPPED_ELEMENTS.has(name)) {
+      const endTag = new RegExp(`</${name}`, "gi"); // name is one of SKIPPED_ELEMENTS
+      endTag.lastIndex = i;
+      const end = endTag.exec(html)?.index ?? -1;
+      const endClose = end < 0 ? -1 : html.indexOf(">", end);
+      i = endClose < 0 ? html.length : endClose + 1;
+    } else if (name === "br" || (closing && BLOCK_ELEMENTS.has(name))) {
+      text += "\n";
+    } else if (name === "li" && !closing) {
+      text += "- ";
+    }
   }
-  // A bracket left over is the start of an unclosed tag, never prose (prose writes `&lt;`).
   // Whatever is left is text; a decoded `&lt;` stays a character, shown with textContent.
   return text
-    .replace(/[<>]/g, "")
     .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, code: string) => {
       if (code[0] === "#") {
         const n = code[1].toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
