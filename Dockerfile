@@ -60,7 +60,10 @@ ARG WITH_INTL_FONTS=1
 # reach a committed layer. alsa-utils is required -- the agent's "mute" command
 # shells out to amixer. chromium-sandbox carries the setuid helper: this image
 # runs Chromium as an unprivileged user with its sandbox on, as the real one does.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# The upgrade pulls in security fixes the base image does not carry yet, so a
+# stale debian:bookworm-slim never ships (the publish scan fails on fixed criticals).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     xvfb \
     openbox \
     chromium \

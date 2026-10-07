@@ -30,8 +30,10 @@ ENV TZ=Asia/Kolkata
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Installed before the source is copied, so editing the kiosk config does not
-# re-run apt on every rebuild.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# re-run apt on every rebuild. The upgrade pulls in security fixes the base
+# image does not carry yet, so a stale debian:bookworm-slim never ships.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     live-build \
     debootstrap \
     squashfs-tools \

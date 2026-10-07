@@ -55,6 +55,18 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
 
+      # Before anything is pushed: a tag on a commit whose version was never
+      # bumped would publish the old code as the new version, and :latest with it.
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(tr -d '[:space:]' < distro-builder/config/includes.chroot/usr/share/labkiosk/version)"
+          tag="${GITHUB_REF_NAME#[vV]}"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME does not match usr/share/labkiosk/version ($version)."
+            exit 1
+          fi
+
       # arm64 is built through emulation on the amd64 runner.
       - name: Set up QEMU
         if: contains(matrix.platforms, 'arm64')
