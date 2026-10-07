@@ -200,7 +200,7 @@ for each workstation (Settings → Domains → Automatic Remote Control Tunnels;
 organization with no domain, on the **platform's remote-control domain** as
 `<organization>-<workstation>.<domain>`. Organizations' API tokens and every workstation's run
 token are stored sealed with AES-GCM under one platform secret. Without it the option is
-unavailable; without the four `REMOTE_TUNNEL_PLATFORM_*` settings only the organization's own
+unavailable; without the six `REMOTE_TUNNEL_PLATFORM_*` settings only the organization's own
 domain is offered:
 
 | Setting | What it is | Set it |
@@ -210,14 +210,26 @@ domain is offered:
 | `REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID` | The Cloudflare account that zone is on | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID` |
 | `REMOTE_TUNNEL_PLATFORM_ZONE_ID` | That zone's id (**Overview** → *API* → *Zone ID*) | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ZONE_ID` |
 | `REMOTE_TUNNEL_PLATFORM_TOKEN` | Secret: API token for it (below) | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_TOKEN` |
+| `REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID` | The Remote Control gate's Access service token: its Client ID (below) | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID` |
+| `REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET` | Secret: that service token's Client Secret | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET` |
 
 The platform's remote-control domain must be **a zone of its own, never `DEFAULT_DOMAIN` or a
 name under it** (the Worker refuses one that is, and logs why): the console's session cookie is
 set for `.<DEFAULT_DOMAIN>`, so a browser would send it to every workstation address there, and
-those addresses are served by the workstations themselves. Give the zone **no Worker routes**, or
-the Worker answers the workstation addresses instead of the tunnels. Each workstation is one label
-under the zone, so the zone's free Universal SSL certificate covers it. Every operator who signs
-in through Cloudflare Access on it takes a Zero Trust seat in the platform's account.
+those addresses are served by the workstations themselves. Each workstation is one label under
+the zone, so the zone's free Universal SSL certificate covers it.
+
+**No Zero Trust seats.** Each workstation's Access application on that zone admits only the
+gate's service token, and a service token takes no seat. Operators open Remote Control through the
+**gate** at `vnc.<domain>` (`src/remote_gate.ts`): the console gives a signed-in operator with the
+Workstations permission a pass valid for two minutes, and the gate forwards that session to the
+workstation with the service token. The gate needs, on the remote-control zone:
+
+1. a proxied DNS record for `vnc` (for example `AAAA vnc 100::`, orange cloud on);
+2. **one** Worker route, `vnc.<domain>/*` → `labkiosk-controller`, added to `routes` in
+   `wrangler.jsonc` once the zone is active (a route on a zone that is not active fails the
+   deploy). Never `*.<domain>/*`: a Worker cannot `fetch()` a host its own route covers, so the
+   gate could no longer reach the workstations.
 
 Changing or losing the key makes every stored token unreadable: organizations then have to turn
 the tunnels off in their own Cloudflare dashboard and on again here. Images must ship cloudflared
@@ -259,7 +271,14 @@ Zone Resources: *Include* · *Specific zone* · your platform domain's zone. **C
 *Zone* · *DNS* · *Edit*. Account Resources: *Include* · the account the zone is on. Zone
 Resources: *Include* · *Specific zone* · the remote-control zone only. Zero Trust must be set up
 on that account (**Zero Trust** → pick a team name and plan). **Create Token**, then
-`npx wrangler secret put REMOTE_TUNNEL_PLATFORM_TOKEN`.
+`npx wrangler secret put REMOTE_TUNNEL_PLATFORM_TOKEN`. Add *Account* · *Access: Service Tokens*
+· *Read* too: turning the mode on looks up the gate's service token by its Client ID.
+
+**`REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID` / `_SECRET`** (the gate's service token): Cloudflare
+dashboard → **Zero Trust** → **Access** → **Service credentials** → **Service Tokens** →
+**Create Service Token**. Name it `labkiosk-remote-control-gate`, duration *Non-expiring* (or
+renew it before it expires: an expired token closes every platform workstation). Copy the
+**Client ID** and **Client Secret** once, then `npx wrangler secret put` each.
 
 Workers AI needs no token: the `AI` binding uses the account the Worker is deployed to.
 

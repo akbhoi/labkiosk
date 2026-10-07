@@ -24,6 +24,7 @@ import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
 import { isHostUnder } from "../src/guard";
+import { issueRemotePass } from "../src/remote_gate";
 import { openSecret, platformTunnelConfig, platformWorkstationHostname, sealSecret, workstationHostname } from "../src/remote_tunnels";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -110,15 +111,21 @@ const validTunnelSettings = {
 const PLATFORM_ACCOUNT = "fedcba9876543210fedcba9876543210";
 const PLATFORM_ZONE = "00112233445566778899aabbccddeeff";
 const PLATFORM_TOKEN = "cf-platform-token-0123456789abcdef";
+const GATE_CLIENT_ID = "0123456789abcdef0123456789abcdef.access";
+const GATE_CLIENT_SECRET = "gate-service-token-secret-0123456789abcdef";
 const platformTunnelEnv = {
   REMOTE_TUNNEL_PLATFORM_DOMAIN: "labkiosk.dev",
   REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID: PLATFORM_ACCOUNT,
   REMOTE_TUNNEL_PLATFORM_ZONE_ID: PLATFORM_ZONE,
-  REMOTE_TUNNEL_PLATFORM_TOKEN: PLATFORM_TOKEN
+  REMOTE_TUNNEL_PLATFORM_TOKEN: PLATFORM_TOKEN,
+  REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID: GATE_CLIENT_ID,
+  REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET: GATE_CLIENT_SECRET
 };
 
 function fakeCloudflare() {
   const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+  // Requests the Remote Control gate forwarded to a workstation's tunnel.
+  const forwarded: Array<{ url: string; headers: Headers }> = [];
   // foreignRecord: a name with an A record Lab Kiosk did not create.
   // staleRecord: a name with a Lab Kiosk CNAME pointing at some other tunnel.
   const state = { forbid: false, foreignRecord: "", staleRecord: "" };
@@ -126,6 +133,22 @@ function fakeCloudflare() {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
+    if (url.hostname.endsWith(".labkiosk.dev")) {
+      const headers = new Headers(init?.headers);
+      forwarded.push({ url: url.toString(), headers });
+      if (headers.get("cf-access-client-secret") !== GATE_CLIENT_SECRET) {
+        return new Response(null, { status: 302, headers: { Location: "https://akbhoi.cloudflareaccess.com/cdn-cgi/access/login" } });
+      }
+      return new Response("<title>noVNC</title>", {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html",
+          "Set-Cookie": "CF_Authorization=from-access; Secure",
+          "X-Frame-Options": "DENY",
+          Server: "WebSockify Python/3.11"
+        }
+      });
+    }
     assert.equal(url.origin, "https://api.cloudflare.com", "only the Cloudflare API is called");
     const path = url.pathname.replace("/client/v4", "") + url.search;
     const method = init?.method || "GET";
@@ -149,6 +172,9 @@ function fakeCloudflare() {
       return ok([]);
     }
     if (method === "GET" && bare.endsWith("/token")) return ok(`tunnel-run-token-for-${bare.split("/")[4]}-0123456789`);
+    if (method === "GET" && bare === `/accounts/${PLATFORM_ACCOUNT}/access/service_tokens`) {
+      return ok([{ id: "svc-other", client_id: "someone-else.access" }, { id: "svc-gate", client_id: GATE_CLIENT_ID }]);
+    }
     if (method === "GET") return ok([]);
     if (method === "POST" && bare.endsWith("/access/policies")) return ok({ id: "policy-1" });
     if (method === "PUT" && bare.includes("/access/policies/")) return ok({ id: bare.split("/").at(-1) });
@@ -159,6 +185,7 @@ function fakeCloudflare() {
   }) as typeof fetch;
   return {
     calls,
+    forwarded,
     set forbid(value: boolean) { state.forbid = value; },
     set foreignRecord(value: string) { state.foreignRecord = value; },
     set staleRecord(value: string) { state.staleRecord = value; },
@@ -3903,7 +3930,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const db = getDatabase(mockEnv);
     const settingsCall = (init: RequestInit & { cookie?: string } = {}, env: Env = tunnelEnv) =>
       worker.fetch(request("/api/settings/remote-tunnels?tenant=greenwood", init), env);
-    const platformSettings = { mode: "platform", accessRules: "it@example.com" };
+    const platformSettings = { mode: "platform" };
 
     // Offered only when fully configured, and never on the console's own domain,
     // whose session cookie the browser would send to every workstation there.
@@ -3925,7 +3952,6 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     );
     assert.equal(manual.status, 400);
     assert.equal((await settingsCall({ ...json({ ...platformSettings, mode: "elsewhere" }), cookie: orgSessionCookie })).status, 400);
-    assert.equal((await settingsCall({ ...json({ ...platformSettings, accessRules: "" }), cookie: orgSessionCookie })).status, 400);
 
     const enrolFrom = (clientId: string, ip: string) =>
       callJson("/api/devices/enroll", { ...json({ subdomain: "greenwood", enrollmentKey, clientId }), headers: { "CF-Connecting-IP": ip } });
@@ -3937,6 +3963,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal(saved.status, 200);
       assert.deepEqual(await saved.json(), { status: "ok", mode: "platform", domain: "labkiosk.dev", zone: "labkiosk.dev" });
       assert.ok(!cf.calls.some((c) => c.path.startsWith("/zones?")), "the platform's zone is configured, not looked up");
+      const policy = cf.calls.find((c) => c.method === "POST" && c.path === `/accounts/${PLATFORM_ACCOUNT}/access/policies`);
+      assert.deepEqual(
+        { decision: (policy!.body as any).decision, include: (policy!.body as any).include },
+        { decision: "non_identity", include: [{ service_token: { token_id: "svc-gate" } }] },
+        "only the gate's service token gets through, so no operator takes a Zero Trust seat"
+      );
       const stored = await db.prepare("SELECT mode, account_id, zone_id, domain, api_token FROM remote_tunnel_accounts").first<any>();
       assert.deepEqual({ ...stored }, { mode: "platform", account_id: PLATFORM_ACCOUNT, zone_id: PLATFORM_ZONE, domain: "labkiosk.dev", api_token: null });
       const status = await (await settingsCall({ cookie: orgSessionCookie })).json<any>();
@@ -3948,6 +3980,60 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       const { data: enrol } = await enrolFrom("PC-PLATFORM", "198.51.100.73");
       const first = await (await deviceTunnel(enrol.deviceToken)).json<any>();
       assert.deepEqual(first.tunnel?.hostname, "greenwood-pc-platform.labkiosk.dev");
+
+      // The console asks for a pass; only this organization's staff get one.
+      const passCall = (cookie: string | undefined, clientId = "PC-PLATFORM") =>
+        worker.fetch(request("/api/clients/remote-pass?tenant=greenwood", { ...json({ clientId }), cookie }), tunnelEnv);
+      for (const cookie of [undefined, rivalSessionCookie]) {
+        assert.ok([401, 403].includes((await passCall(cookie)).status), "only this organization's staff get a pass");
+      }
+      assert.equal((await passCall(orgSessionCookie, "PC-NO-TUNNEL")).status, 404);
+      const issued = await passCall(orgSessionCookie);
+      assert.equal(issued.status, 200);
+      const opened = await issued.json<any>();
+      assert.match(opened.url, /^https:\/\/vnc\.labkiosk\.dev\/w\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\/vnc\.html$/);
+      const passPath = new URL(opened.url).pathname.replace(/\/vnc\.html$/, "");
+      assert.equal(opened.path, `${passPath.slice(1)}/websockify`, "noVNC's WebSocket path carries the pass too");
+      const gate = (path: string, init: RequestInit = {}, env: Env = tunnelEnv) =>
+        worker.fetch(new Request(`https://vnc.labkiosk.dev${path}`, init), env);
+
+      // The gate forwards to the workstation with the service token, and nothing of the browser's.
+      const page = await gate(`${passPath}/vnc.html?autoconnect=true`, { headers: { Cookie: "lk_session=console-cookie", Accept: "text/html" } });
+      assert.equal(page.status, 200);
+      assert.equal(await page.text(), "<title>noVNC</title>");
+      const sent = cf.forwarded.at(-1)!;
+      assert.equal(sent.url, "https://greenwood-pc-platform.labkiosk.dev/vnc.html?autoconnect=true");
+      assert.equal(sent.headers.get("cf-access-client-id"), GATE_CLIENT_ID);
+      assert.equal(sent.headers.get("cookie"), null, "a browser cookie never reaches the workstation");
+      assert.equal(page.headers.get("set-cookie"), null, "nor does Access's cookie reach the browser");
+      assert.equal(page.headers.get("x-frame-options"), null);
+      assert.equal(page.headers.get("content-security-policy"), "frame-ancestors https://labkiosk.org https://*.labkiosk.org");
+      assert.equal(page.headers.get("referrer-policy"), "no-referrer");
+
+      const [payload, signature] = passPath.slice(3).split(".");
+      const tampered = `${payload.slice(0, -2)}${payload.slice(-2) === "AA" ? "AB" : "AA"}.${signature}`;
+      for (const [path, status] of [
+        [`/w/${tampered}/vnc.html`, 403],
+        [`/w/${payload}.${"A".repeat(43)}/vnc.html`, 403],
+        [`${passPath}`, 404],
+        ["/", 404],
+        ["/api/clients", 404]
+      ] as const) {
+        assert.equal((await gate(path)).status, status, path);
+      }
+      assert.equal((await gate(`${passPath}/vnc.html`, { method: "POST" })).status, 405);
+      const expired = await issueRemotePass(tunnelEnv, (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id, "PC-PLATFORM", Math.floor(Date.now() / 1000) - 600);
+      assert.equal((await gate(`/w/${expired}/vnc.html`)).status, 403, "an expired pass opens nothing");
+      assert.equal(
+        (await gate(`${passPath}/vnc.html`, {}, { ...tunnelEnv, REMOTE_TUNNEL_KEY: btoa("b".repeat(32)) } as Env)).status,
+        403,
+        "a pass signed under another key is refused"
+      );
+      // A wrong service token shows as the gate's error, not Access's login page.
+      const refusedByAccess = await gate(`${passPath}/vnc.html`, {}, { ...tunnelEnv, REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET: "wrong-secret-0123456789abcdef" } as Env);
+      assert.equal(refusedByAccess.status, 502);
+      // The gate's host serves nothing of the console.
+      assert.equal(cf.forwarded.filter((f) => !f.url.startsWith("https://greenwood-pc-platform.labkiosk.dev/")).length, 0);
       const dns = cf.calls.find((c) => c.method === "POST" && c.path === `/zones/${PLATFORM_ZONE}/dns_records`);
       assert.equal((dns!.body as any).name, "greenwood-pc-platform.labkiosk.dev");
       assert.ok(cf.calls.some((c) => c.method === "POST" && c.path === `/accounts/${PLATFORM_ACCOUNT}/cfd_tunnel`));
@@ -3977,6 +4063,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.deepEqual(await off.json(), { status: "ok", remaining: 0 });
       assert.deepEqual(cf.calls.at(-1), { method: "DELETE", path: `/accounts/${PLATFORM_ACCOUNT}/access/policies/policy-1`, body: undefined });
       assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM remote_tunnel_accounts").first<number>("n"), 0);
+      const forwardedBefore = cf.forwarded.length;
+      assert.equal((await gate(`${passPath}/vnc.html`)).status, 404, "a pass for a workstation whose tunnel is gone opens nothing");
+      assert.equal(cf.forwarded.length, forwardedBefore);
     } finally {
       cf.restore();
     }

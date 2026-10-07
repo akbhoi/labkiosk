@@ -10,6 +10,9 @@
 	// Every zone named here must already be active on the deploying account, or
 	// `wrangler deploy` fails. Each hostname also needs a proxied DNS record: the
 	// apex and a wildcard (`*`), e.g. AAAA 100:: with the orange cloud on.
+	// The Remote Control gate on the platform's remote-control domain needs one more,
+	// `vnc.<REMOTE_TUNNEL_PLATFORM_DOMAIN>/*`, added once that zone is active -- never
+	// a wildcard there (docs/DEPLOYMENT.md, "Optional: automatic Remote Control tunnels").
 	"workers_dev": true,
 	"routes": [
 		{

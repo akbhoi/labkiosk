@@ -213,7 +213,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
                 <div class="form-hint">Permissions: Account · Cloudflare Tunnel · Edit; Account · Access: Apps and Policies · Edit; Zone · DNS · Edit and Zone · Zone · Read for this domain. Stored encrypted and never shown again.</div>
               </div>
               </div>
-              <div class="form-group">
+              <div class="form-group" id="remote-tunnels-access-group">
                 <label class="form-label" for="remote-tunnels-access">Who may connect</label>
                 <textarea class="form-textarea" id="remote-tunnels-access" rows="3" placeholder="it@example.com&#10;example.com"></textarea>
                 <div class="form-hint">Email addresses or whole email domains, one per line. Cloudflare Access asks them to sign in before the remote screen opens.</div>
@@ -615,6 +615,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         const platformOption = document.getElementById("remote-tunnels-mode-platform");
         const modeHint = document.getElementById("remote-tunnels-mode-hint");
         const ownFields = document.getElementById("remote-tunnels-own-fields");
+        const accessGroup = document.getElementById("remote-tunnels-access-group");
         let platformDomain = null;
         let configuredMode = null;
         const domainInput = document.getElementById("remote-tunnels-domain");
@@ -627,10 +628,12 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         function showMode() {
           const own = modeSelect.value === "own";
           ownFields.hidden = !own;
+          accessGroup.hidden = !own;
+          accessInput.required = own;
           tokenInput.required = own && configuredMode !== "own";
           modeHint.textContent = own
             ? "Workstations are <workstation>.<your domain>, in your own Cloudflare account and Zero Trust seats."
-            : "Workstations are <organization>-<workstation>." + platformDomain + ". No domain or Cloudflare account needed.";
+            : "Workstations are <organization>-<workstation>." + platformDomain + ". No domain or Cloudflare account needed: staff with the Workstations permission open Remote Control from this console.";
         }
         modeSelect.addEventListener("change", showMode);
 
@@ -685,7 +688,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
                       apiToken: tokenInput.value.trim(),
                       accessRules: accessInput.value
                     }
-                  : { mode: "platform", accessRules: accessInput.value }
+                  : { mode: "platform" }
               )
             });
             const data = await res.json();

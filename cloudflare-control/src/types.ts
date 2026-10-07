@@ -232,6 +232,11 @@ export interface LabConfig {
   updatedAt: string;
   defaultHomepage: string;
   tunnelDomain: string;
+  /**
+   * The platform's remote-control domain, or "": a workstation whose reported
+   * address is under it opens through the Remote Control gate (src/remote_gate.ts).
+   */
+  remoteGateDomain: string;
   homeRoute?: string;
   /** Effective allowlist for this organization: its own domains plus portal app hosts. */
   whitelist: string[];
@@ -305,14 +310,25 @@ export interface Env {
   REMOTE_TUNNEL_KEY?: string;
   /**
    * The platform's remote-control domain for organizations without one
-   * (src/remote_tunnels.ts): a zone of its own, never under DEFAULT_DOMAIN, with
-   * no Worker routes. All four, or platform tunnels are not offered.
+   * (src/remote_tunnels.ts, src/remote_gate.ts): a zone of its own, never under
+   * DEFAULT_DOMAIN, whose only Worker route is `vnc.<domain>/*`. All six, or
+   * platform tunnels are not offered.
    */
   REMOTE_TUNNEL_PLATFORM_DOMAIN?: string;
   REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID?: string;
   REMOTE_TUNNEL_PLATFORM_ZONE_ID?: string;
-  /** Secret: Cloudflare Tunnel Edit and Access Apps and Policies Edit on the account, DNS Edit on the zone. */
+  /**
+   * Secret: Cloudflare Tunnel Edit, Access: Apps and Policies Edit and Access:
+   * Service Tokens Read on the account, DNS Edit on the zone.
+   */
   REMOTE_TUNNEL_PLATFORM_TOKEN?: string;
+  /**
+   * The Access service token the Remote Control gate presents to every
+   * workstation's tunnel. A service token takes no Zero Trust seat.
+   */
+  REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID?: string;
+  /** Secret: that service token's client secret. */
+  REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET?: string;
   /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.org. */
   DEFAULT_HOMEPAGE?: string;
   /**

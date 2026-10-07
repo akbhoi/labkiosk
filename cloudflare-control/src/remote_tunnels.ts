@@ -9,7 +9,11 @@
  *             no domain: a workstation is `<organization>-<workstation>.<domain>`.
  *             It is never under the console's domain, whose session cookie the
  *             browser would send to every host there -- and a host there is
- *             served by the workstation itself.
+ *             served by the workstation itself. Operators never open those
+ *             addresses: they come through the Remote Control gate
+ *             (src/remote_gate.ts), which signs in to each tunnel's Access
+ *             application with the platform's service token, so no operator
+ *             takes a Zero Trust seat in the platform's account.
  *
  * For each workstation that asks (GET /api/devices/tunnel), the Worker then
  * creates, in that account:
@@ -48,6 +52,8 @@ export const PROVISION_RETRY_SECONDS = 600;
 export const PROVISIONING_STALE_SECONDS = 300;
 /** People or domains an Access policy may list. */
 export const MAX_ACCESS_RULES = 50;
+/** The gate's label under the platform domain. Workstation labels always hold a hyphen. */
+export const REMOTE_GATE_LABEL = "vnc";
 /** Workstations whose tunnels one request removes; each costs four API calls. */
 export const DEPROVISION_BATCH = 10;
 const MAX_ERROR_LENGTH = 300;
@@ -110,7 +116,8 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-async function sealingKey(env: Env): Promise<CryptoKey> {
+/** The 32 bytes of REMOTE_TUNNEL_KEY; throws when it is missing or malformed. */
+export function remoteTunnelKeyBytes(env: Env): Uint8Array {
   if (!remoteTunnelsAvailable(env)) {
     throw new Error("REMOTE_TUNNEL_KEY is not set; Remote Control tunnels are unavailable");
   }
@@ -123,7 +130,11 @@ async function sealingKey(env: Env): Promise<CryptoKey> {
   if (raw.length !== 32) {
     throw new Error("REMOTE_TUNNEL_KEY must be 32 random bytes, base64-encoded");
   }
-  return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+  return raw;
+}
+
+async function sealingKey(env: Env): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", remoteTunnelKeyBytes(env), "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
 /**
@@ -163,7 +174,11 @@ export interface PlatformTunnelConfig {
   zoneId: string;
   domain: string;
   apiToken: string;
+  accessClientId: string;
+  accessClientSecret: string;
 }
+
+const SERVICE_TOKEN_PART_PATTERN = /^[A-Za-z0-9._-]{16,256}$/;
 
 /**
  * The platform's remote-control zone, or null when this server does not offer
@@ -175,14 +190,22 @@ export function platformTunnelConfig(env: Env): PlatformTunnelConfig | null {
   const accountId = cleanAccountId(env.REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID);
   const zoneId = cleanAccountId(env.REMOTE_TUNNEL_PLATFORM_ZONE_ID);
   const apiToken = cleanApiToken(env.REMOTE_TUNNEL_PLATFORM_TOKEN);
+  const accessClientId = (env.REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID || "").trim();
+  const accessClientSecret = (env.REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET || "").trim();
   if (!domain || !accountId || !zoneId || !apiToken) return null;
+  if (!SERVICE_TOKEN_PART_PATTERN.test(accessClientId) || !SERVICE_TOKEN_PART_PATTERN.test(accessClientSecret)) return null;
   if (env.DEFAULT_DOMAIN && (isHostUnder(domain, env.DEFAULT_DOMAIN) || isHostUnder(env.DEFAULT_DOMAIN, domain))) {
     console.error(
       `[RemoteTunnel] REMOTE_TUNNEL_PLATFORM_DOMAIN ${domain} shares ${env.DEFAULT_DOMAIN}, whose session cookie would reach every workstation; platform tunnels are off`
     );
     return null;
   }
-  return { accountId, zoneId, domain, apiToken };
+  return { accountId, zoneId, domain, apiToken, accessClientId, accessClientSecret };
+}
+
+/** The host the Remote Control gate answers on: one label no workstation address can take. */
+export function remoteGateHost(platform: Pick<PlatformTunnelConfig, "domain">): string {
+  return `${REMOTE_GATE_LABEL}.${platform.domain}`;
 }
 
 /** The API token that acts for an organization's tunnels. */
@@ -369,7 +392,7 @@ export type RemoteTunnelSettings =
       apiToken: string | null;
       accessRules: string[];
     }
-  | { mode: "platform"; accessRules: string[] };
+  | { mode: "platform" };
 
 function accessPolicyBody(tenant: Pick<Tenant, "subdomain">, rules: string[]): Record<string, unknown> {
   return {
@@ -377,6 +400,35 @@ function accessPolicyBody(tenant: Pick<Tenant, "subdomain">, rules: string[]): R
     decision: "allow",
     include: accessInclude(rules)
   };
+}
+
+/**
+ * On the platform's domain only the gate's service token gets through: the
+ * operator was already checked by the console, and a service token takes no seat.
+ */
+function serviceTokenPolicyBody(tenant: Pick<Tenant, "subdomain">, serviceTokenId: string): Record<string, unknown> {
+  return {
+    name: `Lab Kiosk Remote Control gate (${tenant.subdomain})`,
+    decision: "non_identity",
+    include: [{ service_token: { token_id: serviceTokenId } }]
+  };
+}
+
+/** The id of the platform's service token, found by its client id. */
+async function platformServiceTokenId(platform: PlatformTunnelConfig): Promise<string> {
+  const tokens = await cfApi<Array<{ id: string; client_id: string }>>(
+    platform.apiToken,
+    "GET",
+    `/accounts/${encodeURIComponent(platform.accountId)}/access/service_tokens?per_page=1000`
+  );
+  const token = tokens.find((t) => t.client_id === platform.accessClientId);
+  if (!token) {
+    throw new RemoteTunnelSetupError(
+      "The platform's Access service token (REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID) is not in its Cloudflare account",
+      409
+    );
+  }
+  return token.id;
 }
 
 /**
@@ -402,6 +454,8 @@ export async function configureRemoteTunnels(
   let domain: string;
   let apiToken: string;
   let zone: { zoneId: string; zoneName: string };
+  let policyBody: Record<string, unknown>;
+  let accessRules: string[];
   if (settings.mode === "platform") {
     const platform = platformTunnelConfig(env);
     if (!platform) {
@@ -409,7 +463,18 @@ export async function configureRemoteTunnels(
     }
     ({ accountId, domain, apiToken } = platform);
     zone = { zoneId: platform.zoneId, zoneName: platform.domain };
+    try {
+      policyBody = serviceTokenPolicyBody(tenant, await platformServiceTokenId(platform));
+    } catch (err) {
+      if (err instanceof CloudflareApiError) {
+        throw new RemoteTunnelSetupError(`Cloudflare refused the platform's token: ${err.message}`, 502);
+      }
+      throw err;
+    }
+    accessRules = [];
   } else {
+    policyBody = accessPolicyBody(tenant, settings.accessRules);
+    accessRules = settings.accessRules;
     accountId = settings.accountId;
     domain = settings.domain;
     const keepToken = existing?.mode === "own" && existing.account_id === accountId;
@@ -438,7 +503,7 @@ export async function configureRemoteTunnels(
   }
 
   const accountPath = `/accounts/${encodeURIComponent(accountId)}`;
-  const body = accessPolicyBody(tenant, settings.accessRules);
+  const body = policyBody;
   let policyId: string;
   try {
     policyId = samePlace
@@ -472,7 +537,7 @@ export async function configureRemoteTunnels(
          domain = excluded.domain, api_token = excluded.api_token, access_rules = excluded.access_rules,
          access_policy_id = excluded.access_policy_id, updated_at = excluded.updated_at`
     )
-    .bind(tenant.id, settings.mode, accountId, zone.zoneId, domain, sealed, JSON.stringify(settings.accessRules), policyId, now, now)
+    .bind(tenant.id, settings.mode, accountId, zone.zoneId, domain, sealed, JSON.stringify(accessRules), policyId, now, now)
     .run();
   return { domain, zoneName: zone.zoneName };
 }
@@ -667,10 +732,11 @@ async function provision(
 
   // 4. Access in front of it, with the organization's policy. The console
   //    shows noVNC in a frame, so the application allows framing and its
-  //    cookie is SameSite=None.
+  //    cookie is SameSite=None. On the platform's domain the policy admits only
+  //    the gate's service token (src/remote_gate.ts).
   if (!row.access_app_id) {
     const app = await cfApi<{ id: string }>(apiToken, "POST", `${accountPath}/access/apps`, {
-      name: `Lab Kiosk ${clientId}`,
+      name: `Lab Kiosk ${tenant.subdomain} ${clientId}`,
       domain: hostname,
       type: "self_hosted",
       session_duration: "8h",

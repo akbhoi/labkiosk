@@ -400,13 +400,14 @@ writes the token to `/etc/labkiosk/tunnel.token`, which `cloudflared-labkiosk.se
 
 Turn automatic Remote Control tunnels on, or change them (`settings` permission).
 
-- **Request Body:** `mode`: `"own"` (the default) or `"platform"`. Always `accessRules` (email
-  addresses or email domains, 1–50, one per line or as an array). `platform` puts workstations on
-  the server's remote-control domain and takes nothing else; it answers `409` when the server
-  does not offer one. `own` also takes `accountId` (the Cloudflare account ID, 32 hex characters),
-  `domain` (a zone on that account, or a name under one; never under the platform domain or the
-  platform's remote-control domain), and `apiToken` (required the first time and when the account
-  changes; omitted keeps the stored one).
+- **Request Body:** `mode`: `"own"` (the default) or `"platform"`. `platform` puts workstations
+  on the server's remote-control domain, behind Access applications that admit only the Remote
+  Control gate's service token, and takes nothing else; it answers `409` when the server does not
+  offer one. `own` takes `accountId` (the Cloudflare account ID, 32 hex characters), `domain` (a
+  zone on that account, or a name under one; never under the platform domain or the platform's
+  remote-control domain), `apiToken` (required the first time and when the account changes;
+  omitted keeps the stored one) and `accessRules` (email addresses or email domains, 1–50, one
+  per line or as an array).
 - In `own` mode the token needs **Account · Cloudflare Tunnel · Edit**, **Account · Access: Apps and Policies ·
   Edit**, and **Zone · DNS · Edit** plus **Zone · Zone · Read** on the domain's zone. It is checked
   against the account before it is stored, sealed with AES-GCM under `REMOTE_TUNNEL_KEY`, and never
@@ -423,6 +424,31 @@ DNS records and Access applications per call and answers `{"status":"ok","remain
 has also deleted the Access policy and the stored token. Removing a workstation
 (`POST /api/clients/remove`) deletes its tunnel first and answers `502` without removing it when
 the organization's account refuses.
+
+#### `POST /api/clients/remote-pass`
+
+A pass to open a workstation on the platform's remote-control domain (`workstations` permission).
+
+- **Request Body:** `{"clientId": "PC-01"}`.
+- **Responses:** `200 {"url": "https://vnc.<domain>/w/<pass>/vnc.html", "path": "w/<pass>/websockify",
+  "expiresIn": 120}`: the console frames `url` with noVNC's `path` set to `path`, so the noVNC files
+  and its WebSocket all carry the pass. `404` when the workstation has no active tunnel in
+  `platform` mode; `409` when the server has no remote-control domain. Each pass is written to the
+  audit log (`device.remote_control`).
+
+#### The Remote Control gate: `https://vnc.<platform domain>/w/<pass>/<path>`
+
+Served by the same Worker on its own route (`src/remote_gate.ts`); it answers nothing else. It
+checks the pass (HMAC-SHA-256 under a key derived from `REMOTE_TUNNEL_KEY`, organization,
+workstation, expiry) and that the workstation still has an active `platform` tunnel in an active
+organization, then forwards `GET`/`HEAD` and the WebSocket to `https://<workstation address>/<path>`
+with the `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers. It forwards no cookie or other
+browser header beyond what noVNC needs, drops `Set-Cookie`, and answers with
+`Content-Security-Policy: frame-ancestors` the console's hosts (and the organization's approved own
+domain), `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. `403` for a forged,
+altered or expired pass, `404` for no tunnel, `405` for other methods, `502` when the workstation's
+Access application refuses the service token. A WebSocket opened while the pass was valid stays
+open.
 
 #### `POST /api/devices/boot-report`
 

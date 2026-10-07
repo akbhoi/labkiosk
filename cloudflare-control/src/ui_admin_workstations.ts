@@ -297,10 +297,12 @@ function renderWorkstationsScripts(
   // config.tunnelDomain already prefers the organization's own and drops one the
   // platform cannot serve; tenant.tunnel_domain would bring a refused one back.
   const tunnelDomain = config?.tunnelDomain || "";
+  const remoteGateDomain = config?.remoteGateDomain || "";
 
   return `
     <script nonce="${escapeAttr(nonce)}">
       const TUNNEL_DOMAIN = ${escapeJson(tunnelDomain)};
+      const REMOTE_GATE_DOMAIN = ${escapeJson(remoteGateDomain)};
       let clientsData = {};
       let groupsList = ${escapeJson(initialGroups.map((g) => ({ id: g.id, name: g.name })))};
       let selectedClientIds = new Set();
@@ -879,9 +881,45 @@ function renderWorkstationsScripts(
         });
       }
 
+      // A workstation on the platform's remote-control domain opens through
+      // the gate with a short-lived pass; its own address admits only the gate.
+      function viaRemoteGate(client) {
+        return Boolean(REMOTE_GATE_DOMAIN && client.remoteHost && client.remoteHost.toLowerCase().endsWith("." + REMOTE_GATE_DOMAIN));
+      }
+
+      function vncPasswordFragment(client) {
+        // The password rides in the fragment, which noVNC reads first and a
+        // browser never sends, so it stays out of tunnel and server logs.
+        return client.vncPassword ? "#" + new URLSearchParams({ password: client.vncPassword }).toString() : "";
+      }
+
+      async function openGateSession(id, client) {
+        try {
+          const res = await fetch(labkioskApi("/api/clients/remote-pass"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ clientId: id })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            lkToast(data.error || "Could not open Remote Control", "error");
+            return;
+          }
+          const params = new URLSearchParams({ autoconnect: "true", resize: "scale", path: data.path });
+          document.getElementById("vnc-frame").src = data.url + "?" + params.toString() + vncPasswordFragment(client);
+          document.getElementById("vnc-modal").classList.add("active");
+        } catch (err) {
+          lkToast("Network error: " + err.message, "error");
+        }
+      }
+
       function openVncSession(id) {
         document.getElementById("vnc-modal-title").textContent = "Live Remote Control: " + id;
         const client = clientsData[id] || {};
+        if (viaRemoteGate(client)) {
+          openGateSession(id, client);
+          return;
+        }
         const host = window.location.hostname;
         let base = "";
 
@@ -899,12 +937,7 @@ function renderWorkstationsScripts(
         }
 
         const params = new URLSearchParams({ autoconnect: "true", resize: "scale" });
-        // The password rides in the fragment, which noVNC reads first and a
-        // browser never sends, so it stays out of tunnel and server logs.
-        const secret = client.vncPassword
-          ? "#" + new URLSearchParams({ password: client.vncPassword }).toString()
-          : "";
-        document.getElementById("vnc-frame").src = base + "/vnc.html?" + params.toString() + secret;
+        document.getElementById("vnc-frame").src = base + "/vnc.html?" + params.toString() + vncPasswordFragment(client);
         document.getElementById("vnc-modal").classList.add("active");
       }
 
