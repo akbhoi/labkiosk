@@ -3,6 +3,7 @@ export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
 export type KioskMode = "portal" | "single_url";
 export type CommandAction = "lock" | "unlock" | "navigate" | "reload" | "reboot" | "shutdown" | "clear-session" | "mute";
 export type CustomHostnameStatus = "none" | "pending" | "active" | "failed" | "local";
+export type RemoteControlStatus = "none" | "pending" | "approved" | "rejected";
 export type TenantUserRole = "org_admin" | "sub_admin" | "operator" | "assistant" | "content_manager";
 
 export interface TenantUser {
@@ -69,6 +70,8 @@ export interface Tenant {
   /** The Automatic Bug Report Terms version the organization accepted, and when. */
   bug_reports_terms_version?: string | null;
   bug_reports_terms_accepted_at?: number | null;
+  /** Remote Control is approved per organization by the platform (migration 0020). */
+  remote_control_status?: RemoteControlStatus;
 }
 
 export interface BroadcastPreset {
@@ -306,6 +309,22 @@ export interface Env {
   GITHUB_ISSUES_TOKEN?: string;
   /** "owner/repo" the issues are filed in. */
   GITHUB_ISSUES_REPO?: string;
+  /**
+   * Outbound email through Cloudflare Email Service (src/mail.ts): signup codes,
+   * approval decisions and replies written in the Super Admin console. Without
+   * the binding and MAIL_FROM, signup and replies refuse with 503 rather than
+   * pretend a message went out.
+   */
+  EMAIL?: SendEmail;
+  /** Sender on the onboarded sending domain, e.g. "Lab Kiosk <support@email.labkiosk.org>". */
+  MAIL_FROM?: string;
+  /** Where customers reply, and the address the support inbox answers from, e.g. "support@labkiosk.org". */
+  SUPPORT_ADDRESS?: string;
+  /**
+   * Optional: a verified Email Routing destination. Inbound support mail is
+   * forwarded there as well as stored, and new tasks are announced there.
+   */
+  SUPPORT_FORWARD_TO?: string;
 }
 
 /** The one Workers AI method the Worker uses. */

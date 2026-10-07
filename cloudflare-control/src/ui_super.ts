@@ -9,6 +9,7 @@ import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
+import { renderInboxPaneHtml, renderInboxScript, renderInboxSubPanelHtml } from "./ui_super_inbox";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
 export interface SuperConsoleTenant extends Tenant {
@@ -33,18 +34,23 @@ export interface SuperAdminOptions {
   tenants: SuperConsoleTenant[];
   catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
-  activeTab?: "organizations" | "approvals" | "catalogs" | "system";
+  activeTab?: "organizations" | "tasks" | "support" | "catalogs" | "system";
+  /** Open tasks and support conversations, for the rail badges (src/conversations.ts). */
+  inbox?: { openTasks: number; openSupport: number; unreadSupport: number };
   nonce: string;
 }
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const { superAdminEmail, superAdminId, tenants, baseDomain = "labkiosk.org", activeTab = "organizations", nonce } = data;
 
-  const pendingList = tenants.filter((t) => t.status === "pending" || t.requested_subdomain);
+  // Registrations are decided in Tasks; this list is an active organization asking for a new address.
+  const pendingList = tenants.filter((t) => t.status !== "pending" && t.requested_subdomain);
+  const inbox = data.inbox || { openTasks: 0, openSupport: 0, unreadSupport: 0 };
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
   const totalClients = tenants.reduce((acc, t) => acc + (t.total_clients || 0), 0);
   const totalOnline = tenants.reduce((acc, t) => acc + (t.online_clients || 0), 0);
-  const pendingCount = pendingList.length + pendingCustomList.length;
+  const domainRequestCount = pendingList.length + pendingCustomList.length;
+  const pendingCount = inbox.openTasks + domainRequestCount;
 
   const catalogList = data.catalogs || [];
   const catalogRows = catalogList
@@ -195,12 +201,20 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`
     },
     {
-      id: "approvals",
-      label: "Approvals Queue",
-      href: "/super/approvals",
+      id: "tasks",
+      label: "Tasks",
+      href: "/super/tasks",
       badge: pendingCount > 0 ? pendingCount : undefined,
       badgeTone: "attention",
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`
+    },
+    {
+      id: "support",
+      label: "Support",
+      href: "/super/support",
+      badge: inbox.unreadSupport > 0 ? inbox.unreadSupport : undefined,
+      badgeTone: "attention",
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`
     },
     {
       id: "catalogs",
@@ -220,7 +234,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const stats: StatItem[] = [
     { label: "Organizations", value: tenants.length, color: "blue" },
     { label: "Online", value: `${totalOnline} / ${totalClients}`, color: "green" },
-    { label: "Approvals", value: pendingCount, color: pendingCount > 0 ? "yellow" : "blue" }
+    { label: "Tasks", value: pendingCount, color: pendingCount > 0 ? "yellow" : "blue" }
   ];
 
   const activeTenantsCount = tenants.filter((t) => t.status === "active").length;
@@ -247,21 +261,20 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
         Super Admins cannot access any organization's internal console or telemetry except the platform's demo organizations. Organization data isolation is enforced at the edge D1 layer.
       </div>
     `;
-  } else if (activeTab === "approvals") {
-    subPanelTitle = "Approvals Queue";
-    subPanelSubtitle = "Domain review & routing";
-    subPanelHtml = `
-      <div class="sub-section-title">Queue Status</div>
+  } else if (activeTab === "tasks") {
+    subPanelTitle = "Tasks";
+    subPanelSubtitle = "Registrations & requests";
+    subPanelHtml = `${renderInboxSubPanelHtml("tasks", { open: inbox.openTasks })}
+      <div class="sub-section-title">Domain Requests</div>
       <div class="kv-list">
-        <div class="kv-row"><span>Subdomains pending</span><span class="badge ${pendingList.length > 0 ? "badge-yellow" : "badge-neutral"}">${pendingList.length}</span></div>
-        <div class="kv-row"><span>Custom domains pending</span><span class="badge ${pendingCustomList.length > 0 ? "badge-yellow" : "badge-neutral"}">${pendingCustomList.length}</span></div>
-      </div>
-
-      <div class="sub-section-title">Approval Policy</div>
-      <div class="panel-note">
-        Approved subdomains immediately bind in edge routing. Custom domains require DNS CNAME records pointing to <code>${escapeHtml(baseDomain)}</code>.
+        <div class="kv-row"><span>Subdomain changes</span><span class="badge ${pendingList.length > 0 ? "badge-yellow" : "badge-neutral"}">${pendingList.length}</span></div>
+        <div class="kv-row"><span>Custom domains</span><span class="badge ${pendingCustomList.length > 0 ? "badge-yellow" : "badge-neutral"}">${pendingCustomList.length}</span></div>
       </div>
     `;
+  } else if (activeTab === "support") {
+    subPanelTitle = "Support";
+    subPanelSubtitle = "Email & contact form";
+    subPanelHtml = renderInboxSubPanelHtml("support", { open: inbox.openSupport });
   } else if (activeTab === "catalogs") {
     subPanelTitle = "Translation Catalogs";
     subPanelSubtitle = "Language & localization";
@@ -336,10 +349,10 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
   `;
 
-  const approvalsPaneHtml = `
-      <div class="card">
-        <h2 class="card-title">Pending Subdomain Requests (${pendingList.length})</h2>
-        <p class="card-sub">Organizations requesting initial activation or subdomain modifications.</p>
+  const domainRequestsHtml = `
+      <div class="card mt-lg">
+        <h2 class="card-title">Subdomain Change Requests (${pendingList.length})</h2>
+        <p class="card-sub">Active organizations asking to move to a new address. Registrations are decided above.</p>
         <div class="table-container">
           <table>
             <thead>
@@ -347,12 +360,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
                 <th>Organization</th>
                 <th>Contact</th>
                 <th>Requested Subdomain</th>
-                <th>Registered Date</th>
+                <th>Requested</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              ${pendingSubdomainRows || `<tr><td colspan="5" class="table-empty">No pending subdomain requests.</td></tr>`}
+              ${pendingSubdomainRows || `<tr><td colspan="5" class="table-empty">No subdomain change requests.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -479,9 +492,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 ${auditCardHtml}
   `;
 
+  const tasksPaneHtml = `${renderInboxPaneHtml("tasks")}
+${domainRequestCount > 0 ? domainRequestsHtml : ""}`;
+
   const panesByTab: Record<typeof activeTab, string> = {
     organizations: organizationsPaneHtml,
-    approvals: approvalsPaneHtml,
+    tasks: tasksPaneHtml,
+    support: renderInboxPaneHtml("support"),
     catalogs: catalogsPaneHtml,
     system: systemPaneHtml
   };
@@ -489,15 +506,18 @@ ${auditCardHtml}
   const contentHtml = `${bannerHtml}
 ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
-  const scriptsHtml = `
+  const inboxScriptHtml =
+    activeTab === "tasks" || activeTab === "support" ? renderInboxScript(nonce, activeTab, baseDomain) : "";
+
+  const scriptsHtml = `${inboxScriptHtml}
     <script nonce="${escapeAttr(nonce)}">
       document.querySelectorAll(".btn-approve-sub").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const subdomain = btn.dataset.subdomain;
           const agreed = await lkConfirm({
-            title: "Approve '" + subdomain + "'?",
-            message: "The console and user portal for this organization go live on that address straight away, and its workstations can enrol against it.",
+            title: "Move to '" + subdomain + "'?",
+            message: "The console and user portal for this organization move to that address straight away. Workstations enrolled against the old address need reconfiguring.",
             confirmLabel: "Approve"
           });
           if (!agreed) return;
@@ -523,8 +543,8 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;
           const agreed = await lkConfirm({
-            title: "Reject this request?",
-            message: "The organization stays pending and cannot enrol workstations. Nothing is deleted, so you can approve it later.",
+            title: "Decline this address change?",
+            message: "The organization keeps its current address. It can ask for a different one later.",
             confirmLabel: "Reject",
             tone: "danger"
           });

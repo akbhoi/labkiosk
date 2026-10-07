@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 3, 3b, 3c; reference:
 
 - `migrations/NNNN_name.sql` is what a deployed D1 has; `SCHEMA_SQL` in `src/db.ts` builds the
   in-memory database for tests and `pnpm dev`. **Change both.**
-- Add a **new** numbered file (next: `0020_…`). **Never edit or rename an applied migration** —
+- Add a **new** numbered file (next: `0021_…`). **Never edit or rename an applied migration** —
   wrangler tracks them by file name, so a rename re-runs it (that is why `0008_school_homepage.sql`
   keeps its name).
 - Every query that touches tenant data filters by `tenant_id`; index what you query on.
@@ -106,3 +106,11 @@ organization. `tenants.custom_hostname_id` / `custom_hostname_status`
 keeps 180 days (`AUDIT_RETENTION_DAYS`); the hourly cron moves older rows to R2 as NDJSON.
 A DO's own schema is not a D1 migration: it is created in `OrgHub`'s constructor, and changing it
 needs its own versioned step there.
+
+**Registration and the inbox** (`0020`). `tenants.remote_control_status`
+(`none | pending | approved | rejected`; the demos are `approved`) gates Remote Control.
+`organization_profiles` (one row per tenant) holds the registration's contact, address and billing
+details and when the email and phone were verified. `email_codes` holds hashed one-time signup
+codes, keyed `purpose:email`, purged hourly. `conversations` (`signup | remote_control | support`,
+`tenant_id` NULL for support mail from strangers) and `conversation_messages` are the **platform's**
+Tasks and Support inbox, read only by a super admin.

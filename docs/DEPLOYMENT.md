@@ -180,6 +180,33 @@ local rate-limit simulator throws on every call; the worker logs that and keeps 
 **The CI token.** `wrangler deploy` now also binds a queue, a bucket and a Workflow. If the deploy
 reports an authorization error, add the permission it names to `CLOUDFLARE_API_TOKEN`.
 
+### Email
+
+Registration, Remote Control requests and the Super Admin **Tasks** and **Support** tabs run on
+email. New organizations register with a verified email address and a phone number, and stay
+`pending` until a super admin confirms the phone and approves them under **Tasks**; Remote Control
+is off for every organization until it asks under Settings and a super admin approves it. Replies
+are written in the Super Admin console and sent from the platform, and the customer's answers come
+back into the same conversation.
+
+| Piece | What it is | Set it up |
+| :--- | :--- | :--- |
+| `EMAIL` | `send_email` binding, Cloudflare Email Service (outbound) | Declared in `wrangler.jsonc`. Onboard a sending domain once (Dashboard → Email → Email Sending, e.g. `email.labkiosk.org`). Sending needs Workers Paid; 3,000 messages a month are included. |
+| `MAIL_FROM` | Variable: the sender, on the onboarded domain, e.g. `Lab Kiosk <support@email.labkiosk.org>` | Dashboard variable |
+| `SUPPORT_ADDRESS` | Variable: the address customers reply to and write to, e.g. `support@labkiosk.org` | Dashboard variable |
+| `SUPPORT_FORWARD_TO` | Variable, optional: a verified Email Routing destination that gets a copy of every incoming message, and every message the Worker could not file | Dashboard variable |
+| Email Routing rule | Routes `SUPPORT_ADDRESS` (and any other public address, such as `contact@`) to the Worker, whose `email()` handler files it under **Support** | Dashboard → Email → Email Routing → Routing rules → *Send to a Worker* → `labkiosk-controller` |
+
+Without `EMAIL`, `MAIL_FROM` and `SUPPORT_ADDRESS`, registration and replies refuse with "Email is
+not configured"; the rest of the Worker runs. Incoming mail joins a conversation only when its
+subject carries the conversation's reference (`[LK-XXXXXX]`) or it answers one of the platform's
+messages, **and** it comes from that conversation's contact; anything else opens a new support
+conversation. Mail from `MAIL_FROM` itself is dropped, so a bounce cannot loop. Phone numbers are
+confirmed by hand (**Mark phone as verified** after a call or message); no SMS provider is used.
+
+Locally (`ALLOW_LOCAL_DB=1`) no binding is needed: messages go to an in-process outbox the tests
+read (`localOutbox()` in `src/mail.ts`).
+
 ### Automatic bug reports (optional)
 
 Organizations can opt in, in Settings → Errors & Warnings, to having their workstations' errors and
@@ -260,6 +287,7 @@ Configure production variables in the **Cloudflare Dashboard**:
      apex is canonical.
    - `ISO_DOWNLOAD_URL`: Direct link to download the live bootable Debian 12 Kiosk ISO (e.g. GitHub Releases artifact).
    - `GITHUB_ISSUES_REPO` (optional): `owner/repo` for automatic bug reports (see "Automatic bug reports").
+   - `MAIL_FROM`, `SUPPORT_ADDRESS`, `SUPPORT_FORWARD_TO`: email (see "Email").
 
 ---
 

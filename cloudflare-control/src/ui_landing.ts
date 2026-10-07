@@ -621,6 +621,29 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .modal-switch { text-align: center; margin-top: 18px; font-size: 0.8125rem; color: var(--text-muted); }
     .modal-switch a { color: var(--accent-text); text-decoration: none; cursor: pointer; font-weight: 600; }
     .modal-switch a:hover { text-decoration: underline; }
+    .modal-wide { max-width: 640px; }
+    .form-split { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+    .form-legend { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin: 20px 0 10px; text-align: left; }
+    .form-legend:first-of-type { margin-top: 0; }
+    .code-row { display: flex; gap: 8px; align-items: stretch; }
+    .code-row .form-input { flex: 1; min-width: 0; }
+    .code-row .btn { white-space: nowrap; }
+    .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 0.8125rem; color: var(--text-muted); text-align: left; line-height: 1.5; }
+    .check-row input { margin-top: 3px; }
+    .check-row a { color: var(--accent-text); }
+    .notice-box {
+      background: var(--success-soft);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--success);
+      color: var(--text-main);
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.875rem;
+      line-height: 1.55;
+      margin-bottom: 18px;
+      text-align: left;
+      display: none;
+    }
     .alert-box {
       background: var(--danger-soft);
       border: 1px solid var(--border);
@@ -926,6 +949,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       }
       .modal-title { font-size: 1.25rem; }
       .form-input { font-size: 1rem; }
+      .form-split { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1612,7 +1636,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Registration takes less than 60 seconds on this website. You receive your organization subdomain (e.g. <code>yourorganization.${escapeHtml(baseDomain)}</code>) and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
+            Register on this website and we review the request, usually within one working day. Once it is approved you receive your organization subdomain (e.g. <code>yourorganization.${escapeHtml(baseDomain)}</code>) and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
           </div>
         </div>
       </div>
@@ -1689,34 +1713,126 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
 
   <!-- Register Modal -->
   <div class="modal-overlay" id="register-modal" role="dialog" aria-modal="true" aria-labelledby="reg-modal-title">
-    <div class="modal-box">
+    <div class="modal-box modal-wide">
       <button class="modal-close" data-action="close-modal" data-modal="register" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="reg-modal-title">Register Your Organization</h2>
-      <p class="modal-sub">Claim your custom subdomain and cloud console.</p>
+      <p class="modal-sub">We review every registration and email you when your console is active, usually within one working day.</p>
       <div class="alert-box" id="register-alert" role="alert"></div>
+      <div class="notice-box" id="register-done" role="status"></div>
       <form id="register-form">
-        <div class="form-group">
-          <label class="form-label" for="reg-name">Organization Name</label>
-          <input type="text" class="form-input" id="reg-name" required placeholder="Greenwood Holdings">
+        <div class="form-legend">Organization</div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-name">Organization name</label>
+            <input type="text" class="form-input" id="reg-name" required maxlength="120" placeholder="Greenwood Holdings" autocomplete="organization">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-legal-name">Legal or billing name <span class="input-hint">(optional)</span></label>
+            <input type="text" class="form-input" id="reg-legal-name" maxlength="160" placeholder="Greenwood Holdings Pvt Ltd">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-type">Type</label>
+            <select class="form-input" id="reg-type">
+              <option value="business">Business</option>
+              <option value="government">Government or public body</option>
+              <option value="library">Library</option>
+              <option value="education">Education</option>
+              <option value="nonprofit">Non-profit</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-workstations">Expected workstations</label>
+            <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
+          </div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="reg-email">Admin Email</label>
-          <input type="email" class="form-input" id="reg-email" required placeholder="admin@greenwood.example" autocomplete="email">
+          <label class="form-label" for="reg-subdomain">Console address</label>
+          <div class="code-row">
+            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\\-]+" style="font-family: var(--font-mono);">
+            <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; align-self: center;">.${escapeHtml(baseDomain)}</span>
+          </div>
+          <div class="input-hint">Lowercase letters, numbers and hyphens.</div>
+        </div>
+
+        <div class="form-legend">Technical contact</div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-contact-name">Full name</label>
+            <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-phone">Phone, with country code</label>
+            <input type="tel" class="form-input" id="reg-phone" required placeholder="+91 98765 43210" autocomplete="tel">
+            <div class="input-hint">We call or message this number to confirm it before approval.</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-email">Work email (your sign-in)</label>
+          <div class="code-row">
+            <input type="email" class="form-input" id="reg-email" required placeholder="jane@greenwood.example" autocomplete="email">
+            <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-code">Six-digit code from that email</label>
+          <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
         </div>
         <div class="form-group">
           <label class="form-label" for="reg-password">Password</label>
           <input type="password" class="form-input" id="reg-password" required minlength="12" placeholder="••••••••" autocomplete="new-password">
-          <div class="input-hint">Must be at least 12 characters.</div>
+          <div class="input-hint">At least 12 characters, with letters and numbers.</div>
+        </div>
+
+        <div class="form-legend">Address &amp; billing</div>
+        <div class="form-group">
+          <label class="form-label" for="reg-address1">Street address</label>
+          <input type="text" class="form-input" id="reg-address1" required maxlength="200" autocomplete="address-line1">
         </div>
         <div class="form-group">
-          <label class="form-label" for="reg-subdomain">Requested Subdomain Slug</label>
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\-]+" style="font-family: var(--font-mono);">
-            <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap;">.${escapeHtml(baseDomain)}</span>
-          </div>
-          <div class="input-hint">Lowercase letters, numbers, hyphens only. Your organization is active as soon as you register.</div>
+          <label class="form-label" for="reg-address2">Address line 2 <span class="input-hint">(optional)</span></label>
+          <input type="text" class="form-input" id="reg-address2" maxlength="200" autocomplete="address-line2">
         </div>
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Register &amp; Claim Subdomain</button>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-city">City</label>
+            <input type="text" class="form-input" id="reg-city" required maxlength="100" autocomplete="address-level2">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-region">State or region</label>
+            <input type="text" class="form-input" id="reg-region" maxlength="100" autocomplete="address-level1">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-postal">Postal code</label>
+            <input type="text" class="form-input" id="reg-postal" required maxlength="20" autocomplete="postal-code">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-country">Country</label>
+            <input type="text" class="form-input" id="reg-country" required maxlength="80" autocomplete="country-name" placeholder="India">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-tax-id">Tax ID, e.g. GSTIN <span class="input-hint">(optional)</span></label>
+            <input type="text" class="form-input" id="reg-tax-id" maxlength="40">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-billing-email">Billing email <span class="input-hint">(optional)</span></label>
+            <input type="email" class="form-input" id="reg-billing-email" autocomplete="email">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-notes">Anything we should know? <span class="input-hint">(optional)</span></label>
+          <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
+        </div>
+        <div class="form-group">
+          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
       </form>
       <div class="modal-switch">
         Already registered? <a href="/login" data-action="switch-modal" data-close="register" data-modal="login">Sign in</a>
@@ -1750,6 +1866,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <button class="modal-close" data-action="close-modal" data-modal="contact" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="contact-modal-title">Send Deployment Inquiry</h2>
       <p class="modal-sub">Our team responds to organizations and partners within 24 hours.</p>
+      <div class="alert-box" id="contact-alert" role="alert"></div>
+      <div class="notice-box" id="contact-done" role="status"></div>
       <form id="contact-form">
         <div class="form-group">
           <label class="form-label" for="contact-name">Your Full Name</label>
@@ -2023,27 +2141,40 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       item.classList.toggle('open');
     }
 
-    // Contact Form submission (generates prefilled mailto)
-    function handleContactSubmit(e) {
+    // Contact form: filed straight into the platform's support inbox, and
+    // answered by email. No mail client is needed on either side.
+    async function handleContactSubmit(e) {
       e.preventDefault();
-      const name = document.getElementById('contact-name').value.trim();
-      const org = document.getElementById('contact-org').value.trim();
-      const email = document.getElementById('contact-sender-email').value.trim();
-      const type = document.getElementById('contact-type').value;
-      const message = document.getElementById('contact-message').value.trim();
-      const target = ${escapeJson(contactEmail)};
-
-      const subject = encodeURIComponent('[' + type + '] Inquiry from ' + name + ' (' + org + ')');
-      const body = encodeURIComponent(
-        'Name: ' + name + '\\n' +
-        'Organization: ' + org + '\\n' +
-        'Email: ' + email + '\\n' +
-        'Inquiry Type: ' + type + '\\n\\n' +
-        'Message:\\n' + message
-      );
-
-      closeModal('contact-modal');
-      window.location.href = 'mailto:' + target + '?subject=' + subject + '&body=' + body;
+      const alertBox = document.getElementById('contact-alert');
+      const done = document.getElementById('contact-done');
+      const form = document.getElementById('contact-form');
+      alertBox.style.display = 'none';
+      const payload = {
+        name: document.getElementById('contact-name').value.trim(),
+        organization: document.getElementById('contact-org').value.trim(),
+        email: document.getElementById('contact-sender-email').value.trim(),
+        topic: document.getElementById('contact-type').value,
+        message: document.getElementById('contact-message').value.trim()
+      };
+      try {
+        const res = await fetch('/api/contact', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          form.style.display = 'none';
+          done.textContent = 'Thank you. Your message is with our team (reference ' + data.reference + '). We will reply to ' + payload.email + '.';
+          done.style.display = 'block';
+        } else {
+          alertBox.textContent = data.error || 'Your message could not be sent.';
+          alertBox.style.display = 'block';
+        }
+      } catch (err) {
+        alertBox.textContent = 'Network error. Please try again.';
+        alertBox.style.display = 'block';
+      }
     }
 
     const BASE_DOMAIN = ${escapeJson(baseDomain)};
@@ -2103,41 +2234,91 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       }
     });
 
-    // Registration Form Submission
+    // Registration: confirm the email with a code, then submit the request.
+    // The organization is reviewed before it is activated, so no session follows.
+    const registerAlert = document.getElementById('register-alert');
+    function registerError(message) {
+      registerAlert.textContent = message;
+      registerAlert.style.display = 'block';
+      registerAlert.scrollIntoView({ block: 'nearest' });
+    }
+
+    const sendCodeButton = document.getElementById('reg-send-code');
+    sendCodeButton.addEventListener('click', async () => {
+      const email = document.getElementById('reg-email').value.trim();
+      registerAlert.style.display = 'none';
+      if (!email) {
+        registerError('Enter your work email first.');
+        return;
+      }
+      sendCodeButton.disabled = true;
+      try {
+        const res = await fetch('/api/auth/register/email-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          sendCodeButton.textContent = 'Code sent';
+          document.getElementById('reg-code').focus();
+          // A new code may be asked for after a minute.
+          setTimeout(() => { sendCodeButton.disabled = false; sendCodeButton.textContent = 'Resend code'; }, 60000);
+          return;
+        }
+        registerError(data.error || 'The code could not be sent.');
+      } catch (err) {
+        registerError('Network error while sending the code.');
+      }
+      sendCodeButton.disabled = false;
+    });
+
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const name = document.getElementById('reg-name').value.trim();
-      const email = document.getElementById('reg-email').value.trim();
-      const password = document.getElementById('reg-password').value;
-      const subdomain = document.getElementById('reg-subdomain').value.trim().toLowerCase();
-      const alertBox = document.getElementById('register-alert');
-      alertBox.style.display = 'none';
+      registerAlert.style.display = 'none';
+      const value = (id) => document.getElementById(id).value.trim();
+      const workstations = parseInt(value('reg-workstations'), 10);
+      const payload = {
+        name: value('reg-name'),
+        legalName: value('reg-legal-name'),
+        organizationType: value('reg-type'),
+        workstationEstimate: Number.isFinite(workstations) ? workstations : null,
+        subdomain: value('reg-subdomain').toLowerCase(),
+        contactName: value('reg-contact-name'),
+        phone: value('reg-phone'),
+        email: value('reg-email'),
+        emailCode: value('reg-code'),
+        password: document.getElementById('reg-password').value,
+        addressLine1: value('reg-address1'),
+        addressLine2: value('reg-address2'),
+        city: value('reg-city'),
+        region: value('reg-region'),
+        postalCode: value('reg-postal'),
+        country: value('reg-country'),
+        taxId: value('reg-tax-id'),
+        billingEmail: value('reg-billing-email'),
+        notes: value('reg-notes'),
+        acceptTerms: document.getElementById('reg-terms').checked
+      };
 
       try {
         const res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password, subdomain })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
-        if (data.status === 'ok') {
-          if (data.subdomain) {
-            const host = window.location.hostname;
-            if (host === 'localhost' || host === '127.0.0.1' || host.includes('docker')) {
-              window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
-            } else {
-              window.location.href = 'https://' + encodeURIComponent(data.subdomain) + '.' + BASE_DOMAIN + '/admin';
-            }
-          } else {
-            window.location.href = '/admin';
-          }
-        } else {
-          alertBox.textContent = data.error || 'Registration failed';
-          alertBox.style.display = 'block';
+        if (res.ok && data.status === 'ok') {
+          document.getElementById('register-form').style.display = 'none';
+          const done = document.getElementById('register-done');
+          done.textContent = 'Thank you. Your registration (reference ' + data.reference + ') is waiting for review. ' +
+            'We have emailed ' + payload.email + ' and will write again as soon as your console is active.';
+          done.style.display = 'block';
+          return;
         }
+        registerError(data.error || 'Registration failed');
       } catch (err) {
-        alertBox.textContent = 'Network error during registration';
-        alertBox.style.display = 'block';
+        registerError('Network error during registration');
       }
     });
   </script>

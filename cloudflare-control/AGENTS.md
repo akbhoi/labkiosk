@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0019)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0020)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), AI, hourly cron
 ├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
@@ -25,6 +25,11 @@ cloudflare-control/
 │   ├── boot_report.ts                  # Workstation boot reports, Errors & Warnings (Rule 2e)
 │   ├── bug_reports.ts                  # Opt-in automatic GitHub bug reports (Rule 2e)
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
+│   ├── signup.ts                       # Registration with an email code, the contact form, Remote Control requests
+│   ├── inbox.ts                        # Super Admin Tasks/Support API and the email() handler
+│   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
+│   ├── mail.ts                         # Outbound email via the EMAIL send_email binding
+│   ├── mime.ts                         # Dependency-free parser for incoming email
 │   ├── guard.ts                        # Tenant resolution, authorization, CSRF origin guard (MANDATORY)
 │   ├── escape.ts                       # HTML / attribute / JSON escaping & safe URLs (MANDATORY)
 │   ├── db.ts                           # D1 Database queries, SCHEMA_SQL, tenant seeding, audit
@@ -45,6 +50,7 @@ cloudflare-control/
 │   ├── ui_org_home.ts                  # The organization homepage at the subdomain root (/)
 │   ├── ui_portal.ts                    # User Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
+│   ├── ui_super_inbox.ts               # Its Tasks and Support panes (/super/tasks, /super/support)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /terms/bug-reports)
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   └── types.ts                        # Strict TypeScript interfaces

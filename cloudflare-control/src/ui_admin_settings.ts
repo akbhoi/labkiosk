@@ -140,6 +140,7 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
           </form>
         </div>
       </div>
+${renderRemoteControlCard(tenant)}
     </div>
 
     <!-- ============================================================== -->
@@ -344,6 +345,46 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
   `;
 }
 
+/**
+ * Remote Control is an add-on the platform approves per organization. This card
+ * says where the organization stands and, until it is on, lets it ask.
+ */
+function renderRemoteControlCard(tenant: Tenant | undefined): string {
+  const status = tenant?.remote_control_status || "none";
+  const badges: Record<string, string> = {
+    none: `<span class="badge badge-neutral">Not enabled</span>`,
+    pending: `<span class="badge badge-yellow">Requested</span>`,
+    approved: `<span class="badge badge-green">Enabled</span>`,
+    rejected: `<span class="badge badge-red">Not approved</span>`
+  };
+  const explanation: Record<string, string> = {
+    none: "See and control a workstation's screen from this console. It is enabled for each organization on request; we will email you the outcome, and licensing may need to be arranged first.",
+    pending: "Your request is being reviewed. We will email you as soon as it has been decided.",
+    approved: "Operators with the Workstations permission can open Remote Control on any connected workstation.",
+    rejected: "Your last request was not approved. You can ask again, ideally with a note on what you need it for."
+  };
+  const canRequest = status === "none" || status === "rejected";
+  return `
+      <div class="card mt-lg" id="section-remote-control">
+        <div class="row-between">
+          <h2 class="card-title">Remote Control</h2>
+          ${badges[status] || badges.none}
+        </div>
+        <p class="card-sub">${explanation[status] || explanation.none}</p>
+        ${
+          canRequest
+            ? `<form id="form-remote-control-request" class="form-narrow">
+          <div class="form-group">
+            <label class="form-label" for="remote-control-reason">What will you use it for? (optional)</label>
+            <textarea class="form-textarea" id="remote-control-reason" rows="3" maxlength="2000" placeholder="For example: helping users at 30 workstations across two sites."></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary">Request Remote Control</button>
+        </form>`
+            : ""
+        }
+      </div>`;
+}
+
 function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
@@ -389,6 +430,30 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       }
 
       window.labkioskSwitchTab = switchTab;
+
+      const remoteControlForm = document.getElementById("form-remote-control-request");
+      if (remoteControlForm) {
+        remoteControlForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const reason = document.getElementById("remote-control-reason").value.trim();
+          try {
+            const res = await fetch(labkioskApi("/api/tenant/remote-control/request"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ reason })
+            });
+            const data = await res.json();
+            if (res.ok && data.status === "ok") {
+              lkToastAfterReload("Remote Control requested. We will email you when it has been reviewed.", "success");
+              window.location.reload();
+            } else {
+              lkToast(data.error || "The request could not be sent", "error");
+            }
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      }
 
       // Initialize from hash or URL query param
       const hash = window.location.hash.replace("#", "");
