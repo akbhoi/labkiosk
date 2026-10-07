@@ -19,11 +19,11 @@
   "author": "Lab Kiosk Contributors",
   "license": "SEE LICENSE IN LICENSE",
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260925.1",
+    "@cloudflare/workers-types": "^5.20261004.1",
     "@novnc/novnc": "1.7.0",
     "@types/node": "^26.6.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "wrangler": "^4.139.0"
+    "wrangler": "^4.147.0"
   }
 }
