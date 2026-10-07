@@ -684,6 +684,25 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(htmlToText("a &lt;b&gt; &amp; c"), "a <b> & c", "entities become characters");
     assert.doesNotMatch(htmlToText("before <!-- never closed <script"), /[<>]/, "an unclosed fragment leaves no bracket");
 
+    const inner = ["From: Customer <c@x.example>", "Subject: Original", "Content-Type: text/plain", "", "The forwarded words."].join("\r\n");
+    const forwarded = parseEmail(
+      encode(
+        [
+          "From: Agent <a@x.example>",
+          "Subject: Fwd: Original",
+          'Content-Type: multipart/mixed; boundary="f"',
+          "",
+          "--f",
+          "Content-Type: message/rfc822",
+          "Content-Transfer-Encoding: base64",
+          "",
+          Buffer.from(inner).toString("base64"),
+          "--f--"
+        ].join("\n")
+      )
+    );
+    assert.match(forwarded.text, /The forwarded words\./, "a base64-encoded forwarded message is read");
+
     assert.deepEqual(parseAddress("Lab Kiosk <Support@Email.LabKiosk.org>"), { email: "support@email.labkiosk.org", name: "Lab Kiosk" });
     assert.deepEqual(parseAddress('"Doe, J" <j@x.example>'), { email: "j@x.example", name: "Doe, J" });
     assert.deepEqual(parseAddress("jane@example.com"), { email: "jane@example.com", name: "" });

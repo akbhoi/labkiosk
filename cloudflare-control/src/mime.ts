@@ -161,6 +161,9 @@ function decodeTransfer(body: string, encoding: string): Uint8Array {
   return binaryToBytes(body);
 }
 
+/** HTML read for the text view: well past MAX_BODY_CHARS of text, short of a costly regex pass. */
+const MAX_HTML_CHARS = 200_000;
+
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 
 /** HTML reduced to readable text. The result is shown with textContent, never as markup. */
@@ -253,7 +256,9 @@ function walk(part: Part, depth: number, acc: Collected): void {
   }
   if (type.value === "message/rfc822") {
     // A forwarded message: its text is the content, its attachments are listed.
-    const { head, body } = splitHeadersAndBody(part.body);
+    // It may itself be transfer-encoded (RFC 2046 allows only 7bit/8bit/binary, but senders differ).
+    const inner = bytesToBinary(decodeTransfer(part.body, header(part.headers, "content-transfer-encoding")));
+    const { head, body } = splitHeadersAndBody(inner);
     walk({ headers: parseHeaders(head), body }, depth + 1, acc);
     return;
   }
@@ -278,7 +283,7 @@ export function parseEmail(raw: Uint8Array): ParsedEmail {
   const acc: Collected = { plain: null, html: null, attachments: [], parts: 0 };
   walk({ headers, body }, 0, acc);
 
-  const rawText = acc.plain !== null ? acc.plain : acc.html !== null ? htmlToText(acc.html) : "";
+  const rawText = acc.plain !== null ? acc.plain : acc.html !== null ? htmlToText(acc.html.slice(0, MAX_HTML_CHARS)) : "";
   const text = stripQuotedHistory(rawText.replace(/\r\n/g, "\n").trim()).slice(0, MAX_BODY_CHARS);
 
   const autoSubmitted = header(headers, "auto-submitted").toLowerCase();
