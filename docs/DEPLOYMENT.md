@@ -222,9 +222,8 @@ On `DEFAULT_DOMAIN` the console and the workstations share one zone, so:
 
 - each workstation address gets its own **Worker route with no Worker** (`<address>/*`), created
   and deleted with its tunnel. It is more specific than `*.<DEFAULT_DOMAIN>/*`, so the tunnel, not
-  the console, answers that address. A zone holds at most 1000 routes, which caps platform
-  workstations at about 998. They name no Worker, and `wrangler deploy` sets only this Worker's
-  routes, so a deploy does not remove them;
+  the console, answers that address (at most 1000 routes per zone). They name no Worker, and
+  `wrangler deploy` sets only this Worker's routes, so a deploy does not remove them;
 - organization names `vnc` and `*-vnc` are reserved, so no organization's console shares a
   Remote Control address;
 - the browser sends the console's session cookie (`Domain=.<DEFAULT_DOMAIN>`) to Remote Control
@@ -233,6 +232,20 @@ On `DEFAULT_DOMAIN` the console and the workstations share one zone, so:
   workstation.
 
 A zone of its own needs none of this.
+
+**How many platform workstations fit.** Each one uses a tunnel, a DNS record and an Access
+application in the platform's account, so Cloudflare's defaults set the ceiling, whichever comes
+first:
+
+| Limit | Default | Applies to |
+| :--- | :--- | :--- |
+| DNS records per zone | 200 on a Free zone created on or after 2024-09-01 (1000 before; 3500 on Pro) | the remote-control zone, shared with its other records |
+| Access applications per account | 500 | the whole account, shared with anything else protected by Access there |
+| Reusable Access policies per account | 500 | one per organization in this mode |
+| Tunnels per account | 1000 | the whole account |
+| Worker routes per zone | 1000 | only when the domain is `DEFAULT_DOMAIN` |
+
+Organizations on their own domain use their own account and count toward none of these.
 
 **No Zero Trust seats.** Each workstation's Access application on that zone admits only the
 gate's service token, and a service token takes no seat. Operators open Remote Control through the
