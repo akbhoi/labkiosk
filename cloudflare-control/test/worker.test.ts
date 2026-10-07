@@ -134,7 +134,7 @@ function fakeCloudflare() {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
-    if (url.hostname.endsWith("-vnc.labkiosk.org") || url.hostname.endsWith(".labkiosk.dev")) {
+    if (isRemoteControlHost(url.hostname, "labkiosk.org") || isHostUnder(url.hostname, "labkiosk.dev")) {
       const headers = new Headers(init?.headers);
       forwarded.push({ url: url.toString(), headers });
       if (headers.get("cf-access-client-secret") !== GATE_CLIENT_SECRET) {
