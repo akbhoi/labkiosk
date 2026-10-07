@@ -56,6 +56,7 @@ import { envelopeFor, localOutbox, parseAddress } from "../src/mail";
 import { loadRawMail } from "../src/mail_store";
 import { handleInboundEmail, InboundMessage } from "../src/inbox";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
+import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
 
 /**
  * The suite runs against the in-memory D1 adapter, which a production
@@ -423,6 +424,130 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       password: "RiversidePass456!",
       subdomain: "riverside"
     });
+  });
+
+  test("TOTP codes match RFC 6238 and secrets survive base32", async () => {
+    const rfcSecret = new TextEncoder().encode("12345678901234567890");
+    assert.equal(await totpCode(rfcSecret, Math.floor(59 / 30)), "287082");
+    assert.equal(await totpCode(rfcSecret, Math.floor(1111111109 / 30)), "081804");
+    assert.equal(await totpCode(rfcSecret, Math.floor(2000000000 / 30)), "279037");
+    assert.equal(base32Encode(rfcSecret), "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+    assert.deepEqual(base32Decode("gezd gnbv-gy3tqojqgezdgnbvgy3tqojq"), rfcSecret);
+    assert.throws(() => base32Decode("not base32!"));
+  });
+
+  test("Two-factor sign-in: set up with an app, then a code, an emailed code or a recovery code", async () => {
+    const email = "operator@hillside.example";
+    const password = "HillsidePass789!";
+    const cookie = await registerApprovedOrganization({ name: "Hillside Library", contactName: "Hana Hill", email, password, subdomain: "hillside" });
+    const login = (device?: string) => call("/api/auth/login", { ...json({ email, password }), cookie: device });
+    const cookiesOf = (res: Response) => res.headers.getSetCookie().map((c) => c.split(";")[0]);
+    const session = (res: Response) => cookiesOf(res).find((c) => c.startsWith("labkiosk_session="))!;
+    const device = (res: Response) => cookiesOf(res).find((c) => c.startsWith("labkiosk_device="))!;
+    const mailTo = () => localOutbox().filter((m) => m.to === email);
+
+    // Off by default; only the signed-in account sees or changes its own.
+    assert.equal((await call("/api/auth/two-factor")).status, 401);
+    assert.equal((await call("/api/auth/two-factor/setup", json({ password }))).status, 401);
+    const { data: off } = await callJson("/api/auth/two-factor", { cookie });
+    assert.equal(off.enabled, false);
+    const { data: superState } = await callJson("/api/auth/two-factor", { cookie: await superCookie() });
+    assert.equal(superState.enabled, false, "super admins have it too");
+
+    const otherBrowser = session(await login());
+    assert.equal((await call("/api/auth/two-factor/setup", { ...json({ password: "wrong" }), cookie })).status, 400, "setup needs the password");
+    const { res: setupRes, data: setup } = await callJson("/api/auth/two-factor/setup", { ...json({ password }), cookie });
+    assert.equal(setupRes.status, 200);
+    assert.match(setup.otpauthUri, /^otpauth:\/\/totp\/Lab%20Kiosk%3Aoperator%40hillside\.example\?secret=[A-Z2-7]{32}&issuer=Lab%20Kiosk/);
+    const secret = base32Decode(setup.secret);
+    assert.equal((await login()).headers.get("Set-Cookie")?.includes("labkiosk_session"), true, "not on until a code proves the app");
+
+    assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "000000" }), cookie })).status, 400);
+    const firstStep = currentTotpStep();
+    const { res: enableRes, data: enabled } = await callJson("/api/auth/two-factor/enable", {
+      ...json({ code: await totpCode(secret, firstStep) }),
+      cookie
+    });
+    assert.equal(enableRes.status, 200);
+    assert.equal(enabled.recoveryCodes.length, 10);
+    assert.ok(enabled.recoveryCodes.every((c: string) => /^[a-z2-9]{5}-[a-z2-9]{5}$/.test(c)));
+    assert.equal((await callJson("/api/auth/me", { cookie: otherBrowser })).data.user, null, "browsers signed in with the password alone are signed out");
+    assert.ok((await callJson("/api/auth/me", { cookie })).data.user, "this browser stays signed in");
+
+    // The password alone now gives a challenge, not a session.
+    const step1 = await login();
+    const { status, challenge } = (await step1.json()) as any;
+    assert.equal(status, "two_factor");
+    assert.equal(step1.headers.get("Set-Cookie"), null, "no session before the second factor");
+    const verify = (body: Record<string, unknown>, deviceCookie?: string) =>
+      call("/api/auth/login/verify", { ...json(body), cookie: deviceCookie });
+    assert.equal((await verify({ challenge, code: "123456" })).status, 400);
+    assert.equal((await verify({ challenge, code: await totpCode(secret, firstStep) })).status, 400, "a code works once");
+    assert.equal((await verify({ challenge: "f".repeat(64), code: await totpCode(secret, firstStep + 1) })).status, 401);
+    const alertsBefore = mailTo().filter((m) => m.subject === "New sign-in to your Lab Kiosk account").length;
+    const signedIn = await verify({ challenge, code: await totpCode(secret, firstStep + 1) });
+    assert.equal(signedIn.status, 200);
+    assert.ok(session(signedIn), "the right code signs in");
+    assert.match(signedIn.headers.getSetCookie().find((c) => c.startsWith("labkiosk_device="))!, /Path=\/api\/auth; .*HttpOnly; SameSite=Strict/);
+    assert.equal((await verify({ challenge, code: "654321" })).status, 401, "a challenge signs in once");
+    const browser = device(signedIn);
+    assert.equal(
+      mailTo().filter((m) => m.subject === "New sign-in to your Lab Kiosk account").length,
+      alertsBefore + 1,
+      "a browser the account has not used before is reported by email"
+    );
+
+    // A code by email, and "trust this browser".
+    const step2 = (await (await login(browser)).json()) as any;
+    assert.equal(step2.status, "two_factor", "a known browser is not a trusted one");
+    const sent = await callJson("/api/auth/login/email-code", json({ challenge: step2.challenge }));
+    assert.equal(sent.res.status, 200);
+    assert.equal(sent.data.sentTo, "o•••@hillside.example");
+    assert.equal((await call("/api/auth/login/email-code", json({ challenge: step2.challenge }))).status, 429, "one code a minute");
+    const emailed = mailTo().at(-1)!;
+    const emailedCode = /is your Lab Kiosk sign-in code/.test(emailed.subject) ? emailed.subject.slice(0, 6) : "";
+    assert.match(emailedCode, /^\d{6}$/);
+    const trusted = await verify({ challenge: step2.challenge, code: emailedCode, trustBrowser: true }, browser);
+    assert.equal(trusted.status, 200);
+    assert.equal(
+      mailTo().filter((m) => m.subject === "New sign-in to your Lab Kiosk account").length,
+      alertsBefore + 1,
+      "a browser it has used before is not reported"
+    );
+    const direct = await login(browser);
+    assert.equal(((await direct.json()) as any).status, "ok", "a trusted browser skips the code for 30 days");
+    assert.ok(session(direct));
+
+    // A recovery code works once.
+    const recovery = enabled.recoveryCodes[0].toUpperCase();
+    const step3 = (await (await login()).json()) as any;
+    assert.equal((await verify({ challenge: step3.challenge, code: recovery })).status, 200);
+    const step4 = (await (await login()).json()) as any;
+    assert.equal((await verify({ challenge: step4.challenge, code: recovery })).status, 400, "a recovery code is used up");
+    assert.equal((await callJson("/api/auth/two-factor", { cookie })).data.recoveryCodesLeft, 9);
+
+    // Turning it off needs the password and a code.
+    assert.equal((await call("/api/auth/two-factor/disable", { ...json({ password, code: "000000" }), cookie })).status, 400);
+    assert.equal((await call("/api/auth/two-factor/disable", { ...json({ password: "wrong", code: enabled.recoveryCodes[1] }), cookie })).status, 400);
+    assert.equal((await call("/api/auth/two-factor/disable", { ...json({ password, code: enabled.recoveryCodes[1] }), cookie })).status, 200);
+    assert.equal(((await (await login()).json()) as any).status, "ok", "the password alone signs in again");
+    assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "123456" }), cookie })).status, 409, "a new setup starts over");
+  });
+
+  test("Two-factor sign-in: a challenge takes five wrong codes, then the password is needed again", async () => {
+    const email = "operator@hillside.example";
+    const password = "HillsidePass789!";
+    const cookie = (await call("/api/auth/login", json({ email, password }))).headers.get("Set-Cookie")!.split(";")[0];
+    const { data: setup } = await callJson("/api/auth/two-factor/setup", { ...json({ password }), cookie });
+    const step = currentTotpStep();
+    await call("/api/auth/two-factor/enable", { ...json({ code: await totpCode(base32Decode(setup.secret), step) }), cookie });
+    const { challenge } = (await (await call("/api/auth/login", json({ email, password }))).json()) as any;
+    for (let i = 0; i < 4; i++) {
+      assert.equal((await call("/api/auth/login/verify", json({ challenge, code: "000000" }))).status, 400);
+    }
+    assert.equal((await call("/api/auth/login/verify", json({ challenge, code: "000000" }))).status, 401);
+    const late = await call("/api/auth/login/verify", json({ challenge, code: await totpCode(base32Decode(setup.secret), step + 1) }));
+    assert.equal(late.status, 401, "the challenge is gone, even for the right code");
   });
 
   test("Remote Control is off until an organization asks and the platform approves", async () => {
@@ -3610,6 +3735,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(support.includes('data-box="support"'), "Mail shows the conversation list");
     const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
     assert.ok(system.includes("Platform Architecture"));
+    for (const page of [system, await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text()]) {
+      assert.ok(page.includes('data-action="open-two-factor"') && page.includes('id="two-factor-modal"'), "every console offers two-factor sign-in");
+    }
     assert.ok(!system.includes('id="inbox"'));
     // The old address of the queue still lands.
     const old = await call("/super/approvals", { cookie: superSessionCookie });

@@ -71,7 +71,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 | :--- | :--- | :--- |
 | `/api/auth/me` | `GET` | Current user profile and tenant |
 | `/api/auth/logout` | `POST` | Invalidate this session and clear the cookie |
-| `/api/auth/change-password` | `POST` | Rotate password, revoking the account's other sessions |
+| `/api/auth/change-password` | `POST` | Rotate password, revoking the account's other sessions and trusted browsers |
+| `/api/auth/login/verify` | `POST` | Second step of a two-factor sign-in (app code, emailed code or recovery code) |
+| `/api/auth/login/email-code` | `POST` | Email a sign-in code for a pending two-factor sign-in |
+| `/api/auth/two-factor[/setup,/enable,/recovery-codes,/disable]` | `GET`/`POST` | The signed-in account's own two-factor sign-in |
 
 ### Operator admin
 
@@ -450,7 +453,10 @@ Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()
 { "email": "operator@oakridge.edu", "password": "StrongPassword123!" }
 ```
 
-→ `{ "status": "ok", "role": "org_admin", "subdomain": "oakridge" }`, plus a `labkiosk_session` cookie.
+→ `{ "status": "ok", "role": "org_admin", "subdomain": "oakridge", "redirect": "…" }`, plus the
+`labkiosk_session` and `labkiosk_device` cookies. An account with two-factor sign-in, on a browser it
+has not trusted, gets `{ "status": "two_factor", "challenge": "…" }` instead, completed with
+`POST /api/auth/login/verify`.
 
 Repeated failures back off exponentially per identifier, tracked in `login_attempts`.
 

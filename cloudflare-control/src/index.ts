@@ -161,6 +161,15 @@ import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from 
 import { handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
 import { handleInboundEmail, handleInboxRoute, InboundMessage, isInboxRoute } from "./inbox";
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
+import {
+  continueSignIn,
+  handleLoginEmailCode,
+  handleLoginVerify,
+  handleTwoFactorRoute,
+  isTwoFactorRoute,
+  purgeExpiredLoginChallenges,
+  revokeTrustedBrowsers
+} from "./two_factor";
 
 /** Commands an admin console is allowed to dispatch. */
 const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "clear-session", "mute"]);
@@ -614,6 +623,7 @@ export default {
     await deleteExpiredSessions(db);
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
+    await purgeExpiredLoginChallenges(db);
     const purgedIssues = await purgeOldWorkstationIssues(db);
     if (purgedIssues) console.log(`[Worker] Deleted ${purgedIssues} workstation issues older than ${WORKSTATION_ISSUE_RETENTION_DAYS} days.`);
     // Commands expire inside each organization's OrgHub; the audit log is the
@@ -770,6 +780,8 @@ export default {
       env.AUTH_RATE_LIMITER &&
       method === "POST" &&
       (path === "/api/auth/login" ||
+        path === "/api/auth/login/verify" ||
+        path === "/api/auth/login/email-code" ||
         path === "/api/auth/register" ||
         path === "/api/auth/register/email-code" ||
         path === "/api/contact" ||
@@ -842,6 +854,7 @@ export default {
       baseDomain,
       isDev
     };
+    const signInCookies = { domain: cookieDomain, secure: secureCookies, sessionCookie };
 
     // POST /api/auth/register/email-code: prove the email address before signing up.
     if (path === "/api/auth/register/email-code" && method === "POST") {
@@ -914,28 +927,12 @@ export default {
             jsonHeaders
           );
         }
-        const token = generateSessionToken();
-        await createSession(db, {
-          token,
-          user_id: user.id,
-          tenant_id: tenant?.id || null,
-          role: user.role,
-          expires_at: Math.floor(Date.now() / 1000) + 7 * 24 * 3600
-        });
-
-        await writeAuditLog(db, {
-          tenantId: tenant?.id || null,
+        // A session now, or a second step first for an account with two-factor sign-in.
+        return await continueSignIn(routeContext, signInCookies, {
           userId: user.id,
-          action: "auth.login",
-          details: `role=${user.role}`
-        });
-
-        return new Response(
-          JSON.stringify({
-            status: "ok",
-            role: user.role,
-            subdomain: tenant?.subdomain || null,
-            redirect: postLoginRedirect({
+          tenantId: tenant?.id || null,
+          role: user.role,
+          redirect: postLoginRedirect({
               role: user.role,
               ownSubdomain: tenant?.subdomain || null,
               hostSlug: hostSubdomain(request, env.DEFAULT_DOMAIN),
@@ -946,16 +943,27 @@ export default {
               // regardless, and the console guards on arrival either way.
               requestedSlug:
                 cleanSubdomain(url.searchParams.get("tenant") || body.tenant || "") || null,
-              isDev,
-              baseDomain
-            })
-          }),
-          { headers: { ...jsonHeaders, "Set-Cookie": sessionCookie(token) } }
-        );
+            isDev,
+            baseDomain
+          })
+        });
       } catch (err: any) {
         console.error("[Worker] Login failed:", err);
         return jsonError("Sign-in failed. Please try again.", 500, jsonHeaders);
       }
+    }
+
+    // POST /api/auth/login/verify, /email-code: the second step of a two-factor sign-in.
+    if (path === "/api/auth/login/verify" && method === "POST") {
+      return handleLoginVerify(routeContext, signInCookies);
+    }
+    if (path === "/api/auth/login/email-code" && method === "POST") {
+      return handleLoginEmailCode(routeContext);
+    }
+
+    // /api/auth/two-factor...: the signed-in account turns its own second factor on or off.
+    if (isTwoFactorRoute(path)) {
+      return handleTwoFactorRoute(routeContext, sessionToken);
     }
 
     // POST /api/auth/logout: Sign Out. GET is refused so a cross-site link or
@@ -1029,6 +1037,7 @@ export default {
         }
 
         await updateUserPassword(db, user.id, newPassword);
+        await revokeTrustedBrowsers(db, user.id);
         // Any other browser holding this account is signed out; this one stays.
         await deleteSessionsForUser(db, user.id, sessionToken || undefined);
         await writeAuditLog(db, {

@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 3, 3b, 3c; reference:
 
 - `migrations/NNNN_name.sql` is what a deployed D1 has; `SCHEMA_SQL` in `src/db.ts` builds the
   in-memory database for tests and `pnpm dev`. **Change both.**
-- Add a **new** numbered file (next: `0021_…`). **Never edit or rename an applied migration** —
+- Add a **new** numbered file (next: `0022_…`). **Never edit or rename an applied migration** —
   wrangler tracks them by file name, so a rename re-runs it (that is why `0008_school_homepage.sql`
   keeps its name).
 - Every query that touches tenant data filters by `tenant_id`; index what you query on.
@@ -116,3 +116,9 @@ codes, keyed `purpose:email`, purged hourly. `conversations` (`signup | remote_c
 Tasks and Mail inbox, read only by a super admin. `conversations.mailbox` is the platform address a
 mail conversation belongs to (NULL for a task); `conversation_messages.raw_key` points at the
 original in R2 (`mail/<message id>.eml`) and `attachments` is its JSON attachment list.
+
+**Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
+`enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes
+as a JSON list of SHA-256 hashes. `login_challenges` is a password-checked sign-in waiting for its
+second factor, keyed by the SHA-256 of the browser's token, purged hourly. `user_devices` keys
+browsers by `(user_id, token_hash)` for new-browser alerts and `trusted_until`.

@@ -53,7 +53,14 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/auth/login` | `POST` | Public | Sign in to Admin console or Super Admin Console |
 | `/api/auth/me` | `GET` | Session | Retrieve current authenticated user profile & tenant |
 | `/api/auth/logout` | `POST` | Session | Invalidate session token and clear cookies |
-| `/api/auth/change-password` | `POST` | Session | Rotate user password and revoke other active sessions |
+| `/api/auth/change-password` | `POST` | Session | Rotate user password, revoke other active sessions and every trusted browser |
+| `/api/auth/login/verify` | `POST` | Public | `{"challenge", "code", "trustBrowser"?}`: the second step of a two-factor sign-in; `code` is the app's six digits, an emailed code or a recovery code |
+| `/api/auth/login/email-code` | `POST` | Public | `{"challenge"}`: email a sign-in code to the account (three per sign-in, one a minute) |
+| `/api/auth/two-factor` | `GET` | Session | Whether the account's two-factor sign-in is on, and recovery codes left |
+| `/api/auth/two-factor/setup` | `POST` | Session | `{"password"}`: a new authenticator secret and `otpauth://` URI (not on until enabled) |
+| `/api/auth/two-factor/enable` | `POST` | Session | `{"code"}`: turn it on; returns ten recovery codes once and signs other browsers out |
+| `/api/auth/two-factor/recovery-codes` | `POST` | Session | `{"password", "code"}`: replace the recovery codes |
+| `/api/auth/two-factor/disable` | `POST` | Session | `{"password", "code"}`: turn it off and forget trusted browsers |
 | `/api/portal-sites` | `GET` | Public | List approved applications for user portal |
 | `/api/portal-sites` | `POST` | Organization Admin | Add a new application card to user portal |
 | `/api/portal-sites/:id` | `DELETE` | Organization Admin | Delete an application card from user portal |
@@ -190,15 +197,24 @@ Authenticates an operator or platform super administrator.
   }
   ```
 
-- **Response `200 OK`:** Sets `labkiosk_session` cookie.
+- **Response `200 OK`:** Sets the `labkiosk_session` cookie and the `labkiosk_device` cookie
+  (`Path=/api/auth`, the browser's identity for sign-in alerts and "trust this browser").
 
   ```json
   {
     "status": "ok",
     "role": "org_admin",
-    "subdomain": "oakridge"
+    "subdomain": "oakridge",
+    "redirect": "https://oakridge.labkiosk.org/admin"
   }
   ```
+
+- **Two-factor sign-in:** when the account has it on and the browser is not trusted, no cookie is
+  set and the answer is `{ "status": "two_factor", "challenge": "<64 hex>", "expiresIn": 600 }`.
+  `POST /api/auth/login/verify` with the challenge and a code completes it (five wrong codes end the
+  challenge); `POST /api/auth/login/email-code` sends a code by email instead.
+- **New-browser alert:** a successful sign-in from a browser the account has not used before is
+  reported to the account's email address (the first browser an account ever uses is not).
 
 #### `GET /api/auth/me`
 

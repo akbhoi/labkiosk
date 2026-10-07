@@ -633,6 +633,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .code-row .btn { white-space: nowrap; }
     .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 0.8125rem; color: var(--text-muted); text-align: left; line-height: 1.5; }
     .check-row input { margin-top: 3px; }
+    #login-form[hidden], #login-2fa-form[hidden] { display: none; }
     .check-row a { color: var(--accent-text); }
     .notice-box {
       background: var(--success-soft);
@@ -1717,6 +1718,22 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         </div>
         <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Admin Console</button>
       </form>
+      <form id="login-2fa-form" hidden>
+        <div class="notice-box" id="login-2fa-notice" role="status"></div>
+        <div class="form-group">
+          <label class="form-label" for="login-2fa-code">Code from your authenticator app</label>
+          <input type="text" class="form-input" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
+        </div>
+        <div class="form-group">
+          <label class="check-row"><input type="checkbox" id="login-2fa-trust"> <span>Trust this browser for 30 days</span></label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Verify and sign in</button>
+        <div class="code-row" style="margin-top: 10px;">
+          <button type="button" class="btn btn-ghost" id="login-2fa-email">Email me a code instead</button>
+          <button type="button" class="btn btn-ghost" id="login-2fa-back">Start over</button>
+        </div>
+        <p class="modal-sub" style="margin: 12px 0 0;">Lost your phone? Enter one of your recovery codes instead of the six digits.</p>
+      </form>
       <div class="modal-switch">
         New organization? <a href="/register" data-action="switch-modal" data-close="login" data-modal="register">Register your organization</a>
       </div>
@@ -2237,6 +2254,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           // to be worked out here, and sent every super admin to /super whatever
           // subdomain they had signed in on.
           window.location.href = data.redirect || '/admin';
+        } else if (data.status === 'two_factor') {
+          showSecondStep(data.challenge);
         } else {
           alertBox.textContent = data.error || 'Login failed';
           alertBox.style.display = 'block';
@@ -2244,6 +2263,82 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       } catch (err) {
         alertBox.textContent = 'Network error during login';
         alertBox.style.display = 'block';
+      }
+    });
+
+    // The second step of a two-factor sign-in: the app's code, an emailed one, or a recovery code.
+    const loginForm = document.getElementById('login-form');
+    const secondForm = document.getElementById('login-2fa-form');
+    const secondNotice = document.getElementById('login-2fa-notice');
+    let loginChallenge = '';
+    function loginError(message) {
+      const alertBox = document.getElementById('login-alert');
+      alertBox.textContent = message;
+      alertBox.style.display = 'block';
+    }
+    function showSecondStep(challenge) {
+      loginChallenge = challenge;
+      loginForm.hidden = true;
+      secondForm.hidden = false;
+      secondNotice.textContent = 'Your account uses two-factor sign-in. Enter the six-digit code from your authenticator app.';
+      secondNotice.style.display = 'block';
+      document.getElementById('login-2fa-code').value = '';
+      document.getElementById('login-2fa-code').focus();
+    }
+    function startOver() {
+      loginChallenge = '';
+      secondForm.hidden = true;
+      loginForm.hidden = false;
+      document.getElementById('login-password').value = '';
+      document.getElementById('login-password').focus();
+    }
+    document.getElementById('login-2fa-back').addEventListener('click', () => {
+      document.getElementById('login-alert').style.display = 'none';
+      startOver();
+    });
+    secondForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      document.getElementById('login-alert').style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/login/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            challenge: loginChallenge,
+            code: document.getElementById('login-2fa-code').value.trim(),
+            trustBrowser: document.getElementById('login-2fa-trust').checked
+          })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          window.location.href = data.redirect || '/admin';
+          return;
+        }
+        loginError(data.error || 'That code is not right.');
+        // An expired or exhausted sign-in needs the password again.
+        if (res.status === 401) startOver();
+      } catch (err) {
+        loginError('Network error during sign-in');
+      }
+    });
+    document.getElementById('login-2fa-email').addEventListener('click', async () => {
+      document.getElementById('login-alert').style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/login/email-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ challenge: loginChallenge })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          secondNotice.textContent = 'We emailed a six-digit code to ' + data.sentTo + '. Enter it below.';
+          document.getElementById('login-2fa-code').focus();
+          return;
+        }
+        loginError(data.error || 'The code could not be sent.');
+        if (res.status === 401) startOver();
+      } catch (err) {
+        loginError('Network error while sending the code');
       }
     });
 

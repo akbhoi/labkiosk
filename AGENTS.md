@@ -38,12 +38,13 @@ labkiosk/
 │       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
 │       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0020 (never edit an applied one)
+│   ├── migrations/          0001..0021 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
 │   │                        remote_relay.ts (one Durable Object per workstation's Remote Control session),
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
 │   │                        boot_report.ts, bug_reports.ts (Errors & Warnings, opt-in GitHub bug reports),
 │   │                        seo.ts (robots.txt, sitemap, noindex, canonical host, analytics CSP),
+│   │                        two_factor.ts (TOTP, recovery codes, sign-in alerts),
 │   │                        signup.ts, inbox.ts, conversations.ts, mail.ts, mail_store.ts, mime.ts (registration,
 │   │                        Super Admin Tasks and Mail, email in and out),
 │   │                        ui_*.ts (one module per page), ui_tokens.ts, ui_layout.ts

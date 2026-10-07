@@ -479,7 +479,7 @@ export async function emailCodeCooldown(db: D1Database, purpose: EmailCodePurpos
 }
 
 /** A uniformly random integer in [0, limit): draws past the last whole multiple are rejected, so no value is favoured. */
-function uniformBelow(limit: number): number {
+export function uniformBelow(limit: number): number {
   const ceiling = Math.floor(0x1_0000_0000 / limit) * limit;
   const draw = new Uint32Array(1);
   for (;;) {

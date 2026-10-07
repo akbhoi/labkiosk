@@ -6,6 +6,7 @@
 
 import { escapeHtml, escapeAttr } from "./escape";
 import { FONT_LINKS, THEME_TOGGLE_SCRIPT, rootTokensCss, themeHeadHtml } from "./ui_tokens";
+import { renderTwoFactorModalHtml, renderTwoFactorScript } from "./ui_two_factor";
 
 export interface NavItem {
   id: string;
@@ -1850,6 +1851,18 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .modal-desc { font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 18px; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 20px; }
     .modal-sm { max-width: 480px; }
+    .numbered-steps { margin: 0; padding-left: 20px; font-size: 0.875rem; }
+    .recovery-codes {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px 16px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-subtle);
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+    }
     .modal-vnc {
       max-width: 1100px;
       width: 96%;
@@ -2070,6 +2083,10 @@ ${FONT_LINKS}
                       <span>Change Password</span>
                     </a>`
               }
+              <button type="button" class="profile-menu-item" data-action="open-two-factor">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+                <span>Two-factor sign-in</span>
+              </button>
               <button type="button" class="profile-menu-item" data-action="toggle-theme">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>
                 <span data-theme-label>Dark theme</span>
@@ -2362,8 +2379,10 @@ ${FONT_LINKS}
   <\/script>
 
   ${modalsHtml}
+  ${renderTwoFactorModalHtml()}
 
   ${scriptsHtml}
+  ${renderTwoFactorScript(nonce)}
 
   <script nonce="${escapeAttr(nonce)}">
     (function() {
