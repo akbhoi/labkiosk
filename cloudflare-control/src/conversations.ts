@@ -395,10 +395,19 @@ export async function emailCodeCooldown(db: D1Database, purpose: EmailCodePurpos
   return Math.max(0, row.sent_at + EMAIL_CODE_RESEND_SECONDS - now());
 }
 
+/** A uniformly random integer in [0, limit): draws past the last whole multiple are rejected, so no value is favoured. */
+function uniformBelow(limit: number): number {
+  const ceiling = Math.floor(0x1_0000_0000 / limit) * limit;
+  const draw = new Uint32Array(1);
+  for (;;) {
+    crypto.getRandomValues(draw);
+    if (draw[0] < ceiling) return draw[0] % limit;
+  }
+}
+
 /** A fresh six-digit code for this address, replacing any earlier one. */
 export async function issueEmailCode(db: D1Database, purpose: EmailCodePurpose, email: string): Promise<string> {
-  const value = crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000;
-  const code = String(value).padStart(6, "0");
+  const code = String(uniformBelow(1_000_000)).padStart(6, "0");
   const ts = now();
   await db
     .prepare(

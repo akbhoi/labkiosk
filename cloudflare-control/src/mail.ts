@@ -58,13 +58,28 @@ export function mailConfigProblem(env: Env): string | null {
 /** `Name <address>` or a bare address; null when there is no usable address. */
 export function parseAddress(value: string): { email: string; name: string } | null {
   const text = String(value || "").trim();
-  if (!text) return null;
-  const angled = text.match(/^(.*?)\s*<([^<>\s]+@[^<>\s]+)>$/);
-  if (angled) {
-    const name = angled[1].trim().replace(/^"(.*)"$/, "$1");
-    return { email: angled[2].toLowerCase(), name };
+  if (!text || text.length > 400) return null;
+  // Split by hand rather than with a backtracking pattern: part of this can come from a form.
+  if (text.endsWith(">")) {
+    const open = text.lastIndexOf("<");
+    if (open < 0) return null;
+    const email = text.slice(open + 1, -1);
+    if (!isBareAddress(email)) return null;
+    let name = text.slice(0, open).trim();
+    if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) name = name.slice(1, -1);
+    return { email: email.toLowerCase(), name };
   }
-  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(text) ? { email: text.toLowerCase(), name: "" } : null;
+  return isBareAddress(text) ? { email: text.toLowerCase(), name: "" } : null;
+}
+
+/** `local@domain.tld`: one `@`, a dot in the domain, no spaces or angle brackets. */
+function isBareAddress(value: string): boolean {
+  if (/[\s<>]/.test(value)) return false;
+  const at = value.indexOf("@");
+  if (at < 1 || at !== value.lastIndexOf("@")) return false;
+  const domain = value.slice(at + 1);
+  const dot = domain.lastIndexOf(".");
+  return dot > 0 && dot < domain.length - 1;
 }
 
 /** The address customers reply to; it routes back into the support inbox. */

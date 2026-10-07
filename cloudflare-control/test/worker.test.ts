@@ -52,9 +52,9 @@ import {
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
-import { localOutbox } from "../src/mail";
+import { localOutbox, parseAddress } from "../src/mail";
 import { handleInboundEmail, InboundMessage } from "../src/inbox";
-import { parseEmail, stripQuotedHistory } from "../src/mime";
+import { htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 
 /**
  * The suite runs against the in-memory D1 adapter, which a production
@@ -679,6 +679,20 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(htmlOnly.text, /Hello\s*\n\s*there/);
     assert.doesNotMatch(htmlOnly.text, /alert|<p>/);
     assert.equal(htmlOnly.automated, false);
+
+    assert.doesNotMatch(htmlToText("<scr<script>x</script>ipt>alert(1)</script><p>Hi</p>"), /<script/i, "nested tags do not survive");
+    assert.equal(htmlToText("a &lt;b&gt; &amp; c"), "a <b> & c", "entities become characters");
+
+    assert.deepEqual(parseAddress("Lab Kiosk <Support@Email.LabKiosk.org>"), { email: "support@email.labkiosk.org", name: "Lab Kiosk" });
+    assert.deepEqual(parseAddress('"Doe, J" <j@x.example>'), { email: "j@x.example", name: "Doe, J" });
+    assert.deepEqual(parseAddress("jane@example.com"), { email: "jane@example.com", name: "" });
+    for (const bad of ["", "jane", "jane@localhost", "a@b@c.example", "Name <not an address>", "x <a@b.example", "a b@c.example"]) {
+      assert.equal(parseAddress(bad), null, `${JSON.stringify(bad)} is not an address`);
+    }
+    const started = Date.now();
+    parseAddress("!@!." + "!.".repeat(50_000));
+    parseAddress("<!@" + "!@".repeat(50_000) + " ".repeat(50_000));
+    assert.ok(Date.now() - started < 200, "hostile input is refused quickly");
 
     assert.equal(stripQuotedHistory("Yes.\n\nOn Mon, 5 Oct 2026, Lab Kiosk wrote:\n> old"), "Yes.");
     assert.equal(stripQuotedHistory("On Mon, 5 Oct 2026, Lab Kiosk wrote:\n> only history"), "On Mon, 5 Oct 2026, Lab Kiosk wrote:\n> only history");

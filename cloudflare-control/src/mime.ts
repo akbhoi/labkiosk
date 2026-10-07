@@ -165,13 +165,20 @@ const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"'
 
 /** HTML reduced to readable text. The result is shown with textContent, never as markup. */
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|head|title)\b[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)\s*>/gi, "\n")
-    .replace(/<li\b[^>]*>/gi, "- ")
-    .replace(/<[^>]+>/g, "")
+  let text = html;
+  // Until nothing changes: removing one piece must not leave another behind (`<scr<script>ipt>`).
+  for (let previous = ""; previous !== text; ) {
+    previous = text;
+    text = text
+      .replace(/<(script|style|head|title)\b[\s\S]*?<\/\1\s*>/gi, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)\s*>/gi, "\n")
+      .replace(/<li\b[^>]*>/gi, "- ")
+      .replace(/<[^>]+>/g, "");
+  }
+  // Whatever is left is text; a decoded `&lt;` stays a character, shown with textContent.
+  return text
     .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, code: string) => {
       if (code[0] === "#") {
         const n = code[1].toLowerCase() === "x" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
