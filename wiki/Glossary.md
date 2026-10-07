@@ -128,7 +128,7 @@ A random per-response value stamped on every `<script>` and named in the Content
 
 ### noVNC
 
-The HTML5 VNC client `websockify` serves, embedded in the admin console for remote control.
+The HTML5 VNC client. The console serves it from `/novnc/` (the exactly pinned `@novnc/novnc` package) on its Remote Control viewer page; the simulator also serves its own copy on port 6080. The workstation image has none.
 
 ### One-try boot
 
@@ -149,6 +149,10 @@ The password hashing function, run through `crypto.subtle`: HMAC-SHA256, 100 000
 ### Portal site / portal card
 
 An application card on the User Portal. Adding one implicitly authorises its domain. → [User Portal](User-Portal)
+
+### RemoteRelay
+
+The Durable Object, one per workstation, that carries a Remote Control session: it pairs the console viewer's WebSocket with the one the agent opens on request and forwards the VNC bytes between them. Sessions must be joined within 60 seconds and last at most four hours. → [Remote Control](Remote-Control)
 
 ### Reserved slug
 
@@ -190,13 +194,9 @@ A base64 JPEG captured with `scrot -t 20 -q 35`: sent as a frame over the WebSoc
 
 An **opt-in** boot menu entry copying the whole image into RAM before starting, so the USB stick can be removed. Not what the default entry does.
 
-### Tunnel
-
-A Cloudflare Tunnel giving a workstation's loopback noVNC gateway a public hostname without any inbound port on the organization network. Optional; only interactive remote control needs one.
-
 ### websockify
 
-Bridges the WebSocket the browser speaks to the raw VNC port x11vnc listens on. Binds `127.0.0.1:6080` on the real image.
+Bridges the WebSocket the browser speaks to the raw VNC port x11vnc listens on. Used only by the simulator, on port 6080, so a developer can watch its screen; the workstation image has no websockify.
 
 ### Wizard
 

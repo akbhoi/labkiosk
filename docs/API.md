@@ -321,7 +321,7 @@ The workstation's control channel: a WebSocket to its organization's OrgHub Dura
   - `{"type":"frames","on":true,"intervalSeconds":3}` while a console shows this screen, `on:false` after;
   - `{"type":"pong"}`, answered at the edge.
 - **Workstation → hub:**
-  - `{"type":"status","clientNum":1,"activeUrl":"…","isLocked":false,"vncPassword":"…","remoteHost":"…"}`
+  - `{"type":"status","clientNum":1,"activeUrl":"…","isLocked":false,"vncPassword":"…"}`
     on connect and whenever it changes;
   - `{"type":"frame","thumbnail":"data:image/jpeg;base64,…"}` every `intervalSeconds` while asked
     (≤ 256 KB, relayed to consoles and never stored);
@@ -352,8 +352,7 @@ any queued commands.
     "activeUrl": "https://scratch.mit.edu",
     "isLocked": false,
     "thumbnail": "data:image/jpeg;base64,...",
-    "vncPassword": "randomBootPassword12",
-    "remoteHost": "pc-01.labkiosk.example.com"
+    "vncPassword": "randomBootPassword12"
   }
   ```
 
@@ -456,8 +455,7 @@ screens' frames for the next 10 seconds.
         "thumbnail": "data:image/jpeg;base64,...",
         "timestamp": 1726300000,
         "online": true,
-        "vncPassword": "randomBootPassword12",
-        "remoteHost": "pc-01.labkiosk.example.com"
+        "vncPassword": "randomBootPassword12"
       }
     }
   }

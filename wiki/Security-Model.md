@@ -149,7 +149,7 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 
 **A compromised control plane.** The client trusts its control plane by design. `safe_navigable_url()` restricts navigation to `http(s)`, so a hostile response cannot inject `javascript:` or `file:` — but a compromised control plane can point a lab at anything the allowlist permits.
 
-**An unprotected tunnel.** `websockify` serves the full noVNC UI on the tunnel hostname. Without a Cloudflare Access policy, an 8-character RFB secret — about 32 bits, capped by the RFB protocol — is all that stands between the internet and a live room desktop. → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
+**A stolen operator session.** Remote Control is reached only through the console's relay, so what protects a live desktop is the console sign-in, the `workstations` permission and the one-time session token — not the 8-character RFB secret, which is about 32 bits, capped by the RFB protocol. Whoever holds an operator session with that permission can open a workstation's desktop. → [Remote Control](Remote-Control#why-eight-characters)
 
 **Screen content in transit and at rest.** Thumbnails are base64 JPEGs stored in D1 and served to authenticated operators over HTTPS. They are not end-to-end encrypted. Anyone with database access can see the latest frame from every workstation.
 
@@ -190,7 +190,7 @@ Particularly wanted:
 
 1. **Firmware password** on every workstation, with USB and network booting disabled.
 2. **Boot-menu password** set at install time, unique per site.
-3. **Cloudflare Access** in front of every tunnel hostname, before the first tunnel goes live.
+3. **Grant `workstations` sparingly** — it is the permission that opens Remote Control.
 4. **User VLAN** isolated from administrative networks.
 5. **Rotate the enrollment key** when it has been shared outside IT staff, and when a technician leaves.
 6. **Review the audit log** periodically — it records every command and settings change with the acting user.

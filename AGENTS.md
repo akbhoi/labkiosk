@@ -40,6 +40,7 @@ labkiosk/
 ├── cloudflare-control/      Cloudflare Worker + D1
 │   ├── migrations/          0001..0018 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
+│   │                        remote_relay.ts (one Durable Object per workstation's Remote Control session),
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
 │   │                        boot_report.ts, bug_reports.ts (Errors & Warnings, opt-in GitHub bug reports),
 │   │                        seo.ts (robots.txt, sitemap, noindex, canonical host, analytics CSP),
@@ -58,7 +59,8 @@ without it post the older 3-second heartbeat (`POST /api/telemetry`), which carr
 D1 is the registry the hubs write back to, never per heartbeat. Enrolment exchanges
 an organization's enrollment key for the device token. An installed disk's agent reports what each
 boot did with its system image (`POST /api/devices/boot-report`), shown under Settings → Errors &
-Warnings. Remote control is loopback VNC → websockify → Cloudflare Tunnel. Full contracts:
+Warnings. Remote control is the console's `RemoteRelay` Durable Object pairing the viewer's WebSocket with
+one the agent opens on request and pipes to loopback x11vnc. Full contracts:
 `labkiosk-core`.
 
 ## 2. Invariants (zero exceptions)

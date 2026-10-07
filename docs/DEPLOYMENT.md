@@ -259,7 +259,6 @@ Configure production variables in the **Cloudflare Dashboard**:
      `www.labkiosk.yourdomain.com`). It must be `DEFAULT_DOMAIN` or a host under it; without it the
      apex is canonical.
    - `ISO_DOWNLOAD_URL`: Direct link to download the live bootable Debian 12 Kiosk ISO (e.g. GitHub Releases artifact).
-   - `TUNNEL_DOMAIN`: Base domain for remote assistance tunnels (e.g. `labkiosk.yourdomain.com`).
    - `GITHUB_ISSUES_REPO` (optional): `owner/repo` for automatic bug reports (see "Automatic bug reports").
 
 ---
@@ -388,9 +387,8 @@ For workstations running Lab Kiosk OS to communicate reliably with the Cloudflar
 
 Organization firewalls should permit outbound connections for the following ports and hosts:
 
-- **HTTPS (`TCP 443`):** To `<organization>.labkiosk.yourdomain.com` (the control channel, enrollment, and web pages). The control channel is a long-lived WebSocket; a proxy that refuses WebSocket upgrades only costs efficiency, because the agent falls back to the 3-second HTTPS heartbeat after three failed attempts.
+- **HTTPS (`TCP 443`):** To `<organization>.labkiosk.yourdomain.com` (the control channel, enrollment, Remote Control sessions, and web pages). The control channel is a long-lived WebSocket; a proxy that refuses WebSocket upgrades only costs efficiency, because the agent falls back to the 3-second HTTPS heartbeat after three failed attempts.
 - **DNS (`UDP/TCP 53`):** To organization DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
-- **Cloudflare Tunnel (`TCP 7844` / `UDP 7844` QUIC):** Optional, required only if remote desktop assistance via `cloudflared` is deployed.
 
 ### Network Addressing & Proxy Architecture
 

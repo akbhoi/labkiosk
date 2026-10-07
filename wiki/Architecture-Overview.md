@@ -59,7 +59,7 @@ Nothing else is required. There is no per-organization server, no on-premise app
 |         `-- Chromium policy synchronisation and command execution                     |
 |                                                                                       |
 |   [ Remote control gateway ]                                                          |
-|         `-- x11vnc :5900 -> websockify 127.0.0.1:6080 -> Cloudflare Tunnel            |
+|         `-- x11vnc 127.0.0.1:5900 <- agent -> console's RemoteRelay (outbound WSS)    |
 +---------------------------------------------------------------------------------------+
 ```
 
@@ -76,9 +76,10 @@ The critical architectural rule is that **worker isolates are per-colocation and
 | State | Where it lives | Why |
 | :--- | :--- | :--- |
 | Active broadcast URL and epoch | `tenants.broadcast_url` / `broadcast_epoch` (organization-wide) and `client_devices.broadcast_url` / `broadcast_epoch` (selected workstations) in D1; the newer wins | Workstations hitting different colos must see the same page, and a broadcast to some screens must survive their next heartbeat. |
-| Device VNC password and tunnel host | `client_devices.vnc_password` / `remote_host` in D1 | The operator's browser and the workstation's heartbeat land in different isolates. |
+| Device VNC password | `client_devices.vnc_password` in D1 | The operator's browser and the workstation's heartbeat land in different isolates. |
 | Domain allowlist | `tenant_whitelist` rows in D1 | Previously a module global shared across every tenant, and lost on isolate recycle. |
 | Who is online, the command queue, screen frames | The organization's **OrgHub** Durable Object | One object per organization sees every workstation and console of it; frames are relayed, never stored. |
+| An open Remote Control session | A **RemoteRelay** Durable Object, one per workstation | Pairs the viewer's WebSocket with the agent's and forwards VNC bytes; nothing is stored. |
 | Workstation registry (last known state, groups) | `client_devices` in D1 | Written by the hub on connect, disconnect, a change, or every 5 minutes -- never per heartbeat. |
 
 ### 2. Transport — one channel, pushed both ways
@@ -89,12 +90,13 @@ A workstation holds one WebSocket to its organization's OrgHub:
 GET /api/devices/ws   (Upgrade: websocket)
 Authorization: Bearer <device token>
 
-   up  ->  status {clientNum, activeUrl, isLocked, vncPassword?, remoteHost?}   on change
+   up  ->  status {clientNum, activeUrl, isLocked, vncPassword?}                on change
            frame {thumbnail}                                                  only while watched
            {"type":"ping"}                                                    every 15 s
  down  <-  config {whitelist, mode, targetUrl, broadcastUrl, broadcastEpoch}  on connect and change
            commands [...]                                                     at once
            frames {on, intervalSeconds}                                       when a console watches
+           remote {session}                                                   when an operator opens Remote Control
 ```
 
 The ping is answered at the edge without waking the hub, so an idle workstation costs nothing.

@@ -82,7 +82,7 @@ sudo bash build-iso.sh
 | Firmware | `intel-microcode`, `amd64-microcode`, `firmware-linux-free`, `firmware-misc-nonfree`, `firmware-realtek`, `firmware-iwlwifi` |
 | X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `xinit`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
 | Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji` |
-| Remote & network | `x11vnc`, `websockify`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
+| Remote & network | `x11vnc`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
 
 ### Keeping the image small
 
@@ -91,7 +91,7 @@ sudo bash build-iso.sh
 - A package the kiosk needs that some other package only *recommends* must be listed by name (that is why `systemd-timesyncd`, the signed shim/GRUB and the extra Xorg drivers are there).
 - `live-tools` is in that list for a concrete reason: it prints *"Please remove the live-medium ... press ENTER"* when a live session reboots. Without it, a workstation that has just been installed reboots straight back into the installer.
 - New Wi-Fi or GPU hardware needs its `firmware-*` package added explicitly (e.g. `firmware-amd-graphics`, `firmware-atheros`, `firmware-brcm80211`).
-- The noVNC client is **not** Debian's `novnc` package (which depends on Node.js): `01-lockdown.hook.chroot` installs the release pinned in `usr/share/labkiosk/novnc.pin`, verifying its SHA-256, and the simulator Dockerfile does the same.
+- The image has no noVNC, websockify or cloudflared: Remote Control goes from loopback `x11vnc` through the agent to the console's relay, and the console serves the viewer. The simulator's noVNC is **not** Debian's `novnc` package (which depends on Node.js): its Dockerfile installs the release pinned in `docker-test/novnc.pin` with `docker-test/install-novnc.sh`, verifying its SHA-256.
 - The initramfs is xz-compressed via `etc/initramfs-tools/conf.d/labkiosk-compress`; live-build 20230502's `--initramfs-compression` does not accept xz.
 - `scrot` stays: Openbox already needs `imlib2`, which is what pulls in its large image loaders, so replacing `scrot` would add packages rather than remove them.
 
@@ -106,7 +106,7 @@ sudo bash build-iso.sh
 
 ### Rootfs overlay
 
-`config/includes.chroot/` is injected verbatim into the image: the agent, the extension, the wizard, the installer, `labkiosk-boot-slots` and `labkiosk-boot-ok.service`, the installed disk's boot menu (`usr/share/labkiosk/boot/grub.cfg`), the image's version (`usr/share/labkiosk/version`), the `labkiosk-data-generator` systemd generator, `overlayroot.conf`, the Openbox config, and the `cloudflared-kiosk.service` unit.
+`config/includes.chroot/` is injected verbatim into the image: the agent, the extension, the wizard, the installer, `labkiosk-boot-slots` and `labkiosk-boot-ok.service`, the installed disk's boot menu (`usr/share/labkiosk/boot/grub.cfg`), the image's version (`usr/share/labkiosk/version`), the `labkiosk-data-generator` systemd generator, `overlayroot.conf`, and the Openbox config.
 
 > **Line endings.** `.gitattributes` pins every script, hook, and config in this tree to `eol=lf`, because the repository builds a Linux image. A CRLF hook dies with `$'\r': command not found`. Never write these files with a tool that translates newlines — Python's `Path.write_text` does, on Windows.
 
@@ -126,17 +126,13 @@ The menu offers a default entry, a **Load into RAM (toram)** entry, an **Install
 ## Build pins
 
 ```text
-config/includes.chroot/usr/share/labkiosk/cloudflared.pin   release tag + SHA-256
 config/includes.chroot/usr/share/labkiosk/grub.pin          PBKDF2 boot-menu hash
-config/includes.chroot/usr/share/labkiosk/novnc.pin         noVNC version + SHA-256
 config/includes.chroot/usr/share/labkiosk/update-keys/      release-signing public keys (current + next)
 ```
 
 | Pin | Unset | Wrong |
 | :--- | :--- | :--- |
-| `cloudflared.pin` | Builds without the tunnel binary | **Build fails** |
 | `grub.pin` | Builds with a loud warning; live menu stays editable | **Build fails** |
-| `novnc.pin` | **Build fails** — remote control needs the client | **Build fails** |
 | `update-keys/*.gpg` | **Build fails** — the image could never verify an update | **Build fails** (not a binary public key) |
 
 Never invent a value to make a build go green. → [Kiosk Hardening](Kiosk-Hardening#build-pins-fail-closed)

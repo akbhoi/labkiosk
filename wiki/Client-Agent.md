@@ -50,7 +50,6 @@ Environment overrides, useful in the simulator:
 | :--- | :--- |
 | `WORKER_URL` | Control plane base URL |
 | `LABKIOSK_DOMAIN` | Base platform domain shown in the wizard |
-| `LABKIOSK_REMOTE_HOST` | Tunnel hostname to report, when not read from `cloudflared` config |
 
 ---
 
@@ -73,7 +72,6 @@ the agent uses the older HTTP heartbeat for ten minutes and then tries again: ev
          |  current_status()             url, lock, num   |
          |  capture_thumbnail_base64()   only if watched   |
          |  read_vnc_password()          /tmp/labkiosk/…   |
-         |  detect_remote_host()         cloudflared cfg   |
          +-----------------------------------------------+
                               |
                  WebSocket /api/devices/ws  (or POST /api/telemetry)
@@ -91,6 +89,8 @@ the agent uses the older HTTP heartbeat for ten minutes and then tries again: ev
 **Failure handling.** A failed connection or heartbeat backs off exponentially up to `MAX_BACKOFF_SECONDS` (60), so a lab that loses its uplink does not hammer the edge, and recovers promptly when the link returns. A connection the server closed on purpose (a deploy restarts every hub) is re-opened after a random pause of up to 10 s, so a whole fleet does not return at the same instant. A close with `4001` (removed) or `4003` (organization not active), like a `401`/`403`, sends the screen to the re-enrolment form.
 
 **Thumbnails.** Captured with `scrot -t 20 -q 35` — there is **no PIL/Pillow dependency**; the agent is standard library plus `scrot`. A frame whose base64 payload exceeds `MAX_THUMBNAIL_BYTES` (256 KB) is dropped rather than sent, so an oversized capture never costs the organization's uplink or delays the loop. The heartbeat still lands; only that one frame is missing. Over the WebSocket, no screenshot is taken at all unless an operator is watching.
+
+**Remote Control.** A `{"type":"remote","session":…}` message on the WebSocket makes `start_remote_session()` open `GET /api/devices/remote` (device token plus `X-Labkiosk-Session`) and pipe it to x11vnc on `127.0.0.1:5900`, one session at a time. The HTTP heartbeat cannot carry that message, so an agent on the fallback cannot join. → [Remote Control](Remote-Control)
 
 ---
 

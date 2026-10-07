@@ -31,9 +31,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | :--- | :--- | :--- |
 | `resolveTenant()` | `404` | every tenant-scoped route |
 | `requireTenantAdmin()` | `401` anonymous, `400` no organization, `403` wrong tenant (and a super admin outside its own demos) | `GET /api/broadcast-presets`, `GET /api/whitelist`, the `/admin` pages |
-| `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*`, `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
+| `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*`, `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/console/remote`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
 | `requireSuperAdmin()` | `401` / `403` | all `/api/super/*` |
-| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report` |
+| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/remote` |
 | `rejectCrossSiteMutation()` | `403` | every cookie-authenticated `POST`/`DELETE` under `/api/` |
 
 ### Rate limiting
@@ -76,6 +76,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/clients` | `GET` | Fleet state with live thumbnails and remote-control details |
+| `/api/clients/remote-session` | `POST` | Open a Remote Control session through the console's relay; asks the workstation to join (`409` when it is not connected) |
+| `/api/console/remote` | `GET` (WebSocket) | The viewer's side of a Remote Control session (VNC bytes) |
 | `/api/clients/remove` | `POST` | Decommission a workstation and revoke its token |
 | `/api/clients/group` | `POST` | Assign workstations to a group |
 | `/api/groups` | `GET` `POST` | List and create workstation groups |
@@ -105,6 +107,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/devices/ws` | `GET` (WebSocket) | The control channel: status and frames up; configuration, commands and frame requests down |
 | `/api/telemetry` | `POST` | The HTTP fallback: a three-second heartbeat carrying the same |
 | `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
+| `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
 ### Super admin
 
@@ -191,7 +194,7 @@ organization is refused, `426` without an upgrade.
 | hub → workstation | `{"type":"config", whitelist, mode, targetUrl, broadcastUrl, broadcastEpoch, commands?}` on connect and after every admin change |
 | hub → workstation | `{"type":"commands", commands}` the moment a command is dispatched |
 | hub → workstation | `{"type":"frames", on, intervalSeconds}` when a console starts or stops showing this screen |
-| workstation → hub | `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?, remoteHost?}` on connect and on change |
+| workstation → hub | `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?}` on connect and on change |
 | workstation → hub | `{"type":"frame", thumbnail}` every `intervalSeconds` while asked |
 | workstation → hub | `{"type":"ping"}` every 15 s, byte for byte; answered `{"type":"pong"}` at the edge |
 
@@ -220,8 +223,7 @@ one request and reply.
   "activeUrl": "https://scratch.mit.edu",
   "isLocked": false,
   "thumbnail": "data:image/jpeg;base64,...",
-  "vncPassword": "a1b2c3d4",
-  "remoteHost": "pc-01.labkiosk.example.edu"
+  "vncPassword": "a1b2c3d4"
 }
 ```
 
@@ -232,7 +234,6 @@ one request and reply.
 | `isLocked` | Whether the lock curtain is currently up. |
 | `thumbnail` | Base64 JPEG from `scrot -t 20 -q 35`. **Omitted** when the encoded payload would exceed `MAX_THUMBNAIL_BYTES` (256 KB), so an oversized frame is dropped rather than allowed to bloat a three-second loop. No PIL/Pillow is involved — the agent is standard library only. |
 | `vncPassword` | Per-boot ephemeral secret from `/tmp/labkiosk/vnc.secret`. Sent only when present, so the control plane keeps what it already knows otherwise. |
-| `remoteHost` | Tunnel hostname from `/etc/cloudflared/config.yml` or `LABKIOSK_REMOTE_HOST`. Sent only when present. |
 
 There is **no `currentUrl` key and no `metrics` object.** The agent collects no CPU, RAM, or storage statistics; do not build a dashboard against fields that do not exist.
 
@@ -381,14 +382,13 @@ Returns the organization's fleet: the D1 registry merged with the hub's live sta
       "timestamp": 1726300000,
       "lastSeen": "2026-09-14T09:26:40.000Z",
       "online": true,
-      "vncPassword": "a1b2c3d4",
-      "remoteHost": "pc-01.labkiosk.example.edu"
+      "vncPassword": "a1b2c3d4"
     }
   }
 }
 ```
 
-`vncPassword` and `remoteHost` are what make one-click remote control work without an operator typing anything. They are readable only by an authenticated admin of that specific organization.
+`vncPassword` is what makes one-click remote control work without an operator typing anything. It is readable only by an authenticated admin of that specific organization. A `remoteHost` an older agent still sends is ignored.
 
 ---
 

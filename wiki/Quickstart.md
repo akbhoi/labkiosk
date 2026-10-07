@@ -83,7 +83,7 @@ Open the simulated screen:
 http://localhost:6080/vnc.html
 ```
 
-The VNC password is `labkiosk`. You should see the thin-client desktop showing the **first-boot setup wizard**.
+The VNC password is random per container and printed in `docker compose logs`. You should see the thin-client desktop showing the **first-boot setup wizard**.
 
 ---
 

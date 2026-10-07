@@ -126,7 +126,7 @@ distro-builder/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Locked rc.xml and autostart script
 │       │   ├── overlayroot.conf        # tmpfs RAM overlay configuration
-│       │   ├── systemd/system/         # cloudflared-kiosk.service, labkiosk-boot-ok.service
+│       │   ├── systemd/system/         # labkiosk-boot-ok.service
 │       │   └── systemd/system-generators/ # labkiosk-data-generator (DATA mount by UUID)
 │       ├── opt/labkiosk/
 │       │   ├── setup/                  # First-boot onboarding & disk installation HTML wizard
@@ -141,9 +141,7 @@ distro-builder/
 │       └── usr/share/labkiosk/
 │           ├── boot/grub.cfg           # Every installed disk's boot menu, copied verbatim
 │           ├── chromium-policy-base.json # THE single declaration of the static Chromium policy
-│           ├── cloudflared.pin         # Pinned release version & SHA-256 for cloudflared binary
 │           ├── grub.pin                # Pinned PBKDF2 hash for GRUB boot password
-│           ├── novnc.pin               # Pinned noVNC release (installed by install-novnc.sh)
 │           └── version                 # The image's release (= AGENT_VERSION)
 ├── tests/
 │   ├── test_client.py                  # Client unit tests (python3 -m unittest discover)
@@ -323,13 +321,3 @@ Write the compiled ISO to a USB flash drive (minimum 2 GB):
   ```bash
   sudo dd if=distro-builder/out/labkiosk-debian12-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
   ```
-
----
-
-## 📦 Cloudflared Binary Pinning
-
-To support remote desktop supervision via Cloudflare Tunnel:
-
-1. Update `distro-builder/config/includes.chroot/usr/share/labkiosk/cloudflared.pin` with the desired release tag and SHA-256 hash.
-2. The build script verifies the binary's checksum during image creation.
-3. If unpinned or mismatched, the build fails closed to prevent unverified binaries from entering the OS.

@@ -117,7 +117,6 @@ Configure these in **Workers & Pages → `labkiosk-controller` → Settings → 
 | :--- | :--- | :--- |
 | `DEFAULT_DOMAIN` | `labkiosk.yourdomain.com` | Platform apex; the base that subdomains hang off |
 | `ISO_DOWNLOAD_URL` | a GitHub Releases asset URL | Target of `/download` and `/iso` |
-| `TUNNEL_DOMAIN` | `labkiosk.yourdomain.com` | Base domain for remote-assistance tunnels |
 | `DEFAULT_HOMEPAGE` | `https://labkiosk.yourdomain.com` | Fallback for non-enrolled clients |
 | `GITHUB_ISSUES_REPO` | `owner/repo` | Optional: the repository automatic bug reports are filed in |
 

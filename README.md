@@ -40,7 +40,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 | **Kiosk Distro Builder** | Debian 12 live-build image, image-store disk installer with one-try boot and automatic rollback, 100% RAM overlay (`overlayroot="tmpfs"`), hybrid BIOS/UEFI bootloaders, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
 | **Local Workstation Simulator** | Docker-based workstation simulator with embedded HTML5 noVNC display for rapid testing without physical thin clients. | [`docker-test/README.md`](docker-test/README.md) |
 | **Production Deployment** | Step-by-step production manual: Cloudflare D1 provisioning, remote migrations, secrets, wildcard DNS, and automated CI/CD. | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
-| **Remote Control & Tunnels** | Zero-exposure remote desktop architecture via loopback `websockify`, per-boot ephemeral passwords, and Cloudflare Tunnels. | [`docs/REMOTE_CONTROL.md`](docs/REMOTE_CONTROL.md) |
+| **Remote Control** | Zero-exposure remote desktop architecture via loopback `x11vnc`, per-boot ephemeral passwords, and a relay on the console's own address. | [`docs/REMOTE_CONTROL.md`](docs/REMOTE_CONTROL.md) |
 | **REST API Specification** | Complete REST endpoint catalog, authentication schemes, tenant scoping rules, request/response schemas, and rate limits. | [`docs/API.md`](docs/API.md) |
 | **AI Architecture Codices** | Modular architectural specifications and code invariants for AI coding assistants: [Master (`AGENTS.md`)](AGENTS.md) • [Distro Builder (`distro-builder/AGENTS.md`)](distro-builder/AGENTS.md) • [Control Plane (`cloudflare-control/AGENTS.md`)](cloudflare-control/AGENTS.md). | [`AGENTS.md`](AGENTS.md) |
 | **AI Skills & Automation** | Standardized AI engineering skills for full-stack, distro, and edge control plane workflows. | [`.agents/skills/`](.agents/skills/) |
@@ -95,7 +95,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 |         └── Chromium Policy Synchronisation & Remote Command Dispatch                 |
 |                                                                                       |
 |   [ Remote Control Gateway ]                                                          |
-|         └── x11vnc (password) + websockify on 127.0.0.1:6080 ──▶ Cloudflare Tunnel    |
+|         └── x11vnc 127.0.0.1:5900 ◀─ agent ──▶ console's relay (outbound WSS)         |
 +---------------------------------------------------------------------------------------+
 ```
 

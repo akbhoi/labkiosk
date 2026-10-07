@@ -119,8 +119,9 @@ Here is the quick summary of non-negotiable standards:
 
 4. **Fail Closed:**
    - Missing configuration is an error, not a reason to fall back to something weaker.
-   - The client agent's local API binds to `127.0.0.1`; `websockify` binds to loopback on the real
-     image. Neither may be published on `0.0.0.0`.
+   - The client agent's local API binds to `127.0.0.1`; `x11vnc` listens on loopback only (Remote
+     Control reaches it through the agent and the console's relay). Neither may be published on
+     `0.0.0.0`.
    - Chromium is never launched with `--disable-web-security`, and keeps its sandbox in both images.
      `--no-sandbox` is permitted only as the simulator entrypoint's fallback for a container that was
      started as root, which it warns about.

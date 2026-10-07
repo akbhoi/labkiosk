@@ -48,7 +48,7 @@ Instead, please submit your findings privately via GitHub Security Advisories:
 
 1. **BIOS / UEFI Password:** Always set an administrative password in the Thin Client BIOS/UEFI and disable booting from unauthorized USB drives after installation.
 2. **Network Isolation:** Where possible, place user thin clients on a dedicated user VLAN isolated from administrative organization networks.
-3. **Cloudflare Tunnel Secrets:** Store Cloudflare Tunnel tokens securely in environment variables; never commit raw credentials into public configuration files.
+3. **Grant `workstations` Deliberately:** Remote Control is opened by any operator signed in with the `workstations` permission for the organization; that sign-in, not the VNC password, is what protects a live desktop. Give the permission only to staff who need it.
 4. **Change the Super Admin Credentials:** Set `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` as
    Wrangler secrets before your first deploy; the worker will not serve a bound database without
    them (see item 9).
@@ -62,14 +62,15 @@ Instead, please submit your findings privately via GitHub Security Advisories:
    live USB menu as well, build a per-customer ISO with `LABKIOSK_GRUB_PBKDF2` (or `grub.pin` for a
    single organization's own image); see `distro-builder/README.md`. Booting never prompts: only
    editing an entry or opening the GRUB shell asks for the password.
-7. **Pin cloudflared:** The build installs the Cloudflare Tunnel binary only from a version and
-   SHA-256 recorded in `cloudflared.pin`, and fails on a mismatch. Do not relax this to an unpinned
-   "latest" download.
+7. **Keep noVNC Pinned:** The console serves the Remote Control viewer from the exactly pinned
+   `@novnc/novnc` devDependency in `cloudflare-control/package.json`. Do not relax this to a version
+   range or an unpinned "latest" download.
 8. **Keep the Remote Control Ports Off the LAN:** On the real image `x11vnc` runs behind a per-boot
-   random password and `websockify` binds to `127.0.0.1`, so remote control is reachable only through
-   the Cloudflare Tunnel. Publishing port 6080 — or the agent's port 8888 — on `0.0.0.0` hands anyone
-   on the organization Wi-Fi keyboard and mouse control of a user workstation. The Docker simulator
-   publishes 6080 deliberately and is not a deployment target. The VNC password is reported to the
+   random password and listens on `127.0.0.1` only; Remote Control reaches it through the agent's
+   outbound connection to the console's relay, and the image has no websockify or noVNC. Publishing
+   port 5900 — or the agent's port 8888 — on `0.0.0.0` hands anyone on the organization Wi-Fi
+   keyboard and mouse control of a user workstation. The Docker simulator publishes its own noVNC
+   on the host's `127.0.0.1:6080` for development and is not a deployment target. The VNC password is reported to the
    control plane over the workstation's authenticated telemetry and stored per device; it is shown
    only to that organization's operators, carries the same sensitivity as the live screen thumbnails, and
    changes on every reboot.

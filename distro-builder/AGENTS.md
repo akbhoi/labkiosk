@@ -30,7 +30,7 @@ distro-builder/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Empty keybindings (rc.xml) & autostart script
 │       │   ├── overlayroot.conf        # RAM overlay (overlayroot="tmpfs", recurse=0)
-│       │   ├── systemd/system/         # cloudflared-kiosk.service, labkiosk-boot-ok.service; nodm
+│       │   ├── systemd/system/         # labkiosk-boot-ok.service; nodm
 │       │   │                           #   is configured through /etc/default/nodm in
 │       │   │                           #   01-lockdown.hook.chroot, and the agent is started by
 │       │   │                           #   the Openbox autostart
@@ -47,8 +47,7 @@ distro-builder/
 │       │   ├── labkiosk-localization   # The one program the agent may sudo (Rule 1e)
 │       │   └── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
-│                                       #   plus the cloudflared.pin, grub.pin & novnc.pin build
-│                                       #   pins, install-novnc.sh, version (the image's release)
+│                                       #   plus the grub.pin build pin, version (the image's release)
 │                                       #   and boot/grub.cfg (every installed disk's boot menu)
 └── out/                                # Generated ISO & SHA-256 artifacts
 ```
@@ -163,7 +162,7 @@ distro-builder/
 ### Rule 1c: Only What the Package List Names
 
 - `auto/config` passes `--apt-recommends false --firmware-chroot false --firmware-binary false`. Anything the image needs is listed by name in `config/package-lists/kiosk.list.chroot`, including packages that are merely *recommended* elsewhere (`systemd-timesyncd`, `shim-signed`, `grub-efi-amd64-signed`, `xserver-xorg-video-intel`/`-qxl`) and every `firmware-*`/microcode package. Re-enabling either default puts ~1 GB of unused packages back into the ISO.
-- The noVNC web client comes from the release pinned in `usr/share/labkiosk/novnc.pin`, installed by `install-novnc.sh` in both the ISO hook and the simulator Dockerfile. Never add Debian's `novnc` package: it depends on Node.js and OpenStack libraries.
+- The image has no noVNC, websockify or cloudflared: Remote Control goes from loopback x11vnc through the agent to the console's relay. The simulator's noVNC comes from the release pinned in `docker-test/novnc.pin`, installed by `docker-test/install-novnc.sh` in the simulator Dockerfile. Never add Debian's `novnc` package: it depends on Node.js and OpenStack libraries.
 - Do not reintroduce `x11-xserver-utils` for `xset`: screen blanking is disabled in `10-kiosk-lockdown.conf`.
 - **`live-tools` is not optional.** It ships `/lib/systemd/system-shutdown/live-tools.shutdown`, the
   "Please remove the live-medium ... press ENTER" prompt at the end of a live session. It is only a
@@ -295,8 +294,6 @@ distro-builder/
   `r"..."` that is a literal backslash followed by `Z`, a pattern nothing can match. That exact slip
   in `labkiosk-localization` refused every interface language, `en-US` included, and broke
   installation. `test_client.py` now scans the three client scripts for it.
-- `REMOTE_HOST_PATTERN` keeps `$` on purpose: it is a
-  `MULTILINE` search over a configuration file, where matching at a line end is the point.
 - `distro-builder/tests/test_client.py` pins this behaviour.
 
 ### Rule 2: Universal Dual Bootloader Compatibility (BIOS + UEFI)

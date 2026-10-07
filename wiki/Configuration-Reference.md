@@ -24,7 +24,6 @@ There is no default super admin in a production path. Changing `SUPER_ADMIN_EMAI
 | :--- | :--- | :--- |
 | `DEFAULT_DOMAIN` | `labkiosk.yourdomain.com` | Platform apex. Only a host *under* this is treated as an organization subdomain. |
 | `ISO_DOWNLOAD_URL` | a GitHub Releases asset URL | Target of `/download` and `/iso` |
-| `TUNNEL_DOMAIN` | `labkiosk.yourdomain.com` | Base domain for remote-assistance tunnels. Defaults to `lab.example.com`. |
 | `DEFAULT_HOMEPAGE` | `https://labkiosk.yourdomain.com` | Fallback for non-enrolled clients |
 | `GITHUB_ISSUES_REPO` | `owner/repo` | Repository automatic bug reports are filed in. Unset or malformed: the option stays unavailable. |
 | `ALLOW_LOCAL_DB` | `1` | **Tests and local dev only.** Permits the in-memory database when no D1 binding exists. |
@@ -199,7 +198,6 @@ Permits the unprivileged `kiosk` user to control NetworkManager and create/modif
 | :--- | :--- |
 | `WORKER_URL` | Control plane base URL |
 | `LABKIOSK_DOMAIN` | Base platform domain shown in the wizard |
-| `LABKIOSK_REMOTE_HOST` | Tunnel hostname to report, when not parsed from the cloudflared config |
 
 ### Agent constants
 
@@ -228,19 +226,6 @@ at reboot.
 
 Changing this defeats the project's core guarantee. Do not.
 
-### `/etc/cloudflared/config.yml`
-
-```yaml
-tunnel: <TUNNEL_UUID>
-credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
-ingress:
-  - hostname: pc-01.labkiosk.example.com
-    service: http://127.0.0.1:6080
-  - service: http_status:404
-```
-
-`cloudflared-kiosk.service` starts automatically when this file exists. The agent parses the first `hostname:` under `ingress:` and reports it as `remoteHost`.
-
 ### Chromium policy
 
 Declared once in `usr/share/labkiosk/chromium-policy-base.json`; generated into `etc/chromium/policies/managed/policies.json`. **Never hand-edit the generated file.**
@@ -259,7 +244,6 @@ python3 distro-builder/tools/generate-chromium-policy.py --check
 
 | File | Holds | Unset | Wrong |
 | :--- | :--- | :--- | :--- |
-| `usr/share/labkiosk/cloudflared.pin` | Release tag + SHA-256 | Builds without the tunnel binary | **Build fails** |
 | `usr/share/labkiosk/grub.pin` | PBKDF2 boot-menu hash | Builds with a warning; live menu editable | **Build fails** |
 
 Never invent a value to make a build go green.
@@ -290,7 +274,6 @@ Sets the kernel command line, `--bootappend-live`, distribution, and package lis
 | `WORKER_URL` | `http://host.docker.internal:8787` |
 | `LABKIOSK_DOMAIN` | `labkiosk.org` |
 | `VNC_PASSWORD` | random per container |
-| `LABKIOSK_REMOTE_HOST` | *(empty)* |
 
 ---
 
@@ -299,8 +282,8 @@ Sets the kernel command line, `--bootappend-live`, distribution, and package lis
 | Port | Bound to | Service |
 | :--- | :--- | :--- |
 | `8888` | `127.0.0.1` | Agent loopback API — **always** loopback, simulator included |
-| `5900` | `localhost` | x11vnc |
-| `6080` | `127.0.0.1` on the real image; `0.0.0.0` in the simulator | websockify / noVNC |
+| `5900` | `localhost` | x11vnc; Remote Control reaches it through the agent and the console's relay |
+| `6080` | Simulator only: `0.0.0.0` inside the container, published on the host's `127.0.0.1` | websockify / noVNC, to watch the simulated screen (the real image has neither) |
 | `8787` | localhost | `wrangler dev` |
 
 ---
