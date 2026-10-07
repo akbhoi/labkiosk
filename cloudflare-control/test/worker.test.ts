@@ -23,7 +23,7 @@ import { DEMO_SLUGS } from "../src/demo";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
-import { isHostUnder } from "../src/guard";
+import { isHostUnder, isRemoteControlHost } from "../src/guard";
 import { issueRemotePass } from "../src/remote_gate";
 import { openSecret, platformTunnelConfig, platformWorkstationHostname, sealSecret, workstationHostname } from "../src/remote_tunnels";
 import { Env, AuditEntryMessage } from "../src/types";
@@ -114,7 +114,7 @@ const PLATFORM_TOKEN = "cf-platform-token-0123456789abcdef";
 const GATE_CLIENT_ID = "0123456789abcdef0123456789abcdef.access";
 const GATE_CLIENT_SECRET = "gate-service-token-secret-0123456789abcdef";
 const platformTunnelEnv = {
-  REMOTE_TUNNEL_PLATFORM_DOMAIN: "labkiosk.dev",
+  REMOTE_TUNNEL_PLATFORM_DOMAIN: "labkiosk.org",
   REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID: PLATFORM_ACCOUNT,
   REMOTE_TUNNEL_PLATFORM_ZONE_ID: PLATFORM_ZONE,
   REMOTE_TUNNEL_PLATFORM_TOKEN: PLATFORM_TOKEN,
@@ -128,12 +128,13 @@ function fakeCloudflare() {
   const forwarded: Array<{ url: string; headers: Headers }> = [];
   // foreignRecord: a name with an A record Lab Kiosk did not create.
   // staleRecord: a name with a Lab Kiosk CNAME pointing at some other tunnel.
-  const state = { forbid: false, foreignRecord: "", staleRecord: "" };
-  let tunnels = 0, records = 0, apps = 0;
+  // workerRoute: a route pattern already sending its host to some Worker.
+  const state = { forbid: false, foreignRecord: "", staleRecord: "", workerRoute: "" };
+  let tunnels = 0, records = 0, apps = 0, routes = 0;
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
-    if (url.hostname.endsWith(".labkiosk.dev")) {
+    if (url.hostname.endsWith("-vnc.labkiosk.org") || url.hostname.endsWith(".labkiosk.dev")) {
       const headers = new Headers(init?.headers);
       forwarded.push({ url: url.toString(), headers });
       if (headers.get("cf-access-client-secret") !== GATE_CLIENT_SECRET) {
@@ -171,6 +172,9 @@ function fakeCloudflare() {
       }
       return ok([]);
     }
+    if (method === "GET" && /^\/zones\/[^/]+\/workers\/routes$/.test(bare)) {
+      return ok(state.workerRoute ? [{ id: "route-theirs", pattern: state.workerRoute, script: "someone-elses-worker" }] : []);
+    }
     if (method === "GET" && bare.endsWith("/token")) return ok(`tunnel-run-token-for-${bare.split("/")[4]}-0123456789`);
     if (method === "GET" && bare === `/accounts/${PLATFORM_ACCOUNT}/access/service_tokens`) {
       return ok([{ id: "svc-other", client_id: "someone-else.access" }, { id: "svc-gate", client_id: GATE_CLIENT_ID }]);
@@ -181,6 +185,7 @@ function fakeCloudflare() {
     if (method === "POST" && bare.endsWith("/cfd_tunnel")) return ok({ id: `tunnel-${++tunnels}` });
     if (method === "POST" && bare.endsWith("/dns_records")) return ok({ id: `record-${++records}` });
     if (method === "POST" && bare.endsWith("/access/apps")) return ok({ id: `app-${++apps}` });
+    if (method === "POST" && bare.endsWith("/workers/routes")) return ok({ id: `route-${++routes}` });
     return ok({ id: bare.split("/").at(-1) });
   }) as typeof fetch;
   return {
@@ -189,6 +194,7 @@ function fakeCloudflare() {
     set forbid(value: boolean) { state.forbid = value; },
     set foreignRecord(value: string) { state.foreignRecord = value; },
     set staleRecord(value: string) { state.staleRecord = value; },
+    set workerRoute(value: string) { state.workerRoute = value; },
     restore() { globalThis.fetch = realFetch; }
   };
 }
@@ -2046,6 +2052,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(sameSite.status, 200);
 
+    // Remote Control pages share labkiosk.org, and with it the session cookie,
+    // but are served by the gate and by workstations: never the console.
+    for (const origin of ["https://vnc.labkiosk.org", "https://greenwood-pc-01-vnc.labkiosk.org"]) {
+      const fromRemote = await call("/api/command?tenant=greenwood", {
+        ...json({ target: "all", action: "unlock" }),
+        cookie: orgSessionCookie,
+        headers: { Origin: origin }
+      });
+      assert.equal(fromRemote.status, 403, origin);
+    }
+
     // A bearer-authenticated device never relies on a cookie, so Origin is irrelevant.
     const device = await call("/api/telemetry", {
       ...json({}),
@@ -2116,7 +2133,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ------------------------------------------------------ registration rules
 
   test("Rejects reserved subdomains and implausible emails at registration", async () => {
-    for (const subdomain of ["admin", "www", "super", "api"]) {
+    for (const subdomain of ["admin", "www", "super", "api", "vnc", "greenwood-pc-01-vnc"]) {
       const { res, data } = await callJson(
         "/api/auth/register",
         json({ name: "Reserved", email: `reserved-${subdomain}@example.com`, password: "ReservedPass123!", subdomain })
@@ -2447,6 +2464,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       (await call("/api/console/ws?tenant=greenwood", { headers: { ...upgrade, Origin: "https://evil.example" }, cookie: orgSessionCookie })).status,
       403,
       "a cross-site page cannot open an administrator's live channel"
+    );
+    assert.equal(
+      (await call("/api/console/ws?tenant=greenwood", { headers: { ...upgrade, Origin: "https://greenwood-pc-01-vnc.labkiosk.org" }, cookie: orgSessionCookie })).status,
+      403,
+      "nor can a workstation's Remote Control page"
     );
     assert.equal(
       (await call("/api/console/ws?tenant=greenwood", { headers: { Upgrade: "websocket" }, cookie: orgSessionCookie })).status,
@@ -3925,29 +3947,29 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(workstationHostname("***", "example.com"), null);
   });
 
-  test("Automatic Remote Control tunnels: organizations without a domain get <organization>-<workstation> on the platform's own", async () => {
+  test("Automatic Remote Control tunnels: organizations without a domain get <organization>-<workstation>-vnc on the platform's own", async () => {
     const tunnelEnv = { ...mockEnv, REMOTE_TUNNEL_KEY: TUNNEL_KEY, ...platformTunnelEnv } as Env;
     const db = getDatabase(mockEnv);
     const settingsCall = (init: RequestInit & { cookie?: string } = {}, env: Env = tunnelEnv) =>
       worker.fetch(request("/api/settings/remote-tunnels?tenant=greenwood", init), env);
     const platformSettings = { mode: "platform" };
 
-    // Offered only when fully configured, and never on the console's own domain,
-    // whose session cookie the browser would send to every workstation there.
+    // Offered only when fully configured: on the console's own domain or a zone
+    // of its own, never a name under or above it.
     assert.equal((await (await settingsCall({ cookie: orgSessionCookie }, { ...mockEnv, REMOTE_TUNNEL_KEY: TUNNEL_KEY } as Env)).json<any>()).platformDomain, null);
-    for (const domain of ["vnc.labkiosk.org", "labkiosk.org", "org"]) {
+    for (const domain of ["vnc.labkiosk.org", "pcs.labkiosk.org", "org"]) {
       const sharing = { ...tunnelEnv, REMOTE_TUNNEL_PLATFORM_DOMAIN: domain } as Env;
       assert.equal(platformTunnelConfig(sharing), null, domain);
       assert.equal((await settingsCall({ ...json(platformSettings), cookie: orgSessionCookie }, sharing)).status, 409, domain);
     }
-    assert.equal((await (await settingsCall({ cookie: orgSessionCookie })).json<any>()).platformDomain, "labkiosk.dev");
+    assert.equal((await (await settingsCall({ cookie: orgSessionCookie })).json<any>()).platformDomain, "labkiosk.org");
 
     // It is not an "own" domain, nor a manual tunnel domain.
-    const asOwn = await settingsCall({ ...json({ ...validTunnelSettings, domain: "pcs.labkiosk.dev" }), cookie: orgSessionCookie });
+    const asOwn = await settingsCall({ ...json({ ...validTunnelSettings, domain: "pcs.labkiosk.org" }), cookie: orgSessionCookie });
     assert.equal(asOwn.status, 400);
-    assert.match((await asOwn.json<any>()).error, /platform's own remote-control domain/);
+    assert.match((await asOwn.json<any>()).error, /labkiosk\.org/);
     const manual = await worker.fetch(
-      request("/api/tenant/settings?tenant=greenwood", { ...json({ tunnelDomain: "labkiosk.dev" }), cookie: orgSessionCookie }),
+      request("/api/tenant/settings?tenant=greenwood", { ...json({ tunnelDomain: "labkiosk.org" }), cookie: orgSessionCookie }),
       tunnelEnv
     );
     assert.equal(manual.status, 400);
@@ -3961,7 +3983,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     try {
       const saved = await settingsCall({ ...json(platformSettings), cookie: orgSessionCookie });
       assert.equal(saved.status, 200);
-      assert.deepEqual(await saved.json(), { status: "ok", mode: "platform", domain: "labkiosk.dev", zone: "labkiosk.dev" });
+      assert.deepEqual(await saved.json(), { status: "ok", mode: "platform", domain: "labkiosk.org", zone: "labkiosk.org" });
       assert.ok(!cf.calls.some((c) => c.path.startsWith("/zones?")), "the platform's zone is configured, not looked up");
       const policy = cf.calls.find((c) => c.method === "POST" && c.path === `/accounts/${PLATFORM_ACCOUNT}/access/policies`);
       assert.deepEqual(
@@ -3970,16 +3992,23 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         "only the gate's service token gets through, so no operator takes a Zero Trust seat"
       );
       const stored = await db.prepare("SELECT mode, account_id, zone_id, domain, api_token FROM remote_tunnel_accounts").first<any>();
-      assert.deepEqual({ ...stored }, { mode: "platform", account_id: PLATFORM_ACCOUNT, zone_id: PLATFORM_ZONE, domain: "labkiosk.dev", api_token: null });
+      assert.deepEqual({ ...stored }, { mode: "platform", account_id: PLATFORM_ACCOUNT, zone_id: PLATFORM_ZONE, domain: "labkiosk.org", api_token: null });
       const status = await (await settingsCall({ cookie: orgSessionCookie })).json<any>();
       assert.equal(status.mode, "platform");
       assert.equal(status.accountId, null, "the platform's account is not shown to organizations");
       const tenantRow = await db.prepare("SELECT tunnel_domain FROM tenants WHERE subdomain = 'greenwood'").first<any>();
-      assert.equal(tenantRow.tunnel_domain, null, "<workstation>.labkiosk.dev is not an address, so no fallback domain is set");
+      assert.equal(tenantRow.tunnel_domain, null, "<workstation>.labkiosk.org is not an address, so no fallback domain is set");
 
       const { data: enrol } = await enrolFrom("PC-PLATFORM", "198.51.100.73");
       const first = await (await deviceTunnel(enrol.deviceToken)).json<any>();
-      assert.deepEqual(first.tunnel?.hostname, "greenwood-pc-platform.labkiosk.dev");
+      assert.deepEqual(first.tunnel?.hostname, "greenwood-pc-platform-vnc.labkiosk.org");
+      // The console's Worker answers *.labkiosk.org; a route with no Worker hands this address to the tunnel.
+      const route = cf.calls.find((c) => c.method === "POST" && c.path === `/zones/${PLATFORM_ZONE}/workers/routes`);
+      assert.deepEqual(route?.body, { pattern: "greenwood-pc-platform-vnc.labkiosk.org/*" });
+      assert.equal(
+        await db.prepare("SELECT route_id FROM remote_tunnels WHERE client_id = 'PC-PLATFORM'").first<string>("route_id"),
+        "route-1"
+      );
 
       // The console asks for a pass; only this organization's staff get one.
       const passCall = (cookie: string | undefined, clientId = "PC-PLATFORM") =>
@@ -3991,18 +4020,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       const issued = await passCall(orgSessionCookie);
       assert.equal(issued.status, 200);
       const opened = await issued.json<any>();
-      assert.match(opened.url, /^https:\/\/vnc\.labkiosk\.dev\/w\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\/vnc\.html$/);
+      assert.match(opened.url, /^https:\/\/vnc\.labkiosk\.org\/w\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\/vnc\.html$/);
       const passPath = new URL(opened.url).pathname.replace(/\/vnc\.html$/, "");
       assert.equal(opened.path, `${passPath.slice(1)}/websockify`, "noVNC's WebSocket path carries the pass too");
       const gate = (path: string, init: RequestInit = {}, env: Env = tunnelEnv) =>
-        worker.fetch(new Request(`https://vnc.labkiosk.dev${path}`, init), env);
+        worker.fetch(new Request(`https://vnc.labkiosk.org${path}`, init), env);
 
       // The gate forwards to the workstation with the service token, and nothing of the browser's.
       const page = await gate(`${passPath}/vnc.html?autoconnect=true`, { headers: { Cookie: "lk_session=console-cookie", Accept: "text/html" } });
       assert.equal(page.status, 200);
       assert.equal(await page.text(), "<title>noVNC</title>");
       const sent = cf.forwarded.at(-1)!;
-      assert.equal(sent.url, "https://greenwood-pc-platform.labkiosk.dev/vnc.html?autoconnect=true");
+      assert.equal(sent.url, "https://greenwood-pc-platform-vnc.labkiosk.org/vnc.html?autoconnect=true");
       assert.equal(sent.headers.get("cf-access-client-id"), GATE_CLIENT_ID);
       assert.equal(sent.headers.get("cookie"), null, "a browser cookie never reaches the workstation");
       assert.equal(page.headers.get("set-cookie"), null, "nor does Access's cookie reach the browser");
@@ -4033,15 +4062,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       const refusedByAccess = await gate(`${passPath}/vnc.html`, {}, { ...tunnelEnv, REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET: "wrong-secret-0123456789abcdef" } as Env);
       assert.equal(refusedByAccess.status, 502);
       // The gate's host serves nothing of the console.
-      assert.equal(cf.forwarded.filter((f) => !f.url.startsWith("https://greenwood-pc-platform.labkiosk.dev/")).length, 0);
+      assert.equal(cf.forwarded.filter((f) => !f.url.startsWith("https://greenwood-pc-platform-vnc.labkiosk.org/")).length, 0);
       const dns = cf.calls.find((c) => c.method === "POST" && c.path === `/zones/${PLATFORM_ZONE}/dns_records`);
-      assert.equal((dns!.body as any).name, "greenwood-pc-platform.labkiosk.dev");
+      assert.equal((dns!.body as any).name, "greenwood-pc-platform-vnc.labkiosk.org");
       assert.ok(cf.calls.some((c) => c.method === "POST" && c.path === `/accounts/${PLATFORM_ACCOUNT}/cfd_tunnel`));
 
       // An address another organization already holds is refused, not shared.
       const riverside = await db.prepare("SELECT id FROM tenants WHERE subdomain = 'riverside'").first<{ id: string }>();
       await db
-        .prepare("INSERT INTO remote_tunnels (tenant_id, client_id, hostname, status, updated_at) VALUES (?, 'X', 'greenwood-pc-taken2.labkiosk.dev', 'active', 0)")
+        .prepare("INSERT INTO remote_tunnels (tenant_id, client_id, hostname, status, updated_at) VALUES (?, 'X', 'greenwood-pc-taken2-vnc.labkiosk.org', 'active', 0)")
         .bind(riverside!.id)
         .run();
       const { data: taken } = await enrolFrom("PC-TAKEN2", "198.51.100.74");
@@ -4054,13 +4083,24 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
       // A Lab Kiosk record pointing at another tunnel is someone else's.
       const { data: stale } = await enrolFrom("PC-STALE", "198.51.100.75");
-      cf.staleRecord = "greenwood-pc-stale.labkiosk.dev";
+      cf.staleRecord = "greenwood-pc-stale-vnc.labkiosk.org";
       assert.deepEqual(await (await deviceTunnel(stale.deviceToken)).json(), { tunnel: null, pending: true });
       assert.ok(!cf.calls.some((c) => c.method === "PUT" && c.path.endsWith("/dns_records/stale")), "it is never overwritten");
+
+      // Nor is a route that already sends the address to some Worker.
+      const { data: routed } = await enrolFrom("PC-ROUTED", "198.51.100.76");
+      cf.workerRoute = "greenwood-pc-routed-vnc.labkiosk.org/*";
+      assert.deepEqual(await (await deviceTunnel(routed.deviceToken)).json(), { tunnel: null, pending: true });
+      assert.match(
+        (await db.prepare("SELECT error FROM remote_tunnels WHERE client_id = 'PC-ROUTED'").first<string>("error"))!,
+        /already routed to the Worker someone-elses-worker/
+      );
+      cf.workerRoute = "";
 
       cf.calls.length = 0;
       const off = await worker.fetch(request("/api/settings/remote-tunnels/off?tenant=greenwood", { method: "POST", cookie: orgSessionCookie }), tunnelEnv);
       assert.deepEqual(await off.json(), { status: "ok", remaining: 0 });
+      assert.ok(cf.calls.some((c) => c.method === "DELETE" && c.path === `/zones/${PLATFORM_ZONE}/workers/routes/route-1`), "its Worker route goes too");
       assert.deepEqual(cf.calls.at(-1), { method: "DELETE", path: `/accounts/${PLATFORM_ACCOUNT}/access/policies/policy-1`, body: undefined });
       assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM remote_tunnel_accounts").first<number>("n"), 0);
       const forwardedBefore = cf.forwarded.length;
@@ -4071,10 +4111,40 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("On a remote-control zone of its own no Worker route is made", async () => {
+    const tunnelEnv = { ...mockEnv, REMOTE_TUNNEL_KEY: TUNNEL_KEY, ...platformTunnelEnv, REMOTE_TUNNEL_PLATFORM_DOMAIN: "labkiosk.dev" } as Env;
+    const settingsCall = (init: RequestInit & { cookie?: string } = {}) =>
+      worker.fetch(request("/api/settings/remote-tunnels?tenant=greenwood", init), tunnelEnv);
+    const asOwn = await settingsCall({ ...json({ ...validTunnelSettings, domain: "pcs.labkiosk.dev" }), cookie: orgSessionCookie });
+    assert.equal(asOwn.status, 400);
+    assert.match((await asOwn.json<any>()).error, /platform's own remote-control domain/);
+
+    const cf = fakeCloudflare();
+    try {
+      assert.equal((await settingsCall({ ...json({ mode: "platform" }), cookie: orgSessionCookie })).status, 200);
+      const { data: enrol } = await callJson("/api/devices/enroll", {
+        ...json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-DEV" }),
+        headers: { "CF-Connecting-IP": "198.51.100.77" }
+      });
+      const tunnel = await (await worker.fetch(request("/api/devices/tunnel", { bearer: enrol.deviceToken }), tunnelEnv)).json<any>();
+      assert.equal(tunnel.tunnel?.hostname, "greenwood-pc-dev-vnc.labkiosk.dev");
+      assert.ok(!cf.calls.some((c) => c.path.includes("/workers/routes")), "the console's Worker is not routed there");
+      const off = await worker.fetch(request("/api/settings/remote-tunnels/off?tenant=greenwood", { method: "POST", cookie: orgSessionCookie }), tunnelEnv);
+      assert.deepEqual(await off.json(), { status: "ok", remaining: 0 });
+    } finally {
+      cf.restore();
+    }
+  });
+
   test("Platform workstation addresses stay one DNS label", () => {
-    assert.equal(platformWorkstationHostname("greenwood", "PC-01", "labkiosk.dev"), "greenwood-pc-01.labkiosk.dev");
+    assert.equal(platformWorkstationHostname("greenwood", "PC-01", "labkiosk.dev"), "greenwood-pc-01-vnc.labkiosk.dev");
     assert.equal(platformWorkstationHostname("a".repeat(40), "b".repeat(30), "labkiosk.dev"), null, "too long is refused, not cut");
     assert.equal(platformWorkstationHostname("greenwood", "***", "labkiosk.dev"), null);
+    assert.equal(isRemoteControlHost("vnc.labkiosk.org", "labkiosk.org"), true);
+    assert.equal(isRemoteControlHost("Greenwood-PC-01-VNC.labkiosk.org", "labkiosk.org"), true);
+    assert.equal(isRemoteControlHost("greenwood.labkiosk.org", "labkiosk.org"), false);
+    assert.equal(isRemoteControlHost("x-vnc.greenwood.labkiosk.org", "labkiosk.org"), false, "only one label under the domain");
+    assert.equal(isRemoteControlHost("pc-vnc.example.com", "labkiosk.org"), false);
   });
 
   test("Workstation groups are rendered on the Workstations page", async () => {

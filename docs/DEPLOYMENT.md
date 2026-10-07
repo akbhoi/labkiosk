@@ -198,7 +198,7 @@ Organizations can let the platform create a Cloudflare Tunnel, DNS record and Ac
 for each workstation (Settings → Domains → Automatic Remote Control Tunnels;
 `src/remote_tunnels.ts`), either in **their own** Cloudflare account and domain, or, for an
 organization with no domain, on the **platform's remote-control domain** as
-`<organization>-<workstation>.<domain>`. Organizations' API tokens and every workstation's run
+`<organization>-<workstation>-vnc.<domain>`. Organizations' API tokens and every workstation's run
 token are stored sealed with AES-GCM under one platform secret. Without it the option is
 unavailable; without the six `REMOTE_TUNNEL_PLATFORM_*` settings only the organization's own
 domain is offered:
@@ -206,24 +206,40 @@ domain is offered:
 | Setting | What it is | Set it |
 | :--- | :--- | :--- |
 | `REMOTE_TUNNEL_KEY` | Secret: 32 random bytes, base64 | `openssl rand -base64 32 \| npx wrangler secret put REMOTE_TUNNEL_KEY` |
-| `REMOTE_TUNNEL_PLATFORM_DOMAIN` | The platform's remote-control zone, e.g. `labkiosk.dev` | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_DOMAIN` |
+| `REMOTE_TUNNEL_PLATFORM_DOMAIN` | The platform's remote-control domain: `DEFAULT_DOMAIN` itself (`labkiosk.org`) or a zone of its own | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_DOMAIN` |
 | `REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID` | The Cloudflare account that zone is on | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID` |
 | `REMOTE_TUNNEL_PLATFORM_ZONE_ID` | That zone's id (**Overview** → *API* → *Zone ID*) | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ZONE_ID` |
 | `REMOTE_TUNNEL_PLATFORM_TOKEN` | Secret: API token for it (below) | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_TOKEN` |
 | `REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID` | The Remote Control gate's Access service token: its Client ID (below) | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_ID` |
 | `REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET` | Secret: that service token's Client Secret | `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET` |
 
-The platform's remote-control domain must be **a zone of its own, never `DEFAULT_DOMAIN` or a
-name under it** (the Worker refuses one that is, and logs why): the console's session cookie is
-set for `.<DEFAULT_DOMAIN>`, so a browser would send it to every workstation address there, and
-those addresses are served by the workstations themselves. Each workstation is one label under
-the zone, so the zone's free Universal SSL certificate covers it.
+The platform's remote-control domain is **`DEFAULT_DOMAIN` itself or a zone of its own, never a
+name under `DEFAULT_DOMAIN`** (the Worker refuses one that is, and logs why): each workstation is
+one label under the domain, `greenwood-pc-01-vnc.labkiosk.org`, so the zone's free Universal SSL
+certificate covers it, and `vnc.labkiosk.org` would need a certificate it does not have.
+
+On `DEFAULT_DOMAIN` the console and the workstations share one zone, so:
+
+- each workstation address gets its own **Worker route with no Worker** (`<address>/*`), created
+  and deleted with its tunnel. It is more specific than `*.<DEFAULT_DOMAIN>/*`, so the tunnel, not
+  the console, answers that address. A zone holds at most 1000 routes, which caps platform
+  workstations at about 998. They name no Worker, and `wrangler deploy` sets only this Worker's
+  routes, so a deploy does not remove them;
+- organization names `vnc` and `*-vnc` are reserved, so no organization's console shares a
+  Remote Control address;
+- the browser sends the console's session cookie (`Domain=.<DEFAULT_DOMAIN>`) to Remote Control
+  pages too, so the console treats them as cross-site: a request from one cannot act with that
+  cookie. The gate never forwards a browser's cookies, and Access stops anyone else before the
+  workstation.
+
+A zone of its own needs none of this.
 
 **No Zero Trust seats.** Each workstation's Access application on that zone admits only the
 gate's service token, and a service token takes no seat. Operators open Remote Control through the
 **gate** at `vnc.<domain>` (`src/remote_gate.ts`): the console gives a signed-in operator with the
 Workstations permission a pass valid for two minutes, and the gate forwards that session to the
-workstation with the service token. The gate needs, on the remote-control zone:
+workstation with the service token. On `DEFAULT_DOMAIN` the gate is already served by the
+`*.<DEFAULT_DOMAIN>/*` route and wildcard DNS record. On a zone of its own it needs:
 
 1. a proxied DNS record for `vnc` (for example `AAAA vnc 100::`, orange cloud on);
 2. **one** Worker route, `vnc.<domain>/*` → `labkiosk-controller`, added to `routes` in
@@ -268,7 +284,8 @@ Zone Resources: *Include* · *Specific zone* · your platform domain's zone. **C
 **`REMOTE_TUNNEL_PLATFORM_TOKEN`** (the platform's remote-control domain): Cloudflare dashboard →
 **My Profile** → **API Tokens** → **Create Token** → **Create Custom Token**. Permissions:
 *Account* · *Cloudflare Tunnel* · *Edit*; *Account* · *Access: Apps and Policies* · *Edit*;
-*Zone* · *DNS* · *Edit*. Account Resources: *Include* · the account the zone is on. Zone
+*Zone* · *DNS* · *Edit*; and, when the domain is `DEFAULT_DOMAIN`, *Zone* · *Workers Routes* ·
+*Edit*. Account Resources: *Include* · the account the zone is on. Zone
 Resources: *Include* · *Specific zone* · the remote-control zone only. Zero Trust must be set up
 on that account (**Zero Trust** → pick a team name and plan). **Create Token**, then
 `npx wrangler secret put REMOTE_TUNNEL_PLATFORM_TOKEN`. Add *Account* · *Access: Service Tokens*

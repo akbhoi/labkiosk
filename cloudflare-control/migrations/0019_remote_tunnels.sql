@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS remote_tunnels (
   hostname TEXT NOT NULL,
   tunnel_id TEXT,
   dns_record_id TEXT,
+  route_id TEXT,
   access_app_id TEXT,
   token TEXT,
   status TEXT NOT NULL CHECK (status IN ('provisioning', 'active', 'failed')),

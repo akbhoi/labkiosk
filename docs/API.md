@@ -383,8 +383,9 @@ The Remote Control tunnel this workstation should run, when its organization tur
 tunnels (Settings → Domains → Automatic Remote Control Tunnels). On first request the Worker creates,
 in the organization's own Cloudflare account (or, in `platform` mode, the platform's), a remotely
 managed tunnel whose one public hostname `<workstation>.<domain>` (`platform`:
-`<organization>-<workstation>.<platform domain>`) forwards to `http://127.0.0.1:6080`, the proxied CNAME for it (comment
-`Lab Kiosk Remote Control`; a record it did not create is never taken over) and a Cloudflare Access
+`<organization>-<workstation>-vnc.<platform domain>`) forwards to `http://127.0.0.1:6080`, the proxied CNAME for it (comment
+`Lab Kiosk Remote Control`; a record it did not create is never taken over), on the console's own
+domain a Worker route with no Worker for it (a route that already names a Worker is never taken over), and a Cloudflare Access
 application using the organization's Access policy. The agent asks at start and every 5 minutes and
 writes the token to `/etc/labkiosk/tunnel.token`, which `cloudflared-labkiosk.service` runs.
 

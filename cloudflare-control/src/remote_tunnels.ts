@@ -4,12 +4,16 @@
  *   own       its own Cloudflare account and a domain on it: the administrator
  *             gives the platform an API token for that account, and a
  *             workstation is `<workstation>.<domain>`;
- *   platform  the platform's remote-control domain, a zone of its own (e.g.
- *             labkiosk.dev) in the platform's account, for organizations with
- *             no domain: a workstation is `<organization>-<workstation>.<domain>`.
- *             It is never under the console's domain, whose session cookie the
- *             browser would send to every host there -- and a host there is
- *             served by the workstation itself. Operators never open those
+ *   platform  the platform's remote-control domain in the platform's account,
+ *             for organizations with no domain: a workstation is
+ *             `<organization>-<workstation>-vnc.<domain>`. The domain is the
+ *             console's own (labkiosk.org) or a zone of its own; never a name
+ *             under the console's domain, which the zone's certificate does
+ *             not cover. On the console's domain each address gets a Worker
+ *             route with no script so the tunnel, not the Worker, answers it.
+ *             Organizations cannot be named `vnc` or `*-vnc` (src/guard.ts),
+ *             and the console's CSRF guards treat pages there as cross-site,
+ *             since the browser sends them its session cookie. Operators never open those
  *             addresses: they come through the Remote Control gate
  *             (src/remote_gate.ts), which signs in to each tunnel's Access
  *             application with the platform's service token, so no operator
@@ -21,7 +25,8 @@
  *   - a remotely managed Cloudflare Tunnel whose only public hostname is
  *     `<workstation>.<domain>`, forwarding to the workstation's loopback noVNC
  *     (127.0.0.1:6080);
- *   - the proxied CNAME for that hostname;
+ *   - the proxied CNAME for that hostname, and on the console's own domain a
+ *     Worker route with no script for it;
  *   - a Cloudflare Access application in front of it, using one reusable
  *     Access policy per organization that allows only the people the
  *     administrator listed (the 8-character VNC password alone is not a
@@ -38,7 +43,7 @@
  */
 
 import { cleanCustomDomain } from "./escape";
-import { isHostUnder } from "./guard";
+import { isHostUnder, REMOTE_CONTROL_LABEL_SUFFIX, REMOTE_GATE_LABEL } from "./guard";
 import { Env, Tenant } from "./types";
 
 const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -52,8 +57,6 @@ export const PROVISION_RETRY_SECONDS = 600;
 export const PROVISIONING_STALE_SECONDS = 300;
 /** People or domains an Access policy may list. */
 export const MAX_ACCESS_RULES = 50;
-/** The gate's label under the platform domain. Workstation labels always hold a hyphen. */
-export const REMOTE_GATE_LABEL = "vnc";
 /** Workstations whose tunnels one request removes; each costs four API calls. */
 export const DEPROVISION_BATCH = 10;
 const MAX_ERROR_LENGTH = 300;
@@ -84,6 +87,7 @@ export interface RemoteTunnelRow {
   hostname: string;
   tunnel_id: string | null;
   dns_record_id: string | null;
+  route_id: string | null;
   access_app_id: string | null;
   token: string | null;
   status: "provisioning" | "active" | "failed";
@@ -194,9 +198,17 @@ export function platformTunnelConfig(env: Env): PlatformTunnelConfig | null {
   const accessClientSecret = (env.REMOTE_TUNNEL_PLATFORM_ACCESS_CLIENT_SECRET || "").trim();
   if (!domain || !accountId || !zoneId || !apiToken) return null;
   if (!SERVICE_TOKEN_PART_PATTERN.test(accessClientId) || !SERVICE_TOKEN_PART_PATTERN.test(accessClientSecret)) return null;
-  if (env.DEFAULT_DOMAIN && (isHostUnder(domain, env.DEFAULT_DOMAIN) || isHostUnder(env.DEFAULT_DOMAIN, domain))) {
+  // The console's own domain itself is fine: browsers only ever open the gate,
+  // and Access admits nothing but the gate's service token at a workstation's
+  // address. A name under it is not: the one-label certificate does not cover
+  // `<workstation>.<name>.<domain>`.
+  const sharesConsole =
+    env.DEFAULT_DOMAIN &&
+    domain !== env.DEFAULT_DOMAIN.toLowerCase() &&
+    (isHostUnder(domain, env.DEFAULT_DOMAIN) || isHostUnder(env.DEFAULT_DOMAIN, domain));
+  if (sharesConsole) {
     console.error(
-      `[RemoteTunnel] REMOTE_TUNNEL_PLATFORM_DOMAIN ${domain} shares ${env.DEFAULT_DOMAIN}, whose session cookie would reach every workstation; platform tunnels are off`
+      `[RemoteTunnel] REMOTE_TUNNEL_PLATFORM_DOMAIN ${domain} is under or above ${env.DEFAULT_DOMAIN}; use that domain itself or a zone of its own. Platform tunnels are off`
     );
     return null;
   }
@@ -270,15 +282,21 @@ export function workstationHostname(clientId: string, domain: string): string | 
 }
 
 /**
- * The hostname on the platform's shared domain: `<organization>-<workstation>`,
+ * The hostname on the platform's shared domain: `<organization>-<workstation>-vnc`,
  * still one label so the zone's certificate covers it. Null when that is longer
  * than a DNS label allows, rather than cutting it into someone else's name.
  */
 export function platformWorkstationHostname(subdomain: string, clientId: string, domain: string): string | null {
   const org = dnsLabel(subdomain);
   const pc = dnsLabel(clientId);
-  if (!org || !pc || org.length + 1 + pc.length > 63) return null;
-  return `${org}-${pc}.${domain}`;
+  const label = `${org}-${pc}${REMOTE_CONTROL_LABEL_SUFFIX}`;
+  if (!org || !pc || label.length > 63) return null;
+  return `${label}.${domain}`;
+}
+
+/** True when tunnels share the zone the console's Worker is routed on. */
+function sharesWorkerZone(env: Env, account: RemoteTunnelAccount): boolean {
+  return account.mode === "platform" && !!env.DEFAULT_DOMAIN && account.domain === env.DEFAULT_DOMAIN.toLowerCase();
 }
 
 function tunnelHostname(account: RemoteTunnelAccount, tenant: Pick<Tenant, "subdomain">, clientId: string): string | null {
@@ -566,7 +584,7 @@ async function recordIds(
   db: D1Database,
   tenantId: string,
   clientId: string,
-  ids: Partial<Pick<RemoteTunnelRow, "tunnel_id" | "dns_record_id" | "access_app_id">>,
+  ids: Partial<Pick<RemoteTunnelRow, "tunnel_id" | "dns_record_id" | "route_id" | "access_app_id">>,
   now: number
 ): Promise<void> {
   const columns = Object.keys(ids) as Array<keyof typeof ids>;
@@ -645,7 +663,7 @@ export async function workstationTunnel(
   const row = (await getTunnelRow(db, tenant.id, clientId))!;
   try {
     const apiToken = await accountApiToken(env, account);
-    const token = await provision(apiToken, account, tenant, clientId, hostname, row, db, now);
+    const token = await provision(apiToken, account, tenant, clientId, hostname, row, db, now, sharesWorkerZone(env, account));
     const sealed = await sealSecret(env, token, tunnelContext(tenant.id, clientId));
     await db
       .prepare("UPDATE remote_tunnels SET token = ?, status = 'active', error = NULL, updated_at = ? WHERE tenant_id = ? AND client_id = ?")
@@ -668,7 +686,8 @@ async function provision(
   hostname: string,
   row: RemoteTunnelRow,
   db: D1Database,
-  now: number
+  now: number,
+  bypassWorker: boolean
 ): Promise<string> {
   const accountPath = `/accounts/${encodeURIComponent(account.account_id)}`;
   const zonePath = `/zones/${encodeURIComponent(account.zone_id)}`;
@@ -730,6 +749,22 @@ async function provision(
     await recordIds(db, tenant.id, clientId, { dns_record_id: saved.id }, now);
   }
 
+  // 3b. On the console's own domain the Worker's `*.<domain>/*` route would
+  //     answer for this address before the tunnel could; a route with no
+  //     Worker, more specific than the wildcard, hands it back to the tunnel.
+  if (bypassWorker && !row.route_id) {
+    const pattern = `${hostname}/*`;
+    const routes = await cfApi<Array<{ id: string; pattern: string; script?: string | null }>>(apiToken, "GET", `${zonePath}/workers/routes`);
+    const existing = routes.find((r) => r.pattern === pattern);
+    if (existing?.script) {
+      throw new Error(`${pattern} is already routed to the Worker ${existing.script}; remove that route or rename the workstation`);
+    }
+    const routeId = existing
+      ? existing.id
+      : (await cfApi<{ id: string }>(apiToken, "POST", `${zonePath}/workers/routes`, { pattern })).id;
+    await recordIds(db, tenant.id, clientId, { route_id: routeId }, now);
+  }
+
   // 4. Access in front of it, with the organization's policy. The console
   //    shows noVNC in a frame, so the application allows framing and its
   //    cookie is SameSite=None. On the platform's domain the policy admits only
@@ -776,6 +811,9 @@ export async function deprovisionWorkstationTunnel(
 
   if (row.access_app_id) {
     await cfDelete(apiToken, `${accountPath}/access/apps/${encodeURIComponent(row.access_app_id)}`);
+  }
+  if (row.route_id) {
+    await cfDelete(apiToken, `/zones/${encodeURIComponent(account.zone_id)}/workers/routes/${encodeURIComponent(row.route_id)}`);
   }
   if (row.dns_record_id) {
     await cfDelete(apiToken, `/zones/${encodeURIComponent(account.zone_id)}/dns_records/${encodeURIComponent(row.dns_record_id)}`);

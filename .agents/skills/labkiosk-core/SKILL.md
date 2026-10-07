@@ -117,8 +117,11 @@ domain is refused (`usableTunnelDomain()`): two labels down it has no certificat
 
 **Automatic tunnels** (`src/remote_tunnels.ts`, migration 0019, secret `REMOTE_TUNNEL_KEY`): an
 organization either stores a Cloudflare API token for its own account (`mode` `own`, `<pc>.<domain>`)
-or uses the platform's remote-control zone (`platform`, `<org>-<pc>.<REMOTE_TUNNEL_PLATFORM_DOMAIN>`,
-never under `DEFAULT_DOMAIN` because the console cookie is `Domain=.<DEFAULT_DOMAIN>`; its Access apps
+or uses the platform's remote-control domain (`platform`, `<org>-<pc>-vnc.<REMOTE_TUNNEL_PLATFORM_DOMAIN>`,
+`DEFAULT_DOMAIN` itself or a zone of its own, never under it; on `DEFAULT_DOMAIN` each address gets a
+no-script Worker route (`remote_tunnels.route_id`), `vnc`/`*-vnc` slugs are reserved and
+`isRemoteControlHost()` makes those pages cross-site for the CSRF guards, since the console cookie is
+`Domain=.<DEFAULT_DOMAIN>`; its Access apps
 admit only a service token, and operators reach it through the gate `vnc.<domain>/w/<pass>/…`,
 `src/remote_gate.ts`, with a 2-minute pass from `POST /api/clients/remote-pass`, so no Zero Trust seats);
 `GET /api/devices/tunnel` creates that workstation's tunnel, CNAME and Access application there on first request and returns

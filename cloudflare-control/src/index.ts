@@ -2012,7 +2012,7 @@ export default {
         const { domain, zoneName } = await configureRemoteTunnels(env, db, currentTenant!, settings, now);
         // The console's own Remote Control fallback address follows an
         // organization's own domain; the platform domain's addresses are
-        // `<organization>-<workstation>`, which that fallback cannot build.
+        // `<organization>-<workstation>-vnc`, which that fallback cannot build.
         if (settings.mode === "own") {
           await updateTenant(db, currentTenant!.id, { tunnel_domain: domain });
         } else if (previous?.mode === "own" && currentTenant!.tunnel_domain === previous.domain) {

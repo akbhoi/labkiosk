@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS remote_tunnels (
   hostname TEXT NOT NULL,
   tunnel_id TEXT,
   dns_record_id TEXT,
+  route_id TEXT,
   access_app_id TEXT,
   token TEXT,
   status TEXT NOT NULL CHECK (status IN ('provisioning', 'active', 'failed')),
@@ -417,9 +418,9 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT bug_reports_terms_version FROM tenants LIMIT 1").run();
     await db.prepare("SELECT status, status_checked_at FROM bug_reports LIMIT 1").run();
     await db.prepare("SELECT report_match FROM workstation_issues LIMIT 1").run();
-    // 0019: Remote Control tunnels in an organization's own Cloudflare account.
+    // 0019: automatic Remote Control tunnels.
     await db.prepare("SELECT account_id, access_policy_id FROM remote_tunnel_accounts LIMIT 1").run();
-    await db.prepare("SELECT tunnel_id, status FROM remote_tunnels LIMIT 1").run();
+    await db.prepare("SELECT tunnel_id, route_id, status FROM remote_tunnels LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

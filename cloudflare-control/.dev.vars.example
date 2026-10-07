@@ -18,8 +18,8 @@ ALLOW_LOCAL_DB=1
 # Optional: turns on automatic Remote Control tunnels (src/remote_tunnels.ts).
 # 32 random bytes, base64:  openssl rand -base64 32
 # REMOTE_TUNNEL_KEY=
-# Optional, with it: the platform's remote-control zone for organizations without
-# a domain (never under DEFAULT_DOMAIN). See docs/DEPLOYMENT.md.
+# Optional, with it: the platform's remote-control domain for organizations without
+# one (DEFAULT_DOMAIN itself or a zone of its own, never under it). See docs/DEPLOYMENT.md.
 # REMOTE_TUNNEL_PLATFORM_DOMAIN=
 # REMOTE_TUNNEL_PLATFORM_ACCOUNT_ID=
 # REMOTE_TUNNEL_PLATFORM_ZONE_ID=

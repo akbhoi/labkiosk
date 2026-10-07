@@ -633,7 +633,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
           tokenInput.required = own && configuredMode !== "own";
           modeHint.textContent = own
             ? "Workstations are <workstation>.<your domain>, in your own Cloudflare account and Zero Trust seats."
-            : "Workstations are <organization>-<workstation>." + platformDomain + ". No domain or Cloudflare account needed: staff with the Workstations permission open Remote Control from this console.";
+            : "Workstations are <organization>-<workstation>-vnc." + platformDomain + ". No domain or Cloudflare account needed: staff with the Workstations permission open Remote Control from this console.";
         }
         modeSelect.addEventListener("change", showMode);
 

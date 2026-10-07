@@ -115,7 +115,7 @@ The agent parses the first `hostname:` under `ingress:` and reports it as `remot
 | **A — Per-lab overlay** | Build a site-specific ISO with `/etc/cloudflared/` pre-populated | A lab imaged all at once |
 | **B — Persistence partition** | Not supported by the stock image: it mounts no partition by label, and an installed disk mounts only its own `LABKIOSK_DATA` by UUID. Persisting `/etc/cloudflared/` there needs an image change | — |
 | **C — Dynamic enrolment** | Script first-boot to fetch tunnel tokens with a deployment secret | Large or growing fleets |
-| **D — Automatic tunnels** | Settings → Domains → Automatic Remote Control Tunnels: the console creates each workstation's tunnel, DNS record and Access application in the organization's own Cloudflare account, or as `<organization>-<workstation>` on the platform's remote-control domain for an organization without one, and the agent runs it (`docs/REMOTE_CONTROL.md`) | Any fleet; needs the server secret `REMOTE_TUNNEL_KEY` |
+| **D — Automatic tunnels** | Settings → Domains → Automatic Remote Control Tunnels: the console creates each workstation's tunnel, DNS record and Access application in the organization's own Cloudflare account, or as `<organization>-<workstation>-vnc` on the platform's remote-control domain for an organization without one, and the agent runs it (`docs/REMOTE_CONTROL.md`) | Any fleet; needs the server secret `REMOTE_TUNNEL_KEY` |
 
 `LABKIOSK_REMOTE_HOST` overrides the parsed hostname, which is what the simulator uses.
 
