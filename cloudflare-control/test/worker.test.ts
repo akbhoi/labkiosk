@@ -4024,7 +4024,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // the relay viewer on its own address, whatever the deployment default.
     const underPlatform = { ...mockEnv, TUNNEL_DOMAIN: "remote.labkiosk.org" } as Env;
     const ws = await (await worker.fetch(request("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie }), underPlatform)).text();
-    assert.ok(!ws.includes("remote.labkiosk.org"));
+    assert.doesNotMatch(ws, /remote\.labkiosk\.org/);
     assert.match(ws, /labkioskApi\("\/console\/remote\?"/);
   });
 
