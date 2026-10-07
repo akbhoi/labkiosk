@@ -236,7 +236,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
       <p>Google Analytics never runs on workstations, the User Portal, organization homepages, organization subdomains or custom domains, or the consoles: the Platform's Content Security Policy blocks it there.</p>
 
       <h2>9. Contact Us</h2>
-      <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@akbhoi.com">privacy@akbhoi.com</a>.</p>
+      <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@labkiosk.org">privacy@labkiosk.org</a>.</p>
     </div>
   </main>
 `
@@ -288,7 +288,7 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
       <p>The platform is provided "as is" and "as available". While we strive for 99.9% uptime via Cloudflare's global edge network, we do not warrant that service will be uninterrupted or error-free.</p>
 
       <h2>7. Inquiries &amp; Legal Notices</h2>
-      <p>For legal inquiries, contact <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a>.</p>
+      <p>For legal inquiries, contact <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
     </div>
   </main>
 `
@@ -339,7 +339,7 @@ export function renderBugReportTermsHtml(repository: string | null, options: Leg
       <p>A report never contains your organization's name, subdomain or domain, workstation names, staff accounts, the pages users visit, screen images, or anything a user types.</p>
 
       <h2>4. Masking Is Automatic and Best Effort</h2>
-      <p>The masking is done by software before anything leaves the Platform. We designed it to remove identifying details, but no automatic filter can be guaranteed to catch everything. If you find a detail in a published report that identifies your organization or a person, write to <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a> with a link to the report and we will edit or remove it.</p>
+      <p>The masking is done by software before anything leaves the Platform. We designed it to remove identifying details, but no automatic filter can be guaranteed to catch everything. If you find a detail in a published report that identifies your organization or a person, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a> with a link to the report and we will edit or remove it.</p>
 
       <h2>5. Where Reports Are Published</h2>
       <p>Reports are published in ${where}, which is operated by GitHub, Inc. under its own terms and privacy statement. If that repository is public, anyone can read, copy and index the reports, and copies may remain elsewhere after a report is edited or removed. Reports from different organizations about the same problem are combined, so a report may reflect problems seen by several organizations.</p>
@@ -366,7 +366,7 @@ export function renderBugReportTermsHtml(repository: string | null, options: Leg
       <p>If these terms change, they get a new version and date at the top of this page. Reports stop being sent until an administrator of your organization accepts the new version. Nothing is sent under a version your organization has not accepted.</p>
 
       <h2>13. Contact</h2>
-      <p>For questions about these terms, contact <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a>.</p>
+      <p>For questions about these terms, contact <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
     </div>
   </main>
 `

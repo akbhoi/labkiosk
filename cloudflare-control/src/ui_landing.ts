@@ -21,6 +21,9 @@ import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 
+/** The public source repository, linked from the navigation and the footer. */
+const SOURCE_REPOSITORY_URL = "https://github.com/akbhoi/labkiosk";
+
 const PAGE_TITLE = "Lab Kiosk OS - Secure Browser Workstations for Any Organization";
 const PAGE_DESCRIPTION =
   "Turn any computer into a secure browser workstation. Central management for companies, public services, libraries and schools: 100% RAM overlay, one-click screen lock, allowlist-only browsing, zero SSD wear, on Cloudflare's edge.";
@@ -76,7 +79,7 @@ export interface LandingOptions {
   isoDownloadUrl?: string;
   /** Apex / base domain for organization subdomains (defaults to labkiosk.org). */
   baseDomain?: string;
-  /** Primary contact email (defaults to contact@akbhoi.com). */
+  /** Primary contact email (defaults to contact@labkiosk.org). */
   contactEmail?: string;
   /** This page on the canonical host; set only where the page may be indexed (src/seo.ts). */
   canonicalUrl?: string;
@@ -86,7 +89,7 @@ export interface LandingOptions {
 
 export function renderLandingHtml(data: LandingOptions): string {
   const baseDomain = (data.baseDomain || "labkiosk.org").toLowerCase().replace(/^\./, "");
-  const contactEmail = (data.contactEmail || "contact@akbhoi.com").toLowerCase();
+  const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
 
   const banner = data.error
     ? `<div class="page-alert" role="alert" aria-live="polite">${escapeHtml(data.error)}</div>`
@@ -246,7 +249,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .btn-danger-solid { background: var(--danger); color: var(--on-solid); }
     .btn-danger-solid:hover { filter: brightness(0.92); }
     .btn-block { width: 100%; }
-    .theme-toggle {
+    .theme-toggle, .icon-link {
       width: 36px;
       height: 36px;
       border-radius: var(--radius-sm);
@@ -258,7 +261,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       justify-content: center;
       cursor: pointer;
     }
-    .theme-toggle:hover { color: var(--text-main); background: var(--bg-card-hover); }
+    .theme-toggle:hover, .icon-link:hover { color: var(--text-main); background: var(--bg-card-hover); }
 
     /* Edge Status Indicator */
     .edge-status {
@@ -892,6 +895,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     }
 
     /* Responsive Breakpoints */
+    /* The decorative status badge gives way before the brand name has to wrap. */
+    @media (max-width: 1360px) { .edge-status { display: none; } }
     @media (max-width: 1080px) {
       .nav-links { display: none; }
       .mobile-menu-btn { display: inline-flex; }
@@ -980,6 +985,9 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <div class="status-dot"></div>
         <span>Edge Active</span>
       </div>
+      <a class="icon-link" href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener" aria-label="Lab Kiosk source code on GitHub" title="Source code on GitHub">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
       <button type="button" class="theme-toggle" data-action="toggle-theme" aria-label="Switch theme" title="Switch between light and dark">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>
       </button>
@@ -1032,6 +1040,10 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <a href="#contact" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Contact
+      </a>
+      <a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener" data-action="close-drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        Source code on GitHub
       </a>
     </nav>
     <div class="mobile-drawer-actions">
@@ -1317,7 +1329,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <p style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">
               Whether your enterprise has 50 or 5,000 PCs to donate, we provide the operating system, cloud control plane, and training materials.
             </p>
-            <a href="mailto:partners@akbhoi.com?subject=CSR%20Hardware%20Donation%20Inquiry" class="btn btn-primary btn-block">Contact CSR &amp; Partner Team</a>
+            <a href="mailto:partners@labkiosk.org?subject=CSR%20Hardware%20Donation%20Inquiry" class="btn btn-primary btn-block">Contact CSR &amp; Partner Team</a>
           </div>
         </div>
       </div>
@@ -1665,7 +1677,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           </div>
           <h4>Technical &amp; Deployment Support</h4>
           <p>Assistance with ISO flashing, thin client hardware compatibility, and network setup.</p>
-          <a href="mailto:support@akbhoi.com" class="contact-link">support@akbhoi.com</a>
+          <a href="mailto:support@labkiosk.org" class="contact-link">support@labkiosk.org</a>
         </div>
 
         <div class="contact-card">
@@ -1674,7 +1686,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           </div>
           <h4>Education, CSR &amp; Partners</h4>
           <p>Education deployments, hardware donation partnerships, and platform allowlisting.</p>
-          <a href="mailto:partners@akbhoi.com" class="contact-link">partners@akbhoi.com</a>
+          <a href="mailto:partners@labkiosk.org" class="contact-link">partners@labkiosk.org</a>
         </div>
       </div>
 
@@ -1934,6 +1946,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <li><a href="#simulator">Live Simulator</a></li>
           <li><a href="#specs">Hardware Specs</a></li>
           <li><a href="#security">Architecture</a></li>
+          <li><a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener">Source code on GitHub</a></li>
           <li><a href="#faq">FAQ</a></li>
           <li><a href="/iso" data-action="open-modal" data-modal="iso">Download ISO</a></li>
         </ul>
@@ -1943,8 +1956,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <h5>Global Contact</h5>
         <ul>
           <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
-          <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@akbhoi.com">support@akbhoi.com</a></li>
-          <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@akbhoi.com">partners@akbhoi.com</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@labkiosk.org">partners@labkiosk.org</a></li>
           <li><a href="/contact" data-action="open-modal" data-modal="contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
         </ul>
       </div>

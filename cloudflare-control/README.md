@@ -115,7 +115,7 @@ page or drive it from a browser:
 ```bash
 pnpm --prefix cloudflare-control exec tsx test/dev_server.ts
 ```
-It seeds the three demo organizations (`web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator)) and a super admin (`admin@akbhoi.com` /
+It seeds the three demo organizations (`web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator)) and a super admin (`admin@labkiosk.org` /
 `SuperAdminPassword2026!`, set at the top of that file). Use `pnpm dev` instead
 whenever the change touches D1 itself, migrations or Workers runtime behaviour.
 

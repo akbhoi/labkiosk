@@ -62,7 +62,7 @@ import { htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
  */
 const mockEnv: Env = {
   DEFAULT_DOMAIN: "labkiosk.org",
-  SUPER_ADMIN_EMAIL: "admin@akbhoi.com",
+  SUPER_ADMIN_EMAIL: "admin@labkiosk.org",
   SUPER_ADMIN_PASSWORD: "SuperAdminPassword2026!",
   ALLOW_LOCAL_DB: "1"
 };
@@ -723,7 +723,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Logs in as Super Admin and accesses Super Admin Console on /super", async () => {
     const { res: loginRes, data: loginData } = await callJson(
       "/api/auth/login",
-      json({ email: "admin@akbhoi.com", password: "SuperAdminPassword2026!" })
+      json({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" })
     );
     assert.equal(loginRes.status, 200);
     assert.equal(loginData.status, "ok");
@@ -749,7 +749,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Attempt sign-in with rotated password before rotation - must fail
     const { res: preRes } = await callJson(
       "/api/auth/login",
-      json({ email: "admin@akbhoi.com", password: "NewRotatedPassword2026!" })
+      json({ email: "admin@labkiosk.org", password: "NewRotatedPassword2026!" })
     );
     assert.equal(preRes.status, 401);
 
@@ -763,7 +763,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Sign in with new rotated password - must succeed
     const newLoginRes = await worker.fetch(
-      request("/api/auth/login", json({ email: "admin@akbhoi.com", password: "NewRotatedPassword2026!" })),
+      request("/api/auth/login", json({ email: "admin@labkiosk.org", password: "NewRotatedPassword2026!" })),
       rotatedEnv
     );
     assert.equal(newLoginRes.status, 200);
@@ -773,7 +773,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Old password must now fail
     const oldLoginRes = await worker.fetch(
-      request("/api/auth/login", json({ email: "admin@akbhoi.com", password: "SuperAdminPassword2026!" })),
+      request("/api/auth/login", json({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" })),
       rotatedEnv
     );
     assert.equal(oldLoginRes.status, 401);

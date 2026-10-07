@@ -1062,7 +1062,7 @@ export default {
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
-            contactEmail: "contact@akbhoi.com",
+            contactEmail: "contact@labkiosk.org",
             nonce
           }),
           { status: 401, headers: htmlHeaders }
@@ -1086,7 +1086,7 @@ export default {
       const counts = await inboxCounts(db);
       return new Response(
         renderSuperAdminHtml({
-          superAdminEmail: (await findUserById(db, session.user_id))?.email || "admin@akbhoi.com",
+          superAdminEmail: (await findUserById(db, session.user_id))?.email || "admin@labkiosk.org",
           superAdminId: session.user_id,
           tenants: allTenants,
           catalogs,
@@ -2894,7 +2894,7 @@ export default {
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
-            contactEmail: "contact@akbhoi.com",
+            contactEmail: "contact@labkiosk.org",
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -2977,7 +2977,7 @@ export default {
             openModal: isPlatformIsolation ? undefined : "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
-            contactEmail: "contact@akbhoi.com",
+            contactEmail: "contact@labkiosk.org",
             nonce
           }),
           { status: denied.status, headers: htmlHeaders }
@@ -3024,7 +3024,7 @@ export default {
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
-            contactEmail: "contact@akbhoi.com",
+            contactEmail: "contact@labkiosk.org",
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -3174,7 +3174,7 @@ export default {
           openModal,
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
           baseDomain,
-          contactEmail: "contact@akbhoi.com",
+          contactEmail: "contact@labkiosk.org",
           canonicalUrl,
           nonce
         }),

@@ -349,7 +349,7 @@ export async function initSchema(db: D1Database): Promise<void> {
 }
 
 /** Credentials seeded when no secrets are configured; local development and tests only. */
-export const LOCAL_DEV_SUPER_ADMIN = { email: "admin@akbhoi.com", password: "SuperAdmin2026!" };
+export const LOCAL_DEV_SUPER_ADMIN = { email: "admin@labkiosk.org", password: "SuperAdmin2026!" };
 
 /**
  * Ensures a Super Admin account exists in the database.
