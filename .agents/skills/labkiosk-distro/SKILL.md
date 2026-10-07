@@ -19,9 +19,11 @@ Paths are under `distro-builder/`. Authoritative detail: `distro-builder/AGENTS.
   `labkiosk-data-permissions.service` re-checks every boot, mounts it if needed, and **never
   fabricates a directory** in its place). `system-connections/` inside stays root-only.
 - **Only what the package list names** (`config/package-lists/kiosk.list.chroot`; recommends and
-  firmware defaults are off). Keep `live-tools` + `eject`, `locales`, `tzdata`, `xkb-data`. Never
-  Debian's `novnc` (use `novnc.pin` + `install-novnc.sh`); never `x11-xserver-utils`.
-- **Pins fail closed**: `cloudflared.pin`, `novnc.pin` (mandatory), `grub.pin` (stays empty — the
+  firmware defaults are off). Keep `live-tools` + `eject`, `locales`, `tzdata`, `xkb-data`. The image
+  has no noVNC, websockify or cloudflared (Remote Control goes through the console's relay); the
+  simulator's noVNC comes from `docker-test/novnc.pin` + `docker-test/install-novnc.sh`, never
+  Debian's `novnc`. Never `x11-xserver-utils`.
+- **Pins fail closed**: `grub.pin` (stays empty — the
   boot password is applied per installation). Never invent a checksum to make a build pass.
 - **Boot never prompts**: `02-security.hook.chroot` marks every entry `--unrestricted`
   unconditionally.

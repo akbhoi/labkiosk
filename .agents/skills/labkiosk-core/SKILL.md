@@ -1,6 +1,6 @@
 ---
 name: labkiosk-core
-description: Cross-cutting Lab Kiosk contracts between the workstation agent and the Cloudflare Worker — the control channel (OrgHub WebSocket, HTTP heartbeat fallback), enrolment, the remote command set (lock, navigate, clear-session…), broadcast state, remote control (VNC/tunnel), organizationName. Use for full-stack changes that touch both the client and the Worker, when changing what the agent sends or the Worker answers, or when routing a task to the right Lab Kiosk skill.
+description: Cross-cutting Lab Kiosk contracts between the workstation agent and the Cloudflare Worker — the control channel (OrgHub WebSocket, HTTP heartbeat fallback), enrolment, the remote command set (lock, navigate, clear-session…), broadcast state, remote control (VNC through the console's relay), organizationName. Use for full-stack changes that touch both the client and the Worker, when changing what the agent sends or the Worker answers, or when routing a task to the right Lab Kiosk skill.
 ---
 
 # Lab Kiosk — cross-cutting contracts
@@ -39,7 +39,7 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
     commands?}` on connect and on every admin change (`notifyConfigChanged()`);
     `{"type":"commands", commands}`; `{"type":"frames", on, intervalSeconds}` — frames are asked for
     only while a console is showing that screen; `{"type":"pong"}`.
-  - workstation → hub: `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?, remoteHost?}`
+  - workstation → hub: `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?}`
     on connect and on change; `{"type":"frame", thumbnail}` while asked; and the ping, which must be
     **byte-for-byte** `{"type":"ping"}` (`WEBSOCKET_PING` = `HUB_PING`): the edge answers it without
     waking the hub. `json.dumps` adds a space and would bill every ping. Sent every 15 s; the hub
@@ -48,14 +48,14 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
     `4000` replaced by a newer connection (back off), `4008` stale (reconnect).
   - Handshake `404`/`426`/`501`, or three failed connects in a row → HTTP for 10 minutes.
 - **HTTP heartbeat** (every 3 s; older agents and the fallback): payload `clientNum`, `activeUrl`,
-  `isLocked`, `thumbnail`, `vncPassword`, `remoteHost` (`post_telemetry()` is the reference); reply
+  `isLocked`, `thumbnail`, `vncPassword` (`post_telemetry()` is the reference); reply
   `whitelist`, `targetUrl`, `commands`, `broadcastUrl` / `broadcastEpoch`. Both transports apply
   the reply through one function, `apply_control_update()`.
 - `thumbnail`/frame: base64 JPEG from `scrot -t 20 -q 35`, **dropped** above 256 KB
   (`MAX_THUMBNAIL_BYTES` = `MAX_FRAME_BYTES`); no Pillow, the agent is stdlib-only. Frames are
   relayed to consoles and never stored. `vncPassword` (per-boot secret from
-  `/tmp/labkiosk/vnc.secret`) and `remoteHost` (from `/etc/cloudflared/config.yml` or
-  `LABKIOSK_REMOTE_HOST`) are sent only when present, so the hub keeps what it knew. There is no
+  `/tmp/labkiosk/vnc.secret`) is sent only when present, so the hub keeps what it knew. A
+  `remoteHost` from an old agent is ignored. There is no
   `currentUrl` and no CPU/RAM `metrics` — never build UI on fields that do not exist.
 - `targetUrl` is validated by `safe_navigable_url()` before storing — it reaches `window.location`.
 - **Broadcast state is in D1 in two places**: organization-wide (`tenants.broadcast_*`, set by
@@ -110,9 +110,22 @@ report; `409` (row not written by the hub yet), `401`/`403` and network errors a
 
 ## 4. Remote control
 
-`x11vnc` on `127.0.0.1:5900` (per-boot password) → `websockify` on `127.0.0.1:6080` → Cloudflare
-Tunnel to `<pc>.<tunnel_domain>`. No LAN listener. The console's noVNC frame gets `vncPassword` /
-`remoteHost` from `GET /api/clients` (workstations permission).
+**The console relays it** (`src/remote_relay.ts`, Durable Object `RemoteRelay`, binding
+`REMOTE_RELAY`, named `<tenant>:<clientId>`). The viewer `/console/remote` (noVNC from `/novnc/`,
+Workers static assets `ASSETS`, staged from the exactly pinned `@novnc/novnc` by
+`scripts/stage-novnc.mjs`) posts `POST /api/clients/remote-session`; the Worker stores the SHA-256
+of a 32-byte token in the relay and the hub sends `{"type":"remote","session":"<64 hex>"}` on the
+control channel (`409` if the workstation is not connected). The agent (`start_remote_session()`,
+one at a time) opens `GET /api/devices/remote` with its bearer token and `X-Labkiosk-Session`,
+waits for `{"type":"ready"}`, and pipes binary messages to and from `127.0.0.1:5900`. Text
+`{"type":"ping"}` is auto-answered `{"type":"pong"}`; other text is dropped. Join within 60 s, at
+most 4 h, either side closing ends it, a new session replaces the old. The console side must be the
+operator who opened it and passes `rejectCrossSiteSocket`. No LAN listener: `x11vnc`
+stays on `127.0.0.1:5900` (`-localhost -noclipboard -noremote -nocmds`; per-boot password,
+`vncPassword` from `GET /api/clients`, passed to the viewer in the URL fragment, which it reads and
+removes). The 8-character RFB password is not the access control: the console sign-in, the
+`workstations` permission and the one-time session token are. Only agents on the WebSocket control
+channel can join; the HTTP heartbeat cannot carry the `remote` message. Migration `0019` dropped `tenants.tunnel_domain` and `client_devices.remote_host`.
 
 ## 5. Global rules both sides obey
 
@@ -127,7 +140,7 @@ state in D1 or the organization's OrgHub, never isolate memory · fail closed on
 |---|---|
 | Workstation missing from the dashboard, agent logs `401` | Not enrolled, or its device token was revoked → re-run the wizard with the organization's current enrollment key (Settings → Security). |
 | Freshly enrolled screen says "This page is blocked" | Chromium reads policy only at start → the agent sets `pendingBrowserRestart` and restarts it after the next policy sync. |
-| Remote Control asks for a password or never connects | No heartbeat since boot (no `vncPassword` yet) or no tunnel → check `vncPassword`/`remoteHost` in `/api/clients`; provision a tunnel (`docs/REMOTE_CONTROL.md`). |
+| Remote Control asks for a password or never connects | No status since boot (no `vncPassword` yet), the workstation is not on the WebSocket control channel (`409`), or its agent predates the relay (never joins, `4008` after 60 s) → check `vncPassword` in `/api/clients` and the agent version. |
 | Worker refuses to start (`SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set` / `The D1 database is missing the current schema`) | Secrets unset with a D1 binding, or migrations not applied → set secrets; `wrangler d1 migrations apply labkiosk-db --remote`. |
 | Broadcast to some screens reverts to the portal | Worker older than migration `0010` → apply it and deploy together. |
 | Worker refuses to start: `missing required bindings` | A platform resource was not created → `docs/DEPLOYMENT.md`, "Platform resources". |

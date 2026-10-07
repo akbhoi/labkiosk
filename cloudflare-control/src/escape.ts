@@ -82,7 +82,7 @@ const MAX_DOMAIN_INPUT_LENGTH = 2048;
  */
 export function cleanCustomDomain(raw: unknown): string | null {
   const input = String(raw ?? "").trim().toLowerCase();
-  // Workstations report this too (remoteHost), so the input is untrusted: refuse
+  // The input is untrusted: refuse
   // anything far longer than a URL around a 253-character name before any pattern
   // runs, and cut the path by index, since `/\/.*$/` is quadratic on a run of "/".
   if (input.length > MAX_DOMAIN_INPUT_LENGTH) return null;

@@ -84,6 +84,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
+| `/api/clients/remote-session` | `POST` | Organization Admin (`workstations`) | Open a Remote Control session through the console's relay: asks the workstation to join and returns the viewer's socket path |
+| `/api/console/remote` | `GET` (WebSocket) | Organization Admin (`workstations`) | The viewer's side of a Remote Control session (VNC bytes) |
+| `/api/devices/remote` | `GET` (WebSocket) | Device Token | The workstation's side of a Remote Control session (VNC bytes) |
 | `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, each with `report_state`, `report_match` (`new`/`existing`), `issue_url`, `issue_number`, `report_status` (`open`, `in_progress`, `pr_open`, `resolved`, `closed`) and `pr_url`; plus `bugReports: {enabled, available, repository, termsVersion, acceptedTermsVersion, termsAcceptedAt}` |
 | `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
@@ -318,7 +321,7 @@ The workstation's control channel: a WebSocket to its organization's OrgHub Dura
   - `{"type":"frames","on":true,"intervalSeconds":3}` while a console shows this screen, `on:false` after;
   - `{"type":"pong"}`, answered at the edge.
 - **Workstation → hub:**
-  - `{"type":"status","clientNum":1,"activeUrl":"…","isLocked":false,"vncPassword":"…","remoteHost":"…"}`
+  - `{"type":"status","clientNum":1,"activeUrl":"…","isLocked":false,"vncPassword":"…"}`
     on connect and whenever it changes;
   - `{"type":"frame","thumbnail":"data:image/jpeg;base64,…"}` every `intervalSeconds` while asked
     (≤ 256 KB, relayed to consoles and never stored);
@@ -349,8 +352,7 @@ any queued commands.
     "activeUrl": "https://scratch.mit.edu",
     "isLocked": false,
     "thumbnail": "data:image/jpeg;base64,...",
-    "vncPassword": "randomBootPassword12",
-    "remoteHost": "pc-01.labkiosk.example.com"
+    "vncPassword": "randomBootPassword12"
   }
   ```
 
@@ -373,6 +375,36 @@ any queued commands.
     "broadcastEpoch": 0
   }
   ```
+
+#### Remote Control through the console: `POST /api/clients/remote-session`, `GET /api/console/remote`, `GET /api/devices/remote`
+
+The console reaches a workstation's VNC server through its own address, with no tunnel, DNS record or
+route per workstation. Each open session is one `RemoteRelay` Durable Object (`src/remote_relay.ts`)
+named after the organization and workstation, which pairs two WebSockets and forwards their binary
+messages to each other.
+
+1. The viewer (`GET /console/remote?clientId=PC-01`, `workstations` permission) posts
+   `{"clientId": "PC-01"}` to `/api/clients/remote-session`. The Worker makes a random 32-byte
+   session token, stores only its SHA-256 in the relay with the operator's user id, and asks the
+   organization's hub to send `{"type": "remote", "session": "<token>"}` over the workstation's
+   control channel. **Responses:** `200 {"socketPath": "/api/console/remote?clientId=…&session=…",
+   "joinSeconds": 60}`; `400` for a bad workstation id; `409` when the workstation is not connected
+   to the hub; `502` when the relay or hub fails; `503` without the `REMOTE_RELAY` binding. Each
+   session is written to the audit log (`device.remote_control`, `via: relay`).
+2. The viewer opens `socketPath` (same cookie and `workstations` permission, and the cross-site
+   socket check of `/api/console/ws`). The agent opens `/api/devices/remote` with its device bearer
+   token and the token in `X-Labkiosk-Session`, then connects to its own `127.0.0.1:5900`.
+3. Both must join within 60 seconds, each side at most once, and the console side only as the
+   operator who opened it (`403` otherwise, `410` once expired, `409` for a side already present).
+   The relay sends the agent `{"type": "ready"}` once the viewer is there; from then on binary
+   messages are VNC bytes. A text `{"type": "ping"}` is answered `{"type": "pong"}` by the relay
+   itself; other text is dropped.
+4. Either side closing closes the other (`4004`). A new session for the same workstation closes the
+   old one (`4000`), and a session ends after four hours (`4008`).
+
+The VNC password still travels in the viewer's address fragment, which browsers never send, and the
+viewer removes it before it connects. noVNC is served from `/novnc/` (Workers static assets, staged
+from the pinned `@novnc/novnc` package).
 
 #### `POST /api/devices/boot-report`
 
@@ -423,8 +455,7 @@ screens' frames for the next 10 seconds.
         "thumbnail": "data:image/jpeg;base64,...",
         "timestamp": 1726300000,
         "online": true,
-        "vncPassword": "randomBootPassword12",
-        "remoteHost": "pc-01.labkiosk.example.com"
+        "vncPassword": "randomBootPassword12"
       }
     }
   }

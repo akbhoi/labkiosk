@@ -22,9 +22,12 @@ import importlib.util
 import json
 import os
 import re
+import socket
 import stat
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -650,6 +653,7 @@ class FakeWebSocketModule:
 
     class ABNF:
         OPCODE_TEXT = 1
+        OPCODE_BINARY = 2
         OPCODE_CLOSE = 8
 
 
@@ -889,6 +893,120 @@ class ControlChannel(unittest.TestCase):
         self.assertEqual((options["http_proxy_host"], options["http_proxy_port"]), ("proxy.acme.example", 3128))
         self.assertIn("127.0.0.1", options["http_no_proxy"])
         self.assertIn("intranet.example", options["http_no_proxy"])
+
+
+class RemoteControlRelay(unittest.TestCase):
+    """Remote Control through the console: the agent joins only the session the
+    hub named, waits for noVNC, then pipes loopback x11vnc both ways. A mistake
+    here is a screen nobody can open, or one opened to the wrong session."""
+
+    def setUp(self):
+        self.orig_websocket = agent.websocket
+        self.orig_address = agent.REMOTE_VNC_ADDRESS
+        agent.websocket = FakeWebSocketModule
+
+    def tearDown(self):
+        agent.websocket = self.orig_websocket
+        agent.REMOTE_VNC_ADDRESS = self.orig_address
+
+    def test_the_keepalive_and_ready_match_the_relay(self):
+        with open(os.path.join(ROOT, "..", "cloudflare-control", "src", "remote_relay.ts"), encoding="utf-8") as handle:
+            relay = handle.read()
+        self.assertIn(f"export const RELAY_PING = '{agent.REMOTE_PING}';", relay)
+        self.assertIn(f"export const RELAY_READY = '{agent.REMOTE_READY}';", relay)
+        self.assertLess(agent.REMOTE_READY_TIMEOUT_SECONDS, 120)
+
+    def test_the_address_follows_the_worker_scheme(self):
+        self.assertEqual(agent.remote_relay_url("https://acme.labkiosk.example"), "wss://acme.labkiosk.example/api/devices/remote")
+        self.assertEqual(agent.remote_relay_url("http://10.0.0.5:8787"), "ws://10.0.0.5:8787/api/devices/remote")
+
+    def test_only_a_well_formed_session_is_joined(self):
+        started = []
+        original = agent.run_remote_session
+        agent.run_remote_session = lambda session, stop: started.append(session)
+        try:
+            for bad in (None, 42, "", "A" * 64, "a" * 63, "a" * 64 + "\n", "../" + "a" * 61):
+                agent.start_remote_session(bad)
+            agent.start_remote_session("a" * 64)
+            for thread in threading.enumerate():
+                if thread.name == "remote-control":
+                    thread.join(timeout=2)
+        finally:
+            agent.run_remote_session = original
+        self.assertEqual(started, ["a" * 64])
+
+    def test_nothing_reaches_x11vnc_before_novnc_is_there(self):
+        ws = FakeSocket((FakeWebSocketModule.ABNF.OPCODE_TEXT, b'{"type":"pong"}'), close_frame(4004, "gone"))
+        self.assertFalse(agent.wait_for_remote_ready(ws, threading.Event()))
+        ws = FakeSocket((FakeWebSocketModule.ABNF.OPCODE_TEXT, agent.REMOTE_READY.encode()))
+        self.assertTrue(agent.wait_for_remote_ready(ws, threading.Event()))
+
+    def test_bytes_flow_both_ways_between_novnc_and_x11vnc(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        agent.REMOTE_VNC_ADDRESS = server.getsockname()
+        received = []
+
+        def fake_x11vnc():
+            conn, _ = server.accept()
+            with conn:
+                conn.sendall(b"RFB 003.008\n")
+                received.append(conn.recv(64))
+
+        vnc_thread = threading.Thread(target=fake_x11vnc, daemon=True)
+        vnc_thread.start()
+
+        class RelaySocket(FakeSocket):
+            def __init__(self):
+                super().__init__((FakeWebSocketModule.ABNF.OPCODE_TEXT, agent.REMOTE_READY.encode()))
+                self.binary = []
+                self.lock = threading.Lock()
+
+            def send_binary(self, data):
+                with self.lock:
+                    self.binary.append(data)
+                    # noVNC answers the greeting; then the operator leaves.
+                    self.incoming.append((FakeWebSocketModule.ABNF.OPCODE_BINARY, b"RFB 003.008\n"))
+                    self.incoming.append(close_frame(4004, "The other side ended the session"))
+
+            def recv_data(self):
+                with self.lock:
+                    if self.incoming:
+                        return self.incoming.pop(0)
+                time.sleep(0.01)
+                raise FakeWebSocketModule.WebSocketTimeoutException("timed out")
+
+        ws = RelaySocket()
+        original = agent.open_remote_channel
+        agent.open_remote_channel = lambda session: ws
+        try:
+            agent.run_remote_session("b" * 64, threading.Event())
+        finally:
+            agent.open_remote_channel = original
+            server.close()
+        vnc_thread.join(timeout=5)
+        self.assertEqual(ws.binary, [b"RFB 003.008\n"], "x11vnc's greeting reached noVNC")
+        self.assertEqual(received, [b"RFB 003.008\n"], "noVNC's answer reached x11vnc")
+        self.assertTrue(ws.closed)
+
+
+class VncServerFlags(unittest.TestCase):
+    """x11vnc refuses to start on an option it does not know, which leaves
+    Remote Control dead with nothing in the console to say why (`-nocmd` did
+    exactly that). Every flag the image passes must be one x11vnc 0.9.16 has."""
+
+    KNOWN = {"-display", "-forever", "-shared", "-rfbport", "-localhost", "-rfbauth",
+             "-noclipboard", "-noremote", "-nocmds", "-quiet", "-bg", "-storepasswd"}
+
+    def test_every_x11vnc_flag_exists(self):
+        with open(os.path.join(CHROOT, "etc/openbox/autostart"), encoding="utf-8") as handle:
+            script = handle.read().replace("\\\n", " ")
+        calls = [line.strip() for line in script.splitlines() if line.strip().startswith("x11vnc ")]
+        self.assertEqual(len(calls), 2, "the password is stored, then the server started")
+        for call in calls:
+            for flag in re.findall(r"(?<!\S)-[a-z]+", call):
+                self.assertIn(flag, self.KNOWN, call)
 
 
 class BootPolicyBeforeTheBrowser(unittest.TestCase):

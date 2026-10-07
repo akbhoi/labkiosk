@@ -25,6 +25,7 @@ import {
   sitemapXml
 } from "./seo";
 import { renderStatusPageHtml } from "./ui_status";
+import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
 import {
   initSchema,
@@ -140,14 +141,23 @@ import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./es
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
 import { LiveStatus } from "./org_hub";
+import {
+  RELAY_JOIN_SECONDS,
+  RELAY_TOKEN_PATTERN,
+  hashRelayToken,
+  newRelayToken,
+  openRelaySession,
+  relayUpgrade
+} from "./remote_relay";
 import { startCustomHostnameJob } from "./custom_hostnames";
 import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
 import { PALETTE } from "./ui_tokens";
 
 // The Durable Object and Workflow classes wrangler binds (wrangler.jsonc).
 export { OrgHub } from "./org_hub";
+export { RemoteRelay } from "./remote_relay";
 export { CustomHostnameWorkflow } from "./custom_hostname_workflow";
-import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, demoTunnelFallback, isDemoSlug, isDemoTenant } from "./demo";
+import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
 
 /** Commands an admin console is allowed to dispatch. */
 const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "clear-session", "mute"]);
@@ -302,7 +312,6 @@ const DEFAULT_CONFIG: LabConfig = {
   version: 3,
   updatedAt: new Date().toISOString(),
   defaultHomepage: "https://labkiosk.org",
-  tunnelDomain: "",
   whitelist: [],
   scheduledShutdown: "17:00"
 };
@@ -352,6 +361,31 @@ function postLoginRedirect(options: {
  * route touches D1 in the steady state -- verified tokens are cached for a
  * minute, and everything else is OrgHub's.
  */
+/** Workstation ids, as the hub accepts them. */
+const REMOTE_CLIENT_ID = /^[A-Z0-9][A-Z0-9_-]{0,63}$/;
+
+/**
+ * GET /api/devices/remote: the workstation's end of a Remote Control session
+ * (src/remote_relay.ts). The device token decides the organization and the
+ * workstation; `X-Labkiosk-Session` names the session the hub asked it to join.
+ */
+async function handleDeviceRemote(
+  request: Request,
+  env: Env,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return jsonError("Expected a WebSocket upgrade", 426, jsonHeaders);
+  }
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const token = request.headers.get("X-Labkiosk-Session") || "";
+  if (!RELAY_TOKEN_PATTERN.test(token)) return jsonError("A Remote Control session is required", 400, jsonHeaders);
+  if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
+  return relayUpgrade(env, auth.device.tenant_id, auth.device.client_id, "device", await hashRelayToken(token));
+}
+
 async function handleWorkstationRequest(
   request: Request,
   url: URL,
@@ -514,9 +548,11 @@ function isPublicTenantRoute(path: string, method: string): boolean {
  */
 function buildHtmlHeaders(
   nonce: string,
-  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null }
+  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean }
 ): Record<string, string> {
   const scriptSources = [`'nonce-${nonce}'`];
+  // The Remote Control viewer's nonced module imports noVNC from /novnc/.
+  if (options.remoteViewer) scriptSources.push("'self'");
   if (options.analyticsOrigin) scriptSources.push(`${options.analyticsOrigin}${ZARAZ_LOADER_PATH}`);
   const csp = [
     "default-src 'self'",
@@ -524,11 +560,11 @@ function buildHtmlHeaders(
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
-    // Remote control embeds a workstation's noVNC page: its tunnel hostname in
-    // production, or the simulator's published port in local development.
-    "frame-src https: http://localhost:6080 http://127.0.0.1:6080",
+    // Only Remote Control frames a page: the viewer on this console's own address.
+    "frame-src 'self'",
     "connect-src 'self'",
-    "frame-ancestors 'none'",
+    // Only the viewer is framed, and only by the console on its own address.
+    options.remoteViewer ? "frame-ancestors 'self'" : "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
     "object-src 'none'"
@@ -538,7 +574,7 @@ function buildHtmlHeaders(
     "Content-Security-Policy": csp,
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
-    "X-Frame-Options": "DENY",
+    "X-Frame-Options": options.remoteViewer ? "SAMEORIGIN" : "DENY",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cache-Control": "no-store"
@@ -615,6 +651,21 @@ export default {
     }
     if (path === "/api/devices/boot-report" && method === "POST") {
       return handleBootReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/remote" && method === "GET") {
+      return handleDeviceRemote(request, env, db, jsonHeaders);
+    }
+
+    // The noVNC client the Remote Control viewer loads, from static assets.
+    if (path.startsWith(NOVNC_PATH) && (method === "GET" || method === "HEAD")) {
+      if (!env.ASSETS) return jsonError("Not Found", 404, jsonHeaders);
+      const asset = await env.ASSETS.fetch(request);
+      if (!asset.ok) return asset;
+      const headers = new Headers(asset.headers);
+      headers.set("X-Content-Type-Options", "nosniff");
+      headers.set("Cross-Origin-Resource-Policy", "same-origin");
+      headers.set("Cache-Control", "public, max-age=3600");
+      return new Response(asset.body, { status: asset.status, headers });
     }
 
     // The console stylesheet: one immutable file per version instead of ~50 KB
@@ -729,7 +780,7 @@ export default {
 
     // A caller who explicitly named an organization they may not act on is refused
     // once, here, rather than falling through to a route-specific message.
-    if (resolution.denied && path.startsWith("/api/")) {
+    if (resolution.denied && (path.startsWith("/api/") || path === "/console/remote")) {
       return jsonError("You do not have access to this organization", 403, jsonHeaders);
     }
 
@@ -2091,7 +2142,7 @@ export default {
       }
     }
 
-    // POST /api/tenant/settings: update Settings (mode, home_route, tunnel_domain, profile)
+    // POST /api/tenant/settings: update Settings (mode, home_route, profile)
     // POST /api/tenant/homepage: the organization homepage served at the subdomain
     // root. Guarded by the same `settings` permission as the rest of the lab
     // configuration, and every field is normalised here rather than trusted:
@@ -2142,7 +2193,6 @@ export default {
           defaultUrl?: string;
           defaultLockMessage?: string;
           homeRoute?: string;
-          tunnelDomain?: string;
           portalTitle?: string;
           portalSubtitle?: string;
           portalDescription?: string;
@@ -2169,9 +2219,6 @@ export default {
             ? String(body.homeRoute).trim()
             : "/" + String(body.homeRoute).trim();
           updates.home_route = cleanRoute;
-        }
-        if (body.tunnelDomain !== undefined) {
-          updates.tunnel_domain = cleanCustomDomain(body.tunnelDomain) || null;
         }
         if (body.portalTitle !== undefined) {
           updates.portal_title = String(body.portalTitle).trim().slice(0, 100) || null;
@@ -2344,7 +2391,6 @@ export default {
           lastSeen: new Date(lastSeenMs).toISOString(),
           online: Boolean(status?.online),
           vncPassword: status?.vncPassword || row?.vnc_password || undefined,
-          remoteHost: status?.remoteHost || row?.remote_host || undefined,
           groupName: row?.group_name || undefined
         };
       };
@@ -2367,6 +2413,75 @@ export default {
       const crossSite = rejectCrossSiteSocket(request, { baseDomain: env.DEFAULT_DOMAIN }, jsonHeaders);
       if (crossSite) return crossSite;
       return hubUpgrade(env, currentTenant!.id, "console", { userId: session!.user_id });
+    }
+
+    // GET /console/remote?clientId=...: the Remote Control viewer the
+    // Workstations page frames (src/ui_remote_viewer.ts).
+    if (path === "/console/remote" && method === "GET") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      const clientId = url.searchParams.get("clientId") || "";
+      if (!REMOTE_CLIENT_ID.test(clientId)) return jsonError("A workstation id is required", 400, jsonHeaders);
+      return new Response(renderRemoteViewerHtml({ clientId, nonce }), {
+        headers: buildHtmlHeaders(nonce, { hsts: isHttps && !isDev, indexable: false, analyticsOrigin: null, remoteViewer: true })
+      });
+    }
+
+    // POST /api/clients/remote-session: Remote Control through the console's
+    // own address (src/remote_relay.ts). { clientId } -> { socketPath, joinSeconds }.
+    // The workstation is asked, over the connection it already holds, to join.
+    if (path === "/api/clients/remote-session" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
+      let body: { clientId?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const clientId = typeof body?.clientId === "string" ? body.clientId.trim() : "";
+      if (!REMOTE_CLIENT_ID.test(clientId)) return jsonError("A workstation id is required", 400, jsonHeaders);
+      const tenantId = currentTenant!.id;
+      const token = newRelayToken();
+      if (!(await openRelaySession(env, tenantId, clientId, await hashRelayToken(token), session!.user_id))) {
+        return jsonError("The Remote Control relay could not open a session", 502, jsonHeaders);
+      }
+      const asked = await hubRequest(env, tenantId, "/remote-open", { clientId, session: token });
+      if (asked.status === 409) {
+        return jsonError("This workstation is not connected to the console right now", 409, jsonHeaders);
+      }
+      if (!asked.ok) return jsonError("The organization hub could not reach the workstation", 502, jsonHeaders);
+      await writeAuditLog(db, {
+        tenantId,
+        userId: session!.user_id,
+        action: "device.remote_control",
+        details: `client=${clientId} via=relay`
+      });
+      const socket = new URLSearchParams({ clientId, session: token });
+      if (url.searchParams.get("tenant")) socket.set("tenant", url.searchParams.get("tenant")!);
+      return new Response(JSON.stringify({ socketPath: `/api/console/remote?${socket.toString()}`, joinSeconds: RELAY_JOIN_SECONDS }), {
+        headers: jsonHeaders
+      });
+    }
+
+    // GET /api/console/remote: noVNC's end of a relay session, opened by the
+    // same operator who asked for it.
+    if (path === "/api/console/remote" && method === "GET") {
+      if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+        return jsonError("Expected a WebSocket upgrade", 426, jsonHeaders);
+      }
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      const crossSite = rejectCrossSiteSocket(request, { baseDomain: env.DEFAULT_DOMAIN }, jsonHeaders);
+      if (crossSite) return crossSite;
+      if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
+      const clientId = url.searchParams.get("clientId") || "";
+      const token = url.searchParams.get("session") || "";
+      if (!REMOTE_CLIENT_ID.test(clientId) || !RELAY_TOKEN_PATTERN.test(token)) {
+        return jsonError("A workstation id and session are required", 400, jsonHeaders);
+      }
+      return relayUpgrade(env, currentTenant!.id, clientId, "console", await hashRelayToken(token), session!.user_id);
     }
 
     // POST /api/clients/remove: Decommission a workstation
@@ -2894,14 +3009,6 @@ export default {
 
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
-        // The hosted demo's tunnel belongs to web-demo only. Handed to anyone
-        // else it sent their Remote Control -- VNC password included -- to
-        // <pc>.demo.<domain>, a host in another organization's namespace. The
-        // local demos take no fallback at all (demoTunnelFallback).
-        tunnelDomain: tenant.tunnel_domain ||
-          (isDemoTenant(tenant, session.user_id)
-            ? demoTunnelFallback(tenant.subdomain as DemoSlug, env.TUNNEL_DOMAIN)
-            : env.TUNNEL_DOMAIN || ""),
         defaultHomepage: env.DEFAULT_HOMEPAGE || DEFAULT_CONFIG.defaultHomepage,
         homeRoute: tenant.home_route || "/",
         whitelist

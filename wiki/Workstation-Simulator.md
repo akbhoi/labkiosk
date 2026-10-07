@@ -11,12 +11,12 @@ A Docker container that behaves like an enrolled thin client — real agent, rea
 ├── Xvfb                  :0 display buffer, 1920x1080x24
 ├── Openbox               stripped rc.xml, same as the real image
 ├── x11vnc                localhost:5900, password from /tmp/labkiosk/vnc.pass
-├── websockify            bridges :5900 to port 6080 with the noVNC client
+├── websockify            bridges :5900 to port 6080 with the noVNC client (simulator only)
 ├── Chromium              --kiosk, loading /opt/labkiosk/extension
 └── agent.py              status, screenshots via scrot, policy sync
 ```
 
-> The image is defined by the **repository-root `Dockerfile`**, not by anything in `docker-test/`. There used to be a near-identical `docker-test/Dockerfile`; it drifted out of step — it lost `alsa-utils`, so the operator's `mute` command failed in that variant alone — and was removed. `docker-test/` holds the entrypoint and its docs.
+> The image is defined by the **repository-root `Dockerfile`**, not by anything in `docker-test/`. There used to be a near-identical `docker-test/Dockerfile`; it drifted out of step — it lost `alsa-utils`, so the operator's `mute` command failed in that variant alone — and was removed. `docker-test/` holds the entrypoint, the simulator's noVNC pin (`novnc.pin`, installed by `install-novnc.sh`) and its docs.
 
 ---
 
@@ -27,7 +27,7 @@ These are intentional, and each one matters when you are reasoning about a bug:
 | Aspect | Simulator | Real image |
 | :--- | :--- | :--- |
 | **Chromium sandbox** | Full sandbox, as the unprivileged `kiosk` user — same as the real image. `--no-sandbox` only if the container is started as root, with a warning in the log | Full sandbox, running as unprivileged `kiosk` |
-| **websockify binding** | `0.0.0.0:6080` inside the container, published only on the host's `127.0.0.1` | `127.0.0.1:6080`, reachable only through a Cloudflare Tunnel |
+| **websockify / noVNC** | `0.0.0.0:6080` inside the container, published only on the host's `127.0.0.1`, so you can watch the screen | None: Remote Control goes from loopback x11vnc through the agent to the console's relay (the same path works against the simulator) |
 | **Filesystem** | Read-only root, tmpfs for `/tmp`, `/run`, `/etc/labkiosk` and the Chromium policy directory | Read-only root with an `overlayroot="tmpfs"` RAM overlay |
 | **Agent API** | `127.0.0.1:8888` — **unchanged** | `127.0.0.1:8888` |
 
@@ -54,7 +54,7 @@ docker compose up -d
 docker compose pull && docker compose up -d
 ```
 
-Open `http://localhost:6080/vnc.html`. The VNC password is `labkiosk`.
+Open `http://localhost:6080/vnc.html`. The VNC password is random per container and printed in `docker compose logs`.
 
 > The image **bakes the client source in** — the Dockerfile copies `agent.py`, the extension, and the wizard into it. A *pulled* image therefore runs `main`'s client code, not your edits. While working on the client, use `docker compose up -d --build`, or use the `docker cp` recipes below.
 
@@ -132,7 +132,6 @@ Set in `docker-compose.yml`:
 | `WORKER_URL` | `http://host.docker.internal:8787` | Control plane target. Point it at a deployed worker to test against staging. |
 | `LABKIOSK_DOMAIN` | `labkiosk.org` | Base platform domain shown in the wizard |
 | `VNC_PASSWORD` | random per container | The noVNC session password; printed in the startup log when generated |
-| `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional hostname to report as `remoteHost`, exercising the Remote Control button |
 
 ---
 
@@ -157,7 +156,6 @@ Back to an un-enrolled first-boot state. All ephemeral state — browser profile
 | Image switching: the one-try boot, `labkiosk-boot-ok` and rollback, and the boot reports they produce | `distro-builder/tests/vm/boot-test.sh` (QEMU + KVM), which `build-iso.yml` runs after every ISO build |
 | TTY masking, VT switching, polkit | Real hardware or a full VM |
 | Chromium's sandbox outside a container | The real image — the simulator keeps the sandbox on, but inside a container |
-| Cloudflare Tunnel | A provisioned tunnel |
 
 Use it for the agent, the extension, telemetry, the wizard, and anything about the control plane. For anything about booting, use a VM.
 

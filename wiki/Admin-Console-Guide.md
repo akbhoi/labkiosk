@@ -29,7 +29,7 @@ Every enrolled workstation appears as a live telemetry card refreshed from `/api
 - **Online Indicator**: Derived from `last_seen`; stale after 20 seconds.
 - **Active URL**: Where the machine is currently pointing.
 - **Lock State**: Whether the fullscreen lock curtain is currently up.
-- **Remote Control**: Enabled when the workstation reports a secure Cloudflare Tunnel host.
+- **Remote Control**: Opens the workstation's desktop through the console's relay; the workstation must be connected on its control channel (`workstations` permission).
 
 Workstations in the main canvas are partitioned into collapsible **Group Sections** with headers, chevron collapse toggles, and group-wide selection checkboxes. Collapse states persist in `localStorage`.
 
@@ -138,7 +138,7 @@ Structured into 5 semantic, deep-linkable tab panes (`?tab=...`) with horizontal
 
 ### 2. Domains & Network (`?tab=domains`)
 
-- **Organization Subdomain & VNC Tunnel**: Subdomain slug customization and Cloudflare Tunnel hostname.
+- **Organization Subdomain Customization**: Subdomain slug customization.
 - **White-Label Custom Domain**: Request binding a custom FQDN (e.g. `kiosk.example.com`) with CNAME instructions and status indicators.
 
 ### 3. Organization Homepage (`?tab=homepage`)

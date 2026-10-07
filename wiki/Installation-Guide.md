@@ -174,11 +174,9 @@ Then, from the admin console:
 
 ---
 
-## Optional — remote control
+## Remote control
 
-Interactive remote desktop needs a per-workstation Cloudflare Tunnel, which is not part of the base image because per-machine credentials cannot be baked into a generic ISO.
-
-**Everything else works without it**: live thumbnails, lock curtains, broadcasts, reload, reboot, shutdown, and mute. Only the interactive session requires a tunnel.
+Interactive remote desktop needs no setup: an operator with the `workstations` permission clicks **Remote Control** on a workstation's card, and the session goes through a relay on the console's own address, over the same outbound connection the workstation already holds. Nothing is provisioned per workstation and no inbound port is opened.
 
 → [Remote Control](Remote-Control)
 

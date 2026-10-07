@@ -8,7 +8,7 @@ How `cloudflare-control/` is put together, and the rules for changing it.
 
 ```text
 cloudflare-control/
-├── migrations/             D1 SQL migrations 0001..0018
+├── migrations/             D1 SQL migrations 0001..0019
 ├── src/
 │   ├── index.ts            Router, REST endpoints, scheduled(), queue()
 │   ├── org_hub.ts          OrgHub: one Durable Object per organization
@@ -129,7 +129,7 @@ Consumes the `labkiosk-audit` queue: `writeAuditLog()` sends entries there, and 
 | `escapeAttr(value)` | Alias of `escapeHtml`; use it in attributes for intent |
 | `escapeJson(value)` | **Required** for anything inlined into a `<script>` block. Also escapes U+2028 / U+2029, which are valid JSON but terminate a JS line |
 | `cleanSubdomain(raw)` | Normalises a requested slug |
-| `cleanCustomDomain(raw)` | Validates an FQDN; also used for `remoteHost` from telemetry |
+| `cleanCustomDomain(raw)` | Validates an FQDN |
 | `safeHttpUrl(raw)` | `http(s)` only; prepends `https://` to a scheme-less domain, so `canvas.example.com` is accepted |
 
 ---

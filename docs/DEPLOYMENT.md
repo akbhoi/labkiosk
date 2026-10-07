@@ -147,6 +147,8 @@ provisioned by a Workflow. **A production worker refuses to start without every 
 | Binding | What it is | Create it |
 | :--- | :--- | :--- |
 | `ORG_HUB` | Durable Object class `OrgHub` (SQLite-backed) | Nothing to create: the first deploy applies the `v1-org-hub` migration in `wrangler.jsonc`. |
+| `REMOTE_RELAY` | Durable Object class `RemoteRelay` (SQLite-backed), one per workstation while Remote Control is open | Nothing to create: the first deploy applies the `v2-remote-relay` migration. |
+| `ASSETS` | Static assets in `public/`: the noVNC client the Remote Control viewer loads from `/novnc/` | Nothing: `wrangler dev` and `wrangler deploy` run `scripts/stage-novnc.mjs` (`build.command`), which copies the exactly pinned `@novnc/novnc` from `node_modules`, so run `pnpm install` first. |
 | `AUDIT_QUEUE` | Queue `labkiosk-audit`, dead-letter queue `labkiosk-audit-dlq` | `npx wrangler queues create labkiosk-audit` and `npx wrangler queues create labkiosk-audit-dlq` |
 | `AUDIT_ARCHIVE` | R2 bucket `labkiosk-audit-archive` (audit entries older than 180 days, as NDJSON) | `npx wrangler r2 bucket create labkiosk-audit-archive` |
 | `FLEET_METRICS` | Analytics Engine dataset `labkiosk_fleet` (connects and disconnects) | Nothing: it is created on first write. |
@@ -154,6 +156,13 @@ provisioned by a Workflow. **A production worker refuses to start without every 
 | `CUSTOM_HOSTNAMES` | Workflow `labkiosk-custom-hostnames` | Nothing: created on deploy. |
 | `CF_API_TOKEN` | Secret: an API token for the zone with **SSL and Certificates: Edit** (custom hostnames) | `npx wrangler secret put CF_API_TOKEN` |
 | `CF_ZONE_ID` | Secret: the zone id of your platform domain | `npx wrangler secret put CF_ZONE_ID` |
+
+**Remote Control cost.** A Remote Control session is one `RemoteRelay` Durable Object holding two
+WebSockets (the operator's viewer and the workstation's agent) for as long as the session is open,
+so it is billed as Durable Object duration while open plus WebSocket messages at 20:1. Both sides
+send a small keepalive every 30 s, which the relay answers without waking. On the Workers Paid plan
+this is roughly a cent or less per hour of active session (estimated, not measured); on the Free plan it counts against the daily Durable
+Object allowance. Nothing runs while no session is open.
 
 **Custom domains (Cloudflare for SaaS).** When a super admin approves an organization's custom
 domain, the Workflow creates a custom hostname on your zone, waits for its certificate, and records
@@ -250,7 +259,6 @@ Configure production variables in the **Cloudflare Dashboard**:
      `www.labkiosk.yourdomain.com`). It must be `DEFAULT_DOMAIN` or a host under it; without it the
      apex is canonical.
    - `ISO_DOWNLOAD_URL`: Direct link to download the live bootable Debian 12 Kiosk ISO (e.g. GitHub Releases artifact).
-   - `TUNNEL_DOMAIN`: Base domain for remote assistance tunnels (e.g. `labkiosk.yourdomain.com`).
    - `GITHUB_ISSUES_REPO` (optional): `owner/repo` for automatic bug reports (see "Automatic bug reports").
 
 ---
@@ -379,9 +387,8 @@ For workstations running Lab Kiosk OS to communicate reliably with the Cloudflar
 
 Organization firewalls should permit outbound connections for the following ports and hosts:
 
-- **HTTPS (`TCP 443`):** To `<organization>.labkiosk.yourdomain.com` (the control channel, enrollment, and web pages). The control channel is a long-lived WebSocket; a proxy that refuses WebSocket upgrades only costs efficiency, because the agent falls back to the 3-second HTTPS heartbeat after three failed attempts.
+- **HTTPS (`TCP 443`):** To `<organization>.labkiosk.yourdomain.com` (the control channel, enrollment, Remote Control sessions, and web pages). The control channel is a long-lived WebSocket; a proxy that refuses WebSocket upgrades only costs efficiency, because the agent falls back to the 3-second HTTPS heartbeat after three failed attempts.
 - **DNS (`UDP/TCP 53`):** To organization DNS servers or public resolvers (`1.1.1.1`, `8.8.8.8`).
-- **Cloudflare Tunnel (`TCP 7844` / `UDP 7844` QUIC):** Optional, required only if remote desktop assistance via `cloudflared` is deployed.
 
 ### Network Addressing & Proxy Architecture
 

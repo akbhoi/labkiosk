@@ -49,7 +49,7 @@ There is no hard limit. Each workstation is one row in `client_devices` and one 
 Yes. Request it in Settings, create a `CNAME` to the platform apex, and a super admin approves it. → [Super Admin Guide](Super-Admin-Guide#custom-domains)
 
 **Do I need Cloudflare Tunnels?**
-Only for interactive remote control. Thumbnails, lock, broadcast, reload, reboot, shutdown, and mute all work without one.
+No. Remote Control goes through a relay on the console's own address, over the same outbound connection the workstation already uses; nothing is installed or provisioned per workstation. → [Remote Control](Remote-Control)
 
 **How do I move a workstation to a different organization?**
 Remove it from the dashboard: within one heartbeat it shows the **Register this workstation again** form. Or, on the workstation, open the network page from the top bar and choose **Register with Another Organization…**. Either way, enter the administrator (boot) password, then the new organization's subdomain and key.
@@ -86,7 +86,7 @@ In transit, by HTTPS. At rest in D1, no. Anyone with database access can see the
 No. Every query filters by `tenant_id` and every route carries a guard; the test suite asserts an operator at one organization gets `403` for another's console, clients, and commands.
 
 **Is the 8-character VNC password a problem?**
-Yes, if it is your only control. The RFB protocol truncates passwords to 8 characters, so it is about 32 bits however you generate it. **Put a Cloudflare Access policy in front of every tunnel hostname.** → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
+It would be, if it were the only control. The RFB protocol truncates passwords to 8 characters, so it is about 32 bits however you generate it. It is not: x11vnc listens on loopback only, and Remote Control reaches it only through the console's relay, which requires the console sign-in, the `workstations` permission and a one-time session token. → [Remote Control](Remote-Control#why-eight-characters)
 
 ---
 

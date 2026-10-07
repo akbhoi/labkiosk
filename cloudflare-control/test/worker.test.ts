@@ -39,6 +39,16 @@ import {
   redactProblemText
 } from "../src/bug_reports";
 import { HUB_PING, HUB_PONG } from "../src/org_hub";
+import {
+  RemoteRelay,
+  RELAY_JOIN_SECONDS,
+  RELAY_MAX_SECONDS,
+  RELAY_READY,
+  CLOSE_RELAY_PEER_GONE,
+  CLOSE_RELAY_REPLACED,
+  hashRelayToken,
+  relayName
+} from "../src/remote_relay";
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
@@ -94,6 +104,72 @@ async function callJson<T = any>(path: string, init: RequestInit & { cookie?: st
   const res = await call(path, init);
   const data = (await res.json()) as T;
   return { res, data };
+}
+
+/** The parts of the Durable Object runtime RemoteRelay uses, in this process. */
+class FakeRelaySocket {
+  readonly sent: Array<string | ArrayBuffer> = [];
+  closedWith: { code: number; reason: string } | null = null;
+  private attachment: unknown = null;
+  constructor(private readonly state: FakeRelayState) {}
+  send(message: string | ArrayBuffer): void {
+    if (this.closedWith) throw new Error("WebSocket is closed");
+    this.sent.push(message);
+  }
+  close(code = 1000, reason = ""): void {
+    if (this.closedWith) return;
+    this.closedWith = { code, reason };
+    this.state.sockets.delete(this);
+  }
+  serializeAttachment(value: unknown): void {
+    this.attachment = structuredClone(value);
+  }
+  deserializeAttachment(): unknown {
+    return this.attachment === null ? null : structuredClone(this.attachment);
+  }
+}
+
+class FakeRelayState {
+  readonly sockets = new Map<FakeRelaySocket, string[]>();
+  alarmAt: number | null = null;
+  private readonly db = new DatabaseSync(":memory:");
+  readonly storage = {
+    sql: {
+      exec: (query: string, ...bindings: unknown[]) => {
+        const rows = this.db.prepare(query).all(...(bindings as never[]));
+        return { toArray: () => rows };
+      }
+    },
+    setAlarm: async (when: number) => {
+      this.alarmAt = when;
+    }
+  };
+  acceptWebSocket(ws: FakeRelaySocket, tags: string[]): void {
+    this.sockets.set(ws, tags);
+  }
+  getWebSockets(tag?: string): FakeRelaySocket[] {
+    return [...this.sockets.entries()].filter(([, tags]) => !tag || tags.includes(tag)).map(([ws]) => ws);
+  }
+  setWebSocketAutoResponse(): void {}
+}
+
+/** A REMOTE_RELAY namespace of in-process relays, by name. */
+function fakeRelayNamespace() {
+  const relays = new Map<string, { relay: RemoteRelay; state: FakeRelayState }>();
+  const entry = (name: string) => {
+    let found = relays.get(name);
+    if (!found) {
+      const state = new FakeRelayState();
+      found = { relay: new RemoteRelay(state as unknown as DurableObjectState, mockEnv), state };
+      relays.set(name, found);
+    }
+    return found;
+  };
+  const namespace = {
+    idFromName: (name: string) => ({ toString: () => name }),
+    get: (id: { toString(): string }) => ({ fetch: (req: Request) => entry(id.toString()).relay.fetch(req) })
+  } as unknown as DurableObjectNamespace;
+  return { namespace, entry };
 }
 
 describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
@@ -2062,8 +2138,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(cleanCustomDomain("https://Kiosk.Example.com:8443/path/to/page"), "kiosk.example.com");
     assert.equal(cleanCustomDomain("pc-01.labkiosk.example.com"), "pc-01.labkiosk.example.com");
     assert.equal(cleanCustomDomain("not a domain"), null);
-    // A run of "/" made the old path pattern quadratic (CodeQL js/polynomial-redos),
-    // and a workstation's remoteHost reaches this function.
+    // A run of "/" made the old path pattern quadratic (CodeQL js/polynomial-redos).
     const started = performance.now();
     assert.equal(cleanCustomDomain("/".repeat(200_000)), null);
     assert.equal(cleanCustomDomain("kiosk.example.com" + "/".repeat(2000)), "kiosk.example.com");
@@ -2081,7 +2156,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // --------------------------------------------------------- remote control
 
-  test("Stores the remote-control details a workstation reports and shows them to its operator", async () => {
+  test("Stores the VNC password a workstation reports and shows it to its operator", async () => {
+    // An older agent still sends remoteHost; it is ignored and never shown.
     const reported = await callJson("/api/telemetry", {
       ...json({ vncPassword: "s3cr3t42", remoteHost: "PC-02.lab.greenwood.example" }),
       bearer: deviceToken
@@ -2090,13 +2166,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     let { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
     assert.equal(data.clients["PC-02"].vncPassword, "s3cr3t42");
-    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.example");
+    assert.equal(data.clients["PC-02"].remoteHost, undefined);
 
-    // A heartbeat that omits them keeps what is known; a garbage host is ignored.
-    await callJson("/api/telemetry", { ...json({ remoteHost: "not a host!" }), bearer: deviceToken });
+    // A heartbeat that omits it keeps what is known.
+    await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
     ({ data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie }));
     assert.equal(data.clients["PC-02"].vncPassword, "s3cr3t42");
-    assert.equal(data.clients["PC-02"].remoteHost, "pc-02.lab.greenwood.example");
 
     // Another organization's operator never sees them.
     const rival = await call("/api/clients?tenant=greenwood", { cookie: rivalSessionCookie });
@@ -2492,6 +2567,175 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.deepEqual({ ...cleared }, { custom_domain: null, custom_hostname_id: null, custom_hostname_status: "none" });
   });
 
+  // ------------------------------------------------- Remote Control through the relay
+
+  test("Remote Control relay: a session pairs the console and the workstation, and either leaving ends it", async () => {
+    const state = new FakeRelayState();
+    const relay = new RemoteRelay(state as unknown as DurableObjectState, mockEnv);
+    assert.equal(relay.bind("tenant-a:PC-01"), true);
+    assert.equal(relay.bind("tenant-b:PC-01"), false, "a relay serves one workstation only");
+    const token = "a".repeat(64);
+    const hash = await hashRelayToken(token);
+    const now = Math.floor(Date.now() / 1000);
+
+    assert.equal(relay.joinRefusal("device", hash, "", now)?.status, 403, "no session is open yet");
+    await relay.open(hash, "user-1", now);
+    assert.equal(state.alarmAt, (now + RELAY_JOIN_SECONDS) * 1000, "an unjoined session is swept");
+    assert.equal(relay.joinRefusal("device", await hashRelayToken("b".repeat(64)), "", now)?.status, 403, "another token");
+    assert.equal(relay.joinRefusal("console", hash, "user-2", now)?.status, 403, "another operator");
+    assert.equal(relay.joinRefusal("device", hash, "", now + RELAY_JOIN_SECONDS + 1)?.status, 410, "too late");
+
+    // The workstation arrives first and waits: x11vnc speaks first, so nothing
+    // may reach it before noVNC is there.
+    assert.equal(relay.joinRefusal("device", hash, "", now), null);
+    const device = new FakeRelaySocket(state);
+    await relay.accept(device as unknown as WebSocket, "device", hash);
+    assert.deepEqual(device.sent, []);
+    assert.equal(relay.joinRefusal("device", hash, "", now)?.status, 409, "one workstation per session");
+    const console_ = new FakeRelaySocket(state);
+    await relay.accept(console_ as unknown as WebSocket, "console", hash);
+    assert.deepEqual(device.sent, [RELAY_READY]);
+    assert.equal(state.alarmAt, (now + RELAY_MAX_SECONDS) * 1000, "a joined session runs to its time limit");
+
+    const greeting = new TextEncoder().encode("RFB 003.008\n").buffer as ArrayBuffer;
+    await relay.webSocketMessage(device as unknown as WebSocket, greeting);
+    assert.equal(console_.sent[0], greeting, "the workstation's bytes reach noVNC");
+    const input = new Uint8Array([4, 1, 0, 0, 0, 0, 0, 0x61]).buffer;
+    await relay.webSocketMessage(console_ as unknown as WebSocket, input);
+    assert.equal(device.sent[1], input, "noVNC's bytes reach the workstation");
+    await relay.webSocketMessage(console_ as unknown as WebSocket, "not vnc");
+    assert.equal(device.sent.length, 2, "text is never passed on");
+
+    await relay.webSocketClose(console_ as unknown as WebSocket, 1001, "", true);
+    assert.equal(device.closedWith?.code, CLOSE_RELAY_PEER_GONE);
+    assert.equal(relay.joinRefusal("console", hash, "user-1", now)?.status, 403, "an ended session cannot be rejoined");
+  });
+
+  test("Remote Control relay: a new session replaces the old one, and a session nobody joins is closed", async () => {
+    const state = new FakeRelayState();
+    const relay = new RemoteRelay(state as unknown as DurableObjectState, mockEnv);
+    relay.bind("tenant-a:PC-02");
+    const now = Math.floor(Date.now() / 1000);
+    const first = await hashRelayToken("c".repeat(64));
+    await relay.open(first, "user-1", now);
+    const oldConsole = new FakeRelaySocket(state);
+    await relay.accept(oldConsole as unknown as WebSocket, "console", first);
+
+    const second = await hashRelayToken("d".repeat(64));
+    await relay.open(second, "user-2", now);
+    assert.equal(oldConsole.closedWith?.code, CLOSE_RELAY_REPLACED);
+    await relay.webSocketClose(oldConsole as unknown as WebSocket, CLOSE_RELAY_REPLACED, "", true);
+    assert.equal(relay.joinRefusal("console", second, "user-2", now), null, "the old session's close does not end the new one");
+
+    const waiting = new FakeRelaySocket(state);
+    await relay.accept(waiting as unknown as WebSocket, "console", second);
+    const realNow = Date.now;
+    Date.now = () => (now + RELAY_JOIN_SECONDS + 1) * 1000;
+    try {
+      await relay.alarm();
+    } finally {
+      Date.now = realNow;
+    }
+    assert.match(waiting.closedWith?.reason || "", /did not join/);
+  });
+
+  test("Remote Control relay routes: only the organization's staff open a session, and the workstation is asked to join", async () => {
+    const tenantId = await greenwoodId();
+    const relays = fakeRelayNamespace();
+    const relayEnv = { ...mockEnv, REMOTE_RELAY: relays.namespace } as Env;
+    const open = (clientId: string, cookie?: string, env: Env = relayEnv) =>
+      worker.fetch(request("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId }), cookie }), env);
+
+    for (const cookie of [undefined, rivalSessionCookie]) {
+      assert.ok([401, 403].includes((await open("WS-R", cookie)).status), "only this organization's staff");
+    }
+    assert.equal((await open("WS-R", orgSessionCookie, mockEnv)).status, 503, "no relay binding, no session");
+    assert.equal((await open("ws r", orgSessionCookie)).status, 400);
+    assert.equal((await open("WS-R", orgSessionCookie)).status, 409, "a workstation that is not connected");
+
+    await enrolAs("WS-R");
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-R", ip: "10.0.0.9", portal: portalContext() });
+    const opened = await open("WS-R", orgSessionCookie);
+    assert.equal(opened.status, 200);
+    const body = await opened.json<any>();
+    const [remote] = ofType(device, "remote");
+    const asked = { session: String(remote?.session) };
+    assert.match(asked.session, /^[0-9a-f]{64}$/, "the workstation was asked over its own connection");
+    const socketUrl = new URL(body.socketPath, BASE);
+    assert.equal(socketUrl.pathname, "/api/console/remote");
+    assert.equal(socketUrl.searchParams.get("session"), asked.session);
+    assert.equal(socketUrl.searchParams.get("clientId"), "WS-R");
+    const relayState = relays.entry(relayName(tenantId, "WS-R")).state;
+    const stored = relayState.storage.sql.exec("SELECT token_hash FROM session").toArray() as unknown as Array<{ token_hash: string }>;
+    assert.equal(stored[0].token_hash, await hashRelayToken(asked.session), "only the hash is stored");
+
+    // noVNC's side: the operator's cookie, from this site, with the session.
+    const consoleSide = (query: string, init: RequestInit & { cookie?: string } = {}) =>
+      worker.fetch(request(`/api/console/remote?tenant=greenwood&${query}`, init), relayEnv);
+    const upgrade = { Upgrade: "websocket", Origin: BASE };
+    const query = `clientId=WS-R&session=${asked.session}`;
+    assert.equal((await consoleSide(query, { cookie: orgSessionCookie })).status, 426);
+    assert.ok([401, 403].includes((await consoleSide(query, { headers: upgrade })).status));
+    assert.ok([401, 403].includes((await consoleSide(query, { headers: upgrade, cookie: rivalSessionCookie })).status));
+    for (const origin of ["https://evil.example", "https://labkiosk.org.evil.example"]) {
+      assert.equal((await consoleSide(query, { headers: { ...upgrade, Origin: origin }, cookie: orgSessionCookie })).status, 403, origin);
+    }
+    assert.equal((await consoleSide("clientId=WS-R&session=zz", { headers: upgrade, cookie: orgSessionCookie })).status, 400);
+    assert.equal((await consoleSide(`clientId=WS-R&session=${"e".repeat(64)}`, { headers: upgrade, cookie: orgSessionCookie })).status, 403);
+    assert.equal(
+      (await consoleSide(query, { headers: upgrade, cookie: orgSessionCookie })).status,
+      501,
+      "the right operator and session reach the relay's upgrade (Node has no WebSocketPair)"
+    );
+
+    // The workstation's side: its own token decides which relay it reaches.
+    const deviceSide = (headers: Record<string, string>, bearer?: string) =>
+      worker.fetch(request("/api/devices/remote", { headers, bearer }), relayEnv);
+    const token = await enrolAs("WS-R2");
+    assert.equal((await deviceSide({ "X-Labkiosk-Session": asked.session }, token)).status, 426);
+    const deviceUpgrade = { Upgrade: "websocket" };
+    assert.equal((await deviceSide({ ...deviceUpgrade, "X-Labkiosk-Session": asked.session }, "f".repeat(64))).status, 401);
+    assert.equal((await deviceSide(deviceUpgrade, token)).status, 400);
+    assert.equal(
+      (await deviceSide({ ...deviceUpgrade, "X-Labkiosk-Session": asked.session }, token)).status,
+      403,
+      "another workstation holding the session token still reaches only its own relay"
+    );
+    await device.closeFromClient();
+  });
+
+  test("The Remote Control viewer is framed only by the console and loads noVNC from this site", async () => {
+    assert.ok([401, 403].includes((await call("/console/remote?tenant=greenwood&clientId=WS-R")).status));
+    assert.ok([401, 403].includes((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: rivalSessionCookie })).status));
+    assert.equal((await call("/console/remote?tenant=greenwood&clientId=%3Cx%3E", { cookie: orgSessionCookie })).status, 400);
+    const res = await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie });
+    assert.equal(res.status, 200);
+    const csp = res.headers.get("content-security-policy") || "";
+    assert.match(csp, /script-src 'nonce-[^']+' 'self'/);
+    assert.match(csp, /frame-ancestors 'self'/);
+    assert.equal(res.headers.get("x-frame-options"), "SAMEORIGIN");
+    const html = await res.text();
+    assert.match(html, /<script type="module" nonce="[^"]+">\s*import RFB from "\/novnc\/core\/rfb\.js";/);
+    assert.ok(!/ on[a-z]+="/.test(html), "no inline handlers");
+
+    // Every other page still refuses to be framed.
+    const grid = await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.match(grid.headers.get("content-security-policy") || "", /frame-ancestors 'none'/);
+    assert.match(grid.headers.get("content-security-policy") || "", /frame-src 'self';/);
+
+    // noVNC itself comes from static assets, and only from there.
+    assert.equal((await call("/novnc/core/rfb.js")).status, 404, "no assets binding, nothing served");
+    const served: string[] = [];
+    const assetsEnv = {
+      ...mockEnv,
+      ASSETS: { fetch: async (req: Request) => { served.push(new URL(req.url).pathname); return new Response("export default 1;", { headers: { "Content-Type": "text/javascript" } }); } }
+    } as unknown as Env;
+    const asset = await worker.fetch(request("/novnc/core/rfb.js"), assetsEnv);
+    assert.equal(asset.status, 200);
+    assert.equal(asset.headers.get("x-content-type-options"), "nosniff");
+    assert.deepEqual(served, ["/novnc/core/rfb.js"]);
+  });
+
   // --------------------------------------------------------- suspend organization
 
   test("Lets the super admin suspend and reactivate an organization", async () => {
@@ -2595,13 +2839,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await assert.rejects(
       () => worker.fetch(request("/"), secrets as Env),
       (err: Error) =>
-        ["ORG_HUB", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
+        ["ORG_HUB", "REMOTE_RELAY", "ASSETS", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
           .every((name) => err.message.includes(name))
     );
     // With them bound, the same database serves normally.
     const res = await worker.fetch(request("/"), {
       ...secrets,
       ORG_HUB: {} as DurableObjectNamespace,
+      REMOTE_RELAY: {} as DurableObjectNamespace,
+      ASSETS: {} as Fetcher,
       AUDIT_QUEUE: { send: async () => undefined } as unknown as Queue,
       AUDIT_ARCHIVE: {} as R2Bucket,
       FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
@@ -2777,19 +3023,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.doesNotMatch(directory, />demo\.labkiosk\.org/);
   });
 
-  test("The local demos have no domain and no tunnel, even when the deployment sets one", async () => {
-    const withTunnel = { ...mockEnv, TUNNEL_DOMAIN: "tunnels.example.com" } as Env;
-    const settings = async (tenant: string, cookie: string) =>
-      (await worker.fetch(request(`/admin/settings?tenant=${tenant}&tab=domains`, { cookie }), withTunnel)).text();
-    const tunnelOf = (html: string) => html.match(/id="setting-tunnel-domain" value="([^"]*)"/)![1];
-
+  test("The local demos have no custom domain", async () => {
     for (const slug of ["local-demo", "docker-demo"]) {
-      const html = await settings(slug, superSessionCookie);
-      assert.equal(tunnelOf(html), "", `${slug} has no tunnel domain`);
+      const html = await (await call(`/admin/settings?tenant=${slug}&tab=domains`, { cookie: superSessionCookie })).text();
       assert.match(html, /<input type="text" class="form-input" id="setting-custom-domain" placeholder=/, `${slug} has no custom domain`);
+      assert.doesNotMatch(html, /setting-tunnel-domain/, "Settings has no tunnel domain");
     }
-    assert.equal(tunnelOf(await settings("web-demo", superSessionCookie)), "demo.labkiosk.org", "the hosted demo keeps its own tunnel");
-    assert.equal(tunnelOf(await settings("greenwood", orgSessionCookie)), "tunnels.example.com", "an ordinary organization still inherits it");
   });
 
   test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
@@ -3250,12 +3489,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
   });
 
-  test("Updates Settings including custom home route and tunnel domain", async () => {
+  test("Updates Settings including custom home route", async () => {
     // 1. Update settings
     const { res: setRes, data: setData } = await callJson("/api/tenant/settings?tenant=greenwood", {
       ...json({
         homeRoute: "/home",
-        tunnelDomain: "custom-tunnel.example.com",
+        tunnelDomain: "ignored.example.com",
         portalTitle: "Greenwood STEM Portal"
       }),
       cookie: orgSessionCookie
@@ -3263,7 +3502,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(setRes.status, 200);
     assert.equal(setData.status, "ok");
     assert.equal(setData.updates.home_route, "/home");
-    assert.equal(setData.updates.tunnel_domain, "custom-tunnel.example.com");
+    assert.equal(setData.updates.tunnel_domain, undefined, "the retired tunnel domain is not stored");
 
     // 2. /home route serves the user portal
     const homeRes = await call("/home?tenant=greenwood");
@@ -3273,7 +3512,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Reset settings
     await callJson("/api/tenant/settings?tenant=greenwood", {
-      ...json({ homeRoute: "/", tunnelDomain: "" }),
+      ...json({ homeRoute: "/" }),
       cookie: orgSessionCookie
     });
   });
@@ -3288,13 +3527,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(privHtml, /COPPA/);
     assert.match(privHtml, /100% In-Memory RAM Overlay/);
     // Every Cloudflare service the worker binds is disclosed, with Cloudflare's privacy terms.
-    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Cloudflare Tunnel", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
+    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
       assert.ok(privHtml.includes(`<strong>${service}`) || privHtml.includes(`and ${service}`), `the Privacy Policy names ${service}`);
     }
     assert.match(privHtml, /href="https:\/\/www\.cloudflare\.com\/cloudflare-customer-dpa\/"/);
     assert.match(privHtml, /href="\/terms\/bug-reports"/);
     const privCsp = privRes.headers.get("Content-Security-Policy") || "";
     assert.match(privCsp, /script-src 'nonce-[^']+'/);
+    assert.doesNotMatch(privHtml, /Cloudflare Tunnel/, "remote control no longer uses a tunnel");
 
     // /terms
     const termsRes = await call("/terms");
@@ -3630,14 +3870,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
   });
 
-  test("Remote Control never borrows the demo tunnel or puts the VNC password in a query string", async () => {
-    // An organization without a tunnel of its own used to fall back to the demo
-    // organization's, sending its VNC password to <pc>.demo.<domain>.
+  test("Remote Control opens the relay viewer on the console's own address, password in the fragment", async () => {
     const ws = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
-    assert.doesNotMatch(ws, /TUNNEL_DOMAIN = "demo\./, "another organization's tunnel is never the default");
+    assert.match(ws, /labkioskApi\("\/console\/remote\?"/);
+    assert.doesNotMatch(ws, /TUNNEL_DOMAIN|remoteHost|:6080/, "no workstation address is built");
     assert.doesNotMatch(ws, /params\.set\("password"/, "the password goes in the fragment, never the query");
-    const settings = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
-    assert.match(settings, /id="setting-tunnel-domain" value=""/, "no tunnel domain is pre-filled");
   });
 
   test("Workstation groups are rendered on the Workstations page", async () => {
@@ -4251,7 +4488,27 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0016"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0017"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0018"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0019"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
+  });
+
+  test("0019 drops the tunnel columns and keeps every organization, workstation and session", () => {
+    const db = migratedDb("0019");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, tunnel_domain, created_at, updated_at) VALUES ('t1', 'u1', 'Acme', 'acme', 'active', 'tunnels.example.com', 1, 1);
+      INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES ('s1', 'u1', 't1', 'org_admin', 99999999999);
+      INSERT INTO client_devices (id, tenant_id, client_id, vnc_password, remote_host, last_seen, created_at, updated_at) VALUES ('t1:PC', 't1', 'PC', 'pw', 'pc.tunnels.example.com', 1, 1, 1);
+    `);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0019_drop_remote_tunnel_columns.sql"), "utf8"));
+    db.exec("COMMIT;");
+    const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    assert.deepEqual([count("users"), count("tenants"), count("sessions"), count("client_devices")], [1, 1, 1, 1]);
+    const columns = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    assert.ok(!columns("tenants").includes("tunnel_domain"));
+    assert.ok(!columns("client_devices").includes("remote_host"));
+    assert.equal((db.prepare("SELECT vnc_password FROM client_devices").get() as { vnc_password: string }).vnc_password, "pw");
   });
 
   test("0013 removes the old demo and everything in it, and nothing else", async () => {

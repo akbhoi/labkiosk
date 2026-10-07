@@ -56,7 +56,6 @@ export interface Tenant {
   homepage_intro?: string | null;
   /** A JSON array of HomepageBlock; read it with parseHomepageBlocks. */
   homepage_blocks?: string | null;
-  tunnel_domain?: string | null;
   /** Workstations online, as the organization's OrgHub last counted them. */
   online_workstations?: number;
   /** Cloudflare for SaaS custom hostname id for `custom_domain`, once provisioned. */
@@ -113,8 +112,6 @@ export interface ClientDevice {
   active_url?: string | null;
   /** x11vnc password the workstation generated at boot; reported over telemetry. */
   vnc_password?: string | null;
-  /** Hostname the workstation's noVNC gateway is reachable on (Cloudflare Tunnel). */
-  remote_host?: string | null;
   group_name?: string | null;
   /** Last broadcast addressed to this workstation alone; NULL with an epoch is a reset. */
   broadcast_url?: string | null;
@@ -207,7 +204,6 @@ export interface ClientTelemetry {
   lastSeen?: string;
   online?: boolean;
   vncPassword?: string;
-  remoteHost?: string;
   groupName?: string;
 }
 
@@ -231,7 +227,6 @@ export interface LabConfig {
   version: number;
   updatedAt: string;
   defaultHomepage: string;
-  tunnelDomain: string;
   homeRoute?: string;
   /** Effective allowlist for this organization: its own domains plus portal app hosts. */
   whitelist: string[];
@@ -266,6 +261,10 @@ export interface Env {
    */
   /** One OrgHub Durable Object per organization (src/org_hub.ts). */
   ORG_HUB?: DurableObjectNamespace;
+  /** One RemoteRelay Durable Object per workstation in a Remote Control session (src/remote_relay.ts). */
+  REMOTE_RELAY?: DurableObjectNamespace;
+  /** Static files: the noVNC client the Remote Control viewer loads (`public/`). */
+  ASSETS?: Fetcher;
   /** Audit entries, written to D1 in batches by the queue consumer. */
   AUDIT_QUEUE?: Queue<AuditEntryMessage>;
   /** Audit entries older than the retention period, as NDJSON files. */
@@ -295,8 +294,6 @@ export interface Env {
   ALLOW_LOCAL_DB?: string;
   /** Public download URL for the built kiosk ISO, shown on the landing page. */
   ISO_DOWNLOAD_URL?: string;
-  /** Cloudflare Tunnel domain for remote management (VNC). Defaults to lab.example.com. */
-  TUNNEL_DOMAIN?: string;
   /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.org. */
   DEFAULT_HOMEPAGE?: string;
   /**

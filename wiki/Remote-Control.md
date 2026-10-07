@@ -11,20 +11,22 @@ One-click interactive remote desktop from the admin console, with **no inbound p
        |  1. Clicks "Remote Control" on PC-01
        v
 [ Operator Lab Dashboard /admin ]
-       |  2. Reads vncPassword + remoteHost from GET /api/clients
-       |  3. Opens a modal embedding the noVNC viewer
+       |  2. Opens /console/remote (noVNC) with the per-boot password in the address fragment
+       |  3. POST /api/clients/remote-session; the hub tells PC-01 to join
        v
-[ Cloudflare Tunnel edge: pc-01.labkiosk.example.edu ]
-       |  4. Outbound-only tunnel (HTTPS / WSS)
+[ RemoteRelay on the console's own address ]
+       |  4. Pairs the viewer's WebSocket with the agent's and forwards VNC bytes
        v
 [ User workstation ]
-       |-- cloudflared        forwards to 127.0.0.1:6080
-       |-- websockify         bridges 127.0.0.1:6080 -> localhost:5900
-       |-- x11vnc             display :0, auth from /tmp/labkiosk/vnc.pass
-       `-- agent.py           reports the secret + tunnel host over telemetry
+       |-- agent.py           outbound WSS to the relay, piped to 127.0.0.1:5900
+       `-- x11vnc             display :0, loopback only, auth from /tmp/labkiosk/vnc.pass
 ```
 
-The workstation makes an **outbound** connection to Cloudflare. Nothing listens on the organization LAN, and no firewall rule is needed.
+The workstation makes only **outbound** connections to the console, the same address its control channel uses. Nothing listens on the organization LAN, no firewall rule is needed, and there is no tunnel, DNS record or route per workstation.
+
+A session is opened only by an operator signed in to the console with the `workstations` permission, and joined only with the one-time session token the Worker issued for it (the relay keeps only its SHA-256). Both sides must join within 60 seconds; a session lasts at most four hours, either side closing ends it, and a new session for the same workstation replaces the old one. Every session is written to the audit log (`device.remote_control`).
+
+Remote Control needs an agent on the WebSocket control channel (`/api/devices/ws`), because the request to join travels over it. An agent still on the three-second HTTP heartbeat cannot join.
 
 ---
 
@@ -44,27 +46,13 @@ chmod 600 "$VNC_PASSWD_FILE"
 
 Both live in `/tmp` on the RAM overlay. Nothing is written to persistent storage and everything vanishes at power-off.
 
-The session runs with `-noclipboard -nocmd`. Without the first, the VNC clipboard is bidirectional: everything a user copies is readable by whoever holds a session, and anything in the viewer's clipboard can be pasted into the kiosk. `-nocmd` disables x11vnc's own remote-control channel, which is not used here.
+The session runs with `-noclipboard -noremote -nocmds`. Without the first, the VNC clipboard is bidirectional: everything a user copies is readable by whoever holds a session, and anything in the viewer's clipboard can be pasted into the kiosk. `-noremote` disables x11vnc's own remote-control channel, which is not used here, and `-nocmds` stops x11vnc from running external commands.
 
 ### Why eight characters
 
 **Eight characters is the ceiling, not a choice.** The RFB protocol truncates passwords to 8 characters, so this secret is about 32 bits however it is generated — lengthening it changes nothing, because the extra characters are discarded before they reach the wire.
 
-It is a guard against an *accidental* connection, **not** against someone who wants in. The authentication that matters has to sit at the tunnel edge.
-
----
-
-## Cloudflare Access is mandatory
-
-`websockify` serves the **complete noVNC web UI** on the tunnel hostname. That makes `https://pc-01.<domain>` a public, internet-reachable remote-control endpoint for a room machine. The only thing between the open internet and a user's live desktop is the 8-character RFB secret above.
-
-**Put a Cloudflare Access policy in front of every workstation hostname before the first tunnel goes live.**
-
-In Cloudflare Zero Trust, add a self-hosted application covering `*.labkiosk.<your-domain>` and scope the policy to your administrators' identity provider group or email domain. Cloudflare then authenticates the operator at the edge and the tunnel never carries an unauthenticated request.
-
-Without it, the RFB secret is the entire access-control story, and it is not strong enough to be one.
-
-> `cloudflared-kiosk.service` is sandboxed — `NoNewPrivileges`, `ProtectSystem=strict`, an empty `CapabilityBoundingSet`, and a `@system-service` syscall filter — to bound what a compromise of the tunnel binary could reach. That is **containment, not authentication**, and not a substitute for the Access policy.
+It is a guard against an *accidental* connection, **not** against someone who wants in. The authentication that matters is the relay's: the console sign-in, the `workstations` permission and the one-time session token.
 
 ---
 
@@ -72,68 +60,19 @@ Without it, the RFB secret is the entire access-control story, and it is not str
 
 The operator never types a password. Here is how the secret gets from the workstation to the browser:
 
-1. `agent.py` reads `/tmp/labkiosk/vnc.secret` and `/etc/cloudflared/config.yml`.
-2. It sends both in the three-second heartbeat, **authenticated with the workstation's own device bearer token**.
-3. The control plane stores `vnc_password` and `remote_host` on `client_devices`, scoped to the organization's `tenant_id`.
-4. Only an authenticated admin of *that* organization can read them back from `GET /api/clients`.
-5. The dashboard embeds a noVNC frame and passes the credentials to it directly.
+1. `agent.py` reads `/tmp/labkiosk/vnc.secret`.
+2. It reports it as `vncPassword` over its control channel (the WebSocket to the organization's hub, or the heartbeat on older agents), **authenticated with the workstation's own device bearer token**.
+3. The control plane stores `vnc_password` on `client_devices`, scoped to the organization's `tenant_id`.
+4. Only an authenticated admin of *that* organization can read it back from `GET /api/clients`.
+5. The dashboard opens the console's viewer page with the password in the address fragment, which browsers never send; the viewer reads it, removes it from the address and connects.
 
-Both fields are sent **only when present**, so the control plane keeps what it already knows rather than clearing it on a heartbeat where the file was momentarily unreadable.
-
----
-
-## Provisioning tunnels
-
-Because the client is an immutable RAM-overlay system, per-workstation tunnel credentials cannot be baked into a generic ISO.
-
-### Prerequisites
-
-- A Cloudflare Zero Trust account with Tunnels enabled.
-- A domain or subdomain, e.g. `*.labkiosk.example.com`.
-- The `cloudflared` binary, pinned in `distro-builder/config/includes.chroot/usr/share/labkiosk/cloudflared.pin`. An unset checksum builds without the binary; a wrong one **fails the build**.
-
-### The workstation config
-
-`cloudflared-kiosk.service` starts automatically when `/etc/cloudflared/config.yml` exists:
-
-```yaml
-tunnel: <TUNNEL_UUID>
-credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
-
-ingress:
-  - hostname: pc-01.labkiosk.example.com
-    service: http://127.0.0.1:6080
-  - service: http_status:404
-```
-
-The agent parses the first `hostname:` under `ingress:` and reports it as `remoteHost`.
-
-### Getting that file onto each machine
-
-| Strategy | Approach | Suits |
-| :--- | :--- | :--- |
-| **A — Per-lab overlay** | Build a site-specific ISO with `/etc/cloudflared/` pre-populated | A lab imaged all at once |
-| **B — Persistence partition** | Not supported by the stock image: it mounts no partition by label, and an installed disk mounts only its own `LABKIOSK_DATA` by UUID. Persisting `/etc/cloudflared/` there needs an image change | — |
-| **C — Dynamic enrolment** | Script first-boot to fetch tunnel tokens with a deployment secret | Large or growing fleets |
-
-`LABKIOSK_REMOTE_HOST` overrides the parsed hostname, which is what the simulator uses.
+The password is sent **only when present**, so the control plane keeps what it already knows rather than clearing it on a heartbeat where the file was momentarily unreadable.
 
 ---
 
-## Everything works without a tunnel
+## Everything else needs nothing extra
 
-This is worth stating clearly, because the tunnel is the fiddliest part of a deployment and it is **optional**:
-
-| Feature | Needs a tunnel? |
-| :--- | :--- |
-| Live three-second thumbnails | No |
-| Lock curtain | No |
-| Broadcast | No |
-| Reload, reboot, shutdown, clear session, mute | No |
-| Allowlist and policy sync | No |
-| **Interactive remote control** | **Yes** |
-
-Deploy a whole lab, run it for a while, and add tunnels later if you find you want them.
+Live thumbnails, the lock curtain, broadcast, reload, reboot, shutdown, clear session, mute and allowlist sync all travel over the same control channel as Remote Control. None of it needs a port, a DNS record or any per-workstation setup.
 
 ---
 
@@ -147,14 +86,9 @@ cd cloudflare-control && pnpm dev
 docker compose up -d
 ```
 
-Open `http://localhost:6080/vnc.html`; the password is `labkiosk`. Optionally set in `docker-compose.yml`:
+Then click **Remote Control** on the simulated workstation's card: it goes through the relay, as on a real workstation.
 
-```yaml
-environment:
-  - LABKIOSK_REMOTE_HOST=localhost:6080
-```
-
-> In the container `websockify` binds `0.0.0.0:6080` so you can see the simulated display from your host. **On the real image it binds strictly to `127.0.0.1:6080`** and is reachable only through the tunnel. An open noVNC port gives anyone on the organization Wi-Fi full keyboard and mouse control of the workstation.
+The simulator also runs its own websockify and noVNC on port 6080 so you can watch the simulated display at `http://localhost:6080/vnc.html` (the container prints its random VNC password in its log, or set `VNC_PASSWORD`). `docker-compose.yml` publishes it only on the host's `127.0.0.1`: an open noVNC port gives anyone on the same Wi-Fi full keyboard and mouse control. **A real workstation has no websockify or noVNC at all.**
 
 → [Workstation Simulator](Workstation-Simulator)
 
@@ -164,10 +98,9 @@ environment:
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
-| noVNC asks for a password | No heartbeat since boot, or `/tmp/labkiosk/vnc.secret` is missing | Confirm the workstation is enrolled; wait one telemetry cycle |
-| "Failed to connect to server" | Tunnel is not running, or DNS does not point at Cloudflare | `systemctl status cloudflared-kiosk`; confirm `/etc/cloudflared/config.yml` exists |
-| **Remote Control** button disabled | No `remote_host` reported and no `TUNNEL_DOMAIN` configured | Set `TUNNEL_DOMAIN` in the dashboard, or provision a tunnel |
+| "This workstation is not connected to the console right now" | `POST /api/clients/remote-session` answered `409`: the workstation holds no control-channel WebSocket (offline, rebooting, or on the HTTP heartbeat) | Confirm the workstation is online and enrolled, then try again |
+| The viewer says it is waiting for the workstation to answer, then the session ends | The agent is too old to join the relay; with no workstation side, the session ends after 60 seconds | Update the workstation to a current image |
+| The viewer says the workstation asked for a VNC password the console does not have yet | No `vncPassword` reported since boot, or `/tmp/labkiosk/vnc.secret` is missing | Wait a few seconds after boot and try again; check `vncPassword` in `GET /api/clients` |
 | Black or sluggish screen | Bandwidth or thin-client CPU | noVNC adapts to WAN latency; check hardware acceleration in firmware |
-| Anyone on the internet can reach the viewer | No Cloudflare Access policy | Add one now — see above |
 
 → [Kiosk Hardening](Kiosk-Hardening) · [Security Model](Security-Model) · [Client Agent](Client-Agent)

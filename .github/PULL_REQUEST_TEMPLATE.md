@@ -47,7 +47,7 @@ Closes #(issue_number)
 
 ### If you changed the client OS, agent, or extension
 
-- [ ] No new listener on `0.0.0.0`; the agent API and `websockify` stay on loopback
+- [ ] No new listener on `0.0.0.0`; the agent API and `x11vnc` stay on loopback
 - [ ] Chromium is not launched with `--disable-web-security` (`--no-sandbox` only as the simulator's root fallback)
 - [ ] RAM overlay safety: no persistent disk writes added; runtime data goes to `/tmp`
 - [ ] No blanket extension block added to the Chromium policy (it disables `--load-extension` and

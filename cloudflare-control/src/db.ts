@@ -26,7 +26,7 @@ import {
   generateDeviceToken,
   generateEnrollmentKey
 } from "./auth";
-import { DEMO_SLUGS, DEMO_TENANTS, WEB_DEMO_TUNNEL_DOMAIN } from "./demo";
+import { DEMO_SLUGS, DEMO_TENANTS } from "./demo";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS tenants (
   broadcast_url TEXT,
   broadcast_epoch INTEGER NOT NULL DEFAULT 0,
   home_route TEXT DEFAULT '/',
-  tunnel_domain TEXT,
   homepage_headline TEXT,
   homepage_intro TEXT,
   homepage_blocks TEXT,
@@ -107,7 +106,6 @@ CREATE TABLE IF NOT EXISTS client_devices (
   is_locked INTEGER NOT NULL DEFAULT 0,
   active_url TEXT,
   vnc_password TEXT,
-  remote_host TEXT,
   group_name TEXT,
   broadcast_url TEXT,
   broadcast_epoch INTEGER NOT NULL DEFAULT 0,
@@ -354,7 +352,7 @@ export async function ensureSuperAdmin(
 export async function assertSchemaCurrent(db: D1Database): Promise<void> {
   try {
     await db.prepare("SELECT broadcast_epoch FROM tenants LIMIT 1").run();
-    await db.prepare("SELECT remote_host FROM client_devices LIMIT 1").run();
+    await db.prepare("SELECT vnc_password FROM client_devices LIMIT 1").run();
     await db.prepare("SELECT home_route FROM tenants LIMIT 1").run();
     await db.prepare("SELECT role FROM tenant_users LIMIT 1").run();
     await db.prepare("SELECT group_name FROM client_devices LIMIT 1").run();
@@ -389,6 +387,13 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT bug_reports_terms_version FROM tenants LIMIT 1").run();
     await db.prepare("SELECT status, status_checked_at FROM bug_reports LIMIT 1").run();
     await db.prepare("SELECT report_match FROM workstation_issues LIMIT 1").run();
+    // 0019 only drops columns, which no column probe can see.
+    const devices = await db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'client_devices'")
+      .first<{ sql: string }>();
+    if (devices?.sql?.includes("remote_host")) {
+      throw new Error("the Remote Control tunnel columns are still present (0019)");
+    }
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -426,7 +431,6 @@ export async function ensureDemoTenants(db: D1Database, superAdminId: string): P
         mode: "portal"
       });
       const seeded: Partial<Tenant> = { homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}` };
-      if (slug === "web-demo") seeded.tunnel_domain = WEB_DEMO_TUNNEL_DOMAIN;
       await updateTenant(db, tenant.id, seeded);
       demos.push({ ...tenant, ...seeded });
       continue;
@@ -703,7 +707,6 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "broadcast_url",
   "broadcast_epoch",
   "home_route",
-  "tunnel_domain",
   "homepage_headline",
   "homepage_intro",
   "homepage_blocks"
@@ -1185,7 +1188,6 @@ export interface DeviceRegistryRow {
   isLocked: boolean;
   activeUrl: string | null;
   vncPassword: string | null;
-  remoteHost: string | null;
   /** Unix seconds. */
   lastSeen: number;
 }
@@ -1202,8 +1204,8 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
   if (!rows.length) return;
   const now = Math.floor(Date.now() / 1000);
   const statement = db.prepare(
-    `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password, remote_host, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        client_num = excluded.client_num,
        ip = excluded.ip,
@@ -1211,7 +1213,6 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
        is_locked = excluded.is_locked,
        active_url = COALESCE(excluded.active_url, client_devices.active_url),
        vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
-       remote_host = COALESCE(excluded.remote_host, client_devices.remote_host),
        updated_at = excluded.updated_at`
   );
   await db.batch(
@@ -1226,7 +1227,6 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
         row.isLocked ? 1 : 0,
         row.activeUrl,
         row.vncPassword,
-        row.remoteHost,
         now,
         now
       )

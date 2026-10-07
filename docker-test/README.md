@@ -17,14 +17,14 @@ The simulator closely mirrors the production live Debian 12 kiosk environment (`
 ├── Xvfb (:0 display buffer, 1920x1080x24)
 ├── Openbox Window Manager (stripped rc.xml)
 ├── x11vnc (localhost:5900, protected by /tmp/labkiosk/vnc.pass)
-├── websockify (bridges localhost:5900 to port 6080 with noVNC HTML5 client)
+├── websockify (bridges localhost:5900 to port 6080 with noVNC HTML5 client; simulator only)
 ├── Chromium Kiosk Process (runs with --kiosk and loads /opt/labkiosk/extension)
 └── Python 3 Agent (monitors status, captures screenshots via scrot, syncs policy)
 ```
 
 ### Deliberate Differences vs. Physical Hardware
 
-1. **Gateway Binding:** `websockify` binds to `0.0.0.0:6080` *inside* the container so you can view the simulated display, but the port is published only on the host's `127.0.0.1`. In the physical ISO, `websockify` binds strictly to `127.0.0.1:6080` and is reachable only through a per-workstation Cloudflare Tunnel.
+1. **Viewing Gateway:** `websockify` binds to `0.0.0.0:6080` *inside* the container so you can watch the simulated display, but the port is published only on the host's `127.0.0.1`. The physical ISO has no websockify or noVNC at all: Remote Control from the console goes through the agent and the console's relay, which works the same against the simulator. The simulator's noVNC is pinned in `docker-test/novnc.pin` and installed by `docker-test/install-novnc.sh`.
 2. **Sandboxing:** the same as the real image — Chromium runs sandboxed as the unprivileged `kiosk` user. `--no-sandbox` is used only if someone starts the container as root, and the entrypoint warns when that happens.
 3. **Loopback Preservation:** The agent's local API (`127.0.0.1:8888`) remains bound to loopback inside the container, exactly as on physical hardware. You drive the setup wizard from the simulated noVNC screen rather than your host browser.
 4. **No Installed Disk:** the container never boots through GRUB, so it has no image store, no one-try boot or rollback (`labkiosk-boot-slots`), and no `/run/labkiosk-update/status.json`; the agent therefore sends no boot reports and the console's **Settings → Errors & Warnings** stays empty for it. Those paths are tested by `distro-builder/tests/vm/boot-test.sh` (QEMU with KVM), which CI runs after every ISO build.
@@ -42,7 +42,7 @@ The simulator browses the open web, so `docker-compose.yml` treats it as untrust
 | `security_opt: no-new-privileges` | Nothing setuid can raise privileges. Safe because the sandbox uses user namespaces rather than the setuid helper. |
 | `read_only: true` with tmpfs for `/tmp`, `/run`, `/etc/labkiosk` and the Chromium policy directory | Nothing survives a restart, matching the real image's RAM overlay. `/tmp` is mounted `exec` because Chromium maps files there, and the entrypoint moves the browser's home to `/tmp` because `/home/kiosk` is read-only. Because `/etc/labkiosk` is a tmpfs, the wizard shows its amber "cannot remember an enrolment" warning here — correctly: an enrolment made in the simulator does not survive a restart, and you re-enrol each session. |
 | `mem_limit`, `pids_limit`, `shm_size` | A runaway page cannot take the host down with it. |
-| Port published on `127.0.0.1:6080` only | noVNC is protected by an 8-character RFB secret, which the protocol caps; on `0.0.0.0` anyone on the same network reaches a live desktop. To share it, put an authenticating proxy in front, or use a Cloudflare Tunnel with Access. |
+| Port published on `127.0.0.1:6080` only | noVNC is protected by an 8-character RFB secret, which the protocol caps; on `0.0.0.0` anyone on the same network reaches a live desktop. To share it, put an authenticating proxy in front; Remote Control from the console needs no port. |
 | Random VNC password per container | Printed in the startup log. A fixed default would be a published password for keyboard and mouse control. |
 
 If your host forbids unprivileged user namespaces, Chromium cannot start its sandbox. Prefer fixing
@@ -196,7 +196,6 @@ Configure these in `docker-compose.yml` or via shell exports:
 | `WORKER_URL` | `http://host.docker.internal:8787` | Target Cloudflare Worker control plane. Set to your production URL (e.g. `https://labkiosk.org`) to test remote staging. |
 | `LABKIOSK_DOMAIN` | `labkiosk.org` | Base platform domain. |
 | `VNC_PASSWORD` | random per container | Password for the local noVNC session; printed in the startup log when generated. |
-| `LABKIOSK_REMOTE_HOST` | *(empty)* | Optional public hostname (e.g. Cloudflare Tunnel) that routes to port 6080. If set, reported to the admin console for remote assistance. |
 
 ---
 

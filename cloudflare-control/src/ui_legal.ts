@@ -170,7 +170,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
   <main>
     <div class="legal-card">
       <h1>Privacy &amp; Data Protection Policy</h1>
-      <div class="updated-date">Last updated: October 6, 2026 • Effective immediately</div>
+      <div class="updated-date">Last updated: October 7, 2026 • Effective immediately</div>
 
       <div class="highlight-box">
         <strong>100% In-Memory RAM Overlay Guarantee</strong>
@@ -209,13 +209,12 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
       <ul>
         <li><strong>Cloudflare Workers:</strong> runs the Platform. Every request to the consoles, the User Portal and the workstation interface passes through it, and request logs (including IP addresses) are kept for a sample of about one in ten requests for troubleshooting.</li>
         <li><strong>Cloudflare D1:</strong> the database: organization and staff accounts with hashed passwords, the workstation registry, allowlists, User Portal apps, settings, the audit log, and errors and warnings.</li>
-        <li><strong>Durable Objects:</strong> each organization's live state: which workstations are connected, the command queue (commands expire after 60 seconds), and the screen frames relayed to a watching operator, which are never stored.</li>
+        <li><strong>Durable Objects:</strong> each organization's live state: which workstations are connected, the command queue (commands expire after 60 seconds), the screen frames relayed to a watching operator, and the remote-control sessions an operator opens to a workstation, whose screen, keyboard and mouse traffic is passed through and never stored.</li>
         <li><strong>Queues:</strong> audit log entries on their way to the database.</li>
         <li><strong>R2:</strong> audit log entries older than 180 days, archived.</li>
         <li><strong>Workers Analytics Engine:</strong> counts of workstation connections and disconnections per organization.</li>
         <li><strong>Rate Limiting:</strong> counts of requests per IP address in front of sign-in, registration and workstation enrollment.</li>
         <li><strong>Workflows and Cloudflare for SaaS:</strong> an organization's custom domain name and its TLS certificate.</li>
-        <li><strong>Cloudflare Tunnel:</strong> carries the remote-control sessions an operator opens to a workstation.</li>
         <li><strong>Workers AI:</strong> only for organizations that turned on Automatic Bug Reports, the masked problem reports described in section 5.</li>
         <li><strong>Cloudflare Web Analytics:</strong> counts page views and page load times without cookies or a visitor identifier.</li>
         <li><strong>Cloudflare Zaraz:</strong> runs Google Analytics on the public website pages described in section 8, after the visitor consents.</li>

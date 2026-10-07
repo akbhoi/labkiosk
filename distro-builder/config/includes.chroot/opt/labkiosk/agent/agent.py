@@ -133,11 +133,8 @@ DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.org")
 # Remote control. The Openbox autostart (and the simulator's entrypoint) writes
 # the plaintext x11vnc password it generated for this boot here, mode 600, so
 # the agent can hand it to the admin console over the authenticated
-# telemetry channel. The tunnel hostname comes from LABKIOSK_REMOTE_HOST or, on
-# the real image, from the first ingress hostname in cloudflared's config.
+# telemetry channel.
 VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
-CLOUDFLARED_CONFIG_FILE = "/etc/cloudflared/config.yml"
-REMOTE_HOST_PATTERN = re.compile(r"^\s*-?\s*hostname:\s*['\"]?([A-Za-z0-9.-]+)['\"]?\s*$", re.MULTILINE)
 
 AGENT_VERSION = "2.7.0"
 LOCAL_API_HOST = "127.0.0.1"
@@ -180,6 +177,20 @@ WS_CLOSE_INACTIVE = 4003
 WS_CLOSE_STALE = 4008
 FRAME_INTERVAL_BOUNDS = (1, 60)
 
+# Remote Control through the console (remote_relay.ts). The hub asks over the
+# control channel; the agent opens a second WebSocket and, once noVNC is there
+# ("ready"), pipes the loopback x11vnc into it. Nothing listens beyond loopback.
+REMOTE_SESSION_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+REMOTE_VNC_ADDRESS = ("127.0.0.1", 5900)
+REMOTE_READY = '{"type":"ready"}'
+# The relay's auto-response request, like WEBSOCKET_PING for the hub.
+REMOTE_PING = '{"type":"ping"}'
+REMOTE_PING_SECONDS = 30
+# The relay closes a session nobody joined after 60 s; wait a little longer for it.
+REMOTE_READY_TIMEOUT_SECONDS = 70
+REMOTE_CHUNK_BYTES = 64 * 1024
+REMOTE_POLL_SECONDS = 1.0
+
 # Hosts that may appear in a workerUrl in addition to a public https origin.
 LOCAL_WORKER_HOSTS = {
     "127.0.0.1",
@@ -187,8 +198,6 @@ LOCAL_WORKER_HOSTS = {
     "host.docker.internal",
     "host.containers.internal",
 }
-
-HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\Z")
 
 # Kept in step with the maxlength="64" on the wizard's identifier input.
 CLIENT_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,62}\Z")
@@ -243,7 +252,6 @@ state = {
     "broadcastUrl": "",
     "broadcastEpoch": 0,
     "reloadEpoch": 0,
-    "vncPort": 6080,
     # Set at enrolment. Chromium reads its managed policy at startup, so a
     # workstation that just enrolled is still running under the boot-time
     # allowlist and would show "This page is blocked" on its new home page until
@@ -449,7 +457,6 @@ def _read_cached_file(path, cache, parse):
 
 
 _vnc_secret_cache = {}
-_remote_host_cache = {}
 
 
 def read_vnc_password():
@@ -457,23 +464,6 @@ def read_vnc_password():
     return _read_cached_file(
         VNC_SECRET_FILE, _vnc_secret_cache, lambda text: text.strip()[:64]
     )
-
-
-def detect_remote_host():
-    """Hostname the noVNC gateway is reachable on through the tunnel, if any."""
-    candidate = os.environ.get("LABKIOSK_REMOTE_HOST", "").strip().lower()
-    if not candidate:
-        def _first_ingress_hostname(text):
-            match = REMOTE_HOST_PATTERN.search(text)
-            return match.group(1).lower() if match else ""
-
-        candidate = _read_cached_file(
-            CLOUDFLARED_CONFIG_FILE, _remote_host_cache, _first_ingress_hostname
-        )
-    if candidate and not HOSTNAME_PATTERN.match(candidate):
-        log(f"Ignoring remote host {candidate!r}: not a valid hostname")
-        return ""
-    return candidate
 
 
 def derive_default_client_id():
@@ -2640,14 +2630,11 @@ def current_status():
             "activeUrl": state["targetUrl"],
             "isLocked": state["isLocked"],
         }
-    # Remote-control details, sent only when the workstation actually has them
-    # so the control plane keeps whatever it already knows otherwise.
+    # The VNC password, sent only when the workstation actually has one so the
+    # control plane keeps whatever it already knows otherwise.
     vnc_password = read_vnc_password()
     if vnc_password:
         status["vncPassword"] = vnc_password
-    remote_host = detect_remote_host()
-    if remote_host:
-        status["remoteHost"] = remote_host
     return status
 
 
@@ -3054,6 +3041,8 @@ class ControlChannel:
             apply_control_update({"commands": message.get("commands", [])})
         elif kind == "frames":
             self.set_frames(message)
+        elif kind == "remote":
+            start_remote_session(message.get("session"))
         else:
             log(f"Ignoring an unknown control message: {str(kind)[:40]!r}")
 
@@ -3119,6 +3108,157 @@ def websocket_session():
             ws.close()
         except (websocket.WebSocketException, OSError) as err:
             log(f"Closing the control channel: {err}")
+
+
+def remote_relay_url(worker_url):
+    """The relay's address for this worker, beside the control channel's."""
+    parsed = urlparse(worker_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return f"{scheme}://{parsed.netloc}/api/devices/remote"
+
+
+# The one Remote Control session this workstation serves; a new one replaces it.
+_remote_lock = threading.Lock()
+_remote_stop = None
+
+
+def start_remote_session(session):
+    """Join the session the hub named, in the background, ending any earlier one."""
+    global _remote_stop
+    if websocket is None:
+        log("Remote Control needs python3-websocket, which this image lacks.")
+        return
+    if not isinstance(session, str) or not REMOTE_SESSION_PATTERN.match(session):
+        log("Ignoring a Remote Control request without a valid session.")
+        return
+    stop = threading.Event()
+    with _remote_lock:
+        previous, _remote_stop = _remote_stop, stop
+    if previous is not None:
+        previous.set()
+    threading.Thread(target=run_remote_session, args=(session, stop), name="remote-control", daemon=True).start()
+
+
+def open_remote_channel(session):
+    """The workstation's end of the session, or None when the relay refused it."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    try:
+        return websocket.create_connection(
+            remote_relay_url(worker_url),
+            timeout=WEBSOCKET_CONNECT_TIMEOUT_SECONDS,
+            header=[
+                f"Authorization: Bearer {token}",
+                f"User-Agent: LabKioskAgent/{AGENT_VERSION}",
+                f"X-Labkiosk-Session: {session}",
+            ],
+            suppress_origin=True,
+            enable_multithread=True,
+            **websocket_proxy_options(load_proxy_config()),
+        )
+    except websocket.WebSocketBadStatusException as err:
+        log(f"The Remote Control relay refused this workstation (HTTP {getattr(err, 'status_code', 0)}).")
+    except (websocket.WebSocketException, OSError, ValueError) as err:
+        log(f"Could not reach the Remote Control relay: {err}")
+    return None
+
+
+def wait_for_remote_ready(ws, stop, clock=time.monotonic):
+    """Wait until noVNC has joined. False when the session ended first."""
+    deadline = clock() + REMOTE_READY_TIMEOUT_SECONDS
+    ws.settimeout(REMOTE_POLL_SECONDS)
+    while not stop.is_set() and clock() < deadline:
+        try:
+            opcode, data = ws.recv_data()
+        except (websocket.WebSocketTimeoutException, socket.timeout):
+            continue
+        except (websocket.WebSocketException, OSError, ValueError) as err:
+            log(f"The Remote Control session ended before it started: {err}")
+            return False
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            return False
+        if opcode == websocket.ABNF.OPCODE_TEXT:
+            text = data.decode("utf-8", "replace") if isinstance(data, bytes) else data
+            if text == REMOTE_READY:
+                return True
+    return False
+
+
+def pipe_vnc_to_relay(vnc, ws, stop):
+    """x11vnc's bytes to noVNC, until either end closes."""
+    try:
+        while not stop.is_set():
+            data = vnc.recv(REMOTE_CHUNK_BYTES)
+            if not data:
+                break
+            ws.send_binary(data)
+    except (websocket.WebSocketException, OSError) as err:
+        if not stop.is_set():
+            log(f"Remote Control: the screen stream stopped: {err}")
+    finally:
+        stop.set()
+
+
+def pipe_relay_to_vnc(ws, vnc, stop, clock=time.monotonic):
+    """noVNC's input to x11vnc, with the keepalive, until either end closes."""
+    next_ping = clock() + REMOTE_PING_SECONDS
+    ws.settimeout(REMOTE_POLL_SECONDS)
+    try:
+        while not stop.is_set():
+            if clock() >= next_ping:
+                next_ping = clock() + REMOTE_PING_SECONDS
+                ws.send(REMOTE_PING)
+            try:
+                opcode, data = ws.recv_data()
+            except (websocket.WebSocketTimeoutException, socket.timeout):
+                continue
+            if opcode == websocket.ABNF.OPCODE_CLOSE:
+                break
+            if opcode == websocket.ABNF.OPCODE_BINARY:
+                vnc.sendall(data)
+    except (websocket.WebSocketException, OSError, ValueError) as err:
+        if not stop.is_set():
+            log(f"Remote Control: the operator's input stopped: {err}")
+    finally:
+        stop.set()
+
+
+def run_remote_session(session, stop):
+    """Serve one Remote Control session from start to end."""
+    ws = open_remote_channel(session)
+    if ws is None:
+        return
+    vnc = None
+    try:
+        if not wait_for_remote_ready(ws, stop):
+            log("Remote Control: nobody joined the session.")
+            return
+        try:
+            vnc = socket.create_connection(REMOTE_VNC_ADDRESS, timeout=WEBSOCKET_CONNECT_TIMEOUT_SECONDS)
+        except OSError as err:
+            log(f"Remote Control: x11vnc is not answering on 127.0.0.1:5900: {err}")
+            return
+        vnc.settimeout(None)
+        log("Remote Control session started.")
+        reader = threading.Thread(target=pipe_vnc_to_relay, args=(vnc, ws, stop), name="remote-control-screen", daemon=True)
+        reader.start()
+        pipe_relay_to_vnc(ws, vnc, stop)
+        # Closing the VNC socket wakes the reader from recv().
+        try:
+            vnc.shutdown(socket.SHUT_RDWR)
+        except OSError as err:
+            log(f"Remote Control: closing the VNC connection: {err}")
+        reader.join(timeout=5)
+        log("Remote Control session ended.")
+    finally:
+        stop.set()
+        if vnc is not None:
+            vnc.close()
+        try:
+            ws.close()
+        except (websocket.WebSocketException, OSError) as err:
+            log(f"Remote Control: closing the relay connection: {err}")
 
 
 def telemetry_loop():

@@ -71,9 +71,6 @@ fonts-noto-color-emoji
 
 # Remote Management & Networking
 x11vnc
-# noVNC's web client is vendored from a pinned release (usr/share/labkiosk/novnc.pin):
-# Debian's novnc package drags in Node.js and OpenStack libraries it never uses.
-websockify
 network-manager
 # Recommends-only; the kiosk needs a correct clock for TLS and the ip tool.
 systemd-timesyncd

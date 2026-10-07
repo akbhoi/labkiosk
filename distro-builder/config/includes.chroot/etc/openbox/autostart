@@ -21,10 +21,10 @@ labkiosk-lock-keys >>/tmp/lab-agent.log 2>&1 || true
 which unclutter >/dev/null 2>&1 && unclutter -idle 5 -root &
 
 # 4. Remote room management: x11vnc behind a per-boot password.
-#    The VNC gateway is deliberately NOT published on the LAN. It listens on
-#    loopback only and is reached through the Cloudflare Tunnel, because an
-#    open noVNC port gives anyone on the organization Wi-Fi full keyboard and mouse
-#    control of the workstation.
+#    x11vnc is deliberately NOT published on the LAN. It listens on loopback
+#    only and the agent carries it to the operator console through the
+#    console's relay, because an open VNC port gives anyone on the organization
+#    Wi-Fi full keyboard and mouse control of the workstation.
 VNC_SECRET_DIR=/tmp/labkiosk
 mkdir -p "$VNC_SECRET_DIR"
 chmod 700 "$VNC_SECRET_DIR"
@@ -48,17 +48,14 @@ fi
 # -noclipboard: the VNC clipboard is bidirectional, so without it anything a
 #   user copies on the workstation is readable by whoever holds a session,
 #   and anything in the viewer's clipboard can be pasted into the kiosk.
-# -nocmd: disables x11vnc's own remote control channel, which is not used here.
+# -noremote: disables x11vnc's own remote-control channel, which is not used here.
+# -nocmds: x11vnc never runs an external command on a client's behalf.
+# (x11vnc has no -nocmd: it refuses to start on an unknown option.)
 # The VNC protocol truncates passwords to 8 characters, so the secret below is
-# a low-entropy credential by construction -- the tunnel in front of it has to
-# carry the real authentication. See docs/REMOTE_CONTROL.md.
+# a low-entropy credential by construction -- the console relay in front of it
+# carries the real authentication. See docs/REMOTE_CONTROL.md.
 x11vnc -display :0 -forever -shared -rfbport 5900 -localhost \
-  -rfbauth "$VNC_PASSWD_FILE" -noclipboard -nocmd -quiet -bg
-
-# 5. noVNC websockify gateway, bound to loopback for the tunnel to pick up.
-if [ -d "/usr/share/novnc" ]; then
-  websockify --web=/usr/share/novnc/ 127.0.0.1:6080 localhost:5900 >/dev/null 2>&1 &
-fi
+  -rfbauth "$VNC_PASSWD_FILE" -noclipboard -noremote -nocmds -quiet -bg
 
 # 6. Lab Kiosk telemetry & sync agent, under a supervisor.
 #    Logs go to /tmp (RAM) so nothing is written to the read-only rootfs.

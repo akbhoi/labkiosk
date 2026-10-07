@@ -1,14 +1,13 @@
 #!/bin/sh
 # Install the noVNC web client from the release pinned in novnc.pin.
 #
-# Used by 01-lockdown.hook.chroot (ISO) and by the simulator Dockerfile, so both
-# ship byte-identical client files. Fails closed: no pin, a download error or a
-# checksum mismatch aborts, because remote control is useless without it.
+# Used by the simulator Dockerfile for its local screen view. Fails closed: no
+# pin, a download error or a checksum mismatch aborts.
 #
-# Usage: install-novnc.sh [PIN_FILE] [DEST_DIR]
+# Usage: install-novnc.sh PIN_FILE [DEST_DIR]
 set -eu
 
-PIN="${1:-/usr/share/labkiosk/novnc.pin}"
+PIN="${1:?usage: install-novnc.sh PIN_FILE [DEST_DIR]}"
 DEST="${2:-/usr/share/novnc}"
 
 VERSION="$(sed -n 's/^VERSION=//p' "$PIN" | tr -d '[:space:]')"

@@ -180,7 +180,6 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
           </h3>
           <button type="button" class="modal-close" id="btn-close-vnc" aria-label="Close dialog">✕</button>
         </div>
-        <div id="vnc-notice" class="callout" style="display: none;"></div>
         <iframe id="vnc-frame" class="vnc-frame" src="about:blank" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
       </div>
     </div>
@@ -294,11 +293,8 @@ function renderWorkstationsScripts(
   sites: PortalSite[] = [],
   initialGroups: WorkstationGroup[] = []
 ): string {
-  const tunnelDomain = tenant?.tunnel_domain || config?.tunnelDomain || "";
-
   return `
     <script nonce="${escapeAttr(nonce)}">
-      const TUNNEL_DOMAIN = ${escapeJson(tunnelDomain)};
       let clientsData = {};
       let groupsList = ${escapeJson(initialGroups.map((g) => ({ id: g.id, name: g.name })))};
       let selectedClientIds = new Set();
@@ -806,7 +802,6 @@ function renderWorkstationsScripts(
         c.ip = status.ip || c.ip;
         c.online = status.online;
         c.vncPassword = status.vncPassword || c.vncPassword;
-        c.remoteHost = status.remoteHost || c.remoteHost;
         if (!status.online) c.thumbnail = undefined;
         clientsData[status.clientId] = c;
       }
@@ -877,39 +872,25 @@ function renderWorkstationsScripts(
         });
       }
 
+      function vncPasswordFragment(client) {
+        // The password rides in the fragment, which the viewer reads and removes
+        // and a browser never sends, so it stays out of every log.
+        return client.vncPassword ? "#" + new URLSearchParams({ password: client.vncPassword }).toString() : "";
+      }
+
+      // Remote Control runs on this console's own address: the viewer asks the
+      // workstation to join a relay session (src/remote_relay.ts).
       function openVncSession(id) {
         document.getElementById("vnc-modal-title").textContent = "Live Remote Control: " + id;
         const client = clientsData[id] || {};
-        const host = window.location.hostname;
-        let base = "";
-
-        if (client.remoteHost) {
-          base = "https://" + client.remoteHost;
-        } else if (host === "localhost" || host === "127.0.0.1" || host.includes("docker")) {
-          base = "http://" + host + ":6080";
-        } else if (TUNNEL_DOMAIN) {
-          base = "https://" + encodeURIComponent(id.toLowerCase()) + "." + TUNNEL_DOMAIN;
-        } else {
-          base = "http://localhost:6080";
-          const notice = document.getElementById("vnc-notice");
-          notice.textContent = "Notice: Cloudflare Tunnel domain is not configured for this organization. Remote control is accessible via local simulator (port 6080) or after configuring a tunnel in Settings.";
-          notice.style.display = "block";
-        }
-
-        const params = new URLSearchParams({ autoconnect: "true", resize: "scale" });
-        // The password rides in the fragment, which noVNC reads first and a
-        // browser never sends, so it stays out of tunnel and server logs.
-        const secret = client.vncPassword
-          ? "#" + new URLSearchParams({ password: client.vncPassword }).toString()
-          : "";
-        document.getElementById("vnc-frame").src = base + "/vnc.html?" + params.toString() + secret;
+        const viewer = labkioskApi("/console/remote?" + new URLSearchParams({ clientId: id }).toString());
+        document.getElementById("vnc-frame").src = viewer + vncPasswordFragment(client);
         document.getElementById("vnc-modal").classList.add("active");
       }
 
       document.getElementById("btn-close-vnc").addEventListener("click", () => {
         document.getElementById("vnc-modal").classList.remove("active");
         document.getElementById("vnc-frame").src = "about:blank";
-        document.getElementById("vnc-notice").style.display = "none";
       });
 
       // --------------------------------------------------------- command execution
@@ -1365,7 +1346,6 @@ function renderWorkstationsScripts(
           if (overlay.id === "vnc-modal") {
             overlay.classList.remove("active");
             document.getElementById("vnc-frame").src = "about:blank";
-            document.getElementById("vnc-notice").style.display = "none";
           } else {
             overlay.classList.remove("active");
           }
@@ -1377,7 +1357,6 @@ function renderWorkstationsScripts(
           if (overlay.id === "vnc-modal") {
             overlay.classList.remove("active");
             document.getElementById("vnc-frame").src = "about:blank";
-            document.getElementById("vnc-notice").style.display = "none";
           } else {
             overlay.classList.remove("active");
           }

@@ -11,6 +11,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20260925.1
         version: 5.20260925.1
+      '@novnc/novnc':
+        specifier: 1.7.0
+        version: 1.7.0
       '@types/node':
         specifier: ^26.6.2
         version: 26.6.4
@@ -546,6 +549,9 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
+
+  '@novnc/novnc@1.7.0':
+    resolution: {integrity: sha512-ucEJOx4T2avIRCleodk7YobZj5O2Ga2AeLfQ69A/yjG9HHba2+PDgwSkN3FttrmG+70ZGx21sElNFouK13RzyA==}
 
   '@poppinss/colors@4.1.6':
     resolution: {integrity: sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg==}
@@ -1109,6 +1115,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
+
+  '@novnc/novnc@1.7.0': {}
 
   '@poppinss/colors@4.1.6':
     dependencies:

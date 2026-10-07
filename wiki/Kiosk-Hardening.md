@@ -218,11 +218,10 @@ Software cannot defend against someone who can simply boot something else. After
 
 ## Build pins fail closed
 
-`usr/share/labkiosk/cloudflared.pin` and `grub.pin` hold values that cannot be verified from the repository — a release checksum and a password hash.
+`usr/share/labkiosk/grub.pin` holds a value that cannot be verified from the repository — a password hash.
 
 | Pin | Unset | Wrong |
 | :--- | :--- | :--- |
-| `cloudflared.pin` | Builds without the tunnel binary | **Build fails** |
 | `grub.pin` | Builds with a loud warning, live menu editable | **Build fails** |
 
 Never invent a value to make a build go green.
@@ -235,6 +234,6 @@ Stated plainly, because a hardening page that claims completeness is worse than 
 
 - **Physical disassembly.** Anyone who can remove the drive can read it. Nothing on it is secret except an enrolment token, which can be revoked from the dashboard in one click.
 - **A network-level attacker.** The client trusts its control plane. HTTPS and the device token protect the channel; a compromised control plane can point the kiosk anywhere the allowlist permits.
-- **An un-Access-protected tunnel.** `websockify` serves the full noVNC UI on the tunnel hostname. Without a Cloudflare Access policy, an 8-character RFB secret is the only thing between the internet and a live room desktop. → [Remote Control](Remote-Control#cloudflare-access-is-mandatory)
+- **A stolen operator session.** Remote Control is protected by the console's sign-in, the `workstations` permission and a one-time session token, not by the 8-character RFB secret. Whoever holds an operator session with that permission can open a live desktop. → [Remote Control](Remote-Control#why-eight-characters)
 
 → [Security Model](Security-Model) · [Disk Installer](Disk-Installer) · [Building the ISO](Building-the-ISO)

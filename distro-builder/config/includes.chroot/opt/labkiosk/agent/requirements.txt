@@ -4,5 +4,3 @@
 # - scrot
 # - xdotool
 # - x11vnc
-# - novnc
-# - websockify
