@@ -41,7 +41,7 @@ function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: s
       {
         "@type": "Organization",
         "@id": `${origin}/#organization`,
-        name: "Akbhoi Innovations",
+        name: "Lab Kiosk",
         url: `${origin}/`,
         logo: `${origin}${FAVICON_PATH}`,
         email: contactEmail
@@ -1964,7 +1964,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     </div>
 
     <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Akbhoi Innovations • Free for accredited schools up to 45 PCs • Commercial license for businesses &amp; resale</div>
+      <div>&copy; 2026 Lab Kiosk OS • Free for accredited schools up to 45 PCs • Commercial license for businesses &amp; resale</div>
       <div style="display: flex; gap: 16px; flex-wrap: wrap;">
         <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
         <a href="/register" data-action="open-modal" data-modal="register">Register Organization</a>

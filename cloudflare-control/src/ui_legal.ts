@@ -143,7 +143,7 @@ ${rootTokensCss(LEGACY_LEGAL_ALIASES)}
 ${mainHtml}
 
   <footer>
-    &copy; 2026 Lab Kiosk OS • Akbhoi Innovations • <a href="/">Return to Platform Home</a>
+    &copy; 2026 Lab Kiosk OS • <a href="/">Return to Platform Home</a>
   </footer>
 </body>
 </html>`;
