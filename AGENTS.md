@@ -44,8 +44,8 @@ labkiosk/
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
 │   │                        boot_report.ts, bug_reports.ts (Errors & Warnings, opt-in GitHub bug reports),
 │   │                        seo.ts (robots.txt, sitemap, noindex, canonical host, analytics CSP),
-│   │                        signup.ts, inbox.ts, conversations.ts, mail.ts, mime.ts (registration,
-│   │                        Super Admin Tasks/Support, email in and out),
+│   │                        signup.ts, inbox.ts, conversations.ts, mail.ts, mail_store.ts, mime.ts (registration,
+│   │                        Super Admin Tasks and Mail, email in and out),
 │   │                        ui_*.ts (one module per page), ui_tokens.ts, ui_layout.ts
 │   └── test/                worker.test.ts, dump_admin_html.ts, dev_server.ts
 ├── Dockerfile, docker-compose.yml, docker-test/   workstation simulator

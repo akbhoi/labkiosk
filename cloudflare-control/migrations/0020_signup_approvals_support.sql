@@ -6,8 +6,11 @@
 --   address, billing) and when its email and phone were verified.
 -- * email_codes: short-lived one-time codes sent by email (signup verification).
 -- * conversations / conversation_messages: the super admin's Tasks (signups,
---   Remote Control requests) and Support (mail to the support address, the
---   contact form) with every message sent and received.
+--   Remote Control requests) and Mail (every message to an address on the
+--   platform domain, and the contact form) with every message sent and
+--   received. `mailbox` is the platform address a mail conversation belongs
+--   to; `raw_key` names the message's original in R2, `attachments` lists
+--   its attachments as JSON.
 --
 -- Additive only: no table is rebuilt, so nothing can cascade.
 
@@ -65,7 +68,8 @@ CREATE TABLE IF NOT EXISTS conversations (
   updated_at INTEGER NOT NULL,
   last_message_at INTEGER NOT NULL,
   resolved_at INTEGER,
-  resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL
+  resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  mailbox TEXT
 );
 
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -79,11 +83,14 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
   email_message_id TEXT,
   author_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   delivery TEXT CHECK (delivery IN ('sent', 'failed')),
+  raw_key TEXT,
+  attachments TEXT,
   created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_email_codes_expires ON email_codes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_kind ON conversations(kind, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_tenant ON conversations(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_mailbox ON conversations(mailbox, status, last_message_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversation_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messages(email_message_id);

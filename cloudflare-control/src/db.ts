@@ -265,7 +265,8 @@ CREATE TABLE IF NOT EXISTS conversations (
   updated_at INTEGER NOT NULL,
   last_message_at INTEGER NOT NULL,
   resolved_at INTEGER,
-  resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL
+  resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  mailbox TEXT
 );
 
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -279,6 +280,8 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
   email_message_id TEXT,
   author_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   delivery TEXT CHECK (delivery IN ('sent', 'failed')),
+  raw_key TEXT,
+  attachments TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -304,6 +307,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workstation_groups_tenant_name ON workstat
 CREATE INDEX IF NOT EXISTS idx_email_codes_expires ON email_codes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_kind ON conversations(kind, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_tenant ON conversations(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_mailbox ON conversations(mailbox, status, last_message_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversation_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messages(email_message_id);
 `;

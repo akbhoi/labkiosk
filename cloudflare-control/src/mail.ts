@@ -24,6 +24,12 @@ export interface OutgoingMail {
   /** Message-ID of the message this answers, for threading in the customer's mail client. */
   inReplyTo?: string | null;
   references?: string[];
+  /**
+   * The platform address this is written as (`sales@labkiosk.org`). Mail goes out
+   * from the same name on the sending domain, with this as Reply-To; without
+   * one it is sent from MAIL_FROM with SUPPORT_ADDRESS as Reply-To.
+   */
+  mailbox?: string | null;
 }
 
 export interface LocalMail extends OutgoingMail {
@@ -92,6 +98,41 @@ export function senderAddress(env: Env): string | null {
   return parseAddress(env.MAIL_FROM || "")?.email ?? null;
 }
 
+function domainOf(address: string | null): string | null {
+  return address ? address.slice(address.indexOf("@") + 1) : null;
+}
+
+/**
+ * The support address as a Mail tab mailbox. Local development without
+ * SUPPORT_ADDRESS uses `support@` the default domain, so the tab still works.
+ */
+export function supportMailbox(env: Env): string | null {
+  const configured = supportAddress(env);
+  if (configured) return configured;
+  return isLocalEnvironment(env) && env.DEFAULT_DOMAIN ? `support@${env.DEFAULT_DOMAIN.toLowerCase()}` : null;
+}
+
+/** The domain the Mail tab receives for: SUPPORT_ADDRESS's (`labkiosk.org`). */
+export function mailDomain(env: Env): string | null {
+  return domainOf(supportMailbox(env));
+}
+
+/** The domain outbound mail is sent from: MAIL_FROM's (`email.labkiosk.org`). */
+export function sendingDomain(env: Env): string | null {
+  return domainOf(senderAddress(env));
+}
+
+/** Who a message is from and where answers go, for a mailbox or the default. */
+export function envelopeFor(env: Env, mailbox?: string | null): { from: { email: string; name: string }; replyTo: string | null } {
+  const configured = parseAddress(env.MAIL_FROM || "") || { email: "noreply@outbox.local", name: "" };
+  const name = configured.name || "Lab Kiosk";
+  const box = mailbox ? parseAddress(mailbox)?.email ?? null : null;
+  if (!box) return { from: { email: configured.email, name }, replyTo: supportAddress(env) };
+  const local = box.slice(0, box.indexOf("@"));
+  const domain = domainOf(configured.email)!;
+  return { from: { email: domainOf(box) === domain ? box : `${local}@${domain}`, name }, replyTo: box };
+}
+
 /** Plain text as a minimal HTML body: escaped, paragraphs and line breaks kept. */
 export function textToHtml(text: string): string {
   const paragraphs = text
@@ -123,12 +164,13 @@ export async function sendMail(env: Env, mail: OutgoingMail): Promise<SentMail> 
   if (!env.EMAIL) {
     if (!isLocalEnvironment(env)) throw new Error(mailConfigProblem(env) || "Email is not configured");
     const messageId = `<${crypto.randomUUID()}@outbox.local>`;
+    const local = envelopeFor(env, mail.mailbox);
     localMail.push({
       ...mail,
       to: to.email,
       subject,
-      from: env.MAIL_FROM || "Lab Kiosk <noreply@outbox.local>",
-      replyTo: env.SUPPORT_ADDRESS || null,
+      from: `${local.from.name} <${local.from.email}>`,
+      replyTo: local.replyTo,
       messageId
     });
     if (localMail.length > LOCAL_OUTBOX_LIMIT) localMail.splice(0, localMail.length - LOCAL_OUTBOX_LIMIT);
@@ -139,12 +181,11 @@ export async function sendMail(env: Env, mail: OutgoingMail): Promise<SentMail> 
 
   const problem = mailConfigProblem(env);
   if (problem) throw new Error(problem);
-  const from = parseAddress(env.MAIL_FROM!)!;
-  const replyTo = parseAddress(env.SUPPORT_ADDRESS!)!;
+  const { from, replyTo } = envelopeFor(env, mail.mailbox);
   const result = await env.EMAIL.send({
-    from: { email: from.email, name: from.name || "Lab Kiosk" },
+    from,
     to: mail.toName ? { email: to.email, name: headerSafe(mail.toName) } : to.email,
-    replyTo: replyTo.email,
+    replyTo: replyTo!,
     subject,
     text: mail.text,
     html: textToHtml(mail.text),

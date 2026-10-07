@@ -113,4 +113,6 @@ needs its own versioned step there.
 details and when the email and phone were verified. `email_codes` holds hashed one-time signup
 codes, keyed `purpose:email`, purged hourly. `conversations` (`signup | remote_control | support`,
 `tenant_id` NULL for support mail from strangers) and `conversation_messages` are the **platform's**
-Tasks and Support inbox, read only by a super admin.
+Tasks and Mail inbox, read only by a super admin. `conversations.mailbox` is the platform address a
+mail conversation belongs to (NULL for a task); `conversation_messages.raw_key` points at the
+original in R2 (`mail/<message id>.eml`) and `attachments` is its JSON attachment list.

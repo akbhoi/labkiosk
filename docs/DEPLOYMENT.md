@@ -182,26 +182,38 @@ reports an authorization error, add the permission it names to `CLOUDFLARE_API_T
 
 ### Email
 
-Registration, Remote Control requests and the Super Admin **Tasks** and **Support** tabs run on
+Registration, Remote Control requests and the Super Admin **Tasks** and **Mail** tabs run on
 email. New organizations register with a verified email address and a phone number, and stay
 `pending` until a super admin confirms the phone and approves them under **Tasks**; Remote Control
 is off for every organization until it asks under Settings and a super admin approves it. Replies
 are written in the Super Admin console and sent from the platform, and the customer's answers come
 back into the same conversation.
 
+**Mail** is a small mailbox for the whole domain: every message sent to any address on it
+(`SUPPORT_ADDRESS`'s domain, e.g. anything `@labkiosk.org`) is filed under the address it was sent
+to, with unread counts per address. A super admin reads, replies, writes new mail as any address on
+the domain, closes, reopens and deletes it, and downloads attachments. Mail goes out as the same name
+on the sending domain (`sales@labkiosk.org` is sent from `sales@email.labkiosk.org`) with Reply-To
+set to the address itself, so answers come back to the Worker. The original of every incoming
+message, attachments included, is kept in the `AUDIT_ARCHIVE` R2 bucket under `mail/` (messages
+larger than 10 MB are shown from their headers; the original is still downloadable) and removed
+when its conversation is deleted.
+
 | Piece | What it is | Set it up |
 | :--- | :--- | :--- |
 | `EMAIL` | `send_email` binding, Cloudflare Email Service (outbound) | Declared in `wrangler.jsonc`. Onboard a sending domain once (Dashboard → Email → Email Sending, e.g. `email.labkiosk.org`). Sending needs Workers Paid; 3,000 messages a month are included. |
-| `MAIL_FROM` | Variable: the sender, on the onboarded domain, e.g. `Lab Kiosk <support@email.labkiosk.org>` | Dashboard variable |
-| `SUPPORT_ADDRESS` | Variable: the address customers reply to and write to, e.g. `support@labkiosk.org` | Dashboard variable |
+| `MAIL_FROM` | Variable: the sender, on the onboarded domain, e.g. `Lab Kiosk <support@email.labkiosk.org>`. Its domain is the sending domain for every mailbox; its name is the display name | Dashboard variable |
+| `SUPPORT_ADDRESS` | Variable: the address customers reply to and write to, e.g. `support@labkiosk.org`. Its domain is the one the **Mail** tab serves | Dashboard variable |
 | `SUPPORT_FORWARD_TO` | Variable, optional: a verified Email Routing destination that gets a copy of every incoming message, and every message the Worker could not file | Dashboard variable |
-| Email Routing rule | Routes `SUPPORT_ADDRESS` (and any other public address, such as `contact@`) to the Worker, whose `email()` handler files it under **Support** | Dashboard → Email → Email Routing → Routing rules → *Send to a Worker* → `labkiosk-controller` |
+| Email Routing catch-all | Routes every address on the domain to the Worker, whose `email()` handler files it under **Mail** | Dashboard → `labkiosk.org` → Email → Email Routing → Routing rules → *Catch-all address* → Action *Send to a Worker* → `labkiosk-controller`, enabled. Rules for single addresses take precedence; remove any that should land in **Mail** instead |
+| `AUDIT_ARCHIVE` | The R2 bucket production already requires; incoming originals are stored under `mail/` | Nothing new |
 
 Without `EMAIL`, `MAIL_FROM` and `SUPPORT_ADDRESS`, registration and replies refuse with "Email is
 not configured"; the rest of the Worker runs. Incoming mail joins a conversation only when its
 subject carries the conversation's reference (`[LK-XXXXXX]`) or it answers one of the platform's
 messages, **and** it comes from that conversation's contact; anything else opens a new support
-conversation. Mail from `MAIL_FROM` itself is dropped, so a bounce cannot loop. Phone numbers are
+conversation in the mailbox it was sent to. Mail from the sending domain itself is dropped, so a
+bounce cannot loop. Phone numbers are
 confirmed by hand (**Mark phone as verified** after a call or message); no SMS provider is used.
 
 Locally (`ALLOW_LOCAL_DB=1`) no binding is needed: messages go to an in-process outbox the tests

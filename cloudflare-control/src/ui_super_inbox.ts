@@ -1,7 +1,8 @@
 /**
- * Tasks and Support in the Super Admin console: a list of conversations, oldest
+ * Tasks and Mail in the Super Admin console: a list of conversations, oldest
  * open item first, beside the one that is open -- the full request, every
- * message sent and received, and the reply box.
+ * message sent and received with its attachments, and the reply box. Mail is
+ * grouped by the platform address it was sent to, and new mail is written here.
  *
  * Everything the list and the conversation show is data a stranger typed
  * (an organization name, an email body), so the client script builds DOM nodes
@@ -13,11 +14,11 @@ import { escapeAttr, escapeJson } from "./escape";
 export type InboxBox = "tasks" | "support";
 
 export function renderInboxPaneHtml(box: InboxBox): string {
-  const label = box === "tasks" ? "Tasks" : "Support conversations";
+  const label = box === "tasks" ? "Tasks" : "Mail";
   const placeholder =
     box === "tasks"
       ? "Select a task to see the full request and decide it."
-      : "Select a conversation to read it and reply.";
+      : "Select a message to read it and reply, or write a new one.";
   return `
       <div class="inbox-layout" id="inbox" data-box="${escapeAttr(box)}">
         <div class="inbox-list" id="inbox-list" role="list" aria-label="${escapeAttr(label)}">
@@ -30,9 +31,24 @@ export function renderInboxPaneHtml(box: InboxBox): string {
   `;
 }
 
-/** The Level 2 panel for Tasks and Support: the filter, wired by the inbox script. */
+/** The Level 2 panel for Tasks and Mail: mailboxes and the filter, wired by the inbox script. */
 export function renderInboxSubPanelHtml(box: InboxBox, counts: { open: number; unread?: number }): string {
-  return `
+  const mail =
+    box === "support"
+      ? `
+      <div class="sub-action-list">
+        <button type="button" class="sub-action-item" id="inbox-compose">
+          <span>New message</span>
+        </button>
+      </div>
+      <div class="sub-section-title">Mailboxes</div>
+      <div class="sub-action-list" id="inbox-mailboxes">
+        <button type="button" class="sub-action-item active" data-inbox-mailbox="">
+          <span>All mail</span>
+        </button>
+      </div>`
+      : "";
+  return `${mail}
       <div class="sub-section-title">Show</div>
       <div class="sub-action-list">
         <button type="button" class="sub-action-item active" data-inbox-filter="open">
@@ -50,7 +66,7 @@ export function renderInboxSubPanelHtml(box: InboxBox, counts: { open: number; u
         ${
           box === "tasks"
             ? "Registrations and Remote Control requests, oldest first. Approving or rejecting emails the customer; a reply asks them something first, such as payment. Confirm a registration's phone number before approving it."
-            : "Mail sent to the support address and the website's contact form. Replies are emailed from here, and the customer's answers come back into the same conversation."
+            : "Mail sent to any address on the mail domain, and the website's contact form, grouped by the address it was sent to. Replies go out as that address, and answers come back into the same conversation. Attachments are kept with the original message."
         }
       </div>
   `;
@@ -68,7 +84,10 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
         var filter = "open";
         var selectedId = new URLSearchParams(window.location.search).get("id");
 
-        var KIND_LABELS = { signup: "Registration", remote_control: "Remote Control", support: "Support" };
+        var mailbox = BOX === "support" ? (new URLSearchParams(window.location.search).get("mailbox") || "") : "";
+        var mailDomain = "";
+
+        var KIND_LABELS = { signup: "Registration", remote_control: "Remote Control", support: "Mail" };
         var STATUS_BADGES = { open: "badge-yellow", approved: "badge-green", rejected: "badge-red", closed: "badge-neutral" };
 
         function el(tag, className, text) {
@@ -104,11 +123,17 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
 
         async function loadList() {
           try {
-            var data = await api("/api/super/inbox?" + new URLSearchParams({ box: BOX, filter: filter }).toString());
+            var query = { box: BOX, filter: filter };
+            if (BOX === "support" && mailbox) query.mailbox = mailbox;
+            var data = await api("/api/super/inbox?" + new URLSearchParams(query).toString());
             var items = Array.isArray(data.items) ? data.items : [];
+            if (BOX === "support") {
+              mailDomain = data.mailDomain || "";
+              renderMailboxes(Array.isArray(data.mailboxes) ? data.mailboxes : []);
+            }
             listEl.replaceChildren();
             if (!items.length) {
-              emptyList(filter === "open" ? (BOX === "tasks" ? "No open tasks." : "No open conversations.") : "Nothing here.");
+              emptyList(filter === "open" ? (BOX === "tasks" ? "No open tasks." : "No open mail.") : "Nothing here.");
               return;
             }
             items.forEach(function (item) {
@@ -124,7 +149,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
               );
               var meta = el("div", "inbox-item-meta");
               meta.append(
-                el("span", null, KIND_LABELS[item.kind] || item.kind),
+                el("span", "truncate", item.kind === "support" ? (item.mailbox || "Mail") : (KIND_LABELS[item.kind] || item.kind)),
                 el("span", "mono", item.reference),
                 el("span", null, when(item.status === "open" ? item.created_at : item.last_message_at))
               );
@@ -210,6 +235,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             item.append(meta);
             if (m.subject && m.direction !== "event" && m.direction !== "note") item.append(el("div", "text-xs text-muted mb-sm", m.subject));
             item.append(el("pre", "msg-body", m.body));
+            if (m.raw_key) item.append(attachmentLinks(data.conversation.id, m));
             thread.append(item);
           });
           if (!thread.children.length) thread.append(el("p", "empty-note", "No messages yet."));
@@ -227,7 +253,9 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             card.append(warn);
           }
           var group = el("div", "form-group mt-md");
-          var label = el("label", "form-label", c.kind === "support" ? "Message to " + c.contact_email : "Message to " + c.contact_email + " (also added to an approval or rejection email)");
+          var label = el("label", "form-label", c.kind === "support"
+            ? (c.mailbox ? "Reply as " + c.mailbox + " to " + c.contact_email : "Message to " + c.contact_email)
+            : "Message to " + c.contact_email + " (also added to an approval or rejection email)");
           label.htmlFor = "inbox-message";
           var area = el("textarea", "form-textarea");
           area.id = "inbox-message";
@@ -269,6 +297,26 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             if (!message()) { lkToast("Write the note first.", "error"); return; }
             await act(c.id, "note", { message: message() }, "Note added.");
           });
+          if (c.kind === "support") {
+            actions.append(el("span", "toolbar-spacer"));
+            button("Delete", "btn-danger", async function () {
+              var ok = await lkConfirm({
+                title: "Delete this conversation?",
+                message: "Every message in it, its attachments and the stored originals are removed for good.",
+                confirmLabel: "Delete",
+                tone: "danger"
+              });
+              if (!ok) return;
+              try {
+                await api("/api/super/inbox/" + encodeURIComponent(c.id) + "/delete", {});
+                lkToast("Conversation deleted.", "success");
+                clearSelection();
+              } catch (err) {
+                lkToast(err.message, "error");
+              }
+              await loadList();
+            });
+          }
 
           if (c.kind !== "support" && c.status === "open") {
             var spacer = el("span", "toolbar-spacer");
@@ -356,6 +404,166 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           }
           await loadList();
           await openItem(id);
+        }
+
+        function setParam(name, value) {
+          var params = new URLSearchParams(window.location.search);
+          if (value) params.set(name, value);
+          else params.delete(name);
+          var search = params.toString();
+          history.replaceState(null, "", window.location.pathname + (search ? "?" + search : ""));
+        }
+
+        function clearSelection() {
+          selectedId = null;
+          setParam("id", "");
+          var card = el("div", "card");
+          card.append(el("p", "empty-note", BOX === "tasks" ? "Select a task to see the full request and decide it." : "Select a message to read it and reply, or write a new one."));
+          detailEl.replaceChildren(card);
+        }
+
+        function kb(bytes) {
+          var n = Number(bytes) || 0;
+          return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+        }
+
+        function attachmentLinks(conversationId, m) {
+          var box = el("div", "msg-attachments");
+          var base = "/api/super/inbox/" + encodeURIComponent(conversationId) + "/attachment/" + encodeURIComponent(m.id) + "/";
+          var list = [];
+          try { list = m.attachments ? JSON.parse(m.attachments) : []; } catch (err) { list = []; }
+          (Array.isArray(list) ? list : []).forEach(function (a) {
+            var link = el("a", "msg-attachment", a.filename + " (" + kb(a.size) + ")");
+            link.href = base + encodeURIComponent(String(a.index));
+            link.setAttribute("download", "");
+            link.title = "Download " + a.filename + (a.contentType ? " (" + a.contentType + ")" : "");
+            box.append(link);
+          });
+          var original = el("a", "msg-attachment", "Original message (.eml)");
+          original.href = base + "original";
+          original.setAttribute("download", "");
+          box.append(original);
+          return box;
+        }
+
+        function renderMailboxes(list) {
+          var container = document.getElementById("inbox-mailboxes");
+          if (!container) return;
+          var all = el("button", "sub-action-item" + (mailbox ? "" : " active"));
+          all.type = "button";
+          all.dataset.inboxMailbox = "";
+          all.append(el("span", null, "All mail"));
+          var rows = [all];
+          var known = false;
+          list.forEach(function (box) {
+            var row = el("button", "sub-action-item" + (box.mailbox === mailbox ? " active" : ""));
+            row.type = "button";
+            row.dataset.inboxMailbox = box.mailbox;
+            row.title = box.total + " conversation" + (box.total === 1 ? "" : "s") + ", " + box.open + " open";
+            row.append(el("span", "truncate", box.mailbox));
+            if (box.unread > 0) row.append(el("span", "sub-action-badge", box.unread));
+            if (box.mailbox === mailbox) known = true;
+            rows.push(row);
+          });
+          if (mailbox && !known) {
+            var current = el("button", "sub-action-item active");
+            current.type = "button";
+            current.dataset.inboxMailbox = mailbox;
+            current.append(el("span", "truncate", mailbox));
+            rows.push(current);
+          }
+          container.replaceChildren.apply(container, rows);
+        }
+
+        function field(labelText, input, hint) {
+          var group = el("div", "form-group");
+          var label = el("label", "form-label", labelText);
+          label.htmlFor = input.id;
+          group.append(label, input);
+          if (hint) group.append(el("p", "form-hint", hint));
+          return group;
+        }
+
+        function textInput(id, value, placeholder) {
+          var input = el("input", "form-input");
+          input.id = id;
+          input.type = "text";
+          input.value = value || "";
+          if (placeholder) input.placeholder = placeholder;
+          return input;
+        }
+
+        function openCompose() {
+          clearSelection();
+          listEl.querySelectorAll(".inbox-item").forEach(function (row) { row.removeAttribute("aria-current"); });
+          var card = el("div", "card");
+          card.append(el("h2", "card-title", "New message"));
+          var fromInput = textInput("compose-from", mailbox ? mailbox.split("@")[0] : "support", "support");
+          fromInput.autocomplete = "off";
+          fromInput.maxLength = 64;
+          var fromRow = el("div", "form-row mt-md mb-md");
+          var fromGroup = field("From", fromInput);
+          fromRow.append(fromGroup, el("span", "input-suffix", "@" + (mailDomain || "…")));
+          var toInput = textInput("compose-to", "", "name@example.com");
+          toInput.type = "email";
+          toInput.autocomplete = "off";
+          toInput.maxLength = 254;
+          var subjectInput = textInput("compose-subject", "", "");
+          subjectInput.maxLength = 200;
+          var bodyInput = el("textarea", "form-textarea");
+          bodyInput.id = "compose-message";
+          bodyInput.rows = 10;
+          bodyInput.maxLength = 20000;
+          card.append(
+            fromRow,
+            field("To", toInput),
+            field("Subject", subjectInput),
+            field("Message", bodyInput, "Sent as plain text. Answers come back into this conversation.")
+          );
+          var actions = el("div", "form-actions");
+          var send = el("button", "btn btn-sm btn-primary", "Send email");
+          send.type = "button";
+          send.addEventListener("click", async function () {
+            send.disabled = true;
+            try {
+              var result = await api("/api/super/inbox/compose", {
+                from: fromInput.value.trim(),
+                to: toInput.value.trim(),
+                subject: subjectInput.value.trim(),
+                message: bodyInput.value.trim()
+              });
+              lkToast("Email sent.", "success");
+              await loadList();
+              await openItem(result.id);
+            } catch (err) {
+              lkToast(err.message, "error");
+              send.disabled = false;
+            }
+          });
+          var cancel = el("button", "btn btn-sm btn-ghost", "Cancel");
+          cancel.type = "button";
+          cancel.addEventListener("click", clearSelection);
+          actions.append(send, cancel);
+          card.append(actions);
+          detailEl.replaceChildren(card);
+          (mailbox ? toInput : fromInput).focus();
+        }
+
+        var composeButton = document.getElementById("inbox-compose");
+        if (composeButton) composeButton.addEventListener("click", openCompose);
+
+        var mailboxList = document.getElementById("inbox-mailboxes");
+        if (mailboxList) {
+          mailboxList.addEventListener("click", function (event) {
+            var target = event.target instanceof Element ? event.target.closest("[data-inbox-mailbox]") : null;
+            if (!target) return;
+            mailbox = target.dataset.inboxMailbox || "";
+            setParam("mailbox", mailbox);
+            mailboxList.querySelectorAll("[data-inbox-mailbox]").forEach(function (b) {
+              b.classList.toggle("active", b === target);
+            });
+            loadList();
+          });
         }
 
         document.querySelectorAll("[data-inbox-filter]").forEach(function (button) {

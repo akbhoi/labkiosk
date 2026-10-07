@@ -52,9 +52,10 @@ import {
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
-import { localOutbox, parseAddress } from "../src/mail";
+import { envelopeFor, localOutbox, parseAddress } from "../src/mail";
+import { loadRawMail } from "../src/mail_store";
 import { handleInboundEmail, InboundMessage } from "../src/inbox";
-import { htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
+import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 
 /**
  * The suite runs against the in-memory D1 adapter, which a production
@@ -363,7 +364,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
     const pending = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
     assert.equal(pending.res.status, 403);
-    for (const page of ["/super/tasks", "/super/support"]) {
+    for (const page of ["/super/tasks", "/super/mail"]) {
       assert.equal((await call(page)).status, 401);
     }
   });
@@ -529,12 +530,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   /** A message as Email Routing hands it to the Worker. */
-  function inboundMessage(raw: string, envelopeFrom: string) {
+  function inboundMessage(raw: string, envelopeFrom: string, to = "support@labkiosk.org") {
     const bytes = new TextEncoder().encode(raw.replace(/\n/g, "\r\n"));
     const forwarded: string[] = [];
     const message: InboundMessage = {
       from: envelopeFrom,
-      to: "support@labkiosk.org",
+      to,
       raw: new ReadableStream({
         start(controller) {
           controller.enqueue(bytes);
@@ -647,7 +648,140 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const admin = await superCookie();
     const { data: detail } = await callJson(`/api/super/inbox/${filed!.id}`, { cookie: admin });
     assert.match(detail.messages[0].body, /^The screen stays black — help\?/);
-    assert.match(detail.messages[0].body, /screen\.png/, "attachments are named");
+    assert.equal(detail.conversation.mailbox, "support@labkiosk.org", "filed under the address it was sent to");
+    const received = detail.messages[0];
+    assert.deepEqual(JSON.parse(received.attachments), [{ index: 0, filename: "screen.png", contentType: "image/png", size: 8 }]);
+    assert.ok(received.raw_key, "the original is kept");
+
+    // The attachment comes back byte for byte, as a download that never renders.
+    const base = `/api/super/inbox/${filed!.id}/attachment/${received.id}/`;
+    const file = await call(base + "0", { cookie: admin });
+    assert.equal(file.status, 200);
+    assert.equal(file.headers.get("content-type"), "application/octet-stream");
+    assert.match(file.headers.get("content-disposition") || "", /^attachment; filename="screen\.png"/);
+    assert.equal(file.headers.get("x-content-type-options"), "nosniff");
+    assert.match(file.headers.get("content-security-policy") || "", /sandbox/);
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), Buffer.from("iVBORw0KGgo=", "base64"));
+    const original = await call(base + "original", { cookie: admin });
+    assert.equal(original.status, 200);
+    assert.match(original.headers.get("content-disposition") || "", /\.eml"/);
+    assert.match(await original.text(), /filename="screen\.png"/);
+    assert.equal((await call(base + "1", { cookie: admin })).status, 404, "no second attachment");
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/attachment/${crypto.randomUUID()}/0`, { cookie: admin })).status, 404);
+    assert.equal((await call(base + "0")).status, 401, "anonymous callers get nothing");
+    assert.equal((await call(base + "0", { cookie: orgSessionCookie })).status, 403, "organization staff get nothing");
+  });
+
+  test("Mail is kept per address, can be written, answered as that address, and deleted", async () => {
+    const db = getDatabase(mockEnv);
+    const admin = await superCookie();
+    const { message } = inboundMessage(
+      ["From: Buyer <buyer@company.example>", "Subject: Quote for 120 seats", "", "Please send a quote."].join("\n"),
+      "buyer@company.example",
+      "Sales@LabKiosk.org"
+    );
+    const filed = await handleInboundEmail(message, inboxEnv, db);
+    assert.equal(filed!.mailbox, "sales@labkiosk.org", "a new address becomes a mailbox on first mail");
+
+    const { data: sales } = await callJson("/api/super/inbox?box=support&filter=all&mailbox=sales%40labkiosk.org", { cookie: admin });
+    assert.deepEqual((sales.items as any[]).map((i) => i.id), [filed!.id], "only that mailbox's mail");
+    assert.equal(sales.mailDomain, "labkiosk.org");
+    const box = (sales.mailboxes as any[]).find((m) => m.mailbox === "sales@labkiosk.org");
+    assert.deepEqual(box, { mailbox: "sales@labkiosk.org", open: 1, unread: 1, total: 1 });
+
+    // A reply goes out as the mailbox: its name on the sending domain, answers to the mailbox.
+    assert.deepEqual(envelopeFor(inboxEnv, "sales@labkiosk.org"), {
+      from: { email: "sales@email.labkiosk.org", name: "Lab Kiosk" },
+      replyTo: "sales@labkiosk.org"
+    });
+    assert.deepEqual(envelopeFor(inboxEnv, null).replyTo, "support@labkiosk.org");
+    const replied = await callJson(`/api/super/inbox/${filed!.id}/reply`, { ...json({ message: "Here is the quote." }), cookie: admin });
+    assert.equal(replied.res.status, 200);
+    const reply = [...localOutbox()].reverse().find((m) => m.to === "buyer@company.example")!;
+    assert.equal(reply.replyTo, "sales@labkiosk.org");
+    assert.equal(reply.mailbox, "sales@labkiosk.org");
+
+    // A new message, written as any name on the mail domain.
+    const composed = await callJson("/api/super/inbox/compose", {
+      ...json({ from: "partners", to: "Ana <ana@reseller.example>", subject: "Reseller terms", message: "Attached are our terms." }),
+      cookie: admin
+    });
+    assert.equal(composed.res.status, 200, JSON.stringify(composed.data));
+    const sent = [...localOutbox()].reverse().find((m) => m.to === "ana@reseller.example")!;
+    assert.equal(sent.replyTo, "partners@labkiosk.org");
+    assert.match(sent.subject, /Reseller terms/);
+    const { data: thread } = await callJson(`/api/super/inbox/${composed.data.id}`, { cookie: admin });
+    assert.equal(thread.conversation.mailbox, "partners@labkiosk.org");
+    assert.equal(thread.conversation.contact_name, "Ana");
+    assert.deepEqual(thread.messages.map((m: any) => [m.direction, m.from_address]), [["outbound", "partners@labkiosk.org"]]);
+    const { data: all } = await callJson("/api/super/inbox?box=support&filter=all", { cookie: admin });
+    assert.equal((all.mailboxes as any[]).find((m) => m.mailbox === "partners@labkiosk.org")?.unread, 0, "what we wrote is not unread");
+
+    // What compose refuses.
+    const refused = async (body: unknown) => (await call("/api/super/inbox/compose", { ...json(body), cookie: admin })).status;
+    const good = { from: "sales", to: "a@b.example", subject: "s", message: "m" };
+    assert.equal(await refused({ ...good, from: "sales@elsewhere.example" }), 400, "only the platform's own domain");
+    assert.equal(await refused({ ...good, from: "-bad" }), 400);
+    assert.equal(await refused({ ...good, to: "someone@labkiosk.org" }), 400, "not to its own mailboxes");
+    assert.equal(await refused({ ...good, to: "not an address" }), 400);
+    assert.equal(await refused({ ...good, subject: " " }), 400);
+    assert.equal(await refused({ ...good, message: "" }), 400);
+    assert.equal((await call("/api/super/inbox/compose", { cookie: admin })).status, 405);
+    assert.equal((await call("/api/super/inbox/compose", json(good))).status, 401);
+    assert.equal((await call("/api/super/inbox/compose", { ...json(good), cookie: orgSessionCookie })).status, 403);
+
+    // Delete removes the conversation, its messages and the stored original; tasks stay.
+    const { data: detail } = await callJson(`/api/super/inbox/${filed!.id}`, { cookie: admin });
+    const rawKey = (detail.messages as any[]).find((m) => m.direction === "inbound").raw_key;
+    assert.ok(await loadRawMail(inboxEnv, rawKey));
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, json({}))).status, 401);
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { ...json({}), cookie: orgSessionCookie })).status, 403);
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { cookie: admin })).status, 405);
+    const { data: tasks } = await callJson("/api/super/inbox?box=tasks&filter=all", { cookie: admin });
+    const task = (tasks.items as any[])[0];
+    assert.equal((await call(`/api/super/inbox/${task.id}/delete`, { ...json({}), cookie: admin })).status, 400, "tasks stay on record");
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { ...json({}), cookie: admin })).status, 200);
+    assert.equal((await call(`/api/super/inbox/${filed!.id}`, { cookie: admin })).status, 404);
+    assert.equal(await loadRawMail(inboxEnv, rawKey), null, "the stored original is gone too");
+  });
+
+  test("Mail sent from the platform's own sending domain is a loop", async () => {
+    const db = getDatabase(mockEnv);
+    const { message } = inboundMessage(["From: sales@email.labkiosk.org", "Subject: Re: quote", "", "x"].join("\n"), "bounce@cf.example");
+    assert.equal(await handleInboundEmail(message, inboxEnv, db), null);
+  });
+
+  test("Takes one attachment back out of a stored message", () => {
+    const raw = new TextEncoder().encode(
+      [
+        'Content-Type: multipart/mixed; boundary="x"',
+        "",
+        "--x",
+        "Content-Type: text/plain",
+        "",
+        "hi",
+        "--x",
+        'Content-Type: application/pdf; name="a.pdf"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        Buffer.from("%PDF-1").toString("base64"),
+        "--x",
+        "Content-Type: text/html; name=\"../../evil\u0007.html\"",
+        "Content-Disposition: attachment; filename=\"../../evil\u0007.html\"",
+        "",
+        "<script>alert(1)</script>",
+        "--x--"
+      ].join("\r\n")
+    );
+    const parsed = parseEmail(raw);
+    assert.deepEqual(parsed.attachments.map((a) => [a.index, a.filename, a.contentType]), [
+      [0, "a.pdf", "application/pdf"],
+      [1, "evil_.html", "text/html"]
+    ], "names lose their path and control characters");
+    assert.equal(parsed.text, "hi");
+    assert.equal(Buffer.from(extractAttachment(raw, 0)!.bytes).toString(), "%PDF-1");
+    assert.equal(Buffer.from(extractAttachment(raw, 1)!.bytes).toString(), "<script>alert(1)</script>");
+    assert.equal(extractAttachment(raw, 2), null);
   });
 
   test("Parses the email shapes customers send", () => {
@@ -1016,7 +1150,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
-      ["/super/support", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
     ];
@@ -1116,7 +1250,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
-      ["/super/support", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie],
       ["/", undefined],
@@ -1155,7 +1289,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
-      ["/super/support", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
     ];
@@ -1214,7 +1348,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
-      ["/super/support", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
     ];
@@ -3463,7 +3597,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const organizations = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
     assert.ok(organizations.includes(directoryHeading), "organizations tab shows the directory");
 
-    for (const tab of ["/super/tasks", "/super/support", "/super/catalogs", "/super/system"]) {
+    for (const tab of ["/super/tasks", "/super/mail", "/super/catalogs", "/super/system"]) {
       const res = await call(tab, { cookie: superSessionCookie });
       assert.equal(res.status, 200);
       const body = await res.text();
@@ -3472,8 +3606,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const tasks = await (await call("/super/tasks", { cookie: superSessionCookie })).text();
     assert.ok(tasks.includes('data-box="tasks"'), "Tasks shows the task list");
-    const support = await (await call("/super/support", { cookie: superSessionCookie })).text();
-    assert.ok(support.includes('data-box="support"'), "Support shows the conversation list");
+    const support = await (await call("/super/mail", { cookie: superSessionCookie })).text();
+    assert.ok(support.includes('data-box="support"'), "Mail shows the conversation list");
     const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
     assert.ok(system.includes("Platform Architecture"));
     assert.ok(!system.includes('id="inbox"'));
@@ -3481,6 +3615,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const old = await call("/super/approvals", { cookie: superSessionCookie });
     assert.equal(old.status, 302);
     assert.match(old.headers.get("location") || "", /\/super\/tasks$/);
+    const oldSupport = await call("/super/support", { cookie: superSessionCookie });
+    assert.equal(oldSupport.status, 302);
+    assert.match(oldSupport.headers.get("location") || "", /\/super\/mail$/);
   });
 
   // ------------------------------------------ modern admin & privacy isolation
@@ -4601,7 +4738,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/super", superSessionCookie],
       ["/super/organizations", superSessionCookie],
       ["/super/tasks", superSessionCookie],
-      ["/super/support", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie],
       ["/home?tenant=greenwood"],

@@ -35,6 +35,16 @@ export interface Conversation {
   last_message_at: number;
   resolved_at: number | null;
   resolved_by: string | null;
+  /** The platform address a mail conversation belongs to (`support@labkiosk.org`); null for a task. */
+  mailbox: string | null;
+}
+
+/** An attachment as the message list shows it; the bytes stay in the stored original. */
+export interface AttachmentInfo {
+  index: number;
+  filename: string;
+  contentType: string;
+  size: number;
 }
 
 export interface ConversationMessage {
@@ -48,6 +58,10 @@ export interface ConversationMessage {
   email_message_id: string | null;
   author_user_id: string | null;
   delivery: "sent" | "failed" | null;
+  /** Where the original message is kept in R2, for an inbound email. */
+  raw_key: string | null;
+  /** JSON list of `AttachmentInfo`, or null. */
+  attachments: string | null;
   created_at: number;
 }
 
@@ -103,7 +117,16 @@ export function subjectWithReference(reference: string, subject: string): string
 
 export async function createConversation(
   db: D1Database,
-  data: { kind: ConversationKind; tenantId: string | null; subject: string; contactEmail: string; contactName?: string | null }
+  data: {
+    kind: ConversationKind;
+    tenantId: string | null;
+    subject: string;
+    contactEmail: string;
+    contactName?: string | null;
+    mailbox?: string | null;
+    /** A conversation the platform starts (a new outgoing email) has nothing unread. */
+    unread?: boolean;
+  }
 ): Promise<Conversation> {
   const ts = now();
   // A collision on the unique reference is astronomically unlikely, and it
@@ -117,17 +140,18 @@ export async function createConversation(
     contact_email: data.contactEmail.toLowerCase(),
     contact_name: data.contactName ? data.contactName.slice(0, 120) : null,
     status: "open",
-    unread: 1,
+    unread: data.unread === false ? 0 : 1,
     created_at: ts,
     updated_at: ts,
     last_message_at: ts,
     resolved_at: null,
-    resolved_by: null
+    resolved_by: null,
+    mailbox: data.mailbox ? data.mailbox.toLowerCase() : null
   };
   await db
     .prepare(
-      `INSERT INTO conversations (id, kind, tenant_id, reference, subject, contact_email, contact_name, status, unread, created_at, updated_at, last_message_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?, ?)`
+      `INSERT INTO conversations (id, kind, tenant_id, reference, subject, contact_email, contact_name, status, unread, created_at, updated_at, last_message_at, mailbox)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
     )
     .bind(
       conversation.id,
@@ -137,9 +161,11 @@ export async function createConversation(
       conversation.subject,
       conversation.contact_email,
       conversation.contact_name,
+      conversation.unread,
       ts,
       ts,
-      ts
+      ts,
+      conversation.mailbox
     )
     .run();
   return conversation;
@@ -157,11 +183,15 @@ export async function addConversationMessage(
     emailMessageId?: string | null;
     authorUserId?: string | null;
     delivery?: "sent" | "failed" | null;
+    /** Set when the caller already named the message (its stored original is keyed by it). */
+    id?: string;
+    rawKey?: string | null;
+    attachments?: AttachmentInfo[] | null;
   }
 ): Promise<ConversationMessage> {
   const ts = now();
   const message: ConversationMessage = {
-    id: crypto.randomUUID(),
+    id: data.id ?? crypto.randomUUID(),
     conversation_id: data.conversationId,
     direction: data.direction,
     from_address: data.fromAddress ?? null,
@@ -171,6 +201,8 @@ export async function addConversationMessage(
     email_message_id: data.emailMessageId ?? null,
     author_user_id: data.authorUserId ?? null,
     delivery: data.delivery ?? null,
+    raw_key: data.rawKey ?? null,
+    attachments: data.attachments?.length ? JSON.stringify(data.attachments) : null,
     created_at: ts
   };
   // An inbound message is what the platform owner has not read yet.
@@ -178,8 +210,8 @@ export async function addConversationMessage(
   await db.batch([
     db
       .prepare(
-        `INSERT INTO conversation_messages (id, conversation_id, direction, from_address, to_address, subject, body, email_message_id, author_user_id, delivery, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO conversation_messages (id, conversation_id, direction, from_address, to_address, subject, body, email_message_id, author_user_id, delivery, raw_key, attachments, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         message.id,
@@ -192,6 +224,8 @@ export async function addConversationMessage(
         message.email_message_id,
         message.author_user_id,
         message.delivery,
+        message.raw_key,
+        message.attachments,
         ts
       ),
     db
@@ -253,21 +287,23 @@ export async function listConversations(
   db: D1Database,
   kinds: readonly ConversationKind[],
   filter: "open" | "closed" | "all",
-  limit = 200
+  limit = 200,
+  mailbox: string | null = null
 ): Promise<ConversationListRow[]> {
   const marks = kinds.map(() => "?").join(", ");
   const statusClause = filter === "open" ? "AND c.status = 'open'" : filter === "closed" ? "AND c.status <> 'open'" : "";
+  const mailboxClause = mailbox ? "AND c.mailbox = ?" : "";
   const result = await db
     .prepare(
       `SELECT c.*, t.name AS organization_name, t.subdomain AS organization_subdomain,
               (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id = c.id) AS message_count
        FROM conversations c LEFT JOIN tenants t ON t.id = c.tenant_id
-       WHERE c.kind IN (${marks}) ${statusClause}
+       WHERE c.kind IN (${marks}) ${statusClause} ${mailboxClause}
        ORDER BY CASE WHEN c.status = 'open' THEN 0 ELSE 1 END,
                 CASE WHEN c.status = 'open' THEN c.created_at ELSE -c.last_message_at END
        LIMIT ?`
     )
-    .bind(...kinds, Math.max(1, Math.min(500, limit)))
+    .bind(...kinds, ...(mailbox ? [mailbox.toLowerCase()] : []), Math.max(1, Math.min(500, limit)))
     .all<ConversationListRow>();
   return result.results || [];
 }
@@ -288,6 +324,53 @@ export async function inboxCounts(db: D1Database): Promise<{ openTasks: number; 
     openSupport: Number(row?.open_support || 0),
     unreadSupport: Number(row?.unread_support || 0)
   };
+}
+
+export interface MailboxCount {
+  mailbox: string;
+  open: number;
+  unread: number;
+  total: number;
+}
+
+/** Every address mail has arrived at or been sent from, with its open and unread conversations. */
+export async function mailboxCounts(db: D1Database): Promise<MailboxCount[]> {
+  const result = await db
+    .prepare(
+      `SELECT mailbox,
+              SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open,
+              SUM(CASE WHEN unread = 1 THEN 1 ELSE 0 END) AS unread,
+              COUNT(*) AS total
+       FROM conversations WHERE kind = 'support' AND mailbox IS NOT NULL
+       GROUP BY mailbox ORDER BY mailbox LIMIT 200`
+    )
+    .all<{ mailbox: string; open: number | null; unread: number | null; total: number | null }>();
+  return (result.results || []).map((r) => ({
+    mailbox: r.mailbox,
+    open: Number(r.open || 0),
+    unread: Number(r.unread || 0),
+    total: Number(r.total || 0)
+  }));
+}
+
+/** Delete a conversation and its messages; returns the stored originals to delete from R2. */
+export async function deleteConversation(db: D1Database, id: string): Promise<string[]> {
+  const keys = await db
+    .prepare("SELECT raw_key FROM conversation_messages WHERE conversation_id = ? AND raw_key IS NOT NULL")
+    .bind(id)
+    .all<{ raw_key: string }>();
+  await db.batch([
+    db.prepare("DELETE FROM conversation_messages WHERE conversation_id = ?").bind(id),
+    db.prepare("DELETE FROM conversations WHERE id = ?").bind(id)
+  ]);
+  return (keys.results || []).map((r) => r.raw_key);
+}
+
+export async function findConversationMessage(db: D1Database, conversationId: string, messageId: string): Promise<ConversationMessage | null> {
+  return db
+    .prepare("SELECT * FROM conversation_messages WHERE id = ? AND conversation_id = ?")
+    .bind(messageId, conversationId)
+    .first<ConversationMessage>();
 }
 
 export async function listConversationMessages(db: D1Database, conversationId: string): Promise<ConversationMessage[]> {

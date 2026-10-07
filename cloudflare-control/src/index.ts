@@ -632,7 +632,7 @@ export default {
 
   /**
    * Mail routed to the Worker by Email Routing (the support and contact
-   * addresses): filed into Support or the conversation it answers (src/inbox.ts).
+   * addresses): filed into Mail or the conversation it answers (src/inbox.ts).
    */
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     const db = getDatabase(env);
@@ -1070,14 +1070,15 @@ export default {
       }
 
       // The approvals queue became Tasks: signups, Remote Control and domain requests.
-      if (path === "/super/approvals") {
+      // Support became Mail: every address on the mail domain.
+      if (path === "/super/approvals" || path === "/super/support") {
         const redirectUrl = new URL(request.url);
-        redirectUrl.pathname = "/super/tasks";
+        redirectUrl.pathname = path === "/super/approvals" ? "/super/tasks" : "/super/mail";
         return Response.redirect(redirectUrl.toString(), 302);
       }
       let activeTab: "organizations" | "tasks" | "support" | "catalogs" | "system" = "organizations";
       if (path === "/super/tasks") activeTab = "tasks";
-      else if (path === "/super/support") activeTab = "support";
+      else if (path === "/super/mail") activeTab = "support";
       else if (path === "/super/catalogs") activeTab = "catalogs";
       else if (path === "/super/system") activeTab = "system";
 

@@ -115,9 +115,11 @@ Every route passes through `src/guard.ts` before its handler runs:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/super/inbox` | `GET` | Tasks (registrations, Remote Control requests) or Support, `?box=tasks\|support` |
+| `/api/super/inbox` | `GET` | Tasks (registrations, Remote Control requests) or Mail, `?box=tasks\|support&mailbox=<address>` |
+| `/api/super/inbox/compose` | `POST` | Write a new email as any address on the mail domain |
 | `/api/super/inbox/:id` | `GET` | One conversation, its messages and registration details |
-| `/api/super/inbox/:id/{reply,note,status,verify-phone,approve,reject}` | `POST` | Answer by email, note, close, confirm the phone, decide |
+| `/api/super/inbox/:id/{reply,note,status,delete,verify-phone,approve,reject}` | `POST` | Answer by email, note, close, delete mail, confirm the phone, decide |
+| `/api/super/inbox/:id/attachment/:messageId/:index` | `GET` | Download an attachment, or `original` for the whole message |
 | `/api/super/tenants/approve` | `POST` | Approve a requested subdomain change |
 | `/api/super/tenants/reject` | `POST` | Decline a requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Suspend an active organization |

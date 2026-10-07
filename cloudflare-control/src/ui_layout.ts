@@ -1658,6 +1658,23 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .msg-event { border-style: dashed; background: transparent; }
     .msg-meta { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px; }
     .msg-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.875rem; line-height: 1.55; margin: 0; font-family: var(--font-sans); }
+    .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .msg-attachment {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+      padding: 3px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-subtle);
+      color: var(--text-main);
+      font-size: 0.75rem;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .msg-attachment:hover { background: var(--hover); }
+    .msg-attachment:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
     @media (max-width: 900px) {
       .inbox-layout { grid-template-columns: 1fr; }
       .inbox-list { max-height: 320px; }

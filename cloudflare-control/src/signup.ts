@@ -38,7 +38,7 @@ import {
   ProfileInput,
   subjectWithReference
 } from "./conversations";
-import { mailConfigProblem, sendMail } from "./mail";
+import { mailConfigProblem, sendMail, supportAddress, supportMailbox } from "./mail";
 
 /** What every handler in this module is given by the router. */
 export interface RouteContext {
@@ -158,7 +158,8 @@ export async function sendOnConversation(
       subject,
       text: body,
       inReplyTo: options.inReplyTo,
-      references: options.references
+      references: options.references,
+      mailbox: conversation.mailbox
     }));
   } catch (err) {
     delivered = false;
@@ -168,7 +169,7 @@ export async function sendOnConversation(
     conversationId: conversation.id,
     direction: "outbound",
     body,
-    fromAddress: env.SUPPORT_ADDRESS || null,
+    fromAddress: conversation.mailbox || supportAddress(env),
     toAddress: conversation.contact_email,
     subject,
     emailMessageId: messageId,
@@ -439,7 +440,7 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
 
 // ------------------------------------------------------------------ contact form
 
-/** POST /api/contact: the public contact form, filed straight into Support. */
+/** POST /api/contact: the public contact form, filed straight into Mail. */
 export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   const { db, env, jsonHeaders, clientIp } = ctx;
   let body: { name?: unknown; organization?: unknown; email?: unknown; topic?: unknown; message?: unknown };
@@ -466,7 +467,8 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
     tenantId: null,
     subject: `[${topic}] ${organization || name}`,
     contactEmail: email,
-    contactName: name
+    contactName: name,
+    mailbox: supportMailbox(env)
   });
   await addConversationMessage(db, {
     conversationId: conversation.id,
@@ -478,7 +480,7 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   await notifyPlatformOwner(
     env,
     subjectWithReference(conversation.reference, `Contact form: ${conversation.subject}`),
-    `From: ${name} <${email}>\nOrganization: ${organization || "-"}\nTopic: ${topic}\n\n${message}\n\nReply from Support in the Super Admin console.`
+    `From: ${name} <${email}>\nOrganization: ${organization || "-"}\nTopic: ${topic}\n\n${message}\n\nReply from Mail in the Super Admin console.`
   );
   return json({ status: "ok", reference: conversation.reference }, jsonHeaders);
 }

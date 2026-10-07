@@ -210,8 +210,8 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     },
     {
       id: "support",
-      label: "Support",
-      href: "/super/support",
+      label: "Mail",
+      href: "/super/mail",
       badge: inbox.unreadSupport > 0 ? inbox.unreadSupport : undefined,
       badgeTone: "attention",
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`
@@ -272,8 +272,8 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
     `;
   } else if (activeTab === "support") {
-    subPanelTitle = "Support";
-    subPanelSubtitle = "Email & contact form";
+    subPanelTitle = "Mail";
+    subPanelSubtitle = "All addresses and the contact form";
     subPanelHtml = renderInboxSubPanelHtml("support", { open: inbox.openSupport });
   } else if (activeTab === "catalogs") {
     subPanelTitle = "Translation Catalogs";

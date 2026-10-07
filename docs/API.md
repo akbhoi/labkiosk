@@ -94,11 +94,14 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
 | `/api/tenant/remote-control/request` | `POST` | Organization Admin (`settings`) | `{"reason"}`: ask the platform to enable Remote Control; `409` when already asked or enabled |
-| `/api/super/inbox` | `GET` | Super Admin | `?box=tasks\|support&filter=open\|closed\|all`: registrations and Remote Control requests (Tasks) or support mail (Support), open first, oldest first |
+| `/api/super/inbox` | `GET` | Super Admin | `?box=tasks\|support&filter=open\|closed\|all&mailbox=<address>`: registrations and Remote Control requests (Tasks) or mail (Mail), open first, oldest first. Mail lists also return `mailboxes` (`{mailbox, open, unread, total}`) and `mailDomain` |
+| `/api/super/inbox/compose` | `POST` | Super Admin | `{"from", "to", "subject", "message"}`: a new email written as `from` (a name, or an address on the mail domain); `400` for another domain or a recipient on the platform's own domains, `502` when it was saved but not sent |
 | `/api/super/inbox/:id` | `GET` | Super Admin | One conversation with its messages, organization and registration details; marks it read |
 | `/api/super/inbox/:id/reply` | `POST` | Super Admin | `{"message", "close"?}`: email the contact; `502` when the mail was not sent |
 | `/api/super/inbox/:id/note` | `POST` | Super Admin | `{"message"}`: an internal note, never emailed |
-| `/api/super/inbox/:id/status` | `POST` | Super Admin | `{"status": "open"\|"closed"}`: support conversations only |
+| `/api/super/inbox/:id/status` | `POST` | Super Admin | `{"status": "open"\|"closed"}`: mail conversations only |
+| `/api/super/inbox/:id/delete` | `POST` | Super Admin | Delete a mail conversation, its messages and their stored originals; `400` for a task |
+| `/api/super/inbox/:id/attachment/:messageId/:index` | `GET` | Super Admin | One attachment of an incoming message (`:index` from its `attachments` list), or `original` for the whole `.eml`; always `application/octet-stream` as a download |
 | `/api/super/inbox/:id/verify-phone` | `POST` | Super Admin | Record that a registration's phone number was confirmed |
 | `/api/super/inbox/:id/approve` | `POST` | Super Admin | `{"message"?}`: activate the organization (needs a confirmed phone) or enable Remote Control, and email the contact |
 | `/api/super/inbox/:id/reject` | `POST` | Super Admin | `{"message"?}`: decline the registration or Remote Control request, and email the contact |

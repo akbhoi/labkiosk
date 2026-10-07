@@ -4,13 +4,22 @@
  *
  * The Worker has no runtime dependencies (Rule 1), so this is written here
  * rather than pulled from npm. It never executes or renders anything from the
- * message: HTML is reduced to text, attachments are listed by name and size
- * only (the forwarded copy keeps them), and every limit is explicit.
+ * message: HTML is reduced to text, attachments are listed by name, type and
+ * size (`extractAttachment()` takes one back out of the stored original for
+ * download), and every limit is explicit.
  */
 
 export interface ParsedAddress {
   address: string;
   name: string;
+}
+
+export interface MailAttachment {
+  /** Position among the message's attachments; `extractAttachment()` takes it. */
+  index: number;
+  filename: string;
+  contentType: string;
+  size: number;
 }
 
 export interface ParsedEmail {
@@ -22,7 +31,7 @@ export interface ParsedEmail {
   references: string[];
   /** The readable body, quoted history removed when it can be recognised. */
   text: string;
-  attachments: { filename: string; size: number }[];
+  attachments: MailAttachment[];
   /** An auto-reply, bounce or list message (RFC 3834 `Auto-Submitted`, `Precedence`). */
   automated: boolean;
 }
@@ -33,6 +42,8 @@ export const MAX_BODY_CHARS = 20_000;
 const MAX_MIME_DEPTH = 8;
 /** Parts examined per message. */
 const MAX_MIME_PARTS = 64;
+/** Attachments listed per message. */
+const MAX_ATTACHMENTS = 50;
 
 type HeaderMap = Map<string, string[]>;
 
@@ -252,8 +263,11 @@ function messageIds(value: string): string[] {
 interface Collected {
   plain: string | null;
   html: string | null;
-  attachments: { filename: string; size: number }[];
+  attachments: MailAttachment[];
   parts: number;
+  /** The attachment whose bytes to keep, for `extractAttachment()`. */
+  wanted: number | null;
+  found: Uint8Array | null;
 }
 
 function walk(part: Part, depth: number, acc: Collected): void {
@@ -287,7 +301,15 @@ function walk(part: Part, depth: number, acc: Collected): void {
   const bytes = decodeTransfer(part.body, header(part.headers, "content-transfer-encoding"));
   const isAttachment = disposition.value === "attachment" || (filename !== "" && !type.value.startsWith("text/"));
   if (isAttachment || !type.value.startsWith("text/")) {
-    acc.attachments.push({ filename: filename || type.value || "attachment", size: bytes.length });
+    const index = acc.attachments.length;
+    if (index >= MAX_ATTACHMENTS) return;
+    acc.attachments.push({
+      index,
+      filename: cleanFilename(filename) || "attachment",
+      contentType: /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(type.value) ? type.value : "application/octet-stream",
+      size: bytes.length
+    });
+    if (index === acc.wanted) acc.found = bytes;
     return;
   }
   const text = decodeCharset(bytes, type.params.charset);
@@ -298,11 +320,34 @@ function walk(part: Part, depth: number, acc: Collected): void {
   }
 }
 
-export function parseEmail(raw: Uint8Array): ParsedEmail {
+/** A name safe to offer as a download: no path, no control characters, bounded. */
+function cleanFilename(name: string): string {
+  const base = name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1);
+  let out = "";
+  for (const ch of base) {
+    const code = ch.codePointAt(0)!;
+    out += code < 0x20 || code === 0x7f || ch === '"' ? "_" : ch;
+  }
+  return out.trim().slice(0, 150);
+}
+
+function collect(raw: Uint8Array, wanted: number | null): { headers: HeaderMap; acc: Collected } {
   const { head, body } = splitHeadersAndBody(bytesToBinary(raw));
   const headers = parseHeaders(head);
-  const acc: Collected = { plain: null, html: null, attachments: [], parts: 0 };
+  const acc: Collected = { plain: null, html: null, attachments: [], parts: 0, wanted, found: null };
   walk({ headers, body }, 0, acc);
+  return { headers, acc };
+}
+
+/** One attachment's bytes, read back out of the stored original; null when it has no such attachment. */
+export function extractAttachment(raw: Uint8Array, index: number): { attachment: MailAttachment; bytes: Uint8Array } | null {
+  const { acc } = collect(raw, index);
+  const attachment = acc.attachments[index];
+  return attachment && acc.found ? { attachment, bytes: acc.found } : null;
+}
+
+export function parseEmail(raw: Uint8Array): ParsedEmail {
+  const { headers, acc } = collect(raw, null);
 
   const rawText = acc.plain !== null ? acc.plain : acc.html !== null ? htmlToText(acc.html.slice(0, MAX_HTML_CHARS)) : "";
   const text = stripQuotedHistory(rawText.replace(/\r\n/g, "\n").trim()).slice(0, MAX_BODY_CHARS);
@@ -319,7 +364,7 @@ export function parseEmail(raw: Uint8Array): ParsedEmail {
     inReplyTo,
     references: messageIds((headers.get("references") || []).join(" ")).slice(-50),
     text,
-    attachments: acc.attachments.slice(0, 50),
+    attachments: acc.attachments,
     automated:
       (autoSubmitted !== "" && autoSubmitted !== "no") ||
       precedence === "bulk" ||

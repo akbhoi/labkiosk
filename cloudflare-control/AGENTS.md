@@ -26,9 +26,10 @@ cloudflare-control/
 │   ├── bug_reports.ts                  # Opt-in automatic GitHub bug reports (Rule 2e)
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
 │   ├── signup.ts                       # Registration with an email code, the contact form, Remote Control requests
-│   ├── inbox.ts                        # Super Admin Tasks/Support API and the email() handler
+│   ├── inbox.ts                        # Super Admin Tasks/Mail API and the email() handler
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email via the EMAIL send_email binding
+│   ├── mail_store.ts                   # Incoming originals (attachments) in R2 under mail/
 │   ├── mime.ts                         # Dependency-free parser for incoming email
 │   ├── guard.ts                        # Tenant resolution, authorization, CSRF origin guard (MANDATORY)
 │   ├── escape.ts                       # HTML / attribute / JSON escaping & safe URLs (MANDATORY)
@@ -50,7 +51,7 @@ cloudflare-control/
 │   ├── ui_org_home.ts                  # The organization homepage at the subdomain root (/)
 │   ├── ui_portal.ts                    # User Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
-│   ├── ui_super_inbox.ts               # Its Tasks and Support panes (/super/tasks, /super/support)
+│   ├── ui_super_inbox.ts               # Its Tasks and Mail panes (/super/tasks, /super/mail)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /terms/bug-reports)
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   └── types.ts                        # Strict TypeScript interfaces
