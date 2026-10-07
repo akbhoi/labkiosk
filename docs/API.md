@@ -47,7 +47,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | Endpoint | Method | Auth Scheme | Description |
 | :--- | :--- | :--- | :--- |
 | `/api/status` | `GET` | Public | System status and active kiosk target URL probe |
-| `/api/auth/register` | `POST` | Public | Register organization admin and claim subdomain |
+| `/api/auth/register/email-code` | `POST` | Public | `{"email"}`: email a six-digit code for registration (10 minutes; `409` when the address is registered) |
+| `/api/auth/register` | `POST` | Public | Register an organization for review; nobody is signed in |
+| `/api/contact` | `POST` | Public | The website's contact form: opens a Support conversation |
 | `/api/auth/login` | `POST` | Public | Sign in to Admin console or Super Admin Console |
 | `/api/auth/me` | `GET` | Session | Retrieve current authenticated user profile & tenant |
 | `/api/auth/logout` | `POST` | Session | Invalidate session token and clear cookies |
@@ -91,8 +93,17 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
-| `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending organization subdomain registration |
-| `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending organization registration |
+| `/api/tenant/remote-control/request` | `POST` | Organization Admin (`settings`) | `{"reason"}`: ask the platform to enable Remote Control; `409` when already asked or enabled |
+| `/api/super/inbox` | `GET` | Super Admin | `?box=tasks\|support&filter=open\|closed\|all`: registrations and Remote Control requests (Tasks) or support mail (Support), open first, oldest first |
+| `/api/super/inbox/:id` | `GET` | Super Admin | One conversation with its messages, organization and registration details; marks it read |
+| `/api/super/inbox/:id/reply` | `POST` | Super Admin | `{"message", "close"?}`: email the contact; `502` when the mail was not sent |
+| `/api/super/inbox/:id/note` | `POST` | Super Admin | `{"message"}`: an internal note, never emailed |
+| `/api/super/inbox/:id/status` | `POST` | Super Admin | `{"status": "open"\|"closed"}`: support conversations only |
+| `/api/super/inbox/:id/verify-phone` | `POST` | Super Admin | Record that a registration's phone number was confirmed |
+| `/api/super/inbox/:id/approve` | `POST` | Super Admin | `{"message"?}`: activate the organization (needs a confirmed phone) or enable Remote Control, and email the contact |
+| `/api/super/inbox/:id/reject` | `POST` | Super Admin | `{"message"?}`: decline the registration or Remote Control request, and email the contact |
+| `/api/super/tenants/approve` | `POST` | Super Admin | Approve an organization's requested subdomain change |
+| `/api/super/tenants/reject` | `POST` | Super Admin | Decline an organization's requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Super Admin | Suspend active organization tenant |
 | `/api/super/tenants/reactivate` | `POST` | Super Admin | Reactivate suspended organization tenant |
 | `/api/super/tenants/custom-domain/approve` | `POST` | Super Admin | Approve and bind custom domain for an organization |
@@ -127,29 +138,40 @@ Returns the operational mode and current landing target. Used by the first-boot 
 
 #### `POST /api/auth/register`
 
-Creates a new organization and initializes an administrator account.
+Registers an organization for review. Ask for `emailCode` first with
+`POST /api/auth/register/email-code`. Every field below is required except `legalName`,
+`organizationType`, `addressLine2`, `region`, `taxId`, `billingEmail`, `workstationEstimate` and
+`notes`. The phone number is international (`+` and the country code). The organization is
+`pending`, nobody is signed in, and the contact is emailed; a super admin confirms the phone and
+approves it under Super Admin → Tasks, which emails the console address.
 
-- **Access:** Public (rate-limited per IP)
+- **Access:** Public (rate-limited per address and per email)
 - **Request Body:**
 
   ```json
   {
     "name": "Oakridge Holdings",
-    "email": "principal@oakridge.edu",
+    "legalName": "Oakridge Holdings Pvt Ltd",
+    "organizationType": "business",
+    "contactName": "Jane Smith",
+    "email": "it@oakridge.example",
+    "emailCode": "482913",
+    "phone": "+91 98765 43210",
     "password": "StrongPassword123!",
-    "subdomain": "oakridge"
+    "subdomain": "oakridge",
+    "addressLine1": "12 Market Road",
+    "city": "Bhubaneswar",
+    "region": "Odisha",
+    "postalCode": "751001",
+    "country": "India",
+    "taxId": "21ABCDE1234F1Z5",
+    "billingEmail": "accounts@oakridge.example",
+    "workstationEstimate": 40,
+    "acceptTerms": true
   }
   ```
 
-- **Response `200 OK`:**
-
-  ```json
-  {
-    "status": "ok",
-    "message": "Organization registered successfully. Pending approval.",
-    "subdomain": "oakridge"
-  }
-  ```
+- **Response `200 OK`:** `{ "status": "ok", "pending": true, "reference": "LK-7Q2M4K" }`
 
 #### `POST /api/auth/login`
 
@@ -744,9 +766,11 @@ audit log.
 
 ### 7. Super Administrator Console (`/super`)
 
+Registrations and Remote Control requests are decided under **Tasks** (`/api/super/inbox`, above).
+
 #### `POST /api/super/tenants/approve`
 
-Approves a pending organization tenant registration.
+Approves an organization's requested subdomain change.
 
 - **Access:** Super Admin
 - **Request Body:**

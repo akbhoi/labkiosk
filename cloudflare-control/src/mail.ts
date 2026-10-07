@@ -117,6 +117,8 @@ export async function sendMail(env: Env, mail: OutgoingMail): Promise<SentMail> 
       messageId
     });
     if (localMail.length > LOCAL_OUTBOX_LIMIT) localMail.splice(0, localMail.length - LOCAL_OUTBOX_LIMIT);
+    // Local development has no inbox to read: the log is where a registration code is found.
+    console.log(`[Mail] Local outbox, not sent: to ${to.email}: ${subject}`);
     return { messageId };
   }
 
