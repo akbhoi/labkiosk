@@ -125,7 +125,6 @@ import {
   hostSubdomain,
   isDevHost,
   isHostUnder,
-  usableTunnelDomain,
   isReservedSlug,
   rejectCrossSiteMutation,
   rejectCrossSiteSocket
@@ -137,23 +136,6 @@ import {
   recordBootReport,
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
-import {
-  cleanAccountId,
-  cleanApiToken,
-  configureRemoteTunnels,
-  countRemoteTunnels,
-  deprovisionWorkstationTunnel,
-  getRemoteTunnelAccount,
-  parseAccessRules,
-  platformTunnelConfig,
-  remoteGateHost,
-  remoteTunnelsAvailable,
-  RemoteTunnelSettings,
-  RemoteTunnelSetupError,
-  turnOffRemoteTunnels,
-  workstationTunnel
-} from "./remote_tunnels";
-import { handleRemoteGate, issueRemotePass, REMOTE_PASS_SECONDS } from "./remote_gate";
 import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
@@ -331,7 +313,6 @@ const DEFAULT_CONFIG: LabConfig = {
   updatedAt: new Date().toISOString(),
   defaultHomepage: "https://labkiosk.org",
   tunnelDomain: "",
-  remoteGateDomain: "",
   whitelist: [],
   scheduledShutdown: "17:00"
 };
@@ -484,34 +465,6 @@ async function handleBootReport(
 }
 
 /**
- * GET /api/devices/tunnel: the Remote Control tunnel this workstation should
- * run, created in its organization's own Cloudflare account on first request
- * (src/remote_tunnels.ts). The device token alone decides the organization and
- * workstation. `tunnel` is null when the organization has none, `pending` while
- * it is being created or after a failure the next attempt may fix.
- */
-async function handleDeviceTunnel(
-  request: Request,
-  env: Env,
-  db: D1Database,
-  jsonHeaders: Record<string, string>
-): Promise<Response> {
-  const auth = await requireDevice(request, db, jsonHeaders);
-  if (auth.error) return auth.error;
-  const device = auth.device;
-  const tenant = await findTenantById(db, device.tenant_id);
-  if (!tenant || tenant.status !== "active") {
-    return jsonError("This organization is not active", 403, jsonHeaders);
-  }
-  const tunnel = await workstationTunnel(env, db, tenant, device.client_id, Math.floor(Date.now() / 1000));
-  const body = tunnel.state === "ready"
-    ? { tunnel: { hostname: tunnel.hostname, token: tunnel.token }, pending: false }
-    : { tunnel: null, pending: tunnel.state === "pending" };
-  // The run token is a credential: never cached by anything in between.
-  return new Response(JSON.stringify(body), { headers: { ...jsonHeaders, "Cache-Control": "no-store" } });
-}
-
-/**
  * Routes that may name a tenant without a session, either because they are
  * public and read-only (the user portal, the wizard status probe) or because
  * they carry their own credential (`/api/telemetry` uses a device token, and
@@ -608,9 +561,8 @@ function buildHtmlHeaders(
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
-    // Remote control embeds a workstation's noVNC page: its tunnel hostname in
-    // production, or the simulator's published port in local development.
-    "frame-src 'self' https: http://localhost:6080 http://127.0.0.1:6080",
+    // Only Remote Control frames a page: the viewer on this console's own address.
+    "frame-src 'self'",
     "connect-src 'self'",
     // Only the viewer is framed, and only by the console on its own address.
     options.remoteViewer ? "frame-ancestors 'self'" : "frame-ancestors 'none'",
@@ -683,11 +635,6 @@ export default {
     await bootstrap(db, env);
     useAuditQueue(env.AUDIT_QUEUE);
 
-    // The Remote Control gate on the platform's remote-control domain answers
-    // nothing else, and nothing else answers there (src/remote_gate.ts).
-    const gate = await handleRemoteGate(request, url, hostname(request), env, db);
-    if (gate) return gate;
-
     // Same-origin JSON API: no cross-origin credentials are ever needed, so no
     // Access-Control-Allow-Origin is emitted. `/api/status` opts in explicitly
     // below because the first-boot wizard probes it from a file:// page.
@@ -708,9 +655,6 @@ export default {
     }
     if (path === "/api/devices/remote" && method === "GET") {
       return handleDeviceRemote(request, env, db, jsonHeaders);
-    }
-    if (path === "/api/devices/tunnel" && method === "GET") {
-      return handleDeviceTunnel(request, env, db, jsonHeaders);
     }
 
     // The noVNC client the Remote Control viewer loads, from static assets.
@@ -1995,128 +1939,6 @@ export default {
       return new Response(JSON.stringify({ status: "ok", enabled: body.enabled }), { headers: jsonHeaders });
     }
 
-    // GET /api/settings/remote-tunnels: whether automatic Remote Control
-    // tunnels are on, and how many workstations have one. Never the token.
-    if (path === "/api/settings/remote-tunnels" && method === "GET") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
-      if (denied) return denied;
-      const account = await getRemoteTunnelAccount(db, currentTenant!.id);
-      const counts = await countRemoteTunnels(db, currentTenant!.id);
-      return new Response(
-        JSON.stringify({
-          available: remoteTunnelsAvailable(env),
-          configured: account !== null,
-          mode: account?.mode ?? null,
-          platformDomain: platformTunnelConfig(env)?.domain ?? null,
-          accountId: account?.mode === "own" ? account.account_id : null,
-          domain: account?.domain ?? null,
-          accessRules: account ? (JSON.parse(account.access_rules) as string[]) : [],
-          workstations: counts
-        }),
-        { headers: jsonHeaders }
-      );
-    }
-
-    // POST /api/settings/remote-tunnels: turn automatic tunnels on, or change
-    // them. { mode: "platform" } puts workstations on the platform's
-    // remote-control domain, reached through the gate (src/remote_gate.ts) by
-    // staff with the workstations permission; { mode: "own", accountId, domain,
-    // apiToken?, accessRules } on the organization's own Cloudflare account,
-    // whose token is checked against the account before it is stored, sealed.
-    if (path === "/api/settings/remote-tunnels" && method === "POST") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
-      if (denied) return denied;
-      let body: { mode?: unknown; accountId?: unknown; domain?: unknown; apiToken?: unknown; accessRules?: unknown };
-      try {
-        body = await request.json<typeof body>();
-      } catch {
-        return jsonError("The request body must be JSON", 400, jsonHeaders);
-      }
-      if (!body || typeof body !== "object") return jsonError("The request body must be a JSON object", 400, jsonHeaders);
-      const mode = body.mode === undefined ? "own" : body.mode;
-      if (mode !== "own" && mode !== "platform") return jsonError('mode is "own" or "platform"', 400, jsonHeaders);
-      let settings: RemoteTunnelSettings;
-      if (mode === "platform") {
-        settings = { mode };
-      } else {
-        const accessRules = parseAccessRules(body.accessRules);
-        if (!accessRules) {
-          return jsonError("List who may connect: email addresses or email domains, one to fifty", 400, jsonHeaders);
-        }
-        const accountId = cleanAccountId(body.accountId);
-        if (!accountId) return jsonError("The Cloudflare account ID is 32 hexadecimal characters", 400, jsonHeaders);
-        const domain = cleanCustomDomain(body.domain);
-        if (!domain) return jsonError("Enter the domain workstation addresses go under, e.g. example.com", 400, jsonHeaders);
-        if (!usableTunnelDomain(domain, env.DEFAULT_DOMAIN)) {
-          return jsonError(`Use a domain on your own Cloudflare account, not one under ${env.DEFAULT_DOMAIN}`, 400, jsonHeaders);
-        }
-        const platformDomain = platformTunnelConfig(env)?.domain;
-        if (platformDomain && (isHostUnder(domain, platformDomain) || isHostUnder(platformDomain, domain))) {
-          return jsonError(`${platformDomain} is the platform's own remote-control domain; choose it as the place instead`, 400, jsonHeaders);
-        }
-        const rawToken = typeof body.apiToken === "string" ? body.apiToken.trim() : "";
-        const apiToken = rawToken ? cleanApiToken(rawToken) : null;
-        if (rawToken && !apiToken) return jsonError("That does not look like a Cloudflare API token", 400, jsonHeaders);
-        settings = { mode, accountId, domain, apiToken, accessRules };
-      }
-      const now = Math.floor(Date.now() / 1000);
-      try {
-        const previous = await getRemoteTunnelAccount(db, currentTenant!.id);
-        const { domain, zoneName } = await configureRemoteTunnels(env, db, currentTenant!, settings, now);
-        // The console's own Remote Control fallback address follows an
-        // organization's own domain; the platform domain's addresses are
-        // `<organization>-<workstation>-vnc`, which that fallback cannot build.
-        if (settings.mode === "own") {
-          await updateTenant(db, currentTenant!.id, { tunnel_domain: domain });
-        } else if (previous?.mode === "own" && currentTenant!.tunnel_domain === previous.domain) {
-          await updateTenant(db, currentTenant!.id, { tunnel_domain: null });
-        }
-        const where =
-          settings.mode === "own"
-            ? `account=${settings.accountId} domain=${domain} access=${settings.accessRules.join(",")}`
-            : `platform domain=${domain} access=staff with the workstations permission`;
-        await writeAuditLog(db, {
-          tenantId: currentTenant!.id,
-          userId: session!.user_id,
-          action: "settings.remote_tunnels",
-          details: `on: ${where} zone=${zoneName}${settings.mode === "own" && settings.apiToken ? " (token replaced)" : ""}`
-        });
-        return new Response(JSON.stringify({ status: "ok", mode: settings.mode, domain, zone: zoneName }), { headers: jsonHeaders });
-      } catch (err) {
-        if (err instanceof RemoteTunnelSetupError) return jsonError(err.message, err.status, jsonHeaders);
-        console.error("[Worker] Remote tunnel settings failed:", err);
-        return jsonError("Could not save the Remote Control tunnel settings", 500, jsonHeaders);
-      }
-    }
-
-    // POST /api/settings/remote-tunnels/off: delete the tunnels, DNS records and
-    // Access applications created in the organization's account, a batch per
-    // request; once none remain, its Access policy and the stored token.
-    if (path === "/api/settings/remote-tunnels/off" && method === "POST") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
-      if (denied) return denied;
-      const account = await getRemoteTunnelAccount(db, currentTenant!.id);
-      if (!account) return new Response(JSON.stringify({ status: "ok", remaining: 0 }), { headers: jsonHeaders });
-      try {
-        const { remaining } = await turnOffRemoteTunnels(env, db, currentTenant!.id);
-        if (remaining === 0) {
-          if (account.mode === "own" && currentTenant!.tunnel_domain === account.domain) {
-            await updateTenant(db, currentTenant!.id, { tunnel_domain: null });
-          }
-          await writeAuditLog(db, {
-            tenantId: currentTenant!.id,
-            userId: session!.user_id,
-            action: "settings.remote_tunnels",
-            details: `off: ${account.mode === "own" ? `account=${account.account_id}` : "platform"} domain=${account.domain}`
-          });
-        }
-        return new Response(JSON.stringify({ status: "ok", remaining }), { headers: jsonHeaders });
-      } catch (err) {
-        console.error("[Worker] Turning remote tunnels off failed:", err);
-        return jsonError(`Cloudflare refused to delete a tunnel: ${(err as Error).message}`, 502, jsonHeaders);
-      }
-    }
-
     // GET /api/audit-logs: recent activity for this organization
     if (path === "/api/audit-logs" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
@@ -2401,23 +2223,7 @@ export default {
           updates.home_route = cleanRoute;
         }
         if (body.tunnelDomain !== undefined) {
-          const tunnelDomain = cleanCustomDomain(body.tunnelDomain);
-          if (tunnelDomain && !usableTunnelDomain(tunnelDomain, env.DEFAULT_DOMAIN)) {
-            return jsonError(
-              `The tunnel domain must be a domain your Cloudflare Tunnel serves, not one under ${env.DEFAULT_DOMAIN}: workstation addresses there have no certificate and never reach a tunnel.`,
-              400,
-              jsonHeaders
-            );
-          }
-          const platformDomain = platformTunnelConfig(env)?.domain;
-          if (tunnelDomain && platformDomain && isHostUnder(tunnelDomain, platformDomain)) {
-            return jsonError(
-              `${platformDomain} is the platform's remote-control domain; turn on Automatic Remote Control Tunnels to use it.`,
-              400,
-              jsonHeaders
-            );
-          }
-          updates.tunnel_domain = tunnelDomain || null;
+          updates.tunnel_domain = cleanCustomDomain(body.tunnelDomain) || null;
         }
         if (body.portalTitle !== undefined) {
           updates.portal_title = String(body.portalTitle).trim().slice(0, 100) || null;
@@ -2684,48 +2490,6 @@ export default {
       return relayUpgrade(env, currentTenant!.id, clientId, "console", await hashRelayToken(token), session!.user_id);
     }
 
-    // POST /api/clients/remote-pass: a short-lived pass to open a workstation
-    // on the platform's remote-control domain through the gate
-    // (src/remote_gate.ts). { clientId } -> { url, path, expiresIn }.
-    if (path === "/api/clients/remote-pass" && method === "POST") {
-      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
-      if (denied) return denied;
-      let body: { clientId?: unknown };
-      try {
-        body = await request.json<typeof body>();
-      } catch {
-        return jsonError("The request body must be JSON", 400, jsonHeaders);
-      }
-      const clientId = typeof body?.clientId === "string" ? body.clientId.trim() : "";
-      if (!clientId) return jsonError("A workstation id is required", 400, jsonHeaders);
-      const platform = platformTunnelConfig(env);
-      if (!platform) return jsonError("This server has no remote-control domain", 409, jsonHeaders);
-      const tenantId = currentTenant!.id;
-      const tunnel = await db
-        .prepare(
-          `SELECT r.hostname FROM remote_tunnels r JOIN remote_tunnel_accounts a ON a.tenant_id = r.tenant_id
-           WHERE r.tenant_id = ? AND r.client_id = ? AND r.status = 'active' AND a.mode = 'platform'`
-        )
-        .bind(tenantId, clientId)
-        .first<{ hostname: string }>();
-      if (!tunnel) return jsonError("This workstation has no Remote Control tunnel on the platform's domain yet", 404, jsonHeaders);
-      const pass = await issueRemotePass(env, tenantId, clientId, Math.floor(Date.now() / 1000));
-      await writeAuditLog(db, {
-        tenantId,
-        userId: session!.user_id,
-        action: "device.remote_control",
-        details: `client=${clientId} via=${remoteGateHost(platform)}`
-      });
-      return new Response(
-        JSON.stringify({
-          url: `https://${remoteGateHost(platform)}/w/${pass}/vnc.html`,
-          path: `w/${pass}/websockify`,
-          expiresIn: REMOTE_PASS_SECONDS
-        }),
-        { headers: jsonHeaders }
-      );
-    }
-
     // POST /api/clients/remove: Decommission a workstation
     if (path === "/api/clients/remove" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
@@ -2736,19 +2500,6 @@ export default {
         if (!clientId) return jsonError("A workstation id is required", 400, jsonHeaders);
 
         const tenantId = currentTenant!.id;
-        // Its tunnel goes first, while the organization's account still knows
-        // it. If that account refuses, the workstation is not removed: the
-        // tunnel would outlive it with a working token.
-        try {
-          await deprovisionWorkstationTunnel(env, db, tenantId, clientId);
-        } catch (err) {
-          console.error("[Worker] Removing a workstation's tunnel failed:", err);
-          return jsonError(
-            `Could not delete this workstation's Remote Control tunnel in your Cloudflare account: ${(err as Error).message}`,
-            502,
-            jsonHeaders
-          );
-        }
         await deleteClientDevice(db, tenantId, clientId);
         // Decommissioning must also invalidate the device's credentials, or the
         // workstation simply re-registers itself on its next heartbeat. OrgHub
@@ -3267,17 +3018,11 @@ export default {
         // The hosted demo's tunnel belongs to web-demo only. Handed to anyone
         // else it sent their Remote Control -- VNC password included -- to
         // <pc>.demo.<domain>, a host in another organization's namespace. The
-        // local demos take no fallback at all (demoTunnelFallback). A domain under
-        // the platform's own is dropped (usableTunnelDomain), so a row saved before
-        // that was refused shows the "not configured" notice, not a dead link.
-        tunnelDomain: usableTunnelDomain(
-          tenant.tunnel_domain ||
-            (isDemoTenant(tenant, session.user_id)
-              ? demoTunnelFallback(tenant.subdomain as DemoSlug, env.TUNNEL_DOMAIN)
-              : env.TUNNEL_DOMAIN || ""),
-          env.DEFAULT_DOMAIN
-        ),
-        remoteGateDomain: platformTunnelConfig(env)?.domain ?? "",
+        // local demos take no fallback at all (demoTunnelFallback).
+        tunnelDomain: tenant.tunnel_domain ||
+          (isDemoTenant(tenant, session.user_id)
+            ? demoTunnelFallback(tenant.subdomain as DemoSlug, env.TUNNEL_DOMAIN)
+            : env.TUNNEL_DOMAIN || ""),
         defaultHomepage: env.DEFAULT_HOMEPAGE || DEFAULT_CONFIG.defaultHomepage,
         homeRoute: tenant.home_route || "/",
         whitelist

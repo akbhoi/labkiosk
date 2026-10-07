@@ -24,7 +24,7 @@ One-click interactive remote desktop from the admin console, with **no inbound p
 
 The workstation makes only **outbound** connections to the console, the same address its control channel uses. Nothing listens on the organization LAN, no firewall rule is needed, and there is no tunnel, DNS record or route per workstation.
 
-The tunnel sections further down describe the earlier design: tunnels are still provisioned when configured, but the console now connects through the relay.
+The tunnel sections further down describe the earlier design. The console now connects through the relay and no longer opens a workstation's tunnel, so Remote Control needs none.
 
 ---
 
@@ -115,7 +115,6 @@ The agent parses the first `hostname:` under `ingress:` and reports it as `remot
 | **A — Per-lab overlay** | Build a site-specific ISO with `/etc/cloudflared/` pre-populated | A lab imaged all at once |
 | **B — Persistence partition** | Not supported by the stock image: it mounts no partition by label, and an installed disk mounts only its own `LABKIOSK_DATA` by UUID. Persisting `/etc/cloudflared/` there needs an image change | — |
 | **C — Dynamic enrolment** | Script first-boot to fetch tunnel tokens with a deployment secret | Large or growing fleets |
-| **D — Automatic tunnels** | Settings → Domains → Automatic Remote Control Tunnels: the console creates each workstation's tunnel, DNS record and Access application in the organization's own Cloudflare account, or as `<organization>-<workstation>-vnc` on the platform's remote-control domain for an organization without one, and the agent runs it (`docs/REMOTE_CONTROL.md`) | Any fleet; needs the server secret `REMOTE_TUNNEL_KEY` |
 
 `LABKIOSK_REMOTE_HOST` overrides the parsed hostname, which is what the simulator uses.
 
@@ -167,7 +166,6 @@ environment:
 | :--- | :--- | :--- |
 | noVNC asks for a password | No heartbeat since boot, or `/tmp/labkiosk/vnc.secret` is missing | Confirm the workstation is enrolled; wait one telemetry cycle |
 | "Failed to connect to server" | Tunnel is not running, or DNS does not point at Cloudflare | `systemctl status cloudflared-kiosk`; confirm `/etc/cloudflared/config.yml` exists |
-| Browser says the workstation "uses an unsupported protocol" | The address is two labels under a one-label wildcard certificate (`pc-01.org.labkiosk.org`), so TLS fails | Use a tunnel domain whose certificate covers `*.<tunnel domain>`; the console refuses one under the platform's domain |
 | **Remote Control** button disabled | No `remote_host` reported and no `TUNNEL_DOMAIN` configured | Set `TUNNEL_DOMAIN` in the dashboard, or provision a tunnel |
 | Black or sluggish screen | Bandwidth or thin-client CPU | noVNC adapts to WAN latency; check hardware acceleration in firmware |
 | Anyone on the internet can reach the viewer | No Cloudflare Access policy | Add one now — see above |

@@ -181,49 +181,6 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
               <button type="submit" class="btn btn-secondary">Update Tunnel Domain</button>
             </form>
           </div>
-
-          <!-- Card 6: Automatic tunnels, on the platform's remote-control domain or the organization's own -->
-          <div class="card" id="section-remote-tunnels">
-            <h2 class="card-title">Automatic Remote Control Tunnels</h2>
-            <p class="card-sub">Lab Kiosk creates a Cloudflare Tunnel, DNS record and Access application for each workstation, so Remote Control works without setting up tunnels by hand.</p>
-            <p class="form-hint" id="remote-tunnels-status">Loading…</p>
-
-            <form id="form-remote-tunnels">
-              <div class="form-group">
-                <label class="form-label" for="remote-tunnels-mode">Workstation addresses</label>
-                <select class="form-select" id="remote-tunnels-mode">
-                  <option value="platform" id="remote-tunnels-mode-platform">Lab Kiosk's remote-control domain</option>
-                  <option value="own">My own Cloudflare domain</option>
-                </select>
-                <div class="form-hint" id="remote-tunnels-mode-hint"></div>
-              </div>
-              <div id="remote-tunnels-own-fields">
-              <div class="form-group">
-                <label class="form-label" for="remote-tunnels-domain">Domain</label>
-                <input type="text" class="form-input" id="remote-tunnels-domain" placeholder="e.g. example.com" autocomplete="off">
-                <div class="form-hint">A zone on your Cloudflare account. Use the zone itself (<code>pc-01.example.com</code>): the free certificate covers one label under it, so a deeper domain needs Advanced Certificate Manager.</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label" for="remote-tunnels-account">Cloudflare account ID</label>
-                <input type="text" class="form-input mono" id="remote-tunnels-account" placeholder="32 hexadecimal characters" autocomplete="off" spellcheck="false">
-              </div>
-              <div class="form-group">
-                <label class="form-label" for="remote-tunnels-token">API token</label>
-                <input type="password" class="form-input mono" id="remote-tunnels-token" autocomplete="new-password" spellcheck="false">
-                <div class="form-hint">Permissions: Account · Cloudflare Tunnel · Edit; Account · Access: Apps and Policies · Edit; Zone · DNS · Edit and Zone · Zone · Read for this domain. Stored encrypted and never shown again.</div>
-              </div>
-              </div>
-              <div class="form-group" id="remote-tunnels-access-group">
-                <label class="form-label" for="remote-tunnels-access">Who may connect</label>
-                <textarea class="form-textarea" id="remote-tunnels-access" rows="3" placeholder="it@example.com&#10;example.com"></textarea>
-                <div class="form-hint">Email addresses or whole email domains, one per line. Cloudflare Access asks them to sign in before the remote screen opens.</div>
-              </div>
-              <div class="form-row">
-                <button type="submit" class="btn btn-primary" id="btn-remote-tunnels-save">Turn On</button>
-                <button type="button" class="btn btn-danger" id="btn-remote-tunnels-off" hidden>Turn Off</button>
-              </div>
-            </form>
-          </div>
         </div>
 
         <div>
@@ -608,141 +565,6 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         }
       });
 
-      (function remoteTunnels() {
-        const form = document.getElementById("form-remote-tunnels");
-        const statusLine = document.getElementById("remote-tunnels-status");
-        const modeSelect = document.getElementById("remote-tunnels-mode");
-        const platformOption = document.getElementById("remote-tunnels-mode-platform");
-        const modeHint = document.getElementById("remote-tunnels-mode-hint");
-        const ownFields = document.getElementById("remote-tunnels-own-fields");
-        const accessGroup = document.getElementById("remote-tunnels-access-group");
-        let platformDomain = null;
-        let configuredMode = null;
-        const domainInput = document.getElementById("remote-tunnels-domain");
-        const accountInput = document.getElementById("remote-tunnels-account");
-        const tokenInput = document.getElementById("remote-tunnels-token");
-        const accessInput = document.getElementById("remote-tunnels-access");
-        const saveBtn = document.getElementById("btn-remote-tunnels-save");
-        const offBtn = document.getElementById("btn-remote-tunnels-off");
-
-        function showMode() {
-          const own = modeSelect.value === "own";
-          ownFields.hidden = !own;
-          accessGroup.hidden = !own;
-          accessInput.required = own;
-          tokenInput.required = own && configuredMode !== "own";
-          modeHint.textContent = own
-            ? "Workstations are <workstation>.<your domain>, in your own Cloudflare account and Zero Trust seats."
-            : "Workstations are <organization>-<workstation>-vnc." + platformDomain + ". No domain or Cloudflare account needed: staff with the Workstations permission open Remote Control from this console.";
-        }
-        modeSelect.addEventListener("change", showMode);
-
-        async function load() {
-          const res = await fetch(labkioskApi("/api/settings/remote-tunnels"));
-          const data = await res.json();
-          if (!res.ok) {
-            statusLine.textContent = data.error || "Could not load the tunnel settings.";
-            return;
-          }
-          if (!data.available) {
-            statusLine.textContent = "Not available on this server: its administrator has not set REMOTE_TUNNEL_KEY.";
-            for (const el of form.querySelectorAll("input, textarea, button")) el.disabled = true;
-            return;
-          }
-          platformDomain = data.platformDomain || null;
-          configuredMode = data.configured ? data.mode : null;
-          platformOption.disabled = !platformDomain;
-          platformOption.hidden = !platformDomain;
-          modeSelect.value = configuredMode || (platformDomain ? "platform" : "own");
-          offBtn.hidden = !data.configured;
-          saveBtn.textContent = data.configured ? "Save Changes" : "Turn On";
-          tokenInput.placeholder = configuredMode === "own" ? "Saved; leave blank to keep it" : "";
-          showMode();
-          if (data.configured) {
-            if (data.mode === "own") {
-              domainInput.value = data.domain || "";
-              accountInput.value = data.accountId || "";
-            }
-            accessInput.value = (data.accessRules || []).join("\\n");
-            const w = data.workstations || {};
-            statusLine.textContent = "On for " + data.domain + ". Workstations with a tunnel: " + (w.active || 0) +
-              (w.failed ? ", failed: " + w.failed + " (see Errors & Warnings)" : "") + ".";
-          } else {
-            statusLine.textContent = "Off. Workstations pick up their tunnel within five minutes of turning this on.";
-          }
-        }
-
-        form.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          saveBtn.disabled = true;
-          try {
-            const res = await fetch(labkioskApi("/api/settings/remote-tunnels"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(
-                modeSelect.value === "own"
-                  ? {
-                      mode: "own",
-                      domain: domainInput.value.trim(),
-                      accountId: accountInput.value.trim(),
-                      apiToken: tokenInput.value.trim(),
-                      accessRules: accessInput.value
-                    }
-                  : { mode: "platform" }
-              )
-            });
-            const data = await res.json();
-            if (data.status === "ok") {
-              tokenInput.value = "";
-              lkToast("Remote Control tunnels are on for " + data.domain + ".", "success");
-              await load();
-            } else {
-              lkToast(data.error || "Could not save the tunnel settings", "error");
-            }
-          } catch (err) {
-            lkToast("Network error: " + err.message, "error");
-          } finally {
-            saveBtn.disabled = false;
-          }
-        });
-
-        offBtn.addEventListener("click", async () => {
-          const agreed = await lkConfirm({
-            title: "Turn Remote Control tunnels off?",
-            message: "This deletes every workstation's tunnel, DNS record and Access application, and Remote Control stops working until it is turned on again.",
-            confirmLabel: "Turn Off",
-            tone: "danger"
-          });
-          if (!agreed) return;
-          offBtn.disabled = true;
-          try {
-            // A batch of workstations per request, until none remain.
-            for (;;) {
-              const res = await fetch(labkioskApi("/api/settings/remote-tunnels/off"), { method: "POST" });
-              const data = await res.json();
-              if (data.status !== "ok") {
-                lkToast(data.error || "Could not turn the tunnels off", "error");
-                break;
-              }
-              if (data.remaining === 0) {
-                lkToast("Remote Control tunnels are off.", "success");
-                break;
-              }
-              statusLine.textContent = "Removing tunnels… " + data.remaining + " left.";
-            }
-          } catch (err) {
-            lkToast("Network error: " + err.message, "error");
-          } finally {
-            offBtn.disabled = false;
-            await load();
-          }
-        });
-
-        load().catch((err) => {
-          statusLine.textContent = "Could not load the tunnel settings: " + err.message;
-        });
-      })();
-
       let keyRevealed = false;
       document.getElementById("btn-reveal-key").addEventListener("click", async () => {
         const display = document.getElementById("enrollment-key-display");
@@ -896,8 +718,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             update_failed: "Update failed",
             update_rolled_back: "Update rolled back",
             boot_fallback: "Started a fallback image",
-            boot_error: "Boot record error",
-            remote_tunnel_failed: "Remote Control tunnel failed"
+            boot_error: "Boot record error"
           };
           const pad = (n) => String(n).padStart(2, "0");
           // Where a sent problem stands: the issue it opened or joined, and that issue's status on GitHub.

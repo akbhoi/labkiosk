@@ -1059,87 +1059,12 @@ class BootPolicyBeforeTheBrowser(unittest.TestCase):
         agent.state["isConfigured"] = True
         self.run_main()
         self.assertEqual(self.events, [("sync", [], True), ("thread", "start_local_server"),
-                                       ("thread", "boot_report_loop"), ("thread", "remote_tunnel_loop")])
+                                       ("thread", "boot_report_loop")])
 
     def test_an_unenrolled_agent_has_nothing_to_allow_yet(self):
         agent.state["isConfigured"] = False
         self.run_main()
-        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop"),
-                                       ("thread", "remote_tunnel_loop")])
-
-
-class RemoteTunnelFromTheControlPlane(unittest.TestCase):
-    """GET /api/devices/tunnel: the token lands in a file a root service runs
-    cloudflared from, so only a well-formed answer is ever written, a tunnel
-    still being created keeps the one that runs, and "none" stops it."""
-
-    TOKEN = "eyJhIjoiMDEyMyIsInQiOiJhYmNkIiwicyI6IlpYaGhiWEJzWlE9PSJ9"
-
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.orig = {name: getattr(agent, name) for name in
-                     ("REMOTE_TUNNEL_TOKEN_FILE", "REMOTE_TUNNEL_HOST_FILE", "fetch_remote_tunnel")}
-        self.orig_configured = agent.state["isConfigured"]
-        agent.REMOTE_TUNNEL_TOKEN_FILE = os.path.join(self.dir.name, "tunnel.token")
-        agent.REMOTE_TUNNEL_HOST_FILE = os.path.join(self.dir.name, "tunnel.host")
-        agent.state["isConfigured"] = True
-        agent._tunnel_host_cache.clear()
-
-    def tearDown(self):
-        for name, value in self.orig.items():
-            setattr(agent, name, value)
-        agent.state["isConfigured"] = self.orig_configured
-        agent._tunnel_host_cache.clear()
-        self.dir.cleanup()
-
-    def answer(self, status, body):
-        agent.fetch_remote_tunnel = lambda: (status, body)
-        return agent.sync_remote_tunnel(None)
-
-    def files(self):
-        return agent._read_text(agent.REMOTE_TUNNEL_HOST_FILE), agent._read_text(agent.REMOTE_TUNNEL_TOKEN_FILE)
-
-    def test_a_tunnel_is_written_owner_only_and_reported_as_the_remote_host(self):
-        self.assertIsNone(self.answer(200, {"tunnel": {"hostname": "pc-01.example.com", "token": self.TOKEN}, "pending": False}))
-        self.assertEqual(self.files(), ("pc-01.example.com", self.TOKEN))
-        self.assertEqual(stat.S_IMODE(os.stat(agent.REMOTE_TUNNEL_TOKEN_FILE).st_mode), 0o600)
-        orig_env = os.environ.pop("LABKIOSK_REMOTE_HOST", None)
-        try:
-            self.assertEqual(agent.detect_remote_host(), "pc-01.example.com")
-        finally:
-            if orig_env is not None:
-                os.environ["LABKIOSK_REMOTE_HOST"] = orig_env
-        mtime = os.stat(agent.REMOTE_TUNNEL_TOKEN_FILE).st_mtime_ns
-        self.answer(200, {"tunnel": {"hostname": "pc-01.example.com", "token": self.TOKEN}, "pending": False})
-        self.assertEqual(os.stat(agent.REMOTE_TUNNEL_TOKEN_FILE).st_mtime_ns, mtime,
-                         "an unchanged token is not rewritten (that would restart cloudflared)")
-
-    def test_pending_keeps_the_running_tunnel_and_none_stops_it(self):
-        self.answer(200, {"tunnel": {"hostname": "pc-01.example.com", "token": self.TOKEN}, "pending": False})
-        self.answer(200, {"tunnel": None, "pending": True})
-        self.assertEqual(self.files(), ("pc-01.example.com", self.TOKEN))
-        self.answer(200, {"tunnel": None, "pending": False})
-        self.assertEqual(self.files(), ("", ""))
-
-    def test_nothing_malformed_is_written(self):
-        bad = [
-            {"tunnel": {"hostname": "pc-01.example.com", "token": self.TOKEN + "\nExecStart=/bin/sh"}},
-            {"tunnel": {"hostname": "pc-01.example.com", "token": "short"}},
-            {"tunnel": {"hostname": "pc 01.example.com", "token": self.TOKEN}},
-            {"tunnel": {"hostname": "localhost", "token": self.TOKEN}},
-            {"tunnel": "pc-01.example.com"},
-            ["not", "an", "object"],
-        ]
-        for body in bad:
-            with self.subTest(body=body):
-                self.assertIsNotNone(self.answer(200, body), "a malformed answer is reported")
-                self.assertEqual(self.files(), ("", ""))
-
-    def test_a_refused_token_is_left_to_the_control_channel(self):
-        self.answer(200, {"tunnel": {"hostname": "pc-01.example.com", "token": self.TOKEN}, "pending": False})
-        for status in (401, 403, 500):
-            self.assertEqual(self.answer(status, None), f"HTTP {status}")
-        self.assertEqual(self.files(), ("pc-01.example.com", self.TOKEN), "an error never removes a working tunnel")
+        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop")])
 
 
 class ReenrolmentGating(unittest.TestCase):

@@ -32,9 +32,8 @@ workstation, so nothing to provision and no per-zone or per-account limit to rea
 contract is in [API.md](API.md) (*Remote Control through the console*).
 
 > [!NOTE]
-> The Cloudflare Tunnel sections below describe the earlier design. This release still provisions
-> tunnels when they are configured, but the console connects through the relay and no longer
-> opens workstations through a tunnel.
+> The Cloudflare Tunnel sections below describe the earlier design. The console now connects
+> through the relay and no longer opens a workstation's tunnel, so Remote Control needs none.
 
 ### Security Invariants
 
@@ -71,25 +70,7 @@ contract is in [API.md](API.md) (*Remote Control through the console*).
 
 ## 🔧 Workstation Tunnel Provisioning
 
-Because Lab Kiosk runs as an immutable system whose writes all land in a RAM overlay (`overlayroot="tmpfs"`), individual workstation tunnel credentials cannot be baked into a generic base ISO. There are two ways to give each workstation a tunnel: let the console create them (below, recommended), or provision them by hand (the sections after it).
-
-### Automatic tunnels
-
-Settings → Domains → **Automatic Remote Control Tunnels**. Under **Workstation addresses** the organization picks where its workstations live:
-
-- **Lab Kiosk's remote-control domain**, for an organization with no domain: workstations get `<organization>-<workstation>-vnc.<platform domain>` (`greenwood` / `PC-01` → `greenwood-pc-01-vnc.labkiosk.org`) in the platform's own Cloudflare account. The organization supplies nothing: staff with the Workstations permission open Remote Control from the console, which hands their browser a two-minute pass for the **gate** at `vnc.<platform domain>` (`src/remote_gate.ts`). The gate forwards the session to the workstation with the platform's Access service token, the only thing each workstation's Access application admits, so operators never sign in to Cloudflare and take no Zero Trust seat. Offered when the server has the `REMOTE_TUNNEL_PLATFORM_*` settings (`docs/DEPLOYMENT.md`). The platform domain may be the console's own: each address then gets a Worker route with no Worker so the tunnel answers it, organizations cannot be named `vnc` or `*-vnc`, and the console refuses cookie-carrying requests from Remote Control pages. An address longer than one DNS label (63 characters), or one another workstation already holds, is refused and listed in Errors & Warnings; rename the workstation.
-- **My own Cloudflare domain**, below.
-
-For its own domain the organization supplies:
-
-- a **domain** that is a zone on its own Cloudflare account, e.g. `example.com`. Workstations get `<workstation>.example.com` (`PC-01` → `pc-01.example.com`), one label under the zone, so the zone's free Universal SSL certificate covers them. A domain two labels deep (`vnc.example.com`) needs Advanced Certificate Manager on that zone. A domain under the platform's own domain is refused: its certificate covers only one label, and the platform's Worker answers that label;
-- its **Cloudflare account ID**;
-- an **API token** with *Account · Cloudflare Tunnel · Edit*, *Account · Access: Apps and Policies · Edit*, *Zone · DNS · Edit* and *Zone · Zone · Read* on that zone. It is checked before it is saved, stored encrypted (AES-GCM, server secret `REMOTE_TUNNEL_KEY`), and never shown again;
-- **who may connect**: email addresses or whole email domains. They become one reusable Cloudflare Access policy, so Zero Trust must be set up on the account.
-
-Each workstation then asks the console for its tunnel at start and every five minutes (`GET /api/devices/tunnel`). On its first request the console creates, in the organization's account (or the platform's), a remotely managed tunnel forwarding `<workstation>.<domain>` to `http://127.0.0.1:6080`, the proxied CNAME (comment `Lab Kiosk Remote Control`; an existing record it did not create is left alone and reported), and an Access application using the policy, which allows framing because the console shows noVNC in a frame. The agent stores the run token on `LABKIOSK_DATA` (`/etc/labkiosk/tunnel.token`); `cloudflared-labkiosk.path` restarts `cloudflared-labkiosk.service`, which runs cloudflared as a throwaway unprivileged user. Failures appear in Settings → Errors & Warnings and are retried after ten minutes.
-
-Removing a workstation deletes its tunnel, DNS record, Worker route (if any) and Access application first. **Turn Off** deletes them for every workstation, then the policy and the stored token.
+Because Lab Kiosk runs as an immutable system whose writes all land in a RAM overlay (`overlayroot="tmpfs"`), individual workstation tunnel credentials cannot be baked into a generic base ISO.
 
 ### 1. Tunnel Prerequisites
 
@@ -177,5 +158,4 @@ The local Docker simulator (`docker-test/`) simulates remote control without phy
 | **noVNC prompts for a password** | Workstation has not completed its first heartbeat after boot, or `/tmp/labkiosk/vnc.secret` is missing. | Verify the workstation is enrolled. The password is reported as soon as the workstation connects; check `vncPassword` in `GET /api/clients`. |
 | **noVNC shows "Failed to connect to server"** | Cloudflare Tunnel is not running on the target machine, or DNS does not point to Cloudflare. | Ensure `cloudflared-kiosk.service` is active (`systemctl status cloudflared-kiosk`) and `/etc/cloudflared/config.yml` exists. |
 | **"Remote Control" button is disabled** | The device has no `remote_host` registered and no default `TUNNEL_DOMAIN` is set in control plane variables. | Configure `TUNNEL_DOMAIN` in Cloudflare Dashboard, or ensure workstation reports `remoteHost` in telemetry. |
-| **Browser says the workstation "uses an unsupported protocol"** | The address is two labels under a domain whose certificate covers one (`pc-01.org.labkiosk.org` against `*.labkiosk.org`), so the TLS handshake fails. | Use a tunnel domain on a zone you control whose certificate covers `*.<tunnel domain>`. The console refuses one under the platform's own domain. |
 | **Screen is black or sluggish** | Low network bandwidth or thin client CPU constrained by high framerate. | noVNC automatically adapts to WAN latencies. Ensure hardware acceleration is enabled in thin client BIOS. |

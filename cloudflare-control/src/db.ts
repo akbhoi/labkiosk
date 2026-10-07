@@ -26,7 +26,7 @@ import {
   generateDeviceToken,
   generateEnrollmentKey
 } from "./auth";
-import { DEMO_SLUGS, DEMO_TENANTS } from "./demo";
+import { DEMO_SLUGS, DEMO_TENANTS, WEB_DEMO_TUNNEL_DOMAIN } from "./demo";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -143,34 +143,6 @@ CREATE TABLE IF NOT EXISTS workstation_issues (
   report_match TEXT CHECK (report_match IN ('new', 'existing'))
 );
 
-CREATE TABLE IF NOT EXISTS remote_tunnel_accounts (
-  tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
-  mode TEXT NOT NULL CHECK (mode IN ('own', 'platform')),
-  account_id TEXT NOT NULL,
-  zone_id TEXT NOT NULL,
-  domain TEXT NOT NULL,
-  api_token TEXT,
-  access_rules TEXT NOT NULL,
-  access_policy_id TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS remote_tunnels (
-  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  client_id TEXT NOT NULL,
-  hostname TEXT NOT NULL,
-  tunnel_id TEXT,
-  dns_record_id TEXT,
-  route_id TEXT,
-  access_app_id TEXT,
-  token TEXT,
-  status TEXT NOT NULL CHECK (status IN ('provisioning', 'active', 'failed')),
-  error TEXT,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (tenant_id, client_id)
-);
-
 CREATE TABLE IF NOT EXISTS bug_reports (
   signature TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -258,7 +230,6 @@ CREATE INDEX IF NOT EXISTS idx_tenant_whitelist_tenant ON tenant_whitelist(tenan
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant ON audit_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_workstation_issues_tenant ON workstation_issues(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_bug_reports_issue ON bug_reports(issue_number);
-CREATE INDEX IF NOT EXISTS idx_remote_tunnels_hostname ON remote_tunnels(hostname);
 CREATE INDEX IF NOT EXISTS idx_broadcast_presets_tenant ON broadcast_presets(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ui_catalogs_updated ON ui_catalogs(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
@@ -418,9 +389,6 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT bug_reports_terms_version FROM tenants LIMIT 1").run();
     await db.prepare("SELECT status, status_checked_at FROM bug_reports LIMIT 1").run();
     await db.prepare("SELECT report_match FROM workstation_issues LIMIT 1").run();
-    // 0019: automatic Remote Control tunnels.
-    await db.prepare("SELECT account_id, access_policy_id FROM remote_tunnel_accounts LIMIT 1").run();
-    await db.prepare("SELECT tunnel_id, route_id, status FROM remote_tunnels LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -458,6 +426,7 @@ export async function ensureDemoTenants(db: D1Database, superAdminId: string): P
         mode: "portal"
       });
       const seeded: Partial<Tenant> = { homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}` };
+      if (slug === "web-demo") seeded.tunnel_domain = WEB_DEMO_TUNNEL_DOMAIN;
       await updateTenant(db, tenant.id, seeded);
       demos.push({ ...tenant, ...seeded });
       continue;

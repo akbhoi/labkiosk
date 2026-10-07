@@ -1,8 +1,0 @@
-[Unit]
-Description=Apply a new Lab Kiosk Remote Control tunnel token
-# Started only by cloudflared-labkiosk.path. A restart re-checks the token
-# file: a new token starts the new tunnel, an empty one leaves it stopped.
-
-[Service]
-Type=oneshot
-ExecStart=/bin/systemctl restart cloudflared-labkiosk.service

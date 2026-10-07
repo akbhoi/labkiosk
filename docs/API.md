@@ -87,9 +87,6 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/clients/remote-session` | `POST` | Organization Admin (`workstations`) | Open a Remote Control session through the console's relay: asks the workstation to join and returns the viewer's socket path |
 | `/api/console/remote` | `GET` (WebSocket) | Organization Admin (`workstations`) | The viewer's side of a Remote Control session (VNC bytes) |
 | `/api/devices/remote` | `GET` (WebSocket) | Device Token | The workstation's side of a Remote Control session (VNC bytes) |
-| `/api/devices/tunnel` | `GET` | Device Token | The Remote Control tunnel this workstation should run, created in its organization's own Cloudflare account on first request |
-| `/api/settings/remote-tunnels` | `GET` / `POST` | Organization Admin (`settings`) | Automatic Remote Control tunnels: status, or turn on / change `{mode, accountId, domain, apiToken?, accessRules}` |
-| `/api/settings/remote-tunnels/off` | `POST` | Organization Admin (`settings`) | Delete the tunnels created in the organization's account, a batch per call, until `remaining` is 0 |
 | `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, each with `report_state`, `report_match` (`new`/`existing`), `issue_url`, `issue_number`, `report_status` (`open`, `in_progress`, `pr_open`, `resolved`, `closed`) and `pr_url`; plus `bugReports: {enabled, available, repository, termsVersion, acceptedTermsVersion, termsAcceptedAt}` |
 | `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
@@ -409,80 +406,6 @@ messages to each other.
 The VNC password still travels in the viewer's address fragment, which browsers never send, and the
 viewer removes it before it connects. noVNC is served from `/novnc/` (Workers static assets, staged
 from the pinned `@novnc/novnc` package).
-
-#### `GET /api/devices/tunnel`
-
-The Remote Control tunnel this workstation should run, when its organization turned on automatic
-tunnels (Settings → Domains → Automatic Remote Control Tunnels). On first request the Worker creates,
-in the organization's own Cloudflare account (or, in `platform` mode, the platform's), a remotely
-managed tunnel whose one public hostname `<workstation>.<domain>` (`platform`:
-`<organization>-<workstation>-vnc.<platform domain>`) forwards to `http://127.0.0.1:6080`, the proxied CNAME for it (comment
-`Lab Kiosk Remote Control`; a record it did not create is never taken over), on the console's own
-domain a Worker route with no Worker for it (a route that already names a Worker is never taken over), and a Cloudflare Access
-application using the organization's Access policy. The agent asks at start and every 5 minutes and
-writes the token to `/etc/labkiosk/tunnel.token`, which `cloudflared-labkiosk.service` runs.
-
-- **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
-  organization and the workstation. `403` when the organization is not active.
-- **Responses** (`Cache-Control: no-store`):
-  - `{"tunnel": {"hostname": "pc-01.example.com", "token": "<run token>"}, "pending": false}`
-  - `{"tunnel": null, "pending": true}`: being created, or failed less than 10 minutes ago (the
-    failure is listed in Errors & Warnings as `remote_tunnel_failed`); keep what is running.
-  - `{"tunnel": null, "pending": false}`: the organization has no automatic tunnels; stop it.
-
-#### `POST /api/settings/remote-tunnels`
-
-Turn automatic Remote Control tunnels on, or change them (`settings` permission).
-
-- **Request Body:** `mode`: `"own"` (the default) or `"platform"`. `platform` puts workstations
-  on the server's remote-control domain, behind Access applications that admit only the Remote
-  Control gate's service token, and takes nothing else; it answers `409` when the server does not
-  offer one. `own` takes `accountId` (the Cloudflare account ID, 32 hex characters), `domain` (a
-  zone on that account, or a name under one; never under the platform domain or the platform's
-  remote-control domain), `apiToken` (required the first time and when the account changes;
-  omitted keeps the stored one) and `accessRules` (email addresses or email domains, 1–50, one
-  per line or as an array).
-- In `own` mode the token needs **Account · Cloudflare Tunnel · Edit**, **Account · Access: Apps and Policies ·
-  Edit**, and **Zone · DNS · Edit** plus **Zone · Zone · Read** on the domain's zone. It is checked
-  against the account before it is stored, sealed with AES-GCM under `REMOTE_TUNNEL_KEY`, and never
-  returned. The organization's reusable Access policy is created, or updated so every existing
-  workstation follows a change of who may connect.
-- **Responses:** `200 {"status":"ok","mode":"own","domain":"example.com","zone":"example.com"}`; `400` invalid
-  input or a token Cloudflare refused (the reason is in `error`); `409` when the server has no
-  `REMOTE_TUNNEL_KEY`, or the mode, account or domain changes while workstations still have tunnels.
-
-`GET` answers `{available, configured, mode, platformDomain, accountId, domain, accessRules,
-workstations: {total, active, failed}}`; `platformDomain` is the server's remote-control domain
-or `null`, and `accountId` is `null` in `platform` mode. `POST /api/settings/remote-tunnels/off` deletes up to 10 workstations' tunnels,
-DNS records and Access applications per call and answers `{"status":"ok","remaining":n}`; at 0 it
-has also deleted the Access policy and the stored token. Removing a workstation
-(`POST /api/clients/remove`) deletes its tunnel first and answers `502` without removing it when
-the organization's account refuses.
-
-#### `POST /api/clients/remote-pass`
-
-A pass to open a workstation on the platform's remote-control domain (`workstations` permission).
-
-- **Request Body:** `{"clientId": "PC-01"}`.
-- **Responses:** `200 {"url": "https://vnc.<domain>/w/<pass>/vnc.html", "path": "w/<pass>/websockify",
-  "expiresIn": 120}`: the console frames `url` with noVNC's `path` set to `path`, so the noVNC files
-  and its WebSocket all carry the pass. `404` when the workstation has no active tunnel in
-  `platform` mode; `409` when the server has no remote-control domain. Each pass is written to the
-  audit log (`device.remote_control`).
-
-#### The Remote Control gate: `https://vnc.<platform domain>/w/<pass>/<path>`
-
-Served by the same Worker on its own route (`src/remote_gate.ts`); it answers nothing else. It
-checks the pass (HMAC-SHA-256 under a key derived from `REMOTE_TUNNEL_KEY`, organization,
-workstation, expiry) and that the workstation still has an active `platform` tunnel in an active
-organization, then forwards `GET`/`HEAD` and the WebSocket to `https://<workstation address>/<path>`
-with the `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers. It forwards no cookie or other
-browser header beyond what noVNC needs, drops `Set-Cookie`, and answers with
-`Content-Security-Policy: frame-ancestors` the console's hosts (and the organization's approved own
-domain), `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. `403` for a forged,
-altered or expired pass, `404` for no tunnel, `405` for other methods, `502` when the workstation's
-Access application refuses the service token. A WebSocket opened while the pass was valid stays
-open.
 
 #### `POST /api/devices/boot-report`
 

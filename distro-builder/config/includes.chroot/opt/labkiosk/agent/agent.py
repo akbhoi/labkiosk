@@ -133,25 +133,11 @@ DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.org")
 # Remote control. The Openbox autostart (and the simulator's entrypoint) writes
 # the plaintext x11vnc password it generated for this boot here, mode 600, so
 # the agent can hand it to the admin console over the authenticated
-# telemetry channel. The tunnel hostname comes from LABKIOSK_REMOTE_HOST, from
-# the tunnel the control plane created for this workstation, or from the first
-# ingress hostname in a hand-written cloudflared config.
+# telemetry channel. The tunnel hostname comes from LABKIOSK_REMOTE_HOST or, on
+# the real image, from the first ingress hostname in cloudflared's config.
 VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
 CLOUDFLARED_CONFIG_FILE = "/etc/cloudflared/config.yml"
 REMOTE_HOST_PATTERN = re.compile(r"^\s*-?\s*hostname:\s*['\"]?([A-Za-z0-9.-]+)['\"]?\s*$", re.MULTILINE)
-
-# Automatic Remote Control tunnels. When the organization turned them on, the
-# control plane creates a tunnel for this workstation in the organization's own
-# Cloudflare account and hands over its run token (GET /api/devices/tunnel).
-# The token goes on LABKIOSK_DATA beside the enrolment; cloudflared-labkiosk.path
-# restarts cloudflared-labkiosk.service whenever it changes, and an empty file
-# stops it. Checked at start and every few minutes.
-REMOTE_TUNNEL_TOKEN_FILE = "/etc/labkiosk/tunnel.token"
-REMOTE_TUNNEL_HOST_FILE = "/etc/labkiosk/tunnel.host"
-REMOTE_TUNNEL_INTERVAL_SECONDS = 300
-REMOTE_TUNNEL_MAX_BYTES = 16 * 1024
-# A run token is base64 of a small JSON object.
-REMOTE_TUNNEL_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9+/=_-]{32,4096}\Z")
 
 AGENT_VERSION = "2.7.0"
 LOCAL_API_HOST = "127.0.0.1"
@@ -478,7 +464,6 @@ def _read_cached_file(path, cache, parse):
 
 _vnc_secret_cache = {}
 _remote_host_cache = {}
-_tunnel_host_cache = {}
 
 
 def read_vnc_password():
@@ -491,10 +476,6 @@ def read_vnc_password():
 def detect_remote_host():
     """Hostname the noVNC gateway is reachable on through the tunnel, if any."""
     candidate = os.environ.get("LABKIOSK_REMOTE_HOST", "").strip().lower()
-    if not candidate:
-        candidate = _read_cached_file(
-            REMOTE_TUNNEL_HOST_FILE, _tunnel_host_cache, lambda text: text.strip().lower()
-        )
     if not candidate:
         def _first_ingress_hostname(text):
             match = REMOTE_HOST_PATTERN.search(text)
@@ -2814,131 +2795,6 @@ def boot_report_loop():
         time.sleep(BOOT_REPORT_INTERVAL_SECONDS)
 
 
-def parse_remote_tunnel(body):
-    """
-    Validate the control plane's answer to GET /api/devices/tunnel.
-
-    Returns (hostname, token) for a tunnel, ("", "") when the organization has
-    none, or None while one is being created (keep whatever is running). Raises
-    ValueError on anything else: the token ends up on a root service's command
-    line by way of a file, so nothing unexpected is written.
-    """
-    if not isinstance(body, dict):
-        raise ValueError("the answer is not a JSON object")
-    tunnel = body.get("tunnel")
-    if tunnel is None:
-        return None if body.get("pending") is True else ("", "")
-    if not isinstance(tunnel, dict):
-        raise ValueError("tunnel is not an object")
-    hostname = tunnel.get("hostname")
-    token = tunnel.get("token")
-    if not isinstance(hostname, str) or not HOSTNAME_PATTERN.match(hostname):
-        raise ValueError("the tunnel hostname is not a valid hostname")
-    if not isinstance(token, str) or not REMOTE_TUNNEL_TOKEN_PATTERN.match(token):
-        raise ValueError("the tunnel token is not a run token")
-    return hostname, token
-
-
-def fetch_remote_tunnel():
-    """Ask the control plane for this workstation's tunnel. Returns (status, body)."""
-    with state_lock:
-        worker_url = state["workerUrl"]
-        token = state["deviceToken"]
-    request = Request(
-        f"{worker_url}/api/devices/tunnel",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
-        },
-    )
-    try:
-        with open_url(request, timeout=30) as response:
-            raw = response.read(REMOTE_TUNNEL_MAX_BYTES + 1)
-            status = response.status
-    except HTTPError as err:
-        return err.code, None
-    if len(raw) > REMOTE_TUNNEL_MAX_BYTES:
-        raise ValueError(f"the answer is larger than {REMOTE_TUNNEL_MAX_BYTES} bytes")
-    try:
-        return status, json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as err:
-        raise ValueError(f"the answer is not JSON: {err}") from err
-
-
-def _read_text(path):
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read()
-    except FileNotFoundError:
-        return ""
-
-
-def _write_private_text(path, text):
-    """Replace `path` atomically with owner-only permissions."""
-    temp_path = path + ".tmp"
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(temp_path, 0o600)
-    os.replace(temp_path, path)
-
-
-def apply_remote_tunnel(hostname, token):
-    """
-    Store the tunnel this workstation should run; ("", "") stops it. Returns
-    True when anything changed. The hostname is written first: the token file is
-    what restarts cloudflared, and the next status reports the new hostname.
-    """
-    if _read_text(REMOTE_TUNNEL_TOKEN_FILE) == token and _read_text(REMOTE_TUNNEL_HOST_FILE) == hostname:
-        return False
-    os.makedirs(os.path.dirname(REMOTE_TUNNEL_TOKEN_FILE), exist_ok=True)
-    _write_private_text(REMOTE_TUNNEL_HOST_FILE, hostname)
-    _write_private_text(REMOTE_TUNNEL_TOKEN_FILE, token)
-    return True
-
-
-def sync_remote_tunnel(last_problem):
-    """
-    One round of GET /api/devices/tunnel. Returns the problem it logged, so the
-    same one is not logged every round. A refused device token (401/403) is the
-    control channel's to handle, not this loop's.
-    """
-    with state_lock:
-        configured = state["isConfigured"]
-    if not configured:
-        return last_problem
-    try:
-        status, body = fetch_remote_tunnel()
-        if status != 200:
-            problem = f"HTTP {status}"
-            if status in (401, 403) or problem == last_problem:
-                return problem
-            log(f"Remote Control tunnel not checked: the control plane answered {problem}.")
-            return problem
-        wanted = parse_remote_tunnel(body)
-        if wanted is None:
-            return None
-        if apply_remote_tunnel(*wanted):
-            if wanted[0]:
-                log(f"Remote Control tunnel set up for {wanted[0]}.")
-            else:
-                log("Remote Control tunnel removed: the organization has none for this workstation.")
-        return None
-    except (URLError, TimeoutError, socket.timeout, OSError, ValueError) as err:
-        problem = str(err)
-        if problem != last_problem:
-            log(f"Remote Control tunnel not checked: {problem}")
-        return problem
-
-
-def remote_tunnel_loop():
-    last_problem = None
-    while True:
-        last_problem = sync_remote_tunnel(last_problem)
-        time.sleep(REMOTE_TUNNEL_INTERVAL_SECONDS)
-
-
 def mark_enrolment_rejected():
     """
     React, once, to the control plane refusing this workstation's device token.
@@ -3501,7 +3357,6 @@ def main():
 
     threading.Thread(target=start_local_server, daemon=True).start()
     threading.Thread(target=boot_report_loop, daemon=True).start()
-    threading.Thread(target=remote_tunnel_loop, daemon=True).start()
 
     try:
         telemetry_loop()

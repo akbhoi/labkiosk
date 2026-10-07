@@ -80,19 +80,8 @@ const RESERVED_SLUGS = new Set([
   "mail",
   "app",
   "kiosk",
-  "root",
-  // The Remote Control gate (src/remote_gate.ts).
-  "vnc"
+  "root"
 ]);
-
-/**
- * The label suffix of a workstation's Remote Control address on the platform's
- * remote-control domain (`<organization>-<workstation>-vnc.<domain>`). No
- * organization may take a name with it, or it could take a workstation's address.
- */
-export const REMOTE_CONTROL_LABEL_SUFFIX = "-vnc";
-/** The Remote Control gate's label under the platform's remote-control domain. */
-export const REMOTE_GATE_LABEL = "vnc";
 
 /**
  * Names no organization may claim, though they still resolve: the three demos,
@@ -103,23 +92,7 @@ const PLATFORM_SLUGS = new Set<string>(["demo", ...DEMO_SLUGS]);
 
 /** True for slugs no organization may register or be given. */
 export function isReservedSlug(slug: string): boolean {
-  return RESERVED_SLUGS.has(slug) || PLATFORM_SLUGS.has(slug) || slug.endsWith(REMOTE_CONTROL_LABEL_SUFFIX);
-}
-
-/**
- * True for the Remote Control gate and workstation addresses one label under
- * `base`. Pages there are served by a workstation's noVNC, so they are never
- * this site, though they share its registrable domain: the browser would send
- * the console's SameSite=Lax cookie with their requests.
- */
-export function isRemoteControlHost(host: string, base: string | undefined): boolean {
-  if (!base) return false;
-  const cleanBase = base.replace(/^\./, "").toLowerCase();
-  const cleanHost = host.toLowerCase();
-  if (!cleanHost.endsWith("." + cleanBase)) return false;
-  const label = cleanHost.slice(0, -(cleanBase.length + 1));
-  if (label.includes(".")) return false;
-  return label === REMOTE_GATE_LABEL || label.endsWith(REMOTE_CONTROL_LABEL_SUFFIX);
+  return RESERVED_SLUGS.has(slug) || PLATFORM_SLUGS.has(slug);
 }
 
 /** True when `host` is `base` itself or a subdomain of it (dot-anchored, unlike endsWith). */
@@ -128,20 +101,6 @@ export function isHostUnder(host: string, base: string | undefined): boolean {
   const cleanHost = host.toLowerCase();
   const cleanBase = base.replace(/^\./, "").toLowerCase();
   return cleanHost === cleanBase || cleanHost.endsWith("." + cleanBase);
-}
-
-/**
- * The tunnel domain Remote Control can use, or "" when it can use none.
- *
- * Remote Control opens `https://<workstation>.<tunnelDomain>`. Under the platform
- * domain that address can never work: two labels down it has no certificate
- * (Universal SSL covers `*.<platform>` only, so the browser fails the handshake with
- * "uses an unsupported protocol"), and one label down the Worker's `*.<platform>`
- * route serves it as an organization instead of passing it to a tunnel.
- */
-export function usableTunnelDomain(domain: string | null | undefined, platformDomain: string | undefined): string {
-  const clean = (domain || "").trim().toLowerCase();
-  return clean && !isHostUnder(clean, platformDomain) ? clean : "";
 }
 
 /**
@@ -171,7 +130,7 @@ export function hostSubdomain(request: Request, baseDomain?: string): string | n
     slug = cleanSubdomain(parts[0]);
   }
 
-  if (!slug || RESERVED_SLUGS.has(slug) || slug.endsWith(REMOTE_CONTROL_LABEL_SUFFIX)) return null;
+  if (!slug || RESERVED_SLUGS.has(slug)) return null;
   return slug;
 }
 
@@ -276,10 +235,9 @@ export function rejectCrossSiteMutation(
   // host. In production it would admit any page served from the operator's own
   // machine -- a local tool, or a malicious localhost server -- as this site.
   const sameSite =
-    !isRemoteControlHost(originHost, options.baseDomain) &&
-    (originHost === hostname(request) ||
-      (DEV_HOSTS.has(originHost) && isDevHost(request)) ||
-      isHostUnder(originHost, options.baseDomain));
+    originHost === hostname(request) ||
+    (DEV_HOSTS.has(originHost) && isDevHost(request)) ||
+    isHostUnder(originHost, options.baseDomain);
   return sameSite ? null : jsonError("Cross-site requests are not accepted", 403, headers);
 }
 
@@ -306,10 +264,9 @@ export function rejectCrossSiteSocket(
     return jsonError("Cross-site requests are not accepted", 403, headers);
   }
   const sameSite =
-    !isRemoteControlHost(originHost, options.baseDomain) &&
-    (originHost === hostname(request) ||
-      (DEV_HOSTS.has(originHost) && isDevHost(request)) ||
-      isHostUnder(originHost, options.baseDomain));
+    originHost === hostname(request) ||
+    (DEV_HOSTS.has(originHost) && isDevHost(request)) ||
+    isHostUnder(originHost, options.baseDomain);
   return sameSite ? null : jsonError("Cross-site requests are not accepted", 403, headers);
 }
 

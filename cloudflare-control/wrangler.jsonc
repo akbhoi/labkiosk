@@ -10,11 +10,6 @@
 	// Every zone named here must already be active on the deploying account, or
 	// `wrangler deploy` fails. Each hostname also needs a proxied DNS record: the
 	// apex and a wildcard (`*`), e.g. AAAA 100:: with the orange cloud on.
-	// Remote Control on labkiosk.org needs nothing here: the gate (vnc.labkiosk.org) is
-	// served by the wildcard, and the Worker adds and removes one route with no script
-	// per workstation address, which are not this Worker's routes. A separate remote-control zone
-	// would need `vnc.<REMOTE_TUNNEL_PLATFORM_DOMAIN>/*` here, never a wildcard
-	// (docs/DEPLOYMENT.md, "Optional: automatic Remote Control tunnels").
 	"workers_dev": true,
 	"routes": [
 		{
