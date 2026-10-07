@@ -51,6 +51,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0016_workstation_issues.sql` | `workstation_issues`: errors and warnings workstations report (Settings → Errors & Warnings), deleted after 90 days |
 | `0017_bug_reports.sql` | `tenants.bug_reports_enabled`, `workstation_issues.report_state` and `bug_signature`, and the platform table `bug_reports`: opt-in automatic GitHub bug reports |
 | `0018_bug_report_triage.sql` | `tenants.bug_reports_terms_version` / `_accepted_at`, `bug_reports.title`, `problem`, `status`, `pr_url`, `status_checked_at`, `workstation_issues.report_match` |
+| `0019_drop_remote_tunnel_columns.sql` | Drops `tenants.tunnel_domain` and `client_devices.remote_host` (Remote Control now runs through the console relay) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -105,7 +106,6 @@ One row per organization. This table has accumulated the most columns because it
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
 | `broadcast_epoch` | INTEGER | Monotonic marker; `0` when no broadcast is active |
 | `home_route` | TEXT | `/` (organization homepage) or `/home` (User Portal); where workstations land |
-| `tunnel_domain` | TEXT | **Unused.** Was the per-organization Cloudflare Tunnel domain; Remote Control now goes through the console's relay. No longer read or written; still in the schema so the previous Worker keeps working during a deploy, and dropped by a later migration |
 | `homepage_headline` / `homepage_intro` / `homepage_blocks` | TEXT | Organization homepage copy; blocks are JSON, sanitised on the way in and escaped on the way out |
 | `created_at` / `updated_at` | INTEGER | |
 
@@ -151,7 +151,6 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 | `is_locked` | INTEGER | |
 | `active_url` | TEXT | |
 | `vnc_password` | TEXT | Per-boot ephemeral x11vnc secret |
-| `remote_host` | TEXT | **Unused.** Was a workstation's Cloudflare Tunnel hostname; no longer read or written. Still in the schema so the previous Worker keeps working during a deploy, and dropped by a later migration |
 | `group_name` | TEXT | Workstation group, matched by name to `workstation_groups.name`; NULL when ungrouped |
 | `broadcast_url` | TEXT | Last broadcast addressed to this workstation alone; NULL with a non-zero epoch records a reset to the portal |
 | `broadcast_epoch` | INTEGER | Orders the above against `tenants.broadcast_epoch`; the newer wins |

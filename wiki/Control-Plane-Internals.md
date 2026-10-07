@@ -8,7 +8,7 @@ How `cloudflare-control/` is put together, and the rules for changing it.
 
 ```text
 cloudflare-control/
-├── migrations/             D1 SQL migrations 0001..0018
+├── migrations/             D1 SQL migrations 0001..0019
 ├── src/
 │   ├── index.ts            Router, REST endpoints, scheduled(), queue()
 │   ├── org_hub.ts          OrgHub: one Durable Object per organization

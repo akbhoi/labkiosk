@@ -125,9 +125,7 @@ stays on `127.0.0.1:5900` (`-localhost -noclipboard -noremote -nocmds`; per-boot
 `vncPassword` from `GET /api/clients`, passed to the viewer in the URL fragment, which it reads and
 removes). The 8-character RFB password is not the access control: the console sign-in, the
 `workstations` permission and the one-time session token are. Only agents on the WebSocket control
-channel can join; the HTTP heartbeat cannot carry the `remote` message. The D1 columns
-`tenants.tunnel_domain` and `client_devices.remote_host` remain in the schema but are no longer read
-or written (a later migration drops them).
+channel can join; the HTTP heartbeat cannot carry the `remote` message. Migration `0019` dropped `tenants.tunnel_domain` and `client_devices.remote_host`.
 
 ## 5. Global rules both sides obey
 

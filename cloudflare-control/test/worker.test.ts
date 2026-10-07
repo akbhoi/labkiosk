@@ -4488,7 +4488,27 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0016"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0017"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0018"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0019"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
+  });
+
+  test("0019 drops the tunnel columns and keeps every organization, workstation and session", () => {
+    const db = migratedDb("0019");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, tunnel_domain, created_at, updated_at) VALUES ('t1', 'u1', 'Acme', 'acme', 'active', 'tunnels.example.com', 1, 1);
+      INSERT INTO sessions (token, user_id, tenant_id, role, expires_at) VALUES ('s1', 'u1', 't1', 'org_admin', 99999999999);
+      INSERT INTO client_devices (id, tenant_id, client_id, vnc_password, remote_host, last_seen, created_at, updated_at) VALUES ('t1:PC', 't1', 'PC', 'pw', 'pc.tunnels.example.com', 1, 1, 1);
+    `);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0019_drop_remote_tunnel_columns.sql"), "utf8"));
+    db.exec("COMMIT;");
+    const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    assert.deepEqual([count("users"), count("tenants"), count("sessions"), count("client_devices")], [1, 1, 1, 1]);
+    const columns = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    assert.ok(!columns("tenants").includes("tunnel_domain"));
+    assert.ok(!columns("client_devices").includes("remote_host"));
+    assert.equal((db.prepare("SELECT vnc_password FROM client_devices").get() as { vnc_password: string }).vnc_password, "pw");
   });
 
   test("0013 removes the old demo and everything in it, and nothing else", async () => {
