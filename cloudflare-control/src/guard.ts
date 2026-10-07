@@ -104,6 +104,20 @@ export function isHostUnder(host: string, base: string | undefined): boolean {
 }
 
 /**
+ * The tunnel domain Remote Control can use, or "" when it can use none.
+ *
+ * Remote Control opens `https://<workstation>.<tunnelDomain>`. Under the platform
+ * domain that address can never work: two labels down it has no certificate
+ * (Universal SSL covers `*.<platform>` only, so the browser fails the handshake with
+ * "uses an unsupported protocol"), and one label down the Worker's `*.<platform>`
+ * route serves it as an organization instead of passing it to a tunnel.
+ */
+export function usableTunnelDomain(domain: string | null | undefined, platformDomain: string | undefined): string {
+  const clean = (domain || "").trim().toLowerCase();
+  return clean && !isHostUnder(clean, platformDomain) ? clean : "";
+}
+
+/**
  * The organization slug carried by the Host header, or null when the host carries none.
  *
  * When `baseDomain` is configured the host must be exactly `<slug>.<baseDomain>`.

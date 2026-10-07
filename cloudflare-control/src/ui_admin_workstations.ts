@@ -294,7 +294,9 @@ function renderWorkstationsScripts(
   sites: PortalSite[] = [],
   initialGroups: WorkstationGroup[] = []
 ): string {
-  const tunnelDomain = tenant?.tunnel_domain || config?.tunnelDomain || "";
+  // config.tunnelDomain already prefers the organization's own and drops one the
+  // platform cannot serve; tenant.tunnel_domain would bring a refused one back.
+  const tunnelDomain = config?.tunnelDomain || "";
 
   return `
     <script nonce="${escapeAttr(nonce)}">

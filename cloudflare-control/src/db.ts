@@ -26,7 +26,7 @@ import {
   generateDeviceToken,
   generateEnrollmentKey
 } from "./auth";
-import { DEMO_SLUGS, DEMO_TENANTS, WEB_DEMO_TUNNEL_DOMAIN } from "./demo";
+import { DEMO_SLUGS, DEMO_TENANTS } from "./demo";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -426,7 +426,6 @@ export async function ensureDemoTenants(db: D1Database, superAdminId: string): P
         mode: "portal"
       });
       const seeded: Partial<Tenant> = { homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}` };
-      if (slug === "web-demo") seeded.tunnel_domain = WEB_DEMO_TUNNEL_DOMAIN;
       await updateTenant(db, tenant.id, seeded);
       demos.push({ ...tenant, ...seeded });
       continue;

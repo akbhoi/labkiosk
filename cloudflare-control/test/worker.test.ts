@@ -2788,7 +2788,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal(tunnelOf(html), "", `${slug} has no tunnel domain`);
       assert.match(html, /<input type="text" class="form-input" id="setting-custom-domain" placeholder=/, `${slug} has no custom domain`);
     }
-    assert.equal(tunnelOf(await settings("web-demo", superSessionCookie)), "demo.labkiosk.org", "the hosted demo keeps its own tunnel");
+    assert.equal(tunnelOf(await settings("web-demo", superSessionCookie)), "tunnels.example.com", "the hosted demo takes the deployment's tunnel");
     assert.equal(tunnelOf(await settings("greenwood", orgSessionCookie)), "tunnels.example.com", "an ordinary organization still inherits it");
   });
 
@@ -3638,6 +3638,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.doesNotMatch(ws, /params\.set\("password"/, "the password goes in the fragment, never the query");
     const settings = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
     assert.match(settings, /id="setting-tunnel-domain" value=""/, "no tunnel domain is pre-filled");
+  });
+
+  test("Remote Control never builds a workstation address under the platform's own domain", async () => {
+    // <pc>.local-demo.labkiosk.org has no certificate (Universal SSL covers one
+    // label), so the browser refused it with "uses an unsupported protocol".
+    for (const tunnelDomain of ["local-demo.labkiosk.org", "labkiosk.org", "https://Remote.LabKiosk.org/"]) {
+      const { res, data } = await callJson("/api/tenant/settings?tenant=greenwood", {
+        ...json({ tunnelDomain }),
+        cookie: orgSessionCookie
+      });
+      assert.equal(res.status, 400, `${tunnelDomain} is refused`);
+      assert.match(data.error, /not one under labkiosk\.org/);
+    }
+    const settings = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /id="setting-tunnel-domain" value=""/, "nothing was stored");
+
+    // A deployment default under the platform domain is dropped as well.
+    const underPlatform = { ...mockEnv, TUNNEL_DOMAIN: "remote.labkiosk.org" } as Env;
+    const ws = await (await worker.fetch(request("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie }), underPlatform)).text();
+    assert.match(ws, /const TUNNEL_DOMAIN = "";/);
   });
 
   test("Workstation groups are rendered on the Workstations page", async () => {

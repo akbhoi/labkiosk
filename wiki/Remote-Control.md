@@ -166,6 +166,7 @@ environment:
 | :--- | :--- | :--- |
 | noVNC asks for a password | No heartbeat since boot, or `/tmp/labkiosk/vnc.secret` is missing | Confirm the workstation is enrolled; wait one telemetry cycle |
 | "Failed to connect to server" | Tunnel is not running, or DNS does not point at Cloudflare | `systemctl status cloudflared-kiosk`; confirm `/etc/cloudflared/config.yml` exists |
+| Browser says the workstation "uses an unsupported protocol" | The address is two labels under a one-label wildcard certificate (`pc-01.org.labkiosk.org`), so TLS fails | Use a tunnel domain whose certificate covers `*.<tunnel domain>`; the console refuses one under the platform's domain |
 | **Remote Control** button disabled | No `remote_host` reported and no `TUNNEL_DOMAIN` configured | Set `TUNNEL_DOMAIN` in the dashboard, or provision a tunnel |
 | Black or sluggish screen | Bandwidth or thin-client CPU | noVNC adapts to WAN latency; check hardware acceleration in firmware |
 | Anyone on the internet can reach the viewer | No Cloudflare Access policy | Add one now — see above |

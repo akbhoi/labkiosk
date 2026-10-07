@@ -124,6 +124,7 @@ import {
   hostSubdomain,
   isDevHost,
   isHostUnder,
+  usableTunnelDomain,
   isReservedSlug,
   rejectCrossSiteMutation,
   rejectCrossSiteSocket
@@ -2171,7 +2172,15 @@ export default {
           updates.home_route = cleanRoute;
         }
         if (body.tunnelDomain !== undefined) {
-          updates.tunnel_domain = cleanCustomDomain(body.tunnelDomain) || null;
+          const tunnelDomain = cleanCustomDomain(body.tunnelDomain);
+          if (tunnelDomain && !usableTunnelDomain(tunnelDomain, env.DEFAULT_DOMAIN)) {
+            return jsonError(
+              `The tunnel domain must be a domain your Cloudflare Tunnel serves, not one under ${env.DEFAULT_DOMAIN}: workstation addresses there have no certificate and never reach a tunnel.`,
+              400,
+              jsonHeaders
+            );
+          }
+          updates.tunnel_domain = tunnelDomain || null;
         }
         if (body.portalTitle !== undefined) {
           updates.portal_title = String(body.portalTitle).trim().slice(0, 100) || null;
@@ -2897,11 +2906,16 @@ export default {
         // The hosted demo's tunnel belongs to web-demo only. Handed to anyone
         // else it sent their Remote Control -- VNC password included -- to
         // <pc>.demo.<domain>, a host in another organization's namespace. The
-        // local demos take no fallback at all (demoTunnelFallback).
-        tunnelDomain: tenant.tunnel_domain ||
-          (isDemoTenant(tenant, session.user_id)
-            ? demoTunnelFallback(tenant.subdomain as DemoSlug, env.TUNNEL_DOMAIN)
-            : env.TUNNEL_DOMAIN || ""),
+        // local demos take no fallback at all (demoTunnelFallback). A domain under
+        // the platform's own is dropped (usableTunnelDomain), so a row saved before
+        // that was refused shows the "not configured" notice, not a dead link.
+        tunnelDomain: usableTunnelDomain(
+          tenant.tunnel_domain ||
+            (isDemoTenant(tenant, session.user_id)
+              ? demoTunnelFallback(tenant.subdomain as DemoSlug, env.TUNNEL_DOMAIN)
+              : env.TUNNEL_DOMAIN || ""),
+          env.DEFAULT_DOMAIN
+        ),
         defaultHomepage: env.DEFAULT_HOMEPAGE || DEFAULT_CONFIG.defaultHomepage,
         homeRoute: tenant.home_route || "/",
         whitelist
