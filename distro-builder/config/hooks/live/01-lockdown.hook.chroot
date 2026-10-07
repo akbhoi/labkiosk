@@ -289,6 +289,9 @@ chmod 0440 /etc/sudoers.d/51-labkiosk-localization
 # 7. Enable kiosk services.
 systemctl enable nodm.service || true
 systemctl enable cloudflared-kiosk.service || true
+# The tunnel the organization's console creates for this workstation, and the
+# watcher that restarts it when the agent writes a new token.
+systemctl enable cloudflared-labkiosk.service cloudflared-labkiosk.path || true
 # Confirms a new system image after its one try, or reboots into the old one
 # (labkiosk-boot-slots). A no-op off an installed disk.
 systemctl enable labkiosk-boot-ok.service || true

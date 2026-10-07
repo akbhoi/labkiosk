@@ -30,7 +30,7 @@ distro-builder/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Empty keybindings (rc.xml) & autostart script
 │       │   ├── overlayroot.conf        # RAM overlay (overlayroot="tmpfs", recurse=0)
-│       │   ├── systemd/system/         # cloudflared-kiosk.service, labkiosk-boot-ok.service; nodm
+│       │   ├── systemd/system/         # cloudflared-kiosk.service, cloudflared-labkiosk.{service,path} (automatic tunnels), labkiosk-boot-ok.service; nodm
 │       │   │                           #   is configured through /etc/default/nodm in
 │       │   │                           #   01-lockdown.hook.chroot, and the agent is started by
 │       │   │                           #   the Openbox autostart

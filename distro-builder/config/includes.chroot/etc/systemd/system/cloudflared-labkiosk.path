@@ -1,0 +1,10 @@
+[Unit]
+Description=Restart the Lab Kiosk Remote Control tunnel when its token changes
+RequiresMountsFor=/etc/labkiosk
+
+[Path]
+PathChanged=/etc/labkiosk/tunnel.token
+Unit=cloudflared-labkiosk-reload.service
+
+[Install]
+WantedBy=multi-user.target

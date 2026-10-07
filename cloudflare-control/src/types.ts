@@ -297,6 +297,12 @@ export interface Env {
   ISO_DOWNLOAD_URL?: string;
   /** Cloudflare Tunnel domain for remote management (VNC). Defaults to lab.example.com. */
   TUNNEL_DOMAIN?: string;
+  /**
+   * 32 random bytes, base64 (secret). Seals organizations' Cloudflare API tokens
+   * and workstations' tunnel tokens (src/remote_tunnels.ts). Optional: without
+   * it automatic Remote Control tunnels are unavailable.
+   */
+  REMOTE_TUNNEL_KEY?: string;
   /** Default homepage URL for non-enrolled clients. Defaults to https://labkiosk.org. */
   DEFAULT_HOMEPAGE?: string;
   /**

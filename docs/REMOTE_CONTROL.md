@@ -63,7 +63,20 @@ Lab Kiosk enables operators to take interactive control of user thin clients dir
 
 ## 🔧 Workstation Tunnel Provisioning
 
-Because Lab Kiosk runs as an immutable system whose writes all land in a RAM overlay (`overlayroot="tmpfs"`), individual workstation tunnel credentials cannot be baked into a generic base ISO.
+Because Lab Kiosk runs as an immutable system whose writes all land in a RAM overlay (`overlayroot="tmpfs"`), individual workstation tunnel credentials cannot be baked into a generic base ISO. There are two ways to give each workstation a tunnel: let the console create them (below, recommended), or provision them by hand (the sections after it).
+
+### Automatic tunnels in the organization's own Cloudflare account
+
+Settings → Domains → **Automatic Remote Control Tunnels**. The organization supplies:
+
+- a **domain** that is a zone on its own Cloudflare account, e.g. `example.com`. Workstations get `<workstation>.example.com` (`PC-01` → `pc-01.example.com`), one label under the zone, so the zone's free Universal SSL certificate covers them. A domain two labels deep (`vnc.example.com`) needs Advanced Certificate Manager on that zone. A domain under the platform's own domain is refused: its certificate covers only one label, and the platform's Worker answers that label;
+- its **Cloudflare account ID**;
+- an **API token** with *Account · Cloudflare Tunnel · Edit*, *Account · Access: Apps and Policies · Edit*, *Zone · DNS · Edit* and *Zone · Zone · Read* on that zone. It is checked before it is saved, stored encrypted (AES-GCM, server secret `REMOTE_TUNNEL_KEY`), and never shown again;
+- **who may connect**: email addresses or whole email domains. They become one reusable Cloudflare Access policy, so Zero Trust must be set up on the account.
+
+Each workstation then asks the console for its tunnel at start and every five minutes (`GET /api/devices/tunnel`). On its first request the console creates, in the organization's account, a remotely managed tunnel forwarding `<workstation>.<domain>` to `http://127.0.0.1:6080`, the proxied CNAME (comment `Lab Kiosk Remote Control`; an existing record it did not create is left alone and reported), and an Access application using the policy, which allows framing because the console shows noVNC in a frame. The agent stores the run token on `LABKIOSK_DATA` (`/etc/labkiosk/tunnel.token`); `cloudflared-labkiosk.path` restarts `cloudflared-labkiosk.service`, which runs cloudflared as a throwaway unprivileged user. Failures appear in Settings → Errors & Warnings and are retried after ten minutes.
+
+Removing a workstation deletes its tunnel, DNS record and Access application first. **Turn Off** deletes them for every workstation, then the policy and the stored token.
 
 ### 1. Tunnel Prerequisites
 

@@ -143,6 +143,32 @@ CREATE TABLE IF NOT EXISTS workstation_issues (
   report_match TEXT CHECK (report_match IN ('new', 'existing'))
 );
 
+CREATE TABLE IF NOT EXISTS remote_tunnel_accounts (
+  tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  account_id TEXT NOT NULL,
+  zone_id TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  api_token TEXT NOT NULL,
+  access_rules TEXT NOT NULL,
+  access_policy_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS remote_tunnels (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  tunnel_id TEXT,
+  dns_record_id TEXT,
+  access_app_id TEXT,
+  token TEXT,
+  status TEXT NOT NULL CHECK (status IN ('provisioning', 'active', 'failed')),
+  error TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, client_id)
+);
+
 CREATE TABLE IF NOT EXISTS bug_reports (
   signature TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -389,6 +415,9 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT bug_reports_terms_version FROM tenants LIMIT 1").run();
     await db.prepare("SELECT status, status_checked_at FROM bug_reports LIMIT 1").run();
     await db.prepare("SELECT report_match FROM workstation_issues LIMIT 1").run();
+    // 0019: Remote Control tunnels in an organization's own Cloudflare account.
+    await db.prepare("SELECT account_id, access_policy_id FROM remote_tunnel_accounts LIMIT 1").run();
+    await db.prepare("SELECT tunnel_id, status FROM remote_tunnels LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

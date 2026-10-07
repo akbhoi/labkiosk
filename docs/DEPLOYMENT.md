@@ -192,6 +192,21 @@ unavailable to every organization until all three of these are set:
 Issues filed in a public repository are public. Each organization's administrator sees the
 repository name before turning the option on.
 
+### Optional: automatic Remote Control tunnels
+
+Organizations can let the platform create a Cloudflare Tunnel, DNS record and Access application
+for each workstation in **their own** Cloudflare account (Settings → Domains → Automatic Remote
+Control Tunnels; `src/remote_tunnels.ts`). Their API token and every workstation's run token are
+stored sealed with AES-GCM under one platform secret. Without it the option is unavailable:
+
+| Setting | What it is | Set it |
+| :--- | :--- | :--- |
+| `REMOTE_TUNNEL_KEY` | Secret: 32 random bytes, base64 | `openssl rand -base64 32 \| npx wrangler secret put REMOTE_TUNNEL_KEY` |
+
+Changing or losing the key makes every stored token unreadable: organizations then have to turn
+the tunnels off in their own Cloudflare dashboard and on again here. Images must ship cloudflared
+(`distro-builder/config/includes.chroot/usr/share/labkiosk/cloudflared.pin`).
+
 ### Creating the tokens
 
 **`GITHUB_ISSUES_TOKEN`** (GitHub, fine-grained personal access token):

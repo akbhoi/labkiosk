@@ -24,6 +24,7 @@ import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
 import { isHostUnder } from "../src/guard";
+import { openSecret, sealSecret, workstationHostname } from "../src/remote_tunnels";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
@@ -94,6 +95,58 @@ async function callJson<T = any>(path: string, init: RequestInit & { cookie?: st
   const res = await call(path, init);
   const data = (await res.json()) as T;
   return { res, data };
+}
+
+/** Automatic Remote Control tunnels against a fake Cloudflare API (src/remote_tunnels.ts). */
+const TUNNEL_KEY = btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, i) => i + 1)));
+const ACCOUNT = "0123456789abcdef0123456789abcdef";
+const CF_TOKEN = "cf-org-token-0123456789abcdef";
+const validTunnelSettings = {
+  accountId: ACCOUNT,
+  domain: "example.com",
+  apiToken: CF_TOKEN,
+  accessRules: "it@example.com\n@staff.example.com"
+};
+
+function fakeCloudflare() {
+  const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+  const state = { forbid: false, foreignRecord: "" };
+  let tunnels = 0, records = 0, apps = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, "https://api.cloudflare.com", "only the Cloudflare API is called");
+    const path = url.pathname.replace("/client/v4", "") + url.search;
+    const method = init?.method || "GET";
+    calls.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${CF_TOKEN}`);
+    const ok = (result: unknown) => new Response(JSON.stringify({ success: true, errors: [], result }), { status: 200 });
+    if (state.forbid) {
+      return new Response(JSON.stringify({ success: false, errors: [{ code: 9109, message: "Unauthorized to access requested resource" }], result: null }), { status: 403 });
+    }
+    const bare = url.pathname.replace("/client/v4", "");
+    if (method === "GET" && bare === "/zones") {
+      return ok(url.searchParams.get("name") === "example.com" && url.searchParams.get("account.id") === ACCOUNT ? [{ id: "zone-1", name: "example.com" }] : []);
+    }
+    if (method === "GET" && bare === "/zones/zone-1/dns_records") {
+      const name = url.searchParams.get("name");
+      return ok(name && name === state.foreignRecord ? [{ id: "theirs", type: "A", content: "192.0.2.1", comment: null }] : []);
+    }
+    if (method === "GET" && bare.endsWith("/token")) return ok(`tunnel-run-token-for-${bare.split("/")[4]}-0123456789`);
+    if (method === "GET") return ok([]);
+    if (method === "POST" && bare.endsWith("/access/policies")) return ok({ id: "policy-1" });
+    if (method === "PUT" && bare.includes("/access/policies/")) return ok({ id: bare.split("/").at(-1) });
+    if (method === "POST" && bare.endsWith("/cfd_tunnel")) return ok({ id: `tunnel-${++tunnels}` });
+    if (method === "POST" && bare.endsWith("/dns_records")) return ok({ id: `record-${++records}` });
+    if (method === "POST" && bare.endsWith("/access/apps")) return ok({ id: `app-${++apps}` });
+    return ok({ id: bare.split("/").at(-1) });
+  }) as typeof fetch;
+  return {
+    calls,
+    set forbid(value: boolean) { state.forbid = value; },
+    set foreignRecord(value: string) { state.foreignRecord = value; },
+    restore() { globalThis.fetch = realFetch; }
+  };
 }
 
 describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
@@ -3658,6 +3711,174 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const underPlatform = { ...mockEnv, TUNNEL_DOMAIN: "remote.labkiosk.org" } as Env;
     const ws = await (await worker.fetch(request("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie }), underPlatform)).text();
     assert.match(ws, /const TUNNEL_DOMAIN = "";/);
+  });
+
+  test("Automatic Remote Control tunnels: settings are guarded, validated and need the sealing key", async () => {
+    const tunnelEnv = { ...mockEnv, REMOTE_TUNNEL_KEY: TUNNEL_KEY } as Env;
+    const settingsCall = (init: RequestInit & { cookie?: string } = {}, env: Env = tunnelEnv) =>
+      worker.fetch(request("/api/settings/remote-tunnels?tenant=greenwood", init), env);
+
+    for (const cookie of [undefined, rivalSessionCookie]) {
+      assert.ok([401, 403].includes((await settingsCall({ cookie })).status), "only this organization reads them");
+      const write = await settingsCall({ ...json(validTunnelSettings), cookie });
+      assert.ok([401, 403].includes(write.status), "only this organization writes them");
+      const off = await worker.fetch(request("/api/settings/remote-tunnels/off?tenant=greenwood", { method: "POST", cookie }), tunnelEnv);
+      assert.ok([401, 403].includes(off.status), "only this organization turns them off");
+    }
+
+    const unavailable = await (await settingsCall({ cookie: orgSessionCookie }, mockEnv)).json<any>();
+    assert.deepEqual({ available: unavailable.available, configured: unavailable.configured }, { available: false, configured: false });
+    const refused = await settingsCall({ ...json(validTunnelSettings), cookie: orgSessionCookie }, mockEnv);
+    assert.equal(refused.status, 409, "without REMOTE_TUNNEL_KEY nothing is stored");
+
+    const invalid: Array<[Record<string, unknown>, RegExp]> = [
+      [{ accountId: "not-an-account" }, /account ID/],
+      [{ domain: "pcs.labkiosk.org" }, /not one under labkiosk\.org/],
+      [{ domain: "" }, /domain/],
+      [{ apiToken: "short" }, /API token/],
+      [{ accessRules: "" }, /who may connect/i],
+      [{ accessRules: "it@example.com, not an email@" }, /who may connect/i]
+    ];
+    for (const [change, message] of invalid) {
+      const res = await settingsCall({ ...json({ ...validTunnelSettings, ...change }), cookie: orgSessionCookie });
+      assert.equal(res.status, 400, JSON.stringify(change));
+      assert.match((await res.json<any>()).error, message);
+    }
+    assert.equal(
+      (await settingsCall({ ...json({ ...validTunnelSettings, apiToken: "" }), cookie: orgSessionCookie })).status,
+      400,
+      "the first save needs a token"
+    );
+
+    const cf = fakeCloudflare();
+    try {
+      cf.forbid = true;
+      const denied = await settingsCall({ ...json(validTunnelSettings), cookie: orgSessionCookie });
+      assert.equal(denied.status, 400);
+      assert.match((await denied.json<any>()).error, /Cloudflare refused the token/);
+      assert.equal(
+        await getDatabase(mockEnv).prepare("SELECT COUNT(*) AS n FROM remote_tunnel_accounts").first<number>("n"),
+        0,
+        "a token Cloudflare refuses is never stored"
+      );
+    } finally {
+      cf.restore();
+    }
+  });
+
+  test("Automatic Remote Control tunnels: a workstation gets its own tunnel, DNS record and Access app", async () => {
+    const tunnelEnv = { ...mockEnv, REMOTE_TUNNEL_KEY: TUNNEL_KEY } as Env;
+    const db = getDatabase(mockEnv);
+    // Earlier tests used up the shared address's enrolment attempts.
+    const enrolFrom = (clientId: string, ip: string) =>
+      callJson("/api/devices/enroll", { ...json({ subdomain: "greenwood", enrollmentKey, clientId }), headers: { "CF-Connecting-IP": ip } });
+    const { data: enrol } = await enrolFrom("PC-TUNNEL_7", "198.51.100.71");
+    assert.ok(enrol.deviceToken, JSON.stringify(enrol));
+    const token = enrol.deviceToken as string;
+    const deviceTunnel = (bearer: string) => worker.fetch(request("/api/devices/tunnel", { bearer }), tunnelEnv);
+
+    assert.equal((await deviceTunnel("forged-token")).status, 401, "a device route needs a real device token");
+    assert.deepEqual(await (await deviceTunnel(token)).json(), { tunnel: null, pending: false }, "off until an administrator turns it on");
+
+    const cf = fakeCloudflare();
+    try {
+      const saved = await worker.fetch(
+        request("/api/settings/remote-tunnels?tenant=greenwood", { ...json(validTunnelSettings), cookie: orgSessionCookie }),
+        tunnelEnv
+      );
+      assert.equal(saved.status, 200);
+      const policy = cf.calls.find((c) => c.method === "POST" && c.path === `/accounts/${ACCOUNT}/access/policies`);
+      assert.deepEqual((policy!.body as any).include, [{ email: { email: "it@example.com" } }, { email_domain: { domain: "staff.example.com" } }]);
+
+      const stored = await db.prepare("SELECT * FROM remote_tunnel_accounts").first<any>();
+      assert.equal(stored.domain, "example.com");
+      assert.equal(stored.access_policy_id, "policy-1");
+      assert.ok(!stored.api_token.includes(CF_TOKEN), "the API token is stored sealed");
+      const status = await (await worker.fetch(request("/api/settings/remote-tunnels?tenant=greenwood", { cookie: orgSessionCookie }), tunnelEnv)).text();
+      assert.ok(!status.includes(CF_TOKEN) && !status.includes(stored.api_token), "and never sent back");
+
+      // The device token decides the workstation; a ?tenant= it claims is ignored.
+      cf.calls.length = 0;
+      const first = await (await worker.fetch(request("/api/devices/tunnel?tenant=riverside", { bearer: token }), tunnelEnv)).json<any>();
+      assert.deepEqual(first, { tunnel: { hostname: "pc-tunnel-7.example.com", token: "tunnel-run-token-for-tunnel-1-0123456789" }, pending: false });
+      const byPath = (method: string, path: string) => cf.calls.find((c) => c.method === method && c.path.split("?")[0] === path);
+      assert.equal((byPath("POST", `/accounts/${ACCOUNT}/cfd_tunnel`)!.body as any).config_src, "cloudflare");
+      assert.deepEqual((byPath("PUT", `/accounts/${ACCOUNT}/cfd_tunnel/tunnel-1/configurations`)!.body as any).config.ingress, [
+        { hostname: "pc-tunnel-7.example.com", service: "http://127.0.0.1:6080" },
+        { service: "http_status:404" }
+      ]);
+      assert.deepEqual(byPath("POST", "/zones/zone-1/dns_records")!.body, {
+        type: "CNAME", name: "pc-tunnel-7.example.com", content: "tunnel-1.cfargotunnel.com", proxied: true, ttl: 1, comment: "Lab Kiosk Remote Control"
+      });
+      const app = byPath("POST", `/accounts/${ACCOUNT}/access/apps`)!.body as any;
+      assert.equal(app.domain, "pc-tunnel-7.example.com");
+      assert.deepEqual(app.policies, [{ id: "policy-1", precedence: 1 }]);
+      assert.equal(app.allow_iframe, true, "the console shows noVNC in a frame");
+
+      const row = await db.prepare("SELECT * FROM remote_tunnels WHERE client_id = 'PC-TUNNEL_7'").first<any>();
+      assert.equal(row.status, "active");
+      assert.ok(!row.token.includes("tunnel-run-token"), "the run token is stored sealed");
+
+      cf.calls.length = 0;
+      const again = await (await deviceTunnel(token)).json<any>();
+      assert.deepEqual(again, first);
+      assert.equal(cf.calls.length, 0, "an existing tunnel is served from D1");
+
+      // Moving to another domain while workstations have tunnels is refused.
+      const move = await worker.fetch(
+        request("/api/settings/remote-tunnels?tenant=greenwood", { ...json({ ...validTunnelSettings, domain: "other.example.com" }), cookie: orgSessionCookie }),
+        tunnelEnv
+      );
+      assert.equal(move.status, 409);
+
+      // Removing the workstation deletes what was created for it first.
+      cf.calls.length = 0;
+      const removed = await worker.fetch(request("/api/clients/remove?tenant=greenwood", { ...json({ clientId: "PC-TUNNEL_7" }), cookie: orgSessionCookie }), tunnelEnv);
+      assert.equal(removed.status, 200);
+      assert.deepEqual(cf.calls.map((c) => `${c.method} ${c.path}`), [
+        `DELETE /accounts/${ACCOUNT}/access/apps/app-1`,
+        "DELETE /zones/zone-1/dns_records/record-1",
+        `DELETE /accounts/${ACCOUNT}/cfd_tunnel/tunnel-1/connections`,
+        `DELETE /accounts/${ACCOUNT}/cfd_tunnel/tunnel-1`
+      ]);
+      assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM remote_tunnels").first<number>("n"), 0);
+
+      // A record Lab Kiosk did not create is never taken over; the failure is listed.
+      const { data: second } = await enrolFrom("PC-TAKEN", "198.51.100.72");
+      cf.foreignRecord = "pc-taken.example.com";
+      const blocked = await (await deviceTunnel(second.deviceToken)).json<any>();
+      assert.deepEqual(blocked, { tunnel: null, pending: true });
+      const failed = await db.prepare("SELECT status, error, tunnel_id FROM remote_tunnels WHERE client_id = 'PC-TAKEN'").first<any>();
+      assert.equal(failed.status, "failed");
+      assert.match(failed.error, /did not create/);
+      const issue = await db.prepare("SELECT kind, severity, report_state FROM workstation_issues WHERE client_id = 'PC-TAKEN'").first<any>();
+      assert.deepEqual({ ...issue }, { kind: "remote_tunnel_failed", severity: "warning", report_state: "none" });
+      cf.calls.length = 0;
+      assert.deepEqual(await (await deviceTunnel(second.deviceToken)).json(), { tunnel: null, pending: true });
+      assert.equal(cf.calls.length, 0, "a failure is not retried on every request");
+
+      // Turning off deletes the rest, then the policy, then the stored token.
+      cf.calls.length = 0;
+      const off = await worker.fetch(request("/api/settings/remote-tunnels/off?tenant=greenwood", { method: "POST", cookie: orgSessionCookie }), tunnelEnv);
+      assert.deepEqual(await off.json(), { status: "ok", remaining: 0 });
+      assert.ok(cf.calls.some((c) => c.method === "DELETE" && c.path === `/accounts/${ACCOUNT}/cfd_tunnel/${failed.tunnel_id}`));
+      assert.deepEqual(cf.calls.at(-1), { method: "DELETE", path: `/accounts/${ACCOUNT}/access/policies/policy-1`, body: undefined });
+      assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM remote_tunnel_accounts").first<number>("n"), 0);
+      assert.deepEqual(await (await deviceTunnel(second.deviceToken)).json(), { tunnel: null, pending: false });
+    } finally {
+      cf.restore();
+    }
+  });
+
+  test("Sealed tunnel secrets open only for the row they were sealed for", async () => {
+    const env = { ...mockEnv, REMOTE_TUNNEL_KEY: TUNNEL_KEY } as Env;
+    const sealed = await sealSecret(env, "secret-value", "remote-tunnel:a:b");
+    assert.equal(await openSecret(env, sealed, "remote-tunnel:a:b"), "secret-value");
+    await assert.rejects(openSecret(env, sealed, "remote-tunnel:a:c"));
+    await assert.rejects(sealSecret({ ...mockEnv, REMOTE_TUNNEL_KEY: btoa("too short") } as Env, "x", "y"), /32 random bytes/);
+    assert.equal(workstationHostname("PC-VM-101", "example.com"), "pc-vm-101.example.com");
+    assert.equal(workstationHostname("--Lab 3 / PC_01--", "example.com"), "lab-3-pc-01.example.com");
+    assert.equal(workstationHostname("***", "example.com"), null);
   });
 
   test("Workstation groups are rendered on the Workstations page", async () => {

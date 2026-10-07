@@ -84,6 +84,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
+| `/api/devices/tunnel` | `GET` | Device Token | The Remote Control tunnel this workstation should run, created in its organization's own Cloudflare account on first request |
+| `/api/settings/remote-tunnels` | `GET` / `POST` | Organization Admin (`settings`) | Automatic Remote Control tunnels: status, or turn on / change `{accountId, domain, apiToken?, accessRules}` |
+| `/api/settings/remote-tunnels/off` | `POST` | Organization Admin (`settings`) | Delete the tunnels created in the organization's account, a batch per call, until `remaining` is 0 |
 | `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, each with `report_state`, `report_match` (`new`/`existing`), `issue_url`, `issue_number`, `report_status` (`open`, `in_progress`, `pr_open`, `resolved`, `closed`) and `pr_url`; plus `bugReports: {enabled, available, repository, termsVersion, acceptedTermsVersion, termsAcceptedAt}` |
 | `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
@@ -373,6 +376,48 @@ any queued commands.
     "broadcastEpoch": 0
   }
   ```
+
+#### `GET /api/devices/tunnel`
+
+The Remote Control tunnel this workstation should run, when its organization turned on automatic
+tunnels (Settings → Domains → Automatic Remote Control Tunnels). On first request the Worker creates,
+in the organization's own Cloudflare account, a remotely managed tunnel whose one public hostname
+`<workstation>.<domain>` forwards to `http://127.0.0.1:6080`, the proxied CNAME for it (comment
+`Lab Kiosk Remote Control`; a record it did not create is never taken over) and a Cloudflare Access
+application using the organization's Access policy. The agent asks at start and every 5 minutes and
+writes the token to `/etc/labkiosk/tunnel.token`, which `cloudflared-labkiosk.service` runs.
+
+- **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
+  organization and the workstation. `403` when the organization is not active.
+- **Responses** (`Cache-Control: no-store`):
+  - `{"tunnel": {"hostname": "pc-01.example.com", "token": "<run token>"}, "pending": false}`
+  - `{"tunnel": null, "pending": true}`: being created, or failed less than 10 minutes ago (the
+    failure is listed in Errors & Warnings as `remote_tunnel_failed`); keep what is running.
+  - `{"tunnel": null, "pending": false}`: the organization has no automatic tunnels; stop it.
+
+#### `POST /api/settings/remote-tunnels`
+
+Turn automatic Remote Control tunnels on, or change them (`settings` permission).
+
+- **Request Body:** `accountId` (the Cloudflare account ID, 32 hex characters), `domain` (a zone on
+  that account, or a name under one; never under the platform domain), `apiToken` (required the
+  first time and when the account changes; omitted keeps the stored one), `accessRules` (email
+  addresses or email domains, 1–50, one per line or as an array).
+- The token needs **Account · Cloudflare Tunnel · Edit**, **Account · Access: Apps and Policies ·
+  Edit**, and **Zone · DNS · Edit** plus **Zone · Zone · Read** on the domain's zone. It is checked
+  against the account before it is stored, sealed with AES-GCM under `REMOTE_TUNNEL_KEY`, and never
+  returned. The organization's reusable Access policy is created, or updated so every existing
+  workstation follows a change of who may connect.
+- **Responses:** `200 {"status":"ok","domain":"example.com","zone":"example.com"}`; `400` invalid
+  input or a token Cloudflare refused (the reason is in `error`); `409` when the server has no
+  `REMOTE_TUNNEL_KEY`, or the account or domain changes while workstations still have tunnels.
+
+`GET` answers `{available, configured, accountId, domain, accessRules, workstations: {total,
+active, failed}}`. `POST /api/settings/remote-tunnels/off` deletes up to 10 workstations' tunnels,
+DNS records and Access applications per call and answers `{"status":"ok","remaining":n}`; at 0 it
+has also deleted the Access policy and the stored token. Removing a workstation
+(`POST /api/clients/remove`) deletes its tunnel first and answers `502` without removing it when
+the organization's account refuses.
 
 #### `POST /api/devices/boot-report`
 

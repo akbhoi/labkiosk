@@ -112,7 +112,17 @@ report; `409` (row not written by the hub yet), `401`/`403` and network errors a
 
 `x11vnc` on `127.0.0.1:5900` (per-boot password) → `websockify` on `127.0.0.1:6080` → Cloudflare
 Tunnel to `<pc>.<tunnel_domain>`. No LAN listener. The console's noVNC frame gets `vncPassword` /
-`remoteHost` from `GET /api/clients` (workstations permission).
+`remoteHost` from `GET /api/clients` (workstations permission). A tunnel domain under the platform
+domain is refused (`usableTunnelDomain()`): two labels down it has no certificate.
+
+**Automatic tunnels** (`src/remote_tunnels.ts`, migration 0019, secret `REMOTE_TUNNEL_KEY`): an
+organization stores a Cloudflare API token for its own account; `GET /api/devices/tunnel` creates
+that workstation's tunnel, CNAME and Access application there on first request and returns
+`{tunnel: {hostname, token}}`, `{tunnel: null, pending: true}` (keep what runs) or `{tunnel: null,
+pending: false}` (stop). The agent (`remote_tunnel_loop()`, every 5 minutes) writes
+`/etc/labkiosk/tunnel.token` and `tunnel.host`; `cloudflared-labkiosk.path` restarts
+`cloudflared-labkiosk.service` (DynamicUser, token via `LoadCredential`), and `tunnel.host` becomes
+`remoteHost`. Removing a workstation deletes its tunnel first.
 
 ## 5. Global rules both sides obey
 
