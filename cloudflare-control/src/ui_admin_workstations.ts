@@ -180,7 +180,6 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
           </h3>
           <button type="button" class="modal-close" id="btn-close-vnc" aria-label="Close dialog">✕</button>
         </div>
-        <div id="vnc-notice" class="callout" style="display: none;"></div>
         <iframe id="vnc-frame" class="vnc-frame" src="about:blank" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
       </div>
     </div>
@@ -294,15 +293,8 @@ function renderWorkstationsScripts(
   sites: PortalSite[] = [],
   initialGroups: WorkstationGroup[] = []
 ): string {
-  // config.tunnelDomain already prefers the organization's own and drops one the
-  // platform cannot serve; tenant.tunnel_domain would bring a refused one back.
-  const tunnelDomain = config?.tunnelDomain || "";
-  const remoteGateDomain = config?.remoteGateDomain || "";
-
   return `
     <script nonce="${escapeAttr(nonce)}">
-      const TUNNEL_DOMAIN = ${escapeJson(tunnelDomain)};
-      const REMOTE_GATE_DOMAIN = ${escapeJson(remoteGateDomain)};
       let clientsData = {};
       let groupsList = ${escapeJson(initialGroups.map((g) => ({ id: g.id, name: g.name })))};
       let selectedClientIds = new Set();
@@ -881,70 +873,25 @@ function renderWorkstationsScripts(
         });
       }
 
-      // A workstation on the platform's remote-control domain opens through
-      // the gate with a short-lived pass; its own address admits only the gate.
-      function viaRemoteGate(client) {
-        return Boolean(REMOTE_GATE_DOMAIN && client.remoteHost && client.remoteHost.toLowerCase().endsWith("." + REMOTE_GATE_DOMAIN));
-      }
-
       function vncPasswordFragment(client) {
-        // The password rides in the fragment, which noVNC reads first and a
-        // browser never sends, so it stays out of tunnel and server logs.
+        // The password rides in the fragment, which the viewer reads and removes
+        // and a browser never sends, so it stays out of every log.
         return client.vncPassword ? "#" + new URLSearchParams({ password: client.vncPassword }).toString() : "";
       }
 
-      async function openGateSession(id, client) {
-        try {
-          const res = await fetch(labkioskApi("/api/clients/remote-pass"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ clientId: id })
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            lkToast(data.error || "Could not open Remote Control", "error");
-            return;
-          }
-          const params = new URLSearchParams({ autoconnect: "true", resize: "scale", path: data.path });
-          document.getElementById("vnc-frame").src = data.url + "?" + params.toString() + vncPasswordFragment(client);
-          document.getElementById("vnc-modal").classList.add("active");
-        } catch (err) {
-          lkToast("Network error: " + err.message, "error");
-        }
-      }
-
+      // Remote Control runs on this console's own address: the viewer asks the
+      // workstation to join a relay session (src/remote_relay.ts).
       function openVncSession(id) {
         document.getElementById("vnc-modal-title").textContent = "Live Remote Control: " + id;
         const client = clientsData[id] || {};
-        if (viaRemoteGate(client)) {
-          openGateSession(id, client);
-          return;
-        }
-        const host = window.location.hostname;
-        let base = "";
-
-        if (client.remoteHost) {
-          base = "https://" + client.remoteHost;
-        } else if (host === "localhost" || host === "127.0.0.1" || host.includes("docker")) {
-          base = "http://" + host + ":6080";
-        } else if (TUNNEL_DOMAIN) {
-          base = "https://" + encodeURIComponent(id.toLowerCase()) + "." + TUNNEL_DOMAIN;
-        } else {
-          base = "http://localhost:6080";
-          const notice = document.getElementById("vnc-notice");
-          notice.textContent = "Notice: Cloudflare Tunnel domain is not configured for this organization. Remote control is accessible via local simulator (port 6080) or after configuring a tunnel in Settings.";
-          notice.style.display = "block";
-        }
-
-        const params = new URLSearchParams({ autoconnect: "true", resize: "scale" });
-        document.getElementById("vnc-frame").src = base + "/vnc.html?" + params.toString() + vncPasswordFragment(client);
+        const viewer = labkioskApi("/console/remote?" + new URLSearchParams({ clientId: id }).toString());
+        document.getElementById("vnc-frame").src = viewer + vncPasswordFragment(client);
         document.getElementById("vnc-modal").classList.add("active");
       }
 
       document.getElementById("btn-close-vnc").addEventListener("click", () => {
         document.getElementById("vnc-modal").classList.remove("active");
         document.getElementById("vnc-frame").src = "about:blank";
-        document.getElementById("vnc-notice").style.display = "none";
       });
 
       // --------------------------------------------------------- command execution
@@ -1400,7 +1347,6 @@ function renderWorkstationsScripts(
           if (overlay.id === "vnc-modal") {
             overlay.classList.remove("active");
             document.getElementById("vnc-frame").src = "about:blank";
-            document.getElementById("vnc-notice").style.display = "none";
           } else {
             overlay.classList.remove("active");
           }
@@ -1412,7 +1358,6 @@ function renderWorkstationsScripts(
           if (overlay.id === "vnc-modal") {
             overlay.classList.remove("active");
             document.getElementById("vnc-frame").src = "about:blank";
-            document.getElementById("vnc-notice").style.display = "none";
           } else {
             overlay.classList.remove("active");
           }

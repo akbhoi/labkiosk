@@ -100,6 +100,8 @@ export function hubUpgrade(
 export function requiredBindingsProblem(env: Env): string | null {
   const missing: string[] = [];
   if (!env.ORG_HUB) missing.push("ORG_HUB (Durable Object)");
+  if (!env.REMOTE_RELAY) missing.push("REMOTE_RELAY (Durable Object)");
+  if (!env.ASSETS) missing.push("ASSETS (static assets)");
   if (!env.AUDIT_QUEUE) missing.push("AUDIT_QUEUE (Queue producer)");
   if (!env.AUDIT_ARCHIVE) missing.push("AUDIT_ARCHIVE (R2 bucket)");
   if (!env.FLEET_METRICS) missing.push("FLEET_METRICS (Analytics Engine dataset)");

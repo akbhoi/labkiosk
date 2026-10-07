@@ -48,12 +48,14 @@ fi
 # -noclipboard: the VNC clipboard is bidirectional, so without it anything a
 #   user copies on the workstation is readable by whoever holds a session,
 #   and anything in the viewer's clipboard can be pasted into the kiosk.
-# -nocmd: disables x11vnc's own remote control channel, which is not used here.
+# -noremote: disables x11vnc's own remote-control channel, which is not used here.
+# -nocmds: x11vnc never runs an external command on a client's behalf.
+# (x11vnc has no -nocmd: it refuses to start on an unknown option.)
 # The VNC protocol truncates passwords to 8 characters, so the secret below is
 # a low-entropy credential by construction -- the tunnel in front of it has to
 # carry the real authentication. See docs/REMOTE_CONTROL.md.
 x11vnc -display :0 -forever -shared -rfbport 5900 -localhost \
-  -rfbauth "$VNC_PASSWD_FILE" -noclipboard -nocmd -quiet -bg
+  -rfbauth "$VNC_PASSWD_FILE" -noclipboard -noremote -nocmds -quiet -bg
 
 # 5. noVNC websockify gateway, bound to loopback for the tunnel to pick up.
 if [ -d "/usr/share/novnc" ]; then

@@ -15,18 +15,26 @@ Lab Kiosk enables operators to take interactive control of user thin clients dir
         │  1. Clicks "Remote Control" on PC-01
         ▼
 [ Operator Lab Dashboard (/admin) ]
-        │  2. Retrieves ephemeral VNC password & tunnel URL from /api/clients
-        │  3. Opens modal embedding noVNC viewer
+        │  2. Opens /console/remote (noVNC from /novnc/) with the per-boot VNC password in the fragment
+        │  3. POST /api/clients/remote-session → the hub tells PC-01 {"type":"remote","session":…}
         ▼
-[ Cloudflare Tunnel Edge (pc-01.labkiosk.example.com) ]
-        │  4. Secure outbound tunnel (HTTPS/WSS)
+[ RemoteRelay Durable Object (one per open session, on the console's own address) ]
+        │  4. Pairs the viewer's WebSocket (/api/console/remote) with the agent's (/api/devices/remote)
         ▼
 [ User Workstation: Thin Client (RAM-only OS) ]
-        ├── cloudflared daemon (forwards WSS to 127.0.0.1:6080)
-        ├── websockify (bridges 127.0.0.1:6080 ──▶ localhost:5900)
-        ├── x11vnc (running on display :0, authenticated by /tmp/labkiosk/vnc.secret)
-        └── Python Agent (reports ephemeral VNC secret & tunnel host over telemetry)
+        ├── Python Agent (outbound WSS to the relay, pipes it to 127.0.0.1:5900)
+        └── x11vnc (running on display :0, loopback only, authenticated by /tmp/labkiosk/vnc.secret)
 ```
+
+The workstation only makes **outbound** connections to the console's own address, the same one its
+control channel already uses. There is no tunnel, DNS record, route or Access application per
+workstation, so nothing to provision and no per-zone or per-account limit to reach. The full
+contract is in [API.md](API.md) (*Remote Control through the console*).
+
+> [!NOTE]
+> The Cloudflare Tunnel sections below describe the earlier design. This release still provisions
+> tunnels when they are configured, but the console connects through the relay and no longer
+> opens workstations through a tunnel.
 
 ### Security Invariants
 
@@ -42,8 +50,8 @@ Lab Kiosk enables operators to take interactive control of user thin clients dir
 
    - Saved in RAM to `/tmp/labkiosk/vnc.secret` (permissions `0600`, owned by unprivileged `kiosk` user).
    - Passwords are never written to permanent disk and vanish upon power-off or reboot.
-   - The session runs with `-noclipboard -nocmd`: without the first, the VNC clipboard is
-     bidirectional and everything a user copies is readable by whoever holds a session.
+   - The session runs with `-noclipboard -noremote -nocmds`: without the first, the VNC clipboard
+     is bidirectional and everything a user copies is readable by whoever holds a session.
 
    > [!IMPORTANT]
    > **Eight characters is the ceiling, not a choice.** The RFB protocol truncates passwords to

@@ -84,6 +84,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
+| `/api/clients/remote-session` | `POST` | Organization Admin (`workstations`) | Open a Remote Control session through the console's relay: asks the workstation to join and returns the viewer's socket path |
+| `/api/console/remote` | `GET` (WebSocket) | Organization Admin (`workstations`) | The viewer's side of a Remote Control session (VNC bytes) |
+| `/api/devices/remote` | `GET` (WebSocket) | Device Token | The workstation's side of a Remote Control session (VNC bytes) |
 | `/api/devices/tunnel` | `GET` | Device Token | The Remote Control tunnel this workstation should run, created in its organization's own Cloudflare account on first request |
 | `/api/settings/remote-tunnels` | `GET` / `POST` | Organization Admin (`settings`) | Automatic Remote Control tunnels: status, or turn on / change `{mode, accountId, domain, apiToken?, accessRules}` |
 | `/api/settings/remote-tunnels/off` | `POST` | Organization Admin (`settings`) | Delete the tunnels created in the organization's account, a batch per call, until `remaining` is 0 |
@@ -376,6 +379,36 @@ any queued commands.
     "broadcastEpoch": 0
   }
   ```
+
+#### Remote Control through the console: `POST /api/clients/remote-session`, `GET /api/console/remote`, `GET /api/devices/remote`
+
+The console reaches a workstation's VNC server through its own address, with no tunnel, DNS record or
+route per workstation. Each open session is one `RemoteRelay` Durable Object (`src/remote_relay.ts`)
+named after the organization and workstation, which pairs two WebSockets and forwards their binary
+messages to each other.
+
+1. The viewer (`GET /console/remote?clientId=PC-01`, `workstations` permission) posts
+   `{"clientId": "PC-01"}` to `/api/clients/remote-session`. The Worker makes a random 32-byte
+   session token, stores only its SHA-256 in the relay with the operator's user id, and asks the
+   organization's hub to send `{"type": "remote", "session": "<token>"}` over the workstation's
+   control channel. **Responses:** `200 {"socketPath": "/api/console/remote?clientId=…&session=…",
+   "joinSeconds": 60}`; `400` for a bad workstation id; `409` when the workstation is not connected
+   to the hub; `502` when the relay or hub fails; `503` without the `REMOTE_RELAY` binding. Each
+   session is written to the audit log (`device.remote_control`, `via: relay`).
+2. The viewer opens `socketPath` (same cookie and `workstations` permission, and the cross-site
+   socket check of `/api/console/ws`). The agent opens `/api/devices/remote` with its device bearer
+   token and the token in `X-Labkiosk-Session`, then connects to its own `127.0.0.1:5900`.
+3. Both must join within 60 seconds, each side at most once, and the console side only as the
+   operator who opened it (`403` otherwise, `410` once expired, `409` for a side already present).
+   The relay sends the agent `{"type": "ready"}` once the viewer is there; from then on binary
+   messages are VNC bytes. A text `{"type": "ping"}` is answered `{"type": "pong"}` by the relay
+   itself; other text is dropped.
+4. Either side closing closes the other (`4004`). A new session for the same workstation closes the
+   old one (`4000`), and a session ends after four hours (`4008`).
+
+The VNC password still travels in the viewer's address fragment, which browsers never send, and the
+viewer removes it before it connects. noVNC is served from `/novnc/` (Workers static assets, staged
+from the pinned `@novnc/novnc` package).
 
 #### `GET /api/devices/tunnel`
 

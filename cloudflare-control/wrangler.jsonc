@@ -66,6 +66,12 @@
 			{
 				"name": "ORG_HUB",
 				"class_name": "OrgHub"
+			},
+			// One RemoteRelay per workstation in a Remote Control session: passes
+			// VNC between the console and the workstation (src/remote_relay.ts).
+			{
+				"name": "REMOTE_RELAY",
+				"class_name": "RemoteRelay"
 			}
 		]
 	},
@@ -73,8 +79,23 @@
 		{
 			"tag": "v1-org-hub",
 			"new_sqlite_classes": ["OrgHub"]
+		},
+		{
+			"tag": "v2-remote-relay",
+			"new_sqlite_classes": ["RemoteRelay"]
 		}
 	],
+	// Static files: the noVNC client the Remote Control viewer loads, staged into
+	// public/novnc from the pinned @novnc/novnc package by the build command. The
+	// Worker runs first for every request and serves only /novnc/ from here.
+	"build": {
+		"command": "node scripts/stage-novnc.mjs"
+	},
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS",
+		"run_worker_first": true
+	},
 	// Audit entries are queued and written to D1 in batches.
 	//   npx wrangler queues create labkiosk-audit
 	//   npx wrangler queues create labkiosk-audit-dlq

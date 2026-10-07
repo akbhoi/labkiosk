@@ -204,6 +204,6 @@ Bridges the WebSocket the browser speaks to the raw VNC port x11vnc listens on. 
 
 ### x11vnc
 
-The VNC server exporting display `:0`, bound to loopback with a per-boot ephemeral password and run with `-noclipboard -nocmd`.
+The VNC server exporting display `:0`, bound to loopback with a per-boot ephemeral password and run with `-noclipboard -noremote -nocmds`.
 
 → [Home](Home) · [Architecture Overview](Architecture-Overview)

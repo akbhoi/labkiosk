@@ -11,20 +11,20 @@ One-click interactive remote desktop from the admin console, with **no inbound p
        |  1. Clicks "Remote Control" on PC-01
        v
 [ Operator Lab Dashboard /admin ]
-       |  2. Reads vncPassword + remoteHost from GET /api/clients
-       |  3. Opens a modal embedding the noVNC viewer
+       |  2. Opens /console/remote (noVNC) with the per-boot password in the address fragment
+       |  3. POST /api/clients/remote-session; the hub tells PC-01 to join
        v
-[ Cloudflare Tunnel edge: pc-01.labkiosk.example.edu ]
-       |  4. Outbound-only tunnel (HTTPS / WSS)
+[ RemoteRelay on the console's own address ]
+       |  4. Pairs the viewer's WebSocket with the agent's and forwards VNC bytes
        v
 [ User workstation ]
-       |-- cloudflared        forwards to 127.0.0.1:6080
-       |-- websockify         bridges 127.0.0.1:6080 -> localhost:5900
-       |-- x11vnc             display :0, auth from /tmp/labkiosk/vnc.pass
-       `-- agent.py           reports the secret + tunnel host over telemetry
+       |-- agent.py           outbound WSS to the relay, piped to 127.0.0.1:5900
+       `-- x11vnc             display :0, loopback only, auth from /tmp/labkiosk/vnc.pass
 ```
 
-The workstation makes an **outbound** connection to Cloudflare. Nothing listens on the organization LAN, and no firewall rule is needed.
+The workstation makes only **outbound** connections to the console, the same address its control channel uses. Nothing listens on the organization LAN, no firewall rule is needed, and there is no tunnel, DNS record or route per workstation.
+
+The tunnel sections further down describe the earlier design: tunnels are still provisioned when configured, but the console now connects through the relay.
 
 ---
 
@@ -44,7 +44,7 @@ chmod 600 "$VNC_PASSWD_FILE"
 
 Both live in `/tmp` on the RAM overlay. Nothing is written to persistent storage and everything vanishes at power-off.
 
-The session runs with `-noclipboard -nocmd`. Without the first, the VNC clipboard is bidirectional: everything a user copies is readable by whoever holds a session, and anything in the viewer's clipboard can be pasted into the kiosk. `-nocmd` disables x11vnc's own remote-control channel, which is not used here.
+The session runs with `-noclipboard -noremote -nocmds`. Without the first, the VNC clipboard is bidirectional: everything a user copies is readable by whoever holds a session, and anything in the viewer's clipboard can be pasted into the kiosk. `-noremote` disables x11vnc's own remote-control channel, which is not used here, and `-nocmds` stops x11vnc from running external commands.
 
 ### Why eight characters
 

@@ -110,6 +110,19 @@ report; `409` (row not written by the hub yet), `401`/`403` and network errors a
 
 ## 4. Remote control
 
+**The console relays it** (`src/remote_relay.ts`, Durable Object `RemoteRelay`, binding
+`REMOTE_RELAY`, named `<tenant>:<clientId>`). The viewer `/console/remote` (noVNC from `/novnc/`,
+Workers static assets `ASSETS`, staged from the exactly pinned `@novnc/novnc` by
+`scripts/stage-novnc.mjs`) posts `POST /api/clients/remote-session`; the Worker stores the SHA-256
+of a 32-byte token in the relay and the hub sends `{"type":"remote","session":"<64 hex>"}` on the
+control channel (`409` if the workstation is not connected). The agent (`start_remote_session()`,
+one at a time) opens `GET /api/devices/remote` with its bearer token and `X-Labkiosk-Session`,
+waits for `{"type":"ready"}`, and pipes binary messages to and from `127.0.0.1:5900`. Text
+`{"type":"ping"}` is auto-answered `{"type":"pong"}`; other text is dropped. Join within 60 s, at
+most 4 h, either side closing ends it, a new session replaces the old. The console side must be the
+operator who opened it and passes `rejectCrossSiteSocket`. The tunnel design below is the earlier
+one; the console no longer opens workstations through it.
+
 `x11vnc` on `127.0.0.1:5900` (per-boot password) → `websockify` on `127.0.0.1:6080` → Cloudflare
 Tunnel to `<pc>.<tunnel_domain>`. No LAN listener. The console's noVNC frame gets `vncPassword` /
 `remoteHost` from `GET /api/clients` (workstations permission). A tunnel domain under the platform
@@ -144,7 +157,7 @@ state in D1 or the organization's OrgHub, never isolate memory · fail closed on
 |---|---|
 | Workstation missing from the dashboard, agent logs `401` | Not enrolled, or its device token was revoked → re-run the wizard with the organization's current enrollment key (Settings → Security). |
 | Freshly enrolled screen says "This page is blocked" | Chromium reads policy only at start → the agent sets `pendingBrowserRestart` and restarts it after the next policy sync. |
-| Remote Control asks for a password or never connects | No heartbeat since boot (no `vncPassword` yet) or no tunnel → check `vncPassword`/`remoteHost` in `/api/clients`; provision a tunnel (`docs/REMOTE_CONTROL.md`). |
+| Remote Control asks for a password or never connects | No status since boot (no `vncPassword` yet), the workstation is not on the WebSocket control channel (`409`), or its agent predates the relay (never joins, `4008` after 60 s) → check `vncPassword` in `/api/clients` and the agent version. |
 | Worker refuses to start (`SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must both be set` / `The D1 database is missing the current schema`) | Secrets unset with a D1 binding, or migrations not applied → set secrets; `wrangler d1 migrations apply labkiosk-db --remote`. |
 | Broadcast to some screens reverts to the portal | Worker older than migration `0010` → apply it and deploy together. |
 | Worker refuses to start: `missing required bindings` | A platform resource was not created → `docs/DEPLOYMENT.md`, "Platform resources". |

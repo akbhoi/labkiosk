@@ -147,6 +147,8 @@ provisioned by a Workflow. **A production worker refuses to start without every 
 | Binding | What it is | Create it |
 | :--- | :--- | :--- |
 | `ORG_HUB` | Durable Object class `OrgHub` (SQLite-backed) | Nothing to create: the first deploy applies the `v1-org-hub` migration in `wrangler.jsonc`. |
+| `REMOTE_RELAY` | Durable Object class `RemoteRelay` (SQLite-backed), one per workstation while Remote Control is open | Nothing to create: the first deploy applies the `v2-remote-relay` migration. |
+| `ASSETS` | Static assets in `public/`: the noVNC client the Remote Control viewer loads from `/novnc/` | Nothing: `wrangler dev` and `wrangler deploy` run `scripts/stage-novnc.mjs` (`build.command`), which copies the exactly pinned `@novnc/novnc` from `node_modules`, so run `pnpm install` first. |
 | `AUDIT_QUEUE` | Queue `labkiosk-audit`, dead-letter queue `labkiosk-audit-dlq` | `npx wrangler queues create labkiosk-audit` and `npx wrangler queues create labkiosk-audit-dlq` |
 | `AUDIT_ARCHIVE` | R2 bucket `labkiosk-audit-archive` (audit entries older than 180 days, as NDJSON) | `npx wrangler r2 bucket create labkiosk-audit-archive` |
 | `FLEET_METRICS` | Analytics Engine dataset `labkiosk_fleet` (connects and disconnects) | Nothing: it is created on first write. |
@@ -154,6 +156,13 @@ provisioned by a Workflow. **A production worker refuses to start without every 
 | `CUSTOM_HOSTNAMES` | Workflow `labkiosk-custom-hostnames` | Nothing: created on deploy. |
 | `CF_API_TOKEN` | Secret: an API token for the zone with **SSL and Certificates: Edit** (custom hostnames) | `npx wrangler secret put CF_API_TOKEN` |
 | `CF_ZONE_ID` | Secret: the zone id of your platform domain | `npx wrangler secret put CF_ZONE_ID` |
+
+**Remote Control cost.** A Remote Control session is one `RemoteRelay` Durable Object holding two
+WebSockets (the operator's viewer and the workstation's agent) for as long as the session is open,
+so it is billed as Durable Object duration while open plus WebSocket messages at 20:1. Both sides
+send a small keepalive every 30 s, which the relay answers without waking. On the Workers Paid plan
+this is roughly a cent or less per hour of active session (estimated, not measured); on the Free plan it counts against the daily Durable
+Object allowance. Nothing runs while no session is open.
 
 **Custom domains (Cloudflare for SaaS).** When a super admin approves an organization's custom
 domain, the Workflow creates a custom hostname on your zone, waits for its certificate, and records

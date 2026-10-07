@@ -283,6 +283,11 @@ export class OrgHub {
         case "/remove-device":
           await this.removeDevice(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
           return json({ status: "ok" });
+        case "/remote-open": {
+          const body = (await request.json()) as { clientId?: unknown; session?: unknown };
+          const delivered = this.remoteOpen(String(body.clientId || ""), String(body.session || ""));
+          return delivered ? json({ status: "ok" }) : json({ error: "This workstation is not connected" }, 409);
+        }
         case "/device-enrolled":
           this.deviceEnrolled(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
           return json({ status: "ok" });
@@ -764,6 +769,24 @@ export class OrgHub {
     const sql = this.ctx.storage.sql;
     sql.exec("DELETE FROM deliveries WHERE command_id IN (SELECT id FROM commands WHERE expires_at <= ?)", now);
     sql.exec("DELETE FROM commands WHERE expires_at <= ?", now);
+  }
+
+  /**
+   * Ask a connected workstation to join a Remote Control session
+   * (src/remote_relay.ts). False when it has no live connection here: an agent
+   * on the HTTP heartbeat cannot be reached in time.
+   */
+  remoteOpen(clientId: string, session: string): boolean {
+    if (!CLIENT_ID_PATTERN.test(clientId) || !/^[0-9a-f]{64}$/.test(session)) return false;
+    const ws = this.ctx.getWebSockets(`device:${clientId}`)[0];
+    if (!ws) return false;
+    try {
+      ws.send(JSON.stringify({ type: "remote", session }));
+      return true;
+    } catch (err) {
+      console.warn(`[OrgHub] Could not ask ${clientId} to join Remote Control:`, err);
+      return false;
+    }
   }
 
   // ------------------------------------------------------------------ consoles

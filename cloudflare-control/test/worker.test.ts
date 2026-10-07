@@ -41,6 +41,16 @@ import {
   redactProblemText
 } from "../src/bug_reports";
 import { HUB_PING, HUB_PONG } from "../src/org_hub";
+import {
+  RemoteRelay,
+  RELAY_JOIN_SECONDS,
+  RELAY_MAX_SECONDS,
+  RELAY_READY,
+  CLOSE_RELAY_PEER_GONE,
+  CLOSE_RELAY_REPLACED,
+  hashRelayToken,
+  relayName
+} from "../src/remote_relay";
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
@@ -96,6 +106,72 @@ async function callJson<T = any>(path: string, init: RequestInit & { cookie?: st
   const res = await call(path, init);
   const data = (await res.json()) as T;
   return { res, data };
+}
+
+/** The parts of the Durable Object runtime RemoteRelay uses, in this process. */
+class FakeRelaySocket {
+  readonly sent: Array<string | ArrayBuffer> = [];
+  closedWith: { code: number; reason: string } | null = null;
+  private attachment: unknown = null;
+  constructor(private readonly state: FakeRelayState) {}
+  send(message: string | ArrayBuffer): void {
+    if (this.closedWith) throw new Error("WebSocket is closed");
+    this.sent.push(message);
+  }
+  close(code = 1000, reason = ""): void {
+    if (this.closedWith) return;
+    this.closedWith = { code, reason };
+    this.state.sockets.delete(this);
+  }
+  serializeAttachment(value: unknown): void {
+    this.attachment = structuredClone(value);
+  }
+  deserializeAttachment(): unknown {
+    return this.attachment === null ? null : structuredClone(this.attachment);
+  }
+}
+
+class FakeRelayState {
+  readonly sockets = new Map<FakeRelaySocket, string[]>();
+  alarmAt: number | null = null;
+  private readonly db = new DatabaseSync(":memory:");
+  readonly storage = {
+    sql: {
+      exec: (query: string, ...bindings: unknown[]) => {
+        const rows = this.db.prepare(query).all(...(bindings as never[]));
+        return { toArray: () => rows };
+      }
+    },
+    setAlarm: async (when: number) => {
+      this.alarmAt = when;
+    }
+  };
+  acceptWebSocket(ws: FakeRelaySocket, tags: string[]): void {
+    this.sockets.set(ws, tags);
+  }
+  getWebSockets(tag?: string): FakeRelaySocket[] {
+    return [...this.sockets.entries()].filter(([, tags]) => !tag || tags.includes(tag)).map(([ws]) => ws);
+  }
+  setWebSocketAutoResponse(): void {}
+}
+
+/** A REMOTE_RELAY namespace of in-process relays, by name. */
+function fakeRelayNamespace() {
+  const relays = new Map<string, { relay: RemoteRelay; state: FakeRelayState }>();
+  const entry = (name: string) => {
+    let found = relays.get(name);
+    if (!found) {
+      const state = new FakeRelayState();
+      found = { relay: new RemoteRelay(state as unknown as DurableObjectState, mockEnv), state };
+      relays.set(name, found);
+    }
+    return found;
+  };
+  const namespace = {
+    idFromName: (name: string) => ({ toString: () => name }),
+    get: (id: { toString(): string }) => ({ fetch: (req: Request) => entry(id.toString()).relay.fetch(req) })
+  } as unknown as DurableObjectNamespace;
+  return { namespace, entry };
 }
 
 /** Automatic Remote Control tunnels against a fake Cloudflare API (src/remote_tunnels.ts). */
@@ -2611,6 +2687,175 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.deepEqual({ ...cleared }, { custom_domain: null, custom_hostname_id: null, custom_hostname_status: "none" });
   });
 
+  // ------------------------------------------------- Remote Control through the relay
+
+  test("Remote Control relay: a session pairs the console and the workstation, and either leaving ends it", async () => {
+    const state = new FakeRelayState();
+    const relay = new RemoteRelay(state as unknown as DurableObjectState, mockEnv);
+    assert.equal(relay.bind("tenant-a:PC-01"), true);
+    assert.equal(relay.bind("tenant-b:PC-01"), false, "a relay serves one workstation only");
+    const token = "a".repeat(64);
+    const hash = await hashRelayToken(token);
+    const now = Math.floor(Date.now() / 1000);
+
+    assert.equal(relay.joinRefusal("device", hash, "", now)?.status, 403, "no session is open yet");
+    await relay.open(hash, "user-1", now);
+    assert.equal(state.alarmAt, (now + RELAY_JOIN_SECONDS) * 1000, "an unjoined session is swept");
+    assert.equal(relay.joinRefusal("device", await hashRelayToken("b".repeat(64)), "", now)?.status, 403, "another token");
+    assert.equal(relay.joinRefusal("console", hash, "user-2", now)?.status, 403, "another operator");
+    assert.equal(relay.joinRefusal("device", hash, "", now + RELAY_JOIN_SECONDS + 1)?.status, 410, "too late");
+
+    // The workstation arrives first and waits: x11vnc speaks first, so nothing
+    // may reach it before noVNC is there.
+    assert.equal(relay.joinRefusal("device", hash, "", now), null);
+    const device = new FakeRelaySocket(state);
+    await relay.accept(device as unknown as WebSocket, "device", hash);
+    assert.deepEqual(device.sent, []);
+    assert.equal(relay.joinRefusal("device", hash, "", now)?.status, 409, "one workstation per session");
+    const console_ = new FakeRelaySocket(state);
+    await relay.accept(console_ as unknown as WebSocket, "console", hash);
+    assert.deepEqual(device.sent, [RELAY_READY]);
+    assert.equal(state.alarmAt, (now + RELAY_MAX_SECONDS) * 1000, "a joined session runs to its time limit");
+
+    const greeting = new TextEncoder().encode("RFB 003.008\n").buffer as ArrayBuffer;
+    await relay.webSocketMessage(device as unknown as WebSocket, greeting);
+    assert.equal(console_.sent[0], greeting, "the workstation's bytes reach noVNC");
+    const input = new Uint8Array([4, 1, 0, 0, 0, 0, 0, 0x61]).buffer;
+    await relay.webSocketMessage(console_ as unknown as WebSocket, input);
+    assert.equal(device.sent[1], input, "noVNC's bytes reach the workstation");
+    await relay.webSocketMessage(console_ as unknown as WebSocket, "not vnc");
+    assert.equal(device.sent.length, 2, "text is never passed on");
+
+    await relay.webSocketClose(console_ as unknown as WebSocket, 1001, "", true);
+    assert.equal(device.closedWith?.code, CLOSE_RELAY_PEER_GONE);
+    assert.equal(relay.joinRefusal("console", hash, "user-1", now)?.status, 403, "an ended session cannot be rejoined");
+  });
+
+  test("Remote Control relay: a new session replaces the old one, and a session nobody joins is closed", async () => {
+    const state = new FakeRelayState();
+    const relay = new RemoteRelay(state as unknown as DurableObjectState, mockEnv);
+    relay.bind("tenant-a:PC-02");
+    const now = Math.floor(Date.now() / 1000);
+    const first = await hashRelayToken("c".repeat(64));
+    await relay.open(first, "user-1", now);
+    const oldConsole = new FakeRelaySocket(state);
+    await relay.accept(oldConsole as unknown as WebSocket, "console", first);
+
+    const second = await hashRelayToken("d".repeat(64));
+    await relay.open(second, "user-2", now);
+    assert.equal(oldConsole.closedWith?.code, CLOSE_RELAY_REPLACED);
+    await relay.webSocketClose(oldConsole as unknown as WebSocket, CLOSE_RELAY_REPLACED, "", true);
+    assert.equal(relay.joinRefusal("console", second, "user-2", now), null, "the old session's close does not end the new one");
+
+    const waiting = new FakeRelaySocket(state);
+    await relay.accept(waiting as unknown as WebSocket, "console", second);
+    const realNow = Date.now;
+    Date.now = () => (now + RELAY_JOIN_SECONDS + 1) * 1000;
+    try {
+      await relay.alarm();
+    } finally {
+      Date.now = realNow;
+    }
+    assert.match(waiting.closedWith?.reason || "", /did not join/);
+  });
+
+  test("Remote Control relay routes: only the organization's staff open a session, and the workstation is asked to join", async () => {
+    const tenantId = await greenwoodId();
+    const relays = fakeRelayNamespace();
+    const relayEnv = { ...mockEnv, REMOTE_RELAY: relays.namespace } as Env;
+    const open = (clientId: string, cookie?: string, env: Env = relayEnv) =>
+      worker.fetch(request("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId }), cookie }), env);
+
+    for (const cookie of [undefined, rivalSessionCookie]) {
+      assert.ok([401, 403].includes((await open("WS-R", cookie)).status), "only this organization's staff");
+    }
+    assert.equal((await open("WS-R", orgSessionCookie, mockEnv)).status, 503, "no relay binding, no session");
+    assert.equal((await open("ws r", orgSessionCookie)).status, 400);
+    assert.equal((await open("WS-R", orgSessionCookie)).status, 409, "a workstation that is not connected");
+
+    await enrolAs("WS-R");
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-R", ip: "10.0.0.9", portal: portalContext() });
+    const opened = await open("WS-R", orgSessionCookie);
+    assert.equal(opened.status, 200);
+    const body = await opened.json<any>();
+    const [remote] = ofType(device, "remote");
+    const asked = { session: String(remote?.session) };
+    assert.match(asked.session, /^[0-9a-f]{64}$/, "the workstation was asked over its own connection");
+    const socketUrl = new URL(body.socketPath, BASE);
+    assert.equal(socketUrl.pathname, "/api/console/remote");
+    assert.equal(socketUrl.searchParams.get("session"), asked.session);
+    assert.equal(socketUrl.searchParams.get("clientId"), "WS-R");
+    const relayState = relays.entry(relayName(tenantId, "WS-R")).state;
+    const stored = relayState.storage.sql.exec("SELECT token_hash FROM session").toArray() as unknown as Array<{ token_hash: string }>;
+    assert.equal(stored[0].token_hash, await hashRelayToken(asked.session), "only the hash is stored");
+
+    // noVNC's side: the operator's cookie, from this site, with the session.
+    const consoleSide = (query: string, init: RequestInit & { cookie?: string } = {}) =>
+      worker.fetch(request(`/api/console/remote?tenant=greenwood&${query}`, init), relayEnv);
+    const upgrade = { Upgrade: "websocket", Origin: BASE };
+    const query = `clientId=WS-R&session=${asked.session}`;
+    assert.equal((await consoleSide(query, { cookie: orgSessionCookie })).status, 426);
+    assert.ok([401, 403].includes((await consoleSide(query, { headers: upgrade })).status));
+    assert.ok([401, 403].includes((await consoleSide(query, { headers: upgrade, cookie: rivalSessionCookie })).status));
+    for (const origin of ["https://evil.example", "https://greenwood-pc-01-vnc.labkiosk.org"]) {
+      assert.equal((await consoleSide(query, { headers: { ...upgrade, Origin: origin }, cookie: orgSessionCookie })).status, 403, origin);
+    }
+    assert.equal((await consoleSide("clientId=WS-R&session=zz", { headers: upgrade, cookie: orgSessionCookie })).status, 400);
+    assert.equal((await consoleSide(`clientId=WS-R&session=${"e".repeat(64)}`, { headers: upgrade, cookie: orgSessionCookie })).status, 403);
+    assert.equal(
+      (await consoleSide(query, { headers: upgrade, cookie: orgSessionCookie })).status,
+      501,
+      "the right operator and session reach the relay's upgrade (Node has no WebSocketPair)"
+    );
+
+    // The workstation's side: its own token decides which relay it reaches.
+    const deviceSide = (headers: Record<string, string>, bearer?: string) =>
+      worker.fetch(request("/api/devices/remote", { headers, bearer }), relayEnv);
+    const token = await enrolAs("WS-R2");
+    assert.equal((await deviceSide({ "X-Labkiosk-Session": asked.session }, token)).status, 426);
+    const deviceUpgrade = { Upgrade: "websocket" };
+    assert.equal((await deviceSide({ ...deviceUpgrade, "X-Labkiosk-Session": asked.session }, "f".repeat(64))).status, 401);
+    assert.equal((await deviceSide(deviceUpgrade, token)).status, 400);
+    assert.equal(
+      (await deviceSide({ ...deviceUpgrade, "X-Labkiosk-Session": asked.session }, token)).status,
+      403,
+      "another workstation holding the session token still reaches only its own relay"
+    );
+    await device.closeFromClient();
+  });
+
+  test("The Remote Control viewer is framed only by the console and loads noVNC from this site", async () => {
+    assert.ok([401, 403].includes((await call("/console/remote?tenant=greenwood&clientId=WS-R")).status));
+    assert.ok([401, 403].includes((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: rivalSessionCookie })).status));
+    assert.equal((await call("/console/remote?tenant=greenwood&clientId=%3Cx%3E", { cookie: orgSessionCookie })).status, 400);
+    const res = await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie });
+    assert.equal(res.status, 200);
+    const csp = res.headers.get("content-security-policy") || "";
+    assert.match(csp, /script-src 'nonce-[^']+' 'self'/);
+    assert.match(csp, /frame-ancestors 'self'/);
+    assert.equal(res.headers.get("x-frame-options"), "SAMEORIGIN");
+    const html = await res.text();
+    assert.match(html, /<script type="module" nonce="[^"]+">\s*import RFB from "\/novnc\/core\/rfb\.js";/);
+    assert.ok(!/ on[a-z]+="/.test(html), "no inline handlers");
+
+    // Every other page still refuses to be framed.
+    const grid = await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.match(grid.headers.get("content-security-policy") || "", /frame-ancestors 'none'/);
+    assert.match(grid.headers.get("content-security-policy") || "", /frame-src 'self'/);
+
+    // noVNC itself comes from static assets, and only from there.
+    assert.equal((await call("/novnc/core/rfb.js")).status, 404, "no assets binding, nothing served");
+    const served: string[] = [];
+    const assetsEnv = {
+      ...mockEnv,
+      ASSETS: { fetch: async (req: Request) => { served.push(new URL(req.url).pathname); return new Response("export default 1;", { headers: { "Content-Type": "text/javascript" } }); } }
+    } as unknown as Env;
+    const asset = await worker.fetch(request("/novnc/core/rfb.js"), assetsEnv);
+    assert.equal(asset.status, 200);
+    assert.equal(asset.headers.get("x-content-type-options"), "nosniff");
+    assert.deepEqual(served, ["/novnc/core/rfb.js"]);
+  });
+
   // --------------------------------------------------------- suspend organization
 
   test("Lets the super admin suspend and reactivate an organization", async () => {
@@ -2714,13 +2959,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await assert.rejects(
       () => worker.fetch(request("/"), secrets as Env),
       (err: Error) =>
-        ["ORG_HUB", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
+        ["ORG_HUB", "REMOTE_RELAY", "ASSETS", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
           .every((name) => err.message.includes(name))
     );
     // With them bound, the same database serves normally.
     const res = await worker.fetch(request("/"), {
       ...secrets,
       ORG_HUB: {} as DurableObjectNamespace,
+      REMOTE_RELAY: {} as DurableObjectNamespace,
+      ASSETS: {} as Fetcher,
       AUDIT_QUEUE: { send: async () => undefined } as unknown as Queue,
       AUDIT_ARCHIVE: {} as R2Bucket,
       FLEET_METRICS: { writeDataPoint: () => undefined } as AnalyticsEngineDataset,
@@ -3773,10 +4020,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const settings = await (await call("/admin/settings?tenant=greenwood&tab=domains", { cookie: orgSessionCookie })).text();
     assert.match(settings, /id="setting-tunnel-domain" value=""/, "nothing was stored");
 
-    // A deployment default under the platform domain is dropped as well.
+    // The console builds no workstation address at all: Remote Control opens
+    // the relay viewer on its own address, whatever the deployment default.
     const underPlatform = { ...mockEnv, TUNNEL_DOMAIN: "remote.labkiosk.org" } as Env;
     const ws = await (await worker.fetch(request("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie }), underPlatform)).text();
-    assert.match(ws, /const TUNNEL_DOMAIN = "";/);
+    assert.ok(!ws.includes("remote.labkiosk.org"));
+    assert.match(ws, /labkioskApi\("\/console\/remote\?"/);
   });
 
   test("Automatic Remote Control tunnels: settings are guarded, validated and need the sealing key", async () => {

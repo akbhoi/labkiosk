@@ -20,6 +20,7 @@
   "license": "SEE LICENSE IN LICENSE",
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260925.1",
+    "@novnc/novnc": "1.7.0",
     "@types/node": "^26.6.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

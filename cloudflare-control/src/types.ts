@@ -271,6 +271,10 @@ export interface Env {
    */
   /** One OrgHub Durable Object per organization (src/org_hub.ts). */
   ORG_HUB?: DurableObjectNamespace;
+  /** One RemoteRelay Durable Object per workstation in a Remote Control session (src/remote_relay.ts). */
+  REMOTE_RELAY?: DurableObjectNamespace;
+  /** Static files: the noVNC client the Remote Control viewer loads (`public/`). */
+  ASSETS?: Fetcher;
   /** Audit entries, written to D1 in batches by the queue consumer. */
   AUDIT_QUEUE?: Queue<AuditEntryMessage>;
   /** Audit entries older than the retention period, as NDJSON files. */
