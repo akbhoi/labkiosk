@@ -219,6 +219,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
         <li><strong>Cloudflare Email Service:</strong> sends registration codes, approval decisions and our replies, and receives mail sent to our addresses, which is stored with the conversation it belongs to.</li>
         <li><strong>Workflows and Cloudflare for SaaS:</strong> an organization's custom domain name and its TLS certificate.</li>
         <li><strong>Workers AI:</strong> only for organizations that turned on Automatic Bug Reports, the masked problem reports described in section 5.</li>
+        <li><strong>Cloudflare Turnstile:</strong> when we turn it on, checks that the registration and contact forms are being used by a person. Cloudflare reads signals from your browser and its IP address to decide, without a tracking cookie, and tells us only whether the check passed.</li>
         <li><strong>Cloudflare Web Analytics:</strong> counts page views and page load times without cookies or a visitor identifier.</li>
         <li><strong>Cloudflare Zaraz:</strong> runs Google Analytics on the public website pages described in section 8, after the visitor consents.</li>
       </ul>

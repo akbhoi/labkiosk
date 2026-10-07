@@ -426,6 +426,58 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
   });
 
+  test("Turnstile guards the signup code and the contact form once it is configured", async () => {
+    const turnstileEnv: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite", TURNSTILE_SECRET_KEY: "0x4AAAAAAAsecret" };
+    const post = (path: string, body: unknown, env = turnstileEnv) =>
+      worker.fetch(request(path, { ...json(body), headers: { "CF-Connecting-IP": "203.0.113.77" } }), env);
+    const verdicts: Array<{ success: boolean; action?: string }> = [];
+    const seen: FormData[] = [];
+    const realFetch = globalThis.fetch;
+    const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== "https://challenges.cloudflare.com/turnstile/v0/siteverify") return realFetch(input, init);
+      seen.push(init!.body as FormData);
+      return new Response(JSON.stringify(verdicts.shift() ?? { success: false }), { headers: { "Content-Type": "application/json" } });
+    });
+    try {
+      const contact = { name: "Tess", organization: "Town Library", email: "tess@town.example", message: "Hello" };
+      assert.equal((await post("/api/contact", contact)).status, 400, "no token, no message");
+      assert.equal(seen.length, 0, "nothing to verify without a token");
+
+      verdicts.push({ success: false });
+      assert.equal((await post("/api/contact", { ...contact, turnstileToken: "bad" })).status, 400);
+      verdicts.push({ success: true, action: "signup" });
+      assert.equal((await post("/api/contact", { ...contact, turnstileToken: "other-form" })).status, 400, "a token from the other form does not count");
+      verdicts.push({ success: true, action: "contact" });
+      const accepted = await post("/api/contact", { ...contact, turnstileToken: "good" });
+      assert.equal(accepted.status, 200);
+      const last = seen.at(-1)!;
+      assert.equal(last.get("secret"), "0x4AAAAAAAsecret");
+      assert.equal(last.get("response"), "good");
+      assert.equal(last.get("remoteip"), "203.0.113.77");
+
+      assert.equal((await post("/api/auth/register/email-code", { email: "new@town.example" })).status, 400, "the signup code needs the check too");
+      verdicts.push({ success: true, action: "signup" });
+      assert.equal((await post("/api/auth/register/email-code", { email: "new@town.example", turnstileToken: "good" })).status, 200);
+
+      // Half a configuration refuses rather than running unprotected.
+      const half: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite" };
+      assert.equal((await post("/api/contact", contact, half)).status, 503);
+    } finally {
+      fetchMock.mock.restore();
+    }
+
+    // The page loads the widget, and the CSP lets it, only when it is on.
+    const on = await worker.fetch(request("/"), turnstileEnv);
+    const onHtml = await on.text();
+    assert.match(onHtml, /<script nonce="[^"]+" src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit&amp;onload=lkTurnstileReady" async defer><\/script>/);
+    assert.ok(onHtml.includes('id="reg-turnstile"') && onHtml.includes('id="contact-turnstile"'));
+    assert.match(on.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/challenges\.cloudflare\.com/);
+    assert.match(on.headers.get("Content-Security-Policy") || "", /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
+    const off = await call("/");
+    assert.ok(!(await off.text()).includes("challenges.cloudflare.com"));
+    assert.ok(!(off.headers.get("Content-Security-Policy") || "").includes("challenges.cloudflare.com"));
+  });
+
   test("TOTP codes match RFC 6238 and secrets survive base32", async () => {
     const rfcSecret = new TextEncoder().encode("12345678901234567890");
     assert.equal(await totpCode(rfcSecret, Math.floor(59 / 30)), "287082");
@@ -4268,7 +4320,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(privHtml, /COPPA/);
     assert.match(privHtml, /100% In-Memory RAM Overlay/);
     // Every Cloudflare service the worker binds is disclosed, with Cloudflare's privacy terms.
-    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Cloudflare Email Service", "Workflows", "Cloudflare for SaaS", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
+    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Cloudflare Email Service", "Cloudflare Turnstile", "Workflows", "Cloudflare for SaaS", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
       assert.ok(privHtml.includes(`<strong>${service}`) || privHtml.includes(`and ${service}`), `the Privacy Policy names ${service}`);
     }
     assert.match(privHtml, /href="https:\/\/www\.cloudflare\.com\/cloudflare-customer-dpa\/"/);

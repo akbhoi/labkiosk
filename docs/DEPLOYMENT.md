@@ -207,6 +207,7 @@ when its conversation is deleted.
 | `SUPPORT_FORWARD_TO` | Variable, optional: a verified Email Routing destination that gets a copy of every incoming message, and every message the Worker could not file | Dashboard variable |
 | Email Routing catch-all | Routes every address on the domain to the Worker, whose `email()` handler files it under **Mail** | Dashboard → `labkiosk.org` → Email → Email Routing → Routing rules → *Catch-all address* → Action *Send to a Worker* → `labkiosk-controller`, enabled. Rules for single addresses take precedence; remove any that should land in **Mail** instead |
 | `AUDIT_ARCHIVE` | The R2 bucket production already requires; incoming originals are stored under `mail/` | Nothing new |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | Optional: Cloudflare Turnstile in front of the signup email code and the contact form. Free. Set both or neither: one alone makes those forms refuse | Dashboard → Turnstile → *Add widget* (hostname `labkiosk.org`, mode *Managed*); the site key as a variable, the secret key as a secret (`wrangler secret put TURNSTILE_SECRET_KEY`) |
 
 Without `EMAIL`, `MAIL_FROM` and `SUPPORT_ADDRESS`, registration and replies refuse with "Email is
 not configured"; the rest of the Worker runs. Incoming mail joins a conversation only when its
@@ -215,6 +216,12 @@ messages, **and** it comes from that conversation's contact; anything else opens
 conversation in the mailbox it was sent to. Mail from the sending domain itself is dropped, so a
 bounce cannot loop. Phone numbers are
 confirmed by hand (**Mark phone as verified** after a call or message); no SMS provider is used.
+
+**Sign-in security** needs no setup. Every account can turn on two-factor sign-in from the profile
+menu (an authenticator app, with an emailed code and ten recovery codes as fallbacks); turn it on
+for the super admin account first. A sign-in from a browser the account has not used before is
+emailed to the account. Both use the `EMAIL` binding above; without it the app code and recovery
+codes still work.
 
 Locally (`ALLOW_LOCAL_DB=1`) no binding is needed: messages go to an in-process outbox the tests
 read (`localOutbox()` in `src/mail.ts`).

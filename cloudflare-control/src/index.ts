@@ -161,6 +161,7 @@ import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from 
 import { handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
 import { handleInboundEmail, handleInboxRoute, InboundMessage, isInboxRoute } from "./inbox";
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
+import { TURNSTILE_ORIGIN, turnstileSiteKey } from "./turnstile";
 import {
   continueSignIn,
   handleLoginEmailCode,
@@ -574,9 +575,11 @@ function isPublicTenantRoute(path: string, method: string): boolean {
  */
 function buildHtmlHeaders(
   nonce: string,
-  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean }
+  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean; turnstile?: boolean }
 ): Record<string, string> {
   const scriptSources = [`'nonce-${nonce}'`];
+  // Turnstile's widget script, and the frame it draws the check in (src/turnstile.ts).
+  if (options.turnstile) scriptSources.push(TURNSTILE_ORIGIN);
   // The Remote Control viewer's nonced module imports noVNC from /novnc/.
   if (options.remoteViewer) scriptSources.push("'self'");
   if (options.analyticsOrigin) scriptSources.push(`${options.analyticsOrigin}${ZARAZ_LOADER_PATH}`);
@@ -587,7 +590,7 @@ function buildHtmlHeaders(
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
     // Only Remote Control frames a page: the viewer on this console's own address.
-    "frame-src 'self'",
+    options.turnstile ? `frame-src 'self' ${TURNSTILE_ORIGIN}` : "frame-src 'self'",
     "connect-src 'self'",
     // Only the viewer is framed, and only by the console on its own address.
     options.remoteViewer ? "frame-ancestors 'self'" : "frame-ancestors 'none'",
@@ -805,7 +808,8 @@ export default {
     const htmlHeaders = buildHtmlHeaders(nonce, {
       hsts: isHttps && !isDev,
       indexable: isIndexable(request, url, env),
-      analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null
+      analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null,
+      turnstile: Boolean(turnstileSiteKey(env))
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
     const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.org";
@@ -1072,6 +1076,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
+            turnstileSiteKey: turnstileSiteKey(env),
             nonce
           }),
           { status: 401, headers: htmlHeaders }
@@ -2905,6 +2910,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
+            turnstileSiteKey: turnstileSiteKey(env),
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -2988,6 +2994,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
+            turnstileSiteKey: turnstileSiteKey(env),
             nonce
           }),
           { status: denied.status, headers: htmlHeaders }
@@ -3035,6 +3042,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
+            turnstileSiteKey: turnstileSiteKey(env),
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -3185,6 +3193,7 @@ export default {
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
           baseDomain,
           contactEmail: "contact@labkiosk.org",
+          turnstileSiteKey: turnstileSiteKey(env),
           canonicalUrl,
           nonce
         }),

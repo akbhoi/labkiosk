@@ -27,6 +27,7 @@ cloudflare-control/
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
 │   ├── signup.ts                       # Registration with an email code, the contact form, Remote Control requests
 │   ├── two_factor.ts                   # Two-factor sign-in (TOTP, email code, recovery codes), sign-in alerts
+│   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the signup code and contact form
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API and the email() handler
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email via the EMAIL send_email binding

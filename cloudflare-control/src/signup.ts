@@ -39,6 +39,7 @@ import {
   subjectWithReference
 } from "./conversations";
 import { mailConfigProblem, sendMail, supportAddress, supportMailbox } from "./mail";
+import { turnstileRefusal } from "./turnstile";
 
 /** What every handler in this module is given by the router. */
 export interface RouteContext {
@@ -189,7 +190,7 @@ export async function handleSignupEmailCode(ctx: RouteContext): Promise<Response
     console.error("[Signup]", problem);
     return jsonError("Registration is temporarily unavailable. Please write to us instead.", 503, jsonHeaders);
   }
-  let body: { email?: unknown };
+  let body: { email?: unknown; turnstileToken?: unknown };
   try {
     body = await ctx.request.json<typeof body>();
   } catch {
@@ -198,6 +199,8 @@ export async function handleSignupEmailCode(ctx: RouteContext): Promise<Response
   const email = text(body?.email, 254).toLowerCase();
   if (!isPlausibleEmail(email)) return jsonError("Please enter a valid email address", 400, jsonHeaders);
   if (isDisposableEmail(email)) return jsonError("Please use a permanent work email address", 400, jsonHeaders);
+  const refused = await turnstileRefusal(env, body?.turnstileToken, clientIp, "signup");
+  if (refused) return jsonError(refused.message, refused.status, jsonHeaders);
 
   const addressKey = `signup-code:${clientIp}`;
   const emailKey = `signup-code-email:${email}`;
@@ -443,7 +446,7 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
 /** POST /api/contact: the public contact form, filed straight into Mail. */
 export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   const { db, env, jsonHeaders, clientIp } = ctx;
-  let body: { name?: unknown; organization?: unknown; email?: unknown; topic?: unknown; message?: unknown };
+  let body: { name?: unknown; organization?: unknown; email?: unknown; topic?: unknown; message?: unknown; turnstileToken?: unknown };
   try {
     body = await ctx.request.json<typeof body>();
   } catch {
@@ -456,6 +459,8 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   const message = multiline(body?.message, 5000);
   if (!name || !email || !message) return jsonError("Your name, email address and a message are required", 400, jsonHeaders);
   if (!isPlausibleEmail(email)) return jsonError("Please enter a valid email address", 400, jsonHeaders);
+  const refused = await turnstileRefusal(env, body?.turnstileToken, clientIp, "contact");
+  if (refused) return jsonError(refused.message, refused.status, jsonHeaders);
 
   const key = `contact:${clientIp}`;
   const wait = await rateLimitWait(db, key, CONTACT_RATE_LIMIT.limit, CONTACT_RATE_LIMIT.windowSeconds);

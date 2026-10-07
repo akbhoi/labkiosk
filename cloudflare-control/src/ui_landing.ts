@@ -20,6 +20,7 @@
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
+import { TURNSTILE_ORIGIN } from "./turnstile";
 
 /** The public source repository, linked from the navigation and the footer. */
 const SOURCE_REPOSITORY_URL = "https://github.com/akbhoi/labkiosk";
@@ -85,11 +86,15 @@ export interface LandingOptions {
   canonicalUrl?: string;
   /** Per-response CSP nonce; the page's single <script> must carry it. */
   nonce: string;
+  /** Turnstile's public site key when it is on (src/turnstile.ts); the signup code and contact form then carry a check. */
+  turnstileSiteKey?: string | null;
 }
 
 export function renderLandingHtml(data: LandingOptions): string {
   const baseDomain = (data.baseDomain || "labkiosk.org").toLowerCase().replace(/^\./, "");
   const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
+  const turnstileKey = data.turnstileSiteKey || null;
+  const turnstileSlot = (id: string) => (turnstileKey ? `<div class="form-group turnstile-slot" id="${id}"></div>` : "");
 
   const banner = data.error
     ? `<div class="page-alert" role="alert" aria-live="polite">${escapeHtml(data.error)}</div>`
@@ -604,6 +609,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .modal-title { font-size: 1.375rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px; color: var(--text-main); padding-right: 36px; }
     .modal-sub { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 24px; }
     .form-group { margin-bottom: 16px; text-align: left; }
+    .turnstile-slot { min-height: 65px; }
     .form-label { display: block; font-size: 0.8125rem; font-weight: 500; margin-bottom: 6px; color: var(--text-main); }
     .form-input {
       width: 100%;
@@ -1805,6 +1811,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
           </div>
         </div>
+        ${turnstileSlot("reg-turnstile")}
         <div class="form-group">
           <label class="form-label" for="reg-code">Six-digit code from that email</label>
           <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
@@ -1923,6 +1930,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <label class="form-label" for="contact-message">Message / Details</label>
           <textarea class="form-input" id="contact-message" rows="4" required placeholder="Tell us about the number of computers, location, and timeline..."></textarea>
         </div>
+        ${turnstileSlot("contact-turnstile")}
         <button type="submit" class="btn btn-primary btn-block">Send Inquiry &rarr;</button>
       </form>
     </div>
@@ -2171,6 +2179,29 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       item.classList.toggle('open');
     }
 
+    // Cloudflare Turnstile, when the platform turned it on: one widget in front of
+    // the signup code and one in front of the contact form. A token works once,
+    // so each widget is reset after every attempt.
+    const TURNSTILE_SITE_KEY = ${escapeJson(turnstileKey)};
+    const turnstileWidgets = {};
+    window.lkTurnstileReady = function () {
+      ['reg-turnstile', 'contact-turnstile'].forEach((id) => {
+        if (document.getElementById(id) && window.turnstile) {
+          turnstileWidgets[id] = window.turnstile.render('#' + id, {
+            sitekey: TURNSTILE_SITE_KEY,
+            action: id === 'reg-turnstile' ? 'signup' : 'contact'
+          });
+        }
+      });
+    };
+    function turnstileToken(id) {
+      if (!TURNSTILE_SITE_KEY) return '';
+      return window.turnstile && turnstileWidgets[id] !== undefined ? (window.turnstile.getResponse(turnstileWidgets[id]) || '') : '';
+    }
+    function turnstileReset(id) {
+      if (window.turnstile && turnstileWidgets[id] !== undefined) window.turnstile.reset(turnstileWidgets[id]);
+    }
+
     // Contact form: filed straight into the platform's support inbox, and
     // answered by email. No mail client is needed on either side.
     async function handleContactSubmit(e) {
@@ -2184,14 +2215,21 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         organization: document.getElementById('contact-org').value.trim(),
         email: document.getElementById('contact-sender-email').value.trim(),
         topic: document.getElementById('contact-type').value,
-        message: document.getElementById('contact-message').value.trim()
+        message: document.getElementById('contact-message').value.trim(),
+        turnstileToken: turnstileToken('contact-turnstile')
       };
+      if (TURNSTILE_SITE_KEY && !payload.turnstileToken) {
+        alertBox.textContent = 'Please complete the check above the button first.';
+        alertBox.style.display = 'block';
+        return;
+      }
       try {
         const res = await fetch('/api/contact', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
+        turnstileReset('contact-turnstile');
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
           form.style.display = 'none';
@@ -2359,13 +2397,19 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         registerError('Enter your work email first.');
         return;
       }
+      const token = turnstileToken('reg-turnstile');
+      if (TURNSTILE_SITE_KEY && !token) {
+        registerError('Complete the check under your email address first.');
+        return;
+      }
       sendCodeButton.disabled = true;
       try {
         const res = await fetch('/api/auth/register/email-code', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email })
+          body: JSON.stringify({ email, turnstileToken: token })
         });
+        turnstileReset('reg-turnstile');
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
           sendCodeButton.textContent = 'Code sent';
@@ -2431,6 +2475,11 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     });
   </script>
   <script nonce="${escapeAttr(data.nonce)}">${THEME_TOGGLE_SCRIPT}</script>
+  ${
+    turnstileKey
+      ? `<script nonce="${escapeAttr(data.nonce)}" src="${TURNSTILE_ORIGIN}/turnstile/v0/api.js?render=explicit&amp;onload=lkTurnstileReady" async defer></script>`
+      : ""
+  }
 </body>
 </html>`;
 }
