@@ -5201,6 +5201,20 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
     assert.ok(svg.includes(`fill="${PALETTE["--accent"][0]}"`), "the icon uses the accent colour");
   });
+
+  test("Serves the BIMI logo in the SVG Tiny PS profile, on the platform host only", async () => {
+    for (const host of ["labkiosk.org", "www.labkiosk.org"]) {
+      const res = await onHost(host, "/bimi.svg");
+      assert.equal(res.status, 200, host);
+      assert.equal(res.headers.get("Content-Type"), "image/svg+xml");
+      const svg = await res.text();
+      assert.match(svg, /<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" version="1\.2" baseProfile="tiny-ps" viewBox="0 0 48 48">/);
+      assert.match(svg, /<title>Lab Kiosk<\/title>/);
+      assert.doesNotMatch(svg, /<script|href=|<image|\sx="0"\sy="0"/, "nothing external or scripted");
+      assert.match(svg, /<rect width="48" height="48" fill="#[0-9a-fA-F]{6}"\/>/, "a solid square background");
+    }
+    assert.equal((await onHost("greenwood.labkiosk.org", "/bimi.svg")).status, 404);
+  });
 });
 
 /**

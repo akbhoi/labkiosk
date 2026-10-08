@@ -72,12 +72,18 @@ export function renderInboxSubPanelHtml(box: InboxBox, counts: { open: number; u
   `;
 }
 
-export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: string): string {
+/**
+ * `otherTasks` counts what the Tasks rail badge shows besides open tasks (the
+ * subdomain and custom domain requests), so the script can keep that badge
+ * right as tasks are decided.
+ */
+export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: string, otherTasks = 0): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
       (function () {
         var BOX = ${escapeJson(box)};
         var BASE_DOMAIN = ${escapeJson(baseDomain)};
+        var OTHER_TASKS = ${escapeJson(Math.max(0, Math.floor(Number(otherTasks) || 0)))};
         var listEl = document.getElementById("inbox-list");
         var detailEl = document.getElementById("inbox-detail");
         if (!listEl || !detailEl) return;
@@ -117,6 +123,42 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           return data;
         }
 
+        /** Set a count badge inside a node, or remove it at zero. */
+        function setBadge(container, className, count) {
+          if (!container) return;
+          var current = container.querySelector("." + className.split(" ")[0]);
+          var n = Math.max(0, Number(count) || 0);
+          if (!n) {
+            if (current) current.remove();
+            return;
+          }
+          if (!current) {
+            current = el("span", className);
+            container.append(current);
+          }
+          current.textContent = String(n);
+        }
+
+        /** The rail badges and the Open count, from the counts every list answer carries. */
+        function applyCounts(counts) {
+          if (!counts) return;
+          var tasks = (Number(counts.openTasks) || 0) + OTHER_TASKS;
+          setBadge(document.querySelector('.rail-item[data-nav="tasks"]'), "rail-badge attention", tasks);
+          var stat = document.getElementById("stat-tasks");
+          if (stat) {
+            stat.textContent = String(tasks);
+            var dot = stat.parentElement ? stat.parentElement.querySelector(".stat-dot") : null;
+            if (dot) {
+              dot.classList.toggle("dot-yellow", tasks > 0);
+              dot.classList.toggle("dot-blue", tasks === 0);
+            }
+          }
+          setBadge(document.querySelector('.rail-item[data-nav="support"]'), "rail-badge attention", counts.unreadSupport);
+          var open = document.querySelector('[data-inbox-filter="open"]');
+          var openBadge = open ? open.querySelector(".sub-action-badge") : null;
+          if (openBadge) openBadge.textContent = String(Number(BOX === "tasks" ? counts.openTasks : counts.openSupport) || 0);
+        }
+
         function emptyList(text) {
           listEl.replaceChildren(el("div", "inbox-empty", text));
         }
@@ -127,6 +169,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             if (BOX === "support" && mailbox) query.mailbox = mailbox;
             var data = await api("/api/super/inbox?" + new URLSearchParams(query).toString());
             var items = Array.isArray(data.items) ? data.items : [];
+            applyCounts(data.counts);
             if (BOX === "support") {
               mailDomain = data.mailDomain || "";
               renderMailboxes(Array.isArray(data.mailboxes) ? data.mailboxes : []);
@@ -386,10 +429,12 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           var params = new URLSearchParams(window.location.search);
           params.set("id", id);
           history.replaceState(null, "", window.location.pathname + "?" + params.toString());
+          var row = listEl.querySelector('.inbox-item[data-id="' + CSS.escape(id) + '"]');
+          var wasUnread = Boolean(row && row.classList.contains("inbox-item-unread"));
           try {
             renderDetail(await api("/api/super/inbox/" + encodeURIComponent(id)));
-            var row = listEl.querySelector('.inbox-item[data-id="' + CSS.escape(id) + '"]');
-            if (row) row.classList.remove("inbox-item-unread");
+            // Opening marks it read: the list and the unread badges follow.
+            if (wasUnread) await loadList();
           } catch (err) {
             detailEl.replaceChildren(el("div", "card", "Could not open it: " + err.message));
           }

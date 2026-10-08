@@ -128,6 +128,20 @@ export function faviconSvg(accent: string, foreground: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="11" fill="${accent}"/><g transform="translate(9 9) scale(1.25)" fill="none" stroke="${foreground}" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></g></svg>`;
 }
 
+/** The logo mail clients show beside the platform's email (BIMI, docs/DEPLOYMENT.md "Email"). */
+export const BIMI_PATH = "/bimi.svg";
+
+/**
+ * The brand mark in the SVG Tiny Portable/Secure profile BIMI requires: a
+ * square with a solid background (clients crop it to a circle), a title, and
+ * nothing external or scripted.
+ */
+export function bimiSvg(accent: string, foreground: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny-ps" viewBox="0 0 48 48"><title>Lab Kiosk</title><rect width="48" height="48" fill="${accent}"/><g transform="translate(9 9) scale(1.25)" fill="none" stroke="${foreground}" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></g></svg>
+`;
+}
+
 /**
  * robots.txt. The platform host lets crawlers in and names the sitemap; every
  * other host only keeps them off the API, so they can read the noindex header

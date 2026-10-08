@@ -1155,6 +1155,8 @@ function renderWorkstationsScripts(
             closeModal("new-group-modal");
             lkToast("Group \\"" + name + "\\" created", "success");
             await fetchGroups();
+            // The rebuilt group list starts at zero: count the workstations into it again.
+            renderClients();
 
             if (selectedClientIds.size > 0) {
               const moveAgreed = await lkConfirm({
