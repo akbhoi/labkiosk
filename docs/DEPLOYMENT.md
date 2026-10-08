@@ -227,6 +227,14 @@ bounce cannot loop; with `MAIL_FROM` on `labkiosk.org` that is any message whose
 sender is an `@labkiosk.org` address. Phone numbers are
 confirmed by hand (**Mark phone as verified** after a call or message); no SMS provider is used.
 
+**BIMI** (the logo mail clients show beside the platform's email) is served by the Worker at
+`https://labkiosk.org/bimi.svg`, in the SVG Tiny PS profile BIMI requires. It needs DMARC at
+`p=quarantine` or `p=reject` on the domain (labkiosk.org already has `p=quarantine`) and one TXT
+record: name `default._bimi`, content `v=BIMI1; l=https://labkiosk.org/bimi.svg;`. Yahoo, AOL and
+Fastmail show the logo with that alone. Gmail and Apple Mail show it only with a Verified or Common
+Mark Certificate (a paid certificate from DigiCert or Entrust; a VMC also needs a registered
+trademark), whose PEM URL then goes in the same record as `a=<url>`.
+
 **Sign-in security** needs no setup. Every account can turn on two-factor sign-in from the profile
 menu (an authenticator app, with an emailed code and ten recovery codes as fallbacks); turn it on
 for the super admin account first. A sign-in from a browser the account has not used before is

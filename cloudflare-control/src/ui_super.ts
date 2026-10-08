@@ -234,7 +234,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const stats: StatItem[] = [
     { label: "Organizations", value: tenants.length, color: "blue" },
     { label: "Online", value: `${totalOnline} / ${totalClients}`, color: "green" },
-    { label: "Tasks", value: pendingCount, color: pendingCount > 0 ? "yellow" : "blue" }
+    { label: "Tasks", value: pendingCount, color: pendingCount > 0 ? "yellow" : "blue", id: "stat-tasks" }
   ];
 
   const activeTenantsCount = tenants.filter((t) => t.status === "active").length;
@@ -507,7 +507,7 @@ ${domainRequestCount > 0 ? domainRequestsHtml : ""}`;
 ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const inboxScriptHtml =
-    activeTab === "tasks" || activeTab === "support" ? renderInboxScript(nonce, activeTab, baseDomain) : "";
+    activeTab === "tasks" || activeTab === "support" ? renderInboxScript(nonce, activeTab, baseDomain, domainRequestCount) : "";
 
   const scriptsHtml = `${inboxScriptHtml}
     <script nonce="${escapeAttr(nonce)}">

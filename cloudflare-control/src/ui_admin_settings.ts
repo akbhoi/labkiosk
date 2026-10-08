@@ -585,6 +585,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
           const data = await res.json();
           if (data.status === "ok") {
             lkToast("Routing saved.", "success");
+            loadLabActivity();
           } else {
             lkToast(data.error || "Failed to save routing", "error");
           }
@@ -632,6 +633,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
           if (data.status === "ok") {
             document.getElementById("enrollment-key-display").textContent = data.enrollmentKey;
             lkToast("Enrollment key rotated. The new key is shown above.", "success");
+            loadLabActivity();
           }
         } catch (err) {
           lkToast("Network error: " + err.message, "error");
@@ -721,6 +723,9 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             const data = await res.json();
             if (data.status === "ok") {
               lkToast("Homepage saved. " + data.blocks.length + " block(s) published.", "success");
+              // Show what was saved: empty blocks are dropped and unsafe links cleared.
+              if (blocksHost && Array.isArray(data.blocks)) blocksHost.replaceChildren(...data.blocks.map(blockRow));
+              loadLabActivity();
             } else {
               lkToast(data.error || "Could not save the homepage", "error");
             }
@@ -839,6 +844,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               bugState.acceptedTermsVersion = bugState.termsVersion;
               bugState.termsAcceptedAt = Math.floor(Date.now() / 1000);
             }
+            loadLabActivity();
           }
           if (optInBox && termsBox) {
             optInBox.addEventListener("change", async () => {
@@ -950,8 +956,11 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       }
 
       const labAuditRows = document.getElementById("lab-audit-rows");
-      if (labAuditRows) {
-        (async function loadLabActivity() {
+      // Settings actions are audited: each one that succeeds calls this again,
+      // so the list shows it without a reload.
+      async function loadLabActivity() {
+        if (!labAuditRows) return;
+        await (async function () {
           function placeholder(text) {
             const row = document.createElement("tr");
             const cell = document.createElement("td");
@@ -1016,6 +1025,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
           }
         })();
       }
+      loadLabActivity();
 
       document.getElementById("form-change-password").addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -1031,6 +1041,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
           if (data.status === "ok") {
             lkToast("Password updated successfully.", "success");
             document.getElementById("form-change-password").reset();
+            loadLabActivity();
           } else {
             lkToast(data.error || "Failed to change password", "error");
           }
