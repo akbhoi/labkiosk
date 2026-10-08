@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'cloudflare-control/**'
+      - 'cloudflare-email-routing/**'
       - '.github/workflows/deploy-cloudflare.yml'
   workflow_dispatch:
 
@@ -36,7 +37,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: cloudflare-control/pnpm-lock.yaml
+          cache-dependency-path: |
+            cloudflare-control/pnpm-lock.yaml
+            cloudflare-email-routing/pnpm-lock.yaml
 
       - name: Install Dependencies
         run: pnpm --prefix cloudflare-control install --frozen-lockfile
@@ -58,3 +61,19 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm --prefix cloudflare-control exec wrangler deploy
+
+      # After the controller: the email Worker's Service Binding names the
+      # controller's MailIntake entrypoint, which must already be deployed.
+      - name: Install Email Worker Dependencies
+        run: pnpm --prefix cloudflare-email-routing install --frozen-lockfile
+
+      - name: Email Worker Typecheck & Tests
+        run: |
+          pnpm --prefix cloudflare-email-routing run typecheck
+          pnpm --prefix cloudflare-email-routing test
+
+      - name: Deploy Email Worker to Cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --prefix cloudflare-email-routing exec wrangler deploy

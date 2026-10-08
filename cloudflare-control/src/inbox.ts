@@ -6,8 +6,11 @@
  *   phone as verified, close, reopen or delete a mail conversation, and
  *   download an inbound message's attachments or original. Every reply goes
  *   out as email from here.
- * - `handleInboundEmail()`: the Worker's `email()` handler. Mail routed to the
- *   Worker (every address on the mail domain, through the catch-all) is kept
+ * - `fileStoredInboundMail()`: mail the `labkiosk-email-routing` Worker
+ *   received (every address on the mail domain, through the catch-all) and
+ *   stored in R2, handed over through `MailIntake` (src/index.ts).
+ *   `handleInboundEmail()` does the same for mail routed straight to this
+ *   Worker's own `email()` handler. Either way the message is kept
  *   whole in R2 and filed into its conversation by the `[LK-XXXXXX]` reference
  *   in the subject or by its threading headers, and only when it comes from
  *   that conversation's own contact; anything else starts a new conversation
@@ -42,7 +45,7 @@ import {
   TASK_KINDS
 } from "./conversations";
 import { mailConfigProblem, mailDomain, parseAddress, sendingDomain } from "./mail";
-import { deleteRawMail, loadRawMail, rawMailKey, storeRawMail } from "./mail_store";
+import { clearPendingMail, deleteRawMail, isMailId, listPendingMail, loadRawMail, rawMailKey, storeRawMail } from "./mail_store";
 import { extractAttachment, parseEmail } from "./mime";
 import { consoleUrlFor, RouteContext, sendOnConversation } from "./signup";
 
@@ -420,6 +423,28 @@ function headersOnly(message: InboundMessage, note: string): Uint8Array {
   return new TextEncoder().encode(`${lines.join("\r\n")}\r\n\r\n${note}`);
 }
 
+/** Header sections longer than this are cut: real ones are a few kilobytes. */
+const MAX_HEADER_BYTES = 256 * 1024;
+
+/** A stored original's header section with a note for a body, for mail too large to parse. */
+function headerSectionOnly(raw: Uint8Array, note: string): Uint8Array {
+  const limit = Math.min(raw.byteLength, MAX_HEADER_BYTES);
+  // The header section ends at the first empty line; without one, all of it is headers.
+  let end = -1;
+  for (let i = 0; i + 1 < limit; i++) {
+    if (raw[i] === 0x0a && (raw[i + 1] === 0x0a || (raw[i + 1] === 0x0d && raw[i + 2] === 0x0a))) {
+      end = i + 1;
+      break;
+    }
+  }
+  const head = raw.subarray(0, end < 0 ? limit : end);
+  const tail = new TextEncoder().encode(end < 0 ? `\r\n\r\n${note}` : `\r\n${note}`);
+  const out = new Uint8Array(head.byteLength + tail.byteLength);
+  out.set(head);
+  out.set(tail, head.byteLength);
+  return out;
+}
+
 /** The whole message, or null when it is larger than anything Email Routing delivers. */
 async function readRaw(message: InboundMessage): Promise<Uint8Array | null> {
   if (message.rawSize > MAX_INBOUND_BYTES) {
@@ -433,27 +458,32 @@ function domainOf(address: string): string {
   return address.slice(address.lastIndexOf("@") + 1).toLowerCase();
 }
 
+/** One incoming message, however it arrived. */
+interface IncomingMail {
+  /** The id its conversation message gets; the original is stored under `rawMailKey(id)`. */
+  id: string;
+  /** Envelope sender and recipient. */
+  from: string;
+  to: string;
+  /** What to parse: the original, or its headers with a note. */
+  parsable: Uint8Array;
+  /** Where the original is, or null when it is not stored. */
+  rawKey: string | null;
+}
+
 /**
- * File one incoming email. Returns the conversation it went to, or null when
- * it was dropped (a message from the platform's own sending address: a loop).
+ * File one message into Mail. Returns the conversation it went to, or null
+ * when it was dropped (from the platform's own sending domain: a loop).
  */
-export async function handleInboundEmail(message: InboundMessage, env: Env, db: D1Database): Promise<Conversation | null> {
-  const raw = await readRaw(message);
-  const sizeKb = Math.max(1, Math.round(message.rawSize / 1024));
-  const parsed = parseEmail(
-    raw === null
-      ? headersOnly(message, `(This message was ${sizeKb} KB, too large to receive here.)`)
-      : raw.byteLength > MAX_PARSED_BYTES
-        ? headersOnly(message, `(This message is ${sizeKb} KB, too large to show here. Download the original to read it.)`)
-        : raw
-  );
+async function fileIncomingMail(env: Env, db: D1Database, mail: IncomingMail): Promise<Conversation | null> {
+  const parsed = parseEmail(mail.parsable);
   // Who wrote it (the From header, else the envelope) decides which thread it may join;
   // Reply-To, which anyone can set, only decides where answers go.
-  const author = parsed.from || { address: message.from.toLowerCase(), name: "" };
+  const author = parsed.from || { address: mail.from.toLowerCase(), name: "" };
   const sender = parsed.replyTo || author;
   // Everything the platform sends is from the sending domain: mail from it is a loop.
   const own = sendingDomain(env);
-  if (own && (domainOf(author.address) === own || domainOf(message.from) === own)) {
+  if (own && (domainOf(author.address) === own || domainOf(mail.from) === own)) {
     console.warn("[Inbox] Dropped a message from the platform's own sending domain (a mail loop).");
     return null;
   }
@@ -473,24 +503,13 @@ export async function handleInboundEmail(message: InboundMessage, env: Env, db: 
       subject: parsed.subject || "(no subject)",
       contactEmail: sender.address,
       contactName: sender.name || null,
-      mailbox: parseAddress(message.to)?.email ?? null
+      mailbox: parseAddress(mail.to)?.email ?? null
     });
   } else if (conversation.kind === "support" && conversation.status === "closed" && !parsed.automated) {
     // The customer wrote again: the conversation needs attention again.
     await setConversationStatus(db, conversation.id, "open", null);
   }
 
-  // The original keeps the attachments; without it they are listed but cannot be downloaded.
-  const messageId = crypto.randomUUID();
-  let rawKey: string | null = null;
-  if (raw) {
-    try {
-      await storeRawMail(env, rawMailKey(messageId), raw);
-      rawKey = rawMailKey(messageId);
-    } catch (err) {
-      console.error(`[Inbox] Storing the original of a message on ${conversation.reference} failed:`, err);
-    }
-  }
   const attachments: AttachmentInfo[] = parsed.attachments.map((a) => ({
     index: a.index,
     filename: a.filename,
@@ -498,17 +517,50 @@ export async function handleInboundEmail(message: InboundMessage, env: Env, db: 
     size: a.size
   }));
   await addConversationMessage(db, {
-    id: messageId,
+    id: mail.id,
     conversationId: conversation.id,
     direction: "inbound",
     body: (parsed.text || "(no text)") + (parsed.automated ? "\n\n[Automatic message]" : ""),
     fromAddress: sender.address,
-    toAddress: message.to.toLowerCase(),
+    toAddress: mail.to.toLowerCase(),
     subject: parsed.subject,
     emailMessageId: parsed.messageId,
-    rawKey,
+    rawKey: mail.rawKey,
     attachments
   });
+  return conversation;
+}
+
+/**
+ * The controller's own `email()` handler, for mail routed straight to it.
+ * Returns the conversation it went to, or null when it was dropped.
+ */
+export async function handleInboundEmail(message: InboundMessage, env: Env, db: D1Database): Promise<Conversation | null> {
+  const raw = await readRaw(message);
+  const sizeKb = Math.max(1, Math.round(message.rawSize / 1024));
+  const parsable =
+    raw === null
+      ? headersOnly(message, `(This message was ${sizeKb} KB, too large to receive here.)`)
+      : raw.byteLength > MAX_PARSED_BYTES
+        ? headersOnly(message, `(This message is ${sizeKb} KB, too large to show here. Download the original to read it.)`)
+        : raw;
+
+  // The original keeps the attachments; without it they are listed but cannot be downloaded.
+  const id = crypto.randomUUID();
+  let rawKey: string | null = null;
+  if (raw) {
+    try {
+      await storeRawMail(env, rawMailKey(id), raw);
+      rawKey = rawMailKey(id);
+    } catch (err) {
+      console.error("[Inbox] Storing the original of an incoming message failed:", err);
+    }
+  }
+  const conversation = await fileIncomingMail(env, db, { id, from: message.from, to: message.to, parsable, rawKey });
+  if (!conversation) {
+    if (rawKey) await deleteRawMail(env, [rawKey]);
+    return null;
+  }
 
   if (env.SUPPORT_FORWARD_TO) {
     try {
@@ -520,4 +572,72 @@ export async function handleInboundEmail(message: InboundMessage, env: Env, db: 
     }
   }
   return conversation;
+}
+
+/** What the controller did with a message the email Worker stored. */
+export type IntakeResult = { status: "filed"; reference: string } | { status: "dropped" } | { status: "missing" };
+
+/**
+ * File a message the `labkiosk-email-routing` Worker already stored in R2
+ * (`MailIntake.file` in src/index.ts, and the hourly sweep). Safe to repeat:
+ * a message filed before answers with its conversation again.
+ */
+export async function fileStoredInboundMail(env: Env, db: D1Database, id: string, from: string, to: string): Promise<IntakeResult> {
+  if (!isMailId(id)) throw new Error("Not a mail id");
+  const envelopeFrom = String(from).trim().slice(0, 320);
+  const envelopeTo = String(to).trim().slice(0, 320);
+  if (!parseAddress(envelopeTo)) throw new Error("The recipient is not an email address");
+
+  const filed = await db
+    .prepare(
+      "SELECT c.reference AS reference FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.id = ?"
+    )
+    .bind(id)
+    .first<{ reference: string }>();
+  if (filed) {
+    await clearPendingMail(env, id);
+    return { status: "filed", reference: filed.reference };
+  }
+
+  const key = rawMailKey(id);
+  const raw = await loadRawMail(env, key);
+  if (!raw) {
+    // Nothing to file, now or later.
+    console.error(`[Inbox] The original of incoming message ${id} is not in R2; it cannot be filed.`);
+    await clearPendingMail(env, id);
+    return { status: "missing" };
+  }
+  const sizeKb = Math.max(1, Math.round(raw.byteLength / 1024));
+  const parsable =
+    raw.byteLength > MAX_PARSED_BYTES
+      ? headerSectionOnly(raw, `(This message is ${sizeKb} KB, too large to show here. Download the original to read it.)`)
+      : raw;
+  const conversation = await fileIncomingMail(env, db, { id, from: envelopeFrom, to: envelopeTo, parsable, rawKey: key });
+  if (!conversation) await deleteRawMail(env, [key]);
+  await clearPendingMail(env, id);
+  return conversation ? { status: "filed", reference: conversation.reference } : { status: "dropped" };
+}
+
+/** Messages younger than this are left to the email Worker's own call. */
+const SWEEP_MIN_AGE_MS = 10 * 60 * 1000;
+/** Messages the hourly sweep files at most. */
+const SWEEP_LIMIT = 50;
+
+/**
+ * File what the email Worker stored but could not hand over (the controller
+ * was down or failing). Returns how many were filed or dropped.
+ */
+export async function fileStrandedInboundMail(env: Env, db: D1Database, now = Date.now()): Promise<number> {
+  let handled = 0;
+  for (const pending of await listPendingMail(env, SWEEP_LIMIT)) {
+    if (now - pending.storedAt < SWEEP_MIN_AGE_MS) continue;
+    try {
+      await fileStoredInboundMail(env, db, pending.id, pending.from, pending.to);
+      handled++;
+    } catch (err) {
+      // Left pending: the next sweep tries again.
+      console.error(`[Inbox] Filing stored message ${pending.id} failed:`, err);
+    }
+  }
+  return handled;
 }

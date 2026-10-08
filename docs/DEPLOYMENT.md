@@ -192,20 +192,29 @@ back into the same conversation.
 **Mail** is a small mailbox for the whole domain: every message sent to any address on it
 (`SUPPORT_ADDRESS`'s domain, e.g. anything `@labkiosk.org`) is filed under the address it was sent
 to, with unread counts per address. A super admin reads, replies, writes new mail as any address on
-the domain, closes, reopens and deletes it, and downloads attachments. Mail goes out as the same name
-on the sending domain (`sales@labkiosk.org` is sent from `sales@email.labkiosk.org`) with Reply-To
-set to the address itself, so answers come back to the Worker. The original of every incoming
-message, attachments included, is kept in the `AUDIT_ARCHIVE` R2 bucket under `mail/` (messages
-larger than 10 MB are shown from their headers; the original is still downloadable) and removed
-when its conversation is deleted.
+the domain, closes, reopens and deletes it, and downloads attachments. When the sending domain is
+the mail domain itself (`MAIL_FROM` on `labkiosk.org`), mail goes out from the address it was
+written as. With a sending subdomain it goes out as the same name there (`sales@labkiosk.org` is
+sent from `sales@email.labkiosk.org`) with Reply-To set to the address itself, so answers come back.
+
+Incoming mail arrives through a second, small Worker, `labkiosk-email-routing`
+(`cloudflare-email-routing/`), which the catch-all points at. It keeps the original, attachments
+included, in the `AUDIT_ARCHIVE` R2 bucket under `mail/` and hands it to the controller's
+`MailIntake` entrypoint over a Service Binding; the controller files it. If the controller is
+failing at that moment, the message waits in R2 (`mail-pending/`) and the controller's hourly run
+files it, so a broken deploy delays mail instead of losing or bouncing it. Messages larger than
+10 MB are shown from their headers (the original is still downloadable), and the original is
+removed when its conversation is deleted. The CI deploy publishes the controller first and then
+this Worker, because its binding names the controller's entrypoint.
 
 | Piece | What it is | Set it up |
 | :--- | :--- | :--- |
-| `EMAIL` | `send_email` binding, Cloudflare Email Service (outbound) | Declared in `wrangler.jsonc`. Onboard a sending domain once (Dashboard → Email → Email Sending, e.g. `email.labkiosk.org`). Sending needs Workers Paid; 3,000 messages a month are included. |
-| `MAIL_FROM` | Variable: the sender, on the onboarded domain, e.g. `Lab Kiosk <support@email.labkiosk.org>`. Its domain is the sending domain for every mailbox; its name is the display name | Dashboard variable |
-| `SUPPORT_ADDRESS` | Variable: the address customers reply to and write to, e.g. `support@labkiosk.org`. Its domain is the one the **Mail** tab serves | Dashboard variable |
-| `SUPPORT_FORWARD_TO` | Variable, optional: a verified Email Routing destination that gets a copy of every incoming message, and every message the Worker could not file | Dashboard variable |
-| Email Routing catch-all | Routes every address on the domain to the Worker, whose `email()` handler files it under **Mail** | Dashboard → `labkiosk.org` → Email → Email Routing → Routing rules → *Catch-all address* → Action *Send to a Worker* → `labkiosk-controller`, enabled. Rules for single addresses take precedence; remove any that should land in **Mail** instead |
+| `EMAIL` | `send_email` binding, Cloudflare Email Service (outbound) | Declared in `wrangler.jsonc`. Onboard a sending domain once (Dashboard → Email → Email Sending, e.g. `labkiosk.org`). Sending needs Workers Paid; 3,000 messages a month are included. |
+| `MAIL_FROM` | Variable: the sender, on the onboarded domain, e.g. `Lab Kiosk <support@labkiosk.org>`. Its domain is the sending domain for every mailbox; its name is the display name | Dashboard variable on `labkiosk-controller` |
+| `SUPPORT_ADDRESS` | Variable: the address customers reply to and write to, e.g. `support@labkiosk.org`. Its domain is the one the **Mail** tab serves | Dashboard variable on `labkiosk-controller` |
+| `SUPPORT_FORWARD_TO` | Variable, optional: a verified Email Routing destination that gets a copy of every incoming message that is not a loop, and every message that could not be stored | Dashboard variable on `labkiosk-email-routing` (and on `labkiosk-controller` too if mail is ever routed straight to it) |
+| `labkiosk-email-routing` | The Worker that receives the domain's mail (`cloudflare-email-routing/`): R2 binding `MAIL_ARCHIVE` (the same `labkiosk-audit-archive` bucket) and Service Binding `CONTROLLER` to `labkiosk-controller`'s `MailIntake` | Deployed by the same workflow as the controller; nothing to create by hand. To deploy it yourself, deploy the controller first, then `pnpm --prefix cloudflare-email-routing exec wrangler deploy` |
+| Email Routing catch-all | Routes every address on the domain to `labkiosk-email-routing` | Dashboard → `labkiosk.org` → Email → Email Routing → Routing rules → *Catch-all address* → Action *Send to a Worker* → `labkiosk-email-routing`, enabled. Rules for single addresses take precedence; remove any that should land in **Mail** instead. The controller's own `email()` handler still files mail routed straight to it |
 | `AUDIT_ARCHIVE` | The R2 bucket production already requires; incoming originals are stored under `mail/` | Nothing new |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | Optional: Cloudflare Turnstile in front of the signup email code and the contact form. Free. Set both or neither: one alone makes those forms refuse | Dashboard → Turnstile → *Add widget* (hostname `labkiosk.org`, mode *Managed*); the site key as a variable, the secret key as a secret (`wrangler secret put TURNSTILE_SECRET_KEY`) |
 
@@ -214,7 +223,8 @@ not configured"; the rest of the Worker runs. Incoming mail joins a conversation
 subject carries the conversation's reference (`[LK-XXXXXX]`) or it answers one of the platform's
 messages, **and** it comes from that conversation's contact; anything else opens a new support
 conversation in the mailbox it was sent to. Mail from the sending domain itself is dropped, so a
-bounce cannot loop. Phone numbers are
+bounce cannot loop; with `MAIL_FROM` on `labkiosk.org` that is any message whose author or envelope
+sender is an `@labkiosk.org` address. Phone numbers are
 confirmed by hand (**Mark phone as verified** after a call or message); no SMS provider is used.
 
 **Sign-in security** needs no setup. Every account can turn on two-factor sign-in from the profile

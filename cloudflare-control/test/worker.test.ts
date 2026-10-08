@@ -53,8 +53,8 @@ import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
 import { envelopeFor, localOutbox, parseAddress } from "../src/mail";
-import { loadRawMail } from "../src/mail_store";
-import { handleInboundEmail, InboundMessage } from "../src/inbox";
+import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
+import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
 
@@ -926,6 +926,84 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const db = getDatabase(mockEnv);
     const { message } = inboundMessage(["From: sales@email.labkiosk.org", "Subject: Re: quote", "", "x"].join("\n"), "bounce@cf.example");
     assert.equal(await handleInboundEmail(message, inboxEnv, db), null);
+  });
+
+  /** What the labkiosk-email-routing Worker leaves in R2 before it calls the controller. */
+  async function storedByEmailWorker(raw: string, from: string, to = "hello@labkiosk.org", storedAt = Date.now()) {
+    const id = crypto.randomUUID();
+    await storeRawMail(inboxEnv, rawMailKey(id), new TextEncoder().encode(raw.replace(/\n/g, "\r\n")));
+    await markPendingMail(inboxEnv, { id, from, to, storedAt });
+    return id;
+  }
+
+  async function isPending(id: string) {
+    return (await listPendingMail(inboxEnv, 1000)).some((m) => m.id === id);
+  }
+
+  test("Files mail the email Worker stored, once, and clears its marker", async () => {
+    const db = getDatabase(mockEnv);
+    const id = await storedByEmailWorker(
+      ["From: Ria <ria@example.org>", "Subject: Pricing", "Message-ID: <ria-1@example.org>", "", "How much for 60 computers?"].join("\n"),
+      "ria@example.org"
+    );
+    assert.ok(await isPending(id));
+    const result = await fileStoredInboundMail(inboxEnv, db, id, "ria@example.org", "hello@labkiosk.org");
+    assert.equal(result.status, "filed");
+    assert.equal(await isPending(id), false, "the marker is cleared");
+
+    const row = await db
+      .prepare("SELECT m.body, m.raw_key, c.mailbox, c.reference FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.id = ?")
+      .bind(id)
+      .first<any>();
+    assert.equal(row.body, "How much for 60 computers?");
+    assert.equal(row.raw_key, rawMailKey(id), "the original stays where the email Worker put it");
+    assert.equal(row.mailbox, "hello@labkiosk.org");
+    assert.equal(result.status === "filed" && result.reference, row.reference);
+
+    // A repeat (the sweep racing a slow call) answers with the same conversation and adds nothing.
+    assert.deepEqual(await fileStoredInboundMail(inboxEnv, db, id, "ria@example.org", "hello@labkiosk.org"), result);
+    const count = await db.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE id = ?").bind(id).first<any>();
+    assert.equal(count.n, 1);
+  });
+
+  test("Stored mail from the sending domain is dropped with its original; a lost original is not retried", async () => {
+    const db = getDatabase(mockEnv);
+    const loop = await storedByEmailWorker(["From: support@email.labkiosk.org", "Subject: Re: x", "", "loop"].join("\n"), "support@email.labkiosk.org");
+    assert.deepEqual(await fileStoredInboundMail(inboxEnv, db, loop, "support@email.labkiosk.org", "support@labkiosk.org"), { status: "dropped" });
+    assert.equal(await loadRawMail(inboxEnv, rawMailKey(loop)), null);
+    assert.equal(await isPending(loop), false);
+
+    const lost = crypto.randomUUID();
+    await markPendingMail(inboxEnv, { id: lost, from: "a@example.org", to: "support@labkiosk.org", storedAt: 0 });
+    assert.deepEqual(await fileStoredInboundMail(inboxEnv, db, lost, "a@example.org", "support@labkiosk.org"), { status: "missing" });
+    assert.equal(await isPending(lost), false);
+
+    await assert.rejects(fileStoredInboundMail(inboxEnv, db, "../etc", "a@example.org", "support@labkiosk.org"), /Not a mail id/);
+    await assert.rejects(fileStoredInboundMail(inboxEnv, db, crypto.randomUUID(), "a@example.org", "nobody"), /not an email address/);
+  });
+
+  test("The hourly sweep files stranded mail, but leaves the newest to the email Worker's own call", async () => {
+    const db = getDatabase(mockEnv);
+    const now = Date.now();
+    const old = await storedByEmailWorker(["From: kim@example.org", "Subject: Stranded", "", "still here"].join("\n"), "kim@example.org", "support@labkiosk.org", now - 60 * 60 * 1000);
+    const fresh = await storedByEmailWorker(["From: lee@example.org", "Subject: Just now", "", "hi"].join("\n"), "lee@example.org", "support@labkiosk.org", now);
+    assert.ok((await fileStrandedInboundMail(inboxEnv, db, now)) >= 1);
+    assert.equal(await isPending(old), false);
+    assert.ok(await isPending(fresh), "younger than ten minutes: not yet");
+    const filed = await db.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE id = ?").bind(old).first<any>();
+    assert.equal(filed.n, 1);
+    await fileStoredInboundMail(inboxEnv, db, fresh, "lee@example.org", "support@labkiosk.org");
+  });
+
+  test("A stored message too large to parse is filed from its headers", async () => {
+    const db = getDatabase(mockEnv);
+    const big = "x".repeat(11 * 1024 * 1024);
+    const id = await storedByEmailWorker(["From: big@example.org", "Subject: Scans", "", big].join("\n"), "big@example.org");
+    const result = await fileStoredInboundMail(inboxEnv, db, id, "big@example.org", "support@labkiosk.org");
+    assert.equal(result.status, "filed");
+    const row = await db.prepare("SELECT body, subject FROM conversation_messages WHERE id = ?").bind(id).first<any>();
+    assert.equal(row.subject, "Scans");
+    assert.match(row.body, /too large to show here/);
   });
 
   test("Takes one attachment back out of a stored message", () => {

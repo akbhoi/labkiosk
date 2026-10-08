@@ -6,6 +6,7 @@
  * No route in this file may resolve a tenant or render untrusted data without them.
  */
 
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole, Session, AuditEntryMessage } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
@@ -157,9 +158,24 @@ import { PALETTE } from "./ui_tokens";
 export { OrgHub } from "./org_hub";
 export { RemoteRelay } from "./remote_relay";
 export { CustomHostnameWorkflow } from "./custom_hostname_workflow";
+
+/**
+ * The entrypoint the `labkiosk-email-routing` Worker (cloudflare-email-routing/)
+ * calls over its Service Binding once it has stored an incoming message in R2:
+ * the controller files it into Mail and answers what it did, so that Worker
+ * knows whether to forward the owner a copy. Not reachable from the internet.
+ */
+export class MailIntake extends WorkerEntrypoint<Env> {
+  async file(id: string, from: string, to: string): Promise<IntakeResult> {
+    const db = getDatabase(this.env);
+    await bootstrap(db, this.env);
+    useAuditQueue(this.env.AUDIT_QUEUE);
+    return fileStoredInboundMail(this.env, db, id, from, to);
+  }
+}
 import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
 import { handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
-import { handleInboundEmail, handleInboxRoute, InboundMessage, isInboxRoute } from "./inbox";
+import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
 import { TURNSTILE_ORIGIN, turnstileSiteKey } from "./turnstile";
 import {
@@ -627,6 +643,8 @@ export default {
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);
+    const stranded = await fileStrandedInboundMail(env, db);
+    if (stranded) console.log(`[Worker] Filed ${stranded} incoming messages the email Worker could not hand over.`);
     const purgedIssues = await purgeOldWorkstationIssues(db);
     if (purgedIssues) console.log(`[Worker] Deleted ${purgedIssues} workstation issues older than ${WORKSTATION_ISSUE_RETENTION_DAYS} days.`);
     // Commands expire inside each organization's OrgHub; the audit log is the
@@ -644,8 +662,10 @@ export default {
   },
 
   /**
-   * Mail routed to the Worker by Email Routing (the support and contact
-   * addresses): filed into Mail or the conversation it answers (src/inbox.ts).
+   * Mail routed straight to this Worker by Email Routing: filed into Mail or
+   * the conversation it answers (src/inbox.ts). Production routes the
+   * catch-all to `labkiosk-email-routing`, which hands over through
+   * `MailIntake`; this handler keeps a direct route working too.
    */
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     const db = getDatabase(env);

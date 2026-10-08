@@ -316,7 +316,7 @@ export interface Env {
    * pretend a message went out.
    */
   EMAIL?: SendEmail;
-  /** Sender on the onboarded sending domain, e.g. "Lab Kiosk <support@email.labkiosk.org>". */
+  /** Sender on the onboarded sending domain, e.g. "Lab Kiosk <support@labkiosk.org>". */
   MAIL_FROM?: string;
   /** Where customers reply, and the address the support inbox answers from, e.g. "support@labkiosk.org". */
   SUPPORT_ADDRESS?: string;

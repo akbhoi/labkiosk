@@ -28,10 +28,10 @@ cloudflare-control/
 │   ├── signup.ts                       # Registration with an email code, the contact form, Remote Control requests
 │   ├── two_factor.ts                   # Two-factor sign-in (TOTP, email code, recovery codes), sign-in alerts
 │   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the signup code and contact form
-│   ├── inbox.ts                        # Super Admin Tasks/Mail API and the email() handler
+│   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email via the EMAIL send_email binding
-│   ├── mail_store.ts                   # Incoming originals (attachments) in R2 under mail/
+│   ├── mail_store.ts                   # Incoming originals in R2 under mail/, markers under mail-pending/
 │   ├── mime.ts                         # Dependency-free parser for incoming email
 │   ├── guard.ts                        # Tenant resolution, authorization, CSRF origin guard (MANDATORY)
 │   ├── escape.ts                       # HTML / attribute / JSON escaping & safe URLs (MANDATORY)

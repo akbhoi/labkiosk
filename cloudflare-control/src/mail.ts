@@ -117,7 +117,7 @@ export function mailDomain(env: Env): string | null {
   return domainOf(supportMailbox(env));
 }
 
-/** The domain outbound mail is sent from: MAIL_FROM's (`email.labkiosk.org`). */
+/** The domain outbound mail is sent from: MAIL_FROM's (`labkiosk.org`). */
 export function sendingDomain(env: Env): string | null {
   return domainOf(senderAddress(env));
 }

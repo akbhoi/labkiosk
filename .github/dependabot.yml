@@ -1,7 +1,9 @@
 version: 2
 updates:
   - package-ecosystem: npm
-    directory: /cloudflare-control
+    directories:
+      - /cloudflare-control
+      - /cloudflare-email-routing
     schedule:
       interval: weekly
     groups:
