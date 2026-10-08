@@ -6,6 +6,7 @@
 
 import { escapeHtml, escapeAttr } from "./escape";
 import { FONT_LINKS, THEME_TOGGLE_SCRIPT, rootTokensCss, themeHeadHtml } from "./ui_tokens";
+import { renderTwoFactorModalHtml, renderTwoFactorScript } from "./ui_two_factor";
 
 export interface NavItem {
   id: string;
@@ -1615,6 +1616,70 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
     .form-narrow { max-width: 640px; }
     .form-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 0 12px; }
+    /* Super Admin Tasks and Support: a list of conversations beside the open one. */
+    .inbox-layout { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 20px; align-items: start; }
+    .inbox-list {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      max-height: calc(100dvh - 220px);
+      overflow-y: auto;
+    }
+    .inbox-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 12px 14px;
+      border: 0;
+      border-bottom: 1px solid var(--border-subtle);
+      background: transparent;
+      color: var(--text-main);
+      font: inherit;
+      cursor: pointer;
+    }
+    .inbox-item:last-child { border-bottom: 0; }
+    .inbox-item:hover { background: var(--hover); }
+    .inbox-item:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+    .inbox-item[aria-current="true"] { background: var(--accent-soft); }
+    .inbox-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .inbox-item-title { font-size: 0.875rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .inbox-item-unread .inbox-item-title::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
+    .inbox-item-meta { margin-top: 4px; font-size: 0.75rem; color: var(--text-muted); display: flex; gap: 8px; flex-wrap: wrap; }
+    .inbox-empty { padding: 28px 16px; text-align: center; color: var(--text-muted); font-size: 0.8125rem; }
+    .inbox-detail { min-width: 0; }
+    .detail-grid { display: grid; grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); gap: 6px 16px; font-size: 0.8125rem; }
+    .detail-grid dt { color: var(--text-muted); }
+    .detail-grid dd { margin: 0; overflow-wrap: anywhere; }
+    .msg-thread { display: flex; flex-direction: column; gap: 10px; }
+    .msg { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 14px; background: var(--bg-surface); }
+    .msg-inbound { border-left: 3px solid var(--accent); }
+    .msg-outbound { border-left: 3px solid var(--success); background: var(--bg-subtle); }
+    .msg-note { border-left: 3px solid var(--warning); background: var(--warning-soft); }
+    .msg-event { border-style: dashed; background: transparent; }
+    .msg-meta { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px; }
+    .msg-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.875rem; line-height: 1.55; margin: 0; font-family: var(--font-sans); }
+    .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .msg-attachment {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+      padding: 3px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-subtle);
+      color: var(--text-main);
+      font-size: 0.75rem;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .msg-attachment:hover { background: var(--hover); }
+    .msg-attachment:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+    @media (max-width: 900px) {
+      .inbox-layout { grid-template-columns: 1fr; }
+      .inbox-list { max-height: 320px; }
+    }
     .stack-cards { display: flex; flex-direction: column; gap: 20px; }
     .stack-cards > .card { margin-bottom: 0; }
     .input-suffix { font-size: 0.875rem; color: var(--text-muted); white-space: nowrap; align-self: center; }
@@ -1786,6 +1851,18 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .modal-desc { font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 18px; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 20px; }
     .modal-sm { max-width: 480px; }
+    .numbered-steps { margin: 0; padding-left: 20px; font-size: 0.875rem; }
+    .recovery-codes {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px 16px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-subtle);
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+    }
     .modal-vnc {
       max-width: 1100px;
       width: 96%;
@@ -2006,6 +2083,10 @@ ${FONT_LINKS}
                       <span>Change Password</span>
                     </a>`
               }
+              <button type="button" class="profile-menu-item" data-action="open-two-factor">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+                <span>Two-factor sign-in</span>
+              </button>
               <button type="button" class="profile-menu-item" data-action="toggle-theme">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>
                 <span data-theme-label>Dark theme</span>
@@ -2298,8 +2379,10 @@ ${FONT_LINKS}
   <\/script>
 
   ${modalsHtml}
+  ${renderTwoFactorModalHtml()}
 
   ${scriptsHtml}
+  ${renderTwoFactorScript(nonce)}
 
   <script nonce="${escapeAttr(nonce)}">
     (function() {

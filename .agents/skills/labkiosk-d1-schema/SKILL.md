@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 3, 3b, 3c; reference:
 
 - `migrations/NNNN_name.sql` is what a deployed D1 has; `SCHEMA_SQL` in `src/db.ts` builds the
   in-memory database for tests and `pnpm dev`. **Change both.**
-- Add a **new** numbered file (next: `0020_…`). **Never edit or rename an applied migration** —
+- Add a **new** numbered file (next: `0022_…`). **Never edit or rename an applied migration** —
   wrangler tracks them by file name, so a rename re-runs it (that is why `0008_school_homepage.sql`
   keeps its name).
 - Every query that touches tenant data filters by `tenant_id`; index what you query on.
@@ -106,3 +106,19 @@ organization. `tenants.custom_hostname_id` / `custom_hostname_status`
 keeps 180 days (`AUDIT_RETENTION_DAYS`); the hourly cron moves older rows to R2 as NDJSON.
 A DO's own schema is not a D1 migration: it is created in `OrgHub`'s constructor, and changing it
 needs its own versioned step there.
+
+**Registration and the inbox** (`0020`). `tenants.remote_control_status`
+(`none | pending | approved | rejected`; the demos are `approved`) gates Remote Control.
+`organization_profiles` (one row per tenant) holds the registration's contact, address and billing
+details and when the email and phone were verified. `email_codes` holds hashed one-time signup
+codes, keyed `purpose:email`, purged hourly. `conversations` (`signup | remote_control | support`,
+`tenant_id` NULL for support mail from strangers) and `conversation_messages` are the **platform's**
+Tasks and Mail inbox, read only by a super admin. `conversations.mailbox` is the platform address a
+mail conversation belongs to (NULL for a task); `conversation_messages.raw_key` points at the
+original in R2 (`mail/<message id>.eml`) and `attachments` is its JSON attachment list.
+
+**Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
+`enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes
+as a JSON list of SHA-256 hashes. `login_challenges` is a password-checked sign-in waiting for its
+second factor, keyed by the SHA-256 of the browser's token, purged hourly. `user_devices` keys
+browsers by `(user_id, token_hash)` for new-browser alerts and `trusted_until`.

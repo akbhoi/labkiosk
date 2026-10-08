@@ -1,0 +1,36 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "labkiosk-email-routing",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-01",
+	// No routes and no workers.dev URL: this Worker only receives mail. Point the
+	// Email Routing catch-all of the platform's domain at it ("Send to a Worker",
+	// docs/DEPLOYMENT.md, "Email").
+	"workers_dev": false,
+	// The controller's bucket: the original of every message is kept there under
+	// mail/<id>.eml, and a marker under mail-pending/<id> until it is filed.
+	"r2_buckets": [
+		{
+			"binding": "MAIL_ARCHIVE",
+			"bucket_name": "labkiosk-audit-archive"
+		}
+	],
+	// labkiosk-controller's MailIntake entrypoint (cloudflare-control/src/index.ts)
+	// files the stored message into the Super Admin console's Mail. Deploy the
+	// controller first: a binding to an entrypoint that does not exist yet fails.
+	"services": [
+		{
+			"binding": "CONTROLLER",
+			"service": "labkiosk-controller",
+			"entrypoint": "MailIntake"
+		}
+	],
+	// Optional, set in the dashboard: SUPPORT_FORWARD_TO, a verified Email Routing
+	// destination address that receives a copy of every message that is not a loop.
+	// Deploys keep it.
+	"keep_vars": true,
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	}
+}

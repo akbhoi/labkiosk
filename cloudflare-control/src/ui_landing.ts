@@ -20,6 +20,10 @@
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
+import { TURNSTILE_ORIGIN } from "./turnstile";
+
+/** The public source repository, linked from the navigation and the footer. */
+const SOURCE_REPOSITORY_URL = "https://github.com/akbhoi/labkiosk";
 
 const PAGE_TITLE = "Lab Kiosk OS - Secure Browser Workstations for Any Organization";
 const PAGE_DESCRIPTION =
@@ -38,7 +42,7 @@ function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: s
       {
         "@type": "Organization",
         "@id": `${origin}/#organization`,
-        name: "Akbhoi Innovations",
+        name: "Lab Kiosk",
         url: `${origin}/`,
         logo: `${origin}${FAVICON_PATH}`,
         email: contactEmail
@@ -76,17 +80,21 @@ export interface LandingOptions {
   isoDownloadUrl?: string;
   /** Apex / base domain for organization subdomains (defaults to labkiosk.org). */
   baseDomain?: string;
-  /** Primary contact email (defaults to contact@akbhoi.com). */
+  /** Primary contact email (defaults to contact@labkiosk.org). */
   contactEmail?: string;
   /** This page on the canonical host; set only where the page may be indexed (src/seo.ts). */
   canonicalUrl?: string;
   /** Per-response CSP nonce; the page's single <script> must carry it. */
   nonce: string;
+  /** Turnstile's public site key when it is on (src/turnstile.ts); the signup code and contact form then carry a check. */
+  turnstileSiteKey?: string | null;
 }
 
 export function renderLandingHtml(data: LandingOptions): string {
   const baseDomain = (data.baseDomain || "labkiosk.org").toLowerCase().replace(/^\./, "");
-  const contactEmail = (data.contactEmail || "contact@akbhoi.com").toLowerCase();
+  const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
+  const turnstileKey = data.turnstileSiteKey || null;
+  const turnstileSlot = (id: string) => (turnstileKey ? `<div class="form-group turnstile-slot" id="${id}"></div>` : "");
 
   const banner = data.error
     ? `<div class="page-alert" role="alert" aria-live="polite">${escapeHtml(data.error)}</div>`
@@ -246,7 +254,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .btn-danger-solid { background: var(--danger); color: var(--on-solid); }
     .btn-danger-solid:hover { filter: brightness(0.92); }
     .btn-block { width: 100%; }
-    .theme-toggle {
+    .theme-toggle, .icon-link {
       width: 36px;
       height: 36px;
       border-radius: var(--radius-sm);
@@ -258,7 +266,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       justify-content: center;
       cursor: pointer;
     }
-    .theme-toggle:hover { color: var(--text-main); background: var(--bg-card-hover); }
+    .theme-toggle:hover, .icon-link:hover { color: var(--text-main); background: var(--bg-card-hover); }
 
     /* Edge Status Indicator */
     .edge-status {
@@ -601,6 +609,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .modal-title { font-size: 1.375rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px; color: var(--text-main); padding-right: 36px; }
     .modal-sub { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 24px; }
     .form-group { margin-bottom: 16px; text-align: left; }
+    .turnstile-slot { min-height: 65px; }
     .form-label { display: block; font-size: 0.8125rem; font-weight: 500; margin-bottom: 6px; color: var(--text-main); }
     .form-input {
       width: 100%;
@@ -621,6 +630,30 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .modal-switch { text-align: center; margin-top: 18px; font-size: 0.8125rem; color: var(--text-muted); }
     .modal-switch a { color: var(--accent-text); text-decoration: none; cursor: pointer; font-weight: 600; }
     .modal-switch a:hover { text-decoration: underline; }
+    .modal-wide { max-width: 640px; }
+    .form-split { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+    .form-legend { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin: 20px 0 10px; text-align: left; }
+    .form-legend:first-of-type { margin-top: 0; }
+    .code-row { display: flex; gap: 8px; align-items: stretch; }
+    .code-row .form-input { flex: 1; min-width: 0; }
+    .code-row .btn { white-space: nowrap; }
+    .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 0.8125rem; color: var(--text-muted); text-align: left; line-height: 1.5; }
+    .check-row input { margin-top: 3px; }
+    #login-form[hidden], #login-2fa-form[hidden] { display: none; }
+    .check-row a { color: var(--accent-text); }
+    .notice-box {
+      background: var(--success-soft);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--success);
+      color: var(--text-main);
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.875rem;
+      line-height: 1.55;
+      margin-bottom: 18px;
+      text-align: left;
+      display: none;
+    }
     .alert-box {
       background: var(--danger-soft);
       border: 1px solid var(--border);
@@ -869,6 +902,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     }
 
     /* Responsive Breakpoints */
+    /* The decorative status badge gives way before the brand name has to wrap. */
+    @media (max-width: 1360px) { .edge-status { display: none; } }
     @media (max-width: 1080px) {
       .nav-links { display: none; }
       .mobile-menu-btn { display: inline-flex; }
@@ -926,6 +961,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       }
       .modal-title { font-size: 1.25rem; }
       .form-input { font-size: 1rem; }
+      .form-split { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -956,6 +992,9 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <div class="status-dot"></div>
         <span>Edge Active</span>
       </div>
+      <a class="icon-link" href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener" aria-label="Lab Kiosk source code on GitHub" title="Source code on GitHub">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
       <button type="button" class="theme-toggle" data-action="toggle-theme" aria-label="Switch theme" title="Switch between light and dark">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>
       </button>
@@ -1008,6 +1047,10 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <a href="#contact" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Contact
+      </a>
+      <a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener" data-action="close-drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        Source code on GitHub
       </a>
     </nav>
     <div class="mobile-drawer-actions">
@@ -1293,7 +1336,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <p style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">
               Whether your enterprise has 50 or 5,000 PCs to donate, we provide the operating system, cloud control plane, and training materials.
             </p>
-            <a href="mailto:partners@akbhoi.com?subject=CSR%20Hardware%20Donation%20Inquiry" class="btn btn-primary btn-block">Contact CSR &amp; Partner Team</a>
+            <a href="mailto:partners@labkiosk.org?subject=CSR%20Hardware%20Donation%20Inquiry" class="btn btn-primary btn-block">Contact CSR &amp; Partner Team</a>
           </div>
         </div>
       </div>
@@ -1612,7 +1655,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Registration takes less than 60 seconds on this website. You receive your organization subdomain (e.g. <code>yourorganization.${escapeHtml(baseDomain)}</code>) and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
+            Register on this website and we review the request, usually within one working day. Once it is approved you receive your organization subdomain (e.g. <code>yourorganization.${escapeHtml(baseDomain)}</code>) and an enrollment key. Write the ISO to a USB flash drive, boot your lab computers, and complete the 3-step setup wizard on each machine. They immediately link to your private cloud dashboard.
           </div>
         </div>
       </div>
@@ -1641,7 +1684,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           </div>
           <h4>Technical &amp; Deployment Support</h4>
           <p>Assistance with ISO flashing, thin client hardware compatibility, and network setup.</p>
-          <a href="mailto:support@akbhoi.com" class="contact-link">support@akbhoi.com</a>
+          <a href="mailto:support@labkiosk.org" class="contact-link">support@labkiosk.org</a>
         </div>
 
         <div class="contact-card">
@@ -1650,7 +1693,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           </div>
           <h4>Education, CSR &amp; Partners</h4>
           <p>Education deployments, hardware donation partnerships, and platform allowlisting.</p>
-          <a href="mailto:partners@akbhoi.com" class="contact-link">partners@akbhoi.com</a>
+          <a href="mailto:partners@labkiosk.org" class="contact-link">partners@labkiosk.org</a>
         </div>
       </div>
 
@@ -1681,6 +1724,22 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         </div>
         <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Admin Console</button>
       </form>
+      <form id="login-2fa-form" hidden>
+        <div class="notice-box" id="login-2fa-notice" role="status"></div>
+        <div class="form-group">
+          <label class="form-label" for="login-2fa-code">Code from your authenticator app</label>
+          <input type="text" class="form-input" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
+        </div>
+        <div class="form-group">
+          <label class="check-row"><input type="checkbox" id="login-2fa-trust"> <span>Trust this browser for 30 days</span></label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Verify and sign in</button>
+        <div class="code-row" style="margin-top: 10px;">
+          <button type="button" class="btn btn-ghost" id="login-2fa-email">Email me a code instead</button>
+          <button type="button" class="btn btn-ghost" id="login-2fa-back">Start over</button>
+        </div>
+        <p class="modal-sub" style="margin: 12px 0 0;">Lost your phone? Enter one of your recovery codes instead of the six digits.</p>
+      </form>
       <div class="modal-switch">
         New organization? <a href="/register" data-action="switch-modal" data-close="login" data-modal="register">Register your organization</a>
       </div>
@@ -1689,34 +1748,127 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
 
   <!-- Register Modal -->
   <div class="modal-overlay" id="register-modal" role="dialog" aria-modal="true" aria-labelledby="reg-modal-title">
-    <div class="modal-box">
+    <div class="modal-box modal-wide">
       <button class="modal-close" data-action="close-modal" data-modal="register" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="reg-modal-title">Register Your Organization</h2>
-      <p class="modal-sub">Claim your custom subdomain and cloud console.</p>
+      <p class="modal-sub">We review every registration and email you when your console is active, usually within one working day.</p>
       <div class="alert-box" id="register-alert" role="alert"></div>
+      <div class="notice-box" id="register-done" role="status"></div>
       <form id="register-form">
-        <div class="form-group">
-          <label class="form-label" for="reg-name">Organization Name</label>
-          <input type="text" class="form-input" id="reg-name" required placeholder="Greenwood Holdings">
+        <div class="form-legend">Organization</div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-name">Organization name</label>
+            <input type="text" class="form-input" id="reg-name" required maxlength="120" placeholder="Greenwood Holdings" autocomplete="organization">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-legal-name">Legal or billing name <span class="input-hint">(optional)</span></label>
+            <input type="text" class="form-input" id="reg-legal-name" maxlength="160" placeholder="Greenwood Holdings Pvt Ltd">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-type">Type</label>
+            <select class="form-input" id="reg-type">
+              <option value="business">Business</option>
+              <option value="government">Government or public body</option>
+              <option value="library">Library</option>
+              <option value="education">Education</option>
+              <option value="nonprofit">Non-profit</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-workstations">Expected workstations</label>
+            <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
+          </div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="reg-email">Admin Email</label>
-          <input type="email" class="form-input" id="reg-email" required placeholder="admin@greenwood.example" autocomplete="email">
+          <label class="form-label" for="reg-subdomain">Console address</label>
+          <div class="code-row">
+            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\\-]+" style="font-family: var(--font-mono);">
+            <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; align-self: center;">.${escapeHtml(baseDomain)}</span>
+          </div>
+          <div class="input-hint">Lowercase letters, numbers and hyphens.</div>
+        </div>
+
+        <div class="form-legend">Technical contact</div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-contact-name">Full name</label>
+            <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-phone">Phone, with country code</label>
+            <input type="tel" class="form-input" id="reg-phone" required placeholder="+91 98765 43210" autocomplete="tel">
+            <div class="input-hint">We call or message this number to confirm it before approval.</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-email">Work email (your sign-in)</label>
+          <div class="code-row">
+            <input type="email" class="form-input" id="reg-email" required placeholder="jane@greenwood.example" autocomplete="email">
+            <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
+          </div>
+        </div>
+        ${turnstileSlot("reg-turnstile")}
+        <div class="form-group">
+          <label class="form-label" for="reg-code">Six-digit code from that email</label>
+          <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
         </div>
         <div class="form-group">
           <label class="form-label" for="reg-password">Password</label>
           <input type="password" class="form-input" id="reg-password" required minlength="12" placeholder="••••••••" autocomplete="new-password">
-          <div class="input-hint">Must be at least 12 characters.</div>
+          <div class="input-hint">At least 12 characters, with letters and numbers.</div>
+        </div>
+
+        <div class="form-legend">Address &amp; billing</div>
+        <div class="form-group">
+          <label class="form-label" for="reg-address1">Street address</label>
+          <input type="text" class="form-input" id="reg-address1" required maxlength="200" autocomplete="address-line1">
         </div>
         <div class="form-group">
-          <label class="form-label" for="reg-subdomain">Requested Subdomain Slug</label>
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\-]+" style="font-family: var(--font-mono);">
-            <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap;">.${escapeHtml(baseDomain)}</span>
-          </div>
-          <div class="input-hint">Lowercase letters, numbers, hyphens only. Your organization is active as soon as you register.</div>
+          <label class="form-label" for="reg-address2">Address line 2 <span class="input-hint">(optional)</span></label>
+          <input type="text" class="form-input" id="reg-address2" maxlength="200" autocomplete="address-line2">
         </div>
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Register &amp; Claim Subdomain</button>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-city">City</label>
+            <input type="text" class="form-input" id="reg-city" required maxlength="100" autocomplete="address-level2">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-region">State or region</label>
+            <input type="text" class="form-input" id="reg-region" maxlength="100" autocomplete="address-level1">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-postal">Postal code</label>
+            <input type="text" class="form-input" id="reg-postal" required maxlength="20" autocomplete="postal-code">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-country">Country</label>
+            <input type="text" class="form-input" id="reg-country" required maxlength="80" autocomplete="country-name" placeholder="India">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-tax-id">Tax ID, e.g. GSTIN <span class="input-hint">(optional)</span></label>
+            <input type="text" class="form-input" id="reg-tax-id" maxlength="40">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-billing-email">Billing email <span class="input-hint">(optional)</span></label>
+            <input type="email" class="form-input" id="reg-billing-email" autocomplete="email">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-notes">Anything we should know? <span class="input-hint">(optional)</span></label>
+          <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
+        </div>
+        <div class="form-group">
+          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
       </form>
       <div class="modal-switch">
         Already registered? <a href="/login" data-action="switch-modal" data-close="register" data-modal="login">Sign in</a>
@@ -1750,6 +1902,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <button class="modal-close" data-action="close-modal" data-modal="contact" aria-label="Close dialog">✕</button>
       <h2 class="modal-title" id="contact-modal-title">Send Deployment Inquiry</h2>
       <p class="modal-sub">Our team responds to organizations and partners within 24 hours.</p>
+      <div class="alert-box" id="contact-alert" role="alert"></div>
+      <div class="notice-box" id="contact-done" role="status"></div>
       <form id="contact-form">
         <div class="form-group">
           <label class="form-label" for="contact-name">Your Full Name</label>
@@ -1776,6 +1930,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <label class="form-label" for="contact-message">Message / Details</label>
           <textarea class="form-input" id="contact-message" rows="4" required placeholder="Tell us about the number of computers, location, and timeline..."></textarea>
         </div>
+        ${turnstileSlot("contact-turnstile")}
         <button type="submit" class="btn btn-primary btn-block">Send Inquiry &rarr;</button>
       </form>
     </div>
@@ -1816,6 +1971,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           <li><a href="#simulator">Live Simulator</a></li>
           <li><a href="#specs">Hardware Specs</a></li>
           <li><a href="#security">Architecture</a></li>
+          <li><a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener">Source code on GitHub</a></li>
           <li><a href="#faq">FAQ</a></li>
           <li><a href="/iso" data-action="open-modal" data-modal="iso">Download ISO</a></li>
         </ul>
@@ -1825,15 +1981,15 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
         <h5>Global Contact</h5>
         <ul>
           <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
-          <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@akbhoi.com">support@akbhoi.com</a></li>
-          <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@akbhoi.com">partners@akbhoi.com</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@labkiosk.org">partners@labkiosk.org</a></li>
           <li><a href="/contact" data-action="open-modal" data-modal="contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
         </ul>
       </div>
     </div>
 
     <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Akbhoi Innovations • Free for accredited schools up to 45 PCs • Commercial license for businesses &amp; resale</div>
+      <div>&copy; 2026 Lab Kiosk OS • Free for accredited schools up to 45 PCs • Commercial license for businesses &amp; resale</div>
       <div style="display: flex; gap: 16px; flex-wrap: wrap;">
         <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
         <a href="/register" data-action="open-modal" data-modal="register">Register Organization</a>
@@ -2023,27 +2179,70 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       item.classList.toggle('open');
     }
 
-    // Contact Form submission (generates prefilled mailto)
-    function handleContactSubmit(e) {
+    // Cloudflare Turnstile, when the platform turned it on: one widget in front of
+    // the signup code and one in front of the contact form. A token works once,
+    // so each widget is reset after every attempt.
+    const TURNSTILE_SITE_KEY = ${escapeJson(turnstileKey)};
+    const turnstileWidgets = {};
+    window.lkTurnstileReady = function () {
+      ['reg-turnstile', 'contact-turnstile'].forEach((id) => {
+        if (document.getElementById(id) && window.turnstile) {
+          turnstileWidgets[id] = window.turnstile.render('#' + id, {
+            sitekey: TURNSTILE_SITE_KEY,
+            action: id === 'reg-turnstile' ? 'signup' : 'contact'
+          });
+        }
+      });
+    };
+    function turnstileToken(id) {
+      if (!TURNSTILE_SITE_KEY) return '';
+      return window.turnstile && turnstileWidgets[id] !== undefined ? (window.turnstile.getResponse(turnstileWidgets[id]) || '') : '';
+    }
+    function turnstileReset(id) {
+      if (window.turnstile && turnstileWidgets[id] !== undefined) window.turnstile.reset(turnstileWidgets[id]);
+    }
+
+    // Contact form: filed straight into the platform's support inbox, and
+    // answered by email. No mail client is needed on either side.
+    async function handleContactSubmit(e) {
       e.preventDefault();
-      const name = document.getElementById('contact-name').value.trim();
-      const org = document.getElementById('contact-org').value.trim();
-      const email = document.getElementById('contact-sender-email').value.trim();
-      const type = document.getElementById('contact-type').value;
-      const message = document.getElementById('contact-message').value.trim();
-      const target = ${escapeJson(contactEmail)};
-
-      const subject = encodeURIComponent('[' + type + '] Inquiry from ' + name + ' (' + org + ')');
-      const body = encodeURIComponent(
-        'Name: ' + name + '\\n' +
-        'Organization: ' + org + '\\n' +
-        'Email: ' + email + '\\n' +
-        'Inquiry Type: ' + type + '\\n\\n' +
-        'Message:\\n' + message
-      );
-
-      closeModal('contact-modal');
-      window.location.href = 'mailto:' + target + '?subject=' + subject + '&body=' + body;
+      const alertBox = document.getElementById('contact-alert');
+      const done = document.getElementById('contact-done');
+      const form = document.getElementById('contact-form');
+      alertBox.style.display = 'none';
+      const payload = {
+        name: document.getElementById('contact-name').value.trim(),
+        organization: document.getElementById('contact-org').value.trim(),
+        email: document.getElementById('contact-sender-email').value.trim(),
+        topic: document.getElementById('contact-type').value,
+        message: document.getElementById('contact-message').value.trim(),
+        turnstileToken: turnstileToken('contact-turnstile')
+      };
+      if (TURNSTILE_SITE_KEY && !payload.turnstileToken) {
+        alertBox.textContent = 'Please complete the check above the button first.';
+        alertBox.style.display = 'block';
+        return;
+      }
+      try {
+        const res = await fetch('/api/contact', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        turnstileReset('contact-turnstile');
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          form.style.display = 'none';
+          done.textContent = 'Thank you. Your message is with our team (reference ' + data.reference + '). We will reply to ' + payload.email + '.';
+          done.style.display = 'block';
+        } else {
+          alertBox.textContent = data.error || 'Your message could not be sent.';
+          alertBox.style.display = 'block';
+        }
+      } catch (err) {
+        alertBox.textContent = 'Network error. Please try again.';
+        alertBox.style.display = 'block';
+      }
     }
 
     const BASE_DOMAIN = ${escapeJson(baseDomain)};
@@ -2093,6 +2292,8 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           // to be worked out here, and sent every super admin to /super whatever
           // subdomain they had signed in on.
           window.location.href = data.redirect || '/admin';
+        } else if (data.status === 'two_factor') {
+          showSecondStep(data.challenge);
         } else {
           alertBox.textContent = data.error || 'Login failed';
           alertBox.style.display = 'block';
@@ -2103,45 +2304,182 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       }
     });
 
-    // Registration Form Submission
+    // The second step of a two-factor sign-in: the app's code, an emailed one, or a recovery code.
+    const loginForm = document.getElementById('login-form');
+    const secondForm = document.getElementById('login-2fa-form');
+    const secondNotice = document.getElementById('login-2fa-notice');
+    let loginChallenge = '';
+    function loginError(message) {
+      const alertBox = document.getElementById('login-alert');
+      alertBox.textContent = message;
+      alertBox.style.display = 'block';
+    }
+    function showSecondStep(challenge) {
+      loginChallenge = challenge;
+      loginForm.hidden = true;
+      secondForm.hidden = false;
+      secondNotice.textContent = 'Your account uses two-factor sign-in. Enter the six-digit code from your authenticator app.';
+      secondNotice.style.display = 'block';
+      document.getElementById('login-2fa-code').value = '';
+      document.getElementById('login-2fa-code').focus();
+    }
+    function startOver() {
+      loginChallenge = '';
+      secondForm.hidden = true;
+      loginForm.hidden = false;
+      document.getElementById('login-password').value = '';
+      document.getElementById('login-password').focus();
+    }
+    document.getElementById('login-2fa-back').addEventListener('click', () => {
+      document.getElementById('login-alert').style.display = 'none';
+      startOver();
+    });
+    secondForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      document.getElementById('login-alert').style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/login/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            challenge: loginChallenge,
+            code: document.getElementById('login-2fa-code').value.trim(),
+            trustBrowser: document.getElementById('login-2fa-trust').checked
+          })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          window.location.href = data.redirect || '/admin';
+          return;
+        }
+        loginError(data.error || 'That code is not right.');
+        // An expired or exhausted sign-in needs the password again.
+        if (res.status === 401) startOver();
+      } catch (err) {
+        loginError('Network error during sign-in');
+      }
+    });
+    document.getElementById('login-2fa-email').addEventListener('click', async () => {
+      document.getElementById('login-alert').style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/login/email-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ challenge: loginChallenge })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          secondNotice.textContent = 'We emailed a six-digit code to ' + data.sentTo + '. Enter it below.';
+          document.getElementById('login-2fa-code').focus();
+          return;
+        }
+        loginError(data.error || 'The code could not be sent.');
+        if (res.status === 401) startOver();
+      } catch (err) {
+        loginError('Network error while sending the code');
+      }
+    });
+
+    // Registration: confirm the email with a code, then submit the request.
+    // The organization is reviewed before it is activated, so no session follows.
+    const registerAlert = document.getElementById('register-alert');
+    function registerError(message) {
+      registerAlert.textContent = message;
+      registerAlert.style.display = 'block';
+      registerAlert.scrollIntoView({ block: 'nearest' });
+    }
+
+    const sendCodeButton = document.getElementById('reg-send-code');
+    sendCodeButton.addEventListener('click', async () => {
+      const email = document.getElementById('reg-email').value.trim();
+      registerAlert.style.display = 'none';
+      if (!email) {
+        registerError('Enter your work email first.');
+        return;
+      }
+      const token = turnstileToken('reg-turnstile');
+      if (TURNSTILE_SITE_KEY && !token) {
+        registerError('Complete the check under your email address first.');
+        return;
+      }
+      sendCodeButton.disabled = true;
+      try {
+        const res = await fetch('/api/auth/register/email-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, turnstileToken: token })
+        });
+        turnstileReset('reg-turnstile');
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          sendCodeButton.textContent = 'Code sent';
+          document.getElementById('reg-code').focus();
+          // A new code may be asked for after a minute.
+          setTimeout(() => { sendCodeButton.disabled = false; sendCodeButton.textContent = 'Resend code'; }, 60000);
+          return;
+        }
+        registerError(data.error || 'The code could not be sent.');
+      } catch (err) {
+        registerError('Network error while sending the code.');
+      }
+      sendCodeButton.disabled = false;
+    });
+
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const name = document.getElementById('reg-name').value.trim();
-      const email = document.getElementById('reg-email').value.trim();
-      const password = document.getElementById('reg-password').value;
-      const subdomain = document.getElementById('reg-subdomain').value.trim().toLowerCase();
-      const alertBox = document.getElementById('register-alert');
-      alertBox.style.display = 'none';
+      registerAlert.style.display = 'none';
+      const value = (id) => document.getElementById(id).value.trim();
+      const workstations = parseInt(value('reg-workstations'), 10);
+      const payload = {
+        name: value('reg-name'),
+        legalName: value('reg-legal-name'),
+        organizationType: value('reg-type'),
+        workstationEstimate: Number.isFinite(workstations) ? workstations : null,
+        subdomain: value('reg-subdomain').toLowerCase(),
+        contactName: value('reg-contact-name'),
+        phone: value('reg-phone'),
+        email: value('reg-email'),
+        emailCode: value('reg-code'),
+        password: document.getElementById('reg-password').value,
+        addressLine1: value('reg-address1'),
+        addressLine2: value('reg-address2'),
+        city: value('reg-city'),
+        region: value('reg-region'),
+        postalCode: value('reg-postal'),
+        country: value('reg-country'),
+        taxId: value('reg-tax-id'),
+        billingEmail: value('reg-billing-email'),
+        notes: value('reg-notes'),
+        acceptTerms: document.getElementById('reg-terms').checked
+      };
 
       try {
         const res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password, subdomain })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
-        if (data.status === 'ok') {
-          if (data.subdomain) {
-            const host = window.location.hostname;
-            if (host === 'localhost' || host === '127.0.0.1' || host.includes('docker')) {
-              window.location.href = '/admin?tenant=' + encodeURIComponent(data.subdomain);
-            } else {
-              window.location.href = 'https://' + encodeURIComponent(data.subdomain) + '.' + BASE_DOMAIN + '/admin';
-            }
-          } else {
-            window.location.href = '/admin';
-          }
-        } else {
-          alertBox.textContent = data.error || 'Registration failed';
-          alertBox.style.display = 'block';
+        if (res.ok && data.status === 'ok') {
+          document.getElementById('register-form').style.display = 'none';
+          const done = document.getElementById('register-done');
+          done.textContent = 'Thank you. Your registration (reference ' + data.reference + ') is waiting for review. ' +
+            'We have emailed ' + payload.email + ' and will write again as soon as your console is active.';
+          done.style.display = 'block';
+          return;
         }
+        registerError(data.error || 'Registration failed');
       } catch (err) {
-        alertBox.textContent = 'Network error during registration';
-        alertBox.style.display = 'block';
+        registerError('Network error during registration');
       }
     });
   </script>
   <script nonce="${escapeAttr(data.nonce)}">${THEME_TOGGLE_SCRIPT}</script>
+  ${
+    turnstileKey
+      ? `<script nonce="${escapeAttr(data.nonce)}" src="${TURNSTILE_ORIGIN}/turnstile/v0/api.js?render=explicit&amp;onload=lkTurnstileReady" async defer></script>`
+      : ""
+  }
 </body>
 </html>`;
 }

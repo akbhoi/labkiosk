@@ -52,6 +52,11 @@ import {
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
+import { envelopeFor, localOutbox, parseAddress } from "../src/mail";
+import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
+import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
+import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
+import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
 
 /**
  * The suite runs against the in-memory D1 adapter, which a production
@@ -59,7 +64,7 @@ import { PALETTE } from "../src/ui_tokens";
  */
 const mockEnv: Env = {
   DEFAULT_DOMAIN: "labkiosk.org",
-  SUPER_ADMIN_EMAIL: "admin@akbhoi.com",
+  SUPER_ADMIN_EMAIL: "admin@labkiosk.org",
   SUPER_ADMIN_PASSWORD: "SuperAdminPassword2026!",
   ALLOW_LOCAL_DB: "1"
 };
@@ -104,6 +109,82 @@ async function callJson<T = any>(path: string, init: RequestInit & { cookie?: st
   const res = await call(path, init);
   const data = (await res.json()) as T;
   return { res, data };
+}
+
+/** Every field a registration needs, valid unless overridden. */
+function signupBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    name: "Example Organization",
+    legalName: "Example Organization Pvt Ltd",
+    organizationType: "business",
+    contactName: "Jane Smith",
+    email: "jane@example.com",
+    emailCode: "000000",
+    phone: "+91 98765 43210",
+    password: "OrganizationPassword123!",
+    subdomain: "example",
+    addressLine1: "12 Market Road",
+    city: "Bhubaneswar",
+    region: "Odisha",
+    postalCode: "751001",
+    country: "India",
+    taxId: "21ABCDE1234F1Z5",
+    workstationEstimate: 40,
+    acceptTerms: true,
+    ...overrides
+  };
+}
+
+/** The newest message the local outbox holds for an address. */
+function lastMailTo(email: string) {
+  const mail = [...localOutbox()].reverse().find((m) => m.to === email.toLowerCase());
+  assert.ok(mail, `a message was sent to ${email}`);
+  return mail!;
+}
+
+let signupAddress = 0;
+
+/** Ask for a code, read it from the outbox, and submit the registration. */
+async function submitSignup(overrides: Record<string, unknown> = {}, env: Env = mockEnv) {
+  const body = signupBody(overrides);
+  // Each signup from its own address, so the per-address limits stay out of the way.
+  const from = { "CF-Connecting-IP": `198.51.100.${++signupAddress}` };
+  const codeRes = await worker.fetch(request("/api/auth/register/email-code", { ...json({ email: body.email }), headers: from }), env);
+  assert.equal(codeRes.status, 200, `a code is sent to ${body.email}`);
+  const code = lastMailTo(String(body.email)).subject.match(/^(\d{6}) is your Lab Kiosk verification code$/)?.[1];
+  assert.ok(code, "the code is in the subject");
+  const res = await worker.fetch(request("/api/auth/register", { ...json({ ...body, emailCode: code }), headers: from }), env);
+  const data = (await res.json()) as any;
+  return { res, data };
+}
+
+async function superCookie(): Promise<string> {
+  const res = await call("/api/auth/login", json({ email: mockEnv.SUPER_ADMIN_EMAIL, password: mockEnv.SUPER_ADMIN_PASSWORD }));
+  assert.equal(res.status, 200, "the super admin signs in");
+  return res.headers.get("Set-Cookie")!.split(";")[0];
+}
+
+/** The task a registration or request opened, by its reference. */
+async function taskByReference(cookie: string, reference: string, box: "tasks" | "support" = "tasks") {
+  const { data } = await callJson(`/api/super/inbox?box=${box}&filter=all`, { cookie });
+  const item = (data.items as any[]).find((i) => i.reference === reference);
+  assert.ok(item, `${reference} is listed`);
+  return item;
+}
+
+/** Register, confirm the phone, approve, and sign in: the organization's session cookie. */
+async function registerApprovedOrganization(overrides: Record<string, unknown>): Promise<string> {
+  const { res, data } = await submitSignup(overrides);
+  assert.equal(res.status, 200, JSON.stringify(data));
+  const admin = await superCookie();
+  const task = await taskByReference(admin, data.reference);
+  assert.equal((await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin })).status, 200);
+  const approved = await call(`/api/super/inbox/${task.id}/approve`, { ...json({ message: "" }), cookie: admin });
+  assert.equal(approved.status, 200);
+  const body = signupBody(overrides);
+  const login = await call("/api/auth/login", json({ email: body.email, password: body.password }));
+  assert.equal(login.status, 200, "an approved organization can sign in");
+  return login.headers.get("Set-Cookie")!.split(";")[0];
 }
 
 /** The parts of the Durable Object runtime RemoteRelay uses, in this process. */
@@ -205,28 +286,128 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Rejects registration with a weak password", async () => {
     const { res, data } = await callJson(
       "/api/auth/register",
-      json({ name: "Weak Organization", email: "weak@example.com", password: "short", subdomain: "weakorganization" })
+      json(signupBody({ email: "weak@example.com", password: "short", subdomain: "weakorganization" }))
     );
     assert.equal(res.status, 400);
     assert.match(data.error, /at least 12 characters/);
   });
 
-  test("Registers new organization admin and claims subdomain", async () => {
-    const { res, data } = await callJson(
-      "/api/auth/register",
-      json({
-        name: "Greenwood Holdings",
-        email: "operator@greenwood.example",
-        password: "OrganizationPassword123!",
-        subdomain: "greenwood"
-      })
-    );
-    assert.equal(res.status, 200);
-    assert.equal(data.status, "ok");
-    assert.equal(data.subdomain, "greenwood");
+  test("Registration needs a phone number, an address and the email code", async () => {
+    const noPhone = await callJson("/api/auth/register", json(signupBody({ phone: "" })));
+    assert.equal(noPhone.res.status, 400);
+    assert.match(noPhone.data.error, /country code/);
+    const localPhone = await callJson("/api/auth/register", json(signupBody({ phone: "98765 43210" })));
+    assert.equal(localPhone.res.status, 400, "a number without its country code is refused");
+    const noAddress = await callJson("/api/auth/register", json(signupBody({ city: "" })));
+    assert.equal(noAddress.res.status, 400);
+    assert.match(noAddress.data.error, /address/);
+    const noTerms = await callJson("/api/auth/register", json(signupBody({ acceptTerms: false })));
+    assert.equal(noTerms.res.status, 400);
+    const disposable = await callJson("/api/auth/register/email-code", json({ email: "someone@mailinator.com" }));
+    assert.equal(disposable.res.status, 400, "a throwaway inbox cannot hold a signup");
+    // A code that was never sent is not accepted.
+    const unsent = await callJson("/api/auth/register", json(signupBody({ email: "nocode@example.com", subdomain: "nocode" })));
+    assert.equal(unsent.res.status, 400);
+    assert.match(unsent.data.error, /expired/);
+  });
 
-    const cookie = res.headers.get("Set-Cookie");
-    assert.ok(cookie && cookie.includes("labkiosk_session="));
+  test("A wrong code is refused and stops working after five guesses", async () => {
+    const email = "guesser@example.com";
+    assert.equal((await call("/api/auth/register/email-code", json({ email }))).status, 200);
+    const code = lastMailTo(email).subject.slice(0, 6);
+    const wrong = code === "000000" ? "111111" : "000000";
+    for (let i = 0; i < 5; i++) {
+      const { res } = await callJson("/api/auth/register", json(signupBody({ email, subdomain: "guesser", emailCode: wrong })));
+      assert.equal(res.status, 400);
+    }
+    const { res, data } = await callJson("/api/auth/register", json(signupBody({ email, subdomain: "guesser", emailCode: code })));
+    assert.equal(res.status, 400, "the right code no longer works after five wrong ones");
+    assert.match(data.error, /expired/);
+    // The used-up code is gone, so a fresh one may be asked for (five per hour per address).
+    const resend = await callJson("/api/auth/register/email-code", json({ email }));
+    assert.equal(resend.res.status, 200);
+    const again = await callJson("/api/auth/register/email-code", json({ email }));
+    assert.equal(again.res.status, 429, "the next one waits a minute");
+  });
+
+  test("Registers a new organization as pending, emails the customer, and signs nobody in", async () => {
+    const { res, data } = await submitSignup({
+      name: "Greenwood Holdings",
+      contactName: "Gwen Wood",
+      email: "operator@greenwood.example",
+      subdomain: "greenwood"
+    });
+    assert.equal(res.status, 200, JSON.stringify(data));
+    assert.equal(data.status, "ok");
+    assert.equal(data.pending, true);
+    assert.match(data.reference, /^LK-[A-Z0-9]{6}$/);
+    assert.equal(res.headers.get("Set-Cookie"), null, "no session before approval");
+
+    const receipt = lastMailTo("operator@greenwood.example");
+    assert.match(receipt.subject, new RegExp(`^\\[${data.reference}\\] We received your registration`));
+    assert.match(receipt.text, /activated once our team has reviewed it/);
+
+    const early = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
+    assert.equal(early.res.status, 403, "a pending organization cannot sign in");
+    assert.match(early.data.error, /waiting for approval/);
+    const wrongPassword = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "WrongPassword123!" }));
+    assert.equal(wrongPassword.res.status, 401, "a stranger learns nothing about the account");
+
+    const portal = await call("/home?tenant=greenwood");
+    assert.equal(portal.status, 403, "a pending organization has no portal");
+    const enrol = await call("/api/devices/enroll", json({ subdomain: "greenwood", clientId: "PC-01", enrollmentKey: "X" }));
+    assert.notEqual(enrol.status, 200);
+  });
+
+  test("Tasks and Support are the super admin's alone", async () => {
+    for (const path of ["/api/super/inbox?box=tasks", "/api/super/inbox?box=support"]) {
+      assert.equal((await call(path)).status, 401, `${path} refuses an anonymous caller`);
+    }
+    const pending = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
+    assert.equal(pending.res.status, 403);
+    for (const page of ["/super/tasks", "/super/mail"]) {
+      assert.equal((await call(page)).status, 401);
+    }
+  });
+
+  test("Approval needs a verified phone, then activates the organization and emails its console", async () => {
+    const admin = await superCookie();
+    const { data: list } = await callJson("/api/super/inbox?box=tasks", { cookie: admin });
+    const task = (list.items as any[]).find((i) => i.organization_subdomain === "greenwood");
+    assert.ok(task, "the registration is a task");
+    assert.equal(task.kind, "signup");
+    assert.equal(task.status, "open");
+
+    const { data: detail } = await callJson(`/api/super/inbox/${task.id}`, { cookie: admin });
+    assert.equal(detail.profile.contact_phone, "+919876543210", "the phone number is stored in international form");
+    assert.ok(detail.profile.email_verified_at, "the email was verified by its code");
+    assert.equal(detail.profile.phone_verified_at, null);
+    assert.equal(detail.profile.city, "Bhubaneswar");
+    assert.ok(detail.messages.some((m: any) => m.direction === "outbound" && /We received your registration/.test(m.subject)));
+
+    const tooEarly = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
+    assert.equal(tooEarly.res.status, 409);
+    assert.match(tooEarly.data.error, /phone/);
+
+    assert.equal((await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin })).status, 200);
+    const approved = await callJson(`/api/super/inbox/${task.id}/approve`, {
+      ...json({ message: "Your first 45 workstations are covered by the evaluation license." }),
+      cookie: admin
+    });
+    assert.equal(approved.res.status, 200);
+    assert.equal(approved.data.emailSent, true);
+    const mail = lastMailTo("operator@greenwood.example");
+    assert.match(mail.subject, /Your organization is active/);
+    assert.match(mail.text, /https:\/\/greenwood\.labkiosk\.org\/admin/);
+    assert.match(mail.text, /evaluation license/);
+    assert.ok(mail.inReplyTo === undefined || mail.inReplyTo === null || mail.inReplyTo.startsWith("<"));
+
+    const again = await call(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
+    assert.equal(again.status, 409, "a decided task stays decided");
+
+    const login = await call("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
+    assert.equal(login.status, 200);
+    const cookie = login.headers.get("Set-Cookie");
     // Session cookies must be Secure, HttpOnly, and scoped to the parent domain
     // so they survive the hop to greenwood.labkiosk.org.
     assert.match(cookie!, /HttpOnly/);
@@ -236,17 +417,694 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Registers a second, unrelated organization for isolation checks", async () => {
-    const { res } = await callJson(
-      "/api/auth/register",
-      json({
-        name: "Riverside Academy",
-        email: "operator@riverside.example",
-        password: "RiversidePass456!",
-        subdomain: "riverside"
-      })
+    rivalSessionCookie = await registerApprovedOrganization({
+      name: "Riverside Academy",
+      contactName: "Rita Rivers",
+      email: "operator@riverside.example",
+      password: "RiversidePass456!",
+      subdomain: "riverside"
+    });
+  });
+
+  test("Turnstile guards the signup code and the contact form once it is configured", async () => {
+    const turnstileEnv: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite", TURNSTILE_SECRET_KEY: "0x4AAAAAAAsecret" };
+    const post = (path: string, body: unknown, env = turnstileEnv) =>
+      worker.fetch(request(path, { ...json(body), headers: { "CF-Connecting-IP": "203.0.113.77" } }), env);
+    const verdicts: Array<{ success: boolean; action?: string }> = [];
+    const seen: FormData[] = [];
+    const realFetch = globalThis.fetch;
+    const fetchMock = mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== "https://challenges.cloudflare.com/turnstile/v0/siteverify") return realFetch(input, init);
+      seen.push(init!.body as FormData);
+      return new Response(JSON.stringify(verdicts.shift() ?? { success: false }), { headers: { "Content-Type": "application/json" } });
+    });
+    try {
+      const contact = { name: "Tess", organization: "Town Library", email: "tess@town.example", message: "Hello" };
+      assert.equal((await post("/api/contact", contact)).status, 400, "no token, no message");
+      assert.equal(seen.length, 0, "nothing to verify without a token");
+
+      verdicts.push({ success: false });
+      assert.equal((await post("/api/contact", { ...contact, turnstileToken: "bad" })).status, 400);
+      verdicts.push({ success: true, action: "signup" });
+      assert.equal((await post("/api/contact", { ...contact, turnstileToken: "other-form" })).status, 400, "a token from the other form does not count");
+      verdicts.push({ success: true, action: "contact" });
+      const accepted = await post("/api/contact", { ...contact, turnstileToken: "good" });
+      assert.equal(accepted.status, 200);
+      const last = seen.at(-1)!;
+      assert.equal(last.get("secret"), "0x4AAAAAAAsecret");
+      assert.equal(last.get("response"), "good");
+      assert.equal(last.get("remoteip"), "203.0.113.77");
+
+      assert.equal((await post("/api/auth/register/email-code", { email: "new@town.example" })).status, 400, "the signup code needs the check too");
+      verdicts.push({ success: true, action: "signup" });
+      assert.equal((await post("/api/auth/register/email-code", { email: "new@town.example", turnstileToken: "good" })).status, 200);
+
+      // Half a configuration refuses rather than running unprotected.
+      const half: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite" };
+      assert.equal((await post("/api/contact", contact, half)).status, 503);
+    } finally {
+      fetchMock.mock.restore();
+    }
+
+    // The page loads the widget, and the CSP lets it, only when it is on.
+    const on = await worker.fetch(request("/"), turnstileEnv);
+    const onHtml = await on.text();
+    assert.match(onHtml, /<script nonce="[^"]+" src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit&amp;onload=lkTurnstileReady" async defer><\/script>/);
+    assert.ok(onHtml.includes('id="reg-turnstile"') && onHtml.includes('id="contact-turnstile"'));
+    assert.match(on.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/challenges\.cloudflare\.com/);
+    assert.match(on.headers.get("Content-Security-Policy") || "", /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
+    const off = await call("/");
+    assert.doesNotMatch(await off.text(), /turnstile\/v0\/api\.js|id="(?:reg|contact)-turnstile"/, "no widget while it is off");
+    assert.doesNotMatch(off.headers.get("Content-Security-Policy") || "", /https:\/\/challenges\.cloudflare\.com/);
+  });
+
+  test("TOTP codes match RFC 6238 and secrets survive base32", async () => {
+    const rfcSecret = new TextEncoder().encode("12345678901234567890");
+    assert.equal(await totpCode(rfcSecret, Math.floor(59 / 30)), "287082");
+    assert.equal(await totpCode(rfcSecret, Math.floor(1111111109 / 30)), "081804");
+    assert.equal(await totpCode(rfcSecret, Math.floor(2000000000 / 30)), "279037");
+    assert.equal(base32Encode(rfcSecret), "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+    assert.deepEqual(base32Decode("gezd gnbv-gy3tqojqgezdgnbvgy3tqojq"), rfcSecret);
+    assert.throws(() => base32Decode("not base32!"));
+  });
+
+  test("Two-factor sign-in: set up with an app, then a code, an emailed code or a recovery code", async () => {
+    const email = "operator@hillside.example";
+    const password = "HillsidePass789!";
+    const cookie = await registerApprovedOrganization({ name: "Hillside Library", contactName: "Hana Hill", email, password, subdomain: "hillside" });
+    const login = (device?: string) => call("/api/auth/login", { ...json({ email, password }), cookie: device });
+    const cookiesOf = (res: Response) => res.headers.getSetCookie().map((c) => c.split(";")[0]);
+    const session = (res: Response) => cookiesOf(res).find((c) => c.startsWith("labkiosk_session="))!;
+    const device = (res: Response) => cookiesOf(res).find((c) => c.startsWith("labkiosk_device="))!;
+    const mailTo = () => localOutbox().filter((m) => m.to === email);
+
+    // Off by default; only the signed-in account sees or changes its own.
+    assert.equal((await call("/api/auth/two-factor")).status, 401);
+    assert.equal((await call("/api/auth/two-factor/setup", json({ password }))).status, 401);
+    const { data: off } = await callJson("/api/auth/two-factor", { cookie });
+    assert.equal(off.enabled, false);
+    const { data: superState } = await callJson("/api/auth/two-factor", { cookie: await superCookie() });
+    assert.equal(superState.enabled, false, "super admins have it too");
+
+    const otherBrowser = session(await login());
+    assert.equal((await call("/api/auth/two-factor/setup", { ...json({ password: "wrong" }), cookie })).status, 400, "setup needs the password");
+    const { res: setupRes, data: setup } = await callJson("/api/auth/two-factor/setup", { ...json({ password }), cookie });
+    assert.equal(setupRes.status, 200);
+    assert.match(setup.otpauthUri, /^otpauth:\/\/totp\/Lab%20Kiosk%3Aoperator%40hillside\.example\?secret=[A-Z2-7]{32}&issuer=Lab%20Kiosk/);
+    const secret = base32Decode(setup.secret);
+    assert.equal((await login()).headers.get("Set-Cookie")?.includes("labkiosk_session"), true, "not on until a code proves the app");
+
+    assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "000000" }), cookie })).status, 400);
+    const firstStep = currentTotpStep();
+    const { res: enableRes, data: enabled } = await callJson("/api/auth/two-factor/enable", {
+      ...json({ code: await totpCode(secret, firstStep) }),
+      cookie
+    });
+    assert.equal(enableRes.status, 200);
+    assert.equal(enabled.recoveryCodes.length, 10);
+    assert.ok(enabled.recoveryCodes.every((c: string) => /^[a-z2-9]{5}-[a-z2-9]{5}$/.test(c)));
+    assert.equal((await callJson("/api/auth/me", { cookie: otherBrowser })).data.user, null, "browsers signed in with the password alone are signed out");
+    assert.ok((await callJson("/api/auth/me", { cookie })).data.user, "this browser stays signed in");
+
+    // The password alone now gives a challenge, not a session.
+    const step1 = await login();
+    const { status, challenge } = (await step1.json()) as any;
+    assert.equal(status, "two_factor");
+    assert.equal(step1.headers.get("Set-Cookie"), null, "no session before the second factor");
+    const verify = (body: Record<string, unknown>, deviceCookie?: string) =>
+      call("/api/auth/login/verify", { ...json(body), cookie: deviceCookie });
+    assert.equal((await verify({ challenge, code: "123456" })).status, 400);
+    assert.equal((await verify({ challenge, code: await totpCode(secret, firstStep) })).status, 400, "a code works once");
+    assert.equal((await verify({ challenge: "f".repeat(64), code: await totpCode(secret, firstStep + 1) })).status, 401);
+    const alertsBefore = mailTo().filter((m) => m.subject === "New sign-in to your Lab Kiosk account").length;
+    const signedIn = await verify({ challenge, code: await totpCode(secret, firstStep + 1) });
+    assert.equal(signedIn.status, 200);
+    assert.ok(session(signedIn), "the right code signs in");
+    assert.match(signedIn.headers.getSetCookie().find((c) => c.startsWith("labkiosk_device="))!, /Path=\/api\/auth; .*HttpOnly; SameSite=Strict/);
+    assert.equal((await verify({ challenge, code: "654321" })).status, 401, "a challenge signs in once");
+    const browser = device(signedIn);
+    assert.equal(
+      mailTo().filter((m) => m.subject === "New sign-in to your Lab Kiosk account").length,
+      alertsBefore + 1,
+      "a browser the account has not used before is reported by email"
     );
-    assert.equal(res.status, 200);
-    rivalSessionCookie = res.headers.get("Set-Cookie")!.split(";")[0];
+
+    // A code by email, and "trust this browser".
+    const step2 = (await (await login(browser)).json()) as any;
+    assert.equal(step2.status, "two_factor", "a known browser is not a trusted one");
+    const sent = await callJson("/api/auth/login/email-code", json({ challenge: step2.challenge }));
+    assert.equal(sent.res.status, 200);
+    assert.equal(sent.data.sentTo, "o•••@hillside.example");
+    assert.equal((await call("/api/auth/login/email-code", json({ challenge: step2.challenge }))).status, 429, "one code a minute");
+    const emailed = mailTo().at(-1)!;
+    const emailedCode = /is your Lab Kiosk sign-in code/.test(emailed.subject) ? emailed.subject.slice(0, 6) : "";
+    assert.match(emailedCode, /^\d{6}$/);
+    const trusted = await verify({ challenge: step2.challenge, code: emailedCode, trustBrowser: true }, browser);
+    assert.equal(trusted.status, 200);
+    assert.equal(
+      mailTo().filter((m) => m.subject === "New sign-in to your Lab Kiosk account").length,
+      alertsBefore + 1,
+      "a browser it has used before is not reported"
+    );
+    const direct = await login(browser);
+    assert.equal(((await direct.json()) as any).status, "ok", "a trusted browser skips the code for 30 days");
+    assert.ok(session(direct));
+
+    // A recovery code works once.
+    const recovery = enabled.recoveryCodes[0].toUpperCase();
+    const step3 = (await (await login()).json()) as any;
+    assert.equal((await verify({ challenge: step3.challenge, code: recovery })).status, 200);
+    const step4 = (await (await login()).json()) as any;
+    assert.equal((await verify({ challenge: step4.challenge, code: recovery })).status, 400, "a recovery code is used up");
+    assert.equal((await callJson("/api/auth/two-factor", { cookie })).data.recoveryCodesLeft, 9);
+
+    // Turning it off needs the password and a code.
+    assert.equal((await call("/api/auth/two-factor/disable", { ...json({ password, code: "000000" }), cookie })).status, 400);
+    assert.equal((await call("/api/auth/two-factor/disable", { ...json({ password: "wrong", code: enabled.recoveryCodes[1] }), cookie })).status, 400);
+    assert.equal((await call("/api/auth/two-factor/disable", { ...json({ password, code: enabled.recoveryCodes[1] }), cookie })).status, 200);
+    assert.equal(((await (await login()).json()) as any).status, "ok", "the password alone signs in again");
+    assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "123456" }), cookie })).status, 409, "a new setup starts over");
+  });
+
+  test("Two-factor sign-in: a challenge takes five wrong codes, then the password is needed again", async () => {
+    const email = "operator@hillside.example";
+    const password = "HillsidePass789!";
+    const cookie = (await call("/api/auth/login", json({ email, password }))).headers.get("Set-Cookie")!.split(";")[0];
+    const { data: setup } = await callJson("/api/auth/two-factor/setup", { ...json({ password }), cookie });
+    const step = currentTotpStep();
+    await call("/api/auth/two-factor/enable", { ...json({ code: await totpCode(base32Decode(setup.secret), step) }), cookie });
+    const { challenge } = (await (await call("/api/auth/login", json({ email, password }))).json()) as any;
+    for (let i = 0; i < 4; i++) {
+      assert.equal((await call("/api/auth/login/verify", json({ challenge, code: "000000" }))).status, 400);
+    }
+    assert.equal((await call("/api/auth/login/verify", json({ challenge, code: "000000" }))).status, 401);
+    const late = await call("/api/auth/login/verify", json({ challenge, code: await totpCode(base32Decode(setup.secret), step + 1) }));
+    assert.equal(late.status, 401, "the challenge is gone, even for the right code");
+  });
+
+  test("Remote Control is off until an organization asks and the platform approves", async () => {
+    const before = await callJson("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "PC-01" }), cookie: orgSessionCookie });
+    assert.equal(before.res.status, 403);
+    assert.match(before.data.error, /not enabled/);
+    assert.equal((await call("/console/remote?tenant=greenwood&clientId=PC-01", { cookie: orgSessionCookie })).status, 403);
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /id="form-remote-control-request"/);
+
+    // Only this organization's own staff can ask for it.
+    const anonymous = (await call("/api/tenant/remote-control/request?tenant=greenwood", json({}))).status;
+    assert.ok(anonymous === 401 || anonymous === 403, "an anonymous caller is refused");
+    const rival = await call("/api/tenant/remote-control/request?tenant=greenwood", { ...json({}), cookie: rivalSessionCookie });
+    assert.equal(rival.status, 403);
+    const crossSite = await call("/api/tenant/remote-control/request?tenant=greenwood", {
+      ...json({}),
+      cookie: orgSessionCookie,
+      headers: { Origin: "https://evil.example" }
+    });
+    assert.equal(crossSite.status, 403);
+
+    const asked = await callJson("/api/tenant/remote-control/request?tenant=greenwood", {
+      ...json({ reason: "Helping users across two rooms." }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(asked.res.status, 200);
+    assert.equal(asked.data.remoteControlStatus, "pending");
+    assert.match(lastMailTo("operator@greenwood.example").subject, /Remote Control request received/);
+    const twice = await call("/api/tenant/remote-control/request?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.equal(twice.status, 409, "a pending request is not asked twice");
+    assert.equal((await call("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "PC-01" }), cookie: orgSessionCookie })).status, 403);
+
+    const admin = await superCookie();
+    const task = await taskByReference(admin, asked.data.reference);
+    assert.equal(task.kind, "remote_control");
+    const verify = await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin });
+    assert.equal(verify.status, 400, "a Remote Control request has no phone to verify");
+    const approved = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
+    assert.equal(approved.res.status, 200);
+    assert.match(lastMailTo("operator@greenwood.example").subject, /Remote Control is on/);
+    const after = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(after, /id="form-remote-control-request"/);
+    assert.match(after, /badge-green">Enabled/);
+  });
+
+  test("A rejected registration is told why and cannot sign in", async () => {
+    const { data } = await submitSignup({ name: "Declined Org", email: "declined@example.org", subdomain: "declined-org" });
+    const admin = await superCookie();
+    const task = await taskByReference(admin, data.reference);
+    const rejected = await call(`/api/super/inbox/${task.id}/reject`, {
+      ...json({ message: "We could not confirm the phone number." }),
+      cookie: admin
+    });
+    assert.equal(rejected.status, 200);
+    const mail = lastMailTo("declined@example.org");
+    assert.match(mail.text, /not able to activate Declined Org/);
+    assert.match(mail.text, /could not confirm the phone number/);
+    const login = await callJson("/api/auth/login", json({ email: "declined@example.org", password: "OrganizationPassword123!" }));
+    assert.equal(login.res.status, 403);
+    assert.match(login.data.error, /not approved/);
+  });
+
+  // ------------------------------------------------------------ support inbox
+
+  test("The contact form opens a support conversation the super admin answers by email", async () => {
+    const missing = await call("/api/contact", { ...json({ name: "Sam", email: "sam@example.net" }), headers: { "CF-Connecting-IP": "203.0.113.70" } });
+    assert.equal(missing.status, 400, "a message is required");
+    const sent = await callJson("/api/contact", {
+      ...json({ name: "Sam Lee", organization: "City Library", email: "Sam@Example.net", topic: "Pricing", message: "How much for 60 computers?" }),
+      headers: { "CF-Connecting-IP": "203.0.113.70" }
+    });
+    assert.equal(sent.res.status, 200);
+    assert.match(sent.data.reference, /^LK-[0-9A-Z]{6}$/);
+
+    const admin = await superCookie();
+    const item = await taskByReference(admin, sent.data.reference, "support");
+    assert.equal(item.kind, "support");
+    assert.equal(item.contact_email, "sam@example.net");
+    const { data: tasks } = await callJson("/api/super/inbox?box=tasks&filter=all", { cookie: admin });
+    assert.ok(!(tasks.items as any[]).some((i) => i.reference === sent.data.reference), "support stays out of Tasks");
+
+    // An organization's own admin cannot read or answer the platform's inbox.
+    assert.equal((await call(`/api/super/inbox/${item.id}`, { cookie: orgSessionCookie })).status, 403);
+    assert.equal((await call(`/api/super/inbox/${item.id}/reply`, { ...json({ message: "x" }), cookie: orgSessionCookie })).status, 403);
+    assert.equal((await call("/api/super/inbox?box=support", { cookie: orgSessionCookie })).status, 403);
+
+    assert.equal((await call(`/api/super/inbox/${item.id}/reply`, { ...json({ message: "" }), cookie: admin })).status, 400);
+    assert.equal((await call(`/api/super/inbox/${item.id}/approve`, { ...json({}), cookie: admin })).status, 400, "support is not approved");
+    const replied = await call(`/api/super/inbox/${item.id}/reply`, {
+      ...json({ message: "60 computers need a subscriber license; details attached.", close: true }),
+      cookie: admin
+    });
+    assert.equal(replied.status, 200);
+    const mail = lastMailTo("sam@example.net");
+    assert.ok(mail.subject.includes(sent.data.reference), "the reply carries the reference");
+    assert.match(mail.text, /subscriber license/);
+
+    const { data: detail } = await callJson(`/api/super/inbox/${item.id}`, { cookie: admin });
+    assert.equal(detail.conversation.status, "closed");
+    assert.deepEqual(
+      detail.messages.map((m: any) => m.direction),
+      ["inbound", "outbound"]
+    );
+  });
+
+  /** A message as Email Routing hands it to the Worker. */
+  function inboundMessage(raw: string, envelopeFrom: string, to = "support@labkiosk.org") {
+    const bytes = new TextEncoder().encode(raw.replace(/\n/g, "\r\n"));
+    const forwarded: string[] = [];
+    const message: InboundMessage = {
+      from: envelopeFrom,
+      to,
+      raw: new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        }
+      }),
+      rawSize: bytes.length,
+      headers: new Headers(),
+      forward: async (rcptTo: string) => {
+        forwarded.push(rcptTo);
+      }
+    };
+    return { message, forwarded };
+  }
+
+  const inboxEnv: Env = { ...mockEnv, MAIL_FROM: "Lab Kiosk <support@email.labkiosk.org>", SUPPORT_ADDRESS: "support@labkiosk.org", SUPPORT_FORWARD_TO: "owner@example.com" };
+
+  test("Incoming email threads by reference, but only from the conversation's own contact", async () => {
+    const admin = await superCookie();
+    const { data: support } = await callJson("/api/super/inbox?box=support&filter=all", { cookie: admin });
+    const sam = (support.items as any[]).find((i) => i.contact_email === "sam@example.net");
+    assert.ok(sam);
+    const db = getDatabase(mockEnv);
+
+    // Sam answers: the closed conversation reopens with the new message, quoted history trimmed.
+    const reply = inboundMessage(
+      [
+        "From: Sam Lee <sam@example.net>",
+        `Subject: Re: [${sam.reference}] Pricing`,
+        "Message-ID: <reply-1@example.net>",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "Thanks, please send the invoice.",
+        "",
+        "On Tue, 6 Oct 2026 at 10:00, Lab Kiosk <support@email.labkiosk.org> wrote:",
+        "> 60 computers need a subscriber license"
+      ].join("\n"),
+      "sam@example.net"
+    );
+    const filed = await handleInboundEmail(reply.message, inboxEnv, db);
+    assert.equal(filed?.id, sam.id, "the reply joins its conversation");
+    assert.deepEqual(reply.forwarded, ["owner@example.com"], "the owner gets a copy");
+    const { data: detail } = await callJson(`/api/super/inbox/${sam.id}`, { cookie: admin });
+    assert.equal(detail.conversation.status, "open", "a customer's reply reopens the conversation");
+    const last = detail.messages[detail.messages.length - 1];
+    assert.equal(last.direction, "inbound");
+    assert.equal(last.body, "Thanks, please send the invoice.");
+
+    // A stranger who knows the reference, even with a forged Reply-To, starts a thread of their own.
+    const stranger = inboundMessage(
+      [
+        "From: Mallory <mallory@evil.example>",
+        "Reply-To: sam@example.net",
+        `Subject: Re: [${sam.reference}] Pricing`,
+        "Content-Type: text/plain",
+        "",
+        "Approve me."
+      ].join("\n"),
+      "mallory@evil.example"
+    );
+    const strangerFiled = await handleInboundEmail(stranger.message, inboxEnv, db);
+    assert.ok(strangerFiled);
+    assert.notEqual(strangerFiled!.id, sam.id);
+    assert.equal(strangerFiled!.kind, "support");
+
+    // Our own outbound mail coming back is a loop, and is dropped.
+    const loop = inboundMessage(["From: support@email.labkiosk.org", "Subject: Re: hello", "", "loop"].join("\n"), "support@email.labkiosk.org");
+    assert.equal(await handleInboundEmail(loop.message, inboxEnv, db), null);
+    assert.deepEqual(loop.forwarded, []);
+  });
+
+  test("Incoming email with no known reference opens a new support conversation", async () => {
+    const db = getDatabase(mockEnv);
+    const { message } = inboundMessage(
+      [
+        "From: =?UTF-8?B?UHJpeWEgU2hhcm1h?= <priya@school.example>",
+        "Subject: =?UTF-8?Q?Need_help_=E2=80=94_kiosk?=",
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/mixed; boundary="b1"',
+        "",
+        "--b1",
+        'Content-Type: multipart/alternative; boundary="b2"',
+        "",
+        "--b2",
+        "Content-Type: text/plain; charset=utf-8",
+        "Content-Transfer-Encoding: quoted-printable",
+        "",
+        "The screen stays bl=",
+        "ack =E2=80=94 help?",
+        "--b2",
+        "Content-Type: text/html",
+        "",
+        "<p>ignored</p>",
+        "--b2--",
+        "--b1",
+        'Content-Type: image/png; name="screen.png"',
+        "Content-Disposition: attachment; filename=\"screen.png\"",
+        "Content-Transfer-Encoding: base64",
+        "",
+        "iVBORw0KGgo=",
+        "--b1--"
+      ].join("\n"),
+      "priya@school.example"
+    );
+    const filed = await handleInboundEmail(message, inboxEnv, db);
+    assert.ok(filed);
+    assert.equal(filed!.subject, "Need help — kiosk");
+    assert.equal(filed!.contact_email, "priya@school.example");
+    assert.equal(filed!.contact_name, "Priya Sharma");
+    const admin = await superCookie();
+    const { data: detail } = await callJson(`/api/super/inbox/${filed!.id}`, { cookie: admin });
+    assert.match(detail.messages[0].body, /^The screen stays black — help\?/);
+    assert.equal(detail.conversation.mailbox, "support@labkiosk.org", "filed under the address it was sent to");
+    const received = detail.messages[0];
+    assert.deepEqual(JSON.parse(received.attachments), [{ index: 0, filename: "screen.png", contentType: "image/png", size: 8 }]);
+    assert.ok(received.raw_key, "the original is kept");
+
+    // The attachment comes back byte for byte, as a download that never renders.
+    const base = `/api/super/inbox/${filed!.id}/attachment/${received.id}/`;
+    const file = await call(base + "0", { cookie: admin });
+    assert.equal(file.status, 200);
+    assert.equal(file.headers.get("content-type"), "application/octet-stream");
+    assert.match(file.headers.get("content-disposition") || "", /^attachment; filename="screen\.png"/);
+    assert.equal(file.headers.get("x-content-type-options"), "nosniff");
+    assert.match(file.headers.get("content-security-policy") || "", /sandbox/);
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), Buffer.from("iVBORw0KGgo=", "base64"));
+    const original = await call(base + "original", { cookie: admin });
+    assert.equal(original.status, 200);
+    assert.match(original.headers.get("content-disposition") || "", /\.eml"/);
+    assert.match(await original.text(), /filename="screen\.png"/);
+    assert.equal((await call(base + "1", { cookie: admin })).status, 404, "no second attachment");
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/attachment/${crypto.randomUUID()}/0`, { cookie: admin })).status, 404);
+    assert.equal((await call(base + "0")).status, 401, "anonymous callers get nothing");
+    assert.equal((await call(base + "0", { cookie: orgSessionCookie })).status, 403, "organization staff get nothing");
+  });
+
+  test("Mail is kept per address, can be written, answered as that address, and deleted", async () => {
+    const db = getDatabase(mockEnv);
+    const admin = await superCookie();
+    const { message } = inboundMessage(
+      ["From: Buyer <buyer@company.example>", "Subject: Quote for 120 seats", "", "Please send a quote."].join("\n"),
+      "buyer@company.example",
+      "Sales@LabKiosk.org"
+    );
+    const filed = await handleInboundEmail(message, inboxEnv, db);
+    assert.equal(filed!.mailbox, "sales@labkiosk.org", "a new address becomes a mailbox on first mail");
+
+    const { data: sales } = await callJson("/api/super/inbox?box=support&filter=all&mailbox=sales%40labkiosk.org", { cookie: admin });
+    assert.deepEqual((sales.items as any[]).map((i) => i.id), [filed!.id], "only that mailbox's mail");
+    assert.equal(sales.mailDomain, "labkiosk.org");
+    const box = (sales.mailboxes as any[]).find((m) => m.mailbox === "sales@labkiosk.org");
+    assert.deepEqual(box, { mailbox: "sales@labkiosk.org", open: 1, unread: 1, total: 1 });
+
+    // A reply goes out as the mailbox: its name on the sending domain, answers to the mailbox.
+    assert.deepEqual(envelopeFor(inboxEnv, "sales@labkiosk.org"), {
+      from: { email: "sales@email.labkiosk.org", name: "Lab Kiosk" },
+      replyTo: "sales@labkiosk.org"
+    });
+    assert.deepEqual(envelopeFor(inboxEnv, null).replyTo, "support@labkiosk.org");
+    const replied = await callJson(`/api/super/inbox/${filed!.id}/reply`, { ...json({ message: "Here is the quote." }), cookie: admin });
+    assert.equal(replied.res.status, 200);
+    const reply = [...localOutbox()].reverse().find((m) => m.to === "buyer@company.example")!;
+    assert.equal(reply.replyTo, "sales@labkiosk.org");
+    assert.equal(reply.mailbox, "sales@labkiosk.org");
+
+    // A new message, written as any name on the mail domain.
+    const composed = await callJson("/api/super/inbox/compose", {
+      ...json({ from: "partners", to: "Ana <ana@reseller.example>", subject: "Reseller terms", message: "Attached are our terms." }),
+      cookie: admin
+    });
+    assert.equal(composed.res.status, 200, JSON.stringify(composed.data));
+    const sent = [...localOutbox()].reverse().find((m) => m.to === "ana@reseller.example")!;
+    assert.equal(sent.replyTo, "partners@labkiosk.org");
+    assert.match(sent.subject, /Reseller terms/);
+    const { data: thread } = await callJson(`/api/super/inbox/${composed.data.id}`, { cookie: admin });
+    assert.equal(thread.conversation.mailbox, "partners@labkiosk.org");
+    assert.equal(thread.conversation.contact_name, "Ana");
+    assert.deepEqual(thread.messages.map((m: any) => [m.direction, m.from_address]), [["outbound", "partners@labkiosk.org"]]);
+    const { data: all } = await callJson("/api/super/inbox?box=support&filter=all", { cookie: admin });
+    assert.equal((all.mailboxes as any[]).find((m) => m.mailbox === "partners@labkiosk.org")?.unread, 0, "what we wrote is not unread");
+
+    // What compose refuses.
+    const refused = async (body: unknown) => (await call("/api/super/inbox/compose", { ...json(body), cookie: admin })).status;
+    const good = { from: "sales", to: "a@b.example", subject: "s", message: "m" };
+    assert.equal(await refused({ ...good, from: "sales@elsewhere.example" }), 400, "only the platform's own domain");
+    assert.equal(await refused({ ...good, from: "-bad" }), 400);
+    assert.equal(await refused({ ...good, to: "someone@labkiosk.org" }), 400, "not to its own mailboxes");
+    assert.equal(await refused({ ...good, to: "not an address" }), 400);
+    assert.equal(await refused({ ...good, subject: " " }), 400);
+    assert.equal(await refused({ ...good, message: "" }), 400);
+    assert.equal((await call("/api/super/inbox/compose", { cookie: admin })).status, 405);
+    assert.equal((await call("/api/super/inbox/compose", json(good))).status, 401);
+    assert.equal((await call("/api/super/inbox/compose", { ...json(good), cookie: orgSessionCookie })).status, 403);
+
+    // Delete removes the conversation, its messages and the stored original; tasks stay.
+    const { data: detail } = await callJson(`/api/super/inbox/${filed!.id}`, { cookie: admin });
+    const rawKey = (detail.messages as any[]).find((m) => m.direction === "inbound").raw_key;
+    assert.ok(await loadRawMail(inboxEnv, rawKey));
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, json({}))).status, 401);
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { ...json({}), cookie: orgSessionCookie })).status, 403);
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { cookie: admin })).status, 405);
+    const { data: tasks } = await callJson("/api/super/inbox?box=tasks&filter=all", { cookie: admin });
+    const task = (tasks.items as any[])[0];
+    assert.equal((await call(`/api/super/inbox/${task.id}/delete`, { ...json({}), cookie: admin })).status, 400, "tasks stay on record");
+    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { ...json({}), cookie: admin })).status, 200);
+    assert.equal((await call(`/api/super/inbox/${filed!.id}`, { cookie: admin })).status, 404);
+    assert.equal(await loadRawMail(inboxEnv, rawKey), null, "the stored original is gone too");
+  });
+
+  test("Mail sent from the platform's own sending domain is a loop", async () => {
+    const db = getDatabase(mockEnv);
+    const { message } = inboundMessage(["From: sales@email.labkiosk.org", "Subject: Re: quote", "", "x"].join("\n"), "bounce@cf.example");
+    assert.equal(await handleInboundEmail(message, inboxEnv, db), null);
+  });
+
+  /** What the labkiosk-email-routing Worker leaves in R2 before it calls the controller. */
+  async function storedByEmailWorker(raw: string, from: string, to = "hello@labkiosk.org", storedAt = Date.now()) {
+    const id = crypto.randomUUID();
+    await storeRawMail(inboxEnv, rawMailKey(id), new TextEncoder().encode(raw.replace(/\n/g, "\r\n")));
+    await markPendingMail(inboxEnv, { id, from, to, storedAt });
+    return id;
+  }
+
+  async function isPending(id: string) {
+    return (await listPendingMail(inboxEnv, 1000)).some((m) => m.id === id);
+  }
+
+  test("Files mail the email Worker stored, once, and clears its marker", async () => {
+    const db = getDatabase(mockEnv);
+    const id = await storedByEmailWorker(
+      ["From: Ria <ria@example.org>", "Subject: Pricing", "Message-ID: <ria-1@example.org>", "", "How much for 60 computers?"].join("\n"),
+      "ria@example.org"
+    );
+    assert.ok(await isPending(id));
+    const result = await fileStoredInboundMail(inboxEnv, db, id, "ria@example.org", "hello@labkiosk.org");
+    assert.equal(result.status, "filed");
+    assert.equal(await isPending(id), false, "the marker is cleared");
+
+    const row = await db
+      .prepare("SELECT m.body, m.raw_key, c.mailbox, c.reference FROM conversation_messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.id = ?")
+      .bind(id)
+      .first<any>();
+    assert.equal(row.body, "How much for 60 computers?");
+    assert.equal(row.raw_key, rawMailKey(id), "the original stays where the email Worker put it");
+    assert.equal(row.mailbox, "hello@labkiosk.org");
+    assert.equal(result.status === "filed" && result.reference, row.reference);
+
+    // A repeat (the sweep racing a slow call) answers with the same conversation and adds nothing.
+    assert.deepEqual(await fileStoredInboundMail(inboxEnv, db, id, "ria@example.org", "hello@labkiosk.org"), result);
+    const count = await db.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE id = ?").bind(id).first<any>();
+    assert.equal(count.n, 1);
+  });
+
+  test("Stored mail from the sending domain is dropped with its original; a lost original is not retried", async () => {
+    const db = getDatabase(mockEnv);
+    const loop = await storedByEmailWorker(["From: support@email.labkiosk.org", "Subject: Re: x", "", "loop"].join("\n"), "support@email.labkiosk.org");
+    assert.deepEqual(await fileStoredInboundMail(inboxEnv, db, loop, "support@email.labkiosk.org", "support@labkiosk.org"), { status: "dropped" });
+    assert.equal(await loadRawMail(inboxEnv, rawMailKey(loop)), null);
+    assert.equal(await isPending(loop), false);
+
+    const lost = crypto.randomUUID();
+    await markPendingMail(inboxEnv, { id: lost, from: "a@example.org", to: "support@labkiosk.org", storedAt: 0 });
+    assert.deepEqual(await fileStoredInboundMail(inboxEnv, db, lost, "a@example.org", "support@labkiosk.org"), { status: "missing" });
+    assert.equal(await isPending(lost), false);
+
+    await assert.rejects(fileStoredInboundMail(inboxEnv, db, "../etc", "a@example.org", "support@labkiosk.org"), /Not a mail id/);
+    await assert.rejects(fileStoredInboundMail(inboxEnv, db, crypto.randomUUID(), "a@example.org", "nobody"), /not an email address/);
+  });
+
+  test("The hourly sweep files stranded mail, but leaves the newest to the email Worker's own call", async () => {
+    const db = getDatabase(mockEnv);
+    const now = Date.now();
+    const old = await storedByEmailWorker(["From: kim@example.org", "Subject: Stranded", "", "still here"].join("\n"), "kim@example.org", "support@labkiosk.org", now - 60 * 60 * 1000);
+    const fresh = await storedByEmailWorker(["From: lee@example.org", "Subject: Just now", "", "hi"].join("\n"), "lee@example.org", "support@labkiosk.org", now);
+    assert.ok((await fileStrandedInboundMail(inboxEnv, db, now)) >= 1);
+    assert.equal(await isPending(old), false);
+    assert.ok(await isPending(fresh), "younger than ten minutes: not yet");
+    const filed = await db.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE id = ?").bind(old).first<any>();
+    assert.equal(filed.n, 1);
+    await fileStoredInboundMail(inboxEnv, db, fresh, "lee@example.org", "support@labkiosk.org");
+  });
+
+  test("A stored message too large to parse is filed from its headers", async () => {
+    const db = getDatabase(mockEnv);
+    const big = "x".repeat(11 * 1024 * 1024);
+    const id = await storedByEmailWorker(["From: big@example.org", "Subject: Scans", "", big].join("\n"), "big@example.org");
+    const result = await fileStoredInboundMail(inboxEnv, db, id, "big@example.org", "support@labkiosk.org");
+    assert.equal(result.status, "filed");
+    const row = await db.prepare("SELECT body, subject FROM conversation_messages WHERE id = ?").bind(id).first<any>();
+    assert.equal(row.subject, "Scans");
+    assert.match(row.body, /too large to show here/);
+  });
+
+  test("Takes one attachment back out of a stored message", () => {
+    const raw = new TextEncoder().encode(
+      [
+        'Content-Type: multipart/mixed; boundary="x"',
+        "",
+        "--x",
+        "Content-Type: text/plain",
+        "",
+        "hi",
+        "--x",
+        'Content-Type: application/pdf; name="a.pdf"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        Buffer.from("%PDF-1").toString("base64"),
+        "--x",
+        "Content-Type: text/html; name=\"../../evil\u0007.html\"",
+        "Content-Disposition: attachment; filename=\"../../evil\u0007.html\"",
+        "",
+        "<script>alert(1)</script>",
+        "--x--"
+      ].join("\r\n")
+    );
+    const parsed = parseEmail(raw);
+    assert.deepEqual(parsed.attachments.map((a) => [a.index, a.filename, a.contentType]), [
+      [0, "a.pdf", "application/pdf"],
+      [1, "evil_.html", "text/html"]
+    ], "names lose their path and control characters");
+    assert.equal(parsed.text, "hi");
+    assert.equal(Buffer.from(extractAttachment(raw, 0)!.bytes).toString(), "%PDF-1");
+    assert.equal(Buffer.from(extractAttachment(raw, 1)!.bytes).toString(), "<script>alert(1)</script>");
+    assert.equal(extractAttachment(raw, 2), null);
+  });
+
+  test("Parses the email shapes customers send", () => {
+    const encode = (text: string) => new TextEncoder().encode(text.replace(/\n/g, "\r\n"));
+    const base64 = parseEmail(
+      encode(
+        [
+          "From: \"Doe, John\" <John@Example.com>",
+          "Reply-To: billing@example.com",
+          "Subject: Invoice",
+          "In-Reply-To: <abc@labkiosk.org>",
+          "References: <first@labkiosk.org> <abc@labkiosk.org>",
+          "Auto-Submitted: auto-replied",
+          "Content-Type: text/plain; charset=utf-8",
+          "Content-Transfer-Encoding: base64",
+          "",
+          Buffer.from("Paid — ₹5000").toString("base64")
+        ].join("\n")
+      )
+    );
+    assert.deepEqual(base64.from, { address: "john@example.com", name: "Doe, John" });
+    assert.equal(base64.replyTo?.address, "billing@example.com");
+    assert.equal(base64.text, "Paid — ₹5000");
+    assert.equal(base64.inReplyTo, "<abc@labkiosk.org>");
+    assert.deepEqual(base64.references, ["<first@labkiosk.org>", "<abc@labkiosk.org>"]);
+    assert.equal(base64.automated, true);
+
+    const htmlOnly = parseEmail(encode(["From: a@b.example", "Subject: x", "Content-Type: text/html", "", "<p>Hello<br>there</p><script>alert(1)</script>"].join("\n")));
+    assert.match(htmlOnly.text, /Hello\s*\n\s*there/);
+    assert.doesNotMatch(htmlOnly.text, /alert|<p>/);
+    assert.equal(htmlOnly.automated, false);
+
+    assert.doesNotMatch(htmlToText("<scr<script>x</script>ipt>alert(1)</script><p>Hi</p>"), /<script/i, "nested tags do not survive");
+    assert.equal(htmlToText("a &lt;b&gt; &amp; c"), "a <b> & c", "entities become characters");
+    assert.doesNotMatch(htmlToText("before <!-- never closed <script"), /[<>]/, "an unclosed fragment leaves no bracket");
+
+    const inner = ["From: Customer <c@x.example>", "Subject: Original", "Content-Type: text/plain", "", "The forwarded words."].join("\r\n");
+    const forwarded = parseEmail(
+      encode(
+        [
+          "From: Agent <a@x.example>",
+          "Subject: Fwd: Original",
+          'Content-Type: multipart/mixed; boundary="f"',
+          "",
+          "--f",
+          "Content-Type: message/rfc822",
+          "Content-Transfer-Encoding: base64",
+          "",
+          Buffer.from(inner).toString("base64"),
+          "--f--"
+        ].join("\n")
+      )
+    );
+    assert.match(forwarded.text, /The forwarded words\./, "a base64-encoded forwarded message is read");
+
+    assert.deepEqual(parseAddress("Lab Kiosk <Support@Email.LabKiosk.org>"), { email: "support@email.labkiosk.org", name: "Lab Kiosk" });
+    assert.deepEqual(parseAddress('"Doe, J" <j@x.example>'), { email: "j@x.example", name: "Doe, J" });
+    assert.deepEqual(parseAddress("jane@example.com"), { email: "jane@example.com", name: "" });
+    for (const bad of ["", "jane", "jane@localhost", "a@b@c.example", "Name <not an address>", "x <a@b.example", "a b@c.example"]) {
+      assert.equal(parseAddress(bad), null, `${JSON.stringify(bad)} is not an address`);
+    }
+    const started = Date.now();
+    parseAddress("!@!." + "!.".repeat(50_000));
+    parseAddress("<!@" + "!@".repeat(50_000) + " ".repeat(50_000));
+    assert.ok(Date.now() - started < 200, "hostile input is refused quickly");
+
+    assert.equal(stripQuotedHistory("Yes.\n\nOn Mon, 5 Oct 2026, Lab Kiosk wrote:\n> old"), "Yes.");
+    assert.equal(stripQuotedHistory("On Mon, 5 Oct 2026, Lab Kiosk wrote:\n> only history"), "On Mon, 5 Oct 2026, Lab Kiosk wrote:\n> only history");
   });
 
   // ------------------------------------------------------------ super admin
@@ -254,7 +1112,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Logs in as Super Admin and accesses Super Admin Console on /super", async () => {
     const { res: loginRes, data: loginData } = await callJson(
       "/api/auth/login",
-      json({ email: "admin@akbhoi.com", password: "SuperAdminPassword2026!" })
+      json({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" })
     );
     assert.equal(loginRes.status, 200);
     assert.equal(loginData.status, "ok");
@@ -280,7 +1138,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Attempt sign-in with rotated password before rotation - must fail
     const { res: preRes } = await callJson(
       "/api/auth/login",
-      json({ email: "admin@akbhoi.com", password: "NewRotatedPassword2026!" })
+      json({ email: "admin@labkiosk.org", password: "NewRotatedPassword2026!" })
     );
     assert.equal(preRes.status, 401);
 
@@ -294,7 +1152,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Sign in with new rotated password - must succeed
     const newLoginRes = await worker.fetch(
-      request("/api/auth/login", json({ email: "admin@akbhoi.com", password: "NewRotatedPassword2026!" })),
+      request("/api/auth/login", json({ email: "admin@labkiosk.org", password: "NewRotatedPassword2026!" })),
       rotatedEnv
     );
     assert.equal(newLoginRes.status, 200);
@@ -304,7 +1162,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // Old password must now fail
     const oldLoginRes = await worker.fetch(
-      request("/api/auth/login", json({ email: "admin@akbhoi.com", password: "SuperAdminPassword2026!" })),
+      request("/api/auth/login", json({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" })),
       rotatedEnv
     );
     assert.equal(oldLoginRes.status, 401);
@@ -329,15 +1187,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Escapes a hostile organization name in the Super Admin Console", async () => {
     const hostileName = '<img src=x onerror=alert(1)>';
-    const { res } = await callJson(
-      "/api/auth/register",
-      json({
-        name: hostileName,
-        email: "attacker@evil.test",
-        password: "AttackerPass789!",
-        subdomain: "evilorganization"
-      })
-    );
+    const { res } = await submitSignup({
+      name: hostileName,
+      email: "attacker@evil.test",
+      password: "AttackerPass789!",
+      subdomain: "evilorganization"
+    });
     assert.equal(res.status, 200);
 
     const html = await (await call("/super", { cookie: superSessionCookie })).text();
@@ -549,7 +1404,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
-      ["/super/approvals", superSessionCookie],
+      ["/super/tasks", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
     ];
@@ -648,7 +1504,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
-      ["/super/approvals", superSessionCookie],
+      ["/super/tasks", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie],
       ["/", undefined],
@@ -686,7 +1543,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
-      ["/super/approvals", superSessionCookie],
+      ["/super/tasks", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
     ];
@@ -744,7 +1602,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/staff?tenant=greenwood", orgSessionCookie],
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super/organizations", superSessionCookie],
-      ["/super/approvals", superSessionCookie],
+      ["/super/tasks", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie]
     ];
@@ -2098,21 +2957,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (const subdomain of ["admin", "www", "super", "api"]) {
       const { res, data } = await callJson(
         "/api/auth/register",
-        json({ name: "Reserved", email: `reserved-${subdomain}@example.com`, password: "ReservedPass123!", subdomain })
+        json(signupBody({ name: "Reserved", email: `reserved-${subdomain}@example.com`, password: "ReservedPass123!", subdomain }))
       );
       assert.equal(res.status, 400, `${subdomain} must be refused`);
       assert.match(data.error, /reserved/);
     }
     const badEmail = await callJson(
       "/api/auth/register",
-      json({ name: "Bad Email", email: "not-an-email", password: "BadEmailPass123!", subdomain: "bademail" })
+      json(signupBody({ name: "Bad Email", email: "not-an-email", password: "BadEmailPass123!", subdomain: "bademail" }))
     );
     assert.equal(badEmail.res.status, 400);
     assert.match(badEmail.data.error, /valid email/);
 
     const tooLong = await callJson(
       "/api/auth/register",
-      json({ name: "Long", email: "long@example.com", password: "LongSlugPass123!", subdomain: "a".repeat(64) })
+      json(signupBody({ name: "Long", email: "long@example.com", password: "LongSlugPass123!", subdomain: "a".repeat(64) }))
     );
     assert.equal(tooLong.res.status, 400);
   });
@@ -2459,7 +3318,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Sign-in, registration and enrolment sit behind the rate limiter", async () => {
     const limited = { ...mockEnv, AUTH_RATE_LIMITER: { limit: async () => ({ success: false }) } as RateLimit };
-    for (const path of ["/api/auth/login", "/api/auth/register", "/api/devices/enroll"]) {
+    for (const path of ["/api/auth/login", "/api/auth/register", "/api/auth/register/email-code", "/api/contact", "/api/devices/enroll"]) {
       const res = await worker.fetch(request(path, json({})), limited as Env);
       assert.equal(res.status, 429, `${path} is throttled`);
     }
@@ -2794,10 +3653,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     for (let i = 0; i < 15 && !throttled; i++) {
       const res = await call(
         "/api/auth/register",
-        json({ name: `Bulk ${i}`, email: `bulk-${i}@example.com`, password: "BulkRegisterPass123!", subdomain: `bulk-${i}` })
+        json(signupBody({ name: `Bulk ${i}`, email: `bulk-${i}@example.com`, password: "BulkRegisterPass123!", subdomain: `bulk-${i}` }))
       );
       if (res.status === 429) throttled = true;
-      else assert.equal(res.status, 200);
+      else assert.equal(res.status, 400, "no code was sent for these, so each is refused");
     }
     assert.ok(throttled, "mass registration from one address must eventually answer 429");
   });
@@ -2993,18 +3852,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const organizations = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
     assert.ok(organizations.includes(directoryHeading), "organizations tab shows the directory");
 
-    for (const tab of ["/super/approvals", "/super/catalogs", "/super/system"]) {
+    for (const tab of ["/super/tasks", "/super/mail", "/super/catalogs", "/super/system"]) {
       const res = await call(tab, { cookie: superSessionCookie });
       assert.equal(res.status, 200);
       const body = await res.text();
       assert.ok(!body.includes(directoryHeading), tab + " must not leak the organizations directory");
     }
 
-    const approvals = await (await call("/super/approvals", { cookie: superSessionCookie })).text();
-    assert.ok(approvals.includes("Pending Subdomain Requests"));
+    const tasks = await (await call("/super/tasks", { cookie: superSessionCookie })).text();
+    assert.ok(tasks.includes('data-box="tasks"'), "Tasks shows the task list");
+    const support = await (await call("/super/mail", { cookie: superSessionCookie })).text();
+    assert.ok(support.includes('data-box="support"'), "Mail shows the conversation list");
     const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
     assert.ok(system.includes("Platform Architecture"));
-    assert.ok(!system.includes("Pending Subdomain Requests"));
+    for (const page of [system, await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text()]) {
+      assert.ok(page.includes('data-action="open-two-factor"') && page.includes('id="two-factor-modal"'), "every console offers two-factor sign-in");
+    }
+    assert.ok(!system.includes('id="inbox"'));
+    // The old address of the queue still lands.
+    const old = await call("/super/approvals", { cookie: superSessionCookie });
+    assert.equal(old.status, 302);
+    assert.match(old.headers.get("location") || "", /\/super\/tasks$/);
+    const oldSupport = await call("/super/support", { cookie: superSessionCookie });
+    assert.equal(oldSupport.status, 302);
+    assert.match(oldSupport.headers.get("location") || "", /\/super\/mail$/);
   });
 
   // ------------------------------------------ modern admin & privacy isolation
@@ -3033,9 +3904,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("No organization can take a demo name, and a demo cannot be renamed or suspended", async () => {
     for (const subdomain of ["demo", ...DEMO_SLUGS]) {
-      const res = await call("/api/auth/register", json({
+      const res = await call("/api/auth/register", json(signupBody({
         name: "Squatter", email: `squatter-${subdomain}@example.com`, password: "SquatterPassword123!", subdomain
-      }));
+      })));
       assert.equal(res.status, 400, `${subdomain} is reserved`);
       const rename = await call("/api/tenant/subdomain?tenant=greenwood", {
         ...json({ subdomain }), cookie: orgSessionCookie
@@ -3527,7 +4398,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(privHtml, /COPPA/);
     assert.match(privHtml, /100% In-Memory RAM Overlay/);
     // Every Cloudflare service the worker binds is disclosed, with Cloudflare's privacy terms.
-    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Workflows", "Cloudflare for SaaS", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
+    for (const service of ["Cloudflare Workers", "Cloudflare D1", "Durable Objects", "Queues", "R2", "Workers Analytics Engine", "Rate Limiting", "Cloudflare Email Service", "Cloudflare Turnstile", "Workflows", "Cloudflare for SaaS", "Workers AI", "GitHub", "Google Fonts", "Cloudflare Web Analytics", "Cloudflare Zaraz", "Google Analytics"]) {
       assert.ok(privHtml.includes(`<strong>${service}`) || privHtml.includes(`and ${service}`), `the Privacy Policy names ${service}`);
     }
     assert.match(privHtml, /href="https:\/\/www\.cloudflare\.com\/cloudflare-customer-dpa\/"/);
@@ -4124,7 +4995,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/admin/settings?tenant=greenwood", orgSessionCookie],
       ["/super", superSessionCookie],
       ["/super/organizations", superSessionCookie],
-      ["/super/approvals", superSessionCookie],
+      ["/super/tasks", superSessionCookie],
+      ["/super/mail", superSessionCookie],
       ["/super/catalogs", superSessionCookie],
       ["/super/system", superSessionCookie],
       ["/home?tenant=greenwood"],

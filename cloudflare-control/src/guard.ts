@@ -298,6 +298,10 @@ export function requireTenantAdmin(
   if (session.tenant_id !== tenant.id) {
     return jsonError("You do not have access to this organization", 403, headers);
   }
+  // An organization the platform has not approved (or turned down) has no console.
+  if (tenant.status === "pending" || tenant.status === "rejected") {
+    return jsonError("This organization has not been approved yet", 403, headers);
+  }
   return null;
 }
 

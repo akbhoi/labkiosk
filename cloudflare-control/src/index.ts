@@ -6,6 +6,7 @@
  * No route in this file may resolve a tenant or render untrusted data without them.
  */
 
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole, Session, AuditEntryMessage } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
@@ -157,7 +158,35 @@ import { PALETTE } from "./ui_tokens";
 export { OrgHub } from "./org_hub";
 export { RemoteRelay } from "./remote_relay";
 export { CustomHostnameWorkflow } from "./custom_hostname_workflow";
+
+/**
+ * The entrypoint the `labkiosk-email-routing` Worker (cloudflare-email-routing/)
+ * calls over its Service Binding once it has stored an incoming message in R2:
+ * the controller files it into Mail and answers what it did, so that Worker
+ * knows whether to forward the owner a copy. Not reachable from the internet.
+ */
+export class MailIntake extends WorkerEntrypoint<Env> {
+  async file(id: string, from: string, to: string): Promise<IntakeResult> {
+    const db = getDatabase(this.env);
+    await bootstrap(db, this.env);
+    useAuditQueue(this.env.AUDIT_QUEUE);
+    return fileStoredInboundMail(this.env, db, id, from, to);
+  }
+}
 import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
+import { handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
+import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
+import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
+import { TURNSTILE_ORIGIN, turnstileSiteKey } from "./turnstile";
+import {
+  continueSignIn,
+  handleLoginEmailCode,
+  handleLoginVerify,
+  handleTwoFactorRoute,
+  isTwoFactorRoute,
+  purgeExpiredLoginChallenges,
+  revokeTrustedBrowsers
+} from "./two_factor";
 
 /** Commands an admin console is allowed to dispatch. */
 const ALLOWED_COMMANDS = new Set(["lock", "unlock", "navigate", "reload", "reboot", "shutdown", "clear-session", "mute"]);
@@ -230,6 +259,20 @@ async function staffDelegationProblem(
  * are enrolled against that name, and renaming one would also stop it being a demo.
  */
 const DEMO_LOCKED_MESSAGE = "The platform's demo organizations keep their names and cannot be suspended or rejected";
+
+/**
+ * Remote Control is an add-on the platform approves per organization (Tasks).
+ * Every way into a session -- the viewer page, opening a session, the
+ * viewer's socket -- is refused until it has been approved.
+ */
+function remoteControlRefusal(tenant: Tenant | null, headers: Record<string, string>): Response | null {
+  if (tenant?.remote_control_status === "approved") return null;
+  return jsonError(
+    "Remote Control is not enabled for this organization. An administrator can request it under Settings.",
+    403,
+    headers
+  );
+}
 
 /** DNS label limit; a longer organization slug can never resolve. */
 const MAX_SUBDOMAIN_LENGTH = 63;
@@ -548,9 +591,11 @@ function isPublicTenantRoute(path: string, method: string): boolean {
  */
 function buildHtmlHeaders(
   nonce: string,
-  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean }
+  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean; turnstile?: boolean }
 ): Record<string, string> {
   const scriptSources = [`'nonce-${nonce}'`];
+  // Turnstile's widget script, and the frame it draws the check in (src/turnstile.ts).
+  if (options.turnstile) scriptSources.push(TURNSTILE_ORIGIN);
   // The Remote Control viewer's nonced module imports noVNC from /novnc/.
   if (options.remoteViewer) scriptSources.push("'self'");
   if (options.analyticsOrigin) scriptSources.push(`${options.analyticsOrigin}${ZARAZ_LOADER_PATH}`);
@@ -561,7 +606,7 @@ function buildHtmlHeaders(
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: https:",
     // Only Remote Control frames a page: the viewer on this console's own address.
-    "frame-src 'self'",
+    options.turnstile ? `frame-src 'self' ${TURNSTILE_ORIGIN}` : "frame-src 'self'",
     "connect-src 'self'",
     // Only the viewer is framed, and only by the console on its own address.
     options.remoteViewer ? "frame-ancestors 'self'" : "frame-ancestors 'none'",
@@ -596,6 +641,10 @@ export default {
     useAuditQueue(env.AUDIT_QUEUE);
     await deleteExpiredSessions(db);
     await purgeStaleLoginAttempts(db);
+    await purgeExpiredEmailCodes(db);
+    await purgeExpiredLoginChallenges(db);
+    const stranded = await fileStrandedInboundMail(env, db);
+    if (stranded) console.log(`[Worker] Filed ${stranded} incoming messages the email Worker could not hand over.`);
     const purgedIssues = await purgeOldWorkstationIssues(db);
     if (purgedIssues) console.log(`[Worker] Deleted ${purgedIssues} workstation issues older than ${WORKSTATION_ISSUE_RETENTION_DAYS} days.`);
     // Commands expire inside each organization's OrgHub; the audit log is the
@@ -609,6 +658,27 @@ export default {
       console.log(
         `[Worker] Bug reports: ${bugs.filed} filed, ${bugs.matched} matched to existing issues, ${bugs.linked} repeats, ${bugs.refreshed} statuses read.`
       );
+    }
+  },
+
+  /**
+   * Mail routed straight to this Worker by Email Routing: filed into Mail or
+   * the conversation it answers (src/inbox.ts). Production routes the
+   * catch-all to `labkiosk-email-routing`, which hands over through
+   * `MailIntake`; this handler keeps a direct route working too.
+   */
+  async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
+    const db = getDatabase(env);
+    await bootstrap(db, env);
+    useAuditQueue(env.AUDIT_QUEUE);
+    try {
+      await handleInboundEmail(message as unknown as InboundMessage, env, db);
+    } catch (err) {
+      console.error("[Worker] Filing an incoming email failed:", err);
+      // Not filed: the owner's copy is the only one left, and without it the
+      // sender is better off with a bounce than with silence.
+      if (!env.SUPPORT_FORWARD_TO) throw err;
+      await message.forward(env.SUPPORT_FORWARD_TO);
     }
   },
 
@@ -732,7 +802,13 @@ export default {
     if (
       env.AUTH_RATE_LIMITER &&
       method === "POST" &&
-      (path === "/api/auth/login" || path === "/api/auth/register" || path === "/api/devices/enroll")
+      (path === "/api/auth/login" ||
+        path === "/api/auth/login/verify" ||
+        path === "/api/auth/login/email-code" ||
+        path === "/api/auth/register" ||
+        path === "/api/auth/register/email-code" ||
+        path === "/api/contact" ||
+        path === "/api/devices/enroll")
     ) {
       let success = true;
       try {
@@ -752,7 +828,8 @@ export default {
     const htmlHeaders = buildHtmlHeaders(nonce, {
       hsts: isHttps && !isDev,
       indexable: isIndexable(request, url, env),
-      analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null
+      analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null,
+      turnstile: Boolean(turnstileSiteKey(env))
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
     const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.org";
@@ -788,98 +865,45 @@ export default {
     // AUTHENTICATION API ENDPOINTS
     // ==========================================
 
-    // POST /api/auth/register: Organization Admin Signup & Subdomain Claim
+    // Signup, the contact form and Remote Control requests (src/signup.ts) and
+    // the Super Admin's Tasks and Support (src/inbox.ts) share one context.
+    const routeContext: RouteContext = {
+      request,
+      env,
+      db,
+      url,
+      session,
+      jsonHeaders,
+      clientIp,
+      baseDomain,
+      isDev
+    };
+    const signInCookies = { domain: cookieDomain, secure: secureCookies, sessionCookie };
+
+    // POST /api/auth/register/email-code: prove the email address before signing up.
+    if (path === "/api/auth/register/email-code" && method === "POST") {
+      return handleSignupEmailCode(routeContext);
+    }
+
+    // POST /api/auth/register: an organization asks to join. It is created as
+    // pending and nothing works until the platform approves it (Tasks).
     if (path === "/api/auth/register" && method === "POST") {
       try {
-        const body = await request.json<{
-          name: string;
-          email: string;
-          password: string;
-          subdomain: string;
-        }>();
-
-        if (!body.name || !body.email || !body.password || !body.subdomain) {
-          return jsonError("All fields are required", 400, jsonHeaders);
-        }
-
-        const passwordProblem = validatePasswordStrength(body.password);
-        if (passwordProblem) {
-          return jsonError(passwordProblem, 400, jsonHeaders);
-        }
-
-        const name = String(body.name).trim().slice(0, MAX_PERSON_NAME_LENGTH);
-        if (!name) {
-          return jsonError("Organization name is required", 400, jsonHeaders);
-        }
-
-        if (!isPlausibleEmail(body.email)) {
-          return jsonError("Please enter a valid email address", 400, jsonHeaders);
-        }
-
-        const cleanSub = cleanSubdomain(body.subdomain);
-        if (cleanSub.length < 3 || cleanSub.length > MAX_SUBDOMAIN_LENGTH) {
-          return jsonError(
-            `Subdomain must be 3-${MAX_SUBDOMAIN_LENGTH} characters (letters, numbers, hyphens)`,
-            400,
-            jsonHeaders
-          );
-        }
-        if (isReservedSlug(cleanSub)) {
-          return jsonError("That subdomain is reserved by the platform. Please pick another.", 400, jsonHeaders);
-        }
-
-        const registerKey = `register:${clientIp}`;
-        const wait = await rateLimitWait(db, registerKey, REGISTER_RATE_LIMIT.limit, REGISTER_RATE_LIMIT.windowSeconds);
-        if (wait > 0) {
-          return jsonError(`Too many registrations from this address. Try again in ${Math.ceil(wait / 60)} minute(s).`, 429, jsonHeaders);
-        }
-        await recordRateLimitHit(db, registerKey, REGISTER_RATE_LIMIT.windowSeconds);
-
-        if (await findUserByEmail(db, body.email)) {
-          return jsonError("Email already registered. Please sign in.", 400, jsonHeaders);
-        }
-        if (await findTenantBySubdomain(db, cleanSub)) {
-          return jsonError("Subdomain already claimed. Please pick another.", 400, jsonHeaders);
-        }
-
-        const user = await createUser(db, {
-          email: body.email,
-          password: body.password,
-          name,
-          role: "org_admin"
-        });
-
-        const tenant = await createTenant(db, {
-          userId: user.id,
-          name,
-          subdomain: cleanSub,
-          status: "active" // Active immediately so a lab can be set up the same day
-        });
-
-        const token = generateSessionToken();
-        await createSession(db, {
-          token,
-          user_id: user.id,
-          tenant_id: tenant.id,
-          role: "org_admin",
-          expires_at: Math.floor(Date.now() / 1000) + 7 * 24 * 3600
-        });
-
-        await writeAuditLog(db, {
-          tenantId: tenant.id,
-          userId: user.id,
-          action: "tenant.register",
-          details: `subdomain=${tenant.subdomain}`
-        });
-
-        return new Response(
-          JSON.stringify({ status: "ok", role: "org_admin", subdomain: tenant.subdomain }),
-          { headers: { ...jsonHeaders, "Set-Cookie": sessionCookie(token) } }
-        );
+        return await handleRegister(routeContext);
       } catch (err: any) {
         console.error("[Worker] Registration failed:", err);
         return jsonError("Registration failed. Please try again.", 500, jsonHeaders);
       }
+    }
+
+    // POST /api/contact: the public contact form, filed into Support.
+    if (path === "/api/contact" && method === "POST") {
+      return handleContactForm(routeContext);
+    }
+
+    // /api/super/inbox...: Tasks and Support in the Super Admin console.
+    if (isInboxRoute(path)) {
+      return handleInboxRoute(routeContext);
     }
 
     // POST /api/auth/login: Operator or Super Admin Sign In
@@ -916,28 +940,23 @@ export default {
         await deleteExpiredSessions(db, user.id);
 
         const tenant = user.role === "org_admin" ? await findTenantByUserId(db, user.id) : null;
-        const token = generateSessionToken();
-        await createSession(db, {
-          token,
-          user_id: user.id,
-          tenant_id: tenant?.id || null,
-          role: user.role,
-          expires_at: Math.floor(Date.now() / 1000) + 7 * 24 * 3600
-        });
-
-        await writeAuditLog(db, {
-          tenantId: tenant?.id || null,
+        // An organization that has not been approved has no console yet. Said only
+        // after the password checked out, so it reveals nothing to a stranger.
+        if (tenant && (tenant.status === "pending" || tenant.status === "rejected")) {
+          return jsonError(
+            tenant.status === "pending"
+              ? "Your organization is waiting for approval. We will email you as soon as it is active."
+              : "This registration was not approved. Reply to our email or contact support for details.",
+            403,
+            jsonHeaders
+          );
+        }
+        // A session now, or a second step first for an account with two-factor sign-in.
+        return await continueSignIn(routeContext, signInCookies, {
           userId: user.id,
-          action: "auth.login",
-          details: `role=${user.role}`
-        });
-
-        return new Response(
-          JSON.stringify({
-            status: "ok",
-            role: user.role,
-            subdomain: tenant?.subdomain || null,
-            redirect: postLoginRedirect({
+          tenantId: tenant?.id || null,
+          role: user.role,
+          redirect: postLoginRedirect({
               role: user.role,
               ownSubdomain: tenant?.subdomain || null,
               hostSlug: hostSubdomain(request, env.DEFAULT_DOMAIN),
@@ -948,16 +967,27 @@ export default {
               // regardless, and the console guards on arrival either way.
               requestedSlug:
                 cleanSubdomain(url.searchParams.get("tenant") || body.tenant || "") || null,
-              isDev,
-              baseDomain
-            })
-          }),
-          { headers: { ...jsonHeaders, "Set-Cookie": sessionCookie(token) } }
-        );
+            isDev,
+            baseDomain
+          })
+        });
       } catch (err: any) {
         console.error("[Worker] Login failed:", err);
         return jsonError("Sign-in failed. Please try again.", 500, jsonHeaders);
       }
+    }
+
+    // POST /api/auth/login/verify, /email-code: the second step of a two-factor sign-in.
+    if (path === "/api/auth/login/verify" && method === "POST") {
+      return handleLoginVerify(routeContext, signInCookies);
+    }
+    if (path === "/api/auth/login/email-code" && method === "POST") {
+      return handleLoginEmailCode(routeContext);
+    }
+
+    // /api/auth/two-factor...: the signed-in account turns its own second factor on or off.
+    if (isTwoFactorRoute(path)) {
+      return handleTwoFactorRoute(routeContext, sessionToken);
     }
 
     // POST /api/auth/logout: Sign Out. GET is refused so a cross-site link or
@@ -1031,6 +1061,7 @@ export default {
         }
 
         await updateUserPassword(db, user.id, newPassword);
+        await revokeTrustedBrowsers(db, user.id);
         // Any other browser holding this account is signed out; this one stays.
         await deleteSessionsForUser(db, user.id, sessionToken || undefined);
         await writeAuditLog(db, {
@@ -1064,28 +1095,39 @@ export default {
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
-            contactEmail: "contact@akbhoi.com",
+            contactEmail: "contact@labkiosk.org",
+            turnstileSiteKey: turnstileSiteKey(env),
             nonce
           }),
           { status: 401, headers: htmlHeaders }
         );
       }
 
-      let activeTab: "organizations" | "approvals" | "catalogs" | "system" = "organizations";
-      if (path === "/super/approvals") activeTab = "approvals";
+      // The approvals queue became Tasks: signups, Remote Control and domain requests.
+      // Support became Mail: every address on the mail domain.
+      if (path === "/super/approvals" || path === "/super/support") {
+        const redirectUrl = new URL(request.url);
+        redirectUrl.pathname = path === "/super/approvals" ? "/super/tasks" : "/super/mail";
+        return Response.redirect(redirectUrl.toString(), 302);
+      }
+      let activeTab: "organizations" | "tasks" | "support" | "catalogs" | "system" = "organizations";
+      if (path === "/super/tasks") activeTab = "tasks";
+      else if (path === "/super/mail") activeTab = "support";
       else if (path === "/super/catalogs") activeTab = "catalogs";
       else if (path === "/super/system") activeTab = "system";
 
       const allTenants = await listAllTenants(db);
       const catalogs = await listUiCatalogs(db);
+      const counts = await inboxCounts(db);
       return new Response(
         renderSuperAdminHtml({
-          superAdminEmail: (await findUserById(db, session.user_id))?.email || "admin@akbhoi.com",
+          superAdminEmail: (await findUserById(db, session.user_id))?.email || "admin@labkiosk.org",
           superAdminId: session.user_id,
           tenants: allTenants,
           catalogs,
           baseDomain,
           activeTab,
+          inbox: counts,
           nonce
         }),
         { headers: htmlHeaders }
@@ -1269,10 +1311,13 @@ export default {
           return jsonError("Subdomain already assigned to another organization", 400, jsonHeaders);
         }
 
+        const target = await findTenantById(db, body.tenantId);
+        if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+        // Activating a registration is a decision with its own checks and email:
+        // it is made from Tasks, never as a side effect of assigning an address.
         await updateTenant(db, body.tenantId, {
           subdomain: cleanSub,
-          requested_subdomain: null,
-          status: "active"
+          requested_subdomain: null
         });
 
         await writeAuditLog(db, {
@@ -1296,14 +1341,23 @@ export default {
       if (denied) return denied;
       try {
         const body = await request.json<{ tenantId: string }>();
-        if (isDemoTenant(await findTenantById(db, body.tenantId), session!.user_id)) {
+        const target = await findTenantById(db, body.tenantId);
+        if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+        if (isDemoTenant(target, session!.user_id)) {
           return jsonError(DEMO_LOCKED_MESSAGE, 400, jsonHeaders);
         }
-        await updateTenant(db, body.tenantId, { status: "rejected", requested_subdomain: null });
+        // A registration is decided from Tasks, which tells the customer why.
+        if (target.status === "pending") {
+          return jsonError("Decide registrations from Tasks, where the customer is emailed the outcome", 409, jsonHeaders);
+        }
+        if (!target.requested_subdomain) return jsonError("This organization has no subdomain request", 400, jsonHeaders);
+        // Declining a new address keeps the organization on the one it has.
+        await updateTenant(db, body.tenantId, { requested_subdomain: null });
         await writeAuditLog(db, {
           tenantId: body.tenantId,
           userId: session!.user_id,
-          action: "tenant.reject"
+          action: "tenant.reject_subdomain",
+          details: `requested=${target.requested_subdomain}`
         });
         await notifyConfigChanged(env, body.tenantId);
         return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
@@ -2390,7 +2444,9 @@ export default {
           ip: status?.ip || row?.ip || undefined,
           lastSeen: new Date(lastSeenMs).toISOString(),
           online: Boolean(status?.online),
-          vncPassword: status?.vncPassword || row?.vnc_password || undefined,
+          // Of no use without Remote Control, which the platform approves per organization.
+          vncPassword:
+            tenant.remote_control_status === "approved" ? status?.vncPassword || row?.vnc_password || undefined : undefined,
           groupName: row?.group_name || undefined
         };
       };
@@ -2420,11 +2476,23 @@ export default {
     if (path === "/console/remote" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
+      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      if (notEnabled) return notEnabled;
       const clientId = url.searchParams.get("clientId") || "";
       if (!REMOTE_CLIENT_ID.test(clientId)) return jsonError("A workstation id is required", 400, jsonHeaders);
       return new Response(renderRemoteViewerHtml({ clientId, nonce }), {
         headers: buildHtmlHeaders(nonce, { hsts: isHttps && !isDev, indexable: false, analyticsOrigin: null, remoteViewer: true })
       });
+    }
+
+    // POST /api/tenant/remote-control/request: ask the platform to turn Remote Control on.
+    if (path === "/api/tenant/remote-control/request" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      if (session!.role === "super_admin") {
+        return jsonError("The demo organizations already have Remote Control", 400, jsonHeaders);
+      }
+      return handleRemoteControlRequest(routeContext, currentTenant!);
     }
 
     // POST /api/clients/remote-session: Remote Control through the console's
@@ -2433,6 +2501,8 @@ export default {
     if (path === "/api/clients/remote-session" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
+      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      if (notEnabled) return notEnabled;
       if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
       let body: { clientId?: unknown };
       try {
@@ -2475,6 +2545,8 @@ export default {
       if (denied) return denied;
       const crossSite = rejectCrossSiteSocket(request, { baseDomain: env.DEFAULT_DOMAIN }, jsonHeaders);
       if (crossSite) return crossSite;
+      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      if (notEnabled) return notEnabled;
       if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
       const clientId = url.searchParams.get("clientId") || "";
       const token = url.searchParams.get("session") || "";
@@ -2857,7 +2929,8 @@ export default {
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
-            contactEmail: "contact@akbhoi.com",
+            contactEmail: "contact@labkiosk.org",
+            turnstileSiteKey: turnstileSiteKey(env),
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -2940,7 +3013,8 @@ export default {
             openModal: isPlatformIsolation ? undefined : "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
-            contactEmail: "contact@akbhoi.com",
+            contactEmail: "contact@labkiosk.org",
+            turnstileSiteKey: turnstileSiteKey(env),
             nonce
           }),
           { status: denied.status, headers: htmlHeaders }
@@ -2987,7 +3061,8 @@ export default {
             openModal: "login",
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
-            contactEmail: "contact@akbhoi.com",
+            contactEmail: "contact@labkiosk.org",
+            turnstileSiteKey: turnstileSiteKey(env),
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -3137,7 +3212,8 @@ export default {
           openModal,
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
           baseDomain,
-          contactEmail: "contact@akbhoi.com",
+          contactEmail: "contact@labkiosk.org",
+          turnstileSiteKey: turnstileSiteKey(env),
           canonicalUrl,
           nonce
         }),

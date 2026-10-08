@@ -83,7 +83,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: cloudflare-control/pnpm-lock.yaml
+          cache-dependency-path: |
+            cloudflare-control/pnpm-lock.yaml
+            cloudflare-email-routing/pnpm-lock.yaml
 
       - name: Install Dependencies
         run: pnpm --prefix cloudflare-control install --frozen-lockfile
@@ -93,6 +95,14 @@ jobs:
 
       - name: Run Integration Tests
         run: pnpm --prefix cloudflare-control test
+
+      - name: Install Email Worker Dependencies
+        run: pnpm --prefix cloudflare-email-routing install --frozen-lockfile
+
+      - name: Email Worker Typecheck & Tests
+        run: |
+          pnpm --prefix cloudflare-email-routing run typecheck
+          pnpm --prefix cloudflare-email-routing test
 
   client:
     name: Kiosk Client Checks (agent, extension, image scripts)

@@ -38,14 +38,19 @@ labkiosk/
 │       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
 │       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0019 (never edit an applied one)
+│   ├── migrations/          0001..0021 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
 │   │                        remote_relay.ts (one Durable Object per workstation's Remote Control session),
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
 │   │                        boot_report.ts, bug_reports.ts (Errors & Warnings, opt-in GitHub bug reports),
 │   │                        seo.ts (robots.txt, sitemap, noindex, canonical host, analytics CSP),
+│   │                        two_factor.ts (TOTP, recovery codes, sign-in alerts), turnstile.ts,
+│   │                        signup.ts, inbox.ts, conversations.ts, mail.ts, mail_store.ts, mime.ts (registration,
+│   │                        Super Admin Tasks and Mail, email in and out),
 │   │                        ui_*.ts (one module per page), ui_tokens.ts, ui_layout.ts
 │   └── test/                worker.test.ts, dump_admin_html.ts, dev_server.ts
+├── cloudflare-email-routing/  labkiosk-email-routing: the Email Routing catch-all's Worker; keeps each
+│                            message in R2 and hands it to the controller's MailIntake (Service Binding)
 ├── Dockerfile, docker-compose.yml, docker-test/   workstation simulator
 ├── docs/, wiki/             deployment, API and user documentation
 └── .agents/skills/          on-demand procedures (above)
@@ -107,6 +112,8 @@ one the agent opens on request and pipes to loopback x11vnc. Full contracts:
 ```bash
 pnpm --prefix cloudflare-control run typecheck
 pnpm --prefix cloudflare-control test
+pnpm --prefix cloudflare-email-routing run typecheck
+pnpm --prefix cloudflare-email-routing test
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \

@@ -143,7 +143,7 @@ ${rootTokensCss(LEGACY_LEGAL_ALIASES)}
 ${mainHtml}
 
   <footer>
-    &copy; 2026 Lab Kiosk OS • Akbhoi Innovations • <a href="/">Return to Platform Home</a>
+    &copy; 2026 Lab Kiosk OS • <a href="/">Return to Platform Home</a>
   </footer>
 </body>
 </html>`;
@@ -200,6 +200,8 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
 
       <h2>4. Organization Administrator Accounts</h2>
       <p>Organization administrators and operators provide an email address, organization name, and password for administrative access. Passwords are cryptographically hashed using PBKDF2-HMAC-SHA256 (100,000 iterations). Administrative account details are stored securely in Cloudflare D1 and are never sold or shared.</p>
+      <p>Signing in sets two cookies, both strictly necessary and never used for tracking: <code>labkiosk_session</code>, which keeps you signed in for up to seven days, and <code>labkiosk_device</code>, a random identifier for the browser, sent only to the sign-in service. We keep a hash of that identifier with the browser's user-agent string, so that a sign-in from a browser your account has not used before can be reported to you by email (with the time, IP address and browser), and so that a browser you chose to trust can skip the two-factor code for 30 days. If you turn on two-factor sign-in, we store the authenticator-app secret and hashes of your recovery codes, and a code you ask for by email is sent to your account's address.</p>
+      <p>To register an organization we also ask for a technical contact's name, email address and phone number, the organization's postal address and, optionally, its legal name, tax identifier and billing email. We use them to verify the request, to decide whether to approve it, to arrange payment where a license requires one, and to reach the organization about its account. The email address is confirmed with a one-time code; the phone number is confirmed by our staff before approval. Messages you send to our addresses or through the contact form, with any attachments, and our replies, are kept with your request so the conversation can continue.</p>
 
       <h2>5. Automatic Bug Reports (Optional)</h2>
       <p>An organization's administrator may turn on Automatic Bug Reports. Only then, the workstation problems listed in Errors &amp; Warnings are sent, with network addresses, host names, e-mail addresses and identifiers masked, to an AI model on Cloudflare Workers AI for triage, and published as issues in a GitHub repository, which may be public. Organization names, workstation names, staff accounts, browsing and screen content are never sent. The <a href="/terms/bug-reports">Automatic Bug Report Terms</a> describe exactly what is sent and how to have a report removed.</p>
@@ -208,14 +210,16 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
       <p>The Platform runs on Cloudflare, Inc. ("Cloudflare"), which processes the data described in this policy as our service provider, under the <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare Privacy Policy</a> and the <a href="https://www.cloudflare.com/cloudflare-customer-dpa/">Cloudflare Customer Data Processing Addendum</a>. Cloudflare may process it in its data centers worldwide. The Cloudflare services we use, and what each one handles:</p>
       <ul>
         <li><strong>Cloudflare Workers:</strong> runs the Platform. Every request to the consoles, the User Portal and the workstation interface passes through it, and request logs (including IP addresses) are kept for a sample of about one in ten requests for troubleshooting.</li>
-        <li><strong>Cloudflare D1:</strong> the database: organization and staff accounts with hashed passwords, the workstation registry, allowlists, User Portal apps, settings, the audit log, and errors and warnings.</li>
+        <li><strong>Cloudflare D1:</strong> the database: organization and staff accounts with hashed passwords, registration details and support conversations, the workstation registry, allowlists, User Portal apps, settings, the audit log, and errors and warnings.</li>
         <li><strong>Durable Objects:</strong> each organization's live state: which workstations are connected, the command queue (commands expire after 60 seconds), the screen frames relayed to a watching operator, and the remote-control sessions an operator opens to a workstation, whose screen, keyboard and mouse traffic is passed through and never stored.</li>
         <li><strong>Queues:</strong> audit log entries on their way to the database.</li>
-        <li><strong>R2:</strong> audit log entries older than 180 days, archived.</li>
+        <li><strong>R2:</strong> audit log entries older than 180 days, archived, and the original of every email sent to our addresses, with its attachments, until we delete the conversation.</li>
         <li><strong>Workers Analytics Engine:</strong> counts of workstation connections and disconnections per organization.</li>
         <li><strong>Rate Limiting:</strong> counts of requests per IP address in front of sign-in, registration and workstation enrollment.</li>
+        <li><strong>Cloudflare Email Service:</strong> sends registration codes, approval decisions and our replies, and receives mail sent to our addresses, which is stored with the conversation it belongs to.</li>
         <li><strong>Workflows and Cloudflare for SaaS:</strong> an organization's custom domain name and its TLS certificate.</li>
         <li><strong>Workers AI:</strong> only for organizations that turned on Automatic Bug Reports, the masked problem reports described in section 5.</li>
+        <li><strong>Cloudflare Turnstile:</strong> when we turn it on, checks that the registration and contact forms are being used by a person. Cloudflare reads signals from your browser and its IP address to decide, without a tracking cookie, and tells us only whether the check passed.</li>
         <li><strong>Cloudflare Web Analytics:</strong> counts page views and page load times without cookies or a visitor identifier.</li>
         <li><strong>Cloudflare Zaraz:</strong> runs Google Analytics on the public website pages described in section 8, after the visitor consents.</li>
       </ul>
@@ -234,7 +238,7 @@ export function renderPrivacyPolicyHtml(options: LegalPageOptions = {}): string 
       <p>Google Analytics never runs on workstations, the User Portal, organization homepages, organization subdomains or custom domains, or the consoles: the Platform's Content Security Policy blocks it there.</p>
 
       <h2>9. Contact Us</h2>
-      <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@akbhoi.com">privacy@akbhoi.com</a>.</p>
+      <p>If you have questions regarding our privacy practices or educational data protection compliance, please contact our data protection team at <a href="mailto:privacy@labkiosk.org">privacy@labkiosk.org</a>.</p>
     </div>
   </main>
 `
@@ -286,7 +290,7 @@ export function renderTermsOfServiceHtml(options: LegalPageOptions = {}): string
       <p>The platform is provided "as is" and "as available". While we strive for 99.9% uptime via Cloudflare's global edge network, we do not warrant that service will be uninterrupted or error-free.</p>
 
       <h2>7. Inquiries &amp; Legal Notices</h2>
-      <p>For legal inquiries, contact <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a>.</p>
+      <p>For legal inquiries, contact <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
     </div>
   </main>
 `
@@ -337,7 +341,7 @@ export function renderBugReportTermsHtml(repository: string | null, options: Leg
       <p>A report never contains your organization's name, subdomain or domain, workstation names, staff accounts, the pages users visit, screen images, or anything a user types.</p>
 
       <h2>4. Masking Is Automatic and Best Effort</h2>
-      <p>The masking is done by software before anything leaves the Platform. We designed it to remove identifying details, but no automatic filter can be guaranteed to catch everything. If you find a detail in a published report that identifies your organization or a person, write to <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a> with a link to the report and we will edit or remove it.</p>
+      <p>The masking is done by software before anything leaves the Platform. We designed it to remove identifying details, but no automatic filter can be guaranteed to catch everything. If you find a detail in a published report that identifies your organization or a person, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a> with a link to the report and we will edit or remove it.</p>
 
       <h2>5. Where Reports Are Published</h2>
       <p>Reports are published in ${where}, which is operated by GitHub, Inc. under its own terms and privacy statement. If that repository is public, anyone can read, copy and index the reports, and copies may remain elsewhere after a report is edited or removed. Reports from different organizations about the same problem are combined, so a report may reflect problems seen by several organizations.</p>
@@ -364,7 +368,7 @@ export function renderBugReportTermsHtml(repository: string | null, options: Leg
       <p>If these terms change, they get a new version and date at the top of this page. Reports stop being sent until an administrator of your organization accepts the new version. Nothing is sent under a version your organization has not accepted.</p>
 
       <h2>13. Contact</h2>
-      <p>For questions about these terms, contact <a href="mailto:legal@akbhoi.com">legal@akbhoi.com</a>.</p>
+      <p>For questions about these terms, contact <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
     </div>
   </main>
 `

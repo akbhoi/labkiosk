@@ -4,7 +4,7 @@ import { Env } from "../src/types";
 
 const env: Env = {
   DEFAULT_DOMAIN: "labkiosk.org",
-  SUPER_ADMIN_EMAIL: "admin@akbhoi.com",
+  SUPER_ADMIN_EMAIL: "admin@labkiosk.org",
   SUPER_ADMIN_PASSWORD: "SuperAdminPassword2026!",
   ALLOW_LOCAL_DB: "1"
 };
@@ -36,8 +36,11 @@ const server = http.createServer(async (req, res) => {
 
     res.statusCode = webRes.status;
     webRes.headers.forEach((val, key) => {
-      res.setHeader(key, val);
+      if (key !== "set-cookie") res.setHeader(key, val);
     });
+    // A sign-in sets two cookies; setHeader per pair would keep only the last.
+    const cookies = webRes.headers.getSetCookie();
+    if (cookies.length) res.setHeader("Set-Cookie", cookies);
 
     const ab = await webRes.arrayBuffer();
     res.end(Buffer.from(ab));

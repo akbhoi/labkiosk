@@ -71,7 +71,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   updated_at INTEGER NOT NULL,
   bug_reports_enabled INTEGER NOT NULL DEFAULT 0,
   bug_reports_terms_version TEXT,
-  bug_reports_terms_accepted_at INTEGER
+  bug_reports_terms_accepted_at INTEGER,
+  remote_control_status TEXT NOT NULL DEFAULT 'none'
+  CHECK (remote_control_status IN ('none', 'pending', 'approved', 'rejected'))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -215,6 +217,107 @@ CREATE TABLE IF NOT EXISTS workstation_groups (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS organization_profiles (
+  tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  legal_name TEXT,
+  contact_name TEXT NOT NULL,
+  contact_email TEXT NOT NULL,
+  contact_phone TEXT NOT NULL,
+  email_verified_at INTEGER,
+  phone_verified_at INTEGER,
+  phone_verified_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  address_line1 TEXT NOT NULL,
+  address_line2 TEXT,
+  city TEXT NOT NULL,
+  region TEXT,
+  postal_code TEXT NOT NULL,
+  country TEXT NOT NULL,
+  tax_id TEXT,
+  billing_email TEXT,
+  workstation_estimate INTEGER,
+  organization_type TEXT,
+  notes TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS email_codes (
+  id TEXT PRIMARY KEY,
+  purpose TEXT NOT NULL CHECK (purpose IN ('signup')),
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER NOT NULL,
+  sent_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_two_factor (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  totp_secret TEXT NOT NULL,
+  enabled_at INTEGER,
+  last_totp_step INTEGER NOT NULL DEFAULT 0,
+  recovery_codes TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS login_challenges (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  redirect TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  email_code_hash TEXT,
+  email_codes_sent INTEGER NOT NULL DEFAULT 0,
+  email_code_sent_at INTEGER,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_devices (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  trusted_until INTEGER,
+  user_agent TEXT,
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, token_hash)
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('signup', 'remote_control', 'support')),
+  tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
+  reference TEXT UNIQUE NOT NULL,
+  subject TEXT NOT NULL,
+  contact_email TEXT NOT NULL,
+  contact_name TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'approved', 'rejected', 'closed')),
+  unread INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_message_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  mailbox TEXT
+);
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound', 'note', 'event')),
+  from_address TEXT,
+  to_address TEXT,
+  subject TEXT,
+  body TEXT NOT NULL,
+  email_message_id TEXT,
+  author_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  delivery TEXT CHECK (delivery IN ('sent', 'failed')),
+  raw_key TEXT,
+  attachments TEXT,
+  created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
@@ -234,6 +337,14 @@ CREATE INDEX IF NOT EXISTS idx_tenant_users_tenant ON tenant_users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_users_user ON tenant_users(user_id);
 CREATE INDEX IF NOT EXISTS idx_workstation_groups_tenant ON workstation_groups(tenant_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workstation_groups_tenant_name ON workstation_groups(tenant_id, name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_email_codes_expires ON email_codes(expires_at);
+CREATE INDEX IF NOT EXISTS idx_conversations_kind ON conversations(kind, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_conversations_tenant ON conversations(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_mailbox ON conversations(mailbox, status, last_message_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversation_messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messages(email_message_id);
+CREATE INDEX IF NOT EXISTS idx_login_challenges_expires ON login_challenges(expires_at);
+CREATE INDEX IF NOT EXISTS idx_login_challenges_user ON login_challenges(user_id);
 `;
 
 /**
@@ -277,7 +388,7 @@ export async function initSchema(db: D1Database): Promise<void> {
 }
 
 /** Credentials seeded when no secrets are configured; local development and tests only. */
-export const LOCAL_DEV_SUPER_ADMIN = { email: "admin@akbhoi.com", password: "SuperAdmin2026!" };
+export const LOCAL_DEV_SUPER_ADMIN = { email: "admin@labkiosk.org", password: "SuperAdmin2026!" };
 
 /**
  * Ensures a Super Admin account exists in the database.
@@ -394,6 +505,12 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     if (devices?.sql?.includes("remote_host")) {
       throw new Error("the Remote Control tunnel columns are still present (0019)");
     }
+    // 0020: approval-gated signup, Remote Control approval, the support inbox.
+    await db.prepare("SELECT remote_control_status FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT contact_phone, phone_verified_at FROM organization_profiles LIMIT 1").run();
+    await db.prepare("SELECT code_hash FROM email_codes LIMIT 1").run();
+    await db.prepare("SELECT reference, unread FROM conversations LIMIT 1").run();
+    await db.prepare("SELECT direction, email_message_id FROM conversation_messages LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -430,7 +547,11 @@ export async function ensureDemoTenants(db: D1Database, superAdminId: string): P
         status: "active",
         mode: "portal"
       });
-      const seeded: Partial<Tenant> = { homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}` };
+      // Remote Control is approved per organization; the platform's own demos have it.
+      const seeded: Partial<Tenant> = {
+        homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}`,
+        remote_control_status: "approved"
+      };
       await updateTenant(db, tenant.id, seeded);
       demos.push({ ...tenant, ...seeded });
       continue;
@@ -709,7 +830,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "home_route",
   "homepage_headline",
   "homepage_intro",
-  "homepage_blocks"
+  "homepage_blocks",
+  "remote_control_status"
 ]);
 
 /** How many blocks an organization may publish, and how long each part may be. */

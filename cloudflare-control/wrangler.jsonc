@@ -49,6 +49,20 @@
 	"triggers": {
 		"crons": ["0 * * * *"]
 	},
+	// Outbound email (signup codes, approval decisions, Super Admin replies) through
+	// Cloudflare Email Service; src/mail.ts. Sending also needs, in the dashboard:
+	//   MAIL_FROM          e.g. "Lab Kiosk <support@labkiosk.org>" (an onboarded sending domain)
+	//   SUPPORT_ADDRESS    the address customers reply to and write to; its domain is the one Mail serves
+	//   SUPPORT_FORWARD_TO optional: a verified destination that receives a copy of mail routed straight here
+	// Incoming mail arrives through labkiosk-email-routing (cloudflare-email-routing/),
+	// which calls the MailIntake entrypoint exported by src/index.ts.
+	// Without them signup and Super Admin replies refuse with "Email is not configured"
+	// (docs/DEPLOYMENT.md, "Email").
+	"send_email": [
+		{
+			"name": "EMAIL"
+		}
+	],
 	// ---------------------------------------------------------------------------
 	// Platform resources. All of them are required in production: the worker
 	// refuses to start without any one (Rule 7, `requiredBindingsProblem` in

@@ -47,11 +47,20 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | Endpoint | Method | Auth Scheme | Description |
 | :--- | :--- | :--- | :--- |
 | `/api/status` | `GET` | Public | System status and active kiosk target URL probe |
-| `/api/auth/register` | `POST` | Public | Register organization admin and claim subdomain |
+| `/api/auth/register/email-code` | `POST` | Public | `{"email"}`: email a six-digit code for registration (10 minutes; `409` when the address is registered) |
+| `/api/auth/register` | `POST` | Public | Register an organization for review; nobody is signed in |
+| `/api/contact` | `POST` | Public | The website's contact form: opens a Support conversation |
 | `/api/auth/login` | `POST` | Public | Sign in to Admin console or Super Admin Console |
 | `/api/auth/me` | `GET` | Session | Retrieve current authenticated user profile & tenant |
 | `/api/auth/logout` | `POST` | Session | Invalidate session token and clear cookies |
-| `/api/auth/change-password` | `POST` | Session | Rotate user password and revoke other active sessions |
+| `/api/auth/change-password` | `POST` | Session | Rotate user password, revoke other active sessions and every trusted browser |
+| `/api/auth/login/verify` | `POST` | Public | `{"challenge", "code", "trustBrowser"?}`: the second step of a two-factor sign-in; `code` is the app's six digits, an emailed code or a recovery code |
+| `/api/auth/login/email-code` | `POST` | Public | `{"challenge"}`: email a sign-in code to the account (three per sign-in, one a minute) |
+| `/api/auth/two-factor` | `GET` | Session | Whether the account's two-factor sign-in is on, and recovery codes left |
+| `/api/auth/two-factor/setup` | `POST` | Session | `{"password"}`: a new authenticator secret and `otpauth://` URI (not on until enabled) |
+| `/api/auth/two-factor/enable` | `POST` | Session | `{"code"}`: turn it on; returns ten recovery codes once and signs other browsers out |
+| `/api/auth/two-factor/recovery-codes` | `POST` | Session | `{"password", "code"}`: replace the recovery codes |
+| `/api/auth/two-factor/disable` | `POST` | Session | `{"password", "code"}`: turn it off and forget trusted browsers |
 | `/api/portal-sites` | `GET` | Public | List approved applications for user portal |
 | `/api/portal-sites` | `POST` | Organization Admin | Add a new application card to user portal |
 | `/api/portal-sites/:id` | `DELETE` | Organization Admin | Delete an application card from user portal |
@@ -91,8 +100,20 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
-| `/api/super/tenants/approve` | `POST` | Super Admin | Approve pending organization subdomain registration |
-| `/api/super/tenants/reject` | `POST` | Super Admin | Reject pending organization registration |
+| `/api/tenant/remote-control/request` | `POST` | Organization Admin (`settings`) | `{"reason"}`: ask the platform to enable Remote Control; `409` when already asked or enabled |
+| `/api/super/inbox` | `GET` | Super Admin | `?box=tasks\|support&filter=open\|closed\|all&mailbox=<address>`: registrations and Remote Control requests (Tasks) or mail (Mail), open first, oldest first. Mail lists also return `mailboxes` (`{mailbox, open, unread, total}`) and `mailDomain` |
+| `/api/super/inbox/compose` | `POST` | Super Admin | `{"from", "to", "subject", "message"}`: a new email written as `from` (a name, or an address on the mail domain); `400` for another domain or a recipient on the platform's own domains, `502` when it was saved but not sent |
+| `/api/super/inbox/:id` | `GET` | Super Admin | One conversation with its messages, organization and registration details; marks it read |
+| `/api/super/inbox/:id/reply` | `POST` | Super Admin | `{"message", "close"?}`: email the contact; `502` when the mail was not sent |
+| `/api/super/inbox/:id/note` | `POST` | Super Admin | `{"message"}`: an internal note, never emailed |
+| `/api/super/inbox/:id/status` | `POST` | Super Admin | `{"status": "open"\|"closed"}`: mail conversations only |
+| `/api/super/inbox/:id/delete` | `POST` | Super Admin | Delete a mail conversation, its messages and their stored originals; `400` for a task |
+| `/api/super/inbox/:id/attachment/:messageId/:index` | `GET` | Super Admin | One attachment of an incoming message (`:index` from its `attachments` list), or `original` for the whole `.eml`; always `application/octet-stream` as a download |
+| `/api/super/inbox/:id/verify-phone` | `POST` | Super Admin | Record that a registration's phone number was confirmed |
+| `/api/super/inbox/:id/approve` | `POST` | Super Admin | `{"message"?}`: activate the organization (needs a confirmed phone) or enable Remote Control, and email the contact |
+| `/api/super/inbox/:id/reject` | `POST` | Super Admin | `{"message"?}`: decline the registration or Remote Control request, and email the contact |
+| `/api/super/tenants/approve` | `POST` | Super Admin | Approve an organization's requested subdomain change |
+| `/api/super/tenants/reject` | `POST` | Super Admin | Decline an organization's requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Super Admin | Suspend active organization tenant |
 | `/api/super/tenants/reactivate` | `POST` | Super Admin | Reactivate suspended organization tenant |
 | `/api/super/tenants/custom-domain/approve` | `POST` | Super Admin | Approve and bind custom domain for an organization |
@@ -127,29 +148,40 @@ Returns the operational mode and current landing target. Used by the first-boot 
 
 #### `POST /api/auth/register`
 
-Creates a new organization and initializes an administrator account.
+Registers an organization for review. Ask for `emailCode` first with
+`POST /api/auth/register/email-code`. Every field below is required except `legalName`,
+`organizationType`, `addressLine2`, `region`, `taxId`, `billingEmail`, `workstationEstimate` and
+`notes`. The phone number is international (`+` and the country code). The organization is
+`pending`, nobody is signed in, and the contact is emailed; a super admin confirms the phone and
+approves it under Super Admin → Tasks, which emails the console address.
 
-- **Access:** Public (rate-limited per IP)
+- **Access:** Public (rate-limited per address and per email)
 - **Request Body:**
 
   ```json
   {
     "name": "Oakridge Holdings",
-    "email": "principal@oakridge.edu",
+    "legalName": "Oakridge Holdings Pvt Ltd",
+    "organizationType": "business",
+    "contactName": "Jane Smith",
+    "email": "it@oakridge.example",
+    "emailCode": "482913",
+    "phone": "+91 98765 43210",
     "password": "StrongPassword123!",
-    "subdomain": "oakridge"
+    "subdomain": "oakridge",
+    "addressLine1": "12 Market Road",
+    "city": "Bhubaneswar",
+    "region": "Odisha",
+    "postalCode": "751001",
+    "country": "India",
+    "taxId": "21ABCDE1234F1Z5",
+    "billingEmail": "accounts@oakridge.example",
+    "workstationEstimate": 40,
+    "acceptTerms": true
   }
   ```
 
-- **Response `200 OK`:**
-
-  ```json
-  {
-    "status": "ok",
-    "message": "Organization registered successfully. Pending approval.",
-    "subdomain": "oakridge"
-  }
-  ```
+- **Response `200 OK`:** `{ "status": "ok", "pending": true, "reference": "LK-7Q2M4K" }`
 
 #### `POST /api/auth/login`
 
@@ -165,15 +197,24 @@ Authenticates an operator or platform super administrator.
   }
   ```
 
-- **Response `200 OK`:** Sets `labkiosk_session` cookie.
+- **Response `200 OK`:** Sets the `labkiosk_session` cookie and the `labkiosk_device` cookie
+  (`Path=/api/auth`, the browser's identity for sign-in alerts and "trust this browser").
 
   ```json
   {
     "status": "ok",
     "role": "org_admin",
-    "subdomain": "oakridge"
+    "subdomain": "oakridge",
+    "redirect": "https://oakridge.labkiosk.org/admin"
   }
   ```
+
+- **Two-factor sign-in:** when the account has it on and the browser is not trusted, no cookie is
+  set and the answer is `{ "status": "two_factor", "challenge": "<64 hex>", "expiresIn": 600 }`.
+  `POST /api/auth/login/verify` with the challenge and a code completes it (five wrong codes end the
+  challenge); `POST /api/auth/login/email-code` sends a code by email instead.
+- **New-browser alert:** a successful sign-in from a browser the account has not used before is
+  reported to the account's email address (the first browser an account ever uses is not).
 
 #### `GET /api/auth/me`
 
@@ -744,9 +785,11 @@ audit log.
 
 ### 7. Super Administrator Console (`/super`)
 
+Registrations and Remote Control requests are decided under **Tasks** (`/api/super/inbox`, above).
+
 #### `POST /api/super/tenants/approve`
 
-Approves a pending organization tenant registration.
+Approves an organization's requested subdomain change.
 
 - **Access:** Super Admin
 - **Request Body:**

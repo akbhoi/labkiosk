@@ -880,7 +880,14 @@ function renderWorkstationsScripts(
 
       // Remote Control runs on this console's own address: the viewer asks the
       // workstation to join a relay session (src/remote_relay.ts).
+      // Remote Control is enabled per organization by the platform (Settings).
+      const REMOTE_CONTROL_ENABLED = ${escapeJson(tenant?.remote_control_status === "approved")};
+
       function openVncSession(id) {
+        if (!REMOTE_CONTROL_ENABLED) {
+          lkToast("Remote Control is not enabled for this organization yet. An administrator can request it under Settings.", "error");
+          return;
+        }
         document.getElementById("vnc-modal-title").textContent = "Live Remote Control: " + id;
         const client = clientsData[id] || {};
         const viewer = labkioskApi("/console/remote?" + new URLSearchParams({ clientId: id }).toString());

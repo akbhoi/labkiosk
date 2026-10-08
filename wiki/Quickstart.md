@@ -57,7 +57,7 @@ The worker creates three demo organizations at startup, one per way of testing: 
 2. **Open Console** on `docker-demo` (this guide uses the Docker simulator; a local VM uses `local-demo`).
 3. Go to **Settings → Workstation Enrollment Key** and copy the key.
 
-To try an ordinary organization instead, register one at `http://localhost:8787/` — it is active as soon as it registers. The demo names and `demo` itself are reserved.
+To try an ordinary organization instead, register one at `http://localhost:8787/`, then approve it under **Tasks** in `/super` (mark the phone verified first). Locally no email is sent: each message, including the registration code in its subject, is printed in the dev server's log. The demo names and `demo` itself are reserved.
 
 ---
 

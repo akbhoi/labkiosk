@@ -58,7 +58,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/status` | `GET` | Platform health and the tenant's current kiosk target |
-| `/api/auth/register` | `POST` | Register an organization and claim a subdomain |
+| `/api/auth/register/email-code` | `POST` | Email a six-digit registration code |
+| `/api/auth/register` | `POST` | Register an organization for review |
+| `/api/contact` | `POST` | The contact form; opens a Support conversation |
 | `/api/auth/login` | `POST` | Sign in as operator or super admin |
 | `/api/portal-sites` | `GET` | List the host tenant's user portal cards |
 | `/api/devices/enroll` | `POST` | Exchange an enrollment key for a device token |
@@ -69,7 +71,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 | :--- | :--- | :--- |
 | `/api/auth/me` | `GET` | Current user profile and tenant |
 | `/api/auth/logout` | `POST` | Invalidate this session and clear the cookie |
-| `/api/auth/change-password` | `POST` | Rotate password, revoking the account's other sessions |
+| `/api/auth/change-password` | `POST` | Rotate password, revoking the account's other sessions and trusted browsers |
+| `/api/auth/login/verify` | `POST` | Second step of a two-factor sign-in (app code, emailed code or recovery code) |
+| `/api/auth/login/email-code` | `POST` | Email a sign-in code for a pending two-factor sign-in |
+| `/api/auth/two-factor[/setup,/enable,/recovery-codes,/disable]` | `GET`/`POST` | The signed-in account's own two-factor sign-in |
 
 ### Operator admin
 
@@ -113,8 +118,13 @@ Every route passes through `src/guard.ts` before its handler runs:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/super/tenants/approve` | `POST` | Approve a pending organization |
-| `/api/super/tenants/reject` | `POST` | Reject a pending organization |
+| `/api/super/inbox` | `GET` | Tasks (registrations, Remote Control requests) or Mail, `?box=tasks\|support&mailbox=<address>` |
+| `/api/super/inbox/compose` | `POST` | Write a new email as any address on the mail domain |
+| `/api/super/inbox/:id` | `GET` | One conversation, its messages and registration details |
+| `/api/super/inbox/:id/{reply,note,status,delete,verify-phone,approve,reject}` | `POST` | Answer by email, note, close, delete mail, confirm the phone, decide |
+| `/api/super/inbox/:id/attachment/:messageId/:index` | `GET` | Download an attachment, or `original` for the whole message |
+| `/api/super/tenants/approve` | `POST` | Approve a requested subdomain change |
+| `/api/super/tenants/reject` | `POST` | Decline a requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Suspend an active organization |
 | `/api/super/tenants/reactivate` | `POST` | Reactivate a suspended organization |
 | `/api/super/tenants/custom-domain/approve` | `POST` | Approve and bind a custom domain |
@@ -406,18 +416,32 @@ Decommissions a workstation and revokes its device token. The machine's next hea
 
 ### `POST /api/auth/register`
 
-Creates an organization and its first administrator. The organization starts `pending` and cannot enrol workstations until a super admin approves it.
+Creates an organization and its first administrator for review. Ask for `emailCode` first with `POST /api/auth/register/email-code { "email" }`. The organization starts `pending`: nobody is signed in, it cannot sign in or enrol workstations, and the contact is emailed. A super admin confirms the phone number and approves it under Super Admin → Tasks, which emails the console address.
 
 ```json
 {
   "name": "Oakridge Holdings",
-  "email": "principal@oakridge.edu",
+  "legalName": "Oakridge Holdings Pvt Ltd",
+  "organizationType": "business",
+  "contactName": "Jane Smith",
+  "email": "it@oakridge.example",
+  "emailCode": "482913",
+  "phone": "+91 98765 43210",
   "password": "StrongPassword123!",
-  "subdomain": "oakridge"
+  "subdomain": "oakridge",
+  "addressLine1": "12 Market Road",
+  "city": "Bhubaneswar",
+  "region": "Odisha",
+  "postalCode": "751001",
+  "country": "India",
+  "taxId": "21ABCDE1234F1Z5",
+  "billingEmail": "accounts@oakridge.example",
+  "workstationEstimate": 40,
+  "acceptTerms": true
 }
 ```
 
-→ `{ "status": "ok", "message": "Organization registered successfully. Pending approval.", "subdomain": "oakridge" }`
+→ `{ "status": "ok", "pending": true, "reference": "LK-7Q2M4K" }`
 
 Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()` and stored as PBKDF2-HMAC-SHA256, 100 000 iterations, 32-byte random salt, 256 derived bits.
 
@@ -429,7 +453,10 @@ Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()
 { "email": "operator@oakridge.edu", "password": "StrongPassword123!" }
 ```
 
-→ `{ "status": "ok", "role": "org_admin", "subdomain": "oakridge" }`, plus a `labkiosk_session` cookie.
+→ `{ "status": "ok", "role": "org_admin", "subdomain": "oakridge", "redirect": "…" }`, plus the
+`labkiosk_session` and `labkiosk_device` cookies. An account with two-factor sign-in, on a browser it
+has not trusted, gets `{ "status": "two_factor", "challenge": "…" }` instead, completed with
+`POST /api/auth/login/verify`.
 
 Repeated failures back off exponentially per identifier, tracked in `login_attempts`.
 

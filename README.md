@@ -196,4 +196,4 @@ Lab Kiosk is licensed under the **LabKiosk Software License (Source-Available, E
 - **Software License vs. Subscriber License:** This document is the Software License. Subscribers utilizing the hosted Cloudflare Worker control plane are supported in accordance with the **Subscriber License** available directly within the Cloudflare Worker.
 - **Proprietary & Source-Available:** This software does not convert to an open-source license. The copyright holders retain all intellectual property, proprietary title, and copyright worldwide.
 
-For commercial licensing inquiries, large-scale deployments, or subscriber agreements, contact `legal@akbhoi.com`.
+For commercial licensing inquiries, large-scale deployments, or subscriber agreements, contact `legal@labkiosk.org`.
