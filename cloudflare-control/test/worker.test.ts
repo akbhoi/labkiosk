@@ -58,6 +58,9 @@ import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, Inb
 import { ENROLLMENT_KEY_ALPHABET, enrollmentKeyCheckCharacter, generateEnrollmentKey, isEnrollmentKey } from "../src/auth";
 import { rotateUncheckedEnrollmentKeys } from "../src/db";
 import { listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
+import { DOCS_NAV, DOCS_PAGES } from "../src/docs_content.generated";
+import { headingId, renderMarkdown } from "../src/markdown";
+import { SITE_STYLESHEET_PATH } from "../src/ui_landing";
 import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
@@ -1159,6 +1162,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         message: "Dear Ms Okafor,\n\nYour license ends soon.\n\nYours sincerely,",
         format: "letter",
         organization: "Northfield <script>alert(1)</script> Trust",
+        signatory: "Asha  Verma",
         signatoryTitle: "Customer Accounts"
       }),
       cookie: admin
@@ -1169,6 +1173,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(letter.html, /Ref\. LTR-[A-Z0-9]{6}/);
     assert.match(letter.html, /\d{1,2} [A-Z][a-z]+ \d{4}/, "a letter is dated");
     assert.ok(letter.html.includes("Ngozi Okafor") && letter.html.includes("Customer Accounts"));
+    assert.ok(letter.html.includes("Asha Verma"), "a letter is signed with the name its writer gave");
     assert.ok(letter.html.includes("&lt;script&gt;") && !letter.html.includes("<script>"), "the organization is escaped");
     const { data: letterThread } = await callJson(`/api/super/inbox/${composed.data.id}`, { cookie: admin });
     assert.equal(letterThread.conversation.category, "letter");
@@ -1435,7 +1440,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
     for (const path of ["/features", "/specs", "/pricing", "/download", "/docs"]) {
       assert.equal((await at(`https://labkiosk.org${path}`)).status, 200);
-      assert.equal((await at(`https://www.labkiosk.org${path}`)).status, 200);
+      const www = await at(`https://www.labkiosk.org${path}?x=1`);
+      assert.equal(www.status, 301, "www answers with the one address");
+      assert.equal(www.headers.get("Location"), `https://labkiosk.org${path}?x=1`);
       assert.equal((await at(`http://127.0.0.1:8787${path}`)).status, 200, "a development host is the platform");
     }
 
@@ -1451,22 +1458,145 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match((await at("https://labkiosk.org/no-such-page")).headers.get("Content-Type") || "", /json/);
   });
 
-  test("The public pages describe the product as it is built", async () => {
-    const docs = await (await call("/docs")).text();
+  test("The public pages describe the product as it is built, and claim nothing that was not measured", async () => {
     const specs = await (await call("/specs")).text();
     const home = await (await call("/")).text();
     const features = await (await call("/features")).text();
-    // The installer's layout (labkiosk-install): a 512 MiB ESP, an image store, and an unencrypted data partition.
-    assert.ok(docs.includes("512 MiB, FAT32") && docs.includes("the last 512 MiB") && docs.includes("It is not encrypted"));
-    assert.ok(!/Encrypted persistence|128 MiB|sudo labkiosk-install/.test(docs));
-    // The roles as the staff page creates them (defaultPermsByRole in ui_admin_staff.ts).
-    assert.ok(docs.includes("By default workstations only") && !docs.includes("Read-only monitoring"));
+    const pricing = await (await call("/pricing")).text();
     // 2 GB runs it; 4 GB is the reference (wiki/Installation-Guide.md).
-    assert.ok(specs.includes("2 GB RAM") && home.includes("2 GB RAM") && docs.includes("at least 2 GB of RAM"));
-    for (const page of [docs, specs, home, features]) {
+    assert.ok(specs.includes("2 GB RAM") && home.includes("2 GB RAM"));
+    for (const page of [specs, home, features, pricing]) {
       assert.ok(!/LightDM|GNU gettext|Immutable Audit|URLBlocklist: \[/.test(page));
       assert.ok(!/non-profits, and personal non-commercial/.test(page), "the license is quoted as LICENSE grants it");
+      // Figures and promises nobody measured or committed to stay off the site.
+      for (const claim of [
+        /\b10 ms\b/,
+        /100\s?ms|100 milliseconds/i,
+        /\$\s?\d/,
+        /Tested on|Verified Hardware|OptiPlex|ThinkCentre/,
+        /\d+\+? years|\d+ to \d+ years|\d+-year-old/,
+        /within 24 hours|one working day/i,
+        /Production Ready|Edge Active/,
+        /end-to-end/i
+      ]) {
+        assert.ok(!claim.test(page.replace(/<script[\s\S]*?<\/script>/g, "")), `the public pages do not say ${claim}`);
+      }
     }
+  });
+
+  test("The public pages share one cached stylesheet and a picture for shared links", async () => {
+    const home = await (await call("/")).text();
+    assert.ok(home.includes(`<link rel="stylesheet" href="${SITE_STYLESHEET_PATH}">`));
+    assert.match(SITE_STYLESHEET_PATH, /^\/assets\/site-[0-9a-f]{8}\.css$/);
+    assert.ok(!/<style>[\s\S]{2000,}<\/style>/.test(home), "the stylesheet is not written into the page");
+    const css = await call(SITE_STYLESHEET_PATH);
+    assert.equal(css.status, 200);
+    assert.equal(css.headers.get("Content-Type"), "text/css; charset=utf-8");
+    assert.equal(css.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+    assert.ok((await css.text()).includes(".docs-table"));
+    // A page from before a deploy still gets styles, and a browser does not keep them.
+    const old = await call("/assets/site-00000000.css");
+    assert.equal(old.status, 200);
+    assert.equal(old.headers.get("Cache-Control"), "no-store");
+    // The picture is a real file of the right size for a large card.
+    const card = new Uint8Array(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "social-card.png")));
+    const cardView = new DataView(card.buffer, card.byteOffset, card.byteLength);
+    assert.equal(String.fromCharCode(card[1], card[2], card[3]), "PNG");
+    assert.deepEqual([cardView.getUint32(16), cardView.getUint32(20)], [1200, 630]);
+    assert.ok(card.length < 300 * 1024);
+  });
+
+  test("The documentation is the wiki, rendered page by page", async () => {
+    // The generated module is the wiki folder, file for file.
+    const wikiDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "wiki");
+    const files = fs.readdirSync(wikiDir).filter((name) => name.endsWith(".md") && !name.startsWith("_")).sort();
+    assert.deepEqual(DOCS_PAGES.map((page) => page.file).sort(), files, "run `pnpm run docs` after adding or removing a wiki page");
+    for (const page of DOCS_PAGES) {
+      const source = fs.readFileSync(path.join(wikiDir, page.file), "utf8").replace(/\r\n/g, "\n");
+      assert.equal(page.markdown, source, `${page.file} changed: run \`pnpm run docs\` in cloudflare-control`);
+    }
+    const slugs = new Set(DOCS_PAGES.map((page) => page.slug));
+    for (const group of DOCS_NAV) for (const slug of group.pages) assert.ok(slugs.has(slug), `${slug} is a page`);
+    assert.ok(DOCS_NAV.length >= 4 && slugs.has("") && slugs.has("quickstart"));
+
+    // Every page is served at its own address, in the shell, with its sidebar; every link inside leads somewhere.
+    const hrefs = new Set<string>();
+    for (const page of DOCS_PAGES) {
+      const at = page.slug ? `/docs/${page.slug}` : "/docs";
+      const res = await call(at);
+      assert.equal(res.status, 200, at);
+      const html = await res.text();
+      assert.ok(html.includes('class="docs-article docs-page"') && html.includes('aria-current="page"'), at);
+      assert.ok(html.includes(`wiki/${page.file}</a> in the repository`), `${at} names its source`);
+      assert.ok(html.includes(`<link rel="canonical" href="https://labkiosk.org${at}">`), `${at} is canonical`);
+      const article = html.slice(html.indexOf('<article class="docs-article docs-page">'), html.indexOf("</article>"));
+      assert.ok(!/<script|<img|<iframe|\son[a-z]+=|href="javascript:/i.test(article), `${at} renders no markup of its own`);
+      for (const m of article.matchAll(/href="([^"]+)"/g)) hrefs.add(m[1].replace(/&amp;/g, "&"));
+    }
+    for (const href of hrefs) {
+      if (href.startsWith("#") || href.startsWith("https://") || href.startsWith("http://")) continue;
+      assert.ok(href.startsWith("/docs"), `${href} is a documentation address`);
+      assert.equal((await call(href.split("#")[0])).status, 200, `${href} is served`);
+    }
+    assert.ok([...hrefs].some((h) => h === "/docs/quickstart") && [...hrefs].some((h) => h.startsWith("https://github.com/akbhoi/labkiosk/blob/main/docs/")));
+
+    // Addresses: the wiki's own names redirect, an unknown page is not found, a slash is dropped.
+    const at = (url: string) => worker.fetch(new Request(url, { headers: { Accept: "text/html" }, redirect: "manual" }), mockEnv);
+    assert.equal((await at("https://labkiosk.org/wiki/Quickstart")).headers.get("Location"), "https://labkiosk.org/docs/quickstart");
+    assert.equal((await at("https://labkiosk.org/wiki")).headers.get("Location"), "https://labkiosk.org/docs");
+    assert.equal((await at("https://labkiosk.org/docs/quickstart/")).headers.get("Location"), "https://labkiosk.org/docs/quickstart");
+    assert.equal((await at("https://labkiosk.org/docs/no-such-page")).status, 404);
+    assert.equal((await at("https://greenwood.labkiosk.org/docs/quickstart")).headers.get("Location"), "https://labkiosk.org/docs/quickstart");
+  });
+
+  test("Markdown is rendered with every character escaped", () => {
+    const link = (target: string) =>
+      target.startsWith("https://") ? { href: target, external: true } : target === "Other-Page" ? { href: "/docs/other-page", external: false } : null;
+    const { html, headings } = renderMarkdown(
+      [
+        "# Title & more",
+        "",
+        "A paragraph with **bold**, *emphasis*, `code <b>` and a [link](Other-Page), an [outside one](https://example.org/a?b=1&c=2)",
+        "and a [dead one](javascript:alert(1)) on a second line. <script>alert(1)</script>",
+        "",
+        "## Steps",
+        "",
+        "1. First",
+        "2. Second",
+        "   - nested `x`",
+        "",
+        "- one",
+        "- two",
+        "",
+        "| Name | What |",
+        "| :--- | :--- |",
+        "| `a\\|b` | <i>x</i> |",
+        "",
+        "> A note.",
+        "",
+        "```html",
+        "<script>alert(2)</script>",
+        "```",
+        "",
+        "---",
+        "",
+        "## Steps"
+      ].join("\n"),
+      link
+    );
+    assert.deepEqual(headings.map((h) => `${h.level}:${h.id}`), ["1:title--more", "2:steps", "2:steps-1"]);
+    assert.ok(html.includes('<h1 id="title--more">Title &amp; more</h1>'));
+    assert.ok(html.includes("<strong>bold</strong>") && html.includes("<em>emphasis</em>") && html.includes("<code>code &lt;b&gt;</code>"));
+    assert.ok(html.includes('<a href="/docs/other-page">link</a>'));
+    assert.ok(html.includes('<a href="https://example.org/a?b=1&amp;c=2" target="_blank" rel="noopener noreferrer">outside one</a>'));
+    assert.ok(html.includes("dead one") && !html.includes("javascript:alert(1)\""), "a link that leads nowhere is text");
+    assert.ok(html.includes("<ol><li>First</li><li>Second<ul><li>nested <code>x</code></li></ul></li></ol>"));
+    assert.ok(html.includes("<ul><li>one</li><li>two</li></ul>"));
+    assert.ok(html.includes("<th>Name</th><th>What</th>") && html.includes("<td><code>a|b</code></td><td>&lt;i&gt;x&lt;/i&gt;</td>"));
+    assert.ok(html.includes("<blockquote><p>A note.</p></blockquote>") && html.includes("<hr>"));
+    assert.ok(html.includes("<pre><code>&lt;script&gt;alert(2)&lt;/script&gt;</code></pre>"));
+    assert.ok(!/<script|<i>/.test(html), "nothing in the source becomes markup");
+    assert.equal(headingId("What's new in 2.7.0?"), "whats-new-in-270");
   });
 
   test("Mail sent from the platform's own sending domain is a loop", async () => {
@@ -5628,6 +5758,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/pricing",
       "https://www.labkiosk.org/download",
       "https://www.labkiosk.org/docs",
+      ...DOCS_PAGES.filter((page) => page.slug).map((page) => `https://www.labkiosk.org/docs/${page.slug}`),
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
       "https://www.labkiosk.org/terms/bug-reports"
@@ -5651,7 +5782,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["www.labkiosk.org", "/pricing"],
       ["www.labkiosk.org", "/download"],
       ["www.labkiosk.org", "/docs"],
-      ["labkiosk.org", "/privacy"],
+      ["www.labkiosk.org", "/privacy"],
       ["www.labkiosk.org", "/terms"],
       ["www.labkiosk.org", "/terms/bug-reports"]
     ];
@@ -5686,7 +5817,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(canonical(landing), "https://www.labkiosk.org/");
     assert.match(landing, /<meta property="og:url" content="https:\/\/www\.labkiosk\.org\/">/);
     assert.match(landing, /<meta property="og:title" content="Lab Kiosk OS - /);
-    assert.match(landing, /<meta name="twitter:card" content="summary">/);
+    assert.match(landing, /<meta name="twitter:card" content="summary_large_image">/);
+    assert.match(landing, /<meta property="og:image" content="https:\/\/www\.labkiosk\.org\/social-card\.png">/);
+    // The other host name of the platform sends a public page to the canonical one.
+    const other = await onHost("labkiosk.org", "/pricing");
+    assert.equal(other.status, 301);
+    assert.equal(other.headers.get("Location"), "https://www.labkiosk.org/pricing");
     assert.match(landing, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
     const ld = landing.match(/<script type="application\/ld\+json" nonce="[^"]+">([\s\S]*?)<\/script>/);
     assert.ok(ld, "the landing page carries structured data with the nonce");

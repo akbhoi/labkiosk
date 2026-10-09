@@ -124,6 +124,7 @@ async function handleCompose(ctx: RouteContext): Promise<Response> {
     message?: unknown;
     format?: unknown;
     organization?: unknown;
+    signatory?: unknown;
     signatoryTitle?: unknown;
   };
   try {
@@ -149,6 +150,8 @@ async function handleCompose(ctx: RouteContext): Promise<Response> {
   const letter = body?.format === "letter";
   const organization = String(body?.organization ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
   const signatoryTitle = String(body?.signatoryTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+  // Who signs the letter: the name its writer gives it, else the account's.
+  const signatory = String(body?.signatory ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
 
   const userId = session!.user_id;
   const author = (await findUserById(db, userId))?.name || null;
@@ -173,7 +176,7 @@ async function handleCompose(ctx: RouteContext): Promise<Response> {
           recipientName: to.name || null,
           recipientOrganization: organization || null,
           heading: subject,
-          signatory: author,
+          signatory: signatory || author,
           signatoryTitle: signatoryTitle || null
         }
       : undefined

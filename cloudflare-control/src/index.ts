@@ -18,7 +18,12 @@ import {
   renderSpecsHtml,
   renderPricingHtml,
   renderDownloadHtml,
-  renderDocsHtml
+  renderDocsHtml,
+  findDocsPage,
+  docsPath,
+  siteStylesheet,
+  SITE_STYLESHEET_PATH,
+  SOCIAL_IMAGE_PATH
 } from "./ui_landing";
 import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import {
@@ -31,6 +36,8 @@ import {
   BIMI_PATH,
   isIndexable,
   isPlatformHost,
+  canonicalHost,
+  INDEXABLE_PATHS,
   robotsTxt,
   siteOrigin,
   sitemapXml
@@ -729,7 +736,12 @@ export default {
     const method = request.method;
 
     // "/pricing/" is "/pricing": one address per page, so a link with a slash still lands.
-    if (path.length > 1 && path.endsWith("/") && (method === "GET" || method === "HEAD") && SLASHLESS_PAGES.has(path.slice(0, -1))) {
+    if (
+      path.length > 1 &&
+      path.endsWith("/") &&
+      (method === "GET" || method === "HEAD") &&
+      (SLASHLESS_PAGES.has(path.slice(0, -1)) || (path.startsWith("/docs/") && path.length > "/docs/".length))
+    ) {
       const slashless = new URL(request.url);
       slashless.pathname = path.slice(0, -1);
       return Response.redirect(slashless.toString(), 301);
@@ -785,6 +797,44 @@ export default {
           "Cache-Control": current ? "public, max-age=31536000, immutable" : "no-store"
         }
       });
+    }
+
+    // The public pages' stylesheet, served the same way.
+    if (path.startsWith("/assets/site-") && path.endsWith(".css") && method === "GET") {
+      const current = path === SITE_STYLESHEET_PATH;
+      return new Response(siteStylesheet(), {
+        headers: {
+          "Content-Type": "text/css; charset=utf-8",
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": current ? "public, max-age=31536000, immutable" : "no-store"
+        }
+      });
+    }
+
+    // The picture shared links show, from static assets.
+    if (path === SOCIAL_IMAGE_PATH && (method === "GET" || method === "HEAD")) {
+      if (!env.ASSETS) return jsonError("Not Found", 404, jsonHeaders);
+      const asset = await env.ASSETS.fetch(request);
+      if (!asset.ok) return asset;
+      const headers = new Headers(asset.headers);
+      headers.set("X-Content-Type-Options", "nosniff");
+      headers.set("Cache-Control", "public, max-age=86400");
+      return new Response(asset.body, { status: asset.status, headers });
+    }
+
+    // One address for each public page: the platform's other host name (`www.`
+    // beside the apex, or the reverse) answers with the canonical one. Only the
+    // pages people land on: the sitemap, the mail logo and the consoles keep
+    // answering on both.
+    if ((method === "GET" || method === "HEAD") && INDEXABLE_PATHS.includes(path) && !isDevHost(request)) {
+      const canonical = canonicalHost(env);
+      const base = (env.DEFAULT_DOMAIN || "").replace(/^\./, "").toLowerCase();
+      const host = hostname(request);
+      if (canonical && base && host !== canonical && (host === base || host === `www.${base}`)) {
+        const target = new URL(request.url);
+        target.hostname = canonical;
+        return Response.redirect(target.toString(), 301);
+      }
     }
 
     // --- Search engines -----------------------------------------------------
@@ -2950,7 +3000,7 @@ export default {
     // host (its subdomain or its own domain) has three paths, each with one job
     // (Rule 5g), and must not also serve Lab Kiosk's pricing and download pages
     // under the organization's name: send those to the platform.
-    if (PLATFORM_PAGES.has(path) && (method === "GET" || method === "HEAD") && !isPlatformHost(request, env)) {
+    if ((PLATFORM_PAGES.has(path) || path.startsWith("/docs/") || path.startsWith("/wiki/")) && (method === "GET" || method === "HEAD") && !isPlatformHost(request, env)) {
       const platform = new URL(path, siteOrigin(request, url, env));
       if (platform.origin !== url.origin) return Response.redirect(platform.toString(), 301);
     }
@@ -2958,18 +3008,25 @@ export default {
     // ==========================================
     // Public Documentation & Wiki 301 Redirect
     if (path === "/wiki" || path.startsWith("/wiki/")) {
+      // "/wiki/Quickstart" is the same page as "/docs/quickstart".
+      const wikiPage = findDocsPage(`/docs/${path.slice("/wiki/".length).toLowerCase()}`);
       const redirectUrl = new URL(request.url);
-      redirectUrl.pathname = "/docs";
+      redirectUrl.pathname = wikiPage ? docsPath(wikiPage.slug) : "/docs";
       return Response.redirect(redirectUrl.toString(), 301);
     }
-    if (path === "/docs") {
+    // The documentation: the repository's wiki, one page per address under /docs.
+    const docsPage = findDocsPage(path);
+    if (docsPage) {
       return new Response(
-        renderDocsHtml({
-          baseDomain,
-          contactEmail: "contact@labkiosk.org",
-          canonicalUrl,
-          nonce
-        }),
+        renderDocsHtml(
+          {
+            baseDomain,
+            contactEmail: "contact@labkiosk.org",
+            canonicalUrl,
+            nonce
+          },
+          docsPage
+        ),
         { headers: htmlHeaders }
       );
     }

@@ -25,6 +25,8 @@ cloudflare-control/
 │   ├── boot_report.ts                  # Workstation boot reports, Errors & Warnings (Rule 2e)
 │   ├── bug_reports.ts                  # Opt-in automatic GitHub bug reports (Rule 2e)
 │   ├── release_notes.ts                # GitHub releases and their AI-written summaries, for /download
+│   ├── markdown.ts                     # Markdown to escaped HTML, for /docs
+│   ├── docs_content.generated.ts       # wiki/ as a module (tools/build-docs.mjs; `pnpm run docs`)
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
 │   ├── signup.ts                       # Registration with an email code, the contact form, Remote Control requests
 │   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional TOTP app, recovery codes), sign-in alerts
@@ -418,7 +420,9 @@ cloudflare-control/
 - `/admin` is the **organization console**, and `/admin/<page>` its sub-pages.
 - **The platform's own pages** (`/features`, `/specs`, `/pricing`, `/download`, `/docs`; `/wiki` redirects to `/docs`) are served on the platform's host only. On an organization's host they answer `301` to the platform, so an organization's address never shows Lab Kiosk's pricing under its own name. A trailing slash on any of them, or on `/home`, `/privacy`, `/terms`, `/admin` and `/super`, is `301` to the address without it. A path that does not exist answers a page with a way back to a browser, JSON to anything else.
 - **`/download` states only what GitHub published.** The hourly run reads the releases into `release_notes` (`src/release_notes.ts`, migration `0025`) and Workers AI rewrites each change list for customers; the page marks those sentences as written by AI. Never write a version, a size, a checksum or a changelog into the page: a test fails on any.
-- **A claim on a public page is checked against the product.** `/docs` and `/specs` describe the installer's partitions, the roles' default permissions, the browser policy and the memory the image needs; a test holds them to what the code does. Change the product, change the page.
+- **A claim on a public page is checked against the product, or it is not made.** No latency, price, lifetime, hardware model or response time that nobody measured or committed to: a test fails on those patterns. Change the product, change the page.
+- **`/docs` is the wiki.** `wiki/*.md` is the one copy of the documentation; `tools/build-docs.mjs` (`pnpm run docs`) writes it into `src/docs_content.generated.ts`, and `src/markdown.ts` renders each page at `/docs/<file name in lower case>` (`Home.md` is `/docs`; the sidebar is `_Sidebar.md`). The renderer escapes every character and writes a link only where `resolveDocsLink` returns one, so a wiki page cannot put markup on the site. After editing the wiki run `pnpm run docs` and commit both: a test fails while they differ. `/wiki/<Page>` answers `301` to its `/docs` address.
+- **One stylesheet, one address each.** The public pages link `/assets/site-<hash>.css` (`SITE_CSS` in `ui_landing.ts`, cached for a year under the hash of its text) instead of carrying their styles. `public/social-card.png` is the picture a shared link shows. The platform's other host name (`www.` beside the apex, or the reverse) answers each public page with `301` to `canonicalHost(env)`.
 - `/portal` no longer exists. All three paths used to render the same grid,
   which is why `home_route` could be set to any of them. An organization that had
   pointed its workstations at `/portal` would have had them reset to a 404, so

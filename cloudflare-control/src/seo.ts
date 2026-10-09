@@ -17,6 +17,7 @@
 import { isDevHost, hostname } from "./guard";
 import { escapeAttr } from "./escape";
 import type { Env } from "./types";
+import { DOCS_PAGES } from "./docs_content.generated";
 
 /** Pages that may appear in search results, and that the sitemap lists. */
 export const INDEXABLE_PATHS: readonly string[] = [
@@ -26,6 +27,8 @@ export const INDEXABLE_PATHS: readonly string[] = [
   "/pricing",
   "/download",
   "/docs",
+  // Every page of the documentation (the repository's wiki, under /docs).
+  ...DOCS_PAGES.filter((page) => page.slug).map((page) => `/docs/${page.slug}`),
   "/privacy",
   "/terms",
   "/terms/bug-reports"

@@ -107,8 +107,9 @@
 		}
 	],
 	// Static files: the noVNC client the Remote Control viewer loads, staged into
-	// public/novnc from the pinned @novnc/novnc package by the build command. The
-	// Worker runs first for every request and serves only /novnc/ from here.
+	// public/novnc from the pinned @novnc/novnc package by the build command, and
+	// social-card.png, the picture a shared link shows. The Worker runs first for
+	// every request and serves only /novnc/ and /social-card.png from here.
 	"build": {
 		"command": "node scripts/stage-novnc.mjs"
 	},

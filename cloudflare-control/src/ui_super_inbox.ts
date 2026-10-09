@@ -708,13 +708,22 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           nameInput.maxLength = 120;
           var organizationInput = textInput("compose-organization", "", "Northfield Learning Trust");
           organizationInput.maxLength = 160;
+          var signatoryInput = textInput("compose-signatory", "", "Your full name");
+          signatoryInput.maxLength = 120;
+          try {
+            // Remembered on this browser, so it is typed once.
+            signatoryInput.value = localStorage.getItem("labkiosk-letter-signatory") || "";
+          } catch (err) {
+            signatoryInput.value = "";
+          }
           var titleInput = textInput("compose-signatory-title", "", "Customer Accounts");
           titleInput.maxLength = 120;
           var letterFields = el("div", "hidden");
           letterFields.append(
             field("Addressed to", nameInput, "The person the letter is for, as it should read above the text."),
             field("Organization", organizationInput),
-            field("Your title", titleInput, "Shown under your name at the end of the letter.")
+            field("Signed by", signatoryInput, "Your name as it should read at the end of the letter. Left empty, your account's name is used."),
+            field("Your title", titleInput, "Shown under your name.")
           );
           formatInput.addEventListener("change", function () {
             letterFields.classList.toggle("hidden", formatInput.value !== "letter");
@@ -753,8 +762,16 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
                 message: bodyInput.value.trim(),
                 format: letter ? "letter" : "message",
                 organization: letter ? organizationInput.value.trim() : "",
+                signatory: letter ? signatoryInput.value.trim() : "",
                 signatoryTitle: letter ? titleInput.value.trim() : ""
               });
+              if (letter && signatoryInput.value.trim()) {
+                try {
+                  localStorage.setItem("labkiosk-letter-signatory", signatoryInput.value.trim());
+                } catch (err) {
+                  // Private browsing: the name is simply typed again next time.
+                }
+              }
               lkToast("Email sent.", "success");
               await loadList();
               await openItem(result.id);
