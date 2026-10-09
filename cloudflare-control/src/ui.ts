@@ -124,7 +124,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
             userPermissions.includes("whitelist")
           );
         }
-        return userPermissions.includes(item.id);
+        // Everyone opens Settings: without the permission it holds only their own sign-in.
+        return item.id === "settings" || userPermissions.includes(item.id);
       });
 
   const stats: StatItem[] = [
@@ -142,6 +143,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     groups: options.groups || [],
     baseDomain,
     tenantParam,
+    accountOnly: activePage === "settings" && !hasAll && !userPermissions.includes("settings"),
     nonce
   };
 

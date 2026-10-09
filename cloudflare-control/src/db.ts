@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS users (
   salt TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('super_admin', 'org_admin')),
   name TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  two_factor_email INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS tenants (
@@ -299,7 +300,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   last_message_at INTEGER NOT NULL,
   resolved_at INTEGER,
   resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-  mailbox TEXT
+  mailbox TEXT,
+  deleted_at INTEGER,
+  category TEXT NOT NULL DEFAULT 'general'
 );
 
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -341,6 +344,7 @@ CREATE INDEX IF NOT EXISTS idx_email_codes_expires ON email_codes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_kind ON conversations(kind, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_tenant ON conversations(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_mailbox ON conversations(mailbox, status, last_message_at);
+CREATE INDEX IF NOT EXISTS idx_conversations_category ON conversations(category, status);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversation_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messages(email_message_id);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_expires ON login_challenges(expires_at);
@@ -511,6 +515,12 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT code_hash FROM email_codes LIMIT 1").run();
     await db.prepare("SELECT reference, unread FROM conversations LIMIT 1").run();
     await db.prepare("SELECT direction, email_message_id FROM conversation_messages LIMIT 1").run();
+    // 0022: Mail's Deleted folder.
+    await db.prepare("SELECT deleted_at FROM conversations LIMIT 1").run();
+    // 0023: two-factor sign-in by emailed code.
+    await db.prepare("SELECT two_factor_email FROM users LIMIT 1").run();
+    // 0024: conversations filed by purpose.
+    await db.prepare("SELECT category FROM conversations LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

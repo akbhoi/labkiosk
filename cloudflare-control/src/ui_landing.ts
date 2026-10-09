@@ -34,7 +34,7 @@ const PAGE_DESCRIPTION =
  * canonical page gets them: the dialog views (/login, /register, ...) are
  * noindex copies of it.
  */
-function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: string): string {
+function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: string, title = PAGE_TITLE, description = PAGE_DESCRIPTION): string {
   const origin = new URL(canonicalUrl).origin;
   const structuredData = {
     "@context": "https://schema.org",
@@ -52,7 +52,7 @@ function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: s
         "@id": `${origin}/#website`,
         name: "Lab Kiosk OS",
         url: `${origin}/`,
-        description: PAGE_DESCRIPTION,
+        description: description,
         inLanguage: "en",
         publisher: { "@id": `${origin}/#organization` }
       }
@@ -60,13 +60,13 @@ function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: s
   };
   return `${canonicalLinkHtml(canonicalUrl)}  <meta property="og:type" content="website">
   <meta property="og:site_name" content="Lab Kiosk OS">
-  <meta property="og:title" content="${escapeAttr(PAGE_TITLE)}">
-  <meta property="og:description" content="${escapeAttr(PAGE_DESCRIPTION)}">
+  <meta property="og:title" content="${escapeAttr(title)}">
+  <meta property="og:description" content="${escapeAttr(description)}">
   <meta property="og:url" content="${escapeAttr(canonicalUrl)}">
   <meta property="og:locale" content="en_US">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="${escapeAttr(PAGE_TITLE)}">
-  <meta name="twitter:description" content="${escapeAttr(PAGE_DESCRIPTION)}">
+  <meta name="twitter:title" content="${escapeAttr(title)}">
+  <meta name="twitter:description" content="${escapeAttr(description)}">
   <script type="application/ld+json" nonce="${escapeAttr(nonce)}">${escapeJson(structuredData)}</script>
 `;
 }
@@ -90,7 +90,10 @@ export interface LandingOptions {
   turnstileSiteKey?: string | null;
 }
 
-export function renderLandingHtml(data: LandingOptions): string {
+function renderPublicShell(
+  data: LandingOptions,
+  meta: { title: string; description: string; activeNav?: string; mainHtml: string }
+): string {
   const baseDomain = (data.baseDomain || "labkiosk.org").toLowerCase().replace(/^\./, "");
   const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
   const turnstileKey = data.turnstileSiteKey || null;
@@ -118,9 +121,9 @@ export function renderLandingHtml(data: LandingOptions): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(PAGE_TITLE)}</title>
-  <meta name="description" content="${escapeAttr(PAGE_DESCRIPTION)}">
-${FAVICON_LINK_HTML}${data.canonicalUrl ? landingSeoHeadHtml(data.canonicalUrl, contactEmail, data.nonce) : ""}  <meta name="theme-color" media="(prefers-color-scheme: light)" content="${PALETTE["--bg-base"][0]}">
+  <title>${escapeHtml(meta.title)}</title>
+  <meta name="description" content="${escapeAttr(meta.description)}">
+${FAVICON_LINK_HTML}${data.canonicalUrl ? landingSeoHeadHtml(data.canonicalUrl, contactEmail, data.nonce, meta.title, meta.description) : ""}  <meta name="theme-color" media="(prefers-color-scheme: light)" content="${PALETTE["--bg-base"][0]}">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="${PALETTE["--bg-base"][1]}">
 ${themeHeadHtml(data.nonce)}
 ${FONT_LINKS}
@@ -490,6 +493,9 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       border: 1px solid var(--border);
       box-shadow: var(--shadow-sm);
       margin-top: 24px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-input) transparent;
+      -webkit-overflow-scrolling: touch;
     }
     .specs-table {
       width: 100%;
@@ -963,6 +969,244 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       .form-input { font-size: 1rem; }
       .form-split { grid-template-columns: 1fr; }
     }
+
+    /* Sub-page Navigation & Hero */
+    .nav-links a.active { color: var(--text-main); background: var(--hover); font-weight: 600; }
+    .page-hero {
+      padding: clamp(48px, 7vw, 84px) 24px 36px;
+      text-align: center;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    .page-hero-title {
+      font-size: clamp(2rem, 1.5rem + 3vw, 3.25rem);
+      font-weight: 700;
+      letter-spacing: -0.035em;
+      line-height: 1.12;
+      margin-bottom: 18px;
+      text-wrap: balance;
+    }
+    .page-hero-title span { color: var(--accent-text); }
+    .page-hero-desc {
+      font-size: clamp(1rem, 0.95rem + 0.3vw, 1.125rem);
+      color: var(--text-muted);
+      line-height: 1.65;
+      max-width: 720px;
+      margin: 0 auto 28px;
+      text-wrap: pretty;
+    }
+
+    /* Features Grid (Deep Dive) */
+    .features-deep-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+      gap: 24px;
+      margin-top: 32px;
+    }
+    .feature-deep-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .feature-deep-card:hover {
+      border-color: var(--border-hover);
+      box-shadow: var(--shadow-md);
+    }
+    .feature-deep-header { display: flex; align-items: center; gap: 14px; }
+    .feature-deep-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em; color: var(--text-main); }
+    .feature-deep-text { font-size: 0.9375rem; color: var(--text-muted); line-height: 1.65; }
+    .feature-badge-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 12px; }
+    .feature-tag { font-size: 0.75rem; font-family: var(--font-mono); background: var(--bg-subtle); color: var(--text-muted); padding: 2px 8px; border-radius: var(--radius-xs); border: 1px solid var(--border-subtle); }
+
+    /* Pricing Grid */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+      gap: 24px;
+      align-items: stretch;
+      margin-top: 36px;
+    }
+    .pricing-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 36px 28px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+    .pricing-card.featured {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), var(--shadow-md);
+    }
+    .pricing-card-badge {
+      position: absolute;
+      top: -12px;
+      right: 24px;
+      background: var(--accent);
+      color: var(--accent-fg);
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 3px 12px;
+      border-radius: 999px;
+      letter-spacing: 0.02em;
+    }
+    .pricing-tier { font-size: 1.375rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px; color: var(--text-main); }
+    .pricing-sub { font-size: 0.875rem; color: var(--text-muted); min-height: 40px; margin-bottom: 20px; line-height: 1.45; }
+    .pricing-price { font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; color: var(--text-main); margin-bottom: 24px; font-variant-numeric: tabular-nums; }
+    .pricing-price small { font-size: 0.875rem; font-weight: 500; color: var(--text-muted); }
+    .pricing-features { list-style: none; display: flex; flex-direction: column; gap: 12px; margin-bottom: 32px; flex: 1; }
+    .pricing-features li { display: flex; align-items: flex-start; gap: 10px; font-size: 0.875rem; color: var(--text-main); line-height: 1.5; }
+    .pricing-features li svg { color: var(--success-text); flex-shrink: 0; margin-top: 2px; }
+
+    /* Download Page Cards */
+    .download-hero-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 36px;
+      max-width: 840px;
+      margin: 0 auto 48px;
+      box-shadow: var(--shadow-sm);
+    }
+    .download-meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+      margin: 24px 0;
+      padding: 16px;
+      background: var(--bg-subtle);
+      border-radius: var(--radius);
+      border: 1px solid var(--border-subtle);
+    }
+    .download-meta-item { display: flex; flex-direction: column; gap: 4px; }
+    .download-meta-label { font-size: 0.75rem; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+    .download-meta-val { font-size: 0.9375rem; font-weight: 600; color: var(--text-main); font-family: var(--font-mono); }
+    .checksum-box {
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      word-break: break-all;
+    }
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+      gap: 20px;
+      margin-top: 24px;
+    }
+    .step-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+    }
+    .step-num {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      color: var(--accent-text);
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.875rem;
+      margin-bottom: 12px;
+    }
+    .step-title { font-size: 1rem; font-weight: 650; margin-bottom: 8px; color: var(--text-main); }
+    .step-desc { font-size: 0.875rem; color: var(--text-muted); line-height: 1.55; }
+
+    /* Changelog */
+    .changelog-list { display: flex; flex-direction: column; gap: 16px; margin-top: 24px; }
+    .changelog-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+    }
+    .changelog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+    .changelog-version { font-size: 1.0625rem; font-weight: 700; font-family: var(--font-mono); color: var(--text-main); }
+    .changelog-date { font-size: 0.8125rem; color: var(--text-muted); }
+    .changelog-bullets { list-style: disc; padding-left: 20px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.6; }
+
+    /* Documentation Layout */
+    .docs-container {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 40px;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 36px 24px 80px;
+      align-items: flex-start;
+    }
+    @media (max-width: 900px) {
+      .docs-container { grid-template-columns: 1fr; gap: 24px; padding: 24px 16px 60px; }
+      .docs-sidebar { position: static !important; max-height: none !important; border-bottom: 1px solid var(--border); padding-bottom: 20px; }
+    }
+    .docs-sidebar {
+      position: sticky;
+      top: 80px;
+      max-height: calc(100vh - 100px);
+      overflow-y: auto;
+      padding-right: 12px;
+    }
+    .docs-sidebar-section { margin-bottom: 24px; }
+    .docs-sidebar-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .docs-sidebar-links { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+    .docs-sidebar-links a {
+      display: block;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      transition: color 0.15s, background-color 0.15s;
+    }
+    .docs-sidebar-links a:hover { color: var(--text-main); background: var(--hover); }
+    .docs-sidebar-links a.active { color: var(--accent-text); background: var(--accent-soft); font-weight: 600; }
+    .docs-content { min-width: 0; }
+    .docs-article { margin-bottom: 48px; scroll-margin-top: 90px; }
+    .docs-article h2 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 14px; color: var(--text-main); padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle); }
+    .docs-article h3 { font-size: 1.25rem; font-weight: 650; margin: 24px 0 10px; color: var(--text-main); }
+    .docs-article p { font-size: 0.9375rem; color: var(--text-muted); line-height: 1.7; margin-bottom: 16px; }
+    .docs-article ul { list-style: disc; padding-left: 24px; margin-bottom: 16px; font-size: 0.9375rem; color: var(--text-muted); line-height: 1.65; }
+    .docs-article li { margin-bottom: 6px; }
+    .docs-article pre {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      overflow-x: auto;
+      margin: 16px 0 24px;
+    }
+    .docs-article pre code { background: none; border: none; padding: 0; font-size: 0.875rem; color: var(--text-main); }
+    .docs-callout {
+      background: var(--bg-surface);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: 16px 20px;
+      margin: 20px 0;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .docs-callout strong { color: var(--text-main); }
   </style>
 </head>
 <body>
@@ -978,13 +1222,12 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     </div>
 
     <nav class="nav-links" aria-label="Main Navigation">
-      <a href="#features">Features</a>
-      <a href="#audiences">Audiences</a>
-      <a href="#simulator">Simulator</a>
-      <a href="#specs">Specs</a>
-      <a href="#security">Architecture</a>
-      <a href="#faq">FAQ</a>
-      <a href="#contact">Contact</a>
+      <a href="/features"${meta.activeNav === "features" ? ' class="active"' : ""}>Features</a>
+      <a href="/specs"${meta.activeNav === "specs" ? ' class="active"' : ""}>Specs</a>
+      <a href="/pricing"${meta.activeNav === "pricing" ? ' class="active"' : ""}>Pricing</a>
+      <a href="/download"${meta.activeNav === "download" ? ' class="active"' : ""}>Download</a>
+      <a href="/docs"${meta.activeNav === "docs" ? ' class="active"' : ""}>Docs</a>
+      <a href="/#contact">Contact</a>
     </nav>
 
     <div class="nav-actions">
@@ -1020,31 +1263,31 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
       <button class="drawer-close-btn" data-action="close-drawer" aria-label="Close menu">&times;</button>
     </div>
     <nav class="mobile-drawer-nav">
-      <a href="#features" data-action="close-drawer">
+      <a href="/features" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         Features
       </a>
-      <a href="#audiences" data-action="close-drawer">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        Stakeholder Solutions
-      </a>
-      <a href="#simulator" data-action="close-drawer">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 16 21 12 17"/></svg>
-        Live Simulator
-      </a>
-      <a href="#specs" data-action="close-drawer">
+      <a href="/specs" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
         Hardware Specs
       </a>
-      <a href="#security" data-action="close-drawer">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
-        Architecture &amp; Security
+      <a href="/pricing" data-action="close-drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        Pricing
       </a>
-      <a href="#faq" data-action="close-drawer">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        FAQ
+      <a href="/download" data-action="close-drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download ISO
       </a>
-      <a href="#contact" data-action="close-drawer">
+      <a href="/docs" data-action="close-drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Documentation
+      </a>
+      <a href="/#simulator" data-action="close-drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 16 21 12 17"/></svg>
+        Live Simulator
+      </a>
+      <a href="/#contact" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Contact
       </a>
@@ -1061,7 +1304,796 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
 
   <main>
     ${banner}
+    ${meta.mainHtml}
+  </main>
 
+  <!-- Login Modal -->
+  <div class="modal-overlay" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
+    <div class="modal-box">
+      <button class="modal-close" data-action="close-modal" data-modal="login" aria-label="Close dialog">✕</button>
+      <h2 class="modal-title" id="login-modal-title">Admin &amp; Staff Sign In</h2>
+      <p class="modal-sub">Sign in to manage your organization's workstations.</p>
+      <div class="alert-box" id="login-alert" role="alert"></div>
+      <form id="login-form">
+        <div class="form-group">
+          <label class="form-label" for="login-email">Email Address</label>
+          <input type="email" class="form-input" id="login-email" required placeholder="you@example.com" autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="login-password">Password</label>
+          <input type="password" class="form-input" id="login-password" required placeholder="••••••••" autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Admin Console</button>
+      </form>
+      <form id="login-2fa-form" hidden>
+        <div class="notice-box" id="login-2fa-notice" role="status"></div>
+        <div class="form-group">
+          <label class="form-label" for="login-2fa-code" id="login-2fa-label">Sign-in code</label>
+          <input type="text" class="form-input" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
+        </div>
+        <div class="form-group">
+          <label class="check-row"><input type="checkbox" id="login-2fa-trust"> <span>Trust this browser for 30 days</span></label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Verify and sign in</button>
+        <div class="code-row" style="margin-top: 10px;">
+          <button type="button" class="btn btn-ghost" id="login-2fa-email">Email me a code instead</button>
+          <button type="button" class="btn btn-ghost" id="login-2fa-back">Start over</button>
+        </div>
+        <p class="modal-sub" id="login-2fa-recovery" style="margin: 12px 0 0;">Lost your phone? Enter one of your recovery codes instead of the six digits.</p>
+      </form>
+      <div class="modal-switch">
+        New organization? <a href="/register" data-action="switch-modal" data-close="login" data-modal="register">Register your organization</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Register Modal -->
+  <div class="modal-overlay" id="register-modal" role="dialog" aria-modal="true" aria-labelledby="reg-modal-title">
+    <div class="modal-box modal-wide">
+      <button class="modal-close" data-action="close-modal" data-modal="register" aria-label="Close dialog">✕</button>
+      <h2 class="modal-title" id="reg-modal-title">Register Your Organization</h2>
+      <p class="modal-sub">We review every registration and email you when your console is active, usually within one working day.</p>
+      <div class="alert-box" id="register-alert" role="alert"></div>
+      <div class="notice-box" id="register-done" role="status"></div>
+      <form id="register-form">
+        <div class="form-legend">Organization</div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-name">Organization name</label>
+            <input type="text" class="form-input" id="reg-name" required maxlength="120" placeholder="Greenwood Holdings" autocomplete="organization">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-legal-name">Legal or billing name <span class="input-hint">(optional)</span></label>
+            <input type="text" class="form-input" id="reg-legal-name" maxlength="160" placeholder="Greenwood Holdings Pvt Ltd">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-type">Type</label>
+            <select class="form-input" id="reg-type">
+              <option value="business">Business</option>
+              <option value="government">Government or public body</option>
+              <option value="library">Library</option>
+              <option value="education">Education</option>
+              <option value="nonprofit">Non-profit</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-workstations">Expected workstations</label>
+            <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-subdomain">Console address</label>
+          <div class="code-row">
+            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\\-]+" style="font-family: var(--font-mono);">
+            <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; align-self: center;">.${escapeHtml(baseDomain)}</span>
+          </div>
+          <div class="input-hint">Lowercase letters, numbers and hyphens.</div>
+        </div>
+
+        <div class="form-legend">Technical contact</div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-contact-name">Full name</label>
+            <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-phone">Phone, with country code</label>
+            <input type="tel" class="form-input" id="reg-phone" required placeholder="+91 98765 43210" autocomplete="tel">
+            <div class="input-hint">We call or message this number to confirm it before approval.</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-email">Work email (your sign-in)</label>
+          <div class="code-row">
+            <input type="email" class="form-input" id="reg-email" required placeholder="jane@greenwood.example" autocomplete="email">
+            <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
+          </div>
+        </div>
+        ${turnstileSlot("reg-turnstile")}
+        <div class="form-group">
+          <label class="form-label" for="reg-code">Six-digit code from that email</label>
+          <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-password">Password</label>
+          <input type="password" class="form-input" id="reg-password" required minlength="12" placeholder="••••••••" autocomplete="new-password">
+          <div class="input-hint">At least 12 characters, with letters and numbers.</div>
+        </div>
+
+        <div class="form-legend">Address &amp; billing</div>
+        <div class="form-group">
+          <label class="form-label" for="reg-address1">Street address</label>
+          <input type="text" class="form-input" id="reg-address1" required maxlength="200" autocomplete="address-line1">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-address2">Address line 2 <span class="input-hint">(optional)</span></label>
+          <input type="text" class="form-input" id="reg-address2" maxlength="200" autocomplete="address-line2">
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-city">City</label>
+            <input type="text" class="form-input" id="reg-city" required maxlength="100" autocomplete="address-level2">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-region">State or region</label>
+            <input type="text" class="form-input" id="reg-region" maxlength="100" autocomplete="address-level1">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-postal">Postal code</label>
+            <input type="text" class="form-input" id="reg-postal" required maxlength="20" autocomplete="postal-code">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-country">Country</label>
+            <input type="text" class="form-input" id="reg-country" required maxlength="80" autocomplete="country-name" placeholder="India">
+          </div>
+        </div>
+        <div class="form-split">
+          <div class="form-group">
+            <label class="form-label" for="reg-tax-id">Tax ID, e.g. GSTIN <span class="input-hint">(optional)</span></label>
+            <input type="text" class="form-input" id="reg-tax-id" maxlength="40">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reg-billing-email">Billing email <span class="input-hint">(optional)</span></label>
+            <input type="email" class="form-input" id="reg-billing-email" autocomplete="email">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-notes">Anything we should know? <span class="input-hint">(optional)</span></label>
+          <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
+        </div>
+        <div class="form-group">
+          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
+      </form>
+      <div class="modal-switch">
+        Already registered? <a href="/login" data-action="switch-modal" data-close="register" data-modal="login">Sign in</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ISO Download Modal -->
+  <div class="modal-overlay" id="iso-modal" role="dialog" aria-modal="true" aria-labelledby="iso-modal-title">
+    <div class="modal-box" style="max-width: 540px;">
+      <button class="modal-close" data-action="close-modal" data-modal="iso" aria-label="Close dialog">✕</button>
+      <h2 class="modal-title" id="iso-modal-title">Download Lab Kiosk ISO</h2>
+      <p class="modal-sub">Flash to a USB drive and boot any PC or Thin Client.</p>
+      <div style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left;">
+        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 1: Write ISO to USB Drive</h4>
+        <p style="font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 14px;">
+          Download <code>labkiosk-debian12-amd64.iso</code> and flash it to a 2 GB+ USB drive using <strong>Rufus</strong> (Windows, DD image mode) or <strong>balenaEtcher</strong> (Mac/Linux).
+        </p>
+        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 2: Boot Client &amp; First-Boot Wizard</h4>
+        <p style="font-size: 13px; color: var(--muted); line-height: 1.5;">
+          Boot your PC from USB. On first boot, the setup wizard prompts for your <strong>Organization Subdomain</strong>, <strong>PC Identifier (e.g. PC-01)</strong>, and <strong>Enrollment Key</strong>. Once verified, the workstation permanently links to your cloud dashboard!
+        </p>
+      </div>
+      ${isoAction}
+    </div>
+  </div>
+
+  <!-- Contact Modal -->
+  <div class="modal-overlay" id="contact-modal" role="dialog" aria-modal="true" aria-labelledby="contact-modal-title">
+    <div class="modal-box" style="max-width: 500px;">
+      <button class="modal-close" data-action="close-modal" data-modal="contact" aria-label="Close dialog">✕</button>
+      <h2 class="modal-title" id="contact-modal-title">Send Deployment Inquiry</h2>
+      <p class="modal-sub">Our team responds to organizations and partners within 24 hours.</p>
+      <div class="alert-box" id="contact-alert" role="alert"></div>
+      <div class="notice-box" id="contact-done" role="status"></div>
+      <form id="contact-form">
+        <div class="form-group">
+          <label class="form-label" for="contact-name">Your Full Name</label>
+          <input type="text" class="form-input" id="contact-name" required placeholder="Dr. Jane Smith">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="contact-org">Organization</label>
+          <input type="text" class="form-input" id="contact-org" required placeholder="Acme Corp / City Library / State University">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="contact-sender-email">Email Address</label>
+          <input type="email" class="form-input" id="contact-sender-email" required placeholder="jane@lincoln.edu">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="contact-type">Inquiry Type</label>
+          <select class="form-input" id="contact-type" style="background: var(--bg-surface); color: var(--text-main);">
+            <option value="Organization Deployment">Organization Deployment</option>
+            <option value="Education Deployment / Assessments">Education Deployment / Assessments</option>
+            <option value="Corporate CSR Hardware Donation">Corporate CSR Hardware Donation</option>
+            <option value="Technical Support Inquiry">Technical Support Inquiry</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="contact-message">Message / Details</label>
+          <textarea class="form-input" id="contact-message" rows="4" required placeholder="Tell us about the number of computers, location, and timeline..."></textarea>
+        </div>
+        ${turnstileSlot("contact-turnstile")}
+        <button type="submit" class="btn btn-primary btn-block">Send Inquiry &rarr;</button>
+      </form>
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-content">
+      <div class="footer-col">
+        <div class="brand" style="margin-bottom: 12px;">
+          <div class="brand-logo">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <span style="font-weight: 800; font-size: 16px; color: var(--text-main);">Lab Kiosk OS</span>
+        </div>
+        <p style="font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
+          Secure browser workstations for any organization. 100% RAM overlay, zero SSD degradation, and central control from Cloudflare's serverless edge.
+        </p>
+        <p style="font-size: 12px; color: var(--text-subtle);">
+          Hosted globally at <code>${escapeHtml(baseDomain)}</code>
+        </p>
+      </div>
+
+      <div class="footer-col">
+        <h5>Stakeholders</h5>
+        <ul>
+          <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-operators">For IT &amp; Operations</a></li>
+          <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-users">For End Users</a></li>
+          <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-universities">For Education</a></li>
+          <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-smc">For Leadership &amp; Finance</a></li>
+          <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-corporate">For CSR Donors</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h5>Platform</h5>
+        <ul>
+          <li><a href="/features">Core Features</a></li>
+          <li><a href="/specs">Hardware Specs</a></li>
+          <li><a href="/pricing">Pricing</a></li>
+          <li><a href="/download">Download ISO</a></li>
+          <li><a href="/docs">Documentation</a></li>
+          <li><a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener">Source code on GitHub</a></li>
+          <li><a href="/#faq">FAQ</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h5>Global Contact</h5>
+        <ul>
+          <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
+          <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@labkiosk.org">partners@labkiosk.org</a></li>
+          <li><a href="/contact" data-action="open-modal" data-modal="contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <div>&copy; 2026 Lab Kiosk OS • Free for accredited schools up to 45 PCs • Commercial license for businesses &amp; resale</div>
+      <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+        <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
+        <a href="/register" data-action="open-modal" data-modal="register">Register Organization</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="/terms">Terms of Service</a>
+        <button type="button" class="footer-link-button" id="cookie-settings-link" data-action="cookie-settings" hidden>Cookie Settings</button>
+        <a href="/#security">Security</a>
+      </div>
+    </div>
+  </footer>
+
+  <div class="cookie-banner" id="cookie-banner" role="region" aria-label="Cookie choice" hidden>
+    <p>We use Google Analytics to count visits to these pages. Nothing is sent to Google unless you accept. See our <a href="/privacy">Privacy Policy</a>.</p>
+    <div class="cookie-banner-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="cookie-reject">Reject</button>
+      <button type="button" class="btn btn-primary btn-sm" data-action="cookie-accept">Accept</button>
+    </div>
+  </div>
+
+  <script nonce="${escapeAttr(data.nonce)}">
+    function openModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('active');
+    }
+    function closeModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('active');
+    }
+    function switchModal(closeId, openId) {
+      closeModal(closeId);
+      openModal(openId);
+    }
+
+    // Mobile Navigation Drawer Toggle
+    function toggleMobileNav(force) {
+      const drawer = document.getElementById('mobile-drawer');
+      const backdrop = document.getElementById('mobile-drawer-backdrop');
+      const toggleBtn = document.getElementById('mobile-toggle');
+      const iconMenu = toggleBtn ? toggleBtn.querySelector('.icon-menu') : null;
+      const iconClose = toggleBtn ? toggleBtn.querySelector('.icon-close') : null;
+
+      const isOpen = drawer ? drawer.classList.contains('active') : false;
+      const willOpen = typeof force === 'boolean' ? force : !isOpen;
+
+      if (drawer) drawer.classList.toggle('active', willOpen);
+      if (backdrop) backdrop.classList.toggle('active', willOpen);
+      if (toggleBtn) toggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      if (iconMenu) iconMenu.style.display = willOpen ? 'none' : 'block';
+      if (iconClose) iconClose.style.display = willOpen ? 'block' : 'none';
+      document.body.style.overflow = willOpen ? 'hidden' : '';
+    }
+
+    // One delegated listener replaces inline handlers: the Content-Security-Policy
+    // allows only nonce-carrying script blocks, never on*= attributes.
+    document.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-action]');
+      if (!target) return;
+      const action = target.dataset.action;
+      if (action === 'open-modal') {
+        event.preventDefault();
+        openModal(target.dataset.modal + '-modal');
+      } else if (action === 'close-modal') {
+        closeModal(target.dataset.modal + '-modal');
+      } else if (action === 'switch-modal') {
+        event.preventDefault();
+        switchModal(target.dataset.close + '-modal', target.dataset.modal + '-modal');
+      } else if (action === 'drawer-open-modal') {
+        toggleMobileNav(false);
+        openModal(target.dataset.modal + '-modal');
+      } else if (action === 'close-drawer') {
+        toggleMobileNav(false);
+      } else if (action === 'toggle-drawer') {
+        toggleMobileNav();
+      } else if (action === 'audience-tab') {
+        switchAudienceTab(target.dataset.tab);
+      } else if (action === 'sim-view') {
+        setSimView(target.dataset.view);
+      } else if (action === 'sim-broadcast') {
+        simulateBroadcast();
+      } else if (action === 'sim-app') {
+        alert(target.dataset.message);
+      } else if (action === 'toggle-faq') {
+        toggleFaq(target);
+      } else if (action === 'cookie-accept') {
+        recordCookieChoice(true);
+      } else if (action === 'cookie-reject') {
+        recordCookieChoice(false);
+      } else if (action === 'cookie-settings') {
+        document.getElementById('cookie-banner').hidden = false;
+      }
+    });
+
+    // Website analytics consent. Zaraz is injected only on the public pages
+    // (src/seo.ts) and its own modal is turned off in the dashboard, so this
+    // bar asks instead, through the Zaraz Consent API, without blocking the
+    // page. Where Zaraz is absent the bar and its footer link stay hidden.
+    function zarazConsent() {
+      const consent = window.zaraz && window.zaraz.consent;
+      return consent && consent.APIReady ? consent : null;
+    }
+    function recordCookieChoice(accepted) {
+      const consent = zarazConsent();
+      if (!consent) return;
+      consent.setAll(accepted);
+      consent.sendQueuedEvents();
+      document.getElementById('cookie-banner').hidden = true;
+    }
+    function initCookieConsent() {
+      const consent = zarazConsent();
+      if (!consent) return;
+      document.getElementById('cookie-settings-link').hidden = false;
+      // consent.getAll() reports false for an undecided purpose, so the
+      // choice cookie (named in Zaraz's consent settings) says whether one was made.
+      const decided = document.cookie.split('; ').some((c) => c.startsWith('zaraz-consent='));
+      if (!decided && !consent.modal) document.getElementById('cookie-banner').hidden = false;
+    }
+    if (zarazConsent()) initCookieConsent();
+    else document.addEventListener('zarazConsentAPIReady', initCookieConsent, { once: true });
+    document.getElementById('contact-form').addEventListener('submit', handleContactSubmit);
+
+    // Escape key closes modals and mobile drawer
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
+        toggleMobileNav(false);
+      }
+    });
+
+    // Close on backdrop click
+    document.querySelectorAll('.modal-overlay').forEach(m => {
+      m.addEventListener('click', (e) => {
+        if (e.target === m) m.classList.remove('active');
+      });
+    });
+
+    // Open the modal requested by the server
+    const requestedModal = ${escapeJson(data.openModal || null)};
+    if (requestedModal === 'login' || requestedModal === 'register' || requestedModal === 'iso' || requestedModal === 'contact') {
+      openModal(requestedModal + '-modal');
+    }
+
+    // Stakeholder tab switcher
+    function switchAudienceTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      const activeContent = document.getElementById(tabId);
+      if (activeContent) activeContent.classList.add('active');
+      const buttons = document.querySelectorAll('.tab-btn');
+      const tabMap = {
+        'tab-operators': 0,
+        'tab-users': 1,
+        'tab-universities': 2,
+        'tab-smc': 3,
+        'tab-corporate': 4
+      };
+      if (buttons[tabMap[tabId]]) buttons[tabMap[tabId]].classList.add('active');
+    }
+
+    // Simulator view switcher
+    function setSimView(view) {
+      const p = document.getElementById('sim-view-portal');
+      const t = document.getElementById('sim-view-operator');
+      const c = document.getElementById('sim-view-curtain');
+      const bp = document.getElementById('sim-btn-portal');
+      const bt = document.getElementById('sim-btn-operator');
+      const bc = document.getElementById('sim-btn-curtain');
+      
+      p.style.display = view === 'portal' ? 'block' : 'none';
+      t.style.display = view === 'operator' ? 'block' : 'none';
+      c.style.display = view === 'curtain' ? 'block' : 'none';
+
+      bp.classList.toggle('active', view === 'portal');
+      bt.classList.toggle('active', view === 'operator');
+      bc.classList.toggle('active', view === 'curtain');
+    }
+
+    function simulateBroadcast() {
+      const url = prompt('Enter a URL to broadcast to every workstation screen:', 'https://intranet.example.com');
+      if (url) {
+        alert('Broadcast Sent! All thin client screens are navigating to: ' + url);
+      }
+    }
+
+    // FAQ Accordion Toggle
+    function toggleFaq(el) {
+      const item = el.parentElement;
+      item.classList.toggle('open');
+    }
+
+    // Cloudflare Turnstile, when the platform turned it on: one widget in front of
+    // the signup code and one in front of the contact form. A token works once,
+    // so each widget is reset after every attempt.
+    const TURNSTILE_SITE_KEY = ${escapeJson(turnstileKey)};
+    const turnstileWidgets = {};
+    window.lkTurnstileReady = function () {
+      ['reg-turnstile', 'contact-turnstile'].forEach((id) => {
+        if (document.getElementById(id) && window.turnstile) {
+          turnstileWidgets[id] = window.turnstile.render('#' + id, {
+            sitekey: TURNSTILE_SITE_KEY,
+            action: id === 'reg-turnstile' ? 'signup' : 'contact'
+          });
+        }
+      });
+    };
+    function turnstileToken(id) {
+      if (!TURNSTILE_SITE_KEY) return '';
+      return window.turnstile && turnstileWidgets[id] !== undefined ? (window.turnstile.getResponse(turnstileWidgets[id]) || '') : '';
+    }
+    function turnstileReset(id) {
+      if (window.turnstile && turnstileWidgets[id] !== undefined) window.turnstile.reset(turnstileWidgets[id]);
+    }
+
+    // Contact form: filed straight into the platform's support inbox, and
+    // answered by email. No mail client is needed on either side.
+    async function handleContactSubmit(e) {
+      e.preventDefault();
+      const alertBox = document.getElementById('contact-alert');
+      const done = document.getElementById('contact-done');
+      const form = document.getElementById('contact-form');
+      alertBox.style.display = 'none';
+      const payload = {
+        name: document.getElementById('contact-name').value.trim(),
+        organization: document.getElementById('contact-org').value.trim(),
+        email: document.getElementById('contact-sender-email').value.trim(),
+        topic: document.getElementById('contact-type').value,
+        message: document.getElementById('contact-message').value.trim(),
+        turnstileToken: turnstileToken('contact-turnstile')
+      };
+      if (TURNSTILE_SITE_KEY && !payload.turnstileToken) {
+        alertBox.textContent = 'Please complete the check above the button first.';
+        alertBox.style.display = 'block';
+        return;
+      }
+      try {
+        const res = await fetch('/api/contact', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        turnstileReset('contact-turnstile');
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          form.style.display = 'none';
+          done.textContent = 'Thank you. Your message is with our team (reference ' + data.reference + '). We will reply to ' + payload.email + '.';
+          done.style.display = 'block';
+        } else {
+          alertBox.textContent = data.error || 'Your message could not be sent.';
+          alertBox.style.display = 'block';
+        }
+      } catch (err) {
+        alertBox.textContent = 'Network error. Please try again.';
+        alertBox.style.display = 'block';
+      }
+    }
+
+    const BASE_DOMAIN = ${escapeJson(baseDomain)};
+
+    /**
+     * Which organization this page is showing, if any.
+     *
+     * The sign-in POST goes to /api/auth/login with no query string, so the
+     * server cannot see the ?tenant= that put this page on screen. On a real
+     * subdomain the Host header carries it; on a dev host, and on the apex
+     * with ?tenant=, nothing did -- which is why signing in to reach the demo
+     * console still landed on /super.
+     *
+     * This is a hint for where to go next, not a claim of access: the server
+     * decides what to do with it, and every console is guarded on arrival.
+     */
+    function currentTenantSlug() {
+      const named = new URLSearchParams(window.location.search).get('tenant');
+      if (named) return named;
+      const host = window.location.hostname;
+      const suffix = '.' + BASE_DOMAIN;
+      if (host.endsWith(suffix)) {
+        const prefix = host.slice(0, -suffix.length);
+        if (prefix && prefix.indexOf('.') === -1) return prefix;
+      }
+      return '';
+    }
+
+    // Login Form Submission
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('login-email').value.trim();
+      const password = document.getElementById('login-password').value;
+      const alertBox = document.getElementById('login-alert');
+      alertBox.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password, tenant: currentTenantSlug() })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          // The server decides. It is the only side that knows which host this
+          // request arrived on and which consoles the account may open. This used
+          // to be worked out here, and sent every super admin to /super whatever
+          // subdomain they had signed in on.
+          window.location.href = data.redirect || '/admin';
+        } else if (data.status === 'two_factor') {
+          showSecondStep(data);
+        } else {
+          alertBox.textContent = data.error || 'Login failed';
+          alertBox.style.display = 'block';
+        }
+      } catch (err) {
+        alertBox.textContent = 'Network error during login';
+        alertBox.style.display = 'block';
+      }
+    });
+
+    // The second step of a two-factor sign-in: the app's code, an emailed one, or a recovery code.
+    const loginForm = document.getElementById('login-form');
+    const secondForm = document.getElementById('login-2fa-form');
+    const secondNotice = document.getElementById('login-2fa-notice');
+    let loginChallenge = '';
+    function loginError(message) {
+      const alertBox = document.getElementById('login-alert');
+      alertBox.textContent = message;
+      alertBox.style.display = 'block';
+    }
+    // The second step is an emailed code unless the account added an authenticator app.
+    function showSecondStep(data) {
+      const byEmail = data.method === 'email';
+      loginChallenge = data.challenge;
+      loginForm.hidden = true;
+      secondForm.hidden = false;
+      secondNotice.textContent = byEmail
+        ? 'We emailed a six-digit code to ' + data.sentTo + '. Enter it below.'
+        : 'Your account uses two-factor sign-in. Enter the six-digit code from your authenticator app.';
+      document.getElementById('login-2fa-label').textContent = byEmail ? 'Code from the email' : 'Code from your authenticator app';
+      document.getElementById('login-2fa-email').textContent = byEmail ? 'Send a new code' : 'Email me a code instead';
+      document.getElementById('login-2fa-recovery').hidden = byEmail;
+      secondNotice.style.display = 'block';
+      document.getElementById('login-2fa-code').value = '';
+      document.getElementById('login-2fa-code').focus();
+    }
+    function startOver() {
+      loginChallenge = '';
+      secondForm.hidden = true;
+      loginForm.hidden = false;
+      document.getElementById('login-password').value = '';
+      document.getElementById('login-password').focus();
+    }
+    document.getElementById('login-2fa-back').addEventListener('click', () => {
+      document.getElementById('login-alert').style.display = 'none';
+      startOver();
+    });
+    secondForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      document.getElementById('login-alert').style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/login/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            challenge: loginChallenge,
+            code: document.getElementById('login-2fa-code').value.trim(),
+            trustBrowser: document.getElementById('login-2fa-trust').checked
+          })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          window.location.href = data.redirect || '/admin';
+          return;
+        }
+        loginError(data.error || 'That code is not right.');
+        // An expired or exhausted sign-in needs the password again.
+        if (res.status === 401) startOver();
+      } catch (err) {
+        loginError('Network error during sign-in');
+      }
+    });
+    document.getElementById('login-2fa-email').addEventListener('click', async () => {
+      document.getElementById('login-alert').style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/login/email-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ challenge: loginChallenge })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          secondNotice.textContent = 'We emailed a six-digit code to ' + data.sentTo + '. Enter it below.';
+          document.getElementById('login-2fa-code').focus();
+          return;
+        }
+        loginError(data.error || 'The code could not be sent.');
+        if (res.status === 401) startOver();
+      } catch (err) {
+        loginError('Network error while sending the code');
+      }
+    });
+
+    // Registration: confirm the email with a code, then submit the request.
+    // The organization is reviewed before it is activated, so no session follows.
+    const registerAlert = document.getElementById('register-alert');
+    function registerError(message) {
+      registerAlert.textContent = message;
+      registerAlert.style.display = 'block';
+      registerAlert.scrollIntoView({ block: 'nearest' });
+    }
+
+    const sendCodeButton = document.getElementById('reg-send-code');
+    sendCodeButton.addEventListener('click', async () => {
+      const email = document.getElementById('reg-email').value.trim();
+      registerAlert.style.display = 'none';
+      if (!email) {
+        registerError('Enter your work email first.');
+        return;
+      }
+      const token = turnstileToken('reg-turnstile');
+      if (TURNSTILE_SITE_KEY && !token) {
+        registerError('Complete the check under your email address first.');
+        return;
+      }
+      sendCodeButton.disabled = true;
+      try {
+        const res = await fetch('/api/auth/register/email-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, turnstileToken: token })
+        });
+        turnstileReset('reg-turnstile');
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          sendCodeButton.textContent = 'Code sent';
+          document.getElementById('reg-code').focus();
+          // A new code may be asked for after a minute.
+          setTimeout(() => { sendCodeButton.disabled = false; sendCodeButton.textContent = 'Resend code'; }, 60000);
+          return;
+        }
+        registerError(data.error || 'The code could not be sent.');
+      } catch (err) {
+        registerError('Network error while sending the code.');
+      }
+      sendCodeButton.disabled = false;
+    });
+
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      registerAlert.style.display = 'none';
+      const value = (id) => document.getElementById(id).value.trim();
+      const workstations = parseInt(value('reg-workstations'), 10);
+      const payload = {
+        name: value('reg-name'),
+        legalName: value('reg-legal-name'),
+        organizationType: value('reg-type'),
+        workstationEstimate: Number.isFinite(workstations) ? workstations : null,
+        subdomain: value('reg-subdomain').toLowerCase(),
+        contactName: value('reg-contact-name'),
+        phone: value('reg-phone'),
+        email: value('reg-email'),
+        emailCode: value('reg-code'),
+        password: document.getElementById('reg-password').value,
+        addressLine1: value('reg-address1'),
+        addressLine2: value('reg-address2'),
+        city: value('reg-city'),
+        region: value('reg-region'),
+        postalCode: value('reg-postal'),
+        country: value('reg-country'),
+        taxId: value('reg-tax-id'),
+        billingEmail: value('reg-billing-email'),
+        notes: value('reg-notes'),
+        acceptTerms: document.getElementById('reg-terms').checked
+      };
+
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          document.getElementById('register-form').style.display = 'none';
+          const done = document.getElementById('register-done');
+          done.textContent = 'Thank you. Your registration (reference ' + data.reference + ') is waiting for review. ' +
+            'We have emailed ' + payload.email + ' and will write again as soon as your console is active.';
+          done.style.display = 'block';
+          return;
+        }
+        registerError(data.error || 'Registration failed');
+      } catch (err) {
+        registerError('Network error during registration');
+      }
+    });
+  </script>
+  <script nonce="${escapeAttr(data.nonce)}">${THEME_TOGGLE_SCRIPT}</script>
+  ${
+    turnstileKey
+      ? `<script nonce="${escapeAttr(data.nonce)}" src="${TURNSTILE_ORIGIN}/turnstile/v0/api.js?render=explicit&amp;onload=lkTurnstileReady" async defer></script>`
+      : ""
+  }
+</body>
+</html>`;
+}
+
+function landingMainHtml(baseDomain: string, contactEmail: string): string {
+  return `
     <!-- Hero Section -->
     <section class="hero">
       <div class="hero-badge-container">
@@ -1703,783 +2735,821 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
           Send Deployment Inquiry Directly
         </button>
       </div>
-    </section>
-  </main>
-
-  <!-- Login Modal -->
-  <div class="modal-overlay" id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
-    <div class="modal-box">
-      <button class="modal-close" data-action="close-modal" data-modal="login" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="login-modal-title">Admin &amp; Staff Sign In</h2>
-      <p class="modal-sub">Sign in to manage your organization's workstations.</p>
-      <div class="alert-box" id="login-alert" role="alert"></div>
-      <form id="login-form">
-        <div class="form-group">
-          <label class="form-label" for="login-email">Email Address</label>
-          <input type="email" class="form-input" id="login-email" required placeholder="you@example.com" autocomplete="email">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="login-password">Password</label>
-          <input type="password" class="form-input" id="login-password" required placeholder="••••••••" autocomplete="current-password">
-        </div>
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Admin Console</button>
-      </form>
-      <form id="login-2fa-form" hidden>
-        <div class="notice-box" id="login-2fa-notice" role="status"></div>
-        <div class="form-group">
-          <label class="form-label" for="login-2fa-code">Code from your authenticator app</label>
-          <input type="text" class="form-input" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
-        </div>
-        <div class="form-group">
-          <label class="check-row"><input type="checkbox" id="login-2fa-trust"> <span>Trust this browser for 30 days</span></label>
-        </div>
-        <button type="submit" class="btn btn-primary btn-block">Verify and sign in</button>
-        <div class="code-row" style="margin-top: 10px;">
-          <button type="button" class="btn btn-ghost" id="login-2fa-email">Email me a code instead</button>
-          <button type="button" class="btn btn-ghost" id="login-2fa-back">Start over</button>
-        </div>
-        <p class="modal-sub" style="margin: 12px 0 0;">Lost your phone? Enter one of your recovery codes instead of the six digits.</p>
-      </form>
-      <div class="modal-switch">
-        New organization? <a href="/register" data-action="switch-modal" data-close="login" data-modal="register">Register your organization</a>
-      </div>
-    </div>
-  </div>
-
-  <!-- Register Modal -->
-  <div class="modal-overlay" id="register-modal" role="dialog" aria-modal="true" aria-labelledby="reg-modal-title">
-    <div class="modal-box modal-wide">
-      <button class="modal-close" data-action="close-modal" data-modal="register" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="reg-modal-title">Register Your Organization</h2>
-      <p class="modal-sub">We review every registration and email you when your console is active, usually within one working day.</p>
-      <div class="alert-box" id="register-alert" role="alert"></div>
-      <div class="notice-box" id="register-done" role="status"></div>
-      <form id="register-form">
-        <div class="form-legend">Organization</div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-name">Organization name</label>
-            <input type="text" class="form-input" id="reg-name" required maxlength="120" placeholder="Greenwood Holdings" autocomplete="organization">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-legal-name">Legal or billing name <span class="input-hint">(optional)</span></label>
-            <input type="text" class="form-input" id="reg-legal-name" maxlength="160" placeholder="Greenwood Holdings Pvt Ltd">
-          </div>
-        </div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-type">Type</label>
-            <select class="form-input" id="reg-type">
-              <option value="business">Business</option>
-              <option value="government">Government or public body</option>
-              <option value="library">Library</option>
-              <option value="education">Education</option>
-              <option value="nonprofit">Non-profit</option>
-              <option value="other">Other</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-workstations">Expected workstations</label>
-            <input type="number" class="form-input" id="reg-workstations" min="1" max="100000" placeholder="40" inputmode="numeric">
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-subdomain">Console address</label>
-          <div class="code-row">
-            <input type="text" class="form-input" id="reg-subdomain" required placeholder="greenwood" pattern="[a-z0-9\\-]+" style="font-family: var(--font-mono);">
-            <span style="font-family: var(--font-mono); font-size: 13px; color: var(--muted); white-space: nowrap; align-self: center;">.${escapeHtml(baseDomain)}</span>
-          </div>
-          <div class="input-hint">Lowercase letters, numbers and hyphens.</div>
-        </div>
-
-        <div class="form-legend">Technical contact</div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-contact-name">Full name</label>
-            <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-phone">Phone, with country code</label>
-            <input type="tel" class="form-input" id="reg-phone" required placeholder="+91 98765 43210" autocomplete="tel">
-            <div class="input-hint">We call or message this number to confirm it before approval.</div>
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-email">Work email (your sign-in)</label>
-          <div class="code-row">
-            <input type="email" class="form-input" id="reg-email" required placeholder="jane@greenwood.example" autocomplete="email">
-            <button type="button" class="btn btn-ghost" id="reg-send-code">Send code</button>
-          </div>
-        </div>
-        ${turnstileSlot("reg-turnstile")}
-        <div class="form-group">
-          <label class="form-label" for="reg-code">Six-digit code from that email</label>
-          <input type="text" class="form-input" id="reg-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-password">Password</label>
-          <input type="password" class="form-input" id="reg-password" required minlength="12" placeholder="••••••••" autocomplete="new-password">
-          <div class="input-hint">At least 12 characters, with letters and numbers.</div>
-        </div>
-
-        <div class="form-legend">Address &amp; billing</div>
-        <div class="form-group">
-          <label class="form-label" for="reg-address1">Street address</label>
-          <input type="text" class="form-input" id="reg-address1" required maxlength="200" autocomplete="address-line1">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-address2">Address line 2 <span class="input-hint">(optional)</span></label>
-          <input type="text" class="form-input" id="reg-address2" maxlength="200" autocomplete="address-line2">
-        </div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-city">City</label>
-            <input type="text" class="form-input" id="reg-city" required maxlength="100" autocomplete="address-level2">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-region">State or region</label>
-            <input type="text" class="form-input" id="reg-region" maxlength="100" autocomplete="address-level1">
-          </div>
-        </div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-postal">Postal code</label>
-            <input type="text" class="form-input" id="reg-postal" required maxlength="20" autocomplete="postal-code">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-country">Country</label>
-            <input type="text" class="form-input" id="reg-country" required maxlength="80" autocomplete="country-name" placeholder="India">
-          </div>
-        </div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-tax-id">Tax ID, e.g. GSTIN <span class="input-hint">(optional)</span></label>
-            <input type="text" class="form-input" id="reg-tax-id" maxlength="40">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-billing-email">Billing email <span class="input-hint">(optional)</span></label>
-            <input type="email" class="form-input" id="reg-billing-email" autocomplete="email">
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="reg-notes">Anything we should know? <span class="input-hint">(optional)</span></label>
-          <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
-        </div>
-        <div class="form-group">
-          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
-        </div>
-        <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
-      </form>
-      <div class="modal-switch">
-        Already registered? <a href="/login" data-action="switch-modal" data-close="register" data-modal="login">Sign in</a>
-      </div>
-    </div>
-  </div>
-
-  <!-- ISO Download Modal -->
-  <div class="modal-overlay" id="iso-modal" role="dialog" aria-modal="true" aria-labelledby="iso-modal-title">
-    <div class="modal-box" style="max-width: 540px;">
-      <button class="modal-close" data-action="close-modal" data-modal="iso" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="iso-modal-title">Download Lab Kiosk ISO</h2>
-      <p class="modal-sub">Flash to a USB drive and boot any PC or Thin Client.</p>
-      <div style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left;">
-        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 1: Write ISO to USB Drive</h4>
-        <p style="font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 14px;">
-          Download <code>labkiosk-debian12-amd64.iso</code> and flash it to a 2 GB+ USB drive using <strong>Rufus</strong> (Windows, DD image mode) or <strong>balenaEtcher</strong> (Mac/Linux).
-        </p>
-        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 2: Boot Client &amp; First-Boot Wizard</h4>
-        <p style="font-size: 13px; color: var(--muted); line-height: 1.5;">
-          Boot your PC from USB. On first boot, the setup wizard prompts for your <strong>Organization Subdomain</strong>, <strong>PC Identifier (e.g. PC-01)</strong>, and <strong>Enrollment Key</strong>. Once verified, the workstation permanently links to your cloud dashboard!
-        </p>
-      </div>
-      ${isoAction}
-    </div>
-  </div>
-
-  <!-- Contact Modal -->
-  <div class="modal-overlay" id="contact-modal" role="dialog" aria-modal="true" aria-labelledby="contact-modal-title">
-    <div class="modal-box" style="max-width: 500px;">
-      <button class="modal-close" data-action="close-modal" data-modal="contact" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="contact-modal-title">Send Deployment Inquiry</h2>
-      <p class="modal-sub">Our team responds to organizations and partners within 24 hours.</p>
-      <div class="alert-box" id="contact-alert" role="alert"></div>
-      <div class="notice-box" id="contact-done" role="status"></div>
-      <form id="contact-form">
-        <div class="form-group">
-          <label class="form-label" for="contact-name">Your Full Name</label>
-          <input type="text" class="form-input" id="contact-name" required placeholder="Dr. Jane Smith">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="contact-org">Organization</label>
-          <input type="text" class="form-input" id="contact-org" required placeholder="Acme Corp / City Library / State University">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="contact-sender-email">Email Address</label>
-          <input type="email" class="form-input" id="contact-sender-email" required placeholder="jane@lincoln.edu">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="contact-type">Inquiry Type</label>
-          <select class="form-input" id="contact-type" style="background: var(--bg-surface); color: var(--text-main);">
-            <option value="Organization Deployment">Organization Deployment</option>
-            <option value="Education Deployment / Assessments">Education Deployment / Assessments</option>
-            <option value="Corporate CSR Hardware Donation">Corporate CSR Hardware Donation</option>
-            <option value="Technical Support Inquiry">Technical Support Inquiry</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="contact-message">Message / Details</label>
-          <textarea class="form-input" id="contact-message" rows="4" required placeholder="Tell us about the number of computers, location, and timeline..."></textarea>
-        </div>
-        ${turnstileSlot("contact-turnstile")}
-        <button type="submit" class="btn btn-primary btn-block">Send Inquiry &rarr;</button>
-      </form>
-    </div>
-  </div>
-
-  <footer>
-    <div class="footer-content">
-      <div class="footer-col">
-        <div class="brand" style="margin-bottom: 12px;">
-          <div class="brand-logo">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-          </div>
-          <span style="font-weight: 800; font-size: 16px; color: var(--text-main);">Lab Kiosk OS</span>
-        </div>
-        <p style="font-size: 13px; line-height: 1.6; margin-bottom: 12px;">
-          Secure browser workstations for any organization. 100% RAM overlay, zero SSD degradation, and central control from Cloudflare's serverless edge.
-        </p>
-        <p style="font-size: 12px; color: var(--text-subtle);">
-          Hosted globally at <code>${escapeHtml(baseDomain)}</code>
-        </p>
-      </div>
-
-      <div class="footer-col">
-        <h5>Stakeholders</h5>
-        <ul>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-operators">For IT &amp; Operations</a></li>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-users">For End Users</a></li>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-universities">For Education</a></li>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-smc">For Leadership &amp; Finance</a></li>
-          <li><a href="#audiences" data-action="audience-tab" data-tab="tab-corporate">For CSR Donors</a></li>
-        </ul>
-      </div>
-
-      <div class="footer-col">
-        <h5>Platform</h5>
-        <ul>
-          <li><a href="#features">Core Features</a></li>
-          <li><a href="#simulator">Live Simulator</a></li>
-          <li><a href="#specs">Hardware Specs</a></li>
-          <li><a href="#security">Architecture</a></li>
-          <li><a href="${SOURCE_REPOSITORY_URL}" target="_blank" rel="noopener">Source code on GitHub</a></li>
-          <li><a href="#faq">FAQ</a></li>
-          <li><a href="/iso" data-action="open-modal" data-modal="iso">Download ISO</a></li>
-        </ul>
-      </div>
-
-      <div class="footer-col">
-        <h5>Global Contact</h5>
-        <ul>
-          <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
-          <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
-          <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@labkiosk.org">partners@labkiosk.org</a></li>
-          <li><a href="/contact" data-action="open-modal" data-modal="contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Free for accredited schools up to 45 PCs • Commercial license for businesses &amp; resale</div>
-      <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-        <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
-        <a href="/register" data-action="open-modal" data-modal="register">Register Organization</a>
-        <a href="/privacy">Privacy Policy</a>
-        <a href="/terms">Terms of Service</a>
-        <button type="button" class="footer-link-button" id="cookie-settings-link" data-action="cookie-settings" hidden>Cookie Settings</button>
-        <a href="#security">Security</a>
-      </div>
-    </div>
-  </footer>
-
-  <div class="cookie-banner" id="cookie-banner" role="region" aria-label="Cookie choice" hidden>
-    <p>We use Google Analytics to count visits to these pages. Nothing is sent to Google unless you accept. See our <a href="/privacy">Privacy Policy</a>.</p>
-    <div class="cookie-banner-actions">
-      <button type="button" class="btn btn-ghost btn-sm" data-action="cookie-reject">Reject</button>
-      <button type="button" class="btn btn-primary btn-sm" data-action="cookie-accept">Accept</button>
-    </div>
-  </div>
-
-  <script nonce="${escapeAttr(data.nonce)}">
-    function openModal(id) {
-      const el = document.getElementById(id);
-      if (el) el.classList.add('active');
-    }
-    function closeModal(id) {
-      const el = document.getElementById(id);
-      if (el) el.classList.remove('active');
-    }
-    function switchModal(closeId, openId) {
-      closeModal(closeId);
-      openModal(openId);
-    }
-
-    // Mobile Navigation Drawer Toggle
-    function toggleMobileNav(force) {
-      const drawer = document.getElementById('mobile-drawer');
-      const backdrop = document.getElementById('mobile-drawer-backdrop');
-      const toggleBtn = document.getElementById('mobile-toggle');
-      const iconMenu = toggleBtn ? toggleBtn.querySelector('.icon-menu') : null;
-      const iconClose = toggleBtn ? toggleBtn.querySelector('.icon-close') : null;
-
-      const isOpen = drawer ? drawer.classList.contains('active') : false;
-      const willOpen = typeof force === 'boolean' ? force : !isOpen;
-
-      if (drawer) drawer.classList.toggle('active', willOpen);
-      if (backdrop) backdrop.classList.toggle('active', willOpen);
-      if (toggleBtn) toggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
-      if (iconMenu) iconMenu.style.display = willOpen ? 'none' : 'block';
-      if (iconClose) iconClose.style.display = willOpen ? 'block' : 'none';
-      document.body.style.overflow = willOpen ? 'hidden' : '';
-    }
-
-    // One delegated listener replaces inline handlers: the Content-Security-Policy
-    // allows only nonce-carrying script blocks, never on*= attributes.
-    document.addEventListener('click', (event) => {
-      const target = event.target.closest('[data-action]');
-      if (!target) return;
-      const action = target.dataset.action;
-      if (action === 'open-modal') {
-        event.preventDefault();
-        openModal(target.dataset.modal + '-modal');
-      } else if (action === 'close-modal') {
-        closeModal(target.dataset.modal + '-modal');
-      } else if (action === 'switch-modal') {
-        event.preventDefault();
-        switchModal(target.dataset.close + '-modal', target.dataset.modal + '-modal');
-      } else if (action === 'drawer-open-modal') {
-        toggleMobileNav(false);
-        openModal(target.dataset.modal + '-modal');
-      } else if (action === 'close-drawer') {
-        toggleMobileNav(false);
-      } else if (action === 'toggle-drawer') {
-        toggleMobileNav();
-      } else if (action === 'audience-tab') {
-        switchAudienceTab(target.dataset.tab);
-      } else if (action === 'sim-view') {
-        setSimView(target.dataset.view);
-      } else if (action === 'sim-broadcast') {
-        simulateBroadcast();
-      } else if (action === 'sim-app') {
-        alert(target.dataset.message);
-      } else if (action === 'toggle-faq') {
-        toggleFaq(target);
-      } else if (action === 'cookie-accept') {
-        recordCookieChoice(true);
-      } else if (action === 'cookie-reject') {
-        recordCookieChoice(false);
-      } else if (action === 'cookie-settings') {
-        document.getElementById('cookie-banner').hidden = false;
-      }
-    });
-
-    // Website analytics consent. Zaraz is injected only on the public pages
-    // (src/seo.ts) and its own modal is turned off in the dashboard, so this
-    // bar asks instead, through the Zaraz Consent API, without blocking the
-    // page. Where Zaraz is absent the bar and its footer link stay hidden.
-    function zarazConsent() {
-      const consent = window.zaraz && window.zaraz.consent;
-      return consent && consent.APIReady ? consent : null;
-    }
-    function recordCookieChoice(accepted) {
-      const consent = zarazConsent();
-      if (!consent) return;
-      consent.setAll(accepted);
-      consent.sendQueuedEvents();
-      document.getElementById('cookie-banner').hidden = true;
-    }
-    function initCookieConsent() {
-      const consent = zarazConsent();
-      if (!consent) return;
-      document.getElementById('cookie-settings-link').hidden = false;
-      // consent.getAll() reports false for an undecided purpose, so the
-      // choice cookie (named in Zaraz's consent settings) says whether one was made.
-      const decided = document.cookie.split('; ').some((c) => c.startsWith('zaraz-consent='));
-      if (!decided && !consent.modal) document.getElementById('cookie-banner').hidden = false;
-    }
-    if (zarazConsent()) initCookieConsent();
-    else document.addEventListener('zarazConsentAPIReady', initCookieConsent, { once: true });
-    document.getElementById('contact-form').addEventListener('submit', handleContactSubmit);
-
-    // Escape key closes modals and mobile drawer
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
-        toggleMobileNav(false);
-      }
-    });
-
-    // Close on backdrop click
-    document.querySelectorAll('.modal-overlay').forEach(m => {
-      m.addEventListener('click', (e) => {
-        if (e.target === m) m.classList.remove('active');
-      });
-    });
-
-    // Open the modal requested by the server
-    const requestedModal = ${escapeJson(data.openModal || null)};
-    if (requestedModal === 'login' || requestedModal === 'register' || requestedModal === 'iso' || requestedModal === 'contact') {
-      openModal(requestedModal + '-modal');
-    }
-
-    // Stakeholder tab switcher
-    function switchAudienceTab(tabId) {
-      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-      const activeContent = document.getElementById(tabId);
-      if (activeContent) activeContent.classList.add('active');
-      const buttons = document.querySelectorAll('.tab-btn');
-      const tabMap = {
-        'tab-operators': 0,
-        'tab-users': 1,
-        'tab-universities': 2,
-        'tab-smc': 3,
-        'tab-corporate': 4
-      };
-      if (buttons[tabMap[tabId]]) buttons[tabMap[tabId]].classList.add('active');
-    }
-
-    // Simulator view switcher
-    function setSimView(view) {
-      const p = document.getElementById('sim-view-portal');
-      const t = document.getElementById('sim-view-operator');
-      const c = document.getElementById('sim-view-curtain');
-      const bp = document.getElementById('sim-btn-portal');
-      const bt = document.getElementById('sim-btn-operator');
-      const bc = document.getElementById('sim-btn-curtain');
-      
-      p.style.display = view === 'portal' ? 'block' : 'none';
-      t.style.display = view === 'operator' ? 'block' : 'none';
-      c.style.display = view === 'curtain' ? 'block' : 'none';
-
-      bp.classList.toggle('active', view === 'portal');
-      bt.classList.toggle('active', view === 'operator');
-      bc.classList.toggle('active', view === 'curtain');
-    }
-
-    function simulateBroadcast() {
-      const url = prompt('Enter a URL to broadcast to every workstation screen:', 'https://intranet.example.com');
-      if (url) {
-        alert('Broadcast Sent! All thin client screens are navigating to: ' + url);
-      }
-    }
-
-    // FAQ Accordion Toggle
-    function toggleFaq(el) {
-      const item = el.parentElement;
-      item.classList.toggle('open');
-    }
-
-    // Cloudflare Turnstile, when the platform turned it on: one widget in front of
-    // the signup code and one in front of the contact form. A token works once,
-    // so each widget is reset after every attempt.
-    const TURNSTILE_SITE_KEY = ${escapeJson(turnstileKey)};
-    const turnstileWidgets = {};
-    window.lkTurnstileReady = function () {
-      ['reg-turnstile', 'contact-turnstile'].forEach((id) => {
-        if (document.getElementById(id) && window.turnstile) {
-          turnstileWidgets[id] = window.turnstile.render('#' + id, {
-            sitekey: TURNSTILE_SITE_KEY,
-            action: id === 'reg-turnstile' ? 'signup' : 'contact'
-          });
-        }
-      });
-    };
-    function turnstileToken(id) {
-      if (!TURNSTILE_SITE_KEY) return '';
-      return window.turnstile && turnstileWidgets[id] !== undefined ? (window.turnstile.getResponse(turnstileWidgets[id]) || '') : '';
-    }
-    function turnstileReset(id) {
-      if (window.turnstile && turnstileWidgets[id] !== undefined) window.turnstile.reset(turnstileWidgets[id]);
-    }
-
-    // Contact form: filed straight into the platform's support inbox, and
-    // answered by email. No mail client is needed on either side.
-    async function handleContactSubmit(e) {
-      e.preventDefault();
-      const alertBox = document.getElementById('contact-alert');
-      const done = document.getElementById('contact-done');
-      const form = document.getElementById('contact-form');
-      alertBox.style.display = 'none';
-      const payload = {
-        name: document.getElementById('contact-name').value.trim(),
-        organization: document.getElementById('contact-org').value.trim(),
-        email: document.getElementById('contact-sender-email').value.trim(),
-        topic: document.getElementById('contact-type').value,
-        message: document.getElementById('contact-message').value.trim(),
-        turnstileToken: turnstileToken('contact-turnstile')
-      };
-      if (TURNSTILE_SITE_KEY && !payload.turnstileToken) {
-        alertBox.textContent = 'Please complete the check above the button first.';
-        alertBox.style.display = 'block';
-        return;
-      }
-      try {
-        const res = await fetch('/api/contact', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        turnstileReset('contact-turnstile');
-        const data = await res.json();
-        if (res.ok && data.status === 'ok') {
-          form.style.display = 'none';
-          done.textContent = 'Thank you. Your message is with our team (reference ' + data.reference + '). We will reply to ' + payload.email + '.';
-          done.style.display = 'block';
-        } else {
-          alertBox.textContent = data.error || 'Your message could not be sent.';
-          alertBox.style.display = 'block';
-        }
-      } catch (err) {
-        alertBox.textContent = 'Network error. Please try again.';
-        alertBox.style.display = 'block';
-      }
-    }
-
-    const BASE_DOMAIN = ${escapeJson(baseDomain)};
-
-    /**
-     * Which organization this page is showing, if any.
-     *
-     * The sign-in POST goes to /api/auth/login with no query string, so the
-     * server cannot see the ?tenant= that put this page on screen. On a real
-     * subdomain the Host header carries it; on a dev host, and on the apex
-     * with ?tenant=, nothing did -- which is why signing in to reach the demo
-     * console still landed on /super.
-     *
-     * This is a hint for where to go next, not a claim of access: the server
-     * decides what to do with it, and every console is guarded on arrival.
-     */
-    function currentTenantSlug() {
-      const named = new URLSearchParams(window.location.search).get('tenant');
-      if (named) return named;
-      const host = window.location.hostname;
-      const suffix = '.' + BASE_DOMAIN;
-      if (host.endsWith(suffix)) {
-        const prefix = host.slice(0, -suffix.length);
-        if (prefix && prefix.indexOf('.') === -1) return prefix;
-      }
-      return '';
-    }
-
-    // Login Form Submission
-    document.getElementById('login-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const email = document.getElementById('login-email').value.trim();
-      const password = document.getElementById('login-password').value;
-      const alertBox = document.getElementById('login-alert');
-      alertBox.style.display = 'none';
-
-      try {
-        const res = await fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password, tenant: currentTenantSlug() })
-        });
-        const data = await res.json();
-        if (data.status === 'ok') {
-          // The server decides. It is the only side that knows which host this
-          // request arrived on and which consoles the account may open. This used
-          // to be worked out here, and sent every super admin to /super whatever
-          // subdomain they had signed in on.
-          window.location.href = data.redirect || '/admin';
-        } else if (data.status === 'two_factor') {
-          showSecondStep(data.challenge);
-        } else {
-          alertBox.textContent = data.error || 'Login failed';
-          alertBox.style.display = 'block';
-        }
-      } catch (err) {
-        alertBox.textContent = 'Network error during login';
-        alertBox.style.display = 'block';
-      }
-    });
-
-    // The second step of a two-factor sign-in: the app's code, an emailed one, or a recovery code.
-    const loginForm = document.getElementById('login-form');
-    const secondForm = document.getElementById('login-2fa-form');
-    const secondNotice = document.getElementById('login-2fa-notice');
-    let loginChallenge = '';
-    function loginError(message) {
-      const alertBox = document.getElementById('login-alert');
-      alertBox.textContent = message;
-      alertBox.style.display = 'block';
-    }
-    function showSecondStep(challenge) {
-      loginChallenge = challenge;
-      loginForm.hidden = true;
-      secondForm.hidden = false;
-      secondNotice.textContent = 'Your account uses two-factor sign-in. Enter the six-digit code from your authenticator app.';
-      secondNotice.style.display = 'block';
-      document.getElementById('login-2fa-code').value = '';
-      document.getElementById('login-2fa-code').focus();
-    }
-    function startOver() {
-      loginChallenge = '';
-      secondForm.hidden = true;
-      loginForm.hidden = false;
-      document.getElementById('login-password').value = '';
-      document.getElementById('login-password').focus();
-    }
-    document.getElementById('login-2fa-back').addEventListener('click', () => {
-      document.getElementById('login-alert').style.display = 'none';
-      startOver();
-    });
-    secondForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      document.getElementById('login-alert').style.display = 'none';
-      try {
-        const res = await fetch('/api/auth/login/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            challenge: loginChallenge,
-            code: document.getElementById('login-2fa-code').value.trim(),
-            trustBrowser: document.getElementById('login-2fa-trust').checked
-          })
-        });
-        const data = await res.json();
-        if (data.status === 'ok') {
-          window.location.href = data.redirect || '/admin';
-          return;
-        }
-        loginError(data.error || 'That code is not right.');
-        // An expired or exhausted sign-in needs the password again.
-        if (res.status === 401) startOver();
-      } catch (err) {
-        loginError('Network error during sign-in');
-      }
-    });
-    document.getElementById('login-2fa-email').addEventListener('click', async () => {
-      document.getElementById('login-alert').style.display = 'none';
-      try {
-        const res = await fetch('/api/auth/login/email-code', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ challenge: loginChallenge })
-        });
-        const data = await res.json();
-        if (res.ok && data.status === 'ok') {
-          secondNotice.textContent = 'We emailed a six-digit code to ' + data.sentTo + '. Enter it below.';
-          document.getElementById('login-2fa-code').focus();
-          return;
-        }
-        loginError(data.error || 'The code could not be sent.');
-        if (res.status === 401) startOver();
-      } catch (err) {
-        loginError('Network error while sending the code');
-      }
-    });
-
-    // Registration: confirm the email with a code, then submit the request.
-    // The organization is reviewed before it is activated, so no session follows.
-    const registerAlert = document.getElementById('register-alert');
-    function registerError(message) {
-      registerAlert.textContent = message;
-      registerAlert.style.display = 'block';
-      registerAlert.scrollIntoView({ block: 'nearest' });
-    }
-
-    const sendCodeButton = document.getElementById('reg-send-code');
-    sendCodeButton.addEventListener('click', async () => {
-      const email = document.getElementById('reg-email').value.trim();
-      registerAlert.style.display = 'none';
-      if (!email) {
-        registerError('Enter your work email first.');
-        return;
-      }
-      const token = turnstileToken('reg-turnstile');
-      if (TURNSTILE_SITE_KEY && !token) {
-        registerError('Complete the check under your email address first.');
-        return;
-      }
-      sendCodeButton.disabled = true;
-      try {
-        const res = await fetch('/api/auth/register/email-code', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, turnstileToken: token })
-        });
-        turnstileReset('reg-turnstile');
-        const data = await res.json();
-        if (res.ok && data.status === 'ok') {
-          sendCodeButton.textContent = 'Code sent';
-          document.getElementById('reg-code').focus();
-          // A new code may be asked for after a minute.
-          setTimeout(() => { sendCodeButton.disabled = false; sendCodeButton.textContent = 'Resend code'; }, 60000);
-          return;
-        }
-        registerError(data.error || 'The code could not be sent.');
-      } catch (err) {
-        registerError('Network error while sending the code.');
-      }
-      sendCodeButton.disabled = false;
-    });
-
-    document.getElementById('register-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      registerAlert.style.display = 'none';
-      const value = (id) => document.getElementById(id).value.trim();
-      const workstations = parseInt(value('reg-workstations'), 10);
-      const payload = {
-        name: value('reg-name'),
-        legalName: value('reg-legal-name'),
-        organizationType: value('reg-type'),
-        workstationEstimate: Number.isFinite(workstations) ? workstations : null,
-        subdomain: value('reg-subdomain').toLowerCase(),
-        contactName: value('reg-contact-name'),
-        phone: value('reg-phone'),
-        email: value('reg-email'),
-        emailCode: value('reg-code'),
-        password: document.getElementById('reg-password').value,
-        addressLine1: value('reg-address1'),
-        addressLine2: value('reg-address2'),
-        city: value('reg-city'),
-        region: value('reg-region'),
-        postalCode: value('reg-postal'),
-        country: value('reg-country'),
-        taxId: value('reg-tax-id'),
-        billingEmail: value('reg-billing-email'),
-        notes: value('reg-notes'),
-        acceptTerms: document.getElementById('reg-terms').checked
-      };
-
-      try {
-        const res = await fetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        const data = await res.json();
-        if (res.ok && data.status === 'ok') {
-          document.getElementById('register-form').style.display = 'none';
-          const done = document.getElementById('register-done');
-          done.textContent = 'Thank you. Your registration (reference ' + data.reference + ') is waiting for review. ' +
-            'We have emailed ' + payload.email + ' and will write again as soon as your console is active.';
-          done.style.display = 'block';
-          return;
-        }
-        registerError(data.error || 'Registration failed');
-      } catch (err) {
-        registerError('Network error during registration');
-      }
-    });
-  </script>
-  <script nonce="${escapeAttr(data.nonce)}">${THEME_TOGGLE_SCRIPT}</script>
-  ${
-    turnstileKey
-      ? `<script nonce="${escapeAttr(data.nonce)}" src="${TURNSTILE_ORIGIN}/turnstile/v0/api.js?render=explicit&amp;onload=lkTurnstileReady" async defer></script>`
-      : ""
-  }
-</body>
-</html>`;
+    </section>`;
 }
+
+export function renderLandingHtml(data: LandingOptions): string {
+  const baseDomain = (data.baseDomain || "labkiosk.org").toLowerCase().replace(/^\./, "");
+  const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
+  return renderPublicShell(data, {
+    title: PAGE_TITLE,
+    description: PAGE_DESCRIPTION,
+    mainHtml: landingMainHtml(baseDomain, contactEmail)
+  });
+}
+
+function featuresMainHtml(): string {
+  return `
+    <section class="page-hero">
+      <div class="hero-badge-container">
+        <span class="badge badge-blue">Built for Central Management</span>
+        <span class="badge badge-green">Production Ready (Debian 12 + Cloudflare Edge)</span>
+      </div>
+      <h1 class="page-hero-title">Enterprise Kiosk <span>Capabilities</span></h1>
+      <p class="page-hero-desc">
+        Defense-in-depth from the Linux kernel to the serverless edge. Everything needed to secure public terminals, shared workstations, and thin-client fleets without hardware wear.
+      </p>
+    </section>
+
+    <section class="section-wrap" style="padding-top: 0;">
+      <div class="features-deep-grid">
+        <div class="feature-deep-card">
+          <div class="feature-deep-header">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </div>
+            <h2 class="feature-deep-title">Tamper-Proof OS Lockdown</h2>
+          </div>
+          <p class="feature-deep-text">
+            Virtual TTY consoles (TTY1-6) and X11 VT-switching shortcuts (Ctrl+Alt+F1-F7) are permanently masked. Openbox window manager runs without escape keybindings. USB storage automounting is blocked, preventing unauthorized execution.
+          </p>
+          <div class="feature-badge-list">
+            <span class="feature-tag">Read-Only Root</span>
+            <span class="feature-tag">Masked TTYs</span>
+            <span class="feature-tag">Openbox Lockdown</span>
+            <span class="feature-tag">No USB Mount</span>
+          </div>
+        </div>
+
+        <div class="feature-deep-card">
+          <div class="feature-deep-header">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            </div>
+            <h2 class="feature-deep-title">Managed Enterprise Chromium</h2>
+          </div>
+          <p class="feature-deep-text">
+            Strict system-level policies enforce <code>URLBlocklist: ["*"]</code>. Workstations access only the domains explicitly approved in your organization console. DevTools, downloads, extensions, and print dialogs are permanently disabled.
+          </p>
+          <div class="feature-badge-list">
+            <span class="feature-tag">URL Allowlisting</span>
+            <span class="feature-tag">F12 Blocked</span>
+            <span class="feature-tag">Zero Extensions</span>
+            <span class="feature-tag">Managed Policy</span>
+          </div>
+        </div>
+
+        <div class="feature-deep-card">
+          <div class="feature-deep-header">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </div>
+            <h2 class="feature-deep-title">100% RAM Overlay (Zero SSD Wear)</h2>
+          </div>
+          <p class="feature-deep-text">
+            The root filesystem mounts read-only with a volatile tmpfs overlay (<code>overlayroot="tmpfs:recurse=0"</code>). Browser caches, temporary logs, and session files live strictly in RAM. Thin clients with small flash SSDs experience zero write cycles.
+          </p>
+          <div class="feature-badge-list">
+            <span class="feature-tag">0 KB Flash Writes</span>
+            <span class="feature-tag">tmpfs Overlay</span>
+            <span class="feature-tag">Stateless Boot</span>
+            <span class="feature-tag">Hardware Longevity</span>
+          </div>
+        </div>
+
+        <div class="feature-deep-card">
+          <div class="feature-deep-header">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            </div>
+            <h2 class="feature-deep-title">Real-Time OrgHub WebSockets</h2>
+          </div>
+          <p class="feature-deep-text">
+            Every workstation maintains an authenticated WebSocket connection to its organization's dedicated Cloudflare Durable Object (OrgHub). Remote commands (lock, navigate, reload, reboot, shutdown) execute in under 100 milliseconds worldwide.
+          </p>
+          <div class="feature-badge-list">
+            <span class="feature-tag">Durable Objects</span>
+            <span class="feature-tag">WebSockets</span>
+            <span class="feature-tag">&lt; 100ms Latency</span>
+            <span class="feature-tag">HTTP Fallback</span>
+          </div>
+        </div>
+
+        <div class="feature-deep-card">
+          <div class="feature-deep-header">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 16 21 12 17"/></svg>
+            </div>
+            <h2 class="feature-deep-title">VNC Remote Control Relay</h2>
+          </div>
+          <p class="feature-deep-text">
+            Assist users directly from your browser without opening firewall ports. RemoteRelay pairs the operator console's browser with the workstation's loopback x11vnc session via end-to-end WebSocket bridging.
+          </p>
+          <div class="feature-badge-list">
+            <span class="feature-tag">noVNC In-Browser</span>
+            <span class="feature-tag">Zero Port Forwarding</span>
+            <span class="feature-tag">RemoteRelay</span>
+            <span class="feature-tag">Encrypted Tunnel</span>
+          </div>
+        </div>
+
+        <div class="feature-deep-card">
+          <div class="feature-deep-header">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            </div>
+            <h2 class="feature-deep-title">Multi-Lingual Interface (i18n)</h2>
+          </div>
+          <p class="feature-deep-text">
+            Complete internationalization support for workstation UI, top bar, lock curtain, and setup wizard. Full right-to-left (RTL) layout switching for Arabic, Hebrew, and Urdu. Translation catalogs synchronize over the air.
+          </p>
+          <div class="feature-badge-list">
+            <span class="feature-tag">OTA Translation</span>
+            <span class="feature-tag">RTL Support</span>
+            <span class="feature-tag">Multi-Lingual</span>
+            <span class="feature-tag">GNU gettext</span>
+          </div>
+        </div>
+
+        <div class="feature-deep-card">
+          <div class="feature-deep-header">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </div>
+            <h2 class="feature-deep-title">Anti-Escalation Staff Delegation</h2>
+          </div>
+          <p class="feature-deep-text">
+            Delegate operational tasks without risking security. Pre-defined roles (Operator, Assistant, Content Manager, Sub-Admin) enforce strict permission boundaries. Staff can never escalate permissions beyond what their creator holds.
+          </p>
+          <div class="feature-badge-list">
+            <span class="feature-tag">Least Privilege</span>
+            <span class="feature-tag">5 Staff Roles</span>
+            <span class="feature-tag">No Wildcards</span>
+            <span class="feature-tag">Immutable Audit</span>
+          </div>
+        </div>
+
+        <div class="feature-deep-card">
+          <div class="feature-deep-header">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            </div>
+            <h2 class="feature-deep-title">Curated User Portal Launcher</h2>
+          </div>
+          <p class="feature-deep-text">
+            Provide end users with an intuitive, clean grid of approved services. Administrators configure app tiles with high-resolution thumbnails, descriptions, and categories. Users click to launch without typing complex URLs.
+          </p>
+          <div class="feature-badge-list">
+            <span class="feature-tag">One-Click Launch</span>
+            <span class="feature-tag">Visual Grid</span>
+            <span class="feature-tag">Category Filter</span>
+            <span class="feature-tag">Responsive Cards</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="text-align: center; margin-top: 48px;">
+        <button class="btn btn-primary btn-lg" data-action="open-modal" data-modal="register">Register Your Organization</button>
+        <a href="/download" class="btn btn-ghost btn-lg" style="margin-left: 12px;">Download Kiosk ISO &rarr;</a>
+      </div>
+    </section>`;
+}
+
+function specsMainHtml(): string {
+  return `
+    <section class="page-hero">
+      <div class="hero-badge-container">
+        <span class="badge badge-blue">Hardware Compatibility</span>
+        <span class="badge badge-green">Linux 6.1 LTS Kernel</span>
+      </div>
+      <h1 class="page-hero-title">Technical Specifications &amp; <span>Hardware Requirements</span></h1>
+      <p class="page-hero-desc">
+        Engineered to give existing computers a second life and run lightning-fast on modern x86-64 thin clients without costly storage or RAM upgrades.
+      </p>
+    </section>
+
+    <section class="section-wrap" style="padding-top: 0;">
+      <div class="specs-table-container">
+        <table class="specs-table">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Minimum Requirement</th>
+              <th>Recommended Specification</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Processor (CPU)</strong></td>
+              <td>64-bit x86-64 (Intel Core 2 Duo, AMD Athlon 64, or newer)</td>
+              <td>Intel Core i3/i5/i7 (2nd gen+), Celeron J4105, or modern AMD Ryzen</td>
+            </tr>
+            <tr>
+              <td><strong>System Memory (RAM)</strong></td>
+              <td>4 GB RAM (the full OS and Chromium run from RAM)</td>
+              <td>4 GB or 8 GB RAM for ultra-smooth multi-app switching</td>
+            </tr>
+            <tr>
+              <td><strong>Storage Drive</strong></td>
+              <td>2 GB+ USB flash drive (USB 2.0 or 3.0); internal disk not required</td>
+              <td>Fast USB 3.0/3.1 Thumb Drive or Internal M.2 / SATA SSD</td>
+            </tr>
+            <tr>
+              <td><strong>Network</strong></td>
+              <td>10/100 Mbps Fast Ethernet or 802.11n Wi-Fi</td>
+              <td>Gigabit Ethernet (1000 Mbps) or 802.11ac Wi-Fi</td>
+            </tr>
+            <tr>
+              <td><strong>Display Output</strong></td>
+              <td>VGA / DVI / HDMI supporting 1024x768 resolution</td>
+              <td>1080p Full HD (1920x1080) or higher via HDMI/DisplayPort</td>
+            </tr>
+            <tr>
+              <td><strong>Verified Hardware</strong></td>
+              <td colspan="2">Tested on HP Thin Clients (t520/t620/t630), Dell OptiPlex (780/790/3020/7040), Lenovo ThinkCentre (M72e/M93p), Intel NUCs, Acer Veriton, and standard assembled desktop towers.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="margin-top: 48px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 36px;">
+        <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 16px; color: var(--text-main);">Edge &amp; Software Architecture</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px;">
+          <div>
+            <h3 style="font-size: 1.0625rem; font-weight: 650; margin-bottom: 8px; color: var(--accent-text);">Workstation Client Stack</h3>
+            <ul style="list-style: disc; padding-left: 20px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.6;">
+              <li>Debian 12 (Bookworm) Live-Build distribution</li>
+              <li>LightDM display manager with automatic kiosk auto-login</li>
+              <li>Openbox minimal window manager with disabled keybindings</li>
+              <li>Loopback Agent Daemon (Python 3.11, bound strictly to 127.0.0.1:8888)</li>
+              <li>MV3 Browser Extension with shadow-DOM navigation &amp; lock curtain</li>
+            </ul>
+          </div>
+          <div>
+            <h3 style="font-size: 1.0625rem; font-weight: 650; margin-bottom: 8px; color: var(--accent-text);">Cloudflare Edge Controller</h3>
+            <ul style="list-style: disc; padding-left: 20px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.6;">
+              <li>Serverless Cloudflare Worker deployed across 300+ edge locations</li>
+              <li>D1 distributed SQLite database for configuration and audit trails</li>
+              <li>OrgHub Durable Objects for real-time WebSocket state distribution</li>
+              <li>RemoteRelay Durable Objects for in-browser VNC bridging</li>
+              <li>Zero runtime npm dependencies, 100% Web Crypto PBKDF2-HMAC-SHA256</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>`;
+}
+
+function pricingMainHtml(): string {
+  return `
+    <section class="page-hero">
+      <div class="hero-badge-container">
+        <span class="badge badge-blue">Licensing &amp; Deployment</span>
+        <span class="badge badge-green">Accredited Education Grant</span>
+      </div>
+      <h1 class="page-hero-title">Transparent Licensing &amp; <span>Deployment Tiers</span></h1>
+      <p class="page-hero-desc">
+        Source-available software with grants for accredited education and transparent commercial terms for enterprise fleets.
+      </p>
+    </section>
+
+    <section class="section-wrap" style="padding-top: 0;">
+      <div class="pricing-grid">
+        <div class="pricing-card">
+          <h2 class="pricing-tier">Accredited Education Grant</h2>
+          <div class="pricing-sub">For accredited educational institutions and non-commercial evaluation.</div>
+          <div class="pricing-price">Grant / Free <small>up to 45 computers</small></div>
+          <ul class="pricing-features">
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Up to 45 managed workstations</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Accredited educational institutions &amp; non-commercial evaluation</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Tamper-proof OS &amp; managed Chromium</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Central web management console</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Dedicated organization subdomain</span>
+            </li>
+          </ul>
+          <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="register">Apply for Education Grant</button>
+        </div>
+
+        <div class="pricing-card featured">
+          <div class="pricing-card-badge">Production Standard</div>
+          <h2 class="pricing-tier">Commercial &amp; Large Fleet</h2>
+          <div class="pricing-sub">For companies, public services, libraries, and deployments of 46+ computers.</div>
+          <div class="pricing-price">Commercial License <small>per workstation fleet</small></div>
+          <ul class="pricing-features">
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Unlimited workstations across multiple facilities</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Real-time thumbnail grid &amp; VNC remote control</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Granular staff delegation &amp; audit logging</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Custom domain support (e.g. kiosk.yourdomain.com)</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Priority onboarding &amp; dedicated support SLA</span>
+            </li>
+          </ul>
+          <button class="btn btn-primary btn-block" data-action="open-modal" data-modal="contact">Contact Sales &amp; Licensing</button>
+        </div>
+
+        <div class="pricing-card">
+          <h2 class="pricing-tier">Self-Hosted Infrastructure</h2>
+          <div class="pricing-sub">For air-gapped facilities or internal infrastructure mandates.</div>
+          <div class="pricing-price">Source-Available <small>self-deployed</small></div>
+          <ul class="pricing-features">
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Deploy control plane on your Cloudflare account</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Build customized Debian 12 ISOs via Docker</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Full control over D1 data and telemetry retention</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Commercial or subscriber license required for commercial use</span>
+            </li>
+            <li>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span>Technical architecture documentation &amp; guides</span>
+            </li>
+          </ul>
+          <a href="/docs" class="btn btn-ghost btn-block">Read Self-Host Docs</a>
+        </div>
+      </div>
+
+      <div class="docs-callout" style="margin-top: 48px; border-left-color: var(--accent);">
+        <strong>Licensing Notice:</strong> Free only for accredited educational institutions and non-commercial evaluation up to 45 computers; commercial or subscriber license for everyone else. Any deployment with 46 or more computers, or utilized by commercial entities, requires a commercial or subscriber license.
+      </div>
+    </section>`;
+}
+
+/** Where every release, its ISO and its checksum are published. */
+const RELEASES_URL = "https://github.com/akbhoi/labkiosk/releases";
+
+function downloadMainHtml(isoUrl?: string | null): string {
+  const downloadAction = isoUrl
+    ? `<a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg btn-block">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download Release ISO (.ISO)
+      </a>`
+    : `<div class="iso-build-note">
+        <p><strong>Release ISO Mirror:</strong> No pre-built release ISO mirror is configured on this cluster.</p>
+        <p style="margin-top: 6px;">Build your own bootable ISO in minutes using the Debian 12 Docker pipeline:</p>
+        <code>docker build -t labkiosk-builder distro-builder</code>
+      </div>`;
+
+  return `
+    <section class="page-hero">
+      <div class="hero-badge-container">
+        <span class="badge badge-blue">Official Distribution</span>
+        <span class="badge badge-green">Latest Release</span>
+      </div>
+      <h1 class="page-hero-title">Download <span>Lab Kiosk OS</span></h1>
+      <p class="page-hero-desc">
+        Lightweight, immutable Debian 12 live-build image. Flash to a USB flash drive and turn any computer into a managed browser workstation.
+      </p>
+    </section>
+
+    <section class="section-wrap" style="padding-top: 0;">
+      <div class="download-hero-card">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 8px;">
+          <h2 style="font-size: 1.375rem; font-weight: 700; color: var(--text-main);">Lab Kiosk OS (x86-64)</h2>
+          <span class="badge badge-green">Stable Release</span>
+        </div>
+        <p style="font-size: 0.9375rem; color: var(--text-muted); margin-bottom: 20px;">
+          Includes Linux 6.1 LTS kernel, Chromium enterprise policy, loopback agent daemon, and tmpfs RAM overlay.
+        </p>
+
+        <div class="download-meta-grid">
+          <div class="download-meta-item">
+            <span class="download-meta-label">Architecture</span>
+            <span class="download-meta-val">x86-64 (AMD64)</span>
+          </div>
+          <div class="download-meta-item">
+            <span class="download-meta-label">Format</span>
+            <span class="download-meta-val">Hybrid ISO (BIOS + UEFI)</span>
+          </div>
+          <div class="download-meta-item">
+            <span class="download-meta-label">Size</span>
+            <span class="download-meta-val">~720 MB</span>
+          </div>
+          <div class="download-meta-item">
+            <span class="download-meta-label">Base OS</span>
+            <span class="download-meta-val">Debian 12 Bookworm</span>
+          </div>
+        </div>
+
+        <div style="margin: 24px 0;">
+          ${downloadAction}
+        </div>
+
+        <div class="checksum-box">
+          <strong>SHA256 Checksum:</strong><br>
+          Published with every release as
+          <a href="${RELEASES_URL}/latest/download/labkiosk-debian12-amd64.iso.sha256" target="_blank" rel="noopener noreferrer">labkiosk-debian12-amd64.iso.sha256</a>.
+          Compare it with the output of <code>sha256sum labkiosk-debian12-amd64.iso</code> before writing the image.
+        </div>
+      </div>
+
+      <div style="max-width: 840px; margin: 0 auto 56px;">
+        <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">3-Step Deployment Guide</h2>
+        <p style="font-size: 0.9375rem; color: var(--text-muted); margin-bottom: 20px;">
+          Get your first workstation booted and enrolled in under five minutes.
+        </p>
+
+        <div class="steps-grid">
+          <div class="step-card">
+            <div class="step-num">1</div>
+            <h3 class="step-title">Write to USB</h3>
+            <p class="step-desc">
+              Flash the ISO onto a 2 GB+ USB flash drive using Rufus (choose 'DD Image' mode) on Windows or BalenaEtcher on Mac/Linux.
+            </p>
+          </div>
+          <div class="step-card">
+            <div class="step-num">2</div>
+            <h3 class="step-title">Boot Hardware</h3>
+            <p class="step-desc">
+              Insert the USB into the computer, turn it on, and press F12, F10 or Esc to select the USB boot device. It boots directly into RAM.
+            </p>
+          </div>
+          <div class="step-card">
+            <div class="step-num">3</div>
+            <h3 class="step-title">Complete Wizard</h3>
+            <p class="step-desc">
+              The setup wizard appears on first launch. Connect to Wi-Fi or Ethernet, enter your organization's enrollment key, and you're live.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div style="max-width: 840px; margin: 0 auto;">
+        <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">Version History &amp; Changelog</h2>
+        <div class="changelog-list">
+          <div class="changelog-card">
+            <div class="changelog-head">
+              <span class="changelog-version">Release notes</span>
+              <span class="badge badge-blue">x86-64 Hybrid ISO</span>
+            </div>
+            <ul class="changelog-bullets">
+              <li>Every release is published on GitHub with its notes, its ISO and the ISO's SHA256 checksum.</li>
+              <li>The newest release is always at the same address, so a bookmark or a script keeps working.</li>
+            </ul>
+            <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
+              <a href="${RELEASES_URL}/latest" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Latest release notes</a>
+              <a href="${RELEASES_URL}/latest/download/labkiosk-debian12-amd64.iso" class="btn btn-secondary btn-sm">Download the latest ISO (~720 MB)</a>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 32px; padding: 18px 24px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); text-align: center;">
+          <p style="font-size: 0.9375rem; color: var(--text-muted); margin: 0;">
+            Looking for historical releases, commit logs, or container builder tags? Browse the
+            <a href="https://github.com/akbhoi/labkiosk/releases" target="_blank" rel="noopener noreferrer" style="color: var(--accent-text); text-decoration: underline; font-weight: 600;">GitHub Releases Archive &rarr;</a>
+          </p>
+        </div>
+      </div>
+    </section>`;
+}
+
+function docsMainHtml(): string {
+  return `
+    <section class="page-hero">
+      <div class="hero-badge-container">
+        <span class="badge badge-blue">Knowledge Base</span>
+        <span class="badge badge-green">Documentation</span>
+      </div>
+      <h1 class="page-hero-title">Platform &amp; Workstation <span>Documentation</span></h1>
+      <p class="page-hero-desc">
+        Complete engineering guides for installing, configuring, securing, and operating Lab Kiosk fleets and edge controllers.
+      </p>
+    </section>
+
+    <div class="docs-container">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-section">
+          <div class="docs-sidebar-title">Getting Started</div>
+          <ul class="docs-sidebar-links">
+            <li><a href="#overview" class="active">Architecture Overview</a></li>
+            <li><a href="#quickstart">Quickstart Guide</a></li>
+            <li><a href="#hardware">Hardware Requirements</a></li>
+          </ul>
+        </div>
+        <div class="docs-sidebar-section">
+          <div class="docs-sidebar-title">Build &amp; Distro</div>
+          <ul class="docs-sidebar-links">
+            <li><a href="#building-iso">Building the ISO</a></li>
+            <li><a href="#ram-overlay">100% RAM Overlay</a></li>
+            <li><a href="#chromium-policy">Managed Chromium Policy</a></li>
+            <li><a href="#agent-api">Loopback Agent API</a></li>
+          </ul>
+        </div>
+        <div class="docs-sidebar-section">
+          <div class="docs-sidebar-title">Installation &amp; Setup</div>
+          <ul class="docs-sidebar-links">
+            <li><a href="#installation">Installation &amp; Flashing</a></li>
+            <li><a href="#disk-install">Disk Install &amp; Persistence</a></li>
+            <li><a href="#network-config">Network &amp; Proxy Config</a></li>
+            <li><a href="#firmware-lockdown">Firmware Lockdown</a></li>
+          </ul>
+        </div>
+        <div class="docs-sidebar-section">
+          <div class="docs-sidebar-title">Cloudflare Control</div>
+          <ul class="docs-sidebar-links">
+            <li><a href="#multi-tenant">Multi-Tenant Isolation</a></li>
+            <li><a href="#orghub">OrgHub WebSockets</a></li>
+            <li><a href="#remote-relay">Remote Control Relay</a></li>
+            <li><a href="#roles-delegation">Staff Delegation &amp; Roles</a></li>
+          </ul>
+        </div>
+        <div class="docs-sidebar-section">
+          <div class="docs-sidebar-title">Operations</div>
+          <ul class="docs-sidebar-links">
+            <li><a href="#allowlisting">URL Allowlisting</a></li>
+            <li><a href="#broadcast">Broadcast System</a></li>
+            <li><a href="#recovery">Re-Enrollment &amp; Recovery</a></li>
+          </ul>
+        </div>
+      </aside>
+
+      <main class="docs-content">
+        <article class="docs-article" id="overview">
+          <h2>1. Architecture Overview</h2>
+          <p>
+            Lab Kiosk consists of two distinct components designed to function seamlessly together:
+          </p>
+          <ul>
+            <li><strong>Workstation Client OS:</strong> A custom Debian 12 Live-Build image featuring a locked-down Openbox environment, managed enterprise Chromium browser, loopback Python agent, and tmpfs RAM overlay.</li>
+            <li><strong>Cloudflare Edge Controller:</strong> A globally distributed Cloudflare Worker with D1 SQL storage, OrgHub Durable Objects for real-time WebSocket state distribution, and RemoteRelay for browser-based VNC.</li>
+          </ul>
+          <div class="docs-callout">
+            <strong>Key Security Invariant:</strong> The root filesystem is mounted strictly read-only. All browser caches and session modifications write to volatile RAM (<code>tmpfs</code>) and disappear completely on reboot or session clear.
+          </div>
+        </article>
+
+        <article class="docs-article" id="quickstart">
+          <h2>2. Quickstart Guide</h2>
+          <p>
+            Deploying your first Lab Kiosk lab requires three simple steps:
+          </p>
+          <ol style="padding-left: 20px; font-size: 0.9375rem; color: var(--text-muted); line-height: 1.65; margin-bottom: 16px;">
+            <li style="margin-bottom: 8px;"><strong>Register your organization:</strong> Submit a registration request on the platform. Once approved, you will receive an organization subdomain (e.g. <code>yourorg.labkiosk.org</code>) and an enrollment key.</li>
+            <li style="margin-bottom: 8px;"><strong>Download &amp; Flash:</strong> Download the latest ISO from the <a href="/download" style="color: var(--accent-text); text-decoration: underline;">Downloads page</a> and flash it to a USB drive using Rufus in DD mode.</li>
+            <li style="margin-bottom: 8px;"><strong>Boot &amp; Enroll:</strong> Boot your computers from the USB drive. Enter your enrollment key in the setup wizard to connect them to your central console.</li>
+          </ol>
+        </article>
+
+        <article class="docs-article" id="hardware">
+          <h2>3. Hardware Requirements</h2>
+          <p>
+            Lab Kiosk requires an x86-64 compatible processor with at least 4 GB of RAM. Detailed requirements and verified models can be found on our <a href="/specs" style="color: var(--accent-text); text-decoration: underline;">Specifications page</a>.
+          </p>
+        </article>
+
+        <article class="docs-article" id="building-iso">
+          <h2>4. Building the Project &amp; ISO Image</h2>
+          <p>
+            The client OS image is built via Debian <code>live-build</code>, driven either from a containerized environment (cross-platform on any OS with Docker or Podman) or natively on a Debian/Ubuntu system.
+          </p>
+          <div class="docs-callout">
+            <strong>Build Artifact:</strong> The build process produces <code>distro-builder/out/labkiosk-debian12-amd64.iso</code> and its cryptographic SHA256 checksum file.
+          </div>
+          <h3 style="font-size: 1.0625rem; font-weight: 650; margin: 16px 0 8px; color: var(--text-main);">Method 1 — Containerized Build (Docker / Podman)</h3>
+          <p>Run both commands from the repository root:</p>
+          <pre><code># 1. Build the builder image (copies distro-builder source into image):
+docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder
+
+# 2. Run live-build in a privileged container with output directory mounted:
+docker run --privileged --rm \
+  -v "$PWD/distro-builder/out:/build/out" \
+  ghcr.io/akbhoi/labkiosk-iso-builder</code></pre>
+          <p style="font-size: 0.875rem; color: var(--text-muted); margin-top: 8px;">
+            <em>Note on container engines:</em> <code>live-build</code> uses <code>debootstrap</code> to create hardware device nodes with <code>mknod</code>. The container engine must run in rootful mode. On Podman machines, ensure rootful execution via <code>podman machine set --rootful</code>.
+          </p>
+          <h3 style="font-size: 1.0625rem; font-weight: 650; margin: 16px 0 8px; color: var(--text-main);">Method 2 — Native Build (Debian 12 / Ubuntu 22.04+)</h3>
+          <pre><code>sudo apt-get update &amp;&amp; sudo apt-get install -y live-build debootstrap
+cd distro-builder
+sudo bash build-iso.sh</code></pre>
+          <h3 style="font-size: 1.0625rem; font-weight: 650; margin: 16px 0 8px; color: var(--text-main);">Package Manifest &amp; Size Optimizations</h3>
+          <p>
+            The OS image is stripped of superfluous packages using <code>--apt-recommends false</code> and <code>--firmware-chroot false</code>, keeping the uncompressed squashfs footprint under 1.2 GB while including Linux 6.1 LTS kernel, signed UEFI shim, Xorg, Openbox, ALSA audio, NetworkManager, and Chromium enterprise policies.
+          </p>
+        </article>
+
+        <article class="docs-article" id="installation">
+          <h2>5. Installation &amp; Flashing Guide</h2>
+          <p>
+            Write the generated or downloaded ISO to any USB flash drive (2 GB or larger).
+          </p>
+          <ul>
+            <li><strong>Windows:</strong> Use Rufus. Select the ISO and ensure you choose <strong>'DD Image'</strong> mode when prompted to preserve the hybrid BIOS/UEFI partition layout.</li>
+            <li><strong>macOS &amp; Linux:</strong> Use BalenaEtcher or write directly with <code>dd if=labkiosk-debian12-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync</code>.</li>
+          </ul>
+          <p>
+            Insert the USB drive into target workstation hardware, turn on the machine, and press F12, F10, or Esc to enter the firmware boot selection menu. Choose the USB drive to boot straight into the RAM overlay environment.
+          </p>
+        </article>
+
+        <article class="docs-article" id="disk-install">
+          <h2>6. Hard Disk Installation &amp; Persistence</h2>
+          <p>
+            For permanent computer lab deployments, install Lab Kiosk directly to the machine's internal SSD or NVMe storage:
+          </p>
+          <pre><code># Run from the workstation terminal or launch via setup wizard:
+sudo labkiosk-install /dev/sda</code></pre>
+          <h3 style="font-size: 1.0625rem; font-weight: 650; margin: 16px 0 8px; color: var(--text-main);">Hybrid GPT Partition Layout</h3>
+          <p>The disk installer formats the internal drive into four structured partitions:</p>
+          <ul>
+            <li><code>bios_grub</code> (1 MiB): Legacy BIOS boot code.</li>
+            <li><code>ESP</code> (128 MiB, FAT32): Signed UEFI bootloaders (shimx64.efi, grubx64.efi).</li>
+            <li><code>ROOT</code> (~4 GiB, ext4): System image store containing squashfs, vmlinuz, and initrd.img.</li>
+            <li><code>LABKIOSK_DATA</code> (Remaining disk, ext4): Encrypted persistence store for configuration, Wi-Fi profiles, and enrollment keys.</li>
+          </ul>
+          <div class="docs-callout">
+            <strong>Data Persistence Guarantee:</strong> At every boot, <code>/etc/labkiosk/system-connections</code> on the data partition is bind-mounted over <code>/etc/NetworkManager/system-connections</code>. Network credentials, organization proxy settings (<code>proxy.json</code>), and device tokens persist permanently, while user session files and browser cache remain strictly volatile in RAM.
+          </div>
+        </article>
+
+        <article class="docs-article" id="network-config">
+          <h2>7. Network-First Configuration &amp; Proxy Setup</h2>
+          <p>
+            The workstation setup wizard executes a <strong>Network-First</strong> validation pipeline before allowing machine enrollment:
+          </p>
+          <ul>
+            <li><strong>Physical Ethernet Detection:</strong> Live link carrier sensing immediately reports cable state (<code>Connected</code> vs <code>Unplugged</code>).</li>
+            <li><strong>Wi-Fi Scanning:</strong> Automatic active scanning detects 2.4 GHz and 5 GHz networks, displaying signal dBm and security flags (WPA2/WPA3 Personal, Open, and hidden networks).</li>
+            <li><strong>Flexible IP Addressing:</strong> Supports DHCP dynamic addressing, DHCP with custom DNS overrides (e.g. <code>1.1.1.1</code>), and static manual IPv4/IPv6 address assignments.</li>
+            <li><strong>Organization Web Proxy:</strong> District networks requiring web filters can specify HTTP/HTTPS proxy host, port, and bypass domain lists. Settings are written to <code>/etc/labkiosk/proxy.json</code> and injected into Chromium policies.</li>
+          </ul>
+        </article>
+
+        <article class="docs-article" id="firmware-lockdown">
+          <h2>8. Hardware Hardening &amp; Firmware Lockdown</h2>
+          <p>
+            Software isolation is complete only when hardware access is secured. For production deployments in publicly accessible organization labs:
+          </p>
+          <ol style="padding-left: 20px; font-size: 0.9375rem; color: var(--text-muted); line-height: 1.65;">
+            <li style="margin-bottom: 6px;">Set a strong BIOS/UEFI Supervisor &amp; Administrator password.</li>
+            <li style="margin-bottom: 6px;">Configure the internal SSD/NVMe drive as the sole allowed boot target.</li>
+            <li style="margin-bottom: 6px;">Disable external USB boot, network PXE boot, and the F12 boot selection menu.</li>
+            <li style="margin-bottom: 6px;">Enable Secure Boot to enforce cryptographic kernel signature verification.</li>
+          </ol>
+        </article>
+
+        <article class="docs-article" id="ram-overlay">
+          <h2>9. 100% RAM Overlay (Zero SSD Wear)</h2>
+          <p>
+            Lab Kiosk uses the Linux <code>overlayroot</code> package configured with <code>tmpfs:recurse=0</code>. All disk writes are captured in volatile system memory. When the computer reboots or when the operator clicks &quot;Clear Session&quot;, all user data, browser cookies, downloads, and cache files are instantly obliterated.
+          </p>
+        </article>
+
+        <article class="docs-article" id="chromium-policy">
+          <h2>10. Managed Chromium Policy</h2>
+          <p>
+            Chromium is locked down via managed enterprise JSON policies located at <code>/etc/chromium/policies/managed/labkiosk.json</code>.
+          </p>
+          <ul>
+            <li><code>URLBlocklist: [&quot;*&quot;]</code> blocks all unapproved web traffic.</li>
+            <li><code>URLAllowlist</code> dynamically reflects the approved URLs configured in your organization console.</li>
+            <li>Downloads, Developer Tools, extension installation, and printing are disabled.</li>
+          </ul>
+        </article>
+
+        <article class="docs-article" id="agent-api">
+          <h2>11. Loopback Agent API</h2>
+          <p>
+            The local agent daemon (<code>opt/labkiosk/agent/agent.py</code>) listens exclusively on <code>127.0.0.1:8888</code>. It bridges commands from the Cloudflare edge to the local desktop environment, managing screen locks, URL navigation, and screen thumbnails.
+          </p>
+        </article>
+
+        <article class="docs-article" id="multi-tenant">
+          <h2>12. Multi-Tenant Isolation</h2>
+          <p>
+            Every organization on Lab Kiosk is isolated by tenant ID at the database layer. Every D1 SQL query filters by <code>tenant_id</code>. Workstations are authenticated via cryptographically hashed device bearer tokens.
+          </p>
+        </article>
+
+        <article class="docs-article" id="orghub">
+          <h2>13. OrgHub WebSockets</h2>
+          <p>
+            OrgHub is a Cloudflare Durable Object dedicated to a single organization. It manages the persistent WebSocket connections from all active workstations, pushing configuration updates and batch commands with sub-100ms global latency.
+          </p>
+        </article>
+
+        <article class="docs-article" id="remote-relay">
+          <h2>14. Remote Control Relay</h2>
+          <p>
+            The RemoteRelay Durable Object establishes an encrypted WebSockets bridge between an operator's browser and a workstation's local x11vnc server. Operators can troubleshoot issues and guide users interactively without VPNs or port forwarding.
+          </p>
+        </article>
+
+        <article class="docs-article" id="roles-delegation">
+          <h2>15. Staff Delegation &amp; Roles</h2>
+          <p>
+            Lab Kiosk supports 5 defined staff roles with strict privilege delegation:
+          </p>
+          <ul>
+            <li><strong>Org Admin:</strong> Full access to all workstations, allowlists, portal, staff, and organization settings.</li>
+            <li><strong>Sub Admin:</strong> Full operational access; can manage staff but cannot grant permissions they do not possess.</li>
+            <li><strong>Operator:</strong> Real-time workstation monitoring, lock/unlock commands, and live screen viewing.</li>
+            <li><strong>Assistant:</strong> Read-only monitoring of workstation status and user portal navigation.</li>
+            <li><strong>Content Manager:</strong> Manages approved websites, portal cards, and broadcast presets.</li>
+          </ul>
+        </article>
+
+        <article class="docs-article" id="allowlisting">
+          <h2>16. URL Allowlisting</h2>
+          <p>
+            Allowed domains are configured in the Apps &amp; Web console. The Cloudflare controller pushes allowlist updates to OrgHub, which broadcasts them to connected workstations in real-time. The local agent updates Chromium's managed policy files immediately.
+          </p>
+        </article>
+
+        <article class="docs-article" id="broadcast">
+          <h2>17. Broadcast System</h2>
+          <p>
+            Operators can push a single URL to all workstations or selected workstation groups simultaneously. Broadcasts can be locked (preventing user navigation) or advisory with an auto-dismissing banner.
+          </p>
+        </article>
+
+        <article class="docs-article" id="recovery">
+          <h2>18. Re-Enrollment &amp; Recovery</h2>
+          <p>
+            If a workstation's token is revoked or hardware credentials change, the workstation automatically transitions into password-gated recovery mode. Entering the workstation administrative password allows the operator to re-enroll the machine into the organization console.
+          </p>
+        </article>
+      </main>
+    </div>`;
+}
+
+export function renderFeaturesHtml(data: LandingOptions): string {
+  return renderPublicShell(data, {
+    title: "Lab Kiosk OS - Features & Technical Capabilities",
+    description: "Deep dive into Lab Kiosk capabilities: 100% RAM overlay, instant screen lock, interactive VNC remote control, managed Chromium policies, and granular staff delegation.",
+    activeNav: "features",
+    mainHtml: featuresMainHtml()
+  });
+}
+
+export function renderSpecsHtml(data: LandingOptions): string {
+  return renderPublicShell(data, {
+    title: "Lab Kiosk OS - Hardware Specifications & System Requirements",
+    description: "Technical specifications, hardware requirements, verified devices, and edge architecture for Lab Kiosk OS and Cloudflare control plane.",
+    activeNav: "specs",
+    mainHtml: specsMainHtml()
+  });
+}
+
+export function renderPricingHtml(data: LandingOptions): string {
+  return renderPublicShell(data, {
+    title: "Lab Kiosk OS - Transparent Licensing & Deployment Tiers",
+    description: "Transparent licensing: grants for accredited educational institutions and non-commercial evaluation up to 45 computers; commercial and subscriber licensing for organizations.",
+    activeNav: "pricing",
+    mainHtml: pricingMainHtml()
+  });
+}
+
+export function renderDownloadHtml(data: LandingOptions): string {
+  const isoUrl = data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null;
+  return renderPublicShell(data, {
+    title: "Lab Kiosk OS - Download Bootable ISO & Flashing Guide",
+    description: "Download the latest Lab Kiosk Debian 12 live-build ISO image, SHA256 checksums, 3-step flashing instructions, and Docker build commands.",
+    activeNav: "download",
+    mainHtml: downloadMainHtml(isoUrl)
+  });
+}
+
+export function renderDocsHtml(data: LandingOptions): string {
+  return renderPublicShell(data, {
+    title: "Lab Kiosk OS - Platform & Workstation Documentation",
+    description: "Complete guide to Lab Kiosk OS, loopback agent APIs, Cloudflare edge control plane, managed Chromium policies, and workstation administration.",
+    activeNav: "docs",
+    mainHtml: docsMainHtml()
+  });
+}
+

@@ -9,6 +9,8 @@ import { FONT_LINKS, rootTokensCss, themeHeadHtml, LEGACY_PORTAL_ALIASES } from 
 export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string): string {
   const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
 
+  const categories = Array.from(new Set(sites.map((s) => s.category).filter(Boolean)));
+
   // Card content is operator-supplied. Cards are anchors rather than divs with an
   // inline navigation handler, so a hostile URL cannot become executable markup,
   // and a non-http(s) URL is dropped entirely rather than rendered.
@@ -18,7 +20,7 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
       if (!href) return "";
       const thumb = safeHttpUrl(site.thumbnail_url) || FALLBACK_THUMBNAIL;
       return `
-    <a class="app-card" href="${escapeHtml(href)}" rel="noopener noreferrer">
+    <a class="app-card" href="${escapeHtml(href)}" rel="noopener noreferrer" data-title="${escapeAttr(site.title.toLowerCase())}" data-domain="${escapeAttr(site.domain.toLowerCase())}" data-category="${escapeAttr(site.category.toLowerCase())}">
       <div class="card-thumb">
         <img class="card-thumb-img" src="${escapeHtml(thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">
         <span class="card-category">${escapeHtml(site.category)}</span>
@@ -38,6 +40,20 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
   `;
     })
     .join("");
+
+  const toolbarHtml = sites.length > 0 ? `
+    <div class="portal-toolbar">
+      <div class="portal-search-box">
+        <svg class="portal-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" id="portal-search" class="portal-search-input" placeholder="Search applications..." autocomplete="off">
+      </div>
+      ${categories.length > 1 ? `
+      <div class="portal-category-pills" role="tablist" aria-label="Categories">
+        <button type="button" class="category-pill active" data-category="all">All (${sites.length})</button>
+        ${categories.map((c) => `<button type="button" class="category-pill" data-category="${escapeAttr(c.toLowerCase())}">${escapeHtml(c)}</button>`).join("")}
+      </div>` : ""}
+    </div>
+  ` : "";
 
   const emptyState = `
     <div class="portal-empty">
@@ -297,6 +313,84 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
       text-align: center;
     }
     .portal-empty-hint { font-size: 0.8125rem; color: var(--text-subtle); }
+
+    .portal-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .portal-search-box {
+      position: relative;
+      flex: 1 1 240px;
+      max-width: 360px;
+    }
+    .portal-search-icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+    .portal-search-input {
+      width: 100%;
+      min-height: 40px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px 8px 36px;
+      color: var(--text-main);
+      font-size: 0.875rem;
+      font-family: inherit;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .portal-search-input:focus-visible {
+      outline: none;
+      border-color: var(--border-focus);
+      box-shadow: var(--focus-ring);
+    }
+    .portal-category-pills {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding: 2px 0;
+      max-width: 100%;
+    }
+    .category-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 4px 12px;
+      border-radius: var(--radius-pill);
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+      font-family: inherit;
+    }
+    .category-pill:hover { color: var(--text-main); background: var(--hover); }
+    .category-pill.active { color: var(--accent-text); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+    .portal-no-match {
+      grid-column: 1 / -1;
+      text-align: center;
+      padding: 48px 16px;
+      color: var(--text-muted);
+      background: var(--bg-surface);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-lg);
+      font-size: 0.9375rem;
+    }
+    .hidden { display: none !important; }
+
     footer {
       text-align: center;
       padding: 20px 24px;
@@ -374,8 +468,11 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
       <p class="portal-desc">${escapeHtml(tenant.portal_description || "Choose an approved application below to get started. Access to every other site is filtered and managed by your organization.")}</p>
     </div>
 
-    <div class="grid">
+    ${toolbarHtml}
+
+    <div class="grid" id="portal-grid">
       ${cardsHtml || emptyState}
+      ${sites.length > 0 ? `<div class="portal-no-match hidden" id="portal-no-match">No applications match your search filter.</div>` : ""}
     </div>
   </main>
 
@@ -391,6 +488,43 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
     }
     setInterval(updateClock, 1000);
     updateClock();
+
+    (function() {
+      const searchInput = document.getElementById('portal-search');
+      const pills = document.querySelectorAll('.category-pill');
+      const cards = document.querySelectorAll('.app-card');
+      const noMatch = document.getElementById('portal-no-match');
+      let activeCategory = 'all';
+
+      function filterApps() {
+        const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+        let visibleCount = 0;
+        for (let i = 0; i < cards.length; i++) {
+          const card = cards[i];
+          const title = card.getAttribute('data-title') || '';
+          const domain = card.getAttribute('data-domain') || '';
+          const cat = card.getAttribute('data-category') || '';
+          const matchesQuery = !query || title.includes(query) || domain.includes(query);
+          const matchesCat = activeCategory === 'all' || cat === activeCategory;
+          const show = matchesQuery && matchesCat;
+          card.classList.toggle('hidden', !show);
+          if (show) visibleCount++;
+        }
+        if (noMatch) noMatch.classList.toggle('hidden', visibleCount > 0 || cards.length === 0);
+      }
+
+      if (searchInput) {
+        searchInput.addEventListener('input', filterApps);
+      }
+      pills.forEach((pill) => {
+        pill.addEventListener('click', () => {
+          pills.forEach((p) => p.classList.remove('active'));
+          pill.classList.add('active');
+          activeCategory = pill.getAttribute('data-category') || 'all';
+          filterApps();
+        });
+      });
+    })();
   </script>
 </body>
 </html>`;

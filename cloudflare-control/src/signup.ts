@@ -26,6 +26,8 @@ import {
 } from "./db";
 import {
   addConversationMessage,
+  categoryForTopic,
+  categoryLabel,
   checkEmailCode,
   Conversation,
   createConversation,
@@ -38,7 +40,7 @@ import {
   ProfileInput,
   subjectWithReference
 } from "./conversations";
-import { mailConfigProblem, sendMail, supportAddress, supportMailbox } from "./mail";
+import { mailConfigProblem, MailTemplate, sendMail, supportAddress, supportMailbox } from "./mail";
 import { turnstileRefusal } from "./turnstile";
 
 /** What every handler in this module is given by the router. */
@@ -132,7 +134,7 @@ export async function notifyPlatformOwner(env: Env, subject: string, body: strin
   const to = env.SUPPORT_FORWARD_TO;
   if (!to) return;
   try {
-    await sendMail(env, { to, subject, text: body });
+    await sendMail(env, { to, subject, text: body, template: { name: "notice", title: "For the platform owner" } });
   } catch (err) {
     console.error("[Signup] Could not notify the platform owner:", err);
   }
@@ -140,14 +142,24 @@ export async function notifyPlatformOwner(env: Env, subject: string, body: strin
 
 /**
  * Send a message on a conversation and record it there, whether or not the
- * provider accepted it. Returns false when it did not go out.
+ * provider accepted it. Returns false when it did not go out. Without a
+ * template of its own it goes out as a reply, signed by `authorName`.
  */
 export async function sendOnConversation(
   env: Env,
   db: D1Database,
   conversation: Conversation,
   body: string,
-  options: { subject?: string; authorUserId?: string | null; inReplyTo?: string | null; references?: string[] } = {}
+  options: {
+    subject?: string;
+    authorUserId?: string | null;
+    authorName?: string | null;
+    inReplyTo?: string | null;
+    references?: string[];
+    template?: MailTemplate;
+    /** An automatic answer (a receipt for an incoming email). */
+    autoReply?: boolean;
+  } = {}
 ): Promise<boolean> {
   const subject = subjectWithReference(conversation.reference, options.subject || conversation.subject);
   let messageId: string | null = null;
@@ -160,7 +172,14 @@ export async function sendOnConversation(
       text: body,
       inReplyTo: options.inReplyTo,
       references: options.references,
-      mailbox: conversation.mailbox
+      mailbox: conversation.mailbox,
+      autoReply: options.autoReply,
+      template: options.template ?? {
+        name: "reply",
+        reference: conversation.reference,
+        category: categoryLabel(conversation.category),
+        author: options.authorName ?? null
+      }
     }));
   } catch (err) {
     delivered = false;
@@ -226,7 +245,8 @@ export async function handleSignupEmailCode(ctx: RouteContext): Promise<Response
       text:
         `Your Lab Kiosk verification code is ${code}.\n\n` +
         `Enter it in the registration form to confirm this email address. It expires in ${EMAIL_CODE_TTL_SECONDS / 60} minutes.\n\n` +
-        `If you did not ask to register an organization, ignore this message; nothing happens without the code.`
+        `If you did not ask to register an organization, ignore this message; nothing happens without the code.`,
+      template: { name: "code", code, purpose: "signup", minutes: EMAIL_CODE_TTL_SECONDS / 60 }
     });
   } catch (err) {
     console.error("[Signup] Sending a verification code failed:", err);
@@ -430,7 +450,10 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
       `and may write to you about licensing first. You will receive an email as soon as the account is active, ` +
       `with the address of your console: ${signup.subdomain}.${ctx.baseDomain}.\n\n` +
       `Reply to this email if you have any questions.\n\nLab Kiosk`,
-    { subject: "We received your registration" }
+    {
+      subject: "We received your registration",
+      template: { name: "receipt", reference: conversation.reference, category: "Registration", title: "We received your registration" }
+    }
   );
   await notifyPlatformOwner(
     env,
@@ -473,7 +496,8 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
     subject: `[${topic}] ${organization || name}`,
     contactEmail: email,
     contactName: name,
-    mailbox: supportMailbox(env)
+    mailbox: supportMailbox(env),
+    category: categoryForTopic(topic)
   });
   await addConversationMessage(db, {
     conversationId: conversation.id,
@@ -548,7 +572,10 @@ export async function handleRemoteControlRequest(ctx: RouteContext, tenant: Tena
     `Hello ${requester.name},\n\n` +
       `We received your request to turn on Remote Control for ${tenant.name} (reference ${conversation.reference}). ` +
       `We will email you when it has been reviewed; licensing may need to be arranged first.\n\nLab Kiosk`,
-    { subject: "Remote Control request received" }
+    {
+      subject: "Remote Control request received",
+      template: { name: "receipt", reference: conversation.reference, category: "Remote Control", title: "We received your request" }
+    }
   );
   await notifyPlatformOwner(
     env,

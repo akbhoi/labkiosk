@@ -21,6 +21,11 @@ export interface AdminPageInput {
   baseDomain: string;
   /** `?tenant=<slug>` on a dev host, empty in production. See Rule 5e. */
   tenantParam: string;
+  /**
+   * Settings for an account without the `settings` permission: only what is
+   * the account's own (its two-factor sign-in), nothing of the organization's.
+   */
+  accountOnly?: boolean;
   nonce: string;
 }
 
@@ -135,6 +140,10 @@ export function renderSubPanelScripts(nonce: string, activePage: string, tenantP
               if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab("portal");
             } else if (focusId === "domain-input") {
               if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab("whitelist");
+            } else if (focusId === "org-name") {
+              if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab("general");
+            } else if (focusId === "admin-password") {
+              if (typeof window.labkioskSwitchTab === "function") window.labkioskSwitchTab("security");
             }
             focusField(focusId);
             return;

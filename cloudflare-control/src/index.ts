@@ -12,7 +12,14 @@ import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
 import { renderSuperAdminHtml } from "./ui_super";
-import { renderLandingHtml } from "./ui_landing";
+import {
+  renderLandingHtml,
+  renderFeaturesHtml,
+  renderSpecsHtml,
+  renderPricingHtml,
+  renderDownloadHtml,
+  renderDocsHtml
+} from "./ui_landing";
 import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import {
   FAVICON_PATH,
@@ -2904,6 +2911,73 @@ export default {
       return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });
     }
 
+    // ==========================================
+    // Public Documentation & Wiki 301 Redirect
+    if (path === "/wiki" || path.startsWith("/wiki/")) {
+      const redirectUrl = new URL(request.url);
+      redirectUrl.pathname = "/docs";
+      return Response.redirect(redirectUrl.toString(), 301);
+    }
+    if (path === "/docs") {
+      return new Response(
+        renderDocsHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+
+    // ==========================================
+    // Dedicated Public Marketing Pages
+    if (path === "/features") {
+      return new Response(
+        renderFeaturesHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/specs") {
+      return new Response(
+        renderSpecsHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/pricing") {
+      return new Response(
+        renderPricingHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/download") {
+      return new Response(
+        renderDownloadHtml({
+          isoDownloadUrl: env.ISO_DOWNLOAD_URL,
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+
     // 1. Organization Admin Dashboard (/admin and /admin/*)
     if (path === "/admin" || path.startsWith("/admin/")) {
       // Legacy redirects: consolidated pages, and the staff page's old name.
@@ -3051,7 +3125,9 @@ export default {
         return false;
       };
 
-      const hasAccess = checkPermission(activePage);
+      // Settings opens for every staff account: without the `settings`
+      // permission it renders only the account's own two-factor sign-in.
+      const hasAccess = checkPermission(activePage) || activePage === "settings";
 
       if (!hasAccess) {
         const pages: AdminPageId[] = ["workstations", "apps-web", "staff", "settings"];
@@ -3201,7 +3277,6 @@ export default {
       path === "/" ||
       path === "/login" ||
       path === "/register" ||
-      path === "/download" ||
       path === "/iso" ||
       path === "/contact"
     ) {
@@ -3210,7 +3285,7 @@ export default {
           ? "register"
           : path === "/login" || url.searchParams.has("login")
             ? "login"
-            : path === "/download" || path === "/iso" || url.searchParams.has("download") || url.searchParams.has("iso")
+            : path === "/iso" || url.searchParams.has("download") || url.searchParams.has("iso")
               ? "iso"
               : path === "/contact" || url.searchParams.has("contact")
                 ? "contact"

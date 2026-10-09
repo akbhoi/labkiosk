@@ -6,7 +6,6 @@
 
 import { escapeHtml, escapeAttr } from "./escape";
 import { FONT_LINKS, THEME_TOGGLE_SCRIPT, rootTokensCss, themeHeadHtml } from "./ui_tokens";
-import { renderTwoFactorModalHtml, renderTwoFactorScript } from "./ui_two_factor";
 
 export interface NavItem {
   id: string;
@@ -63,7 +62,7 @@ function renderRailBadge(item: NavItem): string {
   const text = String(item.badge);
   if (text === "" || text === "0") return "";
   const tone = item.badgeTone === "attention" ? " attention" : "";
-  return `<span class="rail-badge${tone}">${escapeHtml(text)}</span>`;
+  return `<span class="sidebar-badge rail-badge${tone}">${escapeHtml(text)}</span>`;
 }
 
 /**
@@ -83,6 +82,9 @@ const CONSOLE_CSS = `${rootTokensCss()}
     html {
       accent-color: var(--accent);
       scrollbar-color: var(--border-input) transparent;
+      /* A page that scrolls and one that does not are the same width, so the
+         header's counters do not shift between them. */
+      scrollbar-gutter: stable;
       -webkit-text-size-adjust: 100%;
     }
     body {
@@ -143,36 +145,262 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
 
     /* ---------------------------------------------------------------------- */
-    /* Level 1: Primary Navigation Rail                                       */
+    /* Unified Navigation Sidebar (240px)                                     */
     /* ---------------------------------------------------------------------- */
+    .nav-sidebar,
     .nav-rail {
-      width: var(--rail-width);
+      width: var(--sidebar-width);
       background-color: var(--bg-rail);
       border-right: 1px solid var(--border-subtle);
       display: flex;
       flex-direction: column;
-      justify-content: space-between;
       position: fixed;
       top: 0;
       bottom: 0;
       left: 0;
       z-index: 1020;
-      padding: 14px 0;
+      padding: 0;
       transition: transform 0.28s var(--ease-spring);
-      view-transition-name: lk-rail;
+      view-transition-name: lk-sidebar;
+      overflow-x: hidden;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-input) transparent;
     }
 
+    .sidebar-header {
+      padding: 16px 14px 12px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .brand-meta {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .brand-name {
+      font-size: 0.875rem;
+      font-weight: 700;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.25;
+    }
+
+    .brand-sub {
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: var(--font-mono);
+      margin-top: 2px;
+    }
+
+    .sidebar-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 10px 10px 8px;
+    }
+
+    .sidebar-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      position: relative;
+      transition: color 0.15s ease, background-color 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .sidebar-item:hover {
+      color: var(--text-main);
+      background-color: var(--hover);
+    }
+
+    .sidebar-item.active {
+      color: var(--accent-text);
+      background-color: var(--accent-soft);
+      font-weight: 600;
+    }
+
+    .sidebar-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+    .sidebar-icon svg { width: 18px; height: 18px; }
+
+    .sidebar-label {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sidebar-badge {
+      font-size: 0.625rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: var(--bg-surface);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      line-height: 1.4;
+      flex-shrink: 0;
+    }
+
+    .sidebar-context {
+      position: static;
+      width: 100%;
+      border-right: none;
+      border-top: 1px solid var(--border-subtle);
+      background: transparent;
+      transform: none;
+      opacity: 1;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .context-header {
+      padding: 12px 14px 6px;
+    }
+
+    .context-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .context-subtitle {
+      font-size: 0.6875rem;
+      color: var(--text-subtle);
+      margin-top: 1px;
+    }
+
+    .context-body {
+      padding: 6px 10px 14px;
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 10px 12px;
+      border-top: 1px solid var(--border-subtle);
+      background: var(--bg-rail);
+    }
+
+    .sidebar-profile-wrap {
+      position: relative;
+      width: 100%;
+    }
+
+    .sidebar-user-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+      text-align: left;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .sidebar-user-btn:hover {
+      background: var(--hover);
+      border-color: var(--border-subtle);
+    }
+
+    .sidebar-user-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: var(--accent-soft);
+      color: var(--accent-text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.8125rem;
+      flex-shrink: 0;
+    }
+
+    .sidebar-user-info,
+    .user-meta {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .sidebar-user-name,
+    .user-name {
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.25;
+    }
+
+    .sidebar-user-role,
+    .user-role {
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-transform: capitalize;
+    }
+
+    /* ---------------------------------------------------------------------- */
     .rail-top {
       display: flex;
       flex-direction: column;
-      align-items: center;
       gap: 10px;
+      width: 100%;
     }
 
     .brand-glyph {
       display: flex;
       align-items: center;
-      justify-content: center;
       text-decoration: none;
       border-radius: var(--radius);
     }
@@ -193,34 +421,35 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .brand-glyph:hover .brand-icon { background: var(--accent-hover); }
 
     .rail-divider {
-      width: 28px;
+      width: 100%;
       height: 1px;
-      background: var(--border);
+      background: var(--border-subtle);
       margin: 4px 0;
     }
 
     .rail-nav {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 4px;
+      gap: 2px;
       width: 100%;
-      padding: 0 12px;
+      padding: 10px 10px 8px;
     }
 
     .rail-item {
-      width: 44px;
-      height: 40px;
-      border-radius: var(--radius-sm);
       display: flex;
       align-items: center;
-      justify-content: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border-radius: var(--radius-sm);
       color: var(--text-muted);
       text-decoration: none;
+      font-size: 0.8125rem;
+      font-weight: 500;
       position: relative;
       transition: color 0.15s ease, background-color 0.15s ease;
+      white-space: nowrap;
     }
-    .rail-item svg { width: 20px; height: 20px; }
+    .rail-item svg { width: 18px; height: 18px; }
     .rail-item:hover {
       color: var(--text-main);
       background: var(--hover);
@@ -228,62 +457,29 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .rail-item.active {
       color: var(--accent-text);
       background: var(--accent-soft);
-    }
-    .rail-item.active::before {
-      content: "";
-      position: absolute;
-      left: -12px;
-      top: 10px;
-      bottom: 10px;
-      width: 3px;
-      background: var(--accent);
-      border-radius: 0 3px 3px 0;
+      font-weight: 600;
     }
 
-    .rail-icon { display: flex; align-items: center; justify-content: center; }
+    .rail-icon { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; }
 
-    /* Tooltip on hover or keyboard focus */
+    /* In unified sidebar, label is always visible */
     .rail-tooltip {
-      position: absolute;
-      left: calc(100% + 14px);
-      background: var(--text-main);
-      color: var(--bg-surface);
-      padding: 5px 9px;
-      border-radius: var(--radius-sm);
-      font-size: 0.75rem;
-      font-weight: 500;
-      white-space: nowrap;
-      pointer-events: none;
-      opacity: 0;
-      translate: -4px 0;
-      transition: opacity 0.12s ease, translate 0.12s ease;
-      box-shadow: var(--shadow-md);
-      z-index: 1050;
-    }
-    .rail-item:hover .rail-tooltip,
-    .rail-item:focus-visible .rail-tooltip {
-      opacity: 1;
-      translate: 0 0;
+      display: none;
     }
 
     .rail-badge {
-      position: absolute;
-      top: 1px;
-      right: 0;
-      background: var(--bg-surface);
-      color: var(--text-muted);
-      border: 1px solid var(--border);
       font-size: 0.625rem;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
-      min-width: 17px;
-      height: 17px;
+      padding: 1px 6px;
       border-radius: 999px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0 4px;
-      line-height: 1;
+      background: var(--bg-surface);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      line-height: 1.4;
+      flex-shrink: 0;
+      position: static;
+      margin-left: auto;
     }
     .rail-badge.attention {
       background: var(--danger);
@@ -292,12 +488,13 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
 
     .rail-bottom {
+      margin-top: auto;
+      padding: 10px 12px;
+      border-top: 1px solid var(--border-subtle);
+      background: var(--bg-rail);
+      width: 100%;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 10px;
-      width: 100%;
-      padding: 0 12px;
     }
 
     .rail-action-btn {
@@ -327,18 +524,17 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
 
     .rail-user-avatar {
-      width: 34px;
-      height: 34px;
+      width: 32px;
+      height: 32px;
       border-radius: 50%;
       background: var(--accent-soft);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 600;
+      font-weight: 700;
       font-size: 0.8125rem;
       color: var(--accent-text);
-      cursor: pointer;
-      transition: box-shadow 0.15s ease;
+      flex-shrink: 0;
     }
 
     .rail-profile-wrap {
@@ -350,25 +546,30 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
 
     .rail-user-btn {
-      background: transparent;
-      border: none;
-      padding: 0;
-      cursor: pointer;
-      border-radius: 50%;
+      width: 100%;
       display: flex;
       align-items: center;
-      justify-content: center;
+      gap: 10px;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+      text-align: left;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
     }
-    .rail-user-btn:hover .rail-user-avatar,
-    .rail-user-btn[aria-expanded="true"] .rail-user-avatar {
-      box-shadow: 0 0 0 2px var(--bg-rail), 0 0 0 4px var(--border-input);
+    .rail-user-btn:hover {
+      background: var(--hover);
+      border-color: var(--border-subtle);
     }
 
+    /* Opens upward, inside the sidebar: the sidebar scrolls (overflow), so a
+       menu placed beside it is clipped away entirely. */
     .rail-profile-menu {
       position: absolute;
-      left: calc(100% + 16px);
-      bottom: 0;
-      width: 264px;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 8px);
       background: var(--bg-surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -496,27 +697,24 @@ const CONSOLE_CSS = `${rootTokensCss()}
     /* ---------------------------------------------------------------------- */
     /* Level 2: Secondary Context Action Panel (animated & collapsible)       */
     /* ---------------------------------------------------------------------- */
-    .sub-panel {
-      width: var(--subpanel-width);
-      background-color: var(--bg-panel);
-      border-right: 1px solid var(--border-subtle);
-      position: fixed;
-      top: 0;
-      bottom: 0;
-      left: var(--rail-width);
-      z-index: 1010;
+    .sub-panel,
+    .sidebar-context {
+      position: static;
+      width: 100%;
+      border-right: none;
+      border-top: 1px solid var(--border-subtle);
+      background: transparent;
+      transform: none;
+      opacity: 1;
+      flex: 1;
       display: flex;
       flex-direction: column;
-      transform: translateX(0);
-      opacity: 1;
-      transition: transform 0.28s var(--ease-spring), opacity 0.2s ease;
-      view-transition-name: lk-panel;
+      min-height: 0;
     }
 
-    .app-layout.subpanel-collapsed .sub-panel {
-      transform: translateX(-100%);
-      opacity: 0;
-      pointer-events: none;
+    .app-layout.subpanel-collapsed .sub-panel,
+    .app-layout.subpanel-collapsed .sidebar-context {
+      display: none;
     }
 
     .sub-panel-header {
@@ -644,35 +842,37 @@ const CONSOLE_CSS = `${rootTokensCss()}
     /* ---------------------------------------------------------------------- */
     .app-canvas {
       flex: 1;
-      margin-left: calc(var(--rail-width) + var(--subpanel-width));
+      margin-left: var(--sidebar-width);
       transition: margin-left 0.28s var(--ease-spring);
       min-width: 0;
       display: flex;
       flex-direction: column;
       background-color: var(--bg-base);
+      container-type: inline-size;
+      container-name: canvas;
     }
 
-    .app-layout.subpanel-collapsed .app-canvas {
-      margin-left: var(--rail-width);
-    }
 
     /* Top Utility Header */
     .canvas-header {
       background-color: var(--bg-base);
       background-color: color-mix(in oklab, var(--bg-base) 82%, transparent);
-      -webkit-backdrop-filter: saturate(1.4) blur(12px);
-      backdrop-filter: saturate(1.4) blur(12px);
+      -webkit-backdrop-filter: saturate(1.4) blur(14px);
+      backdrop-filter: saturate(1.4) blur(14px);
       border-bottom: 1px solid var(--border-subtle);
       position: sticky;
       top: 0;
       z-index: 1000;
       min-height: 56px;
       padding: 8px 28px;
-      display: flex;
+      /* Three columns with equal outer tracks: the counters sit at the centre of
+         the header on every page, whatever the breadcrumb beside them says. As a
+         wrapping flex row they started where the breadcrumb ended, so they moved
+         with the length of each page's name. */
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
       align-items: center;
-      justify-content: space-between;
       gap: 16px;
-      flex-wrap: wrap;
       view-transition-name: lk-header;
     }
 
@@ -718,10 +918,12 @@ const CONSOLE_CSS = `${rootTokensCss()}
       align-items: center;
       gap: 6px;
       font-size: 0.875rem;
+      max-width: 100%;
+      white-space: nowrap;
     }
-    .breadcrumb-organization { font-weight: 600; color: var(--text-main); }
+    .breadcrumb-organization { font-weight: 600; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; }
     .breadcrumb-sep { color: var(--text-subtle); }
-    .breadcrumb-page { color: var(--text-muted); font-weight: 500; }
+    .breadcrumb-page { color: var(--text-muted); font-weight: 500; flex-shrink: 0; }
     /* The console's own address. */
     .breadcrumb-host {
       font-family: var(--font-mono);
@@ -735,9 +937,10 @@ const CONSOLE_CSS = `${rootTokensCss()}
 
     /* The live counters: one quiet segmented readout rather than three pills. */
     .canvas-header-center {
+      grid-column: 2;
       display: flex;
       align-items: center;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       background: var(--bg-surface);
       border: 1px solid var(--border);
       border-radius: 999px;
@@ -756,16 +959,22 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .stat-pill + .stat-pill { border-left: 1px solid var(--border-subtle); }
     .stat-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .stat-label { color: var(--text-muted); }
-    .stat-val { color: var(--text-main); font-weight: 600; font-variant-numeric: tabular-nums; }
-    .dot-green { background: var(--success); box-shadow: 0 0 0 3px var(--success-glow); }
+    .stat-val { color: var(--text-main); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    @keyframes stat-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    .dot-green { background: var(--success); box-shadow: 0 0 0 3px var(--success-glow); animation: stat-pulse 3s infinite ease-in-out; }
     .dot-red { background: var(--danger); }
     .dot-yellow { background: var(--warning); }
     .dot-blue { background: var(--accent); }
     .dot-neutral { background: var(--neutral); }
 
     .canvas-header-right {
+      grid-column: 3;
       display: flex;
       align-items: center;
+      justify-content: flex-end;
       gap: 12px;
     }
 
@@ -852,14 +1061,18 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .card {
       background: var(--bg-surface);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 20px;
+      border-radius: var(--radius-lg);
+      padding: clamp(16px, 2.2vw, 24px);
       margin-bottom: 20px;
       box-shadow: var(--shadow-sm);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .card:hover {
+      border-color: var(--border-input);
     }
     .card-title {
       font-size: 0.9375rem;
-      font-weight: 600;
+      font-weight: 650;
       letter-spacing: -0.01em;
       margin-bottom: 4px;
       display: flex;
@@ -872,6 +1085,87 @@ const CONSOLE_CSS = `${rootTokensCss()}
       margin-bottom: 18px;
       text-wrap: pretty;
     }
+
+    /* In-canvas filter chips and controls bar */
+    .controls-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .filter-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .card-head .filter-chips { margin-bottom: 0; }
+    .filter-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 2px 10px;
+      border-radius: var(--radius-pill);
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      font-family: inherit;
+      transition: color 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+    }
+    .filter-chip:hover { color: var(--text-main); border-color: var(--border-input); background: var(--hover); }
+    .filter-chip.active { color: var(--accent-text); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+    .chip-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: var(--radius-pill);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      line-height: 1;
+      background: var(--bg-subtle);
+      color: var(--text-muted);
+    }
+    .filter-chip.active .chip-badge,
+    .segmented-tab.active .chip-badge {
+      background: var(--accent);
+      color: var(--accent-fg);
+    }
+
+    /* Grid density toggle */
+    .density-toggle {
+      display: inline-flex;
+      align-items: center;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 2px;
+      gap: 2px;
+    }
+    .density-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 26px;
+      padding: 2px 8px;
+      border-radius: var(--radius-xs);
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      transition: color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+      user-select: none;
+    }
+    .density-btn:hover { color: var(--text-main); background: var(--hover); }
+    .density-btn.active { color: var(--text-main); background: var(--bg-surface); font-weight: 600; box-shadow: var(--shadow-sm); }
+
+    .hidden { display: none !important; }
 
     /* A tinted note inside a page: information, a warning, or a confirmation. */
     .callout {
@@ -1021,9 +1315,10 @@ const CONSOLE_CSS = `${rootTokensCss()}
       gap: 10px;
       padding: 12px;
       margin-bottom: 0;
-      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      border-radius: var(--radius);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
     }
-    .kiosk-card:hover { border-color: var(--border-input); }
+    .kiosk-card:hover { border-color: var(--border-input); transform: translateY(-2px); box-shadow: var(--shadow-md); }
     .kc-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
     .kc-id {
       display: flex;
@@ -1313,17 +1608,18 @@ const CONSOLE_CSS = `${rootTokensCss()}
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius);
       padding: 3px;
-      gap: 2px;
+      gap: 3px;
       max-width: 100%;
       overflow-x: auto;
       scrollbar-width: none;
+      margin-bottom: 20px;
     }
     .segmented-tab {
       display: inline-flex;
       align-items: center;
       gap: 7px;
-      min-height: 30px;
-      padding: 4px 12px;
+      min-height: 32px;
+      padding: 5px 14px;
       border-radius: var(--radius-sm);
       font-size: 0.8125rem;
       font-weight: 500;
@@ -1333,17 +1629,30 @@ const CONSOLE_CSS = `${rootTokensCss()}
       cursor: pointer;
       font-family: inherit;
       white-space: nowrap;
-      transition: color 0.12s ease, background-color 0.12s ease;
+      transition: color 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease;
       text-decoration: none;
+      user-select: none;
     }
     .segmented-tab:hover {
       color: var(--text-main);
+      background: var(--hover);
     }
     .segmented-tab.active {
       color: var(--text-main);
       background: var(--bg-surface);
+      font-weight: 600;
       box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
     }
+    /* A row of view tabs with the view's one action at its end. */
+    .view-bar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .view-bar > .segmented-nav { margin-bottom: 0; }
     .tab-pane {
       display: none;
     }
@@ -1353,9 +1662,8 @@ const CONSOLE_CSS = `${rootTokensCss()}
 
     .grid-2col {
       display: grid;
-      /* min(): a plain 380px floor was wider than a phone's content area, so every
-         two-column page rendered zoomed out on one. */
-      grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
+      /* min(): a 320px floor allows 2-column cards to fit gracefully on laptop screens */
+      grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
       gap: 20px;
       align-items: start;
     }
@@ -1368,7 +1676,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
       gap: 20px;
       align-items: start;
     }
-    @media (max-width: 1180px) { .grid-sidebar { grid-template-columns: minmax(0, 1fr); } }
+    @media (max-width: 980px) { .grid-sidebar { grid-template-columns: minmax(0, 1fr); } }
 
     /* Buttons: one neutral family, one solid accent for the primary action, and
        red only where the action is destructive. */
@@ -1377,8 +1685,8 @@ const CONSOLE_CSS = `${rootTokensCss()}
       align-items: center;
       justify-content: center;
       gap: 6px;
-      min-height: 32px;
-      padding: 0 12px;
+      min-height: 34px;
+      padding: 0 14px;
       border-radius: var(--radius-sm);
       font-size: 0.8125rem;
       font-weight: 500;
@@ -1387,12 +1695,13 @@ const CONSOLE_CSS = `${rootTokensCss()}
       border: 1px solid transparent;
       background: transparent;
       color: var(--text-main);
-      transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+      transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease, transform 0.08s ease;
       font-family: inherit;
       text-decoration: none;
       white-space: nowrap;
       user-select: none;
     }
+    .btn:active:not(:disabled) { transform: scale(0.98); }
     .btn svg { flex-shrink: 0; width: 15px; height: 15px; }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-primary { background: var(--accent); color: var(--accent-fg); box-shadow: var(--shadow-sm); }
@@ -1899,11 +2208,23 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .canvas-footer-links { display: flex; gap: 16px; }
 
     /* ---------------------------------------------------------------------- */
-    /* Mobile / Tablet Responsive Adjustments                                 */
+    /* Mobile / Tablet Responsive Adjustments & Container Queries             */
     /* ---------------------------------------------------------------------- */
+    @container canvas (max-width: 760px) {
+      .controls-bar { flex-direction: column; align-items: stretch; }
+    }
+    @container canvas (max-width: 680px) {
+      .grid-2col { grid-template-columns: 1fr; }
+      .kc-actions { grid-template-columns: 1fr 1fr; }
+      .kc-actions > .btn:first-child { grid-column: 1 / -1; }
+    }
+    @container canvas (max-width: 440px) {
+      .kc-actions { grid-template-columns: 1fr; }
+    }
+
     @media (max-width: 1024px) {
+      .nav-sidebar,
       .nav-rail { transform: translateX(-100%); }
-      .sub-panel { transform: translateX(-100%); left: 0; }
       .app-canvas { margin-left: 0 !important; }
       .btn-mobile-menu { display: inline-flex; }
       .panel-backdrop { display: block; }
@@ -1912,18 +2233,115 @@ const CONSOLE_CSS = `${rootTokensCss()}
       .canvas-footer { padding: 14px 16px; }
       .toolbar { position: static; }
 
+      .app-layout.mobile-open .nav-sidebar,
       .app-layout.mobile-open .nav-rail {
         transform: translateX(0);
-      }
-      .app-layout.mobile-open .sub-panel {
-        transform: translateX(var(--rail-width));
-        opacity: 1;
-        pointer-events: auto;
         box-shadow: var(--shadow-lg);
       }
       .app-layout.mobile-open .panel-backdrop {
         opacity: 1;
         pointer-events: auto;
+      }
+    }
+
+    @media (max-width: 768px) {
+      /* One column: the counters take their own full-width row under the breadcrumb. */
+      .canvas-header {
+        padding: 8px 14px;
+        min-height: 52px;
+        gap: 10px;
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .canvas-header-center { grid-column: 1; }
+      .canvas-header-right { display: none; }
+      .breadcrumb-trail {
+        font-size: 0.8125rem;
+      }
+      .breadcrumb-organization {
+        max-width: 140px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .canvas-header-center {
+        width: 100%;
+        overflow-x: auto;
+        scrollbar-width: none;
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+        padding: 3px 6px;
+        border-radius: var(--radius-sm);
+        -webkit-overflow-scrolling: touch;
+      }
+      .stat-pill {
+        flex-shrink: 0;
+        padding: 2px 8px;
+        font-size: 0.6875rem;
+      }
+      .canvas-body {
+        padding: 16px 12px 36px;
+      }
+      .page-head {
+        margin-bottom: 14px;
+        gap: 10px;
+      }
+      .page-title {
+        font-size: 1.25rem;
+      }
+      .card {
+        padding: 14px 12px;
+        margin-bottom: 14px;
+      }
+      .card-head {
+        padding: 12px 14px;
+      }
+      .segmented-nav {
+        width: 100%;
+        overflow-x: auto;
+        scrollbar-width: none;
+        padding: 3px;
+        -webkit-overflow-scrolling: touch;
+      }
+      .segmented-tab {
+        flex-shrink: 0;
+        min-height: 32px;
+        padding: 4px 10px;
+        font-size: 0.75rem;
+      }
+      .toolbar {
+        padding: 6px 8px;
+        gap: 6px;
+        margin-bottom: 14px;
+      }
+      .form-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .form-actions {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .form-actions > .btn {
+        width: 100%;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .modal-box {
+        padding: 18px 14px;
+        max-width: calc(100vw - 20px);
+        margin: 10px;
+      }
+      .lk-dialog {
+        padding: 16px 14px;
+        max-width: calc(100vw - 20px);
+        margin: 10px;
+      }
+      .lk-toast-stack {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        max-width: calc(100vw - 24px);
       }
     }
 
@@ -1935,7 +2353,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
       ::view-transition-group(*) { animation-duration: 0.18s; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .nav-rail, .sub-panel, .app-canvas, .rail-profile-menu, .lk-toast, .lk-dialog,
+      .nav-sidebar, .nav-rail, .sub-panel, .sidebar-context, .app-canvas, .rail-profile-menu, .lk-toast, .lk-dialog,
       .lk-dialog-overlay, .modal-box, .group-chevron, .rail-action-btn svg, .panel-backdrop {
         transition: none;
       }
@@ -1995,13 +2413,14 @@ export function renderLayoutHtml(options: LayoutOptions): string {
   const activeItem = navItems.find((item) => item.id === activeNavId) || navItems[0];
   const activeNavLabel = activeItem ? activeItem.label : "Dashboard";
 
-  // Level 1: Primary Vertical Rail items
+  // Primary Navigation items
   const railItemsHtml = navItems
     .map((item) => {
       const isActive = item.id === activeNavId;
       return `
-        <a href="${escapeAttr(item.href)}" class="rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" title="${escapeAttr(item.label)}">
-          <span class="rail-icon">${item.iconSvg}</span>
+        <a href="${escapeAttr(item.href)}" class="sidebar-item rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" title="${escapeAttr(item.label)}">
+          <span class="sidebar-icon rail-icon">${item.iconSvg}</span>
+          <span class="sidebar-label">${escapeHtml(item.label)}</span>
           <span class="rail-tooltip">${escapeHtml(item.label)}</span>
           ${renderRailBadge(item)}
         </a>
@@ -2036,27 +2455,53 @@ ${FONT_LINKS}
 </head>
 <body>
   <div class="app-layout" id="app-layout">
-    <!-- Level 1: Primary Navigation Rail (72px) -->
-    <aside class="nav-rail" id="nav-rail">
-      <div class="rail-top">
-        <a href="${escapeAttr(brandHref)}" class="brand-glyph" title="${escapeAttr(brandTitle)}">
+    <!-- Unified Navigation Sidebar (240px) -->
+    <aside class="nav-sidebar nav-rail" id="nav-sidebar">
+      <div class="sidebar-header">
+        <a href="${escapeAttr(brandHref)}" class="sidebar-brand brand-glyph" title="${escapeAttr(brandTitle)}">
           <div class="brand-icon">${brandIconSvg || defaultBrandIcon}</div>
+          <div class="brand-meta">
+            <span class="brand-name">${escapeHtml(brandTitle)}</span>
+            ${brandSubtitle ? `<span class="brand-sub">${escapeHtml(brandSubtitle)}</span>` : ""}
+          </div>
         </a>
-        <div class="rail-divider"></div>
-        <nav class="rail-nav">
-          ${railItemsHtml}
-        </nav>
       </div>
-      <div class="rail-bottom">
-        <button class="rail-action-btn" id="btn-toggle-subpanel" title="Toggle Side Panel (Ctrl+B)" data-action="toggle-subpanel">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
-        </button>
-        <div class="rail-profile-wrap">
-          <button type="button" class="rail-user-btn" id="btn-user-profile" aria-expanded="false" aria-haspopup="true" title="${escapeAttr(userMeta?.name || 'User Profile')} (${escapeAttr(userMeta?.role || 'Admin')})">
-            <div class="rail-user-avatar">
+
+      <nav class="sidebar-nav rail-nav" aria-label="Main Navigation">
+        ${railItemsHtml}
+      </nav>
+
+      ${subPanelHtml ? `
+      <!-- Contextual Action Panel Section -->
+      <aside class="sub-panel" id="sub-panel">
+        ${subPanelTitle ? `
+        <div class="sub-panel-header context-header">
+          <div class="sub-panel-title-wrap">
+            <h3 class="sub-panel-title context-title">${escapeHtml(subPanelTitle)}</h3>
+            ${subPanelSubtitle ? `<p class="sub-panel-subtitle context-subtitle">${escapeHtml(subPanelSubtitle)}</p>` : ""}
+          </div>
+          <button class="sub-panel-close-btn" id="btn-close-subpanel" data-action="toggle-subpanel" title="Collapse Panel">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+          </button>
+        </div>
+        ` : ""}
+        <div class="sub-panel-content context-body">
+          ${subPanelHtml}
+        </div>
+      </aside>
+      ` : ""}
+
+      <div class="sidebar-footer rail-bottom">
+        <div class="sidebar-profile-wrap rail-profile-wrap">
+          <button type="button" class="sidebar-user-btn rail-user-btn" id="btn-user-profile" aria-expanded="false" aria-haspopup="true" title="${escapeAttr(userMeta?.name || 'User Profile')} (${escapeAttr(userMeta?.role || 'Admin')})">
+            <div class="sidebar-user-avatar rail-user-avatar">
               <span>${escapeHtml((userMeta?.name || 'A').slice(0, 1).toUpperCase())}</span>
+            </div>
+            <div class="sidebar-user-info user-meta">
+              <span class="sidebar-user-name user-name">${escapeHtml(userMeta?.name || 'Administrator')}</span>
+              <span class="sidebar-user-role user-role">${escapeHtml(userMeta?.role || 'Admin')}</span>
             </div>
           </button>
           <div class="rail-profile-menu" id="rail-profile-menu" role="menu" aria-label="User profile menu">
@@ -2083,10 +2528,16 @@ ${FONT_LINKS}
                       <span>Change Password</span>
                     </a>`
               }
-              <button type="button" class="profile-menu-item" data-action="open-two-factor">
+              <a href="${escapeAttr(
+                brandHref.startsWith("/super")
+                  ? "/super/system?tab=system-two-factor"
+                  : brandHref.includes("?")
+                    ? "/admin/settings?" + brandHref.split("?")[1] + "&tab=two-factor"
+                    : "/admin/settings?tab=two-factor"
+              )}" class="profile-menu-link">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
                 <span>Two-factor sign-in</span>
-              </button>
+              </a>
               <button type="button" class="profile-menu-item" data-action="toggle-theme">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>
                 <span data-theme-label>Dark theme</span>
@@ -2101,24 +2552,6 @@ ${FONT_LINKS}
             </div>
           </div>
         </div>
-      </div>
-    </aside>
-
-    <!-- Level 2: Secondary Context Action Panel (272px, animated & collapsible) -->
-    <aside class="sub-panel" id="sub-panel">
-      <div class="sub-panel-header">
-        <div class="sub-panel-title-wrap">
-          <h3 class="sub-panel-title">${escapeHtml(subPanelTitle)}</h3>
-          <p class="sub-panel-subtitle">${escapeHtml(subPanelSubtitle)}</p>
-        </div>
-        <button class="sub-panel-close-btn" id="btn-close-subpanel" data-action="toggle-subpanel" title="Collapse Panel">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
-        </button>
-      </div>
-      <div class="sub-panel-content">
-        ${subPanelHtml}
       </div>
     </aside>
 
@@ -2379,10 +2812,8 @@ ${FONT_LINKS}
   <\/script>
 
   ${modalsHtml}
-  ${renderTwoFactorModalHtml()}
 
   ${scriptsHtml}
-  ${renderTwoFactorScript(nonce)}
 
   <script nonce="${escapeAttr(nonce)}">
     (function() {
@@ -2420,6 +2851,17 @@ ${FONT_LINKS}
         } else if (action === "toggle-mobile-menu") {
           e.preventDefault();
           toggleMobileMenu();
+        } else if (action && action.startsWith("tab-")) {
+          if (typeof window.labkioskSwitchTab === "function") {
+            e.preventDefault();
+            window.labkioskSwitchTab(action.slice(4));
+          }
+        }
+
+        // Close mobile drawer on navigation click
+        if (layout.classList.contains("mobile-open")) {
+          const navClick = target.closest(".sidebar-item, .rail-item, .sub-action-item, .segmented-tab, .filter-chip, .density-btn");
+          if (navClick) layout.classList.remove("mobile-open");
         }
       });
 

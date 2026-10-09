@@ -19,13 +19,23 @@ import { escapeAttr } from "./escape";
 import type { Env } from "./types";
 
 /** Pages that may appear in search results, and that the sitemap lists. */
-export const INDEXABLE_PATHS: readonly string[] = ["/", "/privacy", "/terms", "/terms/bug-reports"];
+export const INDEXABLE_PATHS: readonly string[] = [
+  "/",
+  "/features",
+  "/specs",
+  "/pricing",
+  "/download",
+  "/docs",
+  "/privacy",
+  "/terms",
+  "/terms/bug-reports"
+];
 
 /**
  * Public pages where website analytics may run: the indexable pages plus the
  * landing page's dialog views. The Privacy Policy names exactly these.
  */
-const ANALYTICS_PATHS = new Set<string>([...INDEXABLE_PATHS, "/login", "/register", "/download", "/iso", "/contact"]);
+const ANALYTICS_PATHS = new Set<string>([...INDEXABLE_PATHS, "/login", "/register", "/iso", "/contact"]);
 
 /** Zaraz's loader, which the inline snippet Cloudflare injects adds without a nonce. */
 export const ZARAZ_LOADER_PATH = "/cdn-cgi/zaraz/s.js";

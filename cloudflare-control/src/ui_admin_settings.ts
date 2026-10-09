@@ -12,46 +12,47 @@ import { LabConfig, Tenant, HomepageBlock } from "./types";
 import { parseHomepageBlocks } from "./db";
 import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
+import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
+  if (options.accountOnly) {
+    // No `settings` permission: the account's own sign-in, and nothing of the organization's.
+    return {
+      title: "Settings",
+      contentHtml: `
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">Two-factor sign-in</h1>
+        <p class="page-desc">How your own account signs in. The organization's settings belong to its administrators.</p>
+      </div>
+    </div>
+${renderTwoFactorPaneHtml()}`,
+      scriptsHtml: renderTwoFactorScript(nonce),
+      subPanelTitle: "",
+      subPanelSubtitle: "",
+      subPanelHtml: ""
+    };
+  }
   return {
     title: "Settings & Configuration",
     contentHtml: renderSettingsPageHtml(tenant, config, baseDomain, tenantParam),
-    scriptsHtml: renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)),
+    scriptsHtml: renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)) + renderTwoFactorScript(nonce),
     subPanelTitle: "Organization Settings",
     subPanelSubtitle: "Settings & preferences",
     subPanelHtml: `
-      <div class="sub-section-title">Settings Views</div>
-      <div class="sub-action-list" id="sub-tab-list">
-        <button type="button" class="sub-action-item active" data-action="tab-general">
+      <div class="sub-section-title">Quick Actions</div>
+      <div class="sub-action-list">
+        <button type="button" class="sub-action-item" data-focus="org-name">
           <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            General &amp; Kiosk
+            Edit Organization Name
           </span>
         </button>
-        <button type="button" class="sub-action-item" data-action="tab-domains">
-          <span class="row">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            Domains &amp; Network
-          </span>
-        </button>
-        <button type="button" class="sub-action-item" data-action="tab-homepage">
-          <span class="row">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-            Organization Homepage
-          </span>
-        </button>
-        <button type="button" class="sub-action-item" data-action="tab-security">
+        <button type="button" class="sub-action-item" data-focus="admin-password">
           <span class="row">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            Security &amp; Audit
-          </span>
-        </button>
-        <button type="button" class="sub-action-item" data-action="tab-issues">
-          <span class="row">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            Errors &amp; Warnings
+            Change Admin Password
           </span>
         </button>
       </div>
@@ -87,6 +88,33 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
         <p class="page-desc">Organization profile, kiosk behaviour, addresses, the homepage, and security.</p>
       </div>
     </div>
+
+    <nav class="segmented-nav" aria-label="Settings Navigation">
+      <button type="button" class="segmented-tab active" data-action="tab-general">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>General &amp; Kiosk</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-domains">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <span>Domains &amp; Network</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-homepage">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <span>Organization Homepage</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-security">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span>Security &amp; Audit</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-two-factor">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+        <span>Two-factor sign-in</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-issues">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span>Errors &amp; Warnings</span>
+      </button>
+    </nav>
 
     <!-- ============================================================== -->
     <!-- TAB 1: GENERAL & KIOSK PROFILE                                 -->
@@ -307,6 +335,13 @@ ${renderRemoteControlCard(tenant)}
     </div>
 
     <!-- ============================================================== -->
+    <!-- TAB: TWO-FACTOR SIGN-IN (the signed-in account's own)          -->
+    <!-- ============================================================== -->
+    <div class="tab-pane" id="pane-two-factor">
+${renderTwoFactorPaneHtml()}
+    </div>
+
+    <!-- ============================================================== -->
     <!-- TAB 5: ERRORS & WARNINGS                                       -->
     <!-- ============================================================== -->
     <div class="tab-pane" id="pane-issues">
@@ -404,13 +439,19 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       };
 
       function switchTab(tabId) {
-        const validTabs = ["general", "domains", "homepage", "security", "issues"];
+        const validTabs = ["general", "domains", "homepage", "security", "two-factor", "issues"];
         if (!validTabs.includes(tabId)) tabId = "general";
 
-        // Update Subpanel Tabs
-        const subBtns = document.querySelectorAll("#sub-tab-list .sub-action-item");
-        subBtns.forEach((btn) => {
-          btn.classList.toggle("active", btn.getAttribute("data-action") === "tab-" + tabId);
+        // Update In-Canvas Segmented Tabs
+        const segTabs = document.querySelectorAll(".segmented-nav .segmented-tab");
+        segTabs.forEach((tab) => {
+          tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
+        });
+
+        // Update Sub-Panel Tab Items if present
+        const subTabs = document.querySelectorAll("#sub-panel [data-action^='tab-']");
+        subTabs.forEach((tab) => {
+          tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
         });
 
         // Update Tab Panes
@@ -430,6 +471,20 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       }
 
       window.labkioskSwitchTab = switchTab;
+
+      // In-Canvas Segmented Tabs Click Listener
+      const segNav = document.querySelector(".segmented-nav");
+      if (segNav) {
+        segNav.addEventListener("click", function(e) {
+          const tab = e.target && e.target.closest ? e.target.closest(".segmented-tab") : null;
+          if (!tab) return;
+          const action = tab.getAttribute("data-action");
+          if (action && action.startsWith("tab-")) {
+            e.preventDefault();
+            switchTab(action.slice(4));
+          }
+        });
+      }
 
       const remoteControlForm = document.getElementById("form-remote-control-request");
       if (remoteControlForm) {

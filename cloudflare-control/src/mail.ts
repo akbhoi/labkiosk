@@ -1,26 +1,42 @@
 /**
- * Outbound email through Cloudflare Email Service (the `EMAIL` send_email binding).
+ * Outbound email.
  *
- * Every message the platform sends -- signup codes, approval decisions, replies
- * written in the Super Admin console -- goes through `sendMail()`. Nothing here
- * pretends: without the binding and `MAIL_FROM` a production Worker refuses
- * (`mailConfigProblem()`), and a send that fails throws for the caller to report.
+ * Every message the platform sends -- signup and sign-in codes, receipts,
+ * approval decisions, replies and letters written in the Super Admin console --
+ * goes through `sendMail()`. It decides who a message is from and where
+ * answers go, then hands it to labkiosk-email-routing (the `MAILER` Service
+ * Binding), which renders it with the shared templates and sends it. When that
+ * Worker is not bound or does not answer, the message is rendered here with the
+ * same templates and sent through this Worker's own `EMAIL` send_email binding,
+ * so a sign-in code is never stranded by the other Worker.
  *
- * Tests and `ALLOW_LOCAL_DB=1` development have no binding: messages land in an
- * in-process outbox instead (`localOutbox()`), which is what the tests read the
- * signup codes from.
+ * Nothing here pretends: without either binding and `MAIL_FROM` a production
+ * Worker refuses (`mailConfigProblem()`), and a send that fails throws for the
+ * caller to report.
+ *
+ * Tests and `ALLOW_LOCAL_DB=1` development send nothing unless MAIL_FROM is set:
+ * messages land in an in-process outbox instead (`localOutbox()`), which is what
+ * the tests read the signup codes from, and each subject is logged, which is
+ * where a code is read under `pnpm dev`.
  */
 
 import { Env } from "./types";
 import { isLocalEnvironment } from "./database";
-import { escapeHtml } from "./escape";
+// The templates live with the Worker that sends; this is the same module it renders with.
+import { Brand, MailTemplate, renderMailHtml } from "../../cloudflare-email-routing/src/templates";
+
+export type { MailTemplate } from "../../cloudflare-email-routing/src/templates";
 
 export interface OutgoingMail {
   to: string;
   toName?: string | null;
   subject: string;
-  /** Plain text. The HTML part is derived from it, so the two never disagree. */
+  /** Plain text. It is the body of the HTML part too, so the two never disagree. */
   text: string;
+  /** Which template the HTML part is built with; a plain notice when left out. */
+  template?: MailTemplate;
+  /** Set for an automatic answer, so the other side's own automation does not answer it back. */
+  autoReply?: boolean;
   /** Message-ID of the message this answers, for threading in the customer's mail client. */
   inReplyTo?: string | null;
   references?: string[];
@@ -36,6 +52,9 @@ export interface LocalMail extends OutgoingMail {
   from: string;
   replyTo: string | null;
   messageId: string;
+  /** The HTML part as it would have been sent. */
+  html: string;
+  headers: Record<string, string>;
 }
 
 export interface SentMail {
@@ -51,11 +70,21 @@ export function localOutbox(): readonly LocalMail[] {
   return localMail;
 }
 
+/**
+ * Local development and tests keep mail in the in-process outbox unless email
+ * was set up on purpose. `wrangler dev` simulates the EMAIL binding and lists
+ * the MAILER one unconnected, so the bindings alone say nothing: without
+ * MAIL_FROM, a local Worker has not been given anywhere to send from.
+ */
+function usesLocalOutbox(env: Env): boolean {
+  return isLocalEnvironment(env) && ((!env.EMAIL && !env.MAILER) || !parseAddress(env.MAIL_FROM || ""));
+}
+
 /** Why outbound email cannot work here, or null when it can. */
 export function mailConfigProblem(env: Env): string | null {
-  if (!env.EMAIL && isLocalEnvironment(env)) return null;
+  if (usesLocalOutbox(env)) return null;
   const missing: string[] = [];
-  if (!env.EMAIL) missing.push("the EMAIL send_email binding");
+  if (!env.EMAIL && !env.MAILER) missing.push("the MAILER service binding (or the EMAIL send_email binding)");
   if (!parseAddress(env.MAIL_FROM || "")) missing.push("the MAIL_FROM variable");
   if (!parseAddress(env.SUPPORT_ADDRESS || "")) missing.push("the SUPPORT_ADDRESS variable");
   return missing.length ? `Email is not configured on this server: ${missing.join(", ")} (docs/DEPLOYMENT.md, "Email").` : null;
@@ -133,14 +162,13 @@ export function envelopeFor(env: Env, mailbox?: string | null): { from: { email:
   return { from: { email: domainOf(box) === domain ? box : `${local}@${domain}`, name }, replyTo: box };
 }
 
-/** Plain text as a minimal HTML body: escaped, paragraphs and line breaks kept. */
-export function textToHtml(text: string): string {
-  const paragraphs = text
-    .replace(/\r\n/g, "\n")
-    .split(/\n{2,}/)
-    .map((p) => `<p style="margin:0 0 14px">${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
-    .join("");
-  return `<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#1f2937">${paragraphs}</body></html>`;
+/** Who a message says it is from, in its header and footer. */
+function brandFor(env: Env, fromName: string, replyTo: string | null): Brand {
+  return {
+    name: fromName || "Lab Kiosk",
+    siteUrl: env.DEFAULT_DOMAIN ? `https://${env.DEFAULT_DOMAIN.toLowerCase()}` : null,
+    replyAddress: replyTo
+  };
 }
 
 /** A header value may not carry a line break: it would start a new header. */
@@ -160,18 +188,26 @@ export async function sendMail(env: Env, mail: OutgoingMail): Promise<SentMail> 
   if (mail.inReplyTo) headers["In-Reply-To"] = headerSafe(mail.inReplyTo);
   const references = (mail.references || []).map(headerSafe).filter(Boolean);
   if (references.length) headers["References"] = references.slice(-20).join(" ");
+  if (mail.autoReply) {
+    headers["Auto-Submitted"] = "auto-replied";
+    headers["X-Auto-Response-Suppress"] = "All";
+  }
+  const template: MailTemplate = mail.template ?? { name: "notice" };
+  const { from, replyTo } = envelopeFor(env, mail.mailbox);
+  const brand = brandFor(env, from.name, replyTo);
+  const html = () => renderMailHtml({ template, subject, text: mail.text, brand });
 
-  if (!env.EMAIL) {
-    if (!isLocalEnvironment(env)) throw new Error(mailConfigProblem(env) || "Email is not configured");
+  if (usesLocalOutbox(env)) {
     const messageId = `<${crypto.randomUUID()}@outbox.local>`;
-    const local = envelopeFor(env, mail.mailbox);
     localMail.push({
       ...mail,
       to: to.email,
       subject,
-      from: `${local.from.name} <${local.from.email}>`,
-      replyTo: local.replyTo,
-      messageId
+      from: `${from.name} <${from.email}>`,
+      replyTo,
+      messageId,
+      html: html(),
+      headers
     });
     if (localMail.length > LOCAL_OUTBOX_LIMIT) localMail.splice(0, localMail.length - LOCAL_OUTBOX_LIMIT);
     // Local development has no inbox to read: the log is where a registration code is found.
@@ -181,14 +217,37 @@ export async function sendMail(env: Env, mail: OutgoingMail): Promise<SentMail> 
 
   const problem = mailConfigProblem(env);
   if (problem) throw new Error(problem);
-  const { from, replyTo } = envelopeFor(env, mail.mailbox);
-  const result = await env.EMAIL.send({
+  const toName = mail.toName ? headerSafe(mail.toName) : "";
+
+  if (env.MAILER) {
+    try {
+      // The host is never resolved: a Service Binding goes straight to the Worker.
+      const res = await env.MAILER.fetch("https://labkiosk-email-routing/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from, to: { email: to.email, name: toName }, replyTo, subject, text: mail.text, template, brand, headers })
+      });
+      let data: { messageId?: unknown; error?: unknown } | null = null;
+      try {
+        data = await res.json<{ messageId?: unknown; error?: unknown }>();
+      } catch {
+        data = null;
+      }
+      if (res.ok && typeof data?.messageId === "string") return { messageId: data.messageId };
+      throw new Error(typeof data?.error === "string" ? data.error : `The email Worker answered ${res.status}`);
+    } catch (err) {
+      if (!env.EMAIL) throw err;
+      console.error("[Mail] labkiosk-email-routing did not send the message; sending it directly:", err);
+    }
+  }
+
+  const result = await env.EMAIL!.send({
     from,
-    to: mail.toName ? { email: to.email, name: headerSafe(mail.toName) } : to.email,
+    to: toName ? { email: to.email, name: toName } : to.email,
     replyTo: replyTo!,
     subject,
     text: mail.text,
-    html: textToHtml(mail.text),
+    html: html(),
     headers
   });
   return { messageId: result.messageId };

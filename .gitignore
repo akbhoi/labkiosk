@@ -86,3 +86,6 @@ distro-builder/config/bootloaders/grub-pc/labkiosk-password.cfg
 
 # Staged by cloudflare-control/scripts/stage-novnc.mjs from the pinned @novnc/novnc package
 cloudflare-control/public/
+
+# Email template previews (pnpm --prefix cloudflare-email-routing run preview)
+cloudflare-email-routing/previews/

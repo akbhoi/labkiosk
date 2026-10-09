@@ -103,10 +103,15 @@ const INVARIANT_TOKENS = `      --accent-gradient: linear-gradient(135deg, var(-
       --radius-sm: 6px;
       --radius-xs: 4px;
       --radius-lg: 14px;
+      --radius-xl: 18px;
+      --radius-pill: 9999px;
       --rail-width: 72px;
       --subpanel-width: 272px;
+      --sidebar-width: 240px;
       --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
-      --ease-out: cubic-bezier(0.2, 0, 0, 1);`;
+      --ease-out: cubic-bezier(0.2, 0, 0, 1);
+      --transition-fast: 0.15s ease;
+      --transition-smooth: 0.25s cubic-bezier(0.16, 1, 0.3, 1);`;
 
 function paletteCss(theme: 0 | 1, indent: string): string {
   return Object.entries(PALETTE)

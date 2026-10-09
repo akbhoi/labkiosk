@@ -52,9 +52,10 @@ import {
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
-import { envelopeFor, localOutbox, parseAddress } from "../src/mail";
+import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
+import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
 
@@ -158,10 +159,30 @@ async function submitSignup(overrides: Record<string, unknown> = {}, env: Env = 
   return { res, data };
 }
 
+/**
+ * A sign-in to its session response: the password, then the emailed code a
+ * super admin (or an account with emailed codes on) is asked for.
+ */
+async function signIn(
+  creds: { email: string; password: string; tenant?: string },
+  env: Env = mockEnv,
+  headers: Record<string, string> = {}
+): Promise<Response> {
+  const post = (path: string, body: unknown) => worker.fetch(request(path, { ...json(body), headers }), env);
+  const res = await post("/api/auth/login", creds);
+  if (res.status !== 200) return res;
+  const data = (await res.clone().json()) as any;
+  if (data.status !== "two_factor") return res;
+  assert.equal(data.method, "email", "an account without an app is emailed its code");
+  const code = lastMailTo(creds.email).subject.match(/^(\d{6}) is your Lab Kiosk sign-in code$/)?.[1];
+  assert.ok(code, "the sign-in code was emailed");
+  return post("/api/auth/login/verify", { challenge: data.challenge, code });
+}
+
 async function superCookie(): Promise<string> {
-  const res = await call("/api/auth/login", json({ email: mockEnv.SUPER_ADMIN_EMAIL, password: mockEnv.SUPER_ADMIN_PASSWORD }));
+  const res = await signIn({ email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! });
   assert.equal(res.status, 200, "the super admin signs in");
-  return res.headers.get("Set-Cookie")!.split(";")[0];
+  return res.headers.getSetCookie().find((c) => c.startsWith("labkiosk_session=") || !c.startsWith("labkiosk_device="))!.split(";")[0];
 }
 
 /** The task a registration or request opened, by its reference. */
@@ -281,6 +302,43 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /const requestedModal = "login"/);
   });
 
+  test("Serves dedicated public pages: /features, /specs, /pricing, /download, /docs and 301 redirects /wiki", async () => {
+    const features = await (await call("/features")).text();
+    assert.match(features, /Enterprise Kiosk/);
+    assert.match(features, /Tamper-Proof OS Lockdown/);
+
+    const specs = await (await call("/specs")).text();
+    assert.match(specs, /Technical Specifications/);
+    assert.match(specs, /class="specs-table-container"/);
+
+    const pricing = await (await call("/pricing")).text();
+    assert.match(pricing, /Transparent Licensing/);
+    assert.match(pricing, /Accredited Education Grant/);
+    assert.match(pricing, /Commercial &amp; Large Fleet/);
+
+    const download = await (await call("/download")).text();
+    assert.match(download, /Download/);
+    assert.match(download, /SHA256 Checksum/);
+    // The page points at what is published; it never states a version or a checksum of its own.
+    assert.ok(download.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso.sha256"'));
+    assert.ok(!/\bv\d+\.\d+\.\d+\b/.test(download), "no version number is written into the page");
+    assert.ok(!/\b[0-9a-f]{64}\b/.test(download), "no checksum is written into the page");
+    // The footer is on every page: its section links go to the home page, where the sections are.
+    assert.ok(download.includes('href="/#audiences"') && download.includes('href="/#security"') && !/href="#(audiences|security)"/.test(download));
+
+    const docs = await (await call("/docs")).text();
+    assert.match(docs, /Documentation/);
+    assert.match(docs, /Architecture Overview/);
+
+    const wikiRedirect = await call("/wiki");
+    assert.equal(wikiRedirect.status, 301);
+    assert.equal(new URL(wikiRedirect.headers.get("Location")!).pathname, "/docs");
+
+    const wikiSubRedirect = await call("/wiki/getting-started");
+    assert.equal(wikiSubRedirect.status, 301);
+    assert.equal(new URL(wikiSubRedirect.headers.get("Location")!).pathname, "/docs");
+  });
+
   // -------------------------------------------------------- registration
 
   test("Rejects registration with a weak password", async () => {
@@ -340,7 +398,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200, JSON.stringify(data));
     assert.equal(data.status, "ok");
     assert.equal(data.pending, true);
-    assert.match(data.reference, /^LK-[A-Z0-9]{6}$/);
+    assert.match(data.reference, /^REG-[A-Z0-9]{6}$/, "a registration's tracking ID says so");
     assert.equal(res.headers.get("Set-Cookie"), null, "no session before approval");
 
     const receipt = lastMailTo("operator@greenwood.example");
@@ -503,8 +561,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/two-factor/setup", json({ password }))).status, 401);
     const { data: off } = await callJson("/api/auth/two-factor", { cookie });
     assert.equal(off.enabled, false);
+    assert.equal(off.emailCodes, false, "an organization account chooses the emailed code");
+    assert.equal(off.required, false);
     const { data: superState } = await callJson("/api/auth/two-factor", { cookie: await superCookie() });
     assert.equal(superState.enabled, false, "super admins have it too");
+    assert.equal(superState.emailCodes, true, "a super admin is always emailed a code");
+    assert.equal(superState.required, true);
 
     const otherBrowser = session(await login());
     assert.equal((await call("/api/auth/two-factor/setup", { ...json({ password: "wrong" }), cookie })).status, 400, "setup needs the password");
@@ -584,6 +646,57 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/two-factor/disable", { ...json({ password, code: enabled.recoveryCodes[1] }), cookie })).status, 200);
     assert.equal(((await (await login()).json()) as any).status, "ok", "the password alone signs in again");
     assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "123456" }), cookie })).status, 409, "a new setup starts over");
+  });
+
+  test("Two-factor sign-in: an emailed code needs no setup, and a super admin cannot turn it off", async () => {
+    const email = "operator@lakeside.example";
+    const password = "LakesidePass789!";
+    const cookie = await registerApprovedOrganization({ name: "Lakeside Library", contactName: "Lena Lake", email, password, subdomain: "lakeside" });
+    const set = (body: unknown, as?: string) => call("/api/auth/two-factor/email", { ...json(body), cookie: as });
+
+    // Only the signed-in account, with its password, and only a clear on or off.
+    assert.equal((await set({ password, enabled: true })).status, 401);
+    assert.equal((await call("/api/auth/two-factor/email", { cookie })).status, 405);
+    assert.equal((await set({ password: "wrong", enabled: true }, cookie)).status, 400);
+    assert.equal((await set({ password, enabled: "yes" }, cookie)).status, 400);
+    assert.equal(((await (await call("/api/auth/login", json({ email, password }))).json()) as any).status, "ok", "off: the password is enough");
+
+    const otherBrowser = (await call("/api/auth/login", json({ email, password }))).headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await set({ password, enabled: true }, cookie)).status, 200);
+    assert.equal((await callJson("/api/auth/two-factor", { cookie })).data.emailCodes, true);
+    assert.equal((await callJson("/api/auth/me", { cookie: otherBrowser })).data.user, null, "browsers signed in with the password alone are signed out");
+
+    // The password now gives a challenge and an emailed code, with no app anywhere.
+    const { res: step, data: challenge } = await callJson("/api/auth/login", json({ email, password }));
+    assert.equal(challenge.status, "two_factor");
+    assert.equal(challenge.method, "email");
+    assert.equal(challenge.sentTo, "o•••@lakeside.example");
+    assert.equal(step.headers.get("Set-Cookie"), null, "no session before the code");
+    const code = lastMailTo(email).subject.match(/^(\d{6}) is your Lab Kiosk sign-in code$/)![1];
+    const wrong = code === "000000" ? "111111" : "000000";
+    assert.equal((await call("/api/auth/login/verify", json({ challenge: challenge.challenge, code: wrong }))).status, 400);
+    assert.equal((await call("/api/auth/login/verify", json({ challenge: challenge.challenge, code: "abcde-fghjk" }))).status, 400, "no recovery codes without an app");
+    const signedIn = await call("/api/auth/login/verify", json({ challenge: challenge.challenge, code }));
+    assert.equal(signedIn.status, 200);
+    assert.equal((await call("/api/auth/login/verify", json({ challenge: challenge.challenge, code }))).status, 401, "a code signs in once");
+
+    // Off again: the password is enough.
+    assert.equal((await set({ password, enabled: false }, cookie)).status, 200);
+    assert.equal(((await (await call("/api/auth/login", json({ email, password }))).json()) as any).status, "ok");
+
+    // A super admin cannot turn it off.
+    const admin = await superCookie();
+    assert.equal((await set({ password: mockEnv.SUPER_ADMIN_PASSWORD, enabled: false }, admin)).status, 409);
+
+    // Where email is not configured a code cannot be sent: the password alone signs in, and the choice is refused.
+    const noMail = { ...mockEnv, EMAIL: {}, MAIL_FROM: "Lab Kiosk <support@email.labkiosk.org>" } as unknown as Env;
+    const direct = await worker.fetch(
+      request("/api/auth/login", json({ email: mockEnv.SUPER_ADMIN_EMAIL, password: mockEnv.SUPER_ADMIN_PASSWORD })),
+      noMail
+    );
+    assert.equal(((await direct.json()) as any).status, "ok");
+    const refused = await worker.fetch(request("/api/auth/two-factor/email", { ...json({ password, enabled: true }), cookie }), noMail);
+    assert.equal(refused.status, 503);
   });
 
   test("Two-factor sign-in: a challenge takes five wrong codes, then the password is needed again", async () => {
@@ -673,11 +786,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       headers: { "CF-Connecting-IP": "203.0.113.70" }
     });
     assert.equal(sent.res.status, 200);
-    assert.match(sent.data.reference, /^LK-[0-9A-Z]{6}$/);
+    assert.match(sent.data.reference, /^SAL-[0-9A-Z]{6}$/, "a question about pricing is filed under sales");
 
     const admin = await superCookie();
     const item = await taskByReference(admin, sent.data.reference, "support");
     assert.equal(item.kind, "support");
+    assert.equal(item.category, "sales");
     assert.equal(item.contact_email, "sam@example.net");
     const { data: tasks } = await callJson("/api/super/inbox?box=tasks&filter=all", { cookie: admin });
     assert.ok(!(tasks.items as any[]).some((i) => i.reference === sent.data.reference), "support stays out of Tasks");
@@ -907,19 +1021,208 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/super/inbox/compose", json(good))).status, 401);
     assert.equal((await call("/api/super/inbox/compose", { ...json(good), cookie: orgSessionCookie })).status, 403);
 
-    // Delete removes the conversation, its messages and the stored original; tasks stay.
     const { data: detail } = await callJson(`/api/super/inbox/${filed!.id}`, { cookie: admin });
     const rawKey = (detail.messages as any[]).find((m) => m.direction === "inbound").raw_key;
     assert.ok(await loadRawMail(inboxEnv, rawKey));
-    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, json({}))).status, 401);
-    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { ...json({}), cookie: orgSessionCookie })).status, 403);
-    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { cookie: admin })).status, 405);
     const { data: tasks } = await callJson("/api/super/inbox?box=tasks&filter=all", { cookie: admin });
     const task = (tasks.items as any[])[0];
+    const idsIn = async (filter: string) =>
+      ((await callJson(`/api/super/inbox?box=support&filter=${filter}`, { cookie: admin })).data.items as any[]).map((i) => i.id);
+    const base = `/api/super/inbox/${filed!.id}`;
+
+    // Read and unread: opening it above marked it read; it can be put back.
+    for (const action of ["unread", "trash", "restore", "delete"]) {
+      assert.equal((await call(`${base}/${action}`, json({}))).status, 401, `${action} needs a session`);
+      assert.equal((await call(`${base}/${action}`, { ...json({}), cookie: orgSessionCookie })).status, 403, `${action} is the platform's`);
+      assert.equal((await call(`${base}/${action}`, { cookie: admin })).status, 405, `${action} is a POST`);
+    }
+    assert.ok((await idsIn("read")).includes(filed!.id));
+    assert.ok(!(await idsIn("unread")).includes(filed!.id));
+    assert.equal((await call(`${base}/unread`, { ...json({}), cookie: admin })).status, 200);
+    assert.ok((await idsIn("unread")).includes(filed!.id));
+    assert.ok(!(await idsIn("read")).includes(filed!.id));
+
+    // Deleting moves it to Deleted: out of every other view and count, nothing removed.
+    assert.equal((await call(`/api/super/inbox/${task.id}/trash`, { ...json({}), cookie: admin })).status, 400, "tasks stay on record");
     assert.equal((await call(`/api/super/inbox/${task.id}/delete`, { ...json({}), cookie: admin })).status, 400, "tasks stay on record");
+    assert.equal((await call(`${base}/delete`, { ...json({}), cookie: admin })).status, 409, "only from Deleted");
+    const before = (await callJson("/api/super/inbox?box=support", { cookie: admin })).data.counts;
+    assert.equal((await call(`${base}/trash`, { ...json({}), cookie: admin })).status, 200);
+    const { data: trashed } = await callJson("/api/super/inbox?box=support&filter=deleted", { cookie: admin });
+    assert.deepEqual((trashed.items as any[]).map((i) => i.id), [filed!.id]);
+    assert.equal(trashed.counts.deletedSupport, 1);
+    assert.equal(trashed.counts.unreadSupport, before.unreadSupport - 1, "deleted mail is not counted as unread");
+    assert.equal(trashed.counts.openSupport, before.openSupport - 1);
+    for (const filter of ["open", "all", "unread", "read", "closed"]) {
+      assert.ok(!(await idsIn(filter)).includes(filed!.id), `not in ${filter}`);
+    }
+    assert.ok(!(trashed.mailboxes as any[]).some((m) => m.mailbox === "sales@labkiosk.org" && m.total > 1));
+    assert.ok(await loadRawMail(inboxEnv, rawKey), "the stored original is kept");
+
+    // Restore brings it back, and so does an answer from its contact.
+    assert.equal((await call(`${base}/restore`, { ...json({}), cookie: admin })).status, 200);
+    assert.ok((await idsIn("open")).includes(filed!.id));
+    assert.equal((await call(`${base}/trash`, { ...json({}), cookie: admin })).status, 200);
+    const answer = inboundMessage(
+      ["From: Buyer <buyer@company.example>", `Subject: Re: [${filed!.reference}] Quote for 120 seats`, "", "Any news?"].join("\n"),
+      "buyer@company.example",
+      "sales@labkiosk.org"
+    );
+    assert.equal((await handleInboundEmail(answer.message, inboxEnv, db))!.id, filed!.id);
+    assert.deepEqual(await idsIn("deleted"), []);
+    assert.ok((await idsIn("unread")).includes(filed!.id));
+
+    // Delete permanently removes the conversation, its messages and the stored original.
+    assert.equal((await call(`${base}/trash`, { ...json({}), cookie: admin })).status, 200);
     assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { ...json({}), cookie: admin })).status, 200);
     assert.equal((await call(`/api/super/inbox/${filed!.id}`, { cookie: admin })).status, 404);
     assert.equal(await loadRawMail(inboxEnv, rawKey), null, "the stored original is gone too");
+  });
+
+  test("Mail is filed by what it is about, and a new sender gets a receipt with the tracking ID", async () => {
+    const db = getDatabase(mockEnv);
+    const admin = await superCookie();
+    const from = "ines@customer.example";
+    const mail = (subject: string, to: string, extra: string[] = []) =>
+      inboundMessage([`From: Ines Ortiz <${from}>`, `Subject: ${subject}`, "Message-ID: <first@customer.example>", ...extra, "", "Hello."].join("\n"), from, to).message;
+    const receipts = () => localOutbox().filter((m) => m.to === from && /We received your message/.test(m.subject));
+
+    // The address it was sent to names the type and the prefix of the tracking ID.
+    const billing = (await handleInboundEmail(mail("Invoice 2231 <b>", "billing@labkiosk.org"), inboxEnv, db))!;
+    assert.match(billing.reference, /^BIL-[A-Z0-9]{6}$/);
+    assert.equal(billing.category, "billing");
+
+    // The sender is told it arrived: the tracking ID, in the shared layout, marked as an automatic reply.
+    assert.equal(receipts().length, 1);
+    const receipt = receipts()[0];
+    assert.equal(receipt.subject, `[${billing.reference}] We received your message`);
+    assert.equal(receipt.from, "Lab Kiosk <billing@email.labkiosk.org>");
+    assert.equal(receipt.replyTo, "billing@labkiosk.org");
+    assert.equal(receipt.headers["Auto-Submitted"], "auto-replied");
+    assert.equal(receipt.headers["In-Reply-To"], "<first@customer.example>");
+    assert.ok(receipt.text.includes(billing.reference));
+    assert.ok(receipt.html.includes("Tracking ID") && receipt.html.includes(billing.reference) && receipt.html.includes("lk-card"));
+    assert.ok(receipt.html.includes("Invoice 2231 &lt;b&gt;") && !receipt.html.includes("Invoice 2231 <b>"), "what the sender typed is escaped");
+    const { data: thread } = await callJson(`/api/super/inbox/${billing.id}`, { cookie: admin });
+    assert.deepEqual((thread.messages as any[]).map((m) => m.direction), ["inbound", "outbound"], "the receipt is on record");
+
+    // One receipt a day per sender, and none for an automatic message or a no-reply address.
+    const second = (await handleInboundEmail(mail("Another question", "hello@labkiosk.org"), inboxEnv, db))!;
+    assert.match(second.reference, /^GEN-/, "an address that names nothing is general");
+    assert.equal(receipts().length, 1);
+    const robot = "robot@machine.example";
+    await handleInboundEmail(
+      inboundMessage([`From: ${robot}`, "Subject: Out of office", "Auto-Submitted: auto-replied", "", "Away."].join("\n"), robot, "support@labkiosk.org").message,
+      inboxEnv,
+      db
+    );
+    const noreply = "no-reply@shop.example";
+    const fromNoReply = (await handleInboundEmail(
+      inboundMessage([`From: ${noreply}`, "Subject: Your order", "", "Thanks."].join("\n"), noreply, "support@labkiosk.org").message,
+      inboxEnv,
+      db
+    ))!;
+    assert.match(fromNoReply.reference, /^SUP-/);
+    assert.ok(!localOutbox().some((m) => m.to === robot || m.to === noreply), "programs are not answered");
+
+    // The Type filter, and the counts it shows.
+    const list = async (query: string) => (await callJson(`/api/super/inbox?box=support&filter=all${query}`, { cookie: admin })).data;
+    const onlyBilling = await list("&category=billing");
+    assert.ok((onlyBilling.items as any[]).length > 0 && (onlyBilling.items as any[]).every((i) => i.category === "billing"));
+    assert.ok((onlyBilling.items as any[]).some((i) => i.id === billing.id));
+    assert.deepEqual(
+      (onlyBilling.categories as any[]).map((c) => `${c.id}:${c.prefix}`),
+      ["support:SUP", "sales:SAL", "billing:BIL", "legal:LGL", "general:GEN", "letter:LTR"]
+    );
+    assert.ok((onlyBilling.categories as any[]).find((c) => c.id === "billing").open >= 1);
+    assert.equal(((await list("&category=nonsense")).items as any[]).length, ((await list("")).items as any[]).length, "an unknown type filters nothing");
+    const tasks = (await callJson("/api/super/inbox?box=tasks&filter=all&category=registration", { cookie: admin })).data;
+    assert.deepEqual((tasks.categories as any[]).map((c) => c.id), ["registration", "remote_control"]);
+    assert.ok((tasks.items as any[]).every((i) => i.kind === "signup" && /^(REG|LK)-/.test(i.reference)));
+
+    // A conversation from before the prefixes keeps its LK- reference, and a reply still finds it.
+    await db.prepare("UPDATE conversations SET reference = 'LK-ABC234' WHERE id = ?").bind(billing.id).run();
+    assert.equal(referenceInSubject("Re: [lk-abc234] Invoice"), "LK-ABC234");
+    assert.equal(subjectWithReference("SUP-7Q2M9X", "Re: [LK-ABC234] [BIL-222222] Invoice"), "[SUP-7Q2M9X] Re: Invoice");
+    const reply = (await handleInboundEmail(mail("Re: [LK-ABC234] Invoice 2231", "billing@labkiosk.org"), inboxEnv, db))!;
+    assert.equal(reply.id, billing.id);
+
+    // A formal letter written in the console: its own type, prefix and template.
+    const composed = await callJson("/api/super/inbox/compose", {
+      ...json({
+        from: "accounts",
+        to: "Ngozi Okafor <ngozi@northfield.example>",
+        subject: "Renewal of your license",
+        message: "Dear Ms Okafor,\n\nYour license ends soon.\n\nYours sincerely,",
+        format: "letter",
+        organization: "Northfield <script>alert(1)</script> Trust",
+        signatoryTitle: "Customer Accounts"
+      }),
+      cookie: admin
+    });
+    assert.equal(composed.res.status, 200);
+    const letter = lastMailTo("ngozi@northfield.example");
+    assert.match(letter.subject, /^\[LTR-[A-Z0-9]{6}\] Renewal of your license$/);
+    assert.match(letter.html, /Ref\. LTR-[A-Z0-9]{6}/);
+    assert.match(letter.html, /\d{1,2} [A-Z][a-z]+ \d{4}/, "a letter is dated");
+    assert.ok(letter.html.includes("Ngozi Okafor") && letter.html.includes("Customer Accounts"));
+    assert.ok(letter.html.includes("&lt;script&gt;") && !letter.html.includes("<script>"), "the organization is escaped");
+    const { data: letterThread } = await callJson(`/api/super/inbox/${composed.data.id}`, { cookie: admin });
+    assert.equal(letterThread.conversation.category, "letter");
+  });
+
+  test("Every email goes out in the shared layout, through the email Worker when it is bound", async () => {
+    // Codes, alerts and decisions each use their own template.
+    const code = [...localOutbox()].reverse().find((m) => /sign-in code$/.test(m.subject))!;
+    assert.ok(code.html.includes("Your sign-in code") && code.html.includes(code.subject.slice(0, 6)));
+    const approval = [...localOutbox()].reverse().find((m) => /Your organization is active$/.test(m.subject))!;
+    assert.ok(approval.html.includes("Approved") && approval.html.includes("Open your console"));
+    for (const mail of localOutbox()) {
+      assert.ok(mail.html.startsWith("<!DOCTYPE html>") && mail.html.includes("lk-card"), `${mail.subject} is in the layout`);
+      assert.ok(!/<script/i.test(mail.html), `${mail.subject} carries no script`);
+    }
+
+    // With the Service Binding, the controller hands the message over and sends nothing itself.
+    const handed: any[] = [];
+    const direct: any[] = [];
+    const mailer = (status: number, body: unknown) =>
+      ({
+        fetch: async (url: string, init: RequestInit) => {
+          handed.push({ url, body: JSON.parse(String(init.body)) });
+          return new Response(JSON.stringify(body), { status });
+        }
+      }) as unknown as Fetcher;
+    const email = { send: async (message: unknown) => (direct.push(message), { messageId: "<direct@labkiosk.org>" }) } as unknown as SendEmail;
+    const outgoing = {
+      to: "pat@library.example",
+      toName: "Pat Morgan",
+      subject: "[SUP-7Q2M9X] Re: Enrolment",
+      text: "Hello Pat,\n\nTry the new key.",
+      mailbox: "support@labkiosk.org",
+      template: { name: "reply" as const, reference: "SUP-7Q2M9X", category: "Support", author: "Asha" }
+    };
+
+    const viaWorker = await sendMail({ ...inboxEnv, MAILER: mailer(200, { messageId: "<worker@labkiosk.org>" }), EMAIL: email }, outgoing);
+    assert.equal(viaWorker.messageId, "<worker@labkiosk.org>");
+    assert.equal(direct.length, 0);
+    assert.equal(handed.length, 1);
+    assert.match(handed[0].url, /\/send$/);
+    assert.deepEqual(handed[0].body.from, { email: "support@email.labkiosk.org", name: "Lab Kiosk" });
+    assert.deepEqual(handed[0].body.to, { email: "pat@library.example", name: "Pat Morgan" });
+    assert.equal(handed[0].body.replyTo, "support@labkiosk.org");
+    assert.deepEqual(handed[0].body.template, outgoing.template);
+    assert.deepEqual(handed[0].body.brand, { name: "Lab Kiosk", siteUrl: "https://labkiosk.org", replyAddress: "support@labkiosk.org" });
+    assert.equal(handed[0].body.html, undefined, "the email Worker renders");
+
+    // When that Worker does not send, the message goes out directly, rendered with the same template.
+    const fallback = await sendMail({ ...inboxEnv, MAILER: mailer(502, { error: "down" }), EMAIL: email }, outgoing);
+    assert.equal(fallback.messageId, "<direct@labkiosk.org>");
+    assert.equal(direct.length, 1);
+    assert.ok(direct[0].html.includes("SUP-7Q2M9X") && direct[0].html.includes("lk-card") && direct[0].text === outgoing.text);
+
+    // With no way left to send, the failure is the caller's to report.
+    await assert.rejects(() => sendMail({ ...inboxEnv, MAILER: mailer(502, { error: "down" }) }, outgoing), /down/);
+    assert.equal(mailConfigProblem({ ...inboxEnv, MAILER: mailer(200, {}) }), null, "the Service Binding alone is enough to send");
   });
 
   test("Mail sent from the platform's own sending domain is a loop", async () => {
@@ -1110,10 +1413,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ------------------------------------------------------------ super admin
 
   test("Logs in as Super Admin and accesses Super Admin Console on /super", async () => {
-    const { res: loginRes, data: loginData } = await callJson(
-      "/api/auth/login",
-      json({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" })
+    // The password alone is not a session for a super admin: a code is emailed.
+    const first = await callJson("/api/auth/login", json({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" }));
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.status, "two_factor");
+    assert.equal(first.data.method, "email");
+    assert.equal(first.data.sentTo, "a•••@labkiosk.org");
+    assert.equal(first.res.headers.get("Set-Cookie"), null, "no session before the code");
+    assert.equal(
+      (await call("/api/auth/login/verify", json({ challenge: first.data.challenge, code: "000000" }))).status,
+      400,
+      "a wrong code is refused"
     );
+
+    const loginRes = await signIn({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" });
+    const loginData = (await loginRes.clone().json()) as any;
     assert.equal(loginRes.status, 200);
     assert.equal(loginData.status, "ok");
     assert.equal(loginData.role, "super_admin");
@@ -1151,10 +1465,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(pingRes.status, 200);
 
     // Sign in with new rotated password - must succeed
-    const newLoginRes = await worker.fetch(
-      request("/api/auth/login", json({ email: "admin@labkiosk.org", password: "NewRotatedPassword2026!" })),
-      rotatedEnv
-    );
+    const newLoginRes = await signIn({ email: "admin@labkiosk.org", password: "NewRotatedPassword2026!" }, rotatedEnv);
     assert.equal(newLoginRes.status, 200);
     const newLoginData = (await newLoginRes.json()) as any;
     assert.equal(newLoginData.status, "ok");
@@ -3865,8 +4176,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(support.includes('data-box="support"'), "Mail shows the conversation list");
     const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
     assert.ok(system.includes("Platform Architecture"));
-    for (const page of [system, await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text()]) {
-      assert.ok(page.includes('data-action="open-two-factor"') && page.includes('id="two-factor-modal"'), "every console offers two-factor sign-in");
+    // Two-factor sign-in is a tab, and every console's profile menu links to it.
+    assert.ok(system.includes('id="pane-system-two-factor"') && system.includes('id="two-factor-email"'));
+    assert.ok(system.includes('href="/super/system?tab=system-two-factor"'));
+    const workstations = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(workstations, /href="\/admin\/settings\?(tenant=greenwood&amp;)?tab=two-factor"/, "the profile menu links to the tab");
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(settings.includes('data-action="tab-two-factor"') && settings.includes('id="pane-two-factor"') && settings.includes('id="two-factor-email"'));
+    for (const page of [system, workstations, settings]) {
+      assert.ok(!page.includes("two-factor-modal") && !page.includes("open-two-factor"), "no dialog any more");
     }
     assert.ok(!system.includes('id="inbox"'));
     // The old address of the queue still lands.
@@ -3977,12 +4295,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // reach the demo console threw you to the platform console, and nothing in
     // the UI led back. The server decides now: it is the only side that knows
     // the host and which consoles the account may open.
-    const login = (body: object, headers: Record<string, string> = {}) =>
-      call("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...headers },
-        body: JSON.stringify(body)
-      });
+    const login = (body: { email: string; password: string }, headers: Record<string, string> = {}) =>
+      signIn(body, mockEnv, headers);
 
     const superCreds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
 
@@ -4020,12 +4334,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // on the apex with ?tenant=web-demo, the server still saw no organization and sent a
     // super admin to /super -- which is the whole complaint, unfixed. The page
     // now sends the organization it was showing.
-    const login = (body: object) =>
-      call("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
+    const login = (body: { email: string; password: string; tenant?: string }) => signIn(body);
 
     const creds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
 
@@ -4244,6 +4553,16 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(meData.user.email, "alice@greenwood.example");
     assert.equal(meData.tenantRole, "operator");
     assert.deepEqual(meData.permissions, ["workstations"]);
+
+    // Settings opens for her too, holding her own two-factor sign-in and nothing of the organization's.
+    const ownSettings = await call("/admin/settings?tenant=greenwood", { cookie: operatorCookie });
+    assert.equal(ownSettings.status, 200);
+    const ownSettingsHtml = await ownSettings.text();
+    assert.ok(ownSettingsHtml.includes('id="two-factor-email"'));
+    for (const marker of ['id="section-enrollment"', 'id="section-password"', 'id="pane-general"', 'id="org-name"']) {
+      assert.ok(!ownSettingsHtml.includes(marker), `${marker} needs the settings permission`);
+    }
+    assert.equal((await call("/api/workstation-issues?tenant=greenwood", { cookie: operatorCookie })).status, 403);
 
     // 4. Allowed: Operator can view workstations list via /api/clients
     const { res: clientsRes } = await callJson("/api/clients?tenant=greenwood", {
@@ -5059,6 +5378,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
     assert.deepEqual(locs, [
       "https://www.labkiosk.org/",
+      "https://www.labkiosk.org/features",
+      "https://www.labkiosk.org/specs",
+      "https://www.labkiosk.org/pricing",
+      "https://www.labkiosk.org/download",
+      "https://www.labkiosk.org/docs",
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
       "https://www.labkiosk.org/terms/bug-reports"
@@ -5077,6 +5401,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const indexable: [string, string][] = [
       ["www.labkiosk.org", "/"],
       ["www.labkiosk.org", "/?login=1"],
+      ["www.labkiosk.org", "/features"],
+      ["www.labkiosk.org", "/specs"],
+      ["www.labkiosk.org", "/pricing"],
+      ["www.labkiosk.org", "/download"],
+      ["www.labkiosk.org", "/docs"],
       ["labkiosk.org", "/privacy"],
       ["www.labkiosk.org", "/terms"],
       ["www.labkiosk.org", "/terms/bug-reports"]
@@ -5089,7 +5418,6 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const hidden: [string, string, string | undefined][] = [
       ["www.labkiosk.org", "/login", undefined],
       ["www.labkiosk.org", "/register", undefined],
-      ["www.labkiosk.org", "/download", undefined],
       ["www.labkiosk.org", "/?tenant=greenwood", undefined],
       ["www.labkiosk.org", "/super/organizations", superSessionCookie],
       ["greenwood.labkiosk.org", "/", undefined],
@@ -5152,7 +5480,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("The Zaraz analytics loader may run on the platform's public pages and nowhere else", async () => {
     const scriptSrc = (res: Response) =>
       (res.headers.get("Content-Security-Policy") || "").split("; ").find((d) => d.startsWith("script-src ")) || "";
-    for (const path of ["/", "/privacy", "/terms", "/login", "/download", "/contact"]) {
+    for (const path of ["/", "/features", "/specs", "/pricing", "/download", "/docs", "/privacy", "/terms", "/login", "/contact"]) {
       const src = scriptSrc(await onHost("www.labkiosk.org", path));
       assert.match(src, /^script-src 'nonce-[^']+' https:\/\/www\.labkiosk\.org\/cdn-cgi\/zaraz\/s\.js$/, `www${path} allows exactly the Zaraz loader`);
     }

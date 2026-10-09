@@ -63,6 +63,18 @@
 			"name": "EMAIL"
 		}
 	],
+	// Every outgoing message is handed to labkiosk-email-routing, which renders it
+	// with the templates in cloudflare-email-routing/src/templates/ and sends it.
+	// EMAIL above stays as the fallback for when that Worker does not answer.
+	// The two Workers bind each other, so on a first install deploy this one with
+	// this block commented out, deploy labkiosk-email-routing, then deploy this
+	// one again with it (docs/DEPLOYMENT.md, "Email").
+	"services": [
+		{
+			"binding": "MAILER",
+			"service": "labkiosk-email-routing"
+		}
+	],
 	// ---------------------------------------------------------------------------
 	// Platform resources. All of them are required in production: the worker
 	// refuses to start without any one (Rule 7, `requiredBindingsProblem` in

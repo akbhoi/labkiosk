@@ -209,20 +209,37 @@ this Worker, because its binding names the controller's entrypoint.
 
 | Piece | What it is | Set it up |
 | :--- | :--- | :--- |
-| `EMAIL` | `send_email` binding, Cloudflare Email Service (outbound) | Declared in `wrangler.jsonc`. Onboard a sending domain once (Dashboard → Email → Email Sending, e.g. `labkiosk.org`). Sending needs Workers Paid; 3,000 messages a month are included. |
+| `EMAIL` | `send_email` binding, Cloudflare Email Service (outbound), on **both** Workers | Declared in each `wrangler.jsonc`. Onboard a sending domain once (Dashboard → Email → Email Sending, e.g. `labkiosk.org`). Sending needs Workers Paid; 3,000 messages a month are included. |
+| `MAILER` | Service Binding from `labkiosk-controller` to `labkiosk-email-routing`: every outgoing message is handed over (`POST /send`), rendered with the templates in `cloudflare-email-routing/src/templates/` and sent from there. When that Worker does not answer, the controller renders the same template and sends through its own `EMAIL` | Declared in `cloudflare-control/wrangler.jsonc`. The two Workers bind each other, so on a **first install** deploy the controller with the `services` block commented out, deploy `labkiosk-email-routing`, then deploy the controller again with it |
 | `MAIL_FROM` | Variable: the sender, on the onboarded domain, e.g. `Lab Kiosk <support@labkiosk.org>`. Its domain is the sending domain for every mailbox; its name is the display name | Dashboard variable on `labkiosk-controller` |
 | `SUPPORT_ADDRESS` | Variable: the address customers reply to and write to, e.g. `support@labkiosk.org`. Its domain is the one the **Mail** tab serves | Dashboard variable on `labkiosk-controller` |
 | `SUPPORT_FORWARD_TO` | Variable, optional: a verified Email Routing destination that gets a copy of every incoming message that is not a loop, and every message that could not be stored | Dashboard variable on `labkiosk-email-routing` (and on `labkiosk-controller` too if mail is ever routed straight to it) |
-| `labkiosk-email-routing` | The Worker that receives the domain's mail (`cloudflare-email-routing/`): R2 binding `MAIL_ARCHIVE` (the same `labkiosk-audit-archive` bucket) and Service Binding `CONTROLLER` to `labkiosk-controller`'s `MailIntake` | Deployed by the same workflow as the controller; nothing to create by hand. To deploy it yourself, deploy the controller first, then `pnpm --prefix cloudflare-email-routing exec wrangler deploy` |
+| `labkiosk-email-routing` | The Worker that receives the domain's mail and sends the platform's (`cloudflare-email-routing/`): R2 binding `MAIL_ARCHIVE` (the same `labkiosk-audit-archive` bucket), Service Binding `CONTROLLER` to `labkiosk-controller`'s `MailIntake`, and its own `EMAIL` send_email binding | Deployed by the same workflow as the controller; nothing to create by hand. To deploy it yourself, deploy the controller first, then `pnpm --prefix cloudflare-email-routing exec wrangler deploy` |
 | Email Routing catch-all | Routes every address on the domain to `labkiosk-email-routing` | Dashboard → `labkiosk.org` → Email → Email Routing → Routing rules → *Catch-all address* → Action *Send to a Worker* → `labkiosk-email-routing`, enabled. Rules for single addresses take precedence; remove any that should land in **Mail** instead. The controller's own `email()` handler still files mail routed straight to it |
 | `AUDIT_ARCHIVE` | The R2 bucket production already requires; incoming originals are stored under `mail/` | Nothing new |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | Optional: Cloudflare Turnstile in front of the signup email code and the contact form. Free. Set both or neither: one alone makes those forms refuse | Dashboard → Turnstile → *Add widget* (hostname `labkiosk.org`, mode *Managed*); the site key as a variable, the secret key as a secret (`wrangler secret put TURNSTILE_SECRET_KEY`) |
 
-Without `EMAIL`, `MAIL_FROM` and `SUPPORT_ADDRESS`, registration and replies refuse with "Email is
-not configured"; the rest of the Worker runs. Incoming mail joins a conversation only when its
-subject carries the conversation's reference (`[LK-XXXXXX]`) or it answers one of the platform's
-messages, **and** it comes from that conversation's contact; anything else opens a new support
-conversation in the mailbox it was sent to. Mail from the sending domain itself is dropped, so a
+Without a way to send (`MAILER` or `EMAIL`), `MAIL_FROM` and `SUPPORT_ADDRESS`, registration and
+replies refuse with "Email is not configured"; the rest of the Worker runs. Incoming mail joins a
+conversation only when its subject carries the conversation's tracking ID (`[SUP-XXXXXX]`) or it
+answers one of the platform's messages, **and** it comes from that conversation's contact; anything
+else opens a new conversation in the mailbox it was sent to.
+
+**Tracking IDs and types.** A conversation is filed by what it is about, and its tracking ID starts
+with that type's prefix: `REG` registration, `RMT` Remote Control, `SUP` support, `SAL` sales, `BIL`
+billing, `LGL` legal and privacy, `GEN` general, `LTR` a letter written in the console. Mail is typed
+by the address it was sent to (`sales@`, `quotes@`, `pricing@` are sales; `billing@`, `accounts@`,
+`invoices@` billing; `legal@`, `privacy@`, `abuse@`, `security@` legal; `support@`, `help@` support;
+anything else general), and the contact form by its topic. **Tasks** and **Mail** filter by type.
+Conversations from before this keep their `LK-` reference, and replies to them still thread. The
+sender of a new email is sent a receipt with the tracking ID, once a day per address, and never for
+an automatic message, a bounce or a no-reply address.
+
+**Templates.** Every message goes out in one layout (wordmark, body, footer with the reply address
+and why it was sent) with a plain-text copy, from one of seven templates: `code`, `receipt`,
+`reply`, `decision`, `letter`, `alert` and `notice`. They live in
+`cloudflare-email-routing/src/templates/`; `pnpm --prefix cloudflare-email-routing run preview`
+writes each one to `cloudflare-email-routing/previews/` to look at in a browser. Mail from the sending domain itself is dropped, so a
 bounce cannot loop; with `MAIL_FROM` on `labkiosk.org` that is any message whose author or envelope
 sender is an `@labkiosk.org` address. Phone numbers are
 confirmed by hand (**Mark phone as verified** after a call or message); no SMS provider is used.
@@ -235,14 +252,18 @@ Fastmail show the logo with that alone. Gmail and Apple Mail show it only with a
 Mark Certificate (a paid certificate from DigiCert or Entrust; a VMC also needs a registered
 trademark), whose PEM URL then goes in the same record as `a=<url>`.
 
-**Sign-in security** needs no setup. Every account can turn on two-factor sign-in from the profile
-menu (an authenticator app, with an emailed code and ten recovery codes as fallbacks); turn it on
-for the super admin account first. A sign-in from a browser the account has not used before is
-emailed to the account. Both use the `EMAIL` binding above; without it the app code and recovery
-codes still work.
+**Sign-in security** needs no setup. After the password, a super admin is always emailed a
+six-digit code, so `SUPER_ADMIN_EMAIL` must reach an inbox that can be read without signing in to
+the console (not a mailbox that exists only in its **Mail** tab). An organization account turns the
+emailed code on under Settings → Two-factor sign-in; an authenticator app with ten recovery codes is
+optional on top for every account. A sign-in from a browser the account has not used before is
+emailed to the account. Where email is not configured, an account without an app signs in with its
+password alone and the server logs why.
 
-Locally (`ALLOW_LOCAL_DB=1`) no binding is needed: messages go to an in-process outbox the tests
-read (`localOutbox()` in `src/mail.ts`).
+Locally (`ALLOW_LOCAL_DB=1`) nothing is sent unless `MAIL_FROM` is set: messages go to an in-process
+outbox the tests read (`localOutbox()` in `src/mail.ts`) and each subject is logged, so under
+`pnpm dev` a sign-in or registration code is read from the terminal
+(`[Mail] Local outbox, not sent: ... 123456 is your Lab Kiosk sign-in code`).
 
 ### Automatic bug reports (optional)
 
