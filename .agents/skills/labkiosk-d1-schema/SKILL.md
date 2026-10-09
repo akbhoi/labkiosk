@@ -127,6 +127,10 @@ filters by. `reference` carries that prefix (`SUP-…`), or `LK-` for a conversa
 Workers AI wrote from that list (`summary_model` says which model; NULL shows the change list instead).
 A platform table like `ui_catalogs`: no `tenant_id`.
 
+**Email codes** (`0026`). `email_codes.purpose` is a CHECK (`signup`, `contact`). A new purpose is a
+rebuild of the table; it holds ten-minute codes and nothing refers to it, so `0026` drops and recreates
+it instead of copying. `assertSchemaCurrent` reads the table's definition, as it does for `users`.
+
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes
 as a JSON list of SHA-256 hashes. `login_challenges` is a password-checked sign-in waiting for its

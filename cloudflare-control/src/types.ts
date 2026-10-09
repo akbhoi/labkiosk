@@ -333,8 +333,8 @@ export interface Env {
    */
   SUPPORT_FORWARD_TO?: string;
   /**
-   * Cloudflare Turnstile in front of the signup email code and the contact
-   * form (src/turnstile.ts). On only when both are set; one without the other
+   * Cloudflare Turnstile in front of the signup email code, the contact form's
+   * email code and sign-in (src/turnstile.ts). On only when both are set; one without the other
    * makes those forms refuse.
    */
   TURNSTILE_SITE_KEY?: string;

@@ -83,6 +83,18 @@ export function categoryForTopic(topic: string): ConversationCategory {
   return "general";
 }
 
+/**
+ * What the contact page lets a person write about. Each is a type of mail, so
+ * a message arrives in the Super Admin console already sorted.
+ */
+export const CONTACT_REASONS: readonly { value: ConversationCategory; label: string }[] = [
+  { value: "sales", label: "Sales and licensing" },
+  { value: "support", label: "Technical support" },
+  { value: "billing", label: "Billing and invoices" },
+  { value: "legal", label: "Privacy, security or legal" },
+  { value: "general", label: "Something else" }
+];
+
 /** The kinds the Tasks tab shows; Support shows the rest. */
 export const TASK_KINDS: readonly ConversationKind[] = ["signup", "remote_control"];
 
@@ -596,7 +608,7 @@ export async function markPhoneVerified(db: D1Database, tenantId: string, userId
 
 // ------------------------------------------------------------------- email codes
 
-export type EmailCodePurpose = "signup";
+export type EmailCodePurpose = "signup" | "contact";
 
 /** How long a code stays valid, how often one may be resent, and how many guesses it allows. */
 export const EMAIL_CODE_TTL_SECONDS = 600;

@@ -9,7 +9,7 @@ import { Brand, COLOR, MONO, label, layout, panel, paragraphs } from "./layout";
 export interface CodeTemplate {
   name: "code";
   code: string;
-  purpose: "signup" | "sign-in";
+  purpose: "signup" | "sign-in" | "contact";
   /** How long the code works. */
   minutes: number;
   /** Who it is for, for the greeting. */
@@ -23,6 +23,13 @@ const COPY = {
     lead: "Enter this code in the registration form to confirm this email address.",
     unexpected: "If you did not ask to register an organization, ignore this message. Nothing happens without the code.",
     reason: "You are receiving this because this address was entered in a Lab Kiosk registration form."
+  },
+  contact: {
+    kind: "Verification",
+    title: "Confirm your email address",
+    lead: "Enter this code in the contact form to confirm this email address. Your message is sent once you do.",
+    unexpected: "If you did not start a message to Lab Kiosk, ignore this one. Nothing is sent without the code.",
+    reason: "You are receiving this because this address was entered in the Lab Kiosk contact form."
   },
   "sign-in": {
     kind: "Sign-in",

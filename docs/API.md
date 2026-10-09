@@ -49,7 +49,8 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/status` | `GET` | Public | System status and active kiosk target URL probe |
 | `/api/auth/register/email-code` | `POST` | Public | `{"email"}`: email a six-digit code for registration (10 minutes; `409` when the address is registered) |
 | `/api/auth/register` | `POST` | Public | Register an organization for review; nobody is signed in |
-| `/api/contact` | `POST` | Public | The website's contact form: opens a Support conversation |
+| `/api/contact/email-code` | `POST` | Public | `{ email, turnstileToken? }`: emails the six-digit code that proves the sender's address. Turnstile, when configured, is checked here |
+| `/api/contact` | `POST` | Public | `{ name, organization?, email, emailCode, reason, message }`: the contact page's message. `reason` is `sales`, `support`, `billing`, `legal` or `general` and is the type it is filed under in Mail. Refused without the emailed code; the sender gets a receipt |
 | `/api/auth/login` | `POST` | Public | Sign in to Admin console or Super Admin Console |
 | `/api/auth/me` | `GET` | Session | Retrieve current authenticated user profile & tenant |
 | `/api/auth/logout` | `POST` | Session | Invalidate session token and clear cookies |

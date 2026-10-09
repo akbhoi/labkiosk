@@ -25,6 +25,7 @@ import { LATEST_CHECKSUM_URL, LATEST_ISO_URL, RELEASES_URL, RELEASE_CHECKSUM_NAM
 import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
+import { CONTACT_REASONS } from "./conversations";
 
 /** The public source repository, linked from the navigation and the footer. */
 const SOURCE_REPOSITORY_URL = "https://github.com/akbhoi/labkiosk";
@@ -86,8 +87,8 @@ function landingSeoHeadHtml(canonicalUrl: string, contactEmail: string, nonce: s
 export interface LandingOptions {
   /** Message shown in a banner above the hero, e.g. after a rejected redirect. */
   error?: string;
-  /** Modal to open on load, used by /login, /register, /iso, /contact and redirects. */
-  openModal?: "login" | "register" | "iso" | "contact";
+  /** Modal to open on load, used by /login, /register, /iso and redirects. */
+  openModal?: "login" | "register" | "iso";
   /** Public download URL for the built ISO, if configured. */
   isoDownloadUrl?: string;
   /** The newest releases, for /download (src/release_notes.ts); empty until the hourly run has read them. */
@@ -100,8 +101,10 @@ export interface LandingOptions {
   canonicalUrl?: string;
   /** Per-response CSP nonce; the page's single <script> must carry it. */
   nonce: string;
-  /** Turnstile's public site key when it is on (src/turnstile.ts); the signup code and contact form then carry a check. */
+  /** Turnstile's public site key when it is on (src/turnstile.ts); the registration code, the contact code and sign-in then carry a check. */
   turnstileSiteKey?: string | null;
+  /** False on an organization's own domain, where the sign-in form carries no check (the router says why). */
+  loginTurnstile?: boolean;
 }
 
 function renderPublicShell(
@@ -112,6 +115,7 @@ function renderPublicShell(
   const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
   const turnstileKey = data.turnstileSiteKey || null;
   const turnstileSlot = (id: string) => (turnstileKey ? `<div class="form-group turnstile-slot" id="${id}"></div>` : "");
+  const loginTurnstileSlot = data.loginTurnstile === false ? "" : turnstileSlot("login-turnstile");
 
   const banner = data.error
     ? `<div class="page-alert" role="alert" aria-live="polite">${escapeHtml(data.error)}</div>`
@@ -139,7 +143,7 @@ ${FONT_LINKS}
 </head>
 <body>
   <header>
-    <div class="brand">
+    <a class="brand" href="/" aria-label="Lab Kiosk home">
       <div class="brand-logo" aria-hidden="true">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
@@ -147,15 +151,16 @@ ${FONT_LINKS}
         Lab Kiosk
         <span>OS &amp; Edge SaaS</span>
       </div>
-    </div>
+    </a>
 
     <nav class="nav-links" aria-label="Main Navigation">
+      <a href="/"${meta.activeNav ? "" : ' class="active"'}>Home</a>
       <a href="/features"${meta.activeNav === "features" ? ' class="active"' : ""}>Features</a>
       <a href="/specs"${meta.activeNav === "specs" ? ' class="active"' : ""}>Specs</a>
       <a href="/pricing"${meta.activeNav === "pricing" ? ' class="active"' : ""}>Pricing</a>
       <a href="/download"${meta.activeNav === "download" ? ' class="active"' : ""}>Download</a>
       <a href="/docs"${meta.activeNav === "docs" ? ' class="active"' : ""}>Docs</a>
-      <a href="/#contact">Contact</a>
+      <a href="/contact"${meta.activeNav === "contact" ? ' class="active"' : ""}>Contact</a>
     </nav>
 
     <div class="nav-actions">
@@ -187,6 +192,10 @@ ${FONT_LINKS}
       <button class="drawer-close-btn" data-action="close-drawer" aria-label="Close menu">&times;</button>
     </div>
     <nav class="mobile-drawer-nav">
+      <a href="/" data-action="close-drawer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+        Home
+      </a>
       <a href="/features" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         Features
@@ -211,7 +220,7 @@ ${FONT_LINKS}
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><polyline points="8 21 16 21 12 17"/></svg>
         Live Simulator
       </a>
-      <a href="/#contact" data-action="close-drawer">
+      <a href="/contact" data-action="close-drawer">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Contact
       </a>
@@ -247,6 +256,7 @@ ${FONT_LINKS}
           <label class="form-label" for="login-password">Password</label>
           <input type="password" class="form-input" id="login-password" required placeholder="••••••••" autocomplete="current-password">
         </div>
+        ${loginTurnstileSlot}
         <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Sign In to Admin Console</button>
       </form>
       <form id="login-2fa-form" hidden>
@@ -421,46 +431,6 @@ ${FONT_LINKS}
     </div>
   </div>
 
-  <!-- Contact Modal -->
-  <div class="modal-overlay" id="contact-modal" role="dialog" aria-modal="true" aria-labelledby="contact-modal-title">
-    <div class="modal-box" style="max-width: 500px;">
-      <button class="modal-close" data-action="close-modal" data-modal="contact" aria-label="Close dialog">✕</button>
-      <h2 class="modal-title" id="contact-modal-title">Send Deployment Inquiry</h2>
-      <p class="modal-sub">Tell us what you need and a person on our team will reply by email.</p>
-      <div class="alert-box" id="contact-alert" role="alert"></div>
-      <div class="notice-box" id="contact-done" role="status"></div>
-      <form id="contact-form">
-        <div class="form-group">
-          <label class="form-label" for="contact-name">Your Full Name</label>
-          <input type="text" class="form-input" id="contact-name" required placeholder="Dr. Jane Smith">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="contact-org">Organization</label>
-          <input type="text" class="form-input" id="contact-org" required placeholder="Acme Corp / City Library / State University">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="contact-sender-email">Email Address</label>
-          <input type="email" class="form-input" id="contact-sender-email" required placeholder="jane@lincoln.edu">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="contact-type">Inquiry Type</label>
-          <select class="form-input" id="contact-type" style="background: var(--bg-surface); color: var(--text-main);">
-            <option value="Organization Deployment">Organization Deployment</option>
-            <option value="Education Deployment / Assessments">Education Deployment / Assessments</option>
-            <option value="Corporate CSR Hardware Donation">Corporate CSR Hardware Donation</option>
-            <option value="Technical Support Inquiry">Technical Support Inquiry</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="contact-message">Message / Details</label>
-          <textarea class="form-input" id="contact-message" rows="4" required placeholder="Tell us about the number of computers, location, and timeline..."></textarea>
-        </div>
-        ${turnstileSlot("contact-turnstile")}
-        <button type="submit" class="btn btn-primary btn-block">Send Inquiry &rarr;</button>
-      </form>
-    </div>
-  </div>
-
   <footer>
     <div class="footer-content">
       <div class="footer-col">
@@ -508,7 +478,7 @@ ${FONT_LINKS}
           <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
           <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
           <li><span style="color: var(--text-muted); font-size: 13px;">Partners:</span> <a href="mailto:partners@labkiosk.org">partners@labkiosk.org</a></li>
-          <li><a href="/contact" data-action="open-modal" data-modal="contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Send Deployment Form &rarr;</a></li>
+          <li><a href="/contact" style="color: var(--accent-text); font-weight: 600; margin-top: 6px; display: inline-block;">Contact form &rarr;</a></li>
         </ul>
       </div>
     </div>
@@ -633,7 +603,6 @@ ${FONT_LINKS}
     }
     if (zarazConsent()) initCookieConsent();
     else document.addEventListener('zarazConsentAPIReady', initCookieConsent, { once: true });
-    document.getElementById('contact-form').addEventListener('submit', handleContactSubmit);
 
     // Escape key closes modals and mobile drawer
     window.addEventListener('keydown', (e) => {
@@ -652,7 +621,7 @@ ${FONT_LINKS}
 
     // Open the modal requested by the server
     const requestedModal = ${escapeJson(data.openModal || null)};
-    if (requestedModal === 'login' || requestedModal === 'register' || requestedModal === 'iso' || requestedModal === 'contact') {
+    if (requestedModal === 'login' || requestedModal === 'register' || requestedModal === 'iso') {
       openModal(requestedModal + '-modal');
     }
 
@@ -705,16 +674,17 @@ ${FONT_LINKS}
     }
 
     // Cloudflare Turnstile, when the platform turned it on: one widget in front of
-    // the signup code and one in front of the contact form. A token works once,
-    // so each widget is reset after every attempt.
+    // the registration code, one in front of the contact form's code and one in
+    // front of sign-in. A token works once, so each widget is reset after every attempt.
     const TURNSTILE_SITE_KEY = ${escapeJson(turnstileKey)};
     const turnstileWidgets = {};
     window.lkTurnstileReady = function () {
-      ['reg-turnstile', 'contact-turnstile'].forEach((id) => {
+      const actions = { 'reg-turnstile': 'signup', 'contact-turnstile': 'contact', 'login-turnstile': 'login' };
+      Object.keys(actions).forEach((id) => {
         if (document.getElementById(id) && window.turnstile) {
           turnstileWidgets[id] = window.turnstile.render('#' + id, {
             sitekey: TURNSTILE_SITE_KEY,
-            action: id === 'reg-turnstile' ? 'signup' : 'contact'
+            action: actions[id]
           });
         }
       });
@@ -727,47 +697,107 @@ ${FONT_LINKS}
       if (window.turnstile && turnstileWidgets[id] !== undefined) window.turnstile.reset(turnstileWidgets[id]);
     }
 
-    // Contact form: filed straight into the platform's support inbox, and
-    // answered by email. No mail client is needed on either side.
-    async function handleContactSubmit(e) {
-      e.preventDefault();
-      const alertBox = document.getElementById('contact-alert');
-      const done = document.getElementById('contact-done');
-      const form = document.getElementById('contact-form');
-      alertBox.style.display = 'none';
-      const payload = {
-        name: document.getElementById('contact-name').value.trim(),
-        organization: document.getElementById('contact-org').value.trim(),
-        email: document.getElementById('contact-sender-email').value.trim(),
-        topic: document.getElementById('contact-type').value,
-        message: document.getElementById('contact-message').value.trim(),
-        turnstileToken: turnstileToken('contact-turnstile')
-      };
-      if (TURNSTILE_SITE_KEY && !payload.turnstileToken) {
-        alertBox.textContent = 'Please complete the check above the button first.';
-        alertBox.style.display = 'block';
-        return;
+    // The contact page: a code proves the sender's address, then the message is
+    // filed into the platform's mail and answered by email.
+    const contactForm = document.getElementById('contact-form');
+    if (contactForm) {
+      const contactAlert = document.getElementById('contact-alert');
+      const contactDone = document.getElementById('contact-done');
+      const contactSend = document.getElementById('contact-send-code');
+      const contactMessage = document.getElementById('contact-message');
+      const contactCount = document.getElementById('contact-count');
+      function contactError(message) {
+        contactAlert.textContent = message;
+        contactAlert.style.display = 'block';
+        contactAlert.scrollIntoView({ block: 'nearest' });
       }
-      try {
-        const res = await fetch('/api/contact', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        turnstileReset('contact-turnstile');
-        const data = await res.json();
-        if (res.ok && data.status === 'ok') {
-          form.style.display = 'none';
-          done.textContent = 'Thank you. Your message is with our team (reference ' + data.reference + '). We will reply to ' + payload.email + '.';
-          done.style.display = 'block';
-        } else {
-          alertBox.textContent = data.error || 'Your message could not be sent.';
-          alertBox.style.display = 'block';
+      function contactCountShow() {
+        contactCount.textContent = contactMessage.value.length + ' / ' + contactMessage.maxLength;
+      }
+      contactMessage.addEventListener('input', contactCountShow);
+      contactCountShow();
+      // A link such as /contact?reason=sales arrives with that reason chosen.
+      const wantedReason = new URLSearchParams(window.location.search).get('reason');
+      const reasonSelect = document.getElementById('contact-reason');
+      if (wantedReason && Array.from(reasonSelect.options).some((o) => o.value === wantedReason)) reasonSelect.value = wantedReason;
+
+      contactSend.addEventListener('click', async () => {
+        const emailInput = document.getElementById('contact-email');
+        const email = emailInput.value.trim();
+        contactAlert.style.display = 'none';
+        if (!email || !emailInput.checkValidity()) {
+          contactError('Enter your email address first.');
+          return;
         }
-      } catch (err) {
-        alertBox.textContent = 'Network error. Please try again.';
-        alertBox.style.display = 'block';
-      }
+        const token = turnstileToken('contact-turnstile');
+        if (TURNSTILE_SITE_KEY && !token) {
+          contactError('Complete the check under your email address first.');
+          return;
+        }
+        contactSend.disabled = true;
+        try {
+          const res = await fetch('/api/contact/email-code', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, turnstileToken: token })
+          });
+          turnstileReset('contact-turnstile');
+          const data = await res.json();
+          if (res.ok && data.status === 'ok') {
+            contactSend.textContent = 'Code sent';
+            document.getElementById('contact-code').focus();
+            // A new code may be asked for after a minute.
+            setTimeout(() => { contactSend.disabled = false; contactSend.textContent = 'Resend code'; }, 60000);
+            return;
+          }
+          contactError(data.error || 'The code could not be sent.');
+        } catch (err) {
+          contactError('Network error while sending the code.');
+        }
+        contactSend.disabled = false;
+      });
+
+      contactForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        contactAlert.style.display = 'none';
+        const payload = {
+          name: document.getElementById('contact-name').value.trim(),
+          organization: document.getElementById('contact-org').value.trim(),
+          email: document.getElementById('contact-email').value.trim(),
+          emailCode: document.getElementById('contact-code').value.trim(),
+          reason: reasonSelect.value,
+          message: contactMessage.value.trim()
+        };
+        if (!payload.name || !payload.email || !payload.message) {
+          contactError('Your name, email address and a message are required.');
+          return;
+        }
+        if (!/^[0-9]{6}$/.test(payload.emailCode)) {
+          contactError('Enter the six-digit code we emailed you. Use Send code if you do not have one.');
+          return;
+        }
+        const submit = document.getElementById('contact-submit');
+        submit.disabled = true;
+        try {
+          const res = await fetch('/api/contact', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          if (res.ok && data.status === 'ok') {
+            contactForm.hidden = true;
+            contactDone.textContent = 'Thank you. Your message is with us under reference ' + data.reference + '. We sent a receipt to ' + payload.email + ' and will reply there.';
+            contactDone.style.display = 'block';
+            contactDone.scrollIntoView({ block: 'nearest' });
+            return;
+          }
+          contactError(data.error || 'Your message could not be sent.');
+        } catch (err) {
+          contactError('Network error. Please try again.');
+        }
+        submit.disabled = false;
+      });
     }
 
     const BASE_DOMAIN = ${escapeJson(baseDomain)};
@@ -803,13 +833,20 @@ ${FONT_LINKS}
       const password = document.getElementById('login-password').value;
       const alertBox = document.getElementById('login-alert');
       alertBox.style.display = 'none';
+      const token = turnstileToken('login-turnstile');
+      if (TURNSTILE_SITE_KEY && document.getElementById('login-turnstile') && !token) {
+        alertBox.textContent = 'Complete the check above the button first.';
+        alertBox.style.display = 'block';
+        return;
+      }
 
       try {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password, tenant: currentTenantSlug() })
+          body: JSON.stringify({ email, password, tenant: currentTenantSlug(), turnstileToken: token })
         });
+        turnstileReset('login-turnstile');
         const data = await res.json();
         if (data.status === 'ok') {
           // The server decides. It is the only side that knows which host this
@@ -1654,10 +1691,10 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
       </div>
 
       <div style="text-align: center; margin-top: 36px;">
-        <button class="btn btn-ghost" data-action="open-modal" data-modal="contact">
+        <a class="btn btn-ghost" href="/contact">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          Send Deployment Inquiry Directly
-        </button>
+          Write to Us With the Contact Form
+        </a>
       </div>
     </section>`;
 }
@@ -2325,6 +2362,94 @@ export function renderPricingHtml(data: LandingOptions): string {
   });
 }
 
+function contactMainHtml(data: LandingOptions): string {
+  const contactEmail = (data.contactEmail || "contact@labkiosk.org").toLowerCase();
+  const turnstileSlot = data.turnstileSiteKey ? `<div class="form-group turnstile-slot" id="contact-turnstile"></div>` : "";
+  return `
+    <section class="page-hero">
+      <h1 class="page-hero-title">Contact <span>Lab Kiosk</span></h1>
+      <p class="page-hero-desc">
+        Write to us about licensing, a deployment, a problem or anything else. Your message goes straight to the people who run Lab Kiosk, and the reply comes to your email.
+      </p>
+    </section>
+
+    <section class="section-wrap contact-page">
+      <div class="contact-layout">
+        <div class="contact-form-card">
+          <div class="alert-box" id="contact-alert" role="alert"></div>
+          <div class="notice-box" id="contact-done" role="status"></div>
+          <form id="contact-form" novalidate>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="contact-name">Your name</label>
+                <input type="text" class="form-input" id="contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="contact-org">Organization <span class="form-optional">(optional)</span></label>
+                <input type="text" class="form-input" id="contact-org" maxlength="160" placeholder="City Library" autocomplete="organization">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="contact-reason">What is it about?</label>
+              <select class="form-input" id="contact-reason" required>${CONTACT_REASONS.map(
+                (reason) => `
+                <option value="${escapeAttr(reason.value)}">${escapeHtml(reason.label)}</option>`
+              ).join("")}
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="contact-email">Your email address</label>
+              <div class="code-row">
+                <input type="email" class="form-input" id="contact-email" required maxlength="254" placeholder="jane@example.org" autocomplete="email">
+                <button type="button" class="btn btn-ghost" id="contact-send-code">Send code</button>
+              </div>
+              <div class="input-hint">We email a six-digit code to this address to confirm it is yours, so our reply reaches you.</div>
+            </div>
+            ${turnstileSlot}
+            <div class="form-group">
+              <label class="form-label" for="contact-code">Six-digit code from that email</label>
+              <input type="text" class="form-input contact-code-input" id="contact-code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="contact-message">Your message</label>
+              <textarea class="form-input" id="contact-message" rows="7" required maxlength="5000" placeholder="Tell us what you need. For a deployment: how many computers, where, and by when."></textarea>
+              <div class="input-hint contact-count" id="contact-count" aria-live="off"></div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block" id="contact-submit">Send message</button>
+            <p class="input-hint contact-privacy">We use what you write here only to answer you. See the <a href="/privacy">privacy policy</a>.</p>
+          </form>
+        </div>
+
+        <aside class="contact-aside" aria-label="Other ways to reach us">
+          <h2>Prefer email?</h2>
+          <p>Write to the address that fits. Each one reaches the same team.</p>
+          <ul>
+            <li><span>General and sales</span><a href="mailto:${escapeAttr(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
+            <li><span>Technical support</span><a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
+            <li><span>Education and partners</span><a href="mailto:partners@labkiosk.org">partners@labkiosk.org</a></li>
+          </ul>
+          <h2>Before you write</h2>
+          <ul>
+            <li><a href="/docs/troubleshooting">Troubleshooting</a></li>
+            <li><a href="/docs/installation-guide">Installation guide</a></li>
+            <li><a href="/pricing">Licensing and pricing</a></li>
+            <li><a href="${SOURCE_REPOSITORY_URL}/issues" target="_blank" rel="noopener noreferrer">Report a bug on GitHub</a></li>
+          </ul>
+        </aside>
+      </div>
+    </section>`;
+}
+
+/** /contact: a message to the platform, from an address proved with an emailed code. */
+export function renderContactHtml(data: LandingOptions): string {
+  return renderPublicShell(data, {
+    title: "Contact Lab Kiosk",
+    description: "Write to the Lab Kiosk team about licensing, a deployment or a problem. Your message is answered by email.",
+    activeNav: "contact",
+    mainHtml: contactMainHtml(data)
+  });
+}
+
 export function renderDownloadHtml(data: LandingOptions): string {
   const mirrorUrl = data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null;
   return renderPublicShell(data, {
@@ -2419,6 +2544,7 @@ const SITE_CSS = `${rootTokensCss(LEGACY_LANDING_ALIASES)}
       z-index: 100;
     }
     .brand { display: flex; align-items: center; gap: 10px; }
+    a.brand { color: inherit; text-decoration: none; }
     .brand-logo {
       width: 34px;
       height: 34px;
@@ -3430,6 +3556,32 @@ const SITE_CSS = `${rootTokensCss(LEGACY_LANDING_ALIASES)}
       line-height: 1.6;
     }
     .docs-callout strong { color: var(--text-main); }
+    /* The contact page. */
+    .contact-layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 32px; align-items: start; max-width: 1040px; margin: 0 auto; }
+    .contact-form-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg, 14px); padding: 28px; text-align: left; }
+    .contact-form-card .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .contact-form-card select.form-input { background: var(--bg-surface); color: var(--text-main); }
+    .contact-form-card textarea.form-input { resize: vertical; min-height: 140px; line-height: 1.55; }
+    .contact-code-input { font-family: var(--font-mono); letter-spacing: 0.3em; max-width: 220px; }
+    .contact-count { text-align: right; }
+    .contact-privacy { text-align: center; margin-top: 14px; }
+    .contact-privacy a { color: var(--accent-text); }
+    .form-optional { color: var(--text-subtle); font-weight: 400; }
+    .contact-aside { text-align: left; }
+    .contact-aside h2 { font-size: 1rem; font-weight: 650; color: var(--text-main); margin: 0 0 8px; }
+    .contact-aside h2:not(:first-child) { margin-top: 28px; }
+    .contact-aside p { font-size: 0.875rem; color: var(--text-muted); line-height: 1.55; margin-bottom: 12px; }
+    .contact-aside ul { list-style: none; padding: 0; margin: 0; }
+    .contact-aside li { padding: 9px 0; border-bottom: 1px solid var(--border-subtle); font-size: 0.875rem; }
+    .contact-aside li:last-child { border-bottom: 0; }
+    .contact-aside li span { display: block; color: var(--text-muted); font-size: 0.75rem; margin-bottom: 2px; }
+    .contact-aside a { color: var(--accent-text); text-decoration: none; overflow-wrap: anywhere; }
+    .contact-aside a:hover { text-decoration: underline; }
+    @media (max-width: 860px) {
+      .contact-layout { grid-template-columns: 1fr; }
+      .contact-form-card { padding: 20px 16px; }
+      .contact-form-card .form-row { grid-template-columns: 1fr; gap: 0; }
+    }
     /* A wiki page rendered from markdown: everything the renderer can emit. */
     .docs-page h1 { font-size: 2rem; font-weight: 750; letter-spacing: -0.03em; line-height: 1.2; margin-bottom: 18px; color: var(--text-main); }
     .docs-page h2 { margin-top: 40px; scroll-margin-top: 90px; }

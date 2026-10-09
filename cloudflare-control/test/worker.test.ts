@@ -166,6 +166,19 @@ function lastMailTo(email: string) {
   return mail!;
 }
 
+/** Ask for the contact form's code, read it from the outbox, and send the message. */
+async function submitContact(body: Record<string, unknown>, ip: string, env: Env = mockEnv) {
+  const from = { "CF-Connecting-IP": ip };
+  const email = String(body.email);
+  const codeRes = await worker.fetch(request("/api/contact/email-code", { ...json({ email }), headers: from }), env);
+  assert.equal(codeRes.status, 200, `a code is sent to ${email}`);
+  const code = lastMailTo(email).subject.match(/^(\d{6}) is your Lab Kiosk verification code$/)?.[1];
+  assert.ok(code, "the code is in the subject");
+  const res = await worker.fetch(request("/api/contact", { ...json({ ...body, emailCode: code }), headers: from }), env);
+  const data = (await res.json()) as any;
+  return { res, data, code: code! };
+}
+
 let signupAddress = 0;
 
 /** Ask for a code, read it from the outbox, and submit the registration. */
@@ -507,7 +520,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
   });
 
-  test("Turnstile guards the signup code and the contact form once it is configured", async () => {
+  test("Turnstile guards the registration code, the contact code and sign-in once it is configured", async () => {
     const turnstileEnv: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite", TURNSTILE_SECRET_KEY: "0x4AAAAAAAsecret" };
     const post = (path: string, body: unknown, env = turnstileEnv) =>
       worker.fetch(request(path, { ...json(body), headers: { "CF-Connecting-IP": "203.0.113.77" } }), env);
@@ -520,16 +533,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       return new Response(JSON.stringify(verdicts.shift() ?? { success: false }), { headers: { "Content-Type": "application/json" } });
     });
     try {
-      const contact = { name: "Tess", organization: "Town Library", email: "tess@town.example", message: "Hello" };
-      assert.equal((await post("/api/contact", contact)).status, 400, "no token, no message");
+      // The contact form: the check stands in front of the code its message needs.
+      const contact = { email: "tess@town.example" };
+      assert.equal((await post("/api/contact/email-code", contact)).status, 400, "no token, no code");
       assert.equal(seen.length, 0, "nothing to verify without a token");
 
       verdicts.push({ success: false });
-      assert.equal((await post("/api/contact", { ...contact, turnstileToken: "bad" })).status, 400);
+      assert.equal((await post("/api/contact/email-code", { ...contact, turnstileToken: "bad" })).status, 400);
       verdicts.push({ success: true, action: "signup" });
-      assert.equal((await post("/api/contact", { ...contact, turnstileToken: "other-form" })).status, 400, "a token from the other form does not count");
+      assert.equal((await post("/api/contact/email-code", { ...contact, turnstileToken: "other-form" })).status, 400, "a token from the other form does not count");
       verdicts.push({ success: true, action: "contact" });
-      const accepted = await post("/api/contact", { ...contact, turnstileToken: "good" });
+      const accepted = await post("/api/contact/email-code", { ...contact, turnstileToken: "good" });
       assert.equal(accepted.status, 200);
       const last = seen.at(-1)!;
       assert.equal(last.get("secret"), "0x4AAAAAAAsecret");
@@ -540,9 +554,31 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       verdicts.push({ success: true, action: "signup" });
       assert.equal((await post("/api/auth/register/email-code", { email: "new@town.example", turnstileToken: "good" })).status, 200);
 
+      // Sign-in: no password is looked at before the check passes.
+      const credentials = { email: "operator@greenwood.example", password: "OrganizationPassword123!" };
+      const checked = seen.length;
+      assert.equal((await post("/api/auth/login", credentials)).status, 400, "sign-in needs the check");
+      assert.equal(seen.length, checked);
+      verdicts.push({ success: true, action: "contact" });
+      assert.equal((await post("/api/auth/login", { ...credentials, turnstileToken: "other-form" })).status, 400);
+      verdicts.push({ success: true, action: "login" });
+      const signedIn = await post("/api/auth/login", { ...credentials, turnstileToken: "good" });
+      assert.equal(signedIn.status, 200);
+      assert.ok(signedIn.headers.get("Set-Cookie"));
+      // An organization's own domain is not a host name the widget runs on, so
+      // sign-in there carries no check and relies on the lockouts.
+      const elsewhere = await worker.fetch(
+        new Request("https://kiosk.customer.example/api/auth/login", { ...json(credentials), headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.77" } }),
+        turnstileEnv
+      );
+      assert.equal(elsewhere.status, 200);
+      const elsewherePage = await (await worker.fetch(new Request("https://kiosk.customer.example/?login=1", { headers: { Accept: "text/html" } }), turnstileEnv)).text();
+      assert.ok(!elsewherePage.includes('id="login-turnstile"'), "and its sign-in form draws none");
+
       // Half a configuration refuses rather than running unprotected.
       const half: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite" };
-      assert.equal((await post("/api/contact", contact, half)).status, 503);
+      assert.equal((await post("/api/contact/email-code", contact, half)).status, 503);
+      assert.equal((await post("/api/auth/login", credentials, half)).status, 503);
     } finally {
       fetchMock.mock.restore();
     }
@@ -551,11 +587,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const on = await worker.fetch(request("/"), turnstileEnv);
     const onHtml = await on.text();
     assert.match(onHtml, /<script nonce="[^"]+" src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit&amp;onload=lkTurnstileReady" async defer><\/script>/);
-    assert.ok(onHtml.includes('id="reg-turnstile"') && onHtml.includes('id="contact-turnstile"'));
+    assert.ok(onHtml.includes('id="reg-turnstile"') && onHtml.includes('id="login-turnstile"'));
+    // Every public page carries the sign-in and registration forms, so every one carries their checks.
+    for (const page of ["/pricing", "/docs", "/contact"]) {
+      const html = await (await worker.fetch(request(page), turnstileEnv)).text();
+      assert.ok(html.includes('id="reg-turnstile"') && html.includes('id="login-turnstile"'), `${page} draws the checks`);
+    }
+    assert.ok((await (await worker.fetch(request("/contact"), turnstileEnv)).text()).includes('id="contact-turnstile"'));
     assert.match(on.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/challenges\.cloudflare\.com/);
     assert.match(on.headers.get("Content-Security-Policy") || "", /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
     const off = await call("/");
-    assert.doesNotMatch(await off.text(), /turnstile\/v0\/api\.js|id="(?:reg|contact)-turnstile"/, "no widget while it is off");
+    assert.doesNotMatch(await off.text(), /turnstile\/v0\/api\.js|id="(?:reg|contact|login)-turnstile"/, "no widget while it is off");
     assert.doesNotMatch(off.headers.get("Content-Security-Policy") || "", /https:\/\/challenges\.cloudflare\.com/);
   });
 
@@ -801,15 +843,31 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------------ support inbox
 
-  test("The contact form opens a support conversation the super admin answers by email", async () => {
-    const missing = await call("/api/contact", { ...json({ name: "Sam", email: "sam@example.net" }), headers: { "CF-Connecting-IP": "203.0.113.70" } });
-    assert.equal(missing.status, 400, "a message is required");
-    const sent = await callJson("/api/contact", {
-      ...json({ name: "Sam Lee", organization: "City Library", email: "Sam@Example.net", topic: "Pricing", message: "How much for 60 computers?" }),
-      headers: { "CF-Connecting-IP": "203.0.113.70" }
-    });
+  test("The contact form files a message only for an address proved with an emailed code", async () => {
+    const from = { "CF-Connecting-IP": "203.0.113.70" };
+    const message = { name: "Sam Lee", organization: "City Library", email: "Sam@Example.net", reason: "sales", message: "How much for 60 computers?" };
+    const post = (body: unknown) => callJson("/api/contact", { ...json(body), headers: from });
+    assert.equal((await post({ name: "Sam", email: "sam@example.net", reason: "sales", emailCode: "123456" })).res.status, 400, "a message is required");
+    assert.equal((await post({ ...message, reason: "gossip", emailCode: "123456" })).res.status, 400, "the reason is one of the list");
+    const noCode = await post(message);
+    assert.equal(noCode.res.status, 400);
+    assert.match(noCode.data.error, /code/);
+    assert.equal((await post({ ...message, emailCode: "123456" })).res.status, 400, "a code nobody was sent is refused");
+    assert.equal((await call("/api/contact/email-code", { ...json({ email: "not an address" }), headers: from })).status, 400);
+
+    const sent = await submitContact(message, "203.0.113.70");
     assert.equal(sent.res.status, 200);
-    assert.match(sent.data.reference, /^SAL-[0-9A-Z]{6}$/, "a question about pricing is filed under sales");
+    assert.match(sent.data.reference, /^SAL-[0-9A-Z]{6}$/, "the reason decides the type the message is filed under");
+    const codeMail = [...localOutbox()].reverse().find((m) => m.to === "sam@example.net" && /verification code$/.test(m.subject))!;
+    assert.ok(codeMail.html.includes("contact form") && codeMail.html.includes(sent.code), "the code email says what it is for");
+    // The code worked once.
+    assert.equal((await post({ ...message, emailCode: sent.code })).res.status, 400);
+    // The sender, whose address is now proved, gets a receipt with the reference.
+    const receipt = lastMailTo("sam@example.net");
+    assert.ok(receipt.subject.includes(sent.data.reference) && /We received your message/.test(receipt.subject));
+    // A second code is not sent straight after the first.
+    assert.equal((await call("/api/contact/email-code", { ...json({ email: "second@example.net" }), headers: from })).status, 200);
+    assert.equal((await call("/api/contact/email-code", { ...json({ email: "second@example.net" }), headers: from })).status, 429);
 
     const admin = await superCookie();
     const item = await taskByReference(admin, sent.data.reference, "support");
@@ -839,7 +897,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(detail.conversation.status, "closed");
     assert.deepEqual(
       detail.messages.map((m: any) => m.direction),
-      ["inbound", "outbound"]
+      ["inbound", "outbound", "outbound"],
+      "the message, its receipt, the reply"
     );
   });
 
@@ -1521,6 +1580,34 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(String.fromCharCode(card[1], card[2], card[3]), "PNG");
     assert.deepEqual([cardView.getUint32(16), cardView.getUint32(20)], [1200, 630]);
     assert.ok(card.length < 300 * 1024);
+  });
+
+  test("Every public page leads home, and Contact is a page of its own", async () => {
+    for (const page of ["/", "/features", "/specs", "/pricing", "/download", "/docs", "/docs/quickstart", "/contact"]) {
+      const html = await (await call(page)).text();
+      assert.ok(html.includes('<a class="brand" href="/" aria-label="Lab Kiosk home">'), `${page}: the name leads home`);
+      assert.match(html, /<nav class="nav-links"[^>]*>\s*<a href="\/"[^>]*>Home<\/a>/, `${page}: Home is the first tab`);
+      assert.ok(html.includes('<a href="/" data-action="close-drawer">'), `${page}: Home is in the phone menu`);
+      assert.match(html, /<a href="\/contact"[^>]*>Contact<\/a>/, `${page}: Contact is a link to its page`);
+      assert.ok(!html.includes('href="/#contact"') && !html.includes("contact-modal"), `${page}: no contact dialog`);
+    }
+    // Home is the marked tab on the home page only.
+    assert.match(await (await call("/")).text(), /<a href="\/" class="active">Home<\/a>/);
+    assert.match(await (await call("/pricing")).text(), /<a href="\/">Home<\/a>/);
+
+    const res = await call("/contact");
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /<a href="\/contact" class="active">Contact<\/a>/);
+    for (const id of ["contact-name", "contact-org", "contact-reason", "contact-email", "contact-send-code", "contact-code", "contact-message", "contact-submit"]) {
+      assert.ok(html.includes(`id="${id}"`), `the form has ${id}`);
+    }
+    for (const reason of ["sales", "support", "billing", "legal", "general"]) assert.ok(html.includes(`<option value="${reason}">`));
+    assert.ok(html.includes(`<link rel="canonical" href="https://labkiosk.org/contact">`));
+    // The platform's page, at one address.
+    const at = (url: string) => worker.fetch(new Request(url, { headers: { Accept: "text/html" }, redirect: "manual" }), mockEnv);
+    assert.equal((await at("https://greenwood.labkiosk.org/contact")).headers.get("Location"), "https://labkiosk.org/contact");
+    assert.equal((await at("https://labkiosk.org/contact/")).headers.get("Location"), "https://labkiosk.org/contact");
   });
 
   test("The documentation is the wiki, rendered page by page", async () => {
@@ -4021,7 +4108,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Sign-in, registration and enrolment sit behind the rate limiter", async () => {
     const limited = { ...mockEnv, AUTH_RATE_LIMITER: { limit: async () => ({ success: false }) } as RateLimit };
-    for (const path of ["/api/auth/login", "/api/auth/register", "/api/auth/register/email-code", "/api/contact", "/api/devices/enroll"]) {
+    for (const path of ["/api/auth/login", "/api/auth/register", "/api/auth/register/email-code", "/api/contact", "/api/contact/email-code", "/api/devices/enroll"]) {
       const res = await worker.fetch(request(path, json({})), limited as Env);
       assert.equal(res.status, 429, `${path} is throttled`);
     }
@@ -5776,6 +5863,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/download",
       "https://www.labkiosk.org/docs",
       ...DOCS_PAGES.filter((page) => page.slug).map((page) => `https://www.labkiosk.org/docs/${page.slug}`),
+      "https://www.labkiosk.org/contact",
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
       "https://www.labkiosk.org/terms/bug-reports"

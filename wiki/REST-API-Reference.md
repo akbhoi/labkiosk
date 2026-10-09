@@ -60,7 +60,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/status` | `GET` | Platform health and the tenant's current kiosk target |
 | `/api/auth/register/email-code` | `POST` | Email a six-digit registration code |
 | `/api/auth/register` | `POST` | Register an organization for review |
-| `/api/contact` | `POST` | The contact form; opens a Support conversation |
+| `/api/contact/email-code` | `POST` | Emails the code that proves the sender's address (`{ email, turnstileToken? }`) |
+| `/api/contact` | `POST` | The contact page's message (`{ name, organization?, email, emailCode, reason, message }`); filed in Mail under its reason |
 | `/api/auth/login` | `POST` | Sign in as operator or super admin |
 | `/api/portal-sites` | `GET` | List the host tenant's user portal cards |
 | `/api/devices/enroll` | `POST` | Exchange an enrollment key for a device token |

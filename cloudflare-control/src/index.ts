@@ -19,6 +19,7 @@ import {
   renderPricingHtml,
   renderDownloadHtml,
   renderDocsHtml,
+  renderContactHtml,
   findDocsPage,
   docsPath,
   siteStylesheet,
@@ -44,7 +45,7 @@ import {
 } from "./seo";
 
 /** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
-const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/pricing", "/download", "/docs", "/wiki"]);
+const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
 const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
@@ -199,10 +200,10 @@ export class MailIntake extends WorkerEntrypoint<Env> {
   }
 }
 import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
-import { handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
+import { handleContactEmailCode, handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
-import { TURNSTILE_ORIGIN, turnstileSiteKey } from "./turnstile";
+import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
 import {
   continueSignIn,
   handleLoginEmailCode,
@@ -899,6 +900,7 @@ export default {
         path === "/api/auth/register" ||
         path === "/api/auth/register/email-code" ||
         path === "/api/contact" ||
+        path === "/api/contact/email-code" ||
         path === "/api/devices/enroll")
     ) {
       let success = true;
@@ -924,6 +926,12 @@ export default {
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
     const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.org";
+    // Turnstile stands in front of sign-in on the platform's own names. A widget
+    // only runs on the host names its site key lists, and an organization's own
+    // domain is not one of them, so sign-in there relies on the lockouts alone.
+    const loginTurnstile = isDev || isHostUnder(hostname(request), env.DEFAULT_DOMAIN);
+    /** What every public page needs to draw the checks its forms carry. */
+    const formChecks = { turnstileSiteKey: turnstileSiteKey(env), loginTurnstile };
 
     // A cookie-authenticated mutation must come from this site.
     if (path.startsWith("/api/")) {
@@ -987,7 +995,11 @@ export default {
       }
     }
 
-    // POST /api/contact: the public contact form, filed into Support.
+    // POST /api/contact/email-code, /api/contact: the contact page. A code proves
+    // the sender's address, then the message is filed into Mail.
+    if (path === "/api/contact/email-code" && method === "POST") {
+      return handleContactEmailCode(routeContext);
+    }
     if (path === "/api/contact" && method === "POST") {
       return handleContactForm(routeContext);
     }
@@ -1000,9 +1012,14 @@ export default {
     // POST /api/auth/login: Operator or Super Admin Sign In
     if (path === "/api/auth/login" && method === "POST") {
       try {
-        const body = await request.json<{ email: string; password: string; tenant?: string }>();
+        const body = await request.json<{ email: string; password: string; tenant?: string; turnstileToken?: unknown }>();
         if (!body.email || !body.password) {
           return jsonError("Email and password required", 400, jsonHeaders);
+        }
+        // Before a password is looked at, so a script cannot guess at them.
+        if (loginTurnstile) {
+          const refused = await turnstileRefusal(env, body.turnstileToken, clientIp, "login");
+          if (refused) return jsonError(refused.message, refused.status, jsonHeaders);
         }
 
         const identifier = String(body.email).toLowerCase().trim();
@@ -1187,7 +1204,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
-            turnstileSiteKey: turnstileSiteKey(env),
+            ...formChecks,
             nonce
           }),
           { status: 401, headers: htmlHeaders }
@@ -3022,6 +3039,7 @@ export default {
           {
             baseDomain,
             contactEmail: "contact@labkiosk.org",
+            ...formChecks,
             canonicalUrl,
             nonce
           },
@@ -3038,6 +3056,7 @@ export default {
         renderFeaturesHtml({
           baseDomain,
           contactEmail: "contact@labkiosk.org",
+          ...formChecks,
           canonicalUrl,
           nonce
         }),
@@ -3049,6 +3068,19 @@ export default {
         renderSpecsHtml({
           baseDomain,
           contactEmail: "contact@labkiosk.org",
+          ...formChecks,
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/contact") {
+      return new Response(
+        renderContactHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          ...formChecks,
           canonicalUrl,
           nonce
         }),
@@ -3060,6 +3092,7 @@ export default {
         renderPricingHtml({
           baseDomain,
           contactEmail: "contact@labkiosk.org",
+          ...formChecks,
           canonicalUrl,
           nonce
         }),
@@ -3073,6 +3106,7 @@ export default {
           releases: await listReleaseNotes(db),
           baseDomain,
           contactEmail: "contact@labkiosk.org",
+          ...formChecks,
           canonicalUrl,
           nonce
         }),
@@ -3114,7 +3148,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
-            turnstileSiteKey: turnstileSiteKey(env),
+            ...formChecks,
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -3198,7 +3232,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
-            turnstileSiteKey: turnstileSiteKey(env),
+            ...formChecks,
             nonce
           }),
           { status: denied.status, headers: htmlHeaders }
@@ -3248,7 +3282,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
-            turnstileSiteKey: turnstileSiteKey(env),
+            ...formChecks,
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -3379,8 +3413,7 @@ export default {
       path === "/" ||
       path === "/login" ||
       path === "/register" ||
-      path === "/iso" ||
-      path === "/contact"
+      path === "/iso"
     ) {
       const openModal =
         path === "/register" || url.searchParams.has("register")
@@ -3389,16 +3422,14 @@ export default {
             ? "login"
             : path === "/iso" || url.searchParams.has("download") || url.searchParams.has("iso")
               ? "iso"
-              : path === "/contact" || url.searchParams.has("contact")
-                ? "contact"
-                : undefined;
+              : undefined;
       return new Response(
         renderLandingHtml({
           openModal,
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
           baseDomain,
           contactEmail: "contact@labkiosk.org",
-          turnstileSiteKey: turnstileSiteKey(env),
+          ...formChecks,
           canonicalUrl,
           nonce
         }),

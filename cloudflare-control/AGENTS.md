@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0025)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0026)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), AI, hourly cron
 ├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
@@ -28,9 +28,9 @@ cloudflare-control/
 │   ├── markdown.ts                     # Markdown to escaped HTML, for /docs
 │   ├── docs_content.generated.ts       # wiki/ as a module (tools/build-docs.mjs; `pnpm run docs`)
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
-│   ├── signup.ts                       # Registration with an email code, the contact form, Remote Control requests
+│   ├── signup.ts                       # Registration and the contact form, each with an email code; Remote Control requests
 │   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional TOTP app, recovery codes), sign-in alerts
-│   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the signup code and contact form
+│   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the registration code, the contact code and sign-in
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
 │   ├── mail.ts                         # Outbound email: hands each message to labkiosk-email-routing (MAILER), EMAIL as fallback
@@ -419,6 +419,9 @@ cloudflare-control/
   picks a site from.
 - `/admin` is the **organization console**, and `/admin/<page>` its sub-pages.
 - **The platform's own pages** (`/features`, `/specs`, `/pricing`, `/download`, `/docs`; `/wiki` redirects to `/docs`) are served on the platform's host only. On an organization's host they answer `301` to the platform, so an organization's address never shows Lab Kiosk's pricing under its own name. A trailing slash on any of them, or on `/home`, `/privacy`, `/terms`, `/admin` and `/super`, is `301` to the address without it. A path that does not exist answers a page with a way back to a browser, JSON to anything else.
+- **Every public page leads home.** The name in the header is a link to `/` and Home is the first tab, in the bar and in the phone menu; a test holds every page to it.
+- **`/contact` is a page, and its sender is proved.** Name, organization (optional), a reason from `CONTACT_REASONS` (`conversations.ts`; the reason is the type the message is filed under), email and message. `POST /api/contact/email-code` sends a six-digit code (`email_codes`, purpose `contact`, migration `0026`) and `POST /api/contact` files nothing without it; the sender then gets a receipt with the reference. Add a reason by adding a category.
+- **Turnstile stands in front of every form a stranger can use** when it is configured: the registration code, the contact code and sign-in (`turnstileRefusal`, one action each: `signup`, `contact`, `login`). The check is on the step that sends mail or looks at a password; the emailed code guards the step after it. Every public page carries the sign-in and registration forms, so every page render takes `formChecks`. Sign-in on an organization's own domain carries no check: a widget runs only on the host names its site key lists.
 - **`/download` states only what GitHub published.** The hourly run reads the releases into `release_notes` (`src/release_notes.ts`, migration `0025`) and Workers AI rewrites each change list for customers; the page marks those sentences as written by AI. Never write a version, a size, a checksum or a changelog into the page: a test fails on any.
 - **A claim on a public page is checked against the product, or it is not made.** No latency, price, lifetime, hardware model or response time that nobody measured or committed to: a test fails on those patterns. Change the product, change the page.
 - **`/docs` is the wiki.** `wiki/*.md` is the one copy of the documentation; `tools/build-docs.mjs` (`pnpm run docs`) writes it into `src/docs_content.generated.ts`, and `src/markdown.ts` renders each page at `/docs/<file name in lower case>` (`Home.md` is `/docs`; the sidebar is `_Sidebar.md`). The renderer escapes every character and writes a link only where `resolveDocsLink` returns one, so a wiki page cannot put markup on the site. After editing the wiki run `pnpm run docs` and commit both: a test fails while they differ. `/wiki/<Page>` answers `301` to its `/docs` address.

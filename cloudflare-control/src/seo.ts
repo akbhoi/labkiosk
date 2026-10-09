@@ -29,6 +29,7 @@ export const INDEXABLE_PATHS: readonly string[] = [
   "/docs",
   // Every page of the documentation (the repository's wiki, under /docs).
   ...DOCS_PAGES.filter((page) => page.slug).map((page) => `/docs/${page.slug}`),
+  "/contact",
   "/privacy",
   "/terms",
   "/terms/bug-reports"
@@ -38,7 +39,7 @@ export const INDEXABLE_PATHS: readonly string[] = [
  * Public pages where website analytics may run: the indexable pages plus the
  * landing page's dialog views. The Privacy Policy names exactly these.
  */
-const ANALYTICS_PATHS = new Set<string>([...INDEXABLE_PATHS, "/login", "/register", "/iso", "/contact"]);
+const ANALYTICS_PATHS = new Set<string>([...INDEXABLE_PATHS, "/login", "/register", "/iso"]);
 
 /** Zaraz's loader, which the inline snippet Cloudflare injects adds without a nonce. */
 export const ZARAZ_LOADER_PATH = "/cdn-cgi/zaraz/s.js";

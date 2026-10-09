@@ -261,7 +261,7 @@ CREATE TABLE IF NOT EXISTS organization_profiles (
 
 CREATE TABLE IF NOT EXISTS email_codes (
   id TEXT PRIMARY KEY,
-  purpose TEXT NOT NULL CHECK (purpose IN ('signup')),
+  purpose TEXT NOT NULL CHECK (purpose IN ('signup', 'contact')),
   email TEXT NOT NULL,
   code_hash TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -504,6 +504,13 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
       .first<{ name: string }>();
     if (!groupNames) {
       throw new Error("workstation group names are not unique yet (0012)");
+    }
+    // 0026 lets the contact form's codes into email_codes: a CHECK again.
+    const emailCodes = await db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_codes'")
+      .first<{ sql: string }>();
+    if (!emailCodes?.sql?.includes("'contact'")) {
+      throw new Error("email_codes does not accept the contact form's codes yet (0026)");
     }
     // 0014: live state moved to OrgHub; the organization carries its online count.
     await db.prepare("SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1").run();

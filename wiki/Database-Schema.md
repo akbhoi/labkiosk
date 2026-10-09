@@ -58,6 +58,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0023_two_factor_email.sql` | `users.two_factor_email`: an organization account asked for an emailed sign-in code (a super admin is always asked) |
 | `0024_conversation_category.sql` | `conversations.category`: what a conversation is about, which names its tracking ID's prefix (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`) |
 | `0025_release_notes.sql` | `release_notes`: each GitHub release with its change list and a summary written for customers, for `/download`. A platform table, no `tenant_id` |
+| `0026_contact_email_code.sql` | `email_codes` rebuilt so its `purpose` also allows `contact`: the contact page proves its sender's address with a code, as registration does |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
