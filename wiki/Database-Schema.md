@@ -52,6 +52,12 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0017_bug_reports.sql` | `tenants.bug_reports_enabled`, `workstation_issues.report_state` and `bug_signature`, and the platform table `bug_reports`: opt-in automatic GitHub bug reports |
 | `0018_bug_report_triage.sql` | `tenants.bug_reports_terms_version` / `_accepted_at`, `bug_reports.title`, `problem`, `status`, `pr_url`, `status_checked_at`, `workstation_issues.report_match` |
 | `0019_drop_remote_tunnel_columns.sql` | Drops `tenants.tunnel_domain` and `client_devices.remote_host` (Remote Control now runs through the console relay) |
+| `0020_signup_approvals_support.sql` | Registration review and the platform inbox: `tenants.remote_control_status`, `organization_profiles`, `email_codes`, `conversations`, `conversation_messages` |
+| `0021_two_factor.sql` | `user_two_factor` (authenticator app, recovery codes), `login_challenges`, `user_devices` (new-browser alerts, trusted browsers) |
+| `0022_mail_deleted.sql` | `conversations.deleted_at`: Mail's Deleted folder (delete moves there first) |
+| `0023_two_factor_email.sql` | `users.two_factor_email`: an organization account asked for an emailed sign-in code (a super admin is always asked) |
+| `0024_conversation_category.sql` | `conversations.category`: what a conversation is about, which names its tracking ID's prefix (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`) |
+| `0025_release_notes.sql` | `release_notes`: each GitHub release with its change list and a summary written for customers, for `/download`. A platform table, no `tenant_id` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 

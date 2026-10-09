@@ -265,6 +265,18 @@ outbox the tests read (`localOutbox()` in `src/mail.ts`) and each subject is log
 `pnpm dev` a sign-in or registration code is read from the terminal
 (`[Mail] Local outbox, not sent: ... 123456 is your Lab Kiosk sign-in code`).
 
+### Release notes on /download
+
+Nothing to set up. The ISO build publishes each release on GitHub with the change list GitHub writes
+from the merged pull requests. The Worker's hourly run reads the newest releases (anonymously, or with
+`GITHUB_ISSUES_TOKEN` when that is set, which avoids GitHub's limit on anonymous reads) into the
+`release_notes` table, and `/download` shows each one: its version, date, ISO and checksum exactly as
+GitHub published them. With the `AI` binding, Workers AI rewrites each change list as a few sentences
+for the people who run workstations, and the page marks them as written by AI beside a link to the
+full notes; without it, the change list itself is shown. Edit a release's notes on GitHub and its
+summary is rewritten on the next run. Until the first run after a deploy, the page links GitHub's
+`releases/latest` address.
+
 ### Automatic bug reports (optional)
 
 Organizations can opt in, in Settings → Errors & Warnings, to having their workstations' errors and

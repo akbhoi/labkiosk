@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0024)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0025)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), AI, hourly cron
 ├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
@@ -24,6 +24,7 @@ cloudflare-control/
 │   ├── custom_hostname_workflow.ts     # The Workflow that runs those jobs with durable retries
 │   ├── boot_report.ts                  # Workstation boot reports, Errors & Warnings (Rule 2e)
 │   ├── bug_reports.ts                  # Opt-in automatic GitHub bug reports (Rule 2e)
+│   ├── release_notes.ts                # GitHub releases and their AI-written summaries, for /download
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
 │   ├── signup.ts                       # Registration with an email code, the contact form, Remote Control requests
 │   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional TOTP app, recovery codes), sign-in alerts
@@ -415,6 +416,9 @@ cloudflare-control/
 - `/home` is the **user app grid** (`ui_portal.ts`), the launcher a user
   picks a site from.
 - `/admin` is the **organization console**, and `/admin/<page>` its sub-pages.
+- **The platform's own pages** (`/features`, `/specs`, `/pricing`, `/download`, `/docs`; `/wiki` redirects to `/docs`) are served on the platform's host only. On an organization's host they answer `301` to the platform, so an organization's address never shows Lab Kiosk's pricing under its own name. A trailing slash on any of them, or on `/home`, `/privacy`, `/terms`, `/admin` and `/super`, is `301` to the address without it. A path that does not exist answers a page with a way back to a browser, JSON to anything else.
+- **`/download` states only what GitHub published.** The hourly run reads the releases into `release_notes` (`src/release_notes.ts`, migration `0025`) and Workers AI rewrites each change list for customers; the page marks those sentences as written by AI. Never write a version, a size, a checksum or a changelog into the page: a test fails on any.
+- **A claim on a public page is checked against the product.** `/docs` and `/specs` describe the installer's partitions, the roles' default permissions, the browser policy and the memory the image needs; a test holds them to what the code does. Change the product, change the page.
 - `/portal` no longer exists. All three paths used to render the same grid,
   which is why `home_route` could be set to any of them. An organization that had
   pointed its workstations at `/portal` would have had them reset to a 404, so

@@ -32,8 +32,14 @@ import {
   isIndexable,
   isPlatformHost,
   robotsTxt,
+  siteOrigin,
   sitemapXml
 } from "./seo";
+
+/** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
+const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/pricing", "/download", "/docs", "/wiki"]);
+/** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
+const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
@@ -149,6 +155,7 @@ import {
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
 import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
+import { listReleaseNotes, syncReleaseNotes } from "./release_notes";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -667,6 +674,13 @@ export default {
       const archived = await archiveOldAuditLogs(db, env.AUDIT_ARCHIVE);
       if (archived) console.log(`[Worker] Archived ${archived} audit entries older than ${AUDIT_RETENTION_DAYS} days to R2.`);
     }
+    try {
+      const releases = await syncReleaseNotes(db, env);
+      if (releases.summarized) console.log(`[Worker] Release notes: ${releases.summarized} summaries written.`);
+    } catch (err) {
+      // /download keeps showing the releases it already has.
+      console.error("[Worker] Reading the releases from GitHub failed:", err);
+    }
     const bugs = await processBugReports(db, env);
     if (bugs.filed || bugs.matched || bugs.linked || bugs.refreshed) {
       console.log(
@@ -713,6 +727,13 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+
+    // "/pricing/" is "/pricing": one address per page, so a link with a slash still lands.
+    if (path.length > 1 && path.endsWith("/") && (method === "GET" || method === "HEAD") && SLASHLESS_PAGES.has(path.slice(0, -1))) {
+      const slashless = new URL(request.url);
+      slashless.pathname = path.slice(0, -1);
+      return Response.redirect(slashless.toString(), 301);
+    }
 
     const db = getDatabase(env);
     await bootstrap(db, env);
@@ -2925,6 +2946,15 @@ export default {
       return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });
     }
 
+    // The platform's own pages belong to the platform's address. An organization's
+    // host (its subdomain or its own domain) has three paths, each with one job
+    // (Rule 5g), and must not also serve Lab Kiosk's pricing and download pages
+    // under the organization's name: send those to the platform.
+    if (PLATFORM_PAGES.has(path) && (method === "GET" || method === "HEAD") && !isPlatformHost(request, env)) {
+      const platform = new URL(path, siteOrigin(request, url, env));
+      if (platform.origin !== url.origin) return Response.redirect(platform.toString(), 301);
+    }
+
     // ==========================================
     // Public Documentation & Wiki 301 Redirect
     if (path === "/wiki" || path.startsWith("/wiki/")) {
@@ -2983,6 +3013,7 @@ export default {
       return new Response(
         renderDownloadHtml({
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
+          releases: await listReleaseNotes(db),
           baseDomain,
           contactEmail: "contact@labkiosk.org",
           canonicalUrl,
@@ -3318,6 +3349,18 @@ export default {
       );
     }
 
+    // A person who followed a bad link gets a page with a way back; a program gets JSON.
+    if ((method === "GET" || method === "HEAD") && !path.startsWith("/api/") && (request.headers.get("Accept") || "").includes("text/html")) {
+      return new Response(
+        renderStatusPageHtml({
+          title: "Page Not Found",
+          heading: "This page does not exist",
+          messageHtml: "The address may have been mistyped, or the page may have moved.",
+          homeHref: `${url.origin}/`
+        }),
+        { status: 404, headers: htmlHeaders }
+      );
+    }
     return jsonError("Not Found", 404, jsonHeaders);
   }
 };

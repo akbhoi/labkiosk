@@ -18,6 +18,7 @@
  */
 
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
+import { LATEST_CHECKSUM_URL, LATEST_ISO_URL, RELEASES_URL, RELEASE_CHECKSUM_NAME, RELEASE_ISO_NAME, ReleaseNote, releaseHighlights } from "./release_notes";
 import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
@@ -78,6 +79,8 @@ export interface LandingOptions {
   openModal?: "login" | "register" | "iso" | "contact";
   /** Public download URL for the built ISO, if configured. */
   isoDownloadUrl?: string;
+  /** The newest releases, for /download (src/release_notes.ts); empty until the hourly run has read them. */
+  releases?: ReleaseNote[];
   /** Apex / base domain for organization subdomains (defaults to labkiosk.org). */
   baseDomain?: string;
   /** Primary contact email (defaults to contact@labkiosk.org). */
@@ -103,18 +106,12 @@ function renderPublicShell(
     ? `<div class="page-alert" role="alert" aria-live="polite">${escapeHtml(data.error)}</div>`
     : "";
 
-  const isoUrl = data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null;
-  const isoAction = isoUrl
-    ? `<a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-block">
+  // ISO_DOWNLOAD_URL names a mirror; without one the newest GitHub release is the download.
+  const isoUrl = (data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null) || LATEST_ISO_URL;
+  const isoAction = `<a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-block">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download Latest Release (.ISO)
-      </a>`
-    : `<div class="iso-build-note">
-        <p><strong>Deployment Note:</strong> No pre-built release ISO is linked for this cluster yet.</p>
-        <p style="margin-top: 6px;">Build a bootable USB image in minutes using Docker:</p>
-        <code>docker build -t labkiosk-builder distro-builder</code>
-        <p style="margin-top: 8px; font-size: 12px; color: var(--muted);">Or configure the <code>ISO_DOWNLOAD_URL</code> worker secret to publish direct mirrors here.</p>
-      </div>`;
+      </a>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1137,6 +1134,7 @@ ${rootTokensCss(LEGACY_LANDING_ALIASES)}
     .changelog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
     .changelog-version { font-size: 1.0625rem; font-weight: 700; font-family: var(--font-mono); color: var(--text-main); }
     .changelog-date { font-size: 0.8125rem; color: var(--text-muted); }
+    .changelog-note { margin-top: 10px; font-size: 0.75rem; color: var(--text-subtle); }
     .changelog-bullets { list-style: disc; padding-left: 20px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.6; }
 
     /* Documentation Layout */
@@ -2575,7 +2573,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             </tr>
             <tr>
               <td><strong>System Memory (RAM)</strong></td>
-              <td>4 GB RAM (the full OS and Chromium run from RAM)</td>
+              <td>2 GB RAM (the system and the browser run from RAM)</td>
               <td>4 GB or 8 GB RAM for ultra-smooth multi-app switching</td>
             </tr>
             <tr>
@@ -2620,7 +2618,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div>
             <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">2. Managed Enterprise Chromium</h4>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
-              <code>URLBlocklist: ["*"]</code> denies all internet browsing by default. The local Python agent dynamically reconciles the organization's approved whitelist on every heartbeat.
+              <code>URLBlocklist</code> denies every <code>http</code> and <code>https</code> address by default. The local agent applies the organization's approved list to <code>URLAllowlist</code> as soon as it changes.
             </p>
           </div>
           <div>
@@ -2657,7 +2655,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            All unauthorized browsing is immediately denied by Chromium's enterprise managed policy (<code>URLBlocklist: ["*"]</code>). Downloads, print menus, bookmarks, extension installations, and DevTools (<code>F12</code>) are permanently disabled. In addition, USB thumb drive automounting is blocked, preventing users from running unauthorized scripts.
+            All unauthorized browsing is immediately denied by Chromium's enterprise managed policy (<code>URLBlocklist</code> covers every web address that is not on your allowlist). Downloads, print menus, bookmarks, extension installations, and DevTools (<code>F12</code>) are permanently disabled. In addition, USB thumb drive automounting is blocked, preventing users from running unauthorized scripts.
           </div>
         </div>
 
@@ -2677,7 +2675,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             <span class="faq-chevron">▼</span>
           </div>
           <div class="faq-answer">
-            Free for schools up to 45 computers, yes. The operating system build pipeline (Debian 12 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the LabKiosk Software License: free and unrestricted for accredited schools, universities, non-profits, and personal non-commercial use on up to 45 workstations. Any deployment with more than 45 computers is viewed as commercial and requires a commercial or subscriber license. Paid subscribers utilizing the Cloudflare Worker platform are supported per the Subscriber License.
+            Free for schools up to 45 computers, yes. The operating system build pipeline (Debian 12 Live-Build), agent daemon, and Cloudflare Worker control plane are source-available under the LabKiosk Software License: free for non-profit, accredited schools, colleges and universities, and for non-commercial evaluation and research, on up to 45 computers. Any deployment with more than 45 computers, or by a business, needs a commercial or subscriber license.
           </div>
         </div>
 
@@ -2789,7 +2787,7 @@ function featuresMainHtml(): string {
             <h2 class="feature-deep-title">Managed Enterprise Chromium</h2>
           </div>
           <p class="feature-deep-text">
-            Strict system-level policies enforce <code>URLBlocklist: ["*"]</code>. Workstations access only the domains explicitly approved in your organization console. DevTools, downloads, extensions, and print dialogs are permanently disabled.
+            A system-level <code>URLBlocklist</code> covers every <code>http</code> and <code>https</code> address. Workstations access only the domains explicitly approved in your organization console. DevTools, downloads, extensions, and print dialogs are permanently disabled.
           </p>
           <div class="feature-badge-list">
             <span class="feature-tag">URL Allowlisting</span>
@@ -2867,7 +2865,7 @@ function featuresMainHtml(): string {
             <span class="feature-tag">OTA Translation</span>
             <span class="feature-tag">RTL Support</span>
             <span class="feature-tag">Multi-Lingual</span>
-            <span class="feature-tag">GNU gettext</span>
+            <span class="feature-tag">JSON Catalogs</span>
           </div>
         </div>
 
@@ -2885,7 +2883,7 @@ function featuresMainHtml(): string {
             <span class="feature-tag">Least Privilege</span>
             <span class="feature-tag">5 Staff Roles</span>
             <span class="feature-tag">No Wildcards</span>
-            <span class="feature-tag">Immutable Audit</span>
+            <span class="feature-tag">Audit Log</span>
           </div>
         </div>
 
@@ -2946,7 +2944,7 @@ function specsMainHtml(): string {
             </tr>
             <tr>
               <td><strong>System Memory (RAM)</strong></td>
-              <td>4 GB RAM (the full OS and Chromium run from RAM)</td>
+              <td>2 GB RAM (the system and the browser run from RAM)</td>
               <td>4 GB or 8 GB RAM for ultra-smooth multi-app switching</td>
             </tr>
             <tr>
@@ -2979,7 +2977,7 @@ function specsMainHtml(): string {
             <h3 style="font-size: 1.0625rem; font-weight: 650; margin-bottom: 8px; color: var(--accent-text);">Workstation Client Stack</h3>
             <ul style="list-style: disc; padding-left: 20px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.6;">
               <li>Debian 12 (Bookworm) Live-Build distribution</li>
-              <li>LightDM display manager with automatic kiosk auto-login</li>
+              <li>nodm display manager starting the kiosk session without a login prompt</li>
               <li>Openbox minimal window manager with disabled keybindings</li>
               <li>Loopback Agent Daemon (Python 3.11, bound strictly to 127.0.0.1:8888)</li>
               <li>MV3 Browser Extension with shadow-DOM navigation &amp; lock curtain</li>
@@ -3110,26 +3108,76 @@ function pricingMainHtml(): string {
     </section>`;
 }
 
-/** Where every release, its ISO and its checksum are published. */
-const RELEASES_URL = "https://github.com/akbhoi/labkiosk/releases";
+/** "7 October 2026": a release's date as people write one. */
+const RELEASE_DATE = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 
-function downloadMainHtml(isoUrl?: string | null): string {
-  const downloadAction = isoUrl
-    ? `<a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg btn-block">
+/** "~720 MB", from the size GitHub reports for the ISO. */
+function isoSizeLabel(bytes: number | null | undefined): string {
+  const mb = Math.round((Number(bytes) || 0) / (1024 * 1024) / 10) * 10;
+  return mb > 0 ? `~${mb} MB` : "";
+}
+
+/** One release in the version history: what changed, and where its files are. */
+function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
+  const { items, writtenByAi } = releaseHighlights(note);
+  const releaseUrl = safeHttpUrl(note.url);
+  const isoUrl = note.iso_url ? safeHttpUrl(note.iso_url) : null;
+  const checksumUrl = note.checksum_url ? safeHttpUrl(note.checksum_url) : null;
+  const size = isoSizeLabel(note.iso_bytes);
+  return `
+          <div class="changelog-card">
+            <div class="changelog-head">
+              <span class="changelog-version">${escapeHtml(note.tag)}</span>
+              <span class="changelog-date">${newest ? `<span class="badge badge-green">Latest</span> ` : ""}${escapeHtml(RELEASE_DATE.format(new Date(note.published_at * 1000)))}</span>
+            </div>
+            ${
+              items.length
+                ? `<ul class="changelog-bullets">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+                : `<p class="changelog-note">The changes in this release are listed in its notes on GitHub.</p>`
+            }
+            ${writtenByAi ? `<p class="changelog-note">Summary written by AI from this release\u2019s change list. The full list is in the release notes.</p>` : ""}
+            <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
+              ${releaseUrl ? `<a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Release notes</a>` : ""}
+              ${isoUrl ? `<a href="${escapeHtml(isoUrl)}" class="btn btn-secondary btn-sm">Download ${escapeHtml(note.tag)} ISO${size ? ` (${escapeHtml(size)})` : ""}</a>` : ""}
+              ${checksumUrl ? `<a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">SHA256</a>` : ""}
+            </div>
+          </div>`;
+}
+
+function downloadMainHtml(mirrorUrl: string | null, releases: ReleaseNote[]): string {
+  // Everything about a release on this page is what GitHub published for it:
+  // nothing here names a version, a size or a checksum of its own.
+  const latest = releases[0] || null;
+  const isoUrl = mirrorUrl || (latest?.iso_url ? safeHttpUrl(latest.iso_url) : null) || LATEST_ISO_URL;
+  const checksumUrl = (latest?.checksum_url ? safeHttpUrl(latest.checksum_url) : null) || LATEST_CHECKSUM_URL;
+  const size = isoSizeLabel(latest?.iso_bytes) || "~720 MB";
+  const downloadAction = `<a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg btn-block">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Download Release ISO (.ISO)
-      </a>`
-    : `<div class="iso-build-note">
-        <p><strong>Release ISO Mirror:</strong> No pre-built release ISO mirror is configured on this cluster.</p>
-        <p style="margin-top: 6px;">Build your own bootable ISO in minutes using the Debian 12 Docker pipeline:</p>
-        <code>docker build -t labkiosk-builder distro-builder</code>
-      </div>`;
+        Download ${latest ? escapeHtml(latest.tag) : "the latest release"} (.ISO)
+      </a>`;
+  const historyHtml = releases.length
+    ? releases.map((note, index) => releaseCardHtml(note, index === 0)).join("")
+    : `
+          <div class="changelog-card">
+            <div class="changelog-head">
+              <span class="changelog-version">Release notes</span>
+              <span class="badge badge-blue">x86-64 Hybrid ISO</span>
+            </div>
+            <ul class="changelog-bullets">
+              <li>Every release is published on GitHub with its notes, its ISO and the ISO's SHA256 checksum.</li>
+              <li>The newest release is always at the same address, so a bookmark or a script keeps working.</li>
+            </ul>
+            <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
+              <a href="${RELEASES_URL}/latest" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Latest release notes</a>
+              <a href="${LATEST_ISO_URL}" class="btn btn-secondary btn-sm">Download the latest ISO (~720 MB)</a>
+            </div>
+          </div>`;
 
   return `
     <section class="page-hero">
       <div class="hero-badge-container">
         <span class="badge badge-blue">Official Distribution</span>
-        <span class="badge badge-green">Latest Release</span>
+        <span class="badge badge-green">${latest ? `Latest Release ${escapeHtml(latest.tag)}` : "Latest Release"}</span>
       </div>
       <h1 class="page-hero-title">Download <span>Lab Kiosk OS</span></h1>
       <p class="page-hero-desc">
@@ -3140,7 +3188,7 @@ function downloadMainHtml(isoUrl?: string | null): string {
     <section class="section-wrap" style="padding-top: 0;">
       <div class="download-hero-card">
         <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 8px;">
-          <h2 style="font-size: 1.375rem; font-weight: 700; color: var(--text-main);">Lab Kiosk OS (x86-64)</h2>
+          <h2 style="font-size: 1.375rem; font-weight: 700; color: var(--text-main);">Lab Kiosk OS${latest ? ` ${escapeHtml(latest.tag)}` : ""} (x86-64)</h2>
           <span class="badge badge-green">Stable Release</span>
         </div>
         <p style="font-size: 0.9375rem; color: var(--text-muted); margin-bottom: 20px;">
@@ -3158,7 +3206,7 @@ function downloadMainHtml(isoUrl?: string | null): string {
           </div>
           <div class="download-meta-item">
             <span class="download-meta-label">Size</span>
-            <span class="download-meta-val">~720 MB</span>
+            <span class="download-meta-val">${escapeHtml(size)}</span>
           </div>
           <div class="download-meta-item">
             <span class="download-meta-label">Base OS</span>
@@ -3173,8 +3221,8 @@ function downloadMainHtml(isoUrl?: string | null): string {
         <div class="checksum-box">
           <strong>SHA256 Checksum:</strong><br>
           Published with every release as
-          <a href="${RELEASES_URL}/latest/download/labkiosk-debian12-amd64.iso.sha256" target="_blank" rel="noopener noreferrer">labkiosk-debian12-amd64.iso.sha256</a>.
-          Compare it with the output of <code>sha256sum labkiosk-debian12-amd64.iso</code> before writing the image.
+          <a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer">${RELEASE_CHECKSUM_NAME}</a>.
+          Compare it with the output of <code>sha256sum ${RELEASE_ISO_NAME}</code> before writing the image.
         </div>
       </div>
 
@@ -3211,21 +3259,7 @@ function downloadMainHtml(isoUrl?: string | null): string {
 
       <div style="max-width: 840px; margin: 0 auto;">
         <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">Version History &amp; Changelog</h2>
-        <div class="changelog-list">
-          <div class="changelog-card">
-            <div class="changelog-head">
-              <span class="changelog-version">Release notes</span>
-              <span class="badge badge-blue">x86-64 Hybrid ISO</span>
-            </div>
-            <ul class="changelog-bullets">
-              <li>Every release is published on GitHub with its notes, its ISO and the ISO's SHA256 checksum.</li>
-              <li>The newest release is always at the same address, so a bookmark or a script keeps working.</li>
-            </ul>
-            <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
-              <a href="${RELEASES_URL}/latest" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Latest release notes</a>
-              <a href="${RELEASES_URL}/latest/download/labkiosk-debian12-amd64.iso" class="btn btn-secondary btn-sm">Download the latest ISO (~720 MB)</a>
-            </div>
-          </div>
+        <div class="changelog-list">${historyHtml}
         </div>
 
         <div style="margin-top: 32px; padding: 18px 24px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); text-align: center;">
@@ -3328,7 +3362,7 @@ function docsMainHtml(): string {
         <article class="docs-article" id="hardware">
           <h2>3. Hardware Requirements</h2>
           <p>
-            Lab Kiosk requires an x86-64 compatible processor with at least 4 GB of RAM. Detailed requirements and verified models can be found on our <a href="/specs" style="color: var(--accent-text); text-decoration: underline;">Specifications page</a>.
+            Lab Kiosk requires an x86-64 compatible processor with at least 2 GB of RAM (4 GB recommended). Detailed requirements and verified models can be found on our <a href="/specs" style="color: var(--accent-text); text-decoration: underline;">Specifications page</a>.
           </p>
         </article>
 
@@ -3381,15 +3415,14 @@ sudo bash build-iso.sh</code></pre>
           <p>
             For permanent computer lab deployments, install Lab Kiosk directly to the machine's internal SSD or NVMe storage:
           </p>
-          <pre><code># Run from the workstation terminal or launch via setup wizard:
-sudo labkiosk-install /dev/sda</code></pre>
+          <p>Start it from the setup wizard: on the install step pick the internal drive and choose <strong>Install Lab Kiosk to Selected Drive</strong>. A workstation has no terminal to type it into; the wizard runs <code>labkiosk-install</code> for you. The drive needs 7 GiB or more (a drive sold as 8 GB qualifies).</p>
           <h3 style="font-size: 1.0625rem; font-weight: 650; margin: 16px 0 8px; color: var(--text-main);">Hybrid GPT Partition Layout</h3>
           <p>The disk installer formats the internal drive into four structured partitions:</p>
           <ul>
             <li><code>bios_grub</code> (1 MiB): Legacy BIOS boot code.</li>
-            <li><code>ESP</code> (128 MiB, FAT32): Signed UEFI bootloaders (shimx64.efi, grubx64.efi).</li>
-            <li><code>ROOT</code> (~4 GiB, ext4): System image store containing squashfs, vmlinuz, and initrd.img.</li>
-            <li><code>LABKIOSK_DATA</code> (Remaining disk, ext4): Encrypted persistence store for configuration, Wi-Fi profiles, and enrollment keys.</li>
+            <li><code>ESP</code> (512 MiB, FAT32): Signed UEFI bootloaders (shimx64.efi, grubx64.efi).</li>
+            <li><code>ROOT</code> (the rest of the disk, ext4): The system image store. It holds two images, the running one and the previous one, so an update that fails its first start is rolled back.</li>
+            <li><code>LABKIOSK_DATA</code> (the last 512 MiB, ext4): The only place that keeps anything between restarts: the workstation's configuration, its network profiles and its device token. It is not encrypted, so restrict physical access and firmware boot options as described below.</li>
           </ul>
           <div class="docs-callout">
             <strong>Data Persistence Guarantee:</strong> At every boot, <code>/etc/labkiosk/system-connections</code> on the data partition is bind-mounted over <code>/etc/NetworkManager/system-connections</code>. Network credentials, organization proxy settings (<code>proxy.json</code>), and device tokens persist permanently, while user session files and browser cache remain strictly volatile in RAM.
@@ -3435,7 +3468,7 @@ sudo labkiosk-install /dev/sda</code></pre>
             Chromium is locked down via managed enterprise JSON policies located at <code>/etc/chromium/policies/managed/labkiosk.json</code>.
           </p>
           <ul>
-            <li><code>URLBlocklist: [&quot;*&quot;]</code> blocks all unapproved web traffic.</li>
+            <li><code>URLBlocklist</code> lists every <code>http://</code> and <code>https://</code> address, so nothing loads unless it is allowed.</li>
             <li><code>URLAllowlist</code> dynamically reflects the approved URLs configured in your organization console.</li>
             <li>Downloads, Developer Tools, extension installation, and printing are disabled.</li>
           </ul>
@@ -3476,10 +3509,10 @@ sudo labkiosk-install /dev/sda</code></pre>
           </p>
           <ul>
             <li><strong>Org Admin:</strong> Full access to all workstations, allowlists, portal, staff, and organization settings.</li>
-            <li><strong>Sub Admin:</strong> Full operational access; can manage staff but cannot grant permissions they do not possess.</li>
-            <li><strong>Operator:</strong> Real-time workstation monitoring, lock/unlock commands, and live screen viewing.</li>
-            <li><strong>Assistant:</strong> Read-only monitoring of workstation status and user portal navigation.</li>
-            <li><strong>Content Manager:</strong> Manages approved websites, portal cards, and broadcast presets.</li>
+            <li><strong>Sub Admin:</strong> The permissions you choose for them; one who manages staff cannot grant a permission they do not hold themselves.</li>
+            <li><strong>Operator:</strong> By default workstations (live screens, lock and unlock, power), broadcasts and the User Portal.</li>
+            <li><strong>Assistant:</strong> By default workstations only: live screens, lock and unlock.</li>
+            <li><strong>Content Manager:</strong> By default the User Portal's cards and the domain allowlist.</li>
           </ul>
         </article>
 
@@ -3535,12 +3568,12 @@ export function renderPricingHtml(data: LandingOptions): string {
 }
 
 export function renderDownloadHtml(data: LandingOptions): string {
-  const isoUrl = data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null;
+  const mirrorUrl = data.isoDownloadUrl ? safeHttpUrl(data.isoDownloadUrl) : null;
   return renderPublicShell(data, {
     title: "Lab Kiosk OS - Download Bootable ISO & Flashing Guide",
     description: "Download the latest Lab Kiosk Debian 12 live-build ISO image, SHA256 checksums, 3-step flashing instructions, and Docker build commands.",
     activeNav: "download",
-    mainHtml: downloadMainHtml(isoUrl)
+    mainHtml: downloadMainHtml(mirrorUrl, data.releases || [])
   });
 }
 

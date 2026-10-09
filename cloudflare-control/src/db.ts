@@ -145,6 +145,22 @@ CREATE TABLE IF NOT EXISTS workstation_issues (
   report_match TEXT CHECK (report_match IN ('new', 'existing'))
 );
 
+CREATE TABLE IF NOT EXISTS release_notes (
+  tag TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  published_at INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  iso_url TEXT,
+  checksum_url TEXT,
+  iso_bytes INTEGER,
+  source_body TEXT NOT NULL DEFAULT '',
+  summary TEXT,
+  summary_model TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_release_notes_published ON release_notes(published_at);
+
 CREATE TABLE IF NOT EXISTS bug_reports (
   signature TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -522,6 +538,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT two_factor_email FROM users LIMIT 1").run();
     // 0024: conversations filed by purpose.
     await db.prepare("SELECT category FROM conversations LIMIT 1").run();
+    // 0025: what each release changed, for /download.
+    await db.prepare("SELECT tag, summary FROM release_notes LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

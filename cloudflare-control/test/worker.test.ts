@@ -57,6 +57,7 @@ import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
 import { ENROLLMENT_KEY_ALPHABET, enrollmentKeyCheckCharacter, generateEnrollmentKey, isEnrollmentKey } from "../src/auth";
 import { rotateUncheckedEnrollmentKeys } from "../src/db";
+import { listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
 import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
@@ -1301,6 +1302,171 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       if (isEnrollmentKey(row.enrollment_key)) assert.equal(after.results.find((r) => r.id === row.id)!.enrollment_key, row.enrollment_key);
     }
     assert.deepEqual(await rotateUncheckedEnrollmentKeys(db), [], "nothing left to rotate");
+  });
+
+  test("The download page shows what GitHub published for each release, summarized for customers", async () => {
+    const db = getDatabase(mockEnv);
+    const body = [
+      "## What's Changed",
+      "* feat(ota): signed release downloads with labkiosk-update (phase 2) by @akbhoi in https://github.com/akbhoi/labkiosk/pull/22",
+      "* Non-blocking cookie bar for website analytics consent by @akbhoi in https://github.com/akbhoi/labkiosk/pull/25",
+      "* Fix v2.7.0 release: patch image CVEs and bump version by @akbhoi in https://github.com/akbhoi/labkiosk/pull/26",
+      "",
+      "**Full Changelog**: https://github.com/akbhoi/labkiosk/compare/v2.6.0...v2.7.0"
+    ].join("\r\n");
+    assert.deepEqual(plainHighlights(body), [
+      "Signed release downloads with labkiosk-update (phase 2)",
+      "Non-blocking cookie bar for website analytics consent",
+      "Fix v2.7.0 release: patch image CVEs and bump version"
+    ]);
+
+    const release = (tag: string, published: string, extra: Record<string, unknown> = {}) => ({
+      tag_name: tag,
+      name: `Lab Kiosk ${tag}`,
+      html_url: `https://github.com/akbhoi/labkiosk/releases/tag/${tag}`,
+      body,
+      draft: false,
+      prerelease: false,
+      published_at: published,
+      assets: [
+        { name: "labkiosk-debian12-amd64.iso", size: 753926144, browser_download_url: `https://github.com/akbhoi/labkiosk/releases/download/${tag}/labkiosk-debian12-amd64.iso` },
+        { name: "labkiosk-debian12-amd64.iso.sha256", size: 94, browser_download_url: `https://github.com/akbhoi/labkiosk/releases/download/${tag}/labkiosk-debian12-amd64.iso.sha256` }
+      ],
+      ...extra
+    });
+    const asked: string[] = [];
+    const github = (list: unknown, status = 200) =>
+      (async (url: string, init: RequestInit) => {
+        asked.push(`${url} ${(init.headers as Record<string, string>)["User-Agent"]}`);
+        return new Response(JSON.stringify(list), { status });
+      }) as unknown as typeof fetch;
+    const list = [
+      release("v2.7.0", "2026-10-07T03:09:04Z"),
+      release("v2.6.0", "2026-10-05T03:50:09Z"),
+      release("v9.9.9", "2026-10-08T00:00:00Z", { draft: true }),
+      release("v8.8.8", "2026-10-08T00:00:00Z", { prerelease: true }),
+      release("nightly", "2026-10-08T00:00:00Z"),
+      // An address that is not this repository's own release is never stored as a download.
+      release("v2.5.1", "2026-10-01T07:28:37Z", { assets: [{ name: "labkiosk-debian12-amd64.iso", size: 1, browser_download_url: "https://evil.example/labkiosk-debian12-amd64.iso" }] }),
+      release("v2.5.0", "2026-09-26T14:51:11Z", { html_url: "https://evil.example/releases/tag/v2.5.0" })
+    ];
+
+    // Without the model, the releases are stored and shown from their own change list.
+    const first = await syncReleaseNotes(db, { ...mockEnv, AI: undefined }, github(list));
+    assert.deepEqual(first, { stored: 3, summarized: 0 });
+    assert.match(asked[0], /^https:\/\/api\.github\.com\/repos\/akbhoi\/labkiosk\/releases\?per_page=\d+ labkiosk-controller$/);
+    const stored = await listReleaseNotes(db);
+    assert.deepEqual(stored.map((r) => r.tag), ["v2.7.0", "v2.6.0", "v2.5.1"]);
+    assert.equal(stored[2].iso_url, null);
+    let page = await (await call("/download")).text();
+    assert.ok(page.includes("Latest Release v2.7.0") && page.includes("Download v2.7.0 (.ISO)"));
+    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.7.0/labkiosk-debian12-amd64.iso"'));
+    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.7.0/labkiosk-debian12-amd64.iso.sha256"'));
+    assert.ok(page.includes("7 October 2026") && page.includes("~720 MB"));
+    assert.ok(page.includes("<li>Non-blocking cookie bar for website analytics consent</li>"));
+    assert.ok(!page.includes("Summary written by AI") && !page.includes("@akbhoi") && !page.includes("evil.example"));
+
+    // With the model: its sentences, escaped, marked as written by AI; what it should not have written is dropped.
+    const prompts: any[] = [];
+    const ai = (answer: unknown) => ({
+      run: async (_model: string, input: any) => {
+        prompts.push(input);
+        return { output_text: typeof answer === "string" ? answer : JSON.stringify(answer) };
+      }
+    });
+    const good = {
+      highlights: [
+        "Workstations can now download signed updates.",
+        "The website asks before it counts visits <script>alert(1)</script>",
+        "See https://evil.example for more",
+        "Security fixes for the workstation image & its packages."
+      ]
+    };
+    const second = await syncReleaseNotes(db, { ...mockEnv, AI: ai(good) }, github(list));
+    assert.equal(second.summarized, 3);
+    assert.ok(JSON.stringify(prompts[0]).includes("signed release downloads") && JSON.stringify(prompts[0]).includes("Never add a feature"));
+    page = await (await call("/download")).text();
+    assert.ok(page.includes("<li>Workstations can now download signed updates.</li>"));
+    assert.ok(page.includes("<li>Security fixes for the workstation image &amp; its packages.</li>"), "the model's words are escaped");
+    assert.ok(page.includes("Summary written by AI"));
+    assert.ok(!page.includes("<script>alert(1)") && !page.includes("evil.example"), "markup and addresses from the model are dropped");
+
+    // An unchanged change list keeps its summary and is not sent to the model again; an edited one is redone.
+    prompts.length = 0;
+    assert.equal((await syncReleaseNotes(db, { ...mockEnv, AI: ai(good) }, github(list))).summarized, 0);
+    assert.equal(prompts.length, 0);
+    const edited = [{ ...list[0], body: `${body}\r\n* Another change by @akbhoi in https://github.com/akbhoi/labkiosk/pull/40` }, ...list.slice(1)];
+    assert.equal((await syncReleaseNotes(db, { ...mockEnv, AI: ai({ highlights: ["An edited list is summarized again."] }) }, github(edited))).summarized, 1);
+
+    // An answer that cannot be used is thrown away, and GitHub failing changes nothing.
+    await assert.rejects(() => summarizeRelease(ai("I cannot help with that") as any, "v1.0.0", body), /highlights/);
+    await assert.rejects(() => summarizeRelease(ai({ highlights: ["<b>bold</b>"] }) as any, "v1.0.0", body), /no usable/);
+    await assert.rejects(() => syncReleaseNotes(db, mockEnv, github({ message: "rate limited" }, 403)), /403/);
+    assert.equal((await listReleaseNotes(db)).length, 3);
+
+    // Nothing is known yet: the page links GitHub's "latest" address and says nothing of an operator's settings.
+    await db.prepare("DELETE FROM release_notes").run();
+    page = await (await call("/download")).text();
+    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso"'));
+    const home = await (await call("/")).text();
+    assert.ok(home.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso"'));
+    for (const html of [page, home]) assert.ok(!/ISO_DOWNLOAD_URL|worker secret|No pre-built release ISO/.test(html));
+  });
+
+  test("Public pages have one address each, on the platform's host", async () => {
+    const at = (url: string, headers: Record<string, string> = {}) => worker.fetch(new Request(url, { headers, redirect: "manual" }), mockEnv);
+
+    // A trailing slash is the same page.
+    for (const path of ["/features", "/pricing", "/download", "/docs", "/privacy", "/terms"]) {
+      const res = await at(`https://labkiosk.org${path}/?x=1`);
+      assert.equal(res.status, 301, path);
+      assert.equal(res.headers.get("Location"), `https://labkiosk.org${path}?x=1`);
+    }
+    assert.equal((await at("https://labkiosk.org/api/status/")).status, 404, "an API path is not rewritten");
+
+    // An organization's host does not serve the platform's pages under its own name.
+    for (const host of ["greenwood.labkiosk.org", "web-demo.labkiosk.org"]) {
+      for (const path of ["/features", "/specs", "/pricing", "/download", "/docs"]) {
+        const res = await at(`https://${host}${path}`);
+        assert.equal(res.status, 301, `${host}${path}`);
+        assert.equal(res.headers.get("Location"), `https://labkiosk.org${path}`);
+      }
+      assert.equal((await at(`https://${host}/wiki`)).headers.get("Location"), "https://labkiosk.org/wiki");
+    }
+    for (const path of ["/features", "/specs", "/pricing", "/download", "/docs"]) {
+      assert.equal((await at(`https://labkiosk.org${path}`)).status, 200);
+      assert.equal((await at(`https://www.labkiosk.org${path}`)).status, 200);
+      assert.equal((await at(`http://127.0.0.1:8787${path}`)).status, 200, "a development host is the platform");
+    }
+
+    // A page that does not exist: a page with a way back for a person, JSON for a program.
+    const lost = await at("https://labkiosk.org/no-such-page", { Accept: "text/html,application/xhtml+xml" });
+    assert.equal(lost.status, 404);
+    assert.match(lost.headers.get("Content-Type") || "", /text\/html/);
+    const lostHtml = await lost.text();
+    assert.ok(lostHtml.includes("This page does not exist") && lostHtml.includes('href="https://labkiosk.org/"'));
+    const lostApi = await at("https://labkiosk.org/api/no-such-route", { Accept: "text/html" });
+    assert.equal(lostApi.status, 404);
+    assert.match(lostApi.headers.get("Content-Type") || "", /json/);
+    assert.match((await at("https://labkiosk.org/no-such-page")).headers.get("Content-Type") || "", /json/);
+  });
+
+  test("The public pages describe the product as it is built", async () => {
+    const docs = await (await call("/docs")).text();
+    const specs = await (await call("/specs")).text();
+    const home = await (await call("/")).text();
+    const features = await (await call("/features")).text();
+    // The installer's layout (labkiosk-install): a 512 MiB ESP, an image store, and an unencrypted data partition.
+    assert.ok(docs.includes("512 MiB, FAT32") && docs.includes("the last 512 MiB") && docs.includes("It is not encrypted"));
+    assert.ok(!/Encrypted persistence|128 MiB|sudo labkiosk-install/.test(docs));
+    // The roles as the staff page creates them (defaultPermsByRole in ui_admin_staff.ts).
+    assert.ok(docs.includes("By default workstations only") && !docs.includes("Read-only monitoring"));
+    // 2 GB runs it; 4 GB is the reference (wiki/Installation-Guide.md).
+    assert.ok(specs.includes("2 GB RAM") && home.includes("2 GB RAM") && docs.includes("at least 2 GB of RAM"));
+    for (const page of [docs, specs, home, features]) {
+      assert.ok(!/LightDM|GNU gettext|Immutable Audit|URLBlocklist: \[/.test(page));
+      assert.ok(!/non-profits, and personal non-commercial/.test(page), "the license is quoted as LICENSE grants it");
+    }
   });
 
   test("Mail sent from the platform's own sending domain is a loop", async () => {

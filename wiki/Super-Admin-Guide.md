@@ -14,6 +14,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | Suspend or reactivate an organization | The platform's kill switch |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
+| Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Registrations, Remote Control requests and every message sent to an address on the mail domain |
 
 A super-admin session may use `?tenant=<slug>` and `X-Tenant` on any host — one of only four cases where the `Host` header is not the sole authority — but `requireTenantAdmin()` then lets it into an organization's console or API **only** for one of the three demos it owns (`isDemoTenant()` in `src/demo.ts`: a demo slug *and* owned by the super admin). Any other organization answers `403` ("Platform administrators cannot access individual organization consoles"), and its `/admin` page explains the privacy isolation and points to `/super`. Opening `/admin/*` with no organization named lands in `local-demo` on a development host and `web-demo` otherwise. The demo slugs, and the retired `demo`, cannot be registered by an organization. → [Architecture Overview](Architecture-Overview#tenant-resolution)
 
@@ -162,6 +163,22 @@ These can be neither registered nor resolved as an organization. Add one to `RES
 
 ---
 
+## The console
+
+The rail has five tabs: **Organizations** (the directory, filtered by status), **Tasks**, **Mail**, **Catalogs** and **System**. Each tab's views appear both as tabs above the content and under *Views* in the side panel. Signing in always asks for a six-digit code emailed to the super admin address; an authenticator app can be added under **System → Two-factor sign-in**.
+
+**Tasks** holds what needs a decision: *Requests* (registrations and Remote Control requests), *Subdomain changes* and *Custom domains*.
+
+**Mail** is the mailbox for every address on the mail domain and the contact form.
+
+- **Folders**: Inbox (open), Unread, Read, Closed and Deleted. *Delete* moves a conversation to Deleted; from there it is restored or deleted for good. An answer from the sender brings a deleted conversation back.
+- **Types**: a conversation is filed by what it is about, and its tracking ID starts with that type's prefix: `SUP` support, `SAL` sales, `BIL` billing, `LGL` legal and privacy, `GEN` general, `LTR` a letter you wrote (`REG` and `RMT` for the two kinds of task). Mail is typed by the address it was sent to. Filter by type in the side panel.
+- **New message** writes as any address on the domain, as an ordinary message or a **formal letter** (dated, addressed, signed with your name and title).
+- A new email from a person is answered automatically with a receipt carrying its tracking ID: once a day per sender, never to automatic mail, bounces or no-reply addresses.
+- Everything sent uses one layout and a template for its purpose (`cloudflare-email-routing/src/templates/`).
+
+---
+
 ## Hourly housekeeping
 
 A cron trigger (`"0 * * * *"` in `wrangler.jsonc`) calls the worker's `scheduled()` handler at the top of every hour:
@@ -170,6 +187,9 @@ A cron trigger (`"0 * * * *"` in `wrangler.jsonc`) calls the worker's `scheduled
 - Cleans stale rate-limit and sign-in throttle rows.
 - Moves audit entries older than 180 days to the `labkiosk-audit-archive` R2 bucket.
 - Deletes workstation errors and warnings older than 90 days.
+- Files incoming mail the email Worker stored but could not hand over.
+- Replaces enrollment keys issued before keys carried a check character.
+- Reads the newest releases from GitHub for `/download` and writes a customer-facing summary of each with Workers AI (when the `AI` binding is set; the release's own change list is shown otherwise).
 - Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub writes a run), and reads back the status of up to 10 filed issues.
 
 Commands are not in D1: each organization's OrgHub expires its own after 60 seconds.

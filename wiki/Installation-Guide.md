@@ -128,7 +128,7 @@ The workstation then boots into the installed OS, and the wizard displays `INSTA
 | :--- | :--- |
 | **Organization subdomain** | e.g. `oakridge` — or your custom domain, if your organization has one approved |
 | **Workstation identifier** | e.g. `PC-01`. Must match `^[A-Z0-9][A-Z0-9_-]{0,62}$` |
-| **Enrollment key** | From Settings → Workstation Enrollment Key |
+| **Enrollment key** | From Settings → Workstation Enrollment Key. Twenty characters in four groups; it never contains I, L, O, U, 0 or 1, and the wizard tells you at once if a character is wrong or two are swapped |
 
 Click **Connect & Register Workstation**.
 

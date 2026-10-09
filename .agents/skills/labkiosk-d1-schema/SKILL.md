@@ -122,6 +122,11 @@ tasks are never deleted); every list and count but the `deleted` view excludes t
 general | letter`) is what it is about; it names the tracking ID's prefix and the type the console
 filters by. `reference` carries that prefix (`SUP-…`), or `LK-` for a conversation from before 0024.
 
+**Release notes** (`0025`). `release_notes` (keyed by tag) holds what GitHub published for each release
+(name, date, URLs of the ISO and its checksum, the change list) and `summary`, a JSON list of sentences
+Workers AI wrote from that list (`summary_model` says which model; NULL shows the change list instead).
+A platform table like `ui_catalogs`: no `tenant_id`.
+
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes
 as a JSON list of SHA-256 hashes. `login_challenges` is a password-checked sign-in waiting for its

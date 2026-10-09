@@ -148,12 +148,19 @@ Structured into 5 semantic, deep-linkable tab panes (`?tab=...`) with horizontal
 
 ### 4. Security & Audit (`?tab=security`)
 
-- **Workstation Enrollment Key**: View, reveal, or rotate the enrollment key used to pair new thin clients.
+- **Workstation Enrollment Key**: View, reveal, or rotate the enrollment key used to pair new thin clients. The key's last character checks the rest, so a workstation catches a typing mistake before it sends anything.
 - **Account Security & Password**: Change admin password; revokes all other active sessions upon completion.
 - **Recent Activity (`.table-scrollable`)**:
   - Administrative audit log of privileged actions, timestamps, and actors.
   - Capped with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) and sticky table headers (`th` pinned with `position: sticky; top: 0; z-index: 2;`).
   - Stays compact and neatly aligned with the left column cards.
+
+### Two-factor sign-in (`?tab=two-factor`)
+
+How your own account signs in. Every staff account can open Settings for this tab, whatever its permissions; without the `settings` permission it is the only tab shown.
+
+- **Emailed code**: turn it on and every sign-in asks for a six-digit code sent to your address. Nothing to set up.
+- **Authenticator app**: optional. Sign-in then asks for the app's code (an emailed one stays available), and you get ten recovery codes.
 
 ### 5. Errors & Warnings (`?tab=issues`)
 

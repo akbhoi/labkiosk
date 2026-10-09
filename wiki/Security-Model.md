@@ -33,6 +33,8 @@ What Lab Kiosk defends, how, and what it explicitly does not defend. A security 
 
 There are **zero runtime npm dependencies**. No auth framework, no routing library, no ORM. Every primitive is a Web API, which removes the supply-chain surface entirely and keeps cold start under 10 ms.
 
+**Two-step sign-in.** After the password, a super admin is always emailed a six-digit code (it works for that sign-in only, for ten minutes, five wrong tries). An organization account turns the same on under **Settings → Two-factor sign-in**; every account can add an authenticator app (TOTP) with ten recovery codes on top. A browser can be trusted for 30 days. Where email is not configured, an account with no app signs in with its password alone and the server logs why, rather than locking every account out. `SUPER_ADMIN_EMAIL` must therefore reach an inbox that can be read without signing in to the console.
+
 Password changes go through one path — `POST /api/auth/change-password` — which verifies the current password and **revokes the account's other sessions**, so a stolen cookie does not outlive a password change.
 
 ### Tenant isolation
