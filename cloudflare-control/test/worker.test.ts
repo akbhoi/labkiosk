@@ -86,6 +86,23 @@ function request(path: string, init: RequestInit & { cookie?: string; bearer?: s
   return new Request(`${BASE}${path}`, { ...init, headers });
 }
 
+/** A page's text outside its script blocks, found by position rather than by pattern. */
+function outsideScripts(html: string): string {
+  const lower = html.toLowerCase();
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const open = lower.indexOf("<script", at);
+    if (open < 0) return out + html.slice(at);
+    out += html.slice(at, open);
+    const close = lower.indexOf("</script", open);
+    if (close < 0) return out;
+    const end = lower.indexOf(">", close);
+    if (end < 0) return out;
+    at = end + 1;
+  }
+}
+
 function json(body: unknown): RequestInit {
   return { method: "POST", body: JSON.stringify(body) };
 }
@@ -1479,7 +1496,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         /Production Ready|Edge Active/,
         /end-to-end/i
       ]) {
-        assert.ok(!claim.test(page.replace(/<script[\s\S]*?<\/script>/g, "")), `the public pages do not say ${claim}`);
+        assert.ok(!claim.test(outsideScripts(page)), `the public pages do not say ${claim}`);
       }
     }
   });
@@ -1595,7 +1612,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(html.includes("<th>Name</th><th>What</th>") && html.includes("<td><code>a|b</code></td><td>&lt;i&gt;x&lt;/i&gt;</td>"));
     assert.ok(html.includes("<blockquote><p>A note.</p></blockquote>") && html.includes("<hr>"));
     assert.ok(html.includes("<pre><code>&lt;script&gt;alert(2)&lt;/script&gt;</code></pre>"));
-    assert.ok(!/<script|<i>/.test(html), "nothing in the source becomes markup");
+    assert.ok(!html.toLowerCase().includes("<script") && !html.toLowerCase().includes("<i>"), "nothing in the source becomes markup");
     assert.equal(headingId("What's new in 2.7.0?"), "whats-new-in-270");
   });
 
