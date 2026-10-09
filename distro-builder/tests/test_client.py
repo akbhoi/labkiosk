@@ -158,6 +158,62 @@ class CatalogKeysResolve(unittest.TestCase):
                 self.assertEqual(sorted(k for k in keys if k not in catalog), [])
 
 
+class EnrollmentKeyShape(unittest.TestCase):
+    """A key that cannot be one is refused on the workstation, before any server is asked.
+
+    The check is only safe while it describes exactly what the control plane
+    generates: stricter, and a real key could not enrol a workstation at all.
+    """
+
+    def test_keys_of_the_generated_shape_pass(self):
+        for key in ("ABCDE-FGHJK-MNPQR-STVWX", "YZ234-56789-ABCDE-FGHJK", "22222-22222-22222-22222"):
+            with self.subTest(key=key):
+                self.assertTrue(agent.ENROLLMENT_KEY_PATTERN.match(key))
+
+    def test_mistyped_keys_are_refused(self):
+        for key in (
+            "",
+            "ABCDE-FGHJK-MNPQR-STVW",            # one short
+            "ABCDE-FGHJK-MNPQR-STVWXY",          # one long
+            "ABCDEFGHJKMNPQRSTVWX",              # no groups
+            "ABCDE FGHJK MNPQR STVWX",
+            "abcde-fghjk-mnpqr-stvwx",           # the route upper-cases before it checks
+            "ABCDE-FGHJK-MNPQR-STVW0",           # zero for the letter it resembles
+            "ABCDE-FGHJK-MNPQR-STVWO",
+            "ABCDE-FGHJK-MNPQR-STVW1",
+            "ABCDE-FGHJK-MNPQR-STVWI",
+            "ABCDE-FGHJK-MNPQR-STVWL",
+            "ABCDE-FGHJK-MNPQR-STVWU",
+            "ABCDE-FGHJK-MNPQR-STVWX\n",        # \Z, not $: a trailing newline is not a key
+            "ABCDE-FGHJK-MNPQR-STVW\u00c9",
+        ):
+            with self.subTest(key=key):
+                self.assertIsNone(agent.ENROLLMENT_KEY_PATTERN.match(key))
+
+    def test_the_alphabet_is_the_one_keys_are_generated_from(self):
+        with open(os.path.join(ROOT, "..", "cloudflare-control", "src", "auth.ts"), encoding="utf-8") as handle:
+            control = handle.read()
+        generator = control[control.index("export function generateEnrollmentKey") :]
+        generated = re.search(r'const alphabet = "([A-Z0-9]+)";', generator).group(1)
+        self.assertEqual(agent.ENROLLMENT_KEY_ALPHABET, generated)
+        self.assertIn("[0, 5, 10, 15].map((i) => chars.slice(i, i + 5)", generator, "four groups of five")
+        with open(os.path.join(CHROOT, "opt/labkiosk/setup/wizard.html"), encoding="utf-8") as handle:
+            wizard = handle.read()
+        self.assertIn("const ENROLLMENT_KEY_ALPHABET = '%s';" % generated, wizard)
+
+    def test_the_setup_route_checks_the_key_before_it_enrols(self):
+        import inspect
+        source = inspect.getsource(agent)
+        route = source[source.index('enrollment_key = str(data.get("enrollmentKey"') :]
+        self.assertLess(route.index("ENROLLMENT_KEY_PATTERN.match(enrollment_key)"), route.index("enroll(subdomain, client_id, enrollment_key"))
+
+    def test_the_wizard_refuses_a_bad_key_before_it_calls_the_agent(self):
+        with open(os.path.join(CHROOT, "opt/labkiosk/setup/wizard.html"), encoding="utf-8") as handle:
+            wizard = handle.read()
+        submit = wizard[wizard.index("form.addEventListener('submit'") :]
+        self.assertLess(submit.index("enrollmentKeyProblem(enrollmentKey)"), submit.index("/api/setup"))
+
+
 class OrganizationNameFromEnrolment(unittest.TestCase):
     """The Worker renamed schoolName to organizationName; both must be understood."""
 

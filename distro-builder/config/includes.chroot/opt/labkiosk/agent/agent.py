@@ -202,6 +202,15 @@ LOCAL_WORKER_HOSTS = {
 # Kept in step with the maxlength="64" on the wizard's identifier input.
 CLIENT_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,62}\Z")
 
+# An organization's enrollment key as the control plane generates it
+# (generateEnrollmentKey in cloudflare-control/src/auth.ts): four groups of five
+# from an alphabet without I, L, O, U, 0 and 1, which are misread. A key that is
+# not this shape was mistyped, and is refused here without asking the server --
+# so a typo costs no attempt against the organization's enrolment limit. Kept in
+# step with ENROLLMENT_KEY_ALPHABET in the wizard.
+ENROLLMENT_KEY_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
+ENROLLMENT_KEY_PATTERN = re.compile(r"^[%s]{5}(?:-[%s]{5}){3}\Z" % (ENROLLMENT_KEY_ALPHABET, ENROLLMENT_KEY_ALPHABET))
+
 # Whole-disk device nodes the guided installer may target. Kept identical to
 # TARGET_DISK_PATTERN in /usr/local/bin/labkiosk-install, which re-checks it
 # because sudoers lets the kiosk user invoke that binary directly.
@@ -2227,6 +2236,19 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                     400,
                     {
                         "error": "Organization subdomain or custom domain, workstation name, and enrollment key are all required."
+                    },
+                )
+                return
+
+            if not ENROLLMENT_KEY_PATTERN.match(enrollment_key):
+                self._send(
+                    400,
+                    {
+                        "error": (
+                            "The enrollment key is not valid: it is 20 characters in four groups "
+                            "(XXXXX-XXXXX-XXXXX-XXXXX) and never contains the letters I, L, O, U "
+                            "or the digits 0 and 1. Nothing was sent."
+                        )
                     },
                 )
                 return

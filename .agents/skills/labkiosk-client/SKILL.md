@@ -27,6 +27,11 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   `/etc/labkiosk-installed`) ⇒ installed, checked first because installed disks boot through
   live-boot too; then `/run/live` or `boot=live` ⇒ live.
   Install endpoints refuse when `not is_live_session()` (`/api/install/disks` returns `[]`).
+- **Enrollment key shape** (`ENROLLMENT_KEY_PATTERN`, and `ENROLLMENT_KEY_ALPHABET` in the wizard): four
+  groups of five from the alphabet `generateEnrollmentKey` uses (no I, L, O, U, 0, 1). The wizard
+  says what is wrong as the key is typed and refuses to submit it; `/api/setup` refuses it before
+  any server is asked. A test holds the three alphabets equal: never make the check stricter than
+  what the control plane generates, or a real key cannot enrol.
 - **Worker URL** (`validate_worker_url()`): `https`, or plain `http` only to loopback, container
   gateways, `*.internal`/`*.local`, or a private IPv4 literal (`is_private_ip_literal()`:
   `10/8`, `172.16/12`, `192.168/16`). Never widen to hostnames or public IPs — the device token
