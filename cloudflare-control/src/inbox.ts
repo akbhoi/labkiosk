@@ -657,7 +657,7 @@ const RECEIPT_GAP_SECONDS = 24 * 3600;
  */
 async function sendReceipt(env: Env, db: D1Database, conversation: Conversation, envelopeFrom: string, messageId: string | null): Promise<void> {
   if (mailConfigProblem(env)) return;
-  const local = conversation.contact_email.slice(0, conversation.contact_email.indexOf("@"));
+  const local = conversation.contact_email.split("@")[0];
   if (!parseAddress(envelopeFrom) || NO_RECEIPT_SENDER.test(local)) return;
   const recent = await db
     .prepare("SELECT COUNT(*) AS n FROM conversations WHERE contact_email = ? AND id <> ? AND created_at > ?")
