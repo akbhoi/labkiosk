@@ -115,6 +115,7 @@
   "ui.js.applying-connecting": "Applying & Connecting...",
   "ui.js.complete-key-entered": "Complete key entered.",
   "ui.js.key-character": "character",
+  "ui.js.key-mistyped": "There is a typing mistake somewhere in this key: one character is wrong, or two are swapped. Check it against the dashboard.",
   "ui.js.key-never-contains": "A key never contains the letters I, L, O, U or the digits 0 and 1. Check: ",
   "ui.js.key-not-valid": "The enrollment key is not valid, so nothing was sent. ",
   "ui.js.key-of-twenty-entered": "of 20 characters entered.",

@@ -94,15 +94,55 @@ export function generateDeviceToken(): string {
 }
 
 /**
- * Human-transcribable per-organization enrollment key.
- * 20 characters from a Crockford-style alphabet with the ambiguous glyphs
- * (I, L, O, U, 0, 1) removed, grouped for reading aloud in a room.
+ * The characters an enrollment key is made of: a Crockford-style alphabet with
+ * the glyphs that are misread (I, L, O, U, 0, 1) removed.
+ */
+export const ENROLLMENT_KEY_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
+/** Characters in a key, hyphens aside: nineteen random ones and the check character. */
+export const ENROLLMENT_KEY_LENGTH = 20;
+
+/**
+ * The check character for the characters before it: the Luhn algorithm over
+ * this alphabet (Luhn mod N). The workstation recomputes it as the key is
+ * typed, so one wrong character, or two neighbours swapped, is caught there
+ * and never sent. It detects mistakes; it is not a secret and adds no entropy.
+ *
+ * The wizard (`enrollmentKeyCheckCharacter` in wizard.html) and the agent
+ * (`enrollment_key_check_character` in agent.py) carry the same algorithm, and
+ * tests on both sides hold them to the same vectors.
+ */
+export function enrollmentKeyCheckCharacter(payload: string): string {
+  const n = ENROLLMENT_KEY_ALPHABET.length;
+  let factor = 2;
+  let sum = 0;
+  for (let i = payload.length - 1; i >= 0; i--) {
+    const code = ENROLLMENT_KEY_ALPHABET.indexOf(payload[i]);
+    if (code < 0) throw new Error("Not an enrollment key character");
+    const addend = factor * code;
+    sum += Math.floor(addend / n) + (addend % n);
+    factor = factor === 2 ? 1 : 2;
+  }
+  return ENROLLMENT_KEY_ALPHABET[(n - (sum % n)) % n];
+}
+
+/** True for a key of the shape issued here: four groups of five whose last character checks the rest. */
+export function isEnrollmentKey(key: string): boolean {
+  const chars = String(key || "").split("-");
+  if (chars.length !== 4 || chars.some((group) => group.length !== 5)) return false;
+  const flat = chars.join("");
+  for (const ch of flat) if (!ENROLLMENT_KEY_ALPHABET.includes(ch)) return false;
+  return enrollmentKeyCheckCharacter(flat.slice(0, -1)) === flat[flat.length - 1];
+}
+
+/**
+ * Human-transcribable per-organization enrollment key: nineteen random
+ * characters and a check character, grouped in fives for reading aloud in a room.
  */
 export function generateEnrollmentKey(): string {
-  const alphabet = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
-  const bytes = crypto.getRandomValues(new Uint8Array(20));
-  const chars = Array.from(bytes, (b) => alphabet[b % alphabet.length]);
-  return [0, 5, 10, 15].map((i) => chars.slice(i, i + 5).join("")).join("-");
+  const bytes = crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_LENGTH - 1));
+  const payload = Array.from(bytes, (b) => ENROLLMENT_KEY_ALPHABET[b % ENROLLMENT_KEY_ALPHABET.length]).join("");
+  const chars = payload + enrollmentKeyCheckCharacter(payload);
+  return [0, 5, 10, 15].map((i) => chars.slice(i, i + 5)).join("-");
 }
 
 /**

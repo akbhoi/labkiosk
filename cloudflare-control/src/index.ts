@@ -71,6 +71,7 @@ import {
   buildEffectiveWhitelist,
   normalizeDomain,
   regenerateEnrollmentKey,
+  rotateUncheckedEnrollmentKeys,
   writeAuditLog,
   useAuditQueue,
   insertAuditEntries,
@@ -121,6 +122,7 @@ import {
   timingSafeEqual,
   validatePasswordStrength,
   isPlausibleEmail,
+  isEnrollmentKey,
   generateNonce
 } from "./auth";
 import {
@@ -652,6 +654,9 @@ export default {
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);
+    for (const tenantId of await rotateUncheckedEnrollmentKeys(db)) {
+      await writeAuditLog(db, { tenantId, userId: null, action: "settings.rotate_enrollment_key", details: "reason=check_character" });
+    }
     const stranded = await fileStrandedInboundMail(env, db);
     if (stranded) console.log(`[Worker] Filed ${stranded} incoming messages the email Worker could not hand over.`);
     const purgedIssues = await purgeOldWorkstationIssues(db);
@@ -1853,10 +1858,19 @@ export default {
     if (path === "/api/settings/enrollment-key" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
-      return new Response(
-        JSON.stringify({ enrollmentKey: currentTenant!.enrollment_key, subdomain: currentTenant!.subdomain }),
-        { headers: jsonHeaders }
-      );
+      // A key from before the check character cannot be typed into a workstation
+      // any more: hand out a new one rather than one the wizard would refuse.
+      let enrollmentKey = currentTenant!.enrollment_key;
+      if (enrollmentKey && !isEnrollmentKey(enrollmentKey)) {
+        enrollmentKey = await regenerateEnrollmentKey(db, currentTenant!.id);
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: null,
+          action: "settings.rotate_enrollment_key",
+          details: "reason=check_character"
+        });
+      }
+      return new Response(JSON.stringify({ enrollmentKey, subdomain: currentTenant!.subdomain }), { headers: jsonHeaders });
     }
 
     // POST /api/settings/enrollment-key: rotate it (previously enrolled devices keep working)

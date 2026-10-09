@@ -24,7 +24,8 @@ import {
   verifyPassword,
   sha256Hex,
   generateDeviceToken,
-  generateEnrollmentKey
+  generateEnrollmentKey,
+  isEnrollmentKey
 } from "./auth";
 import { DEMO_SLUGS, DEMO_TENANTS } from "./demo";
 
@@ -929,6 +930,27 @@ export async function regenerateEnrollmentKey(db: D1Database, tenantId: string):
   const key = generateEnrollmentKey();
   await updateTenant(db, tenantId, { enrollment_key: key });
   return key;
+}
+
+/**
+ * Keys issued before they carried a check character fail the workstation's own
+ * check, so an organization holding one could not enrol a workstation with it.
+ * Replace each (a key that happens to pass is left alone). Workstations already
+ * enrolled keep working: they hold a device token, not the key. Returns the
+ * organizations whose key was replaced.
+ */
+export async function rotateUncheckedEnrollmentKeys(db: D1Database, limit = 500): Promise<string[]> {
+  const rows = await db
+    .prepare("SELECT id, enrollment_key FROM tenants WHERE enrollment_key <> '' LIMIT ?")
+    .bind(Math.max(1, Math.min(5000, limit)))
+    .all<{ id: string; enrollment_key: string }>();
+  const rotated: string[] = [];
+  for (const row of rows.results || []) {
+    if (isEnrollmentKey(row.enrollment_key)) continue;
+    await regenerateEnrollmentKey(db, row.id);
+    rotated.push(row.id);
+  }
+  return rotated;
 }
 
 /** Find an active tenant by its enrollment key. */

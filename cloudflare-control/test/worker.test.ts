@@ -55,6 +55,8 @@ import { PALETTE } from "../src/ui_tokens";
 import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
+import { ENROLLMENT_KEY_ALPHABET, enrollmentKeyCheckCharacter, generateEnrollmentKey, isEnrollmentKey } from "../src/auth";
+import { rotateUncheckedEnrollmentKeys } from "../src/db";
 import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
@@ -1225,6 +1227,82 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(mailConfigProblem({ ...inboxEnv, MAILER: mailer(200, {}) }), null, "the Service Binding alone is enough to send");
   });
 
+  test("The enrollment key carries a check character the workstation can verify by itself", async () => {
+    // The same pairs the agent is held to (ENROLLMENT_KEY_VECTORS in distro-builder/tests/test_client.py).
+    const vectors: Array<[string, string]> = [
+      ["AAAAAAAAAAAAAAAAAAA", "A"],
+      ["ABCDEFGHJKMNPQRSTVW", "H"],
+      ["YZ23456789ABCDEFGHJ", "4"],
+      ["9999999999999999999", "X"],
+      ["2222222222222222222", "P"]
+    ];
+    const grouped = (chars: string) => [0, 5, 10, 15].map((i) => chars.slice(i, i + 5)).join("-");
+
+    // The wizard's own copy of the algorithm, run as the browser would run it.
+    const wizard = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "distro-builder/config/includes.chroot/opt/labkiosk/setup/wizard.html"),
+      "utf8"
+    );
+    const start = wizard.indexOf("function enrollmentKeyCheckCharacter(payload) {");
+    const end = wizard.indexOf("\n    }\n", start);
+    assert.ok(start > 0 && end > start, "the wizard has its check character function");
+    assert.ok(wizard.includes(`const ENROLLMENT_KEY_ALPHABET = '${ENROLLMENT_KEY_ALPHABET}';`));
+    const wizardCheck = new Function(
+      "ENROLLMENT_KEY_ALPHABET",
+      `${wizard.slice(start, end + 7)}; return enrollmentKeyCheckCharacter;`
+    )(ENROLLMENT_KEY_ALPHABET) as (payload: string) => string;
+
+    for (const [payload, check] of vectors) {
+      assert.equal(enrollmentKeyCheckCharacter(payload), check, payload);
+      assert.equal(wizardCheck(payload), check, `the wizard agrees on ${payload}`);
+      assert.ok(isEnrollmentKey(grouped(payload + check)));
+    }
+
+    // Every key issued passes, and the wizard agrees with each one.
+    for (let i = 0; i < 200; i++) {
+      const key = generateEnrollmentKey();
+      assert.match(key, /^[A-HJKMNP-TV-Z2-9]{5}(-[A-HJKMNP-TV-Z2-9]{5}){3}$/);
+      assert.ok(isEnrollmentKey(key), key);
+      const flat = key.replace(/-/g, "");
+      assert.equal(wizardCheck(flat.slice(0, -1)), flat[19]);
+    }
+
+    // One wrong character anywhere is always caught; so is the wrong shape.
+    const good = "ABCDEFGHJKMNPQRSTVWH";
+    for (let position = 0; position < 20; position++) {
+      for (const other of ENROLLMENT_KEY_ALPHABET) {
+        if (other === good[position]) continue;
+        assert.ok(!isEnrollmentKey(grouped(good.slice(0, position) + other + good.slice(position + 1))));
+      }
+    }
+    for (const bad of ["", good, grouped(good).toLowerCase(), grouped(good) + "-AAAAA", grouped(good).slice(0, -1), grouped(good).slice(0, -1) + "0", `${grouped(good)}\n`]) {
+      assert.ok(!isEnrollmentKey(bad), JSON.stringify(bad));
+    }
+
+    // Keys from before the check character are replaced: when the organization looks at its key...
+    const db = getDatabase(mockEnv);
+    const old = "ABCDE-FGHJK-MNPQR-STVWX";
+    assert.ok(!isEnrollmentKey(old));
+    const tenantId = (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id;
+    await db.prepare("UPDATE tenants SET enrollment_key = ? WHERE id = ?").bind(old, tenantId).run();
+    const { data: shown } = await callJson("/api/settings/enrollment-key?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.notEqual(shown.enrollmentKey, old);
+    assert.ok(isEnrollmentKey(shown.enrollmentKey));
+    assert.equal((await callJson("/api/settings/enrollment-key?tenant=greenwood", { cookie: orgSessionCookie })).data.enrollmentKey, shown.enrollmentKey, "a checked key is left alone");
+
+    // ...and for every organization in the hourly run, leaving checked keys as they are.
+    await db.prepare("UPDATE tenants SET enrollment_key = ? WHERE id = ?").bind(old, tenantId).run();
+    const before = await db.prepare("SELECT id, enrollment_key FROM tenants WHERE id <> ?").bind(tenantId).all<{ id: string; enrollment_key: string }>();
+    const rotated = await rotateUncheckedEnrollmentKeys(db);
+    assert.ok(rotated.includes(tenantId));
+    const after = await db.prepare("SELECT id, enrollment_key FROM tenants").all<{ id: string; enrollment_key: string }>();
+    for (const row of after.results) assert.ok(row.enrollment_key === "" || isEnrollmentKey(row.enrollment_key), row.id);
+    for (const row of before.results) {
+      if (isEnrollmentKey(row.enrollment_key)) assert.equal(after.results.find((r) => r.id === row.id)!.enrollment_key, row.enrollment_key);
+    }
+    assert.deepEqual(await rotateUncheckedEnrollmentKeys(db), [], "nothing left to rotate");
+  });
+
   test("Mail sent from the platform's own sending domain is a loop", async () => {
     const db = getDatabase(mockEnv);
     const { message } = inboundMessage(["From: sales@email.labkiosk.org", "Subject: Re: quote", "", "x"].join("\n"), "bounce@cf.example");
@@ -2169,6 +2247,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 200);
     assert.match(data.enrollmentKey, /^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$/);
+    assert.ok(isEnrollmentKey(data.enrollmentKey), "its last character checks the rest");
     enrollmentKey = data.enrollmentKey;
   });
 

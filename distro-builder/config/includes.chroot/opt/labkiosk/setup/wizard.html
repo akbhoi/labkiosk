@@ -2018,10 +2018,29 @@
     const ENROLLMENT_KEY_CHARS = 20;
     const ENROLLMENT_KEY_GROUP = 5;
     // The characters a key is made of: generateEnrollmentKey leaves out I, L, O,
-    // U, 0 and 1 because they are misread. So a key that holds one of them was
-    // mistyped, and that can be said the moment it is typed, with no server to
-    // ask. The agent checks the same thing (ENROLLMENT_KEY_PATTERN in agent.py).
+    // U, 0 and 1 because they are misread, and makes the last character a check
+    // on the nineteen before it. So a key that holds one of those glyphs, or
+    // whose last character does not fit the rest, was mistyped, and that can be
+    // said the moment it is typed, with no server to ask. The agent checks the
+    // same thing (enrollment_key_is_valid in agent.py).
     const ENROLLMENT_KEY_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+
+    // The check character for the characters before it: the Luhn algorithm over
+    // the key's alphabet, exactly as enrollmentKeyCheckCharacter in the control
+    // plane's src/auth.ts computes it. One wrong character, or two neighbours
+    // swapped, changes it.
+    function enrollmentKeyCheckCharacter(payload) {
+      const n = ENROLLMENT_KEY_ALPHABET.length;
+      let factor = 2;
+      let sum = 0;
+      for (let i = payload.length - 1; i >= 0; i--) {
+        const code = ENROLLMENT_KEY_ALPHABET.indexOf(payload[i]);
+        const addend = factor * code;
+        sum += Math.floor(addend / n) + (addend % n);
+        factor = factor === 2 ? 1 : 2;
+      }
+      return ENROLLMENT_KEY_ALPHABET[(n - (sum % n)) % n];
+    }
     const enrollmentKeyInput = document.getElementById('enrollment-key');
     const enrollmentKeyHint = document.getElementById('enrollment-key-hint');
     const ENROLLMENT_KEY_HINT_HTML = enrollmentKeyHint.innerHTML;
@@ -2040,8 +2059,9 @@
 
     /**
      * What is wrong with a key as typed, or null: characters no key contains
-     * (`characters`, with their positions counted without the hyphens), or not
-     * all twenty there yet (`incomplete`).
+     * (`characters`, with their positions counted without the hyphens), not all
+     * twenty there yet (`incomplete`), or all twenty there but the last one is
+     * not the check character of the rest (`mistyped`: a slip somewhere in it).
      */
     function enrollmentKeyProblem(value) {
       const chars = normaliseEnrollmentKey(value).replace(/-/g, '');
@@ -2050,7 +2070,8 @@
         if (!ENROLLMENT_KEY_ALPHABET.includes(chars[i])) wrong.push({ char: chars[i], position: i + 1 });
       }
       if (wrong.length) return { kind: 'characters', wrong };
-      return chars.length === ENROLLMENT_KEY_CHARS ? null : { kind: 'incomplete', count: chars.length };
+      if (chars.length !== ENROLLMENT_KEY_CHARS) return { kind: 'incomplete', count: chars.length };
+      return enrollmentKeyCheckCharacter(chars.slice(0, -1)) === chars[chars.length - 1] ? null : { kind: 'mistyped' };
     }
 
     /** The sentence for a key problem, as the hint under the field and the refusal on submit show it. */
@@ -2058,6 +2079,9 @@
       if (problem.kind === 'characters') {
         const found = problem.wrong.map((w) => `${w.char} (${t('ui.js.key-character', 'character')} ${w.position})`).join(', ');
         return t('ui.js.key-never-contains', 'A key never contains the letters I, L, O, U or the digits 0 and 1. Check: ') + found;
+      }
+      if (problem.kind === 'mistyped') {
+        return t('ui.js.key-mistyped', 'There is a typing mistake somewhere in this key: one character is wrong, or two are swapped. Check it against the dashboard.');
       }
       return `${problem.count} ${t('ui.js.key-of-twenty-entered', 'of 20 characters entered.')}`;
     }
@@ -2086,7 +2110,7 @@
 
       const count = el.value.replace(/-/g, '').length;
       const problem = enrollmentKeyProblem(el.value);
-      const mistyped = problem && problem.kind === 'characters';
+      const mistyped = problem && problem.kind !== 'incomplete';
       el.style.borderColor = count === 0 ? '' : (mistyped ? 'var(--red)' : (problem ? 'var(--border)' : 'var(--green)'));
       el.setAttribute('aria-invalid', mistyped ? 'true' : 'false');
       enrollmentKeyHint.style.color = mistyped ? 'var(--red)' : (problem ? 'var(--muted)' : '#34d399');
