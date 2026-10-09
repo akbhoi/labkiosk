@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import worker, { Env } from "../src/index";
 import { handleSend, SendRequest, sendRequestProblem } from "../src/send";
 import { MailTemplate, renderMailHtml, TEMPLATE_NAMES } from "../src/templates";
-import { esc, paragraphs, safeUrl } from "../src/templates/layout";
+import { esc, isPlainAddress, paragraphs, safeUrl } from "../src/templates/layout";
 import { BRAND, SAMPLES } from "./samples";
 
 const HOSTILE = `"><script>alert(1)</script><img src=x onerror=alert(2)>`;
@@ -64,6 +64,13 @@ test("Nothing a person typed reaches a message unescaped", () => {
     // Escaped, the words are still there as text; what must not be is markup.
     assert.ok(!/<script|<img|href="javascript:/i.test(html) && !html.includes(HOSTILE), `${template.name} lets nothing through`);
   }
+  assert.ok(isPlainAddress("support@labkiosk.org"));
+  for (const bad of ["support", "@labkiosk.org", "support@", "a@b@c.org", "a b@c.org", 'a"@c.org', "a@c.org>", "a@c.org\n"]) assert.ok(!isPlainAddress(bad), bad);
+  // A long run of "@" is answered at once, not after a search through every split of it.
+  const started = Date.now();
+  assert.ok(!isPlainAddress("!@".repeat(150)));
+  assert.ok(!renderMailHtml({ template: { name: "notice" }, subject: "s", text: "t", brand: { ...BRAND, replyAddress: "!@".repeat(50000) } }).includes("mailto:"));
+  assert.ok(Date.now() - started < 500);
   assert.equal(safeUrl("https://example.org/a?b=1"), "https://example.org/a?b=1");
   for (const bad of ["javascript:alert(1)", "data:text/html,x", "//example.org", "https://exa mple.org", ""]) assert.equal(safeUrl(bad), null);
   assert.equal(paragraphs("a\nb\n\n\nc"), '<p style="margin:0 0 16px;">a<br>b</p><p style="margin:0 0 16px;">c</p>');

@@ -11,6 +11,7 @@
  */
 
 import { Brand, MailTemplate, renderMailHtml, TEMPLATE_NAMES } from "./templates";
+import { isPlainAddress } from "./templates/layout";
 
 export interface SendRequest {
   from: { email: string; name: string };
@@ -36,8 +37,12 @@ function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
 }
 
+/** One address, with a dot in its domain, and nothing that could make it a list of them. */
 function isAddress(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 320 && /^[^\s<>"',;]+@[^\s<>"',;@]+\.[^\s<>"',;@]+$/.test(value);
+  if (typeof value !== "string" || !isPlainAddress(value) || value.includes(",") || value.includes(";")) return false;
+  const domain = value.slice(value.indexOf("@") + 1);
+  const dot = domain.lastIndexOf(".");
+  return dot > 0 && dot < domain.length - 1;
 }
 
 /** One line: a line break in a header value would start a new header. */

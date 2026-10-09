@@ -94,6 +94,21 @@ export function safeUrl(value: unknown): string | null {
   }
 }
 
+/**
+ * `local@domain` with nothing that could leave a `mailto:` link or an attribute.
+ * Checked by hand: a pattern with a repeat on each side of the `@` backtracks
+ * on a long run of `@`, and this value comes from a request.
+ */
+export function isPlainAddress(value: string): boolean {
+  if (value.length > 320) return false;
+  const at = value.indexOf("@");
+  if (at < 1 || at === value.length - 1 || at !== value.lastIndexOf("@")) return false;
+  for (const ch of value) {
+    if (ch === " " || ch === "<" || ch === ">" || ch === '"' || ch === "'" || ch < " ") return false;
+  }
+  return true;
+}
+
 /** One line of text, its http(s) addresses made links. */
 function line(text: string): string {
   let out = "";
@@ -202,7 +217,7 @@ export function layout(parts: LayoutParts): string {
   const { brand } = parts;
   const site = safeUrl(brand.siteUrl);
   const host = site ? new URL(site).host : null;
-  const reply = brand.replyAddress && /^[^\s<>"']+@[^\s<>"']+$/.test(brand.replyAddress) ? brand.replyAddress : null;
+  const reply = brand.replyAddress && isPlainAddress(brand.replyAddress) ? brand.replyAddress : null;
   const initials = brand.name
     .split(/\s+/)
     .map((word) => word[0] || "")
