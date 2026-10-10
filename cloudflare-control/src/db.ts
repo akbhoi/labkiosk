@@ -78,7 +78,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   remote_control_status TEXT NOT NULL DEFAULT 'none'
   CHECK (remote_control_status IN ('none', 'pending', 'approved', 'rejected')),
   update_channel TEXT NOT NULL DEFAULT 'stable'
-  CHECK (update_channel IN ('stable', 'beta'))
+  CHECK (update_channel IN ('stable', 'beta')),
+  security_updates TEXT NOT NULL DEFAULT 'next_boot'
+  CHECK (security_updates IN ('next_boot', 'approval'))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -126,7 +128,9 @@ CREATE TABLE IF NOT EXISTS client_devices (
   update_version TEXT,
   update_progress INTEGER,
   update_detail TEXT,
-  agent_version TEXT
+  agent_version TEXT,
+  update_kind TEXT,
+  update_since INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -579,6 +583,9 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT update_phase, update_version, update_progress, update_detail, agent_version FROM client_devices LIMIT 1").run();
     // 0028: the ISO's checksum, for /download.
     await db.prepare("SELECT iso_sha256 FROM release_notes LIMIT 1").run();
+    // 0029: security releases at the next boot.
+    await db.prepare("SELECT security_updates FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT update_kind, update_since FROM client_devices LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -877,6 +884,7 @@ export async function seedDefaultPortalSites(db: D1Database, tenantId: string): 
 const MUTABLE_TENANT_COLUMNS = new Set([
   "name",
   "update_channel",
+  "security_updates",
   "subdomain",
   "requested_subdomain",
   "status",
@@ -1423,8 +1431,9 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
   const now = Math.floor(Date.now() / 1000);
   const statement = db.prepare(
     `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password,
-       image_version, agent_version, update_phase, update_version, update_progress, update_detail, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       image_version, agent_version, update_phase, update_version, update_progress, update_detail, update_kind, update_since,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        client_num = excluded.client_num,
        ip = excluded.ip,
@@ -1438,6 +1447,8 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
        update_version = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_version ELSE excluded.update_version END,
        update_progress = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_progress ELSE excluded.update_progress END,
        update_detail = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_detail ELSE excluded.update_detail END,
+       update_kind = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_kind ELSE excluded.update_kind END,
+       update_since = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_since ELSE excluded.update_since END,
        updated_at = excluded.updated_at`
   );
   await db.batch(
@@ -1458,6 +1469,8 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
         row.update?.version ?? null,
         row.update?.progress ?? null,
         row.update?.detail ?? null,
+        row.update?.kind ?? null,
+        row.update?.since ?? null,
         now,
         now
       )

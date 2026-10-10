@@ -373,7 +373,8 @@ The workstation's control channel: a WebSocket to its organization's OrgHub Dura
     on connect and after every admin change;
   - `{"type":"commands","commands":[{"id":"…","action":"lock","message":"…"}]}` when dispatched.
     Besides the [`POST /api/command`](#post-apicommand) actions, the hub sends
-    `{"action":"release-available","version":"…"}` (download the offered release; see
+    `{"action":"release-available","version":"…"}` (download the release meant for this
+    workstation, a security release for its own line before the newest one; see
     [`GET /api/devices/update`](#get-apidevicesupdate)) and `{"action":"install-update","version":"…"}`
     (install the release this workstation holds `ready`; queued only by
     [`POST /api/clients/install-update`](#post-apiclientscheck-update-post-apiclientsinstall-update));
@@ -382,9 +383,11 @@ The workstation's control channel: a WebSocket to its organization's OrgHub Dura
 - **Workstation → hub:**
   - `{"type":"status","clientNum":1,"activeUrl":"…","isLocked":false,"vncPassword":"…"}`
     on connect and whenever it changes. An agent from 2.9.0 on adds `imageVersion`, `agentVersion`
-    and `update: {"phase", "version"?, "progress"?, "detail"?}`, `phase` being `live`, `idle`,
-    `checking`, `downloading`, `ready`, `installing`, `up-to-date` or `error` (the HTTP fallback
-    body carries the same fields);
+    and `update: {"phase", "version"?, "progress"?, "detail"?, "kind"?, "since"?}`, `phase` being
+    `live`, `idle`, `checking`, `downloading`, `ready`, `staged` (a security release that installs
+    at the next start), `installing`, `up-to-date` or `error`; `kind` (`feature` or `security`)
+    and `since` (unix seconds) come with `ready` and `staged` (the HTTP fallback body carries the
+    same fields);
   - `{"type":"frame","thumbnail":"data:image/jpeg;base64,…"}` every `intervalSeconds` while asked
     (≤ 256 KB, relayed to consoles and never stored);
   - `{"type":"ping"}` every 15 s, exactly these bytes.
@@ -496,22 +499,33 @@ what people did.
 #### `GET /api/devices/update`
 
 The system release this workstation's organization is offered, asked by the workstation's root
-updater (`labkiosk-update run`) when the hub sends `release-available`. The offer is the newest
+updater (`labkiosk-update run`) when the hub sends `release-available`. `release` is the newest
 unrevoked release classified `stable`, and also `beta` ones when the organization's update channel
-is `beta`. Files are downloaded from `url` (`RELEASES_BASE_URL` + `releases/<version>`), not
-through the Worker; the workstation checks the manifest's signature before it uses any of them.
+is `beta`. `security` is the newest `security` release of that set for the line (major.minor) of
+`running`, the image the workstation runs, when it is newer; `securityUpdates` says whether the
+workstation installs it at its next start by itself (`next_boot`) or waits for an administrator
+(`approval`). Files are downloaded from `url` (`RELEASES_BASE_URL` + `releases/<version>`), not
+through the Worker; the workstation checks the manifest's signature before it uses any of them, and
+stages a release for its next start only when the signed manifest says `security`.
 
 - **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
   organization. `403` when the organization is not active.
-- **Response `200 OK`:**
+- **Query:** `running` — the workstation's image version, such as `2.9.0`. Optional: without it
+  (a 2.9.0 updater) `security` is `null`.
+- **Response `200 OK`** (`GET /api/devices/update?running=2.9.0`):
 
   ```json
-  { "release": { "version": "2.9.1", "kind": "feature", "sizeBytes": 735000000, "url": "https://releases.example.com/releases/2.9.1" } }
+  {
+    "release": { "version": "2.10.0", "kind": "feature", "sizeBytes": 735000000, "url": "https://releases.example.com/releases/2.10.0" },
+    "security": { "version": "2.9.1", "kind": "security", "sizeBytes": 734000000, "url": "https://releases.example.com/releases/2.9.1" },
+    "securityUpdates": "next_boot"
+  }
   ```
 
-  `{"release": null}` when nothing is offered.
-- **Errors:** `503` when a release is offered but `RELEASES_BASE_URL` is unset or not an https
-  address, so a workstation never takes a missing setting for "up to date".
+  `release` and `security` are `null` when nothing is offered.
+- **Errors:** `400` when `running` is not a release version; `503` when a release is offered but
+  `RELEASES_BASE_URL` is unset or not an https address, so a workstation never takes a missing
+  setting for "up to date".
 
 ---
 
@@ -688,10 +702,11 @@ Decommissions a client device and revokes its bearer token.
 The Workstations page's **Updates** menu. `check-update` sends `release-available` to each
 workstation, which then asks [`GET /api/devices/update`](#get-apidevicesupdate) and downloads the
 offered release in the background. `install-update` sends `install-update` only to workstations
-that are online and report `ready` for the offered version; each one restarts into it, and the
-rest are returned in `skipped` with the reason (`Offline`, `Still downloading`, `Live session;
-update it by re-flashing`, `Already up to date`, …) and are never updated later on their own.
-Audited as `update.check` and `update.install`.
+that are online and report `ready` for the release meant for them (a security release for their
+line before the newest one); each one restarts into it, and the rest are returned in `skipped`
+with the reason (`Offline`, `Still downloading`, `Live session; update it by re-flashing`,
+`Already up to date`, `Installs at its next restart; restart it to install now`, …) and are never
+updated later on their own. Audited as `update.check` and `update.install`.
 
 - **Access:** Organization Admin (requires `updates` permission)
 - **Request Body:** `{ "clientIds": ["PC-01", "PC-02"] }` — at most 500. An id that is not a
@@ -702,12 +717,15 @@ Audited as `update.check` and `update.install`.
   {
     "status": "ok",
     "version": "2.9.1",
+    "versions": ["2.9.1"],
     "sent": ["PC-01"],
     "skipped": [{ "clientId": "PC-02", "reason": "Still downloading" }]
   }
   ```
 
-  `version` is the offered release, `null` when nothing is offered (`check-update` only).
+  `version` is the newest offered release, `null` when nothing is offered (`check-update` only);
+  a workstation holding a security release for its line installs that one. `versions`
+  (`install-update` only) lists the versions sent.
 - **Errors:** `400` without ids or with more than 500; `409` (`install-update`) when no release
   is offered to this organization.
 
@@ -857,19 +875,28 @@ audit log.
 #### `GET /api/settings/updates`, `POST /api/settings/updates`
 
 The **Updates** tab of Settings: which classified releases the organization's workstations are
-offered. `stable` (the default) offers stable releases; `beta` also offers beta ones. A change is
-audited as `settings.update_channel`, and the organization's hub tells its workstations at once.
+offered, and what they do with a security release for the line they run. `stable` (the default)
+offers stable releases; `beta` also offers beta ones. `securityUpdates` is `next_boot` (the
+default: installed at each workstation's next start, without approval) or `approval`. Changes are
+audited as `settings.update_channel` and `settings.security_updates`, and the organization's hub
+tells its workstations at once.
 
 - **Access:** Organization Admin (requires `updates` permission)
-- **Request Body (`POST`):** `{ "channel": "beta" }` — `stable` or `beta`.
+- **Request Body (`POST`):** `{ "channel": "beta", "securityUpdates": "approval" }` — either or both.
 - **Response `200 OK`:**
 
   ```json
-  { "channel": "beta", "offer": { "version": "2.9.1", "kind": "feature", "sizeBytes": 735000000 } }
+  {
+    "channel": "beta",
+    "offer": { "version": "2.10.0", "kind": "feature", "sizeBytes": 735000000, "classifiedAt": 1791638060 },
+    "securityUpdates": "next_boot",
+    "pending": [{ "version": "2.9.1", "offeredAt": 1791638060, "workstations": 3 }]
+  }
   ```
 
-  `offer` is `null` when nothing is offered on that channel.
-- **Errors:** `400` for any other channel.
+  `offer` is `null` when nothing is offered on that channel. `pending` lists, per line, the newest
+  security release that some of the organization's workstations on that line do not run yet.
+- **Errors:** `400` for any other channel or setting, or a body with neither.
 
 ---
 

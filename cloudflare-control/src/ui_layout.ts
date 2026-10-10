@@ -1267,6 +1267,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .kc-update { font-size: 0.6875rem; color: var(--text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     .kc-update-ready { color: var(--accent-text); }
     .kc-update-error { color: var(--danger-text); }
+    .kc-update-warn { color: var(--warning-text); }
 
     /* Compact density: one line per machine and no thumbnails at all. */
     .kiosk-grid.compact { grid-template-columns: 1fr; gap: 6px; }

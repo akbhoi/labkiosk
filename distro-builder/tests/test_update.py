@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 labkiosk-update against a release served on loopback and an image store in a
-temporary directory (over-the-air updates, phases 2 and 3).
+temporary directory (over-the-air updates, phases 2 to 4).
 
 The signing key is made fresh for every run with gpg; the workstation's side
 verifies with gpgv, as it does on a real disk. Needs gpg and gpgv, which every
@@ -109,7 +109,8 @@ class Update(unittest.TestCase):
         self.releases = os.path.join(self.tmp, "releases")
         os.makedirs(self.releases)
 
-    def publish(self, version, floor=FLOOR, home=None, sizes=(CHUNK + 5, 2 * CHUNK + 1, 3 * CHUNK + 7)):
+    def publish(self, version, floor=FLOOR, home=None, sizes=(CHUNK + 5, 2 * CHUNK + 1, 3 * CHUNK + 7),
+                kind="feature", base_version=None):
         """A signed release in releases/<version>/; returns (folder, its files' bytes)."""
         folder = os.path.join(self.releases, version)
         os.makedirs(folder)
@@ -118,7 +119,8 @@ class Update(unittest.TestCase):
             payload[name] = os.urandom(size)
             with open(os.path.join(folder, name), "wb") as handle:
                 handle.write(payload[name])
-        manifest = manifests.build_manifest(folder, version, floor, "stable", 1_790_000_000, chunk_size=CHUNK)
+        manifest = manifests.build_manifest(folder, version, floor, "stable", 1_790_000_000, chunk_size=CHUNK,
+                                            kind=kind, base_version=base_version)
         self.write_manifest(folder, manifest, home)
         return folder, payload
 
@@ -377,13 +379,16 @@ class OfferHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         server = self.server
         server.asked.append(self.headers.get("Authorization"))
-        if self.path != "/api/devices/update":
+        path, _, query = self.path.partition("?")
+        server.queries.append(query)
+        if path != "/api/devices/update":
             self.send_error(404)
             return
         if self.headers.get("Authorization") != f"Bearer {TOKEN}":
             self.send_error(401)
             return
-        body = json.dumps({"release": server.offer}).encode()
+        # A control plane from before phase 4 sends `release` alone.
+        body = json.dumps(server.body if server.body is not None else {"release": server.offer}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -416,11 +421,13 @@ class Run(unittest.TestCase):
         update.write_update_state = recording
         self.addCleanup(setattr, update, "write_update_state", original)
 
-    def control_plane(self, offer):
+    def control_plane(self, offer, body=None):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), OfferHandler)
         server.daemon_threads = True
         server.offer = offer
+        server.body = body
         server.asked = []
+        server.queries = []
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -440,6 +447,7 @@ class Run(unittest.TestCase):
         result = self.run_update(worker)
         self.assertEqual(result["state"], "ready")
         self.assertEqual(plane.asked, [f"Bearer {TOKEN}"], "asked once, with this workstation's own token")
+        self.assertEqual(plane.queries, [f"running={RUNNING}"], "and says which image it runs")
         self.assertTrue(os.path.isfile(os.path.join(self.root, "images", "2.6.1", ".verified")))
         state = self.state()
         self.assertEqual((state["phase"], state["version"]), ("ready", "2.6.1"))
@@ -529,6 +537,119 @@ class Run(unittest.TestCase):
             update.install_pending(self.root, RUNNING, FLOOR, self.keys, gpgv=GPGV, state_path=self.state_path)
         self.assertEqual(self.state()["phase"], "error")
         self.assertEqual(self.env(), {"current": RUNNING}, "nothing was staged")
+
+
+class Security(unittest.TestCase):
+    """Phase 4: a security release for the running line is staged for the next boot."""
+
+    setUpClass = Update.__dict__["setUpClass"]
+    tearDownClass = Update.__dict__["tearDownClass"]
+    publish = Update.publish
+    write_manifest = Update.write_manifest
+    serve = Update.serve
+    env = Update.env
+    setUp = Run.setUp
+    control_plane = Run.control_plane
+    run_update = Run.run_update
+    state = Run.state
+
+    def offer(self, releases, mode="next_boot", security="2.6.1", release="2.7.0"):
+        return {
+            "release": {"version": release, "kind": "feature", "sizeBytes": 1, "url": f"{releases}/{release}"},
+            "security": {"version": security, "kind": "security", "sizeBytes": 1, "url": f"{releases}/{security}"}
+            if security else None,
+            "securityUpdates": mode,
+        }
+
+    def test_a_security_release_is_staged_for_the_next_boot_without_a_restart(self):
+        self.publish("2.6.1", kind="security", base_version=RUNNING)
+        self.publish("2.7.0")
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases))
+        result = self.run_update(worker)
+        self.assertEqual(result["state"], "staged")
+        self.assertEqual(self.env(), {"current": RUNNING, "next": "2.6.1", "next_tries": "1"})
+        self.assertEqual(slots.classify(self.env(), RUNNING), "staged")
+        state = self.state()
+        self.assertEqual((state["phase"], state["version"], state["kind"]), ("staged", "2.6.1", "security"))
+        self.assertIsInstance(state["since"], int)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "images", "2.7.0")),
+                         "the feature release waits until the security release is installed")
+
+        # Reminded again later in the same boot: nothing is written but the state,
+        # and the day it was staged is kept for the console's "not restarted in N days".
+        with open(self.state_path, "w", encoding="utf-8") as handle:
+            json.dump(dict(state, since=1_700_000_000), handle)
+        before = os.stat(os.path.join(self.boot_dir, "grubenv")).st_mtime_ns
+        result = self.run_update(worker)
+        self.assertEqual((result["state"], result["already"]), ("staged", True))
+        self.assertEqual(self.state()["since"], 1_700_000_000)
+        self.assertEqual(os.stat(os.path.join(self.boot_dir, "grubenv")).st_mtime_ns, before)
+
+    def test_with_approval_a_security_release_waits_like_any_other(self):
+        self.publish("2.6.1", kind="security", base_version=RUNNING)
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases, mode="approval"))
+        self.assertEqual(self.run_update(worker)["state"], "ready")
+        self.assertEqual(self.env(), {"current": RUNNING})
+        state = self.state()
+        self.assertEqual((state["phase"], state["version"], state["kind"]), ("ready", "2.6.1", "security"))
+
+    def test_the_signed_manifest_decides_not_the_control_plane(self):
+        # Offered as a security release, signed as a feature one: it waits for approval.
+        self.publish("2.6.1")
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases))
+        self.assertEqual(self.run_update(worker)["state"], "ready")
+        self.assertEqual(self.env(), {"current": RUNNING})
+
+    def test_a_security_release_of_another_line_is_refused(self):
+        for version in ("2.7.1", RUNNING, "2.5.9"):
+            with self.subTest(version=version):
+                _, worker = self.control_plane(None, body=self.offer("http://127.0.0.1:9", security=version))
+                with self.assertRaisesRegex(update.UpdateError, "as a security release"):
+                    self.run_update(worker)
+                self.assertEqual(self.state()["phase"], "error")
+
+    def test_an_unknown_setting_is_refused(self):
+        _, worker = self.control_plane(None, body=self.offer("http://127.0.0.1:9", mode="always"))
+        with self.assertRaisesRegex(update.UpdateError, "security update setting"):
+            self.run_update(worker)
+
+    def test_a_security_release_that_rolled_back_is_not_tried_again_on_its_own(self):
+        self.publish("2.6.1", kind="security", base_version=RUNNING)
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases))
+        self.run_update(worker)
+        # GRUB spent the try and the boot check failed: the old image runs again.
+        slots.write_env(self.boot_dir, {"current": RUNNING, "next": "2.6.1", "next_tries": "0"})
+        with self.assertRaisesRegex(update.UpdateError, "not tried again"):
+            self.run_update(worker)
+        self.assertEqual(self.env()["next_tries"], "0")
+        # An administrator who approves security releases may still install it.
+        _, approving = self.control_plane(None, body=self.offer(releases, mode="approval"))
+        self.assertEqual(self.run_update(approving)["state"], "ready")
+
+    def test_a_newer_security_release_replaces_the_staged_one(self):
+        self.publish("2.6.1", kind="security", base_version=RUNNING)
+        self.publish("2.6.2", kind="security", base_version=RUNNING)
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases))
+        self.run_update(worker)
+        _, newer = self.control_plane(None, body=self.offer(releases, security="2.6.2"))
+        self.assertEqual(self.run_update(newer)["state"], "staged")
+        self.assertEqual(self.env(), {"current": RUNNING, "next": "2.6.2", "next_tries": "1"})
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "images"))), [RUNNING, "2.6.2"])
+
+    def test_a_security_release_takes_the_place_of_a_waiting_feature_release(self):
+        self.publish("2.6.1", kind="security", base_version=RUNNING)
+        self.publish("2.7.0")
+        _, releases = self.serve()
+        _, before = self.control_plane(None, body=self.offer(releases, security=None))
+        self.assertEqual(self.run_update(before)["state"], "ready")
+        _, worker = self.control_plane(None, body=self.offer(releases))
+        self.assertEqual(self.run_update(worker)["state"], "staged")
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "images"))), [RUNNING, "2.6.1"])
 
 
 class Enrolment(unittest.TestCase):
@@ -724,6 +845,25 @@ class Manifest(unittest.TestCase):
                 manifest = update.validate_manifest(handle.read())
         self.assertEqual([len(entry["chunks"]) for entry in manifest["files"]], [1, 1, 4])
         self.assertEqual(manifest["files"][0]["chunkSize"], manifests.CHUNK_SIZE)
+
+    def test_the_tool_writes_a_security_release_only_for_a_later_patch_of_its_base(self):
+        with tempfile.TemporaryDirectory() as live:
+            for name in slots.IMAGE_FILES:
+                with open(os.path.join(live, name), "wb") as handle:
+                    handle.write(os.urandom(10))
+            out = os.path.join(live, "manifest.json")
+            args = ["--live", live, "--security-floor", "2.6.0", "--channel", "stable", "--out", out]
+            self.assertEqual(manifests.main(args + ["--version", "2.6.2", "--kind", "security", "--base-version", "2.6.1"]), 0)
+            with open(out, "rb") as handle:
+                manifest = update.validate_manifest(handle.read())
+            self.assertEqual((manifest["kind"], manifest["baseVersion"]), ("security", "2.6.1"))
+            for bad in (["--version", "2.6.2", "--kind", "security"],
+                        ["--version", "2.7.0", "--kind", "security", "--base-version", "2.6.1"],
+                        ["--version", "2.6.1", "--kind", "security", "--base-version", "2.6.1"],
+                        ["--version", "2.6.2-rc1", "--kind", "security", "--base-version", "2.6.1"],
+                        ["--version", "2.6.2", "--base-version", "2.6.1"]):
+                with self.subTest(bad=bad):
+                    self.assertEqual(manifests.main(args + bad), 1)
 
     def test_the_tool_and_the_workstation_agree_on_versions(self):
         self.assertEqual(manifests.VERSION_PATTERN.pattern, slots.VERSION_PATTERN.pattern)

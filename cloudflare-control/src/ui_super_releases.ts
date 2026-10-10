@@ -4,7 +4,10 @@
  *
  * A release reaches no workstation until it is classified `beta` or `stable`
  * here. Beta organizations are offered the newest of both; every other
- * organization the newest stable one. Revoking withdraws a release for good.
+ * organization the newest stable one. A security release (a rebuild of an
+ * earlier release with patched packages) is offered only to workstations on
+ * its own line, which install it at their next start unless their organization
+ * approves security fixes. Revoking withdraws a release for good.
  * The list is read from GET /api/super/releases, which first records any new
  * release it finds in the bucket.
  */
@@ -101,9 +104,16 @@ export function renderReleasesScript(nonce: string): string {
           }
           for (const r of releases) {
             const row = document.createElement("tr");
+            row.dataset.kind = r.kind === "security" ? "security" : "feature";
             row.appendChild(cell(r.version, "mono"));
             const kind = document.createElement("td");
             kind.appendChild(badge(r.kind === "security" ? "Security" : "Feature", r.kind === "security" ? "red" : "neutral"));
+            if (r.kind === "security" && r.baseVersion) {
+              const base = document.createElement("div");
+              base.className = "text-xs nowrap";
+              base.textContent = "Rebuild of " + r.baseVersion;
+              kind.appendChild(base);
+            }
             row.appendChild(kind);
             row.appendChild(cell(size(r.sizeBytes), "nowrap"));
             row.appendChild(cell(String(r.builtAt || "").replace("T", " ").replace(/Z$/, " UTC"), "mono text-xs nowrap"));
@@ -155,6 +165,17 @@ export function renderReleasesScript(nonce: string): string {
           const version = b.dataset.version;
           const revoke = b.dataset.releaseAction === "revoke";
           const channel = b.dataset.channel || null;
+          const row = b.closest("tr");
+          const security = Boolean(row && row.dataset.kind === "security");
+          const line = String(version).split(".").slice(0, 2).join(".");
+          // A security release installs by itself at the next start, on its own line only.
+          const offerMessage = security
+            ? (channel === "stable" ? "Every organization's" : "Beta organizations'") +
+              " workstations on the " + line + " line will download it and install it at their next restart. " +
+              "Organizations that approve security fixes install it from Workstations \u2192 Updates instead."
+            : channel === "stable"
+            ? "Every organization's workstations will download it, and their administrators can install it."
+            : "Workstations of organizations on the beta channel will download it, and their administrators can install it.";
           const agreed = await lkConfirm(
             revoke
               ? {
@@ -166,9 +187,7 @@ export function renderReleasesScript(nonce: string): string {
               : channel
               ? {
                   title: "Offer " + version + " on " + channel + "?",
-                  message: channel === "stable"
-                    ? "Every organization's workstations will download it, and their administrators can install it."
-                    : "Workstations of organizations on the beta channel will download it, and their administrators can install it.",
+                  message: offerMessage,
                   confirmLabel: "Offer on " + channel
                 }
               : {

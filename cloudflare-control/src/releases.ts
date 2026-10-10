@@ -8,6 +8,11 @@
  * the newest unrevoked release of its channel (a `beta` organization also
  * takes `stable` ones), and download it from the bucket's public address.
  *
+ * Phase 4: a workstation is offered, before anything else, the newest
+ * security release for the line it runs (2.8.1 for 2.8.0), and its
+ * organization's `security_updates` setting says whether it installs that at
+ * its next boot by itself or waits for an administrator.
+ *
  * Nothing here decides whether an image is safe to boot: a workstation checks
  * the manifest's signature with the keys baked into its own image, refuses a
  * release below its security floor, and checks every chunk it downloads. The
@@ -15,7 +20,7 @@
  * order releases, never to vouch for it.
  */
 
-import { Env, UpdateChannel } from "./types";
+import { Env, SecurityUpdateMode, UpdateChannel } from "./types";
 import { safeHttpUrl } from "./escape";
 
 /** A release version, as labkiosk-boot-slots' VERSION_PATTERN accepts it. */
@@ -29,17 +34,34 @@ const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_NEW_PER_SYNC = 50;
 
 /** What a workstation says about the update it is fetching or holding. */
-export const UPDATE_PHASES = ["live", "idle", "checking", "downloading", "ready", "installing", "up-to-date", "error"] as const;
+export const UPDATE_PHASES = [
+  "live",
+  "idle",
+  "checking",
+  "downloading",
+  "ready",
+  "staged",
+  "installing",
+  "up-to-date",
+  "error"
+] as const;
 export type UpdatePhase = (typeof UPDATE_PHASES)[number];
+export type ReleaseKind = "feature" | "security";
+
+export const SECURITY_UPDATE_MODES: readonly SecurityUpdateMode[] = ["next_boot", "approval"];
 
 export interface UpdateReport {
   phase: UpdatePhase;
-  /** The release the phase is about (downloading, ready, installing). */
+  /** The release the phase is about (downloading, ready, staged, installing). */
   version?: string;
   /** 0-100 while downloading. */
   progress?: number;
   /** Why the last attempt failed. */
   detail?: string;
+  /** The kind of the release it holds, from its signed manifest (ready, staged). */
+  kind?: ReleaseKind;
+  /** Unix seconds: since when it has held that release ready or staged, in this boot. */
+  since?: number;
 }
 
 export interface ReleaseRow {
@@ -74,8 +96,16 @@ export interface ReleaseSummary {
 /** The release offered to one organization, as a workstation fetches it. */
 export interface ReleaseOffer {
   version: string;
-  kind: "feature" | "security";
+  kind: ReleaseKind;
   sizeBytes: number;
+  /** Unix seconds: when a super admin put it in its channel. */
+  classifiedAt: number;
+}
+
+/** What one workstation should fetch: a security release for its line, and the newest release. */
+export interface WorkstationOffer {
+  release: ReleaseOffer | null;
+  security: ReleaseOffer | null;
 }
 
 type VersionKey = { core: number[]; pre: Array<[number, number, string]> | null };
@@ -133,6 +163,16 @@ export function isReleaseVersion(value: unknown): value is string {
 
 export function isUpdateChannel(value: unknown): value is UpdateChannel {
   return value === "stable" || value === "beta";
+}
+
+export function isSecurityUpdateMode(value: unknown): value is SecurityUpdateMode {
+  return value === "next_boot" || value === "approval";
+}
+
+/** The line a release belongs to: "2.8" for 2.8.1 and 2.8.0-rc1. */
+export function releaseLine(version: string): string {
+  const core = versionKey(version).core;
+  return `${core[0]}.${core[1]}`;
 }
 
 /**
@@ -287,24 +327,94 @@ export async function revokeRelease(db: D1Database, version: string, now = Math.
   return Number(res.meta?.changes ?? 0) > 0;
 }
 
-/** The newest unrevoked release an organization on this channel is offered, or null. */
-export async function offeredRelease(db: D1Database, channel: UpdateChannel | null | undefined): Promise<ReleaseOffer | null> {
+/** Every unrevoked release an organization on this channel is offered, newest first. */
+export async function offeredReleases(db: D1Database, channel: UpdateChannel | null | undefined): Promise<ReleaseOffer[]> {
   const channels = channel === "beta" ? ["stable", "beta"] : ["stable"];
   const res = await db
     .prepare(
-      `SELECT version, kind, size_bytes FROM releases
+      `SELECT version, kind, size_bytes, classified_at FROM releases
        WHERE revoked_at IS NULL AND channel IN (${channels.map(() => "?").join(",")})`
     )
     .bind(...channels)
-    .all<{ version: string; kind: "feature" | "security"; size_bytes: number }>();
-  let best: ReleaseOffer | null = null;
-  for (const row of res.results || []) {
-    if (!isReleaseVersion(row.version)) continue;
-    if (!best || compareVersions(row.version, best.version) > 0) {
-      best = { version: row.version, kind: row.kind, sizeBytes: Number(row.size_bytes) || 0 };
-    }
+    .all<{ version: string; kind: ReleaseKind; size_bytes: number; classified_at: number | null }>();
+  return (res.results || [])
+    .filter((row) => isReleaseVersion(row.version))
+    .map((row) => ({
+      version: row.version,
+      kind: row.kind,
+      sizeBytes: Number(row.size_bytes) || 0,
+      classifiedAt: Number(row.classified_at) || 0
+    }))
+    .sort((a, b) => compareVersions(b.version, a.version));
+}
+
+/** The newest unrevoked release an organization on this channel is offered, or null. */
+export async function offeredRelease(db: D1Database, channel: UpdateChannel | null | undefined): Promise<ReleaseOffer | null> {
+  return (await offeredReleases(db, channel))[0] ?? null;
+}
+
+/**
+ * The newest security release for the line `running` belongs to and newer
+ * than it, from releases sorted newest first; null for an unknown image.
+ */
+export function securityReleaseFor(releases: readonly ReleaseOffer[], running: string | null | undefined): ReleaseOffer | null {
+  if (!isReleaseVersion(running)) return null;
+  const line = releaseLine(running);
+  return (
+    releases.find(
+      (r) => r.kind === "security" && releaseLine(r.version) === line && compareVersions(r.version, running) > 0
+    ) ?? null
+  );
+}
+
+/** What a workstation running `running` is offered. */
+export function workstationOffer(releases: readonly ReleaseOffer[], running: string | null | undefined): WorkstationOffer {
+  return { release: releases[0] ?? null, security: securityReleaseFor(releases, running) };
+}
+
+/**
+ * The release a workstation fetches next: a security release for its line
+ * first (section 5.5: it never waits behind an unapproved feature release),
+ * else the newest release when that is newer than what it runs; null when
+ * there is nothing to fetch. labkiosk-update run chooses the same way.
+ */
+export function updateTargetFor(releases: readonly ReleaseOffer[], running: string | null | undefined): ReleaseOffer | null {
+  if (!isReleaseVersion(running)) return null;
+  const { release, security } = workstationOffer(releases, running);
+  const target = security ?? release;
+  return target && compareVersions(target.version, running) > 0 ? target : null;
+}
+
+/** Days after which the console warns about a security release not yet running everywhere. */
+export const SECURITY_WAIT_WARN_DAYS = 7;
+
+/** A security release some of an organization's workstations on its line do not run yet. */
+export interface PendingSecurityRelease {
+  version: string;
+  /** Unix seconds: when it was put in its channel. */
+  offeredAt: number;
+  /** How many of the organization's workstations on its line run an older image. */
+  workstations: number;
+}
+
+/**
+ * For each line the organization's workstations run, the newest security
+ * release offered for it and how many of them still run an older image there,
+ * from releases sorted newest first and the organization's own registry rows.
+ */
+export function securityReleasesPending(
+  releases: readonly ReleaseOffer[],
+  devices: ReadonlyArray<{ image_version?: string | null }>
+): PendingSecurityRelease[] {
+  const pending = new Map<string, PendingSecurityRelease>();
+  for (const device of devices) {
+    const security = securityReleaseFor(releases, device.image_version);
+    if (!security) continue;
+    const entry = pending.get(security.version) ?? { version: security.version, offeredAt: security.classifiedAt, workstations: 0 };
+    entry.workstations++;
+    pending.set(security.version, entry);
   }
-  return best;
+  return [...pending.values()].sort((a, b) => compareVersions(b.version, a.version));
 }
 
 /**
@@ -352,10 +462,20 @@ export function normalizeUpdateReport(raw: unknown): UpdateReport | null {
     report.progress = Math.max(0, Math.min(100, Math.floor(progress)));
   }
   if (typeof r.detail === "string" && r.detail.trim()) report.detail = r.detail.trim().slice(0, 300);
+  if (r.kind === "feature" || r.kind === "security") report.kind = r.kind;
+  const since = Number(r.since);
+  if (typeof r.since === "number" && Number.isSafeInteger(since) && since > 0) report.since = since;
   return report;
 }
 
 export function sameUpdateReport(a: UpdateReport | undefined, b: UpdateReport | undefined): boolean {
   if (!a || !b) return a === b;
-  return a.phase === b.phase && a.version === b.version && a.progress === b.progress && a.detail === b.detail;
+  return (
+    a.phase === b.phase &&
+    a.version === b.version &&
+    a.progress === b.progress &&
+    a.detail === b.detail &&
+    a.kind === b.kind &&
+    a.since === b.since
+  );
 }
