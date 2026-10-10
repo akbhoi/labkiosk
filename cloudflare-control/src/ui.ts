@@ -157,6 +157,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     baseDomain,
     tenantParam,
     accountOnly: activePage === "settings" && !hasAll && !userPermissions.includes("settings"),
+    canUpdate: hasAll || userPermissions.includes("updates"),
     nonce
   };
 

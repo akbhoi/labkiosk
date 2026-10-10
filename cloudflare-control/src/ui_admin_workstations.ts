@@ -11,15 +11,16 @@ import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 
 export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, groups = [], tenantParam, baseDomain, nonce } = options;
+  const canUpdate = options.canUpdate === true;
   return {
     title: "Workstation Grid & Control",
-    contentHtml: renderWorkstationsPageHtml(tenantParam, groups),
+    contentHtml: renderWorkstationsPageHtml(tenantParam, groups, canUpdate),
     modalsHtml: renderWorkstationsModalsHtml(tenant, presets, groups),
-    scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups)
+    scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups, canUpdate)
   };
 }
 
-function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGroup[]): string {
+function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGroup[], canUpdate: boolean): string {
   const groupChipsHtml = groups
     .map(
       (g) => `
@@ -120,6 +121,7 @@ function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGrou
         </button>
       </div>
       <span class="toolbar-spacer"></span>
+${canUpdate ? UPDATES_MENU_HTML : ""}
       <div class="toolbar-group">
         <!-- Session and power commands sit one click further away than the rest:
              each one interrupts whoever is at the screen. -->
@@ -281,10 +283,12 @@ function renderWorkstationsScripts(
   config?: LabConfig,
   presets: BroadcastPreset[] = [],
   sites: PortalSite[] = [],
-  initialGroups: WorkstationGroup[] = []
+  initialGroups: WorkstationGroup[] = [],
+  canUpdate = false
 ): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
+      const CAN_UPDATE = ${escapeJson(canUpdate)};
       let clientsData = {};
       let groupsList = ${escapeJson(initialGroups.map((g) => ({ id: g.id, name: g.name })))};
       let selectedClientIds = new Set();
@@ -513,7 +517,10 @@ function renderWorkstationsScripts(
         ipSpan.dataset.role = "ip";
         footer.append(urlSpan, ipSpan);
 
-        card.append(head, thumbBox, actions, footer);
+        const updateLine = el("div", "kc-update");
+        updateLine.dataset.role = "update";
+
+        card.append(head, thumbBox, actions, footer, updateLine);
         if (selectedClientIds.has(id)) card.classList.add("selected");
         return card;
       }
@@ -557,6 +564,44 @@ function renderWorkstationsScripts(
           urlSpan.textContent = "Offline";
         }
         ipSpan.textContent = (client && client.ip) || "--";
+        const updateLine = card.querySelector('[data-role="update"]');
+        if (updateLine) {
+          const line = updateText(client);
+          updateLine.textContent = line.text;
+          updateLine.title = line.title;
+          updateLine.classList.toggle("kc-update-ready", line.tone === "ready");
+          updateLine.classList.toggle("kc-update-error", line.tone === "error");
+          updateLine.classList.toggle("hidden", !line.text);
+        }
+      }
+
+      // The system image a workstation runs, and the update it is fetching or holding.
+      function updateText(client) {
+        const none = { text: "", title: "", tone: "" };
+        if (!client) return none;
+        const image = client.imageVersion ? "Image " + client.imageVersion : "";
+        const u = client.update;
+        if (!u) return image ? { text: image, title: "", tone: "" } : none;
+        const prefix = image ? image + " \u00b7 " : "";
+        const v = u.version || "";
+        switch (u.phase) {
+          case "live":
+            return { text: prefix + "live session", title: "Started from the USB stick; update it by re-flashing", tone: "" };
+          case "checking":
+            return { text: prefix + "checking for updates", title: "", tone: "" };
+          case "downloading":
+            return { text: prefix + "downloading " + v + (typeof u.progress === "number" ? " (" + u.progress + "%)" : ""), title: "", tone: "" };
+          case "ready":
+            return { text: prefix + v + " ready to install", title: "Downloaded and verified", tone: "ready" };
+          case "installing":
+            return { text: prefix + "installing " + v, title: "", tone: "ready" };
+          case "up-to-date":
+            return { text: prefix + "up to date", title: "", tone: "" };
+          case "error":
+            return { text: prefix + "update failed", title: u.detail || "", tone: "error" };
+          default:
+            return { text: image, title: "", tone: "" };
+        }
       }
 
       // --------------------------------------------------------- group section manager
@@ -794,6 +839,9 @@ function renderWorkstationsScripts(
         c.ip = status.ip || c.ip;
         c.online = status.online;
         c.vncPassword = status.vncPassword || c.vncPassword;
+        c.imageVersion = status.imageVersion || c.imageVersion;
+        c.agentVersion = status.agentVersion || c.agentVersion;
+        if (status.update) c.update = status.update;
         if (!status.online) c.thumbnail = undefined;
         clientsData[status.clientId] = c;
       }
@@ -1028,6 +1076,65 @@ function renderWorkstationsScripts(
         });
         if (agreed) sendCommand(targets, "clear-session");
       });
+
+      // --------------------------------------------------------- updates
+      async function postUpdate(path, clientIds) {
+        const res = await fetch(labkioskApi(path), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clientIds })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "The request was refused");
+        return data;
+      }
+
+      function skippedSummary(skipped) {
+        const byReason = {};
+        for (const s of skipped || []) byReason[s.reason] = (byReason[s.reason] || 0) + 1;
+        return Object.keys(byReason).map((r) => byReason[r] + " skipped: " + r).join("; ");
+      }
+
+      if (CAN_UPDATE) {
+        document.getElementById("btn-check-updates").addEventListener("click", async () => {
+          const targets = getSelectedOrAll(true);
+          if (!targets) return;
+          try {
+            const data = await postUpdate("/api/clients/check-update", targets);
+            const note = skippedSummary(data.skipped);
+            lkToast(
+              (data.version ? "Checking for " + data.version : "Checking for updates") + " on " + data.sent.length + " workstation(s)" + (note ? ". " + note : ""),
+              "success"
+            );
+          } catch (err) {
+            lkToast(err.message, "error");
+          }
+        });
+
+        document.getElementById("btn-install-update").addEventListener("click", async () => {
+          const targets = getSelectedOrAll(false);
+          if (!targets) return;
+          const agreed = await lkConfirm({
+            title: "Install the update on " + targets.length + " workstation(s)?",
+            message: "Each selected workstation that has downloaded and verified the offered release restarts into it now, and whoever is at it is interrupted. If the new image fails to start, the workstation goes back to the one it runs today.",
+            confirmLabel: "Install and restart",
+            tone: "danger"
+          });
+          if (!agreed) return;
+          try {
+            const data = await postUpdate("/api/clients/install-update", targets);
+            const note = skippedSummary(data.skipped);
+            if (data.sent.length) {
+              lkToast("Installing " + data.version + " on " + data.sent.length + " workstation(s)" + (note ? ". " + note : ""), "success");
+            } else {
+              lkToast("No workstation was ready to install " + data.version + (note ? ". " + note : ""), "warning");
+            }
+            pollClients();
+          } catch (err) {
+            lkToast(err.message, "error");
+          }
+        });
+      }
 
       document.getElementById("btn-open-broadcast").addEventListener("click", () => {
         const targets = getSelectedOrAll(true);
@@ -1400,3 +1507,30 @@ function renderWorkstationsScripts(
     </script>
   `;
 }
+
+/** The Updates menu, for an account holding the `updates` permission. */
+const UPDATES_MENU_HTML = `
+      <div class="toolbar-group">
+        <button type="button" class="btn btn-secondary" id="btn-updates-menu" popovertarget="ws-updates-menu" aria-haspopup="menu">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Updates
+          <svg class="btn-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="menu-popover" id="ws-updates-menu" popover role="menu" aria-label="System updates">
+          <button type="button" class="menu-item" id="btn-check-updates" role="menuitem" title="Ask the selected workstations (or every one shown) to download the release this organization is offered">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            <span class="menu-item-text">
+              <span>Check for updates</span>
+              <span class="menu-item-hint">Downloads in the background</span>
+            </span>
+          </button>
+          <div class="menu-separator" role="separator"></div>
+          <button type="button" class="menu-item menu-item-danger" id="btn-install-update" role="menuitem" title="Restart the selected workstations into the release they downloaded">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="menu-item-text">
+              <span>Install update</span>
+              <span class="menu-item-hint">Restarts the selected workstations</span>
+            </span>
+          </button>
+        </div>
+      </div>`;

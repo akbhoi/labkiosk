@@ -39,8 +39,11 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
     commands?}` on connect and on every admin change (`notifyConfigChanged()`);
     `{"type":"commands", commands}`; `{"type":"frames", on, intervalSeconds}` — frames are asked for
     only while a console is showing that screen; `{"type":"pong"}`.
-  - workstation → hub: `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?}`
-    on connect and on change; `{"type":"frame", thumbnail}` while asked; and the ping, which must be
+  - workstation → hub: `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?,
+    imageVersion?, agentVersion?, update?}` on connect and on change. `update` is `{phase,
+    version?, progress?, detail?}`, phase one of `live`, `idle`, `checking`, `downloading`, `ready`,
+    `installing`, `up-to-date`, `error` (`UPDATE_PHASES` in `src/releases.ts`; the agent reads it
+    from the root-owned `/run/labkiosk-update/update.json`, or reports `live` on a live session); `{"type":"frame", thumbnail}` while asked; and the ping, which must be
     **byte-for-byte** `{"type":"ping"}` (`WEBSOCKET_PING` = `HUB_PING`): the edge answers it without
     waking the hub. `json.dumps` adds a space and would bill every ping. Sent every 15 s; the hub
     closes a socket silent for 75 s.
@@ -48,7 +51,8 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
     `4000` replaced by a newer connection (back off), `4008` stale (reconnect).
   - Handshake `404`/`426`/`501`, or three failed connects in a row → HTTP for 10 minutes.
 - **HTTP heartbeat** (every 3 s; older agents and the fallback): payload `clientNum`, `activeUrl`,
-  `isLocked`, `thumbnail`, `vncPassword` (`post_telemetry()` is the reference); reply
+  `isLocked`, `thumbnail`, `vncPassword`, and the same update fields (`current_status()` /
+  `post_telemetry()` are the reference); reply
   `whitelist`, `targetUrl`, `commands`, `broadcastUrl` / `broadcastEpoch`. Both transports apply
   the reply through one function, `apply_control_update()`.
 - `thumbnail`/frame: base64 JPEG from `scrot -t 20 -q 35`, **dropped** above 256 KB
@@ -80,6 +84,18 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
   ≤ 500 per request. The Worker hands them to the hub (`/enqueue`), which pushes them to connected
   workstations at once and keeps them 60 s for the rest; a command for `"all"` records a delivery
   per workstation, so each gets it once.
+- **Update commands, hub-only** (never accepted by `/api/command`):
+  - `release-available {version}`: the hub sends it to a workstation running an image older than
+    the offer that is not already checking, downloading, installing or holding it `ready` — on
+    connect, on a status change and on a config change, at most every 10 minutes (60 after an
+    `error`) — and for the console's `POST /api/clients/check-update`. The agent (not on live
+    media) starts `labkiosk-update-download.service`; the root updater then asks
+    `GET /api/devices/update` (device token) for `{release: {version, kind, sizeBytes, url} | null}`
+    and downloads from `url` (`RELEASES_BASE_URL` + `releases/<version>`; `503` when unset).
+  - `install-update {version}`: only from `POST /api/clients/install-update` (`updates`
+    permission), only to workstations online and `ready` for that version. The agent checks it
+    holds that version `ready`, starts `labkiosk-update-install.service` and shows the update
+    curtain (`/api/status` `updateScreen`); `reboot`/`shutdown` are refused while it installs.
 
 ## 2b. Boot reports — agent → Worker `POST /api/devices/boot-report`
 

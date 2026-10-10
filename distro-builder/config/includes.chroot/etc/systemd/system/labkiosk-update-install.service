@@ -1,0 +1,15 @@
+[Unit]
+Description=Lab Kiosk: install the downloaded system update and restart into it
+Documentation=file:///usr/local/sbin/labkiosk-update
+ConditionKernelCommandLine=labkiosk.installed=1
+# A download still running holds the image store's lock; this waits for it.
+After=labkiosk-update-download.service
+
+[Service]
+# Started by the agent (as kiosk, through the polkit rule in
+# 01-lockdown.hook.chroot) when an administrator installs the update. The new
+# image gets one try; labkiosk-boot-ok.service confirms it or rolls it back.
+Type=oneshot
+ExecStart=/usr/local/sbin/labkiosk-update install-pending
+# Only reached when the install succeeded.
+ExecStartPost=/bin/systemctl --no-block reboot

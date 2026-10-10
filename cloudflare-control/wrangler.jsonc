@@ -144,6 +144,14 @@
 		{
 			"binding": "AUDIT_ARCHIVE",
 			"bucket_name": "labkiosk-audit-archive"
+		},
+		// Signed system images CI uploads under releases/<version>/ (docs/OTA_UPDATES.md).
+		// Optional: without it the Super Admin Releases page says so and nothing is
+		// offered. Workstations download from the bucket's public address, which
+		// the RELEASES_BASE_URL variable names (set in the dashboard, not here).
+		{
+			"binding": "RELEASES",
+			"bucket_name": "labkiosk-releases"
 		}
 	],
 	// Fleet history: connections, disconnections and online counts per organization.

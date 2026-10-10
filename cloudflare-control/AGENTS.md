@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0026)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0027)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), AI, hourly cron
 ├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
@@ -24,6 +24,7 @@ cloudflare-control/
 │   ├── custom_hostname_workflow.ts     # The Workflow that runs those jobs with durable retries
 │   ├── boot_report.ts                  # Workstation boot reports, Errors & Warnings (Rule 2e)
 │   ├── bug_reports.ts                  # Opt-in automatic GitHub bug reports (Rule 2e)
+│   ├── releases.ts                     # Over-the-air releases: RELEASES bucket sync, channels, the offer (Rule 2d)
 │   ├── release_notes.ts                # GitHub releases and their AI-written summaries, for /download
 │   ├── markdown.ts                     # Markdown to escaped HTML, for /docs
 │   ├── docs_content.generated.ts       # wiki/ as a module (tools/build-docs.mjs; `pnpm run docs`)
@@ -48,6 +49,7 @@ cloudflare-control/
 │   ├── ui_admin_apps_web.ts            #   client script together.
 │   ├── ui_admin_staff.ts               #   apps_web unifies broadcasts, portal apps and
 │   ├── ui_admin_settings.ts            #   the domain allowlist in three tabs
+│   ├── ui_admin_updates.ts             # Settings -> Updates: the organization's update channel
 │   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
 │   │                                   #   radii and easing, plus the legacy aliases the public
 │   │                                   #   pages were written against
@@ -58,6 +60,7 @@ cloudflare-control/
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
 │   ├── ui_two_factor.ts                # The Two-factor sign-in tab (Settings, and System in the super console)
 │   ├── ui_super_inbox.ts               # Its Tasks and Mail panes (/super/tasks, /super/mail)
+│   ├── ui_super_releases.ts            # Its Releases pane (/super/releases): classify, withdraw, revoke
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /terms/bug-reports)
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   └── types.ts                        # Strict TypeScript interfaces
@@ -90,7 +93,7 @@ cloudflare-control/
 - **Subdomain Routing & Apex Redirection**: Organization admin dashboards are located at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`). Accessing `/admin` on the base apex domain redirects (302) to the authenticated organization admin's subdomain `/admin` (or `/super` for super admins). When a super admin accesses a specific organization admin sub-route (`/admin/workstations`, `/admin/broadcast`, etc.) on apex or dev without a query param, it routes to a demo organization's console rather than bouncing to `/super`: `local-demo` on a dev host, `web-demo` otherwise. Furthermore, whenever a console is rendered outside its dedicated subdomain (e.g. On apex or dev hosts), all internal navigation links preserve `?tenant=<subdomain>` to maintain session context.
 - **Super Admin Privacy Isolation**: Super admins are strictly restricted from accessing any organization's admin console (`/admin`), workstation telemetry, or remote desktop/VNC channel *except* for the platform's three demo organizations, one per way of testing: `web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator). Super admin privileges permit approving custom domains, managing interface catalogs, and system maintenance, but protect each organization's privacy. Super admins have full access (`*`) inside a demo.
 - **A demo is a demo slug the platform owns** (`isDemoTenant()` in `src/demo.ts`): the slug alone never opens an organization, or one that registered the name before it was reserved would be exposed. `ensureDemoTenants()` creates any missing demo at startup, moves one owned by an earlier super admin account to the current one, and never adopts a demo name another organization holds. The demo names and the retired `demo` are reserved (`isReservedSlug()`), and a demo cannot be renamed, suspended or rejected. The single `demo` organization was deleted with all its data by migration `0013`. `local-demo` and `docker-demo` have no custom domain.
-- **Granular Staff Delegation & Sub-admins**: Organization admins can delegate management functions by creating staff accounts (`tenant_users` table) with roles (`org_admin`, `sub_admin`, `operator`, `assistant`, `content_manager`) and granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`). Both are validated against those lists on the way in; `*` is never stored.
+- **Granular Staff Delegation & Sub-admins**: Organization admins can delegate management functions by creating staff accounts (`tenant_users` table) with roles (`org_admin`, `sub_admin`, `operator`, `assistant`, `content_manager`) and granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`, `updates`). Both are validated against those lists on the way in; `*` is never stored.
 - **Delegation Never Escalates**: a staff member holding `staff` who is not a co-administrator may only grant permissions they hold, may not appoint an `org_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Adding staff refuses an email that already has an account (`409`) rather than linking another organization's user, and removing staff ends that account's sessions.
 - **Customizable Subdomain & Settings**: Organization admins can customize their subdomain (`POST /api/tenant/subdomain`) and default home route (`home_route`: e.g. `/` vs `/home`). Remote Control needs no per-organization setting: it goes through the console's `RemoteRelay` Durable Object, and a `tunnelDomain` sent to `POST /api/tenant/settings` is ignored.
 - **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (who may then open only the platform-owned demos), for a session that already owns that tenant, or on an explicitly public route.
@@ -187,6 +190,13 @@ cloudflare-control/
 - **Optional:** `AI` (Workers AI), the secret `GITHUB_ISSUES_TOKEN` and the variable
   `GITHUB_ISSUES_REPO` (`owner/repo`) switch on automatic bug reports (Rule 2e); without all
   three `bugReportRepository()` is `null` and no organization can turn them on. Never required.
+  The R2 bucket `RELEASES` (`labkiosk-releases`) and the variable `RELEASES_BASE_URL` (the
+  bucket's public https address, set in the Cloudflare dashboard) switch on over-the-air updates
+  (`src/releases.ts`): without the bucket `GET /api/super/releases` answers `503`; without the
+  address `GET /api/devices/update` answers `503` while a release is offered. The hub sends
+  `release-available` to a workstation behind the offer (on connect, status change and config
+  change; at most every 10 minutes, 60 after an error) and `install-update` only from
+  `POST /api/clients/install-update`; `/api/command` accepts neither.
 - **Tests** run a hub in-process: `LocalHubNamespace` (`src/local_do.ts`) implements the parts of
   the Durable Object runtime the hub uses on `node:sqlite`, and `tsconfig.runtime.json` maps
   `cloudflare:workers` to `test/shims/`. Real sockets need workerd: `pnpm dev` (`wrangler dev`) runs
@@ -293,10 +303,10 @@ cloudflare-control/
   - **Strict View-Switching Tabs (`.segmented-nav`)**: Top tabs in all consoles (`ui_admin_workstations.ts`, `ui_admin_apps_web.ts`, `ui_admin_staff.ts`, `ui_admin_settings.ts`, `ui_super.ts`) strictly switch view panes client-side without anchor jumping, synchronizing `?tab=...` via `history.replaceState`.
     - **Workstations Page Layout (`/admin/workstations`)**:
     - **In-Canvas Controls**: a `.controls-bar` above the toolbar with telemetry quick-filter chips (`.filter-chips`, `.filter-chip`, `.chip-badge` for `All`, `Online`, `Offline`, `Locked`) and a grid density switcher (`.density-toggle`, `.density-btn` for `Thumbs` and `Compact`); under it the **Groups** `.chip-row` (`#group-filter-chips`): one chip per workstation group with its member count and a delete button (`.chip-group`), `Ungrouped`, and `+ New group`. Status and group chips are one filter (`activeFilter`).
-    - **Top Toolbar** (`.toolbar`): "Select All" and the selection count (`# selected`); `Lock` and `Unlock`; `Broadcast URL` (the one primary button), `Reset to Portal` and `Move to Group...`; and a **Session & Power** menu (a `popover`, `.menu-popover`) holding `Clear Session`, `Reboot` and `Shutdown`. The destructive commands sit one click further away because each interrupts whoever is at the screen; their button ids are unchanged.
+    - **Top Toolbar** (`.toolbar`): "Select All" and the selection count (`# selected`); `Lock` and `Unlock`; `Broadcast URL` (the one primary button), `Reset to Portal` and `Move to Group...`; a **Session & Power** menu (a `popover`, `.menu-popover`) holding `Clear Session`, `Reboot` and `Shutdown`; and, for accounts holding `updates`, an **Updates** menu holding `Check for updates` and `Install update`. The destructive commands sit one click further away because each interrupts whoever is at the screen; their button ids are unchanged. Each card shows an update line (image version and update phase).
     - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, saving collapse states in `localStorage`.
   - **Super Admin Console Layout (`/super/*`)**:
-    - **Rail**: `Organizations`, `Tasks`, `Mail`, `Catalogs`, `System`.
+    - **Rail**: `Organizations`, `Tasks`, `Mail`, `Releases`, `Catalogs`, `System`. Releases (`ui_super_releases.ts`) lists what the `RELEASES` bucket holds and classifies each release `Beta` or `Stable`, withdraws or revokes it.
     - **Views are declared once**: `viewsByTab` in `ui_super.ts` renders the in-canvas `.segmented-nav`. Tasks has `Requests`, `Subdomain changes` and `Custom domains` (an address request is a task and lives only there); Catalogs and System have two views each; Organizations is one directory with a status filter (`data-org-filter` chips, each with its count).
     - **Mail's view tabs are its folders** (`data-inbox-filter`: `Inbox`, `Unread`, `Read`, `Closed`, `Deleted`, deep-linked as `?view=`), with `New message` (`data-inbox-compose`) beside them. Delete moves a conversation to Deleted (`conversations.deleted_at`, migration `0022`); from there it is restored, or deleted for good (`POST …/trash | restore | delete`, the last `409` outside Deleted). An inbound answer restores it.
     - **Tasks and Mail filter by type** (`data-inbox-category`, `?type=`; a `.chip-row` above the list, as are Tasks' `Open / Decided / Everything` and Mail's mailboxes, `data-inbox-mailbox`): what a conversation is about (`CATEGORIES` in `conversations.ts`, `conversations.category`, migration `0024`), which is also the prefix of its tracking ID (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`; `LK` before 0024 still threads). Mail is typed by the address it was sent to, the contact form by its topic. New mail is written as a message or a formal letter (`LTR`).
@@ -312,7 +322,7 @@ cloudflare-control/
     - **Role Filter Chips**: quick filter chips (`.filter-chips`, `.filter-chip`, `#staff-role-chips`) in the table header card, one per role in use with its count (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus any other stored role), updating visible row counts instantly without page reload.
     - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
   - **Settings Page Layout (`/admin/settings`)**:
-    - **Semantic Tab Panes & Segmented Nav**: Converted 9 fragile vertical scroll jumps into distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`, `Two-factor sign-in`, `Errors & Warnings`) with instant client-side switching, companion in-canvas `.segmented-nav` tabs, and deep linking (`?tab=...`).
+    - **Semantic Tab Panes & Segmented Nav**: Converted 9 fragile vertical scroll jumps into distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`, `Two-factor sign-in`, `Errors & Warnings`, and `Updates` for accounts holding `updates`) with instant client-side switching, companion in-canvas `.segmented-nav` tabs, and deep linking (`?tab=...`).
     - **Two-factor sign-in is a tab, not a dialog** (`ui_two_factor.ts`): `?tab=two-factor` here and `/super/system?tab=system-two-factor` in the super console, linked from the profile menu. It is the signed-in account's own, so `/admin/settings` opens for every staff account: without the `settings` permission it renders that tab alone (`accountOnly`), and nothing of the organization's.
     - **The second factor is an emailed code by default** (`two_factor.ts`): a super admin is always asked; an organization account turns it on in that tab (`users.two_factor_email`, migration `0023`, `POST /api/auth/two-factor/email { password, enabled }`). An authenticator app is optional on top. Where email is not configured, an account with no app signs in with its password alone and the server logs why.
     - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode | Kiosk Routing & Home URL; Subdomain | Custom Domain; Homepage Identity | Content Blocks; Enrollment Key & Admin Password | Recent Activity).

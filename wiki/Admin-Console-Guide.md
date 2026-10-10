@@ -119,6 +119,7 @@ Allows organization administrators to delegate lab control to colleagues with gr
   - `apps-web`: Manage broadcasts, user portal apps, and domain allowlists.
   - `staff`: Invite and manage other staff members.
   - `settings`: Modify organization identity, kiosk modes, and network parameters.
+  - `updates`: Choose the update channel and check for or install system updates on workstations.
 
 ---
 

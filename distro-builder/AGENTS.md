@@ -23,14 +23,15 @@ distro-builder/
 │   ├── package-lists/
 │   │   └── kiosk.list.chroot           # Minimal package manifest (Xorg, Openbox, Chromium, rsync, parted, efibootmgr)
 │   ├── hooks/live/
-│   │   ├── 01-lockdown.hook.chroot     # Kiosk user, autologin, PAM, polkit, Xorg setuid, sudoers
+│   │   ├── 01-lockdown.hook.chroot     # Kiosk user, autologin, PAM, polkit (incl. the update units), Xorg setuid, sudoers
 │   │   └── 02-security.hook.chroot     # sysctl hardening, limits, GRUB password enforcement
 │   └── includes.chroot/                # Root filesystem overlay directly injected into the OS image
 │       ├── etc/
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
 │       │   ├── openbox/                # Empty keybindings (rc.xml) & autostart script
 │       │   ├── overlayroot.conf        # RAM overlay (overlayroot="tmpfs", recurse=0)
-│       │   ├── systemd/system/         # labkiosk-boot-ok.service; nodm
+│       │   ├── systemd/system/         # labkiosk-boot-ok.service, labkiosk-update-download.service,
+│       │   │                           #   labkiosk-update-install.service (Rule 8); nodm
 │       │   │                           #   is configured through /etc/default/nodm in
 │       │   │                           #   01-lockdown.hook.chroot, and the agent is started by
 │       │   │                           #   the Openbox autostart
@@ -45,7 +46,8 @@ distro-builder/
 │       │   └── labkiosk-lock-keys      # Strips blocked keys from the X keymap (Rule 1h)
 │       ├── usr/local/sbin/
 │       │   ├── labkiosk-localization   # The one program the agent may sudo (Rule 1e)
-│       │   └── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
+│       │   ├── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
+│       │   └── labkiosk-update         # Root-only: signed release download and install (Rule 8)
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
 │                                       #   plus the grub.pin build pin, version (the image's release)
 │                                       #   and boot/grub.cfg (every installed disk's boot menu)
@@ -511,7 +513,7 @@ distro-builder/
   decide whether an image is healthy).
 - The installed kiosk has no shell (getty masked, no SSH). To try a slot by hand, mount
   `LABKIOSK_ROOT` from another system and run `grub-editenv boot/grub/grubenv set next=<v> next_tries=1`.
-- `labkiosk-update` (root only, no sudo rule; phase 2) downloads a signed release by hand:
+- `labkiosk-update` (root only, no sudo rule; phase 2) downloads a signed release:
   `download URL` verifies `manifest.json.sig` with `gpgv` against
   `/usr/share/labkiosk/update-keys/*.gpg` only, refuses a version below
   `/usr/share/labkiosk/security-floor`, fetches into `LABKIOSK_ROOT/downloads/<v>/` (HTTP Range
@@ -520,8 +522,29 @@ distro-builder/
   `images/`: GRUB's last resort boots any complete folder there. `install VERSION` re-verifies and
   sets `next`; `status` prints JSON. The ISO build fails without two release-signing public keys
   in `update-keys/` (`02-security.hook.chroot`).
-- Phases 3–5 of `docs/OTA_UPDATES.md` §9 (the automatic trigger, approval UI, curtain, security
-  rebuilds and LAN sharing) are research; never document or depend on them as features.
+- **Phase 3: the control plane drives it, with no timer.** `labkiosk-update run` reads
+  `workerUrl` and `deviceToken` from `/etc/labkiosk/config.json` and `proxy.json` (files the kiosk
+  user writes, so both are checked with the agent's own validators), asks `GET /api/devices/update`,
+  downloads the offered release with the phase 2 code, and writes each step to
+  `/run/labkiosk-update/update.json` (root-owned, 0644: `phase` = `checking`, `downloading`,
+  `ready`, `installing`, `up-to-date`, `idle` or `error`, with `version`, `progress`, `detail`).
+  `install-pending` installs the version `run` left `ready` (one try at the next boot).
+- They run as `labkiosk-update-download.service` (oneshot, `run`, `Nice=10`,
+  `IOSchedulingClass=idle`) and `labkiosk-update-install.service` (oneshot, `install-pending`, then
+  `systemctl --no-block reboot`), both `ConditionKernelCommandLine=labkiosk.installed=1` and not
+  enabled. `/etc/polkit-1/rules.d/50-labkiosk-update.rules` (written by `01-lockdown.hook.chroot`)
+  lets `kiosk` **start** exactly these two units and nothing else.
+- The agent starts the download unit on the hub's `release-available` (never on live media), and
+  the install unit on `install-update` only when the version it holds `ready` equals the
+  command's. It reports `imageVersion`, `agentVersion` and `update` in its status, shows the update
+  curtain through `/api/status` `updateScreen` ("Installing a system update", or "Finishing a
+  system update" while the boot status is `finishing`), refuses `reboot`/`shutdown` while
+  installing, and drops the screen on an install error or after 15 minutes without a restart.
+  Contracts: `labkiosk-core` §2.
+- Disks installed before 2.9.0 have neither unit nor the polkit rule and need one reinstall from
+  the 2.9.0 ISO; a live session is updated by re-flashing. Phases 4–5 of `docs/OTA_UPDATES.md` §9
+  (security rebuilds staged at next boot, LAN sharing) are research; never document or depend on
+  them as features.
 
 ---
 

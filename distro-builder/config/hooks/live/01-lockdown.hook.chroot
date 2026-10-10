@@ -265,6 +265,26 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
+# Over-the-air updates (labkiosk-update, phase 3): the agent may start the two
+# update units, and only start them. What they download is what the control
+# plane offers and the image's own keys have signed; when they install is an
+# administrator's decision, sent as a command. No other unit, and no verb but
+# start, is granted.
+cat << 'EOF' > /etc/polkit-1/rules.d/50-labkiosk-update.rules
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "kiosk") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("verb") === "start" &&
+        (action.lookup("unit") === "labkiosk-update-download.service" ||
+         action.lookup("unit") === "labkiosk-update-install.service")) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
+EOF
+
 # Sudoers permissions for the guided disk installer.
 mkdir -p /etc/sudoers.d
 cat << 'EOF' > /etc/sudoers.d/50-labkiosk-install

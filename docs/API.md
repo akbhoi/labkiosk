@@ -96,6 +96,10 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
+| `/api/devices/update` | `GET` | Device Token | The system release this workstation's organization is offered and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
+| `/api/settings/updates` | `GET`, `POST` | Organization Admin (`updates`) | The organization's update channel and the release it is offered; `POST {"channel": "stable"\|"beta"}` changes the channel |
+| `/api/clients/check-update` | `POST` | Organization Admin (`updates`) | `{"clientIds"}`: ask these workstations to check for and download the offered release |
+| `/api/clients/install-update` | `POST` | Organization Admin (`updates`) | `{"clientIds"}`: install the offered release on those that hold it downloaded and verified; `409` when nothing is offered |
 | `/api/clients/remote-session` | `POST` | Organization Admin (`workstations`) | Open a Remote Control session through the console's relay: asks the workstation to join and returns the viewer's socket path |
 | `/api/console/remote` | `GET` (WebSocket) | Organization Admin (`workstations`) | The viewer's side of a Remote Control session (VNC bytes) |
 | `/api/devices/remote` | `GET` (WebSocket) | Device Token | The workstation's side of a Remote Control session (VNC bytes) |
@@ -125,6 +129,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/super/tenants/custom-domain/approve` | `POST` | Super Admin | Approve and bind custom domain for an organization |
 | `/api/super/tenants/custom-domain/reject` | `POST` | Super Admin | Reject requested custom domain |
 | `/api/super/tenants/custom-domain/remove` | `POST` | Super Admin | Remove assigned custom domain |
+| `/api/super/releases` | `GET` | Super Admin | Record new releases found in the `RELEASES` bucket and list them all; `503` without the binding |
+| `/api/super/releases/classify` | `POST` | Super Admin | `{"version", "channel": "beta"\|"stable"\|null}`: offer a release on a channel, or withdraw it (`null`) |
+| `/api/super/releases/revoke` | `POST` | Super Admin | `{"version"}`: withdraw a release for good; `409` when already revoked |
 
 ---
 
@@ -364,12 +371,20 @@ The workstation's control channel: a WebSocket to its organization's OrgHub Dura
 - **Hub → workstation:**
   - `{"type":"config","whitelist":[…],"mode":"portal","targetUrl":"…","broadcastUrl":"","broadcastEpoch":0,"commands":[…]}`
     on connect and after every admin change;
-  - `{"type":"commands","commands":[{"id":"…","action":"lock","message":"…"}]}` when dispatched;
+  - `{"type":"commands","commands":[{"id":"…","action":"lock","message":"…"}]}` when dispatched.
+    Besides the [`POST /api/command`](#post-apicommand) actions, the hub sends
+    `{"action":"release-available","version":"…"}` (download the offered release; see
+    [`GET /api/devices/update`](#get-apidevicesupdate)) and `{"action":"install-update","version":"…"}`
+    (install the release this workstation holds `ready`; queued only by
+    [`POST /api/clients/install-update`](#post-apiclientscheck-update-post-apiclientsinstall-update));
   - `{"type":"frames","on":true,"intervalSeconds":3}` while a console shows this screen, `on:false` after;
   - `{"type":"pong"}`, answered at the edge.
 - **Workstation → hub:**
   - `{"type":"status","clientNum":1,"activeUrl":"…","isLocked":false,"vncPassword":"…"}`
-    on connect and whenever it changes;
+    on connect and whenever it changes. An agent from 2.9.0 on adds `imageVersion`, `agentVersion`
+    and `update: {"phase", "version"?, "progress"?, "detail"?}`, `phase` being `live`, `idle`,
+    `checking`, `downloading`, `ready`, `installing`, `up-to-date` or `error` (the HTTP fallback
+    body carries the same fields);
   - `{"type":"frame","thumbnail":"data:image/jpeg;base64,…"}` every `intervalSeconds` while asked
     (≤ 256 KB, relayed to consoles and never stored);
   - `{"type":"ping"}` every 15 s, exactly these bytes.
@@ -478,6 +493,26 @@ what people did.
   workstation already sent (or one less than 60 s after the last); `400` malformed, not sent again;
   `409` the workstation has not checked in yet, sent again later.
 
+#### `GET /api/devices/update`
+
+The system release this workstation's organization is offered, asked by the workstation's root
+updater (`labkiosk-update run`) when the hub sends `release-available`. The offer is the newest
+unrevoked release classified `stable`, and also `beta` ones when the organization's update channel
+is `beta`. Files are downloaded from `url` (`RELEASES_BASE_URL` + `releases/<version>`), not
+through the Worker; the workstation checks the manifest's signature before it uses any of them.
+
+- **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
+  organization. `403` when the organization is not active.
+- **Response `200 OK`:**
+
+  ```json
+  { "release": { "version": "2.9.1", "kind": "feature", "sizeBytes": 735000000, "url": "https://releases.example.com/releases/2.9.1" } }
+  ```
+
+  `{"release": null}` when nothing is offered.
+- **Errors:** `503` when a release is offered but `RELEASES_BASE_URL` is unset or not an https
+  address, so a workstation never takes a missing setting for "up to date".
+
 ---
 
 ### 5. Operator Lab Console: Fleet & Commands
@@ -502,7 +537,10 @@ screens' frames for the next 10 seconds.
         "thumbnail": "data:image/jpeg;base64,...",
         "timestamp": 1726300000,
         "online": true,
-        "vncPassword": "randomBootPassword12"
+        "vncPassword": "randomBootPassword12",
+        "imageVersion": "2.9.0",
+        "agentVersion": "2.9.0",
+        "update": { "phase": "ready", "version": "2.9.1" }
       }
     }
   }
@@ -513,7 +551,8 @@ screens' frames for the next 10 seconds.
 Dispatches remote actions to one, selected subsets, or all workstations.
 
 - **Access:** Organization Admin. `navigate` requires the `broadcast` permission; every other action requires `workstations`.
-- **Supported Actions:** `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`. Anything else answers `400`.
+- **Supported Actions:** `lock`, `unlock`, `navigate`, `reload`, `reboot`, `shutdown`, `clear-session`, `mute`. Anything else answers `400`,
+  including `release-available` and `install-update`, which only the update routes below queue.
 - **`clear-session`** signs users out at the end of a period without a reboot: the workstation ends its
   browser, and the kiosk watchdog deletes the Chromium profile (cookies, saved sign-ins, history, local
   storage, IndexedDB, service workers) and disk cache before relaunching on the workstation's assigned page.
@@ -644,13 +683,41 @@ Decommissions a client device and revokes its bearer token.
   { "status": "ok", "remaining": 14 }
   ```
 
+#### `POST /api/clients/check-update`, `POST /api/clients/install-update`
+
+The Workstations page's **Updates** menu. `check-update` sends `release-available` to each
+workstation, which then asks [`GET /api/devices/update`](#get-apidevicesupdate) and downloads the
+offered release in the background. `install-update` sends `install-update` only to workstations
+that are online and report `ready` for the offered version; each one restarts into it, and the
+rest are returned in `skipped` with the reason (`Offline`, `Still downloading`, `Live session;
+update it by re-flashing`, `Already up to date`, …) and are never updated later on their own.
+Audited as `update.check` and `update.install`.
+
+- **Access:** Organization Admin (requires `updates` permission)
+- **Request Body:** `{ "clientIds": ["PC-01", "PC-02"] }` — at most 500. An id that is not a
+  workstation of this organization is returned in `skipped` with the reason `Not found`.
+- **Response `200 OK`:**
+
+  ```json
+  {
+    "status": "ok",
+    "version": "2.9.1",
+    "sent": ["PC-01"],
+    "skipped": [{ "clientId": "PC-02", "reason": "Still downloading" }]
+  }
+  ```
+
+  `version` is the offered release, `null` when nothing is offered (`check-update` only).
+- **Errors:** `400` without ids or with more than 500; `409` (`install-update`) when no release
+  is offered to this organization.
+
 ---
 
 ### 5b. Staff Delegation
 
 **Roles:** `org_admin` (Co-Administrator, full access), `sub_admin`, `operator`, `assistant`,
 `content_manager`. **Permissions:** `workstations`, `broadcast`, `portal`, `whitelist`, `staff`,
-`settings`. The Apps & Web page opens with any of `broadcast`, `portal` or `whitelist`, and each of its
+`settings`, `updates` (system updates). The Apps & Web page opens with any of `broadcast`, `portal` or `whitelist`, and each of its
 three tabs calls routes guarded by that one permission. `*` is never stored; full access comes from
 owning the organization or holding the `org_admin` role.
 
@@ -787,6 +854,23 @@ audit log.
   boolean or the terms version is not the current one; `409` when the platform has not set up bug
   reports.
 
+#### `GET /api/settings/updates`, `POST /api/settings/updates`
+
+The **Updates** tab of Settings: which classified releases the organization's workstations are
+offered. `stable` (the default) offers stable releases; `beta` also offers beta ones. A change is
+audited as `settings.update_channel`, and the organization's hub tells its workstations at once.
+
+- **Access:** Organization Admin (requires `updates` permission)
+- **Request Body (`POST`):** `{ "channel": "beta" }` — `stable` or `beta`.
+- **Response `200 OK`:**
+
+  ```json
+  { "channel": "beta", "offer": { "version": "2.9.1", "kind": "feature", "sizeBytes": 735000000 } }
+  ```
+
+  `offer` is `null` when nothing is offered on that channel.
+- **Errors:** `400` for any other channel.
+
 ---
 
 ### 7. Super Administrator Console (`/super`)
@@ -831,6 +915,39 @@ Approves and activates a custom domain mapping for an organization.
     "customDomain": "kiosk.oakridge.edu"
   }
   ```
+
+#### Releases: `GET /api/super/releases`, `POST /api/super/releases/classify`, `POST /api/super/releases/revoke`
+
+The **Releases** tab (`/super/releases`). CI uploads each signed release to the `RELEASES` R2
+bucket under `releases/<version>/`. `GET` first records every new folder whose `manifest.json`
+parses, names that folder's version and has `manifest.json.sig` beside it, then lists all
+releases, newest version first. A recorded release reaches no workstation until it is classified.
+`classify` puts it on `beta` or `stable`, or takes it off (`null`, **Withdraw**); `revoke`
+withdraws it for good. Either change is audited (`release.classify`, `release.revoke`) and every
+organization with workstations online reloads its offer.
+
+- **Access:** Super Admin
+- **Request Body:** `{ "version": "2.9.1", "channel": "stable" }` (classify) or
+  `{ "version": "2.9.1" }` (revoke).
+- **Response `200 OK` (`GET`):**
+
+  ```json
+  {
+    "releases": [
+      { "version": "2.9.1", "channel": null, "kind": "feature", "baseVersion": null, "securityFloor": "2.9.0",
+        "sizeBytes": 735000000, "builtAt": "2026-10-09T12:00:00Z", "foundAt": 1791500000,
+        "classifiedAt": null, "revokedAt": null }
+    ],
+    "added": ["2.9.1"],
+    "problems": [{ "version": "2.9.2", "problem": "manifest.json.sig is missing" }],
+    "downloadsConfigured": true
+  }
+  ```
+
+  `downloadsConfigured` is false while `RELEASES_BASE_URL` is unset or not https. `classify` and
+  `revoke` answer `{ "status": "ok", "releases": [...] }`.
+- **Errors:** `503` (`GET`) without the `RELEASES` binding; `400` invalid version or channel;
+  `404` unknown release; `409` the release is already revoked.
 
 ---
 

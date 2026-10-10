@@ -146,6 +146,10 @@ function renderStaffPageHtml(staff: TenantUser[], roleLabels: Map<string, string
                   <input type="checkbox" class="form-checkbox" name="perms" value="settings">
                   <span>Settings (Profile &amp; Keys)</span>
                 </label>
+                <label class="form-checkbox-label">
+                  <input type="checkbox" class="form-checkbox" name="perms" value="updates">
+                  <span>Updates (Check &amp; Install System Updates)</span>
+                </label>
               </div>
             </div>
 
@@ -247,7 +251,7 @@ function renderStaffScripts(nonce: string): string {
           operator: ["workstations", "broadcast", "portal"],
           assistant: ["workstations"],
           content_manager: ["portal", "whitelist"],
-          org_admin: ["workstations", "broadcast", "portal", "whitelist", "staff", "settings"]
+          org_admin: ["workstations", "broadcast", "portal", "whitelist", "staff", "settings", "updates"]
         };
         roleSelect.addEventListener("change", () => {
           const selected = roleSelect.value;

@@ -41,6 +41,15 @@ import {
 } from "./db";
 import { safeHttpUrl } from "./escape";
 import { PortalContext, isPortalContext, portalUrlFromContext } from "./portal_url";
+import {
+  ReleaseOffer,
+  UpdateReport,
+  compareVersions,
+  isReleaseVersion,
+  normalizeUpdateReport,
+  offeredRelease,
+  sameUpdateReport
+} from "./releases";
 
 /** Text a workstation sends to prove it is alive; answered without waking the object. */
 export const HUB_PING = '{"type":"ping"}';
@@ -68,6 +77,11 @@ export const FRAME_INTERVAL_SECONDS = 3;
 export const MAX_FRAME_BYTES = 256 * 1024;
 const MAX_WATCHED = 500;
 const MAX_VNC_PASSWORD_LENGTH = 64;
+/** A workstation behind the offered release is reminded of it at most this often. */
+const RELEASE_NUDGE_MS = 10 * 60_000;
+/** ...and this often while its last attempt failed, so a broken download is not retried in a loop. */
+const RELEASE_NUDGE_AFTER_ERROR_MS = 60 * 60_000;
+const MAX_AGENT_VERSION_LENGTH = 32;
 const CLIENT_ID_PATTERN = /^[A-Z0-9][A-Z0-9_-]{0,63}$/;
 
 /** Close codes a workstation acts on. 4001 and 4003 match HTTP 401 and 403. */
@@ -78,7 +92,30 @@ export const CLOSE_STALE = 4008;
 /** Close codes a peer reports but no endpoint may send (RFC 6455, 7.4.1). */
 const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015]);
 
-type CommandAction = "lock" | "unlock" | "navigate" | "reload" | "reboot" | "shutdown" | "clear-session" | "mute";
+type CommandAction =
+  | "lock"
+  | "unlock"
+  | "navigate"
+  | "reload"
+  | "reboot"
+  | "shutdown"
+  | "clear-session"
+  | "mute"
+  // Over-the-air updates (src/releases.ts). Never accepted by POST /api/command:
+  // only the update routes, guarded by the `updates` permission, queue them.
+  | "release-available"
+  | "install-update";
+
+/** What a workstation reports about its system image and its update, besides the screen. */
+interface UpdateFields {
+  /** The system image it runs. */
+  imageVersion?: string;
+  agentVersion?: string;
+  update?: UpdateReport;
+  /** When it was last reminded of the offered release, and of which one. */
+  nudgedAt?: number;
+  nudgedVersion?: string;
+}
 
 export interface DeviceMeta {
   tenantId: string;
@@ -103,6 +140,11 @@ interface DeviceAttachment {
   vncPassword?: string;
   portal: PortalContext;
   connectedAt: number;
+  imageVersion?: string;
+  agentVersion?: string;
+  update?: UpdateReport;
+  nudgedAt?: number;
+  nudgedVersion?: string;
   /** Whether this workstation has been asked to send frames. */
   streaming: boolean;
   /** Its registry row in D1 is behind. */
@@ -118,7 +160,7 @@ interface ConsoleAttachment {
   watch: string[];
 }
 
-interface HttpClient {
+interface HttpClient extends UpdateFields {
   clientNum: number;
   activeUrl: string;
   isLocked: boolean;
@@ -142,12 +184,17 @@ export interface LiveStatus {
   lastSeen: number;
   transport: "websocket" | "http";
   thumbnail?: string;
+  imageVersion?: string;
+  agentVersion?: string;
+  update?: UpdateReport;
 }
 
 interface HubConfig {
   tenant: Tenant;
   whitelist: string[];
   deviceBroadcasts: Map<string, { url: string | null; epoch: number }>;
+  /** The release this organization's channel offers, or null. */
+  offer: ReleaseOffer | null;
   loadedAt: number;
 }
 
@@ -166,6 +213,8 @@ export interface QueuedCommand {
   url?: string;
   message?: string;
   epoch?: number;
+  /** The release an update command is about. */
+  version?: string;
   timestamp: number;
 }
 
@@ -179,6 +228,9 @@ export interface HeartbeatInput {
     isLocked?: unknown;
     thumbnail?: unknown;
     vncPassword?: unknown;
+    imageVersion?: unknown;
+    agentVersion?: unknown;
+    update?: unknown;
   };
 }
 
@@ -188,6 +240,7 @@ export interface EnqueueInput {
   url?: string;
   message?: string;
   epoch?: number;
+  version?: string;
   portal?: boolean;
   /** The organization's broadcast changed with this command; reload before delivering. */
   reloadConfig?: boolean;
@@ -284,6 +337,10 @@ export class OrgHub {
           const delivered = this.remoteOpen(String(body.clientId || ""), String(body.session || ""));
           return delivered ? json({ status: "ok" }) : json({ error: "This workstation is not connected" }, 409);
         }
+        case "/install-update": {
+          const body = (await request.json()) as { clientIds?: unknown; version?: unknown };
+          return json(await this.installUpdate(body.clientIds, body.version));
+        }
         case "/device-enrolled":
           this.deviceEnrolled(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
           return json({ status: "ok" });
@@ -364,11 +421,12 @@ export class OrgHub {
       this.config = null;
       return null;
     }
-    const [whitelist, broadcasts] = await Promise.all([
+    const [whitelist, broadcasts, offer] = await Promise.all([
       buildEffectiveWhitelist(db, tenant.id),
-      listDeviceBroadcasts(db, tenant.id)
+      listDeviceBroadcasts(db, tenant.id),
+      offeredRelease(db, tenant.update_channel)
     ]);
-    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, loadedAt: Date.now() };
+    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, offer, loadedAt: Date.now() };
     return this.config;
   }
 
@@ -434,6 +492,12 @@ export class OrgHub {
       const { portalUrl: _portal, ...update } = this.configFor(config, a.clientId, a.portal);
       this.sendTo(ws, { type: "config", ...update });
     }
+    // A release may have been classified, revoked, or the channel changed.
+    for (const ws of devices) {
+      const a = this.deviceAttachment(ws);
+      if (a) await this.nudgeSocket(ws, a);
+    }
+    for (const [clientId, client] of this.http) await this.nudgeHttp(clientId, client);
   }
 
   // ------------------------------------------------------------- workstations
@@ -497,9 +561,12 @@ export class OrgHub {
       previous.isLocked !== status.isLocked ||
       previous.clientNum !== status.clientNum ||
       previous.ip !== String(input.ip || "") ||
-      previous.vncPassword !== status.vncPassword;
+      previous.vncPassword !== status.vncPassword ||
+      updateFieldsChanged(previous, status);
     const client: HttpClient = {
       ...status,
+      nudgedAt: previous?.nudgedAt,
+      nudgedVersion: previous?.nudgedVersion,
       ip: String(input.ip || ""),
       portal: input.portal,
       lastSeen: now,
@@ -520,6 +587,7 @@ export class OrgHub {
     }
     if (changed) this.notifyConsoles({ type: "status", client: this.httpStatus(clientId, client, now) });
     if (client.dirty) await this.ensureAlarm(FLUSH_DELAY_MS);
+    await this.nudgeHttp(clientId, client);
 
     const config = (await this.loadConfig())!;
     const { portalUrl, ...update } = this.configFor(config, clientId, input.portal);
@@ -529,7 +597,7 @@ export class OrgHub {
   /** Workstation-reported state, validated; unset fields keep what was known. */
   private normalizeStatus(
     payload: Record<string, unknown>,
-    previous?: { clientNum: number; activeUrl: string; isLocked: boolean; vncPassword?: string }
+    previous?: { clientNum: number; activeUrl: string; isLocked: boolean; vncPassword?: string } & UpdateFields
   ) {
     const clientNum = Number(payload.clientNum);
     const vncPassword =
@@ -540,7 +608,13 @@ export class OrgHub {
       clientNum: Number.isInteger(clientNum) && clientNum > 0 && clientNum < 100_000 ? clientNum : previous?.clientNum ?? 1,
       activeUrl: safeHttpUrl(payload.activeUrl) || previous?.activeUrl || "",
       isLocked: typeof payload.isLocked === "boolean" ? payload.isLocked : previous?.isLocked ?? false,
-      vncPassword
+      vncPassword,
+      imageVersion: isReleaseVersion(payload.imageVersion) ? payload.imageVersion : previous?.imageVersion,
+      agentVersion:
+        typeof payload.agentVersion === "string" && /^[0-9A-Za-z.+-]{1,32}$/.test(payload.agentVersion)
+          ? payload.agentVersion.slice(0, MAX_AGENT_VERSION_LENGTH)
+          : previous?.agentVersion,
+      update: payload.update === undefined ? previous?.update : normalizeUpdateReport(payload.update) ?? previous?.update
     };
   }
 
@@ -570,12 +644,14 @@ export class OrgHub {
         next.activeUrl !== attachment.activeUrl ||
         next.isLocked !== attachment.isLocked ||
         next.clientNum !== attachment.clientNum ||
-        next.vncPassword !== attachment.vncPassword;
+        next.vncPassword !== attachment.vncPassword ||
+        updateFieldsChanged(attachment, next);
       if (changed) {
         const updated: DeviceAttachment = { ...attachment, ...next, dirty: true };
         ws.serializeAttachment(updated);
         this.notifyConsoles({ type: "status", client: this.statusOf(updated, now) });
         await this.ensureAlarm(FLUSH_DELAY_MS);
+        await this.nudgeSocket(ws, updated);
       }
     } else if (data.type === "frame") {
       const frame = acceptableFrame(data.thumbnail);
@@ -657,6 +733,7 @@ export class OrgHub {
       url: input.url,
       message: input.message,
       epoch: input.epoch,
+      ...(input.version ? { version: input.version } : {}),
       ...(input.portal ? { portal: true } : {})
     });
     const ids: string[] = [];
@@ -729,7 +806,7 @@ export class OrgHub {
 
     const commands: QueuedCommand[] = [];
     for (const row of rows) {
-      let payload: { url?: string; message?: string; epoch?: number; portal?: boolean } = {};
+      let payload: { url?: string; message?: string; epoch?: number; version?: string; portal?: boolean } = {};
       try {
         payload = row.payload_json ? JSON.parse(row.payload_json) : {};
       } catch (err) {
@@ -743,6 +820,7 @@ export class OrgHub {
         url: payload.portal ? portalUrl : payload.url,
         message: payload.message,
         epoch: payload.epoch,
+        ...(payload.version ? { version: payload.version } : {}),
         timestamp: row.created_at
       });
       if (row.target === clientId) {
@@ -885,7 +963,8 @@ export class OrgHub {
       vncPassword: a.vncPassword,
       online,
       lastSeen,
-      transport: "websocket"
+      transport: "websocket",
+      ...updateFieldsOf(a)
     };
   }
 
@@ -899,7 +978,8 @@ export class OrgHub {
       vncPassword: c.vncPassword,
       online: now - c.lastSeen < HTTP_ONLINE_MS,
       lastSeen: c.lastSeen,
-      transport: "http"
+      transport: "http",
+      ...updateFieldsOf(c)
     };
   }
 
@@ -927,7 +1007,7 @@ export class OrgHub {
   // -------------------------------------------------------- write-back to D1
 
   private registryRow(
-    a: { clientId: string; clientNum: number; ip: string; isLocked: boolean; activeUrl: string; vncPassword?: string },
+    a: { clientId: string; clientNum: number; ip: string; isLocked: boolean; activeUrl: string; vncPassword?: string } & UpdateFields,
     lastSeenMs: number
   ): DeviceRegistryRow {
     return {
@@ -938,7 +1018,10 @@ export class OrgHub {
       isLocked: a.isLocked,
       activeUrl: a.activeUrl || null,
       vncPassword: a.vncPassword ?? null,
-      lastSeen: Math.floor(lastSeenMs / 1000)
+      lastSeen: Math.floor(lastSeenMs / 1000),
+      imageVersion: a.imageVersion ?? null,
+      agentVersion: a.agentVersion ?? null,
+      update: a.update ?? null
     };
   }
 
@@ -1021,6 +1104,71 @@ export class OrgHub {
     if (current === null || current > due) await this.ctx.storage.setAlarm(due);
   }
 
+  // ------------------------------------------------------------------ updates
+
+  /**
+   * Remind a workstation of the release its organization is offered, when it
+   * runs an older image and is neither fetching nor holding that release.
+   *
+   * This is how a release reaches workstations without any timer on them: a
+   * release classified for the channel (configChanged), a workstation that
+   * connects or reports a change behind the offer, and an admin's Check for
+   * updates all end in a `release-available` command. The workstation's root
+   * updater then asks GET /api/devices/update itself; the command carries the
+   * version only for the agent's log.
+   */
+  private async nudgeSocket(ws: WebSocket, a: DeviceAttachment): Promise<void> {
+    const due = this.releaseNudgeDue(a);
+    if (!due) return;
+    ws.serializeAttachment({ ...a, nudgedAt: Date.now(), nudgedVersion: due.version });
+    await this.enqueue({ targets: [a.clientId], action: "release-available", version: due.version });
+  }
+
+  private async nudgeHttp(clientId: string, client: HttpClient): Promise<void> {
+    const due = this.releaseNudgeDue(client);
+    if (!due) return;
+    client.nudgedAt = Date.now();
+    client.nudgedVersion = due.version;
+    await this.enqueue({ targets: [clientId], action: "release-available", version: due.version });
+  }
+
+  private releaseNudgeDue(fields: UpdateFields): ReleaseOffer | null {
+    const offer = this.config?.offer ?? null;
+    if (!offer || !releaseNudgeWanted(offer, fields.update, fields.imageVersion)) return null;
+    if (fields.nudgedVersion === offer.version && fields.nudgedAt) {
+      const wait = fields.update?.phase === "error" ? RELEASE_NUDGE_AFTER_ERROR_MS : RELEASE_NUDGE_MS;
+      if (Date.now() - fields.nudgedAt < wait) return null;
+    }
+    return offer;
+  }
+
+  /**
+   * Ask the selected workstations to install the release they hold. Only a
+   * workstation online now that reports the offered `version` downloaded and
+   * verified (`ready`) is sent `install-update`; every other one is returned
+   * with the reason, and is never updated later on its own.
+   */
+  async installUpdate(
+    rawIds: unknown,
+    rawVersion: unknown
+  ): Promise<{ sent: string[]; skipped: Array<{ clientId: string; reason: string }> }> {
+    const ids = Array.isArray(rawIds) ? Array.from(new Set(rawIds.map(String))).filter((id) => CLIENT_ID_PATTERN.test(id)) : [];
+    const version = isReleaseVersion(rawVersion) ? rawVersion : "";
+    const live = this.liveClients(false);
+    const sent: string[] = [];
+    const skipped: Array<{ clientId: string; reason: string }> = [];
+    for (const clientId of ids) {
+      const status = live[clientId];
+      const reason = !version
+        ? "No release is offered to this organization"
+        : installRefusal(status, version);
+      if (reason) skipped.push({ clientId, reason });
+      else sent.push(clientId);
+    }
+    if (sent.length) await this.enqueue({ targets: sent, action: "install-update", version });
+    return { sent, skipped };
+  }
+
   // ------------------------------------------------------------------- helpers
 
   private recordEvent(event: string, clientId: string, now = Date.now(), leaving?: WebSocket): void {
@@ -1054,4 +1202,49 @@ export class OrgHub {
   private writeMeta(key: string, value: string): void {
     this.ctx.storage.sql.exec("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", key, value);
   }
+}
+
+/** The update fields a console and the registry see. */
+function updateFieldsOf(f: UpdateFields): Pick<LiveStatus, "imageVersion" | "agentVersion" | "update"> {
+  return {
+    ...(f.imageVersion ? { imageVersion: f.imageVersion } : {}),
+    ...(f.agentVersion ? { agentVersion: f.agentVersion } : {}),
+    ...(f.update ? { update: f.update } : {})
+  };
+}
+
+function updateFieldsChanged(a: UpdateFields, b: UpdateFields): boolean {
+  return a.imageVersion !== b.imageVersion || a.agentVersion !== b.agentVersion || !sameUpdateReport(a.update, b.update);
+}
+
+/**
+ * Whether a workstation should be told about the offered release: it reports
+ * updates at all (an older agent does not), runs from a disk, runs an older
+ * image, and is not already fetching, holding or installing this release.
+ */
+export function releaseNudgeWanted(
+  offer: ReleaseOffer | null,
+  update: UpdateReport | undefined,
+  imageVersion: string | undefined
+): boolean {
+  if (!offer || !update || update.phase === "live") return false;
+  if (!imageVersion || !isReleaseVersion(imageVersion)) return false;
+  if (compareVersions(offer.version, imageVersion) <= 0) return false;
+  if (update.phase === "checking" || update.phase === "downloading" || update.phase === "installing") return false;
+  if (update.phase === "ready" && update.version === offer.version) return false;
+  return true;
+}
+
+/** Why this workstation cannot install `version` now, or null when it can. */
+export function installRefusal(status: LiveStatus | undefined, version: string): string | null {
+  if (!status || !status.online) return "Offline";
+  const update = status.update;
+  if (!update) return "Its software is too old to update over the air; reinstall it from a current ISO";
+  if (update.phase === "live") return "Live session; update it by re-flashing";
+  if (update.phase === "installing") return "Already installing";
+  if (status.imageVersion === version) return "Already up to date";
+  if (update.phase === "downloading" || update.phase === "checking") return "Still downloading";
+  if (update.phase === "ready" && update.version === version) return null;
+  if (update.phase === "error") return "Its last download failed";
+  return "Has not downloaded this release yet";
 }

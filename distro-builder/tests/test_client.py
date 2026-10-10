@@ -1905,5 +1905,139 @@ class BootConfirmation(unittest.TestCase):
         self.assertEqual(bootslots.cmd_check(), {"state": "live"})
 
 
+class UpdateReportingAndInstall(unittest.TestCase):
+    """Phase 3: the agent reports labkiosk-update's state and acts on the hub's two update commands."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.update_path = os.path.join(self.tmp.name, "update.json")
+        self.boot_path = os.path.join(self.tmp.name, "status.json")
+        names = ("read_update_report", "read_root_json", "is_live_session", "start_update_unit", "run_x11", "log")
+        self.saved = {name: getattr(agent, name) for name in names}
+        self.saved_state = dict(agent.state)
+        self.live = False
+        self.started = []
+        self.ran = []
+        self.logged = []
+        self.unit_answer = True
+        uid = os.getuid()
+        agent.read_update_report = lambda: self.saved["read_update_report"](self.update_path, owner_uid=uid)
+        agent.read_root_json = lambda path, owner_uid=uid: self.saved["read_root_json"](
+            self.boot_path if path == agent.BOOT_STATUS_FILE else path, owner_uid=uid)
+        agent.is_live_session = lambda: self.live
+
+        def start(unit):
+            self.started.append(unit)
+            return self.unit_answer
+
+        agent.start_update_unit = start
+        agent.run_x11 = lambda argv, **kwargs: self.ran.append(argv)
+        agent.log = self.logged.append
+
+    def tearDown(self):
+        for name, value in self.saved.items():
+            setattr(agent, name, value)
+        agent.state.clear()
+        agent.state.update(self.saved_state)
+        self.tmp.cleanup()
+
+    def write(self, path, payload):
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(payload if isinstance(payload, str) else json.dumps(payload))
+
+    def test_the_report_is_live_idle_or_what_the_updater_wrote(self):
+        self.assertEqual(agent.read_update_report(), {"phase": "idle"}, "nothing written yet")
+        self.write(self.update_path, {"phase": "downloading", "version": "2.9.0", "progress": 41, "at": 1})
+        self.assertEqual(agent.read_update_report(), {"phase": "downloading", "version": "2.9.0", "progress": 41})
+        self.write(self.update_path, {"phase": "error", "detail": "x" * 900, "at": 1})
+        self.assertEqual(len(agent.read_update_report()["detail"]), agent.MAX_UPDATE_DETAIL)
+        self.write(self.update_path, {"phase": "ready", "version": "../2.9.0", "progress": True, "at": 1})
+        self.assertEqual(agent.read_update_report(), {"phase": "ready"}, "a bad version or progress is dropped")
+        self.write(self.update_path, {"phase": "rooted", "at": 1})
+        self.assertEqual(agent.read_update_report(), {"phase": "idle"})
+        self.live = True
+        self.assertEqual(agent.read_update_report(), {"phase": "live"})
+
+    def test_a_file_root_did_not_write_is_not_believed(self):
+        self.write(self.update_path, {"phase": "ready", "version": "2.9.0", "at": 1})
+        agent.read_root_json = self.saved["read_root_json"]
+        report = self.saved["read_update_report"](self.update_path, owner_uid=os.getuid() + 1)
+        self.assertEqual(report["phase"], "error")
+        self.assertNotIn("version", report)
+
+    def test_the_status_carries_the_versions_and_the_update(self):
+        self.write(self.update_path, {"phase": "ready", "version": "2.9.0", "at": 1})
+        status = agent.current_status()
+        self.assertEqual(status["agentVersion"], agent.AGENT_VERSION)
+        self.assertEqual(status["update"], {"phase": "ready", "version": "2.9.0"})
+        self.assertIn(status.get("imageVersion", ""), ("", agent.image_version()))
+
+    def test_release_available_starts_the_download_unit_off_live_media_only(self):
+        agent.execute_command({"action": "release-available", "version": "2.9.0"})
+        self.assertEqual(self.started, [agent.UPDATE_DOWNLOAD_UNIT])
+        self.live = True
+        agent.execute_command({"action": "release-available", "version": "2.9.0"})
+        self.assertEqual(self.started, [agent.UPDATE_DOWNLOAD_UNIT], "a live session is re-flashed instead")
+
+    def test_install_update_installs_only_the_release_held_ready(self):
+        for held in (None, {"phase": "downloading", "version": "2.9.0", "progress": 50}, {"phase": "ready", "version": "2.8.5"}):
+            if held is None:
+                if os.path.exists(self.update_path):
+                    os.remove(self.update_path)
+            else:
+                self.write(self.update_path, dict(held, at=1))
+            agent.execute_command({"action": "install-update", "version": "2.9.0"})
+        agent.execute_command({"action": "install-update", "version": "2.9.0; reboot"})
+        self.assertEqual(self.started, [])
+        self.assertIsNone(agent.update_screen())
+
+        self.write(self.update_path, {"phase": "ready", "version": "2.9.0", "at": 1})
+        agent.execute_command({"action": "install-update", "version": "2.9.0"})
+        self.assertEqual(self.started, [agent.UPDATE_INSTALL_UNIT])
+        self.assertEqual(agent.update_screen(), {"kind": "installing", "version": "2.9.0"})
+
+    def test_while_installing_unlock_keeps_the_screen_and_power_commands_wait(self):
+        self.write(self.update_path, {"phase": "ready", "version": "2.9.0", "at": 1})
+        agent.execute_command({"action": "install-update", "version": "2.9.0"})
+        agent.execute_command({"action": "unlock"})
+        agent.execute_command({"action": "reboot"})
+        agent.execute_command({"action": "shutdown"})
+        self.assertEqual(self.ran, [], "the install restarts the machine itself")
+        self.assertEqual(agent.update_screen()["kind"], "installing")
+
+    def test_the_install_screen_comes_down_on_an_error_or_when_no_restart_follows(self):
+        self.write(self.update_path, {"phase": "ready", "version": "2.9.0", "at": 1})
+        agent.execute_command({"action": "install-update", "version": "2.9.0"})
+        self.write(self.update_path, {"phase": "error", "version": "2.9.0", "detail": "no longer matches", "at": 2})
+        self.assertIsNone(agent.update_screen())
+        agent.execute_command({"action": "reboot"})
+        self.assertEqual(self.ran, [["systemctl", "reboot"]])
+
+        self.write(self.update_path, {"phase": "ready", "version": "2.9.0", "at": 3})
+        agent.execute_command({"action": "install-update", "version": "2.9.0"})
+        self.write(self.update_path, {"phase": "installing", "version": "2.9.0", "at": 4})
+        later = time.monotonic() + agent.UPDATE_SCREEN_TIMEOUT_SECONDS + 1
+        self.assertIsNone(agent.update_screen(clock=lambda: later))
+
+    def test_a_unit_that_would_not_start_leaves_no_screen(self):
+        self.unit_answer = False
+        self.write(self.update_path, {"phase": "ready", "version": "2.9.0", "at": 1})
+        agent.execute_command({"action": "install-update", "version": "2.9.0"})
+        self.assertIsNone(agent.update_screen())
+
+    def test_a_new_image_on_its_first_start_shows_finishing(self):
+        self.write(self.boot_path, {"state": "finishing", "version": "2.9.0", "previous": "2.8.0", "at": 1})
+        self.assertEqual(agent.update_screen(), {"kind": "finishing", "version": "2.9.0"})
+        self.write(self.boot_path, {"state": "installed", "version": "2.9.0", "previous": "2.8.0", "at": 2})
+        self.assertIsNone(agent.update_screen())
+
+    def test_the_kiosk_bar_shows_the_update_screen_over_everything(self):
+        with open(os.path.join(CHROOT, "opt/labkiosk/extension/content.js"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn('id="lock-title"', source)
+        self.assertIn("data.updateScreen", source)
+        self.assertIn("bar.update-installing-title", source)
+        self.assertIn("bar.update-finishing-title", source)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

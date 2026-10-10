@@ -1,3 +1,4 @@
+import type { UpdateReport } from "./releases";
 export type UserRole = "super_admin" | "org_admin";
 export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
 export type KioskMode = "portal" | "single_url";
@@ -74,7 +75,12 @@ export interface Tenant {
   bug_reports_terms_accepted_at?: number | null;
   /** Remote Control is approved per organization by the platform (migration 0020). */
   remote_control_status?: RemoteControlStatus;
+  /** Which classified releases its workstations are offered (migration 0027). */
+  update_channel?: UpdateChannel;
 }
+
+/** A release channel: `beta` organizations are offered beta and stable releases. */
+export type UpdateChannel = "stable" | "beta";
 
 export interface BroadcastPreset {
   id: string;
@@ -130,6 +136,16 @@ export interface ClientDevice {
   update_error?: string | null;
   /** When the workstation recorded that outcome, by its own clock; 0 = never. */
   update_state_at?: number;
+  /** What it last said about an update it is fetching or holding (0027); see UpdatePhase. */
+  update_phase?: string | null;
+  /** The release that phase is about. */
+  update_version?: string | null;
+  /** Download progress, 0-100, while downloading. */
+  update_progress?: number | null;
+  /** Why the last update attempt failed, when it did. */
+  update_detail?: string | null;
+  /** The workstation agent's own version. */
+  agent_version?: string | null;
 }
 
 export interface WorkstationGroup {
@@ -210,6 +226,11 @@ export interface ClientTelemetry {
   online?: boolean;
   vncPassword?: string;
   groupName?: string;
+  /** The system image it runs. */
+  imageVersion?: string;
+  agentVersion?: string;
+  /** The update it is fetching or holding; absent from an agent too old to say. */
+  update?: UpdateReport;
 }
 
 export interface RemoteCommand {
@@ -274,6 +295,14 @@ export interface Env {
   AUDIT_QUEUE?: Queue<AuditEntryMessage>;
   /** Audit entries older than the retention period, as NDJSON files. */
   AUDIT_ARCHIVE?: R2Bucket;
+  /**
+   * The bucket CI uploads signed system images to (`releases/<version>/`), read
+   * by the super admin's Releases page. Optional: without it, and without
+   * RELEASES_BASE_URL, over-the-air updates are off and their routes say so.
+   */
+  RELEASES?: R2Bucket;
+  /** Public read-only address of that bucket, e.g. `https://releases.labkiosk.org` (dashboard variable). */
+  RELEASES_BASE_URL?: string;
   /** Fleet history: connections, disconnections and online counts per organization. */
   FLEET_METRICS?: AnalyticsEngineDataset;
   /** Coarse per-address throttle in front of sign-in, registration and enrolment. */

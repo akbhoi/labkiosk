@@ -202,5 +202,9 @@
   "ui.warning-installing-will-completely-erase-and": "⚠️ WARNING: Installing will completely erase and re-partition the selected drive.",
   "ui.wi-fi-wireless": "Wi-Fi (Wireless)",
   "ui.workstation-enrollment-key": "Workstation Enrollment Key",
-  "ui.workstation-identifier-pc-name": "Workstation Identifier (PC Name)"
+  "ui.workstation-identifier-pc-name": "Workstation Identifier (PC Name)",
+  "bar.update-finishing-text": "This workstation is checking its new software. It will be ready in a few minutes.",
+  "bar.update-finishing-title": "Finishing a system update",
+  "bar.update-installing-text": "This workstation restarts by itself in a moment. Please do not switch it off.",
+  "bar.update-installing-title": "Installing a system update"
 }

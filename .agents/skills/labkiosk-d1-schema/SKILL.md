@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 3, 3b, 3c; reference:
 
 - `migrations/NNNN_name.sql` is what a deployed D1 has; `SCHEMA_SQL` in `src/db.ts` builds the
   in-memory database for tests and `pnpm dev`. **Change both.**
-- Add a **new** numbered file (next: `0022_…`). **Never edit or rename an applied migration** —
+- Add a **new** numbered file (next: `0028_…`). **Never edit or rename an applied migration** —
   wrangler tracks them by file name, so a rename re-runs it (that is why `0008_school_homepage.sql`
   keeps its name).
 - Every query that touches tenant data filters by `tenant_id`; index what you query on.
@@ -130,6 +130,14 @@ A platform table like `ui_catalogs`: no `tenant_id`.
 **Email codes** (`0026`). `email_codes.purpose` is a CHECK (`signup`, `contact`). A new purpose is a
 rebuild of the table; it holds ten-minute codes and nothing refers to it, so `0026` drops and recreates
 it instead of copying. `assertSchemaCurrent` reads the table's definition, as it does for `users`.
+
+**Over-the-air updates** (`0027`). `releases` (keyed by `version`; `channel` `beta`/`stable`/NULL,
+`kind`, `base_version`, `security_floor`, `size_bytes`, `built_at`, `manifest`, `found_at`,
+`classified_at`, `classified_by`, `revoked_at`) is a platform table like `ui_catalogs`: no
+`tenant_id`. `tenants.update_channel` (`stable` default, or `beta`). `client_devices.update_phase`,
+`update_version`, `update_progress`, `update_detail`, `agent_version` hold what the workstation last
+reported about the update it is fetching or holding (written back by OrgHub), separate from
+`update_state` (0015), the outcome of its last boot.
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

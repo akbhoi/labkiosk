@@ -28,6 +28,7 @@ import {
   isEnrollmentKey
 } from "./auth";
 import { DEMO_SLUGS, DEMO_TENANTS } from "./demo";
+import type { UpdateReport } from "./releases";
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
@@ -75,7 +76,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   bug_reports_terms_version TEXT,
   bug_reports_terms_accepted_at INTEGER,
   remote_control_status TEXT NOT NULL DEFAULT 'none'
-  CHECK (remote_control_status IN ('none', 'pending', 'approved', 'rejected'))
+  CHECK (remote_control_status IN ('none', 'pending', 'approved', 'rejected')),
+  update_channel TEXT NOT NULL DEFAULT 'stable'
+  CHECK (update_channel IN ('stable', 'beta'))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -118,7 +121,12 @@ CREATE TABLE IF NOT EXISTS client_devices (
   image_version TEXT,
   update_state TEXT,
   update_error TEXT,
-  update_state_at INTEGER NOT NULL DEFAULT 0
+  update_state_at INTEGER NOT NULL DEFAULT 0,
+  update_phase TEXT,
+  update_version TEXT,
+  update_progress INTEGER,
+  update_detail TEXT,
+  agent_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -160,6 +168,23 @@ CREATE TABLE IF NOT EXISTS release_notes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_release_notes_published ON release_notes(published_at);
+
+CREATE TABLE IF NOT EXISTS releases (
+  version TEXT PRIMARY KEY,
+  channel TEXT CHECK (channel IN ('beta', 'stable')),
+  kind TEXT NOT NULL CHECK (kind IN ('feature', 'security')),
+  base_version TEXT,
+  security_floor TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  built_at TEXT NOT NULL,
+  manifest TEXT NOT NULL,
+  found_at INTEGER NOT NULL,
+  classified_at INTEGER,
+  classified_by TEXT,
+  revoked_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_releases_channel ON releases(channel);
 
 CREATE TABLE IF NOT EXISTS bug_reports (
   signature TEXT PRIMARY KEY,
@@ -547,6 +572,10 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT category FROM conversations LIMIT 1").run();
     // 0025: what each release changed, for /download.
     await db.prepare("SELECT tag, summary FROM release_notes LIMIT 1").run();
+    // 0027: over-the-air updates.
+    await db.prepare("SELECT version, channel, revoked_at FROM releases LIMIT 1").run();
+    await db.prepare("SELECT update_channel FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT update_phase, update_version, update_progress, update_detail, agent_version FROM client_devices LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -844,6 +873,7 @@ export async function seedDefaultPortalSites(db: D1Database, tenantId: string): 
  */
 const MUTABLE_TENANT_COLUMNS = new Set([
   "name",
+  "update_channel",
   "subdomain",
   "requested_subdomain",
   "status",
@@ -1369,6 +1399,12 @@ export interface DeviceRegistryRow {
   vncPassword: string | null;
   /** Unix seconds. */
   lastSeen: number;
+  /** The system image it runs; null keeps the stored one. */
+  imageVersion: string | null;
+  /** Its agent's version; null keeps the stored one. */
+  agentVersion: string | null;
+  /** The update it is fetching or holding; null keeps the stored one. */
+  update: UpdateReport | null;
 }
 
 /**
@@ -1383,8 +1419,9 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
   if (!rows.length) return;
   const now = Math.floor(Date.now() / 1000);
   const statement = db.prepare(
-    `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO client_devices (id, tenant_id, client_id, client_num, ip, last_seen, is_locked, active_url, vnc_password,
+       image_version, agent_version, update_phase, update_version, update_progress, update_detail, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        client_num = excluded.client_num,
        ip = excluded.ip,
@@ -1392,6 +1429,12 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
        is_locked = excluded.is_locked,
        active_url = COALESCE(excluded.active_url, client_devices.active_url),
        vnc_password = COALESCE(excluded.vnc_password, client_devices.vnc_password),
+       image_version = COALESCE(excluded.image_version, client_devices.image_version),
+       agent_version = COALESCE(excluded.agent_version, client_devices.agent_version),
+       update_phase = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_phase ELSE excluded.update_phase END,
+       update_version = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_version ELSE excluded.update_version END,
+       update_progress = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_progress ELSE excluded.update_progress END,
+       update_detail = CASE WHEN excluded.update_phase IS NULL THEN client_devices.update_detail ELSE excluded.update_detail END,
        updated_at = excluded.updated_at`
   );
   await db.batch(
@@ -1406,6 +1449,12 @@ export async function upsertDeviceRegistry(db: D1Database, rows: DeviceRegistryR
         row.isLocked ? 1 : 0,
         row.activeUrl,
         row.vncPassword,
+        row.imageVersion,
+        row.agentVersion,
+        row.update?.phase ?? null,
+        row.update?.version ?? null,
+        row.update?.progress ?? null,
+        row.update?.detail ?? null,
         now,
         now
       )

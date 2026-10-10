@@ -36,13 +36,15 @@ labkiosk/
 ├── distro-builder/          Debian 12 live-build image, installer, hooks, Chromium policy
 │   └── config/includes.chroot/
 │       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
-│       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots
+│       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots,
+│                            sbin/labkiosk-update
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0026 (never edit an applied one)
+│   ├── migrations/          0001..0027 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
 │   │                        remote_relay.ts (one Durable Object per workstation's Remote Control session),
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
 │   │                        boot_report.ts, bug_reports.ts (Errors & Warnings, opt-in GitHub bug reports),
+│   │                        releases.ts (over-the-air releases: the R2 releases bucket, channels, the offer),
 │   │                        seo.ts (robots.txt, sitemap, noindex, canonical host, analytics CSP),
 │   │                        two_factor.ts (TOTP, recovery codes, sign-in alerts), turnstile.ts,
 │   │                        signup.ts, inbox.ts, conversations.ts, mail.ts, mail_store.ts, mime.ts (registration,
@@ -85,7 +87,7 @@ one the agent opens on request and pipes to loopback x11vnc. Full contracts:
    platform-owned demos `web-demo`, `local-demo` and `docker-demo` (`src/demo.ts`).
 5. **Staff delegation never escalates.** Roles `org_admin`, `sub_admin`, `operator`, `assistant`,
    `content_manager`; permissions `workstations`, `broadcast`, `portal`, `whitelist`, `staff`,
-   `settings`; `*` is never stored; `staffDelegationProblem()` guards every staff change.
+   `settings`, `updates`; `*` is never stored; `staffDelegationProblem()` guards every staff change.
 6. **Escape everything; no inline handlers.** Server: `escapeHtml`/`escapeJson`/`safeHttpUrl`.
    Client: DOM nodes and `textContent` (escape helpers are server-only). Every `<script>` carries the
    CSP nonce. Classes must be declared in `ui_layout.ts`; tokens only in `ui_tokens.ts`.

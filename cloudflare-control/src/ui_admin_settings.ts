@@ -13,9 +13,11 @@ import { parseHomepageBlocks } from "./db";
 import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
+import { renderUpdatesPaneHtml, renderUpdatesScript } from "./ui_admin_updates";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
+  const canUpdate = options.canUpdate === true;
   if (options.accountOnly) {
     // No `settings` permission: the account's own sign-in, and nothing of the organization's.
     return {
@@ -27,18 +29,28 @@ export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
         <p class="page-desc">How your own account signs in. The organization's settings belong to its administrators.</p>
       </div>
     </div>
-${renderTwoFactorPaneHtml()}`,
-      scriptsHtml: renderTwoFactorScript(nonce)
+${renderTwoFactorPaneHtml()}
+${canUpdate ? renderUpdatesPaneHtml() : ""}`,
+      scriptsHtml: renderTwoFactorScript(nonce) + (canUpdate ? renderUpdatesScript(nonce) : "")
     };
   }
   return {
     title: "Settings & Configuration",
-    contentHtml: renderSettingsPageHtml(tenant, config, baseDomain, tenantParam),
-    scriptsHtml: renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)) + renderTwoFactorScript(nonce)
+    contentHtml: renderSettingsPageHtml(tenant, config, baseDomain, tenantParam, canUpdate),
+    scriptsHtml:
+      renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)) +
+      renderTwoFactorScript(nonce) +
+      (canUpdate ? renderUpdatesScript(nonce) : "")
   };
 }
 
-function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | undefined, baseDomain: string, tenantParam: string): string {
+function renderSettingsPageHtml(
+  tenant: Tenant | undefined,
+  config: LabConfig | undefined,
+  baseDomain: string,
+  tenantParam: string,
+  canUpdate: boolean
+): string {
   const currentSubdomain = tenant?.subdomain || "";
   const customDomain = tenant?.custom_domain || "";
   const customDomainStatus = tenant?.custom_domain_status || "none";
@@ -80,7 +92,15 @@ function renderSettingsPageHtml(tenant: Tenant | undefined, config: LabConfig | 
       <button type="button" class="segmented-tab" data-action="tab-issues">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         <span>Errors &amp; Warnings</span>
-      </button>
+      </button>${
+        canUpdate
+          ? `
+      <button type="button" class="segmented-tab" data-action="tab-updates">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Updates</span>
+      </button>`
+          : ""
+      }
     </nav>
 
     <!-- ============================================================== -->
@@ -308,6 +328,14 @@ ${renderRemoteControlCard(tenant)}
 ${renderTwoFactorPaneHtml()}
     </div>
 
+${
+  canUpdate
+    ? `    <div class="tab-pane" id="pane-updates">
+${renderUpdatesPaneHtml()}
+    </div>
+`
+    : ""
+}
     <!-- ============================================================== -->
     <!-- TAB 5: ERRORS & WARNINGS                                       -->
     <!-- ============================================================== -->
@@ -402,11 +430,13 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         "section-enrollment": "security",
         "section-password": "security",
         "section-activity": "security",
-        "section-issues": "issues"
+        "section-issues": "issues",
+        "section-updates": "updates"
       };
 
       function switchTab(tabId) {
         const validTabs = ["general", "domains", "homepage", "security", "two-factor", "issues"];
+        if (document.getElementById("pane-updates")) validTabs.push("updates");
         if (!validTabs.includes(tabId)) tabId = "general";
 
         // Update In-Canvas Segmented Tabs

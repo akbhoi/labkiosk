@@ -22,6 +22,8 @@ export interface AdminPageInput {
    * the account's own (its two-factor sign-in), nothing of the organization's.
    */
   accountOnly?: boolean;
+  /** The account holds the `updates` permission: check for and install system updates. */
+  canUpdate?: boolean;
   nonce: string;
 }
 
