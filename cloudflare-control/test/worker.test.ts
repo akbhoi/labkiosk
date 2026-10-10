@@ -39,6 +39,7 @@ import {
   redactProblemText
 } from "../src/bug_reports";
 import { HUB_PING, HUB_PONG, installRefusal, installTargetFor, releaseNudgeTarget } from "../src/org_hub";
+import { LAN_HOLD_MAX_MS, LAN_SHARE_SECONDS, lanDecision, lanPeers, normalizeLanReport, siteKey } from "../src/lan_sharing";
 import {
   compareVersions,
   isReleaseVersion,
@@ -6616,6 +6617,183 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // A security release names the release it rebuilds, and its confirmation says it installs at the next restart.
     assert.ok(releases.includes('"Rebuild of " + r.baseVersion') && releases.includes("install it at their next restart"));
     assert.match(releases, /href="\/super\/releases"[^>]*aria-current="page"|aria-current="page"[^>]*href="\/super\/releases"/);
+  });
+
+  test("Phase 5: a site is one public address and one private subnet, and its reports are validated", () => {
+    assert.deepEqual(normalizeLanReport({ address: "192.168.10.23", prefix: 24 }), { address: "192.168.10.23", prefix: 24 });
+    assert.deepEqual(normalizeLanReport({ address: "172.20.1.9", prefix: 16 }), { address: "172.20.1.9", prefix: 16 });
+    for (const bad of [
+      { address: "8.8.8.8", prefix: 24 },
+      { address: "169.254.1.1", prefix: 16 },
+      { address: "172.32.0.1", prefix: 16 },
+      { address: "192.168.10.0", prefix: 24 },
+      { address: "192.168.10.255", prefix: 24 },
+      { address: "10.0.0.1", prefix: 8 },
+      { address: "10.0.0.1", prefix: 31 },
+      { address: "10.0.0.1", prefix: "24" },
+      { address: "010.0.0.1", prefix: 24 },
+      { address: "fd00::1", prefix: 64 },
+      "10.0.0.1/24",
+      null
+    ]) {
+      assert.equal(normalizeLanReport(bad), null, JSON.stringify(bad));
+    }
+    const lan = { address: "192.168.10.23", prefix: 24 };
+    assert.equal(siteKey("203.0.113.10", lan), "203.0.113.10|192.168.10.0/24");
+    assert.equal(siteKey("203.0.113.10", undefined), null, "no LAN report, no site");
+    assert.equal(siteKey("2001:db8:0:12:a::1", lan), siteKey("2001:0db8::12:b:0:0:2", lan), "IPv6 egress: one /64 is one site");
+    assert.notEqual(siteKey("2001:db8:0:12::1", lan), siteKey("2001:db8:0:13::1", lan));
+    assert.equal(siteKey("not-an-address", lan), null);
+
+    const now = 1_800_000_000_000;
+    const at = (clientId: string, address: string, update?: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+      clientId,
+      ip: "203.0.113.10",
+      lan: { address, prefix: 24 },
+      update: update as any,
+      ...extra
+    });
+    const me = at("ME", "192.168.10.30", { phase: "idle" });
+    const seed = (id: string, address: string) => at(id, address, { phase: "downloading", version: "2.11.0", progress: 5 });
+    assert.equal(lanDecision(me, "2.11.0", [], undefined, now), "go", "alone at its site, it is a seed");
+    assert.equal(lanDecision(me, "2.11.0", [seed("A", "192.168.10.11")], undefined, now), "go", "a second seed");
+    const twoSeeds = [seed("A", "192.168.10.11"), seed("B", "192.168.10.12")];
+    assert.equal(lanDecision(me, "2.11.0", twoSeeds, undefined, now), "hold");
+    assert.equal(lanDecision(me, "2.11.0", twoSeeds, now - LAN_HOLD_MAX_MS, now), "go", "never waits longer than an hour");
+    const told = at("C", "192.168.10.13", { phase: "idle" }, { nudgedAt: now - 1000, nudgedVersion: "2.11.0" });
+    assert.equal(lanDecision(me, "2.11.0", [seed("A", "192.168.10.11"), told], undefined, now), "hold", "one just told counts");
+    const elsewhere = { ...seed("D", "192.168.20.11"), lan: { address: "192.168.20.11", prefix: 24 } };
+    const otherOffice = { ...seed("E", "192.168.10.12"), ip: "198.51.100.20" };
+    assert.equal(lanDecision(me, "2.11.0", [seed("A", "192.168.10.11"), elsewhere, otherOffice], undefined, now), "go",
+      "another subnet or another public address is another site");
+    const holder = at("H", "192.168.10.40", { phase: "ready", version: "2.11.0", since: now / 1000 - 60 });
+    assert.equal(lanDecision(me, "2.11.0", [...twoSeeds, holder], undefined, now), "go", "it copies from the holder");
+    assert.deepEqual(lanPeers(me, "2.11.0", [...twoSeeds, holder, otherOffice], now), ["192.168.10.40"]);
+    const stale = at("S", "192.168.10.41", { phase: "staged", version: "2.11.0", since: now / 1000 - LAN_SHARE_SECONDS - 1 });
+    assert.deepEqual(lanPeers(me, "2.11.0", [stale], now), [], "past the share server's 48 hours");
+    assert.deepEqual(lanPeers(me, "2.12.0", [holder], now), [], "it holds another release");
+    assert.deepEqual(lanPeers({ ...me, lan: undefined }, "2.11.0", [holder], now), [], "at no site");
+  });
+
+  test("Phase 5: with LAN sharing on, a site fetches a release once or twice and copies the rest", async () => {
+    const tenantId = await greenwoodId();
+    const lanEnv = {
+      ...releasesEnv,
+      RELEASES: fakeReleasesBucket({
+        "releases/2.11.0/manifest.json": releaseManifest("2.11.0"),
+        "releases/2.11.0/manifest.json.sig": "sig"
+      })
+    } as Env;
+    assert.equal((await callWith(lanEnv, "/api/super/releases", { cookie: superSessionCookie })).status, 200);
+    const classified = await callWith(lanEnv, "/api/super/releases/classify", { ...json({ version: "2.11.0", channel: "stable" }), cookie: superSessionCookie });
+    assert.equal(classified.status, 200);
+
+    // The setting: off by default, validated, guarded and audited.
+    const settings = "/api/settings/updates?tenant=greenwood";
+    assert.equal((await callJson(settings, { cookie: orgSessionCookie })).data.lanSharing, false, "off until an administrator turns it on");
+    for (const value of ["yes", 1, null]) {
+      assert.equal((await call(settings, { ...json({ lanSharing: value }), cookie: orgSessionCookie })).status, 400, JSON.stringify(value));
+    }
+    assert.equal((await call(settings, { ...json({ lanSharing: true }), cookie: rivalSessionCookie })).status, 403);
+    const settingsOnly = await staffWith("lan-settings@greenwood.example", ["settings"]);
+    assert.equal((await call(settings, { ...json({ lanSharing: true }), cookie: settingsOnly })).status, 403, "settings is not updates");
+    const tokens: Record<string, string> = {};
+    for (const id of ["LAN-1", "LAN-2", "LAN-3", "LAN-4", "LAN-FAR"]) tokens[id] = await enrolOta(id);
+    const offer = async (id: string) => (await callWith(lanEnv, "/api/devices/update?running=2.10.0", { bearer: tokens[id] })).json<any>();
+    assert.equal((await offer("LAN-1")).lan, null, "no LAN sharing, no peers");
+    const on = await callJson(settings, { ...json({ lanSharing: true }), cookie: orgSessionCookie });
+    assert.equal(on.res.status, 200);
+    assert.equal(on.data.lanSharing, true);
+
+    // Four workstations at one site, and one at another office on the same private range.
+    const sockets: Record<string, Awaited<ReturnType<ReturnType<typeof hubs>["connectDevice"]>>> = {};
+    const lanOf: Record<string, string> = { "LAN-1": "192.168.10.11", "LAN-2": "192.168.10.12", "LAN-3": "192.168.10.13", "LAN-4": "192.168.10.14", "LAN-FAR": "192.168.10.15" };
+    for (const id of Object.keys(lanOf)) {
+      sockets[id] = await hubs().connectDevice({ tenantId, clientId: id, ip: id === "LAN-FAR" ? "198.51.100.20" : "203.0.113.10", portal: portalContext() });
+      assert.equal(ofType(sockets[id], "config")[0].lanSharing, true, "the workstation hears it may share");
+    }
+    const status = (id: string, update: Record<string, unknown>) =>
+      sockets[id].fromClient({
+        type: "status",
+        activeUrl: "https://www.wikipedia.org/",
+        isLocked: false,
+        imageVersion: "2.10.0",
+        agentVersion: "2.11.0",
+        update,
+        lan: { address: lanOf[id], prefix: 24 }
+      });
+    const told = (id: string) =>
+      ofType(sockets[id], "commands")
+        .flatMap((m) => m.commands as Array<Record<string, unknown>>)
+        .filter((c) => c.action === "release-available" && c.version === "2.11.0").length;
+    for (const id of Object.keys(lanOf)) await status(id, { phase: "idle" });
+    assert.deepEqual(Object.keys(lanOf).map(told), [1, 1, 0, 0, 1], "two seeds per site; the other office is its own site");
+    const waiting = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    assert.equal(typeof waiting["LAN-3"].updateWaitingSince, "number", "the console says it waits");
+    assert.equal(waiting["LAN-1"].updateWaitingSince, undefined);
+    assert.deepEqual((await offer("LAN-3")).lan, { peers: [] }, "nobody holds it yet");
+
+    // A seed that leaves is replaced at once; the other still waits.
+    await sockets["LAN-2"].closeFromClient();
+    assert.deepEqual(["LAN-3", "LAN-4"].map(told), [1, 0]);
+
+    // A seed that holds the release lets the rest go, and is named as their peer.
+    await status("LAN-1", { phase: "downloading", version: "2.11.0", progress: 50 });
+    assert.equal(told("LAN-4"), 0);
+    await status("LAN-1", { phase: "ready", version: "2.11.0", kind: "feature", since: Math.floor(Date.now() / 1000) });
+    assert.equal(told("LAN-4"), 1);
+    assert.deepEqual((await offer("LAN-4")).lan, { peers: ["192.168.10.11"] });
+    assert.deepEqual((await offer("LAN-FAR")).lan, { peers: [] }, "never a peer at another site");
+
+    // Turning it off is audited, tells workstations to stop serving, and ends the peer list.
+    const off = await callJson(settings, { ...json({ lanSharing: false }), cookie: orgSessionCookie });
+    assert.equal(off.data.lanSharing, false);
+    assert.equal(ofType(sockets["LAN-1"], "config").at(-1)!.lanSharing, false);
+    assert.equal((await offer("LAN-4")).lan, null);
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "settings.lan_sharing" && l.details === "on"));
+    assert.ok(logs.some((l: any) => l.action === "settings.lan_sharing" && l.details === "off"));
+
+    for (const id of ["LAN-1", "LAN-3", "LAN-4", "LAN-FAR"]) await sockets[id].closeFromClient();
+    await callWith(lanEnv, "/api/super/releases/revoke", { ...json({ version: "2.11.0" }), cookie: superSessionCookie });
+  });
+
+  test("Phase 5: Check for updates holds a workstation whose site is still fetching", async () => {
+    const tenantId = await greenwoodId();
+    const lanEnv = {
+      ...releasesEnv,
+      RELEASES: fakeReleasesBucket({
+        "releases/2.12.0/manifest.json": releaseManifest("2.12.0"),
+        "releases/2.12.0/manifest.json.sig": "sig"
+      })
+    } as Env;
+    await callWith(lanEnv, "/api/super/releases", { cookie: superSessionCookie });
+    await callWith(lanEnv, "/api/super/releases/classify", { ...json({ version: "2.12.0", channel: "stable" }), cookie: superSessionCookie });
+    const ids = ["CHK-1", "CHK-2", "CHK-3"];
+    for (const id of ids) await enrolOta(id);
+    const sockets = await Promise.all(
+      ids.map((clientId) => hubs().connectDevice({ tenantId, clientId, ip: "203.0.113.50", portal: portalContext() }))
+    );
+    const told = (i: number) =>
+      ofType(sockets[i], "commands")
+        .flatMap((m) => m.commands as Array<Record<string, unknown>>)
+        .filter((c) => c.action === "release-available" && c.version === "2.12.0").length;
+    // Up to date as far as the hub knows, until an administrator checks: sharing is off here.
+    for (const [i, socket] of sockets.entries()) {
+      await socket.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, imageVersion: "2.12.0", agentVersion: "2.12.0", update: { phase: "up-to-date" }, lan: { address: `10.20.0.${i + 2}`, prefix: 16 } });
+    }
+    for (const [i, socket] of sockets.entries()) {
+      await socket.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, imageVersion: "2.11.5", agentVersion: "2.12.0", update: { phase: "checking" }, lan: { address: `10.20.0.${i + 2}`, prefix: 16 } });
+    }
+    await callJson("/api/settings/updates?tenant=greenwood", { ...json({ lanSharing: true }), cookie: orgSessionCookie });
+    const check = await callJson("/api/clients/check-update?tenant=greenwood", { ...json({ clientIds: ids }), cookie: orgSessionCookie });
+    assert.equal(check.res.status, 200);
+    assert.deepEqual(check.data.sent, ids, "every one is on its way, now or once a seed has it");
+    assert.deepEqual([0, 1, 2].map(told), [1, 1, 0]);
+
+    await callJson("/api/settings/updates?tenant=greenwood", { ...json({ lanSharing: false }), cookie: orgSessionCookie });
+    for (const socket of sockets) await socket.closeFromClient();
+    await callWith(lanEnv, "/api/super/releases/revoke", { ...json({ version: "2.12.0" }), cookie: superSessionCookie });
   });
 
   test("A delegate cannot grant the updates permission without holding it", async () => {

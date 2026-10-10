@@ -82,7 +82,13 @@ Paths are under `distro-builder/`. Authoritative detail: `distro-builder/AGENTS.
   downloads in `downloads/<v>/`, renamed into `images/<v>/` only once verified. Never write a
   download inside `images/` (GRUB's last resort boots any complete folder there). The build
   fails without two public keys in `update-keys/`. Tests: `tests/test_update.py`, boot-test
-  scenarios 5–9. Phases 3–5 (automatic trigger, approval UI, LAN sharing) are research, not code.
+  scenarios 5–9. `run` and `install-pending` (phases 3–4) run from their units; details in
+  `labkiosk-core` and `docs/OTA_UPDATES.md` §5.10–5.12.
+- `labkiosk-share` (phase 5, `labkiosk-share.service`, never enabled): serves this disk's verified
+  `images/<v>/` files on TCP 8890 to its own private subnet, as a `DynamicUser` that cannot read
+  `/etc/labkiosk`, for at most 48 h; `ExecStartPre` loads `usr/share/labkiosk/labkiosk-share.nft`
+  (package `nftables`) and `ExecStopPost` deletes it. `labkiosk-update run` starts it (root) and
+  the agent may only stop it (polkit). Tests: `tests/test_lan_sharing.py`.
 
 ## Build the ISO
 

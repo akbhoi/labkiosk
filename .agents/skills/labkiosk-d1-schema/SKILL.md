@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 3, 3b, 3c; reference:
 
 - `migrations/NNNN_name.sql` is what a deployed D1 has; `SCHEMA_SQL` in `src/db.ts` builds the
   in-memory database for tests and `pnpm dev`. **Change both.**
-- Add a **new** numbered file (next: `0030_…`). **Never edit or rename an applied migration** —
+- Add a **new** numbered file (next: `0031_…`). **Never edit or rename an applied migration** —
   wrangler tracks them by file name, so a rename re-runs it (that is why `0008_school_homepage.sql`
   keeps its name).
 - Every query that touches tenant data filters by `tenant_id`; index what you query on.
@@ -140,7 +140,8 @@ it instead of copying. `assertSchemaCurrent` reads the table's definition, as it
 reported about the update it is fetching or holding (written back by OrgHub), separate from
 `update_state` (0015), the outcome of its last boot. `0029` adds `tenants.security_updates`
 (`next_boot` default, or `approval`; a CHECK on a new column, so a plain `ALTER TABLE`) and
-`client_devices.update_kind`, `update_since`.
+`client_devices.update_kind`, `update_since`. `0030` adds `tenants.lan_sharing` (0 default, or 1:
+share releases on the LAN, phase 5); sites and peers are live hub state, not columns.
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

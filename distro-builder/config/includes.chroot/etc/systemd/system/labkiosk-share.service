@@ -1,0 +1,45 @@
+[Unit]
+Description=Lab Kiosk: share a verified system update with this site's workstations
+Documentation=file:///usr/local/sbin/labkiosk-share
+# Only an installed disk keeps an image store.
+ConditionKernelCommandLine=labkiosk.installed=1
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Started by labkiosk-update (root) once it holds a release verified and the
+# organization shares releases on its LAN; stopped by the agent (as kiosk,
+# through the polkit rule in 01-lockdown.hook.chroot) when it stops sharing.
+# Never enabled: nothing listens on the LAN unless a release is spreading.
+Type=simple
+# The kernel drops anything but a private source address aimed at the port.
+ExecStartPre=+/usr/sbin/nft -f /usr/share/labkiosk/labkiosk-share.nft
+ExecStart=/usr/local/sbin/labkiosk-share
+ExecStopPost=-+/usr/sbin/nft delete table inet labkiosk_share
+# At most two days per start (docs/OTA_UPDATES.md section 5.9).
+RuntimeMaxSec=48h
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Serving a copy must never slow the screen someone is using.
+Nice=10
+IOSchedulingClass=idle
+# A user of its own, with read access to the images and nothing on LABKIOSK_DATA.
+DynamicUser=yes
+InaccessiblePaths=-/etc/labkiosk
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native

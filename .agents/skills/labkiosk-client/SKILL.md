@@ -64,7 +64,10 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   rule `50-labkiosk-update.rules`, the agent's only way to them. While installing, `reboot` and
   `shutdown` are refused and `/api/status` carries `updateScreen` (the curtain's "Installing" or
   "Finishing a system update"), dropped on an install error or after 15 minutes. `current_status()`
-  adds `imageVersion`, `agentVersion` and `update` (`read_update_report()`; `live` on live media).
+  adds `imageVersion`, `agentVersion` and `update` (`read_update_report()`; `live` on live media),
+  and `lan` (`lan_report()`: `ip -j` for the default route's interface, cached 60 s; never on live
+  media). The config's `lanSharing: false` makes `apply_lan_sharing()` stop
+  `labkiosk-share.service`, the one other unit the polkit rule lets `kiosk` touch.
   Details: `distro-builder/AGENTS.md` Rule 8. `reload` bumps `reloadEpoch` (never `xdotool`). `clear-session` calls
   `restart_browser()`; the Openbox autostart and `docker-test/entrypoint.sh` watchdogs `rm -rf`
   the profile and cache before every relaunch — keep that wipe there (deleting from the agent races

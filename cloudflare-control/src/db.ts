@@ -80,7 +80,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   update_channel TEXT NOT NULL DEFAULT 'stable'
   CHECK (update_channel IN ('stable', 'beta')),
   security_updates TEXT NOT NULL DEFAULT 'next_boot'
-  CHECK (security_updates IN ('next_boot', 'approval'))
+  CHECK (security_updates IN ('next_boot', 'approval')),
+  lan_sharing INTEGER NOT NULL DEFAULT 0
+  CHECK (lan_sharing IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -586,6 +588,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     // 0029: security releases at the next boot.
     await db.prepare("SELECT security_updates FROM tenants LIMIT 1").run();
     await db.prepare("SELECT update_kind, update_since FROM client_devices LIMIT 1").run();
+    // 0030: sharing updates on the local network.
+    await db.prepare("SELECT lan_sharing FROM tenants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -885,6 +889,7 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "name",
   "update_channel",
   "security_updates",
+  "lan_sharing",
   "subdomain",
   "requested_subdomain",
   "status",

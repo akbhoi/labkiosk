@@ -631,6 +631,12 @@ async function handleBootReport(
  * whether the workstation installs that at its next boot by itself. 503 when
  * the platform has no public release address, so a workstation never mistakes
  * a missing setting for "up to date".
+ *
+ * Phase 5 adds `lan`: null unless the organization shares releases on its LAN,
+ * else `{ peers }`, the LAN addresses of workstations at this one's site that
+ * hold the release it should fetch (security first) verified, to copy it from
+ * before the internet; a workstation also serves a release it holds only while
+ * `lan` is not null.
  */
 async function handleDeviceUpdate(
   request: Request,
@@ -661,7 +667,15 @@ async function handleDeviceUpdate(
     }
     described[name] = { version: release.version, kind: release.kind, sizeBytes: release.sizeBytes, url: folder };
   }
-  return new Response(JSON.stringify({ ...described, securityUpdates }), { headers: jsonHeaders });
+  let lan: { peers: string[] } | null = null;
+  if (tenant.lan_sharing === 1) {
+    const target = offer.security ?? offer.release;
+    const peers = target
+      ? (await hubJson<{ peers: string[] }>(env, tenant.id, "/lan-peers", { clientId: auth.device.client_id, version: target.version })).peers
+      : [];
+    lan = { peers };
+  }
+  return new Response(JSON.stringify({ ...described, securityUpdates, lan }), { headers: jsonHeaders });
 }
 
 /**
@@ -2766,7 +2780,8 @@ export default {
           groupName: row?.group_name || undefined,
           imageVersion: status?.imageVersion || row?.image_version || undefined,
           agentVersion: status?.agentVersion || row?.agent_version || undefined,
-          update: status?.update ?? registryUpdate(row)
+          update: status?.update ?? registryUpdate(row),
+          updateWaitingSince: status?.online ? status.updateWaitingSince : undefined
         };
       };
       for (const row of rows) clients[row.client_id] = toTelemetry(live.clients[row.client_id], row);
@@ -2880,22 +2895,28 @@ export default {
     // with a security release for their line, and the security releases some of
     // its workstations still do not run.
     // POST /api/settings/updates { channel?: "stable" | "beta",
-    //                              securityUpdates?: "next_boot" | "approval" }.
+    //                              securityUpdates?: "next_boot" | "approval",
+    //                              lanSharing?: boolean }.
     if (path === "/api/settings/updates" && (method === "GET" || method === "POST")) {
       const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
       if (denied) return denied;
       const tenantId = currentTenant!.id;
       let channel: UpdateChannel = currentTenant!.update_channel === "beta" ? "beta" : "stable";
       let securityUpdates: SecurityUpdateMode = currentTenant!.security_updates === "approval" ? "approval" : "next_boot";
+      let lanSharing = currentTenant!.lan_sharing === 1;
       if (method === "POST") {
-        let body: { channel?: unknown; securityUpdates?: unknown };
+        let body: { channel?: unknown; securityUpdates?: unknown; lanSharing?: unknown };
         try {
           body = await request.json<typeof body>();
         } catch {
           return jsonError("The request body must be JSON", 400, jsonHeaders);
         }
-        if (!body || typeof body !== "object" || (body.channel === undefined && body.securityUpdates === undefined)) {
-          return jsonError("Send a channel or a securityUpdates setting", 400, jsonHeaders);
+        if (
+          !body ||
+          typeof body !== "object" ||
+          (body.channel === undefined && body.securityUpdates === undefined && body.lanSharing === undefined)
+        ) {
+          return jsonError("Send a channel, a securityUpdates or a lanSharing setting", 400, jsonHeaders);
         }
         if (body.channel !== undefined && !isUpdateChannel(body.channel)) {
           return jsonError("The channel is stable or beta", 400, jsonHeaders);
@@ -2903,10 +2924,17 @@ export default {
         if (body.securityUpdates !== undefined && !isSecurityUpdateMode(body.securityUpdates)) {
           return jsonError("securityUpdates is next_boot or approval", 400, jsonHeaders);
         }
+        if (body.lanSharing !== undefined && typeof body.lanSharing !== "boolean") {
+          return jsonError("lanSharing is true or false", 400, jsonHeaders);
+        }
         const changes: Partial<Tenant> = {};
         if (isUpdateChannel(body.channel) && body.channel !== channel) changes.update_channel = channel = body.channel;
         if (isSecurityUpdateMode(body.securityUpdates) && body.securityUpdates !== securityUpdates) {
           changes.security_updates = securityUpdates = body.securityUpdates;
+        }
+        if (typeof body.lanSharing === "boolean" && body.lanSharing !== lanSharing) {
+          lanSharing = body.lanSharing;
+          changes.lan_sharing = lanSharing ? 1 : 0;
         }
         if (Object.keys(changes).length) {
           await updateTenant(db, tenantId, changes);
@@ -2921,12 +2949,20 @@ export default {
               details: securityUpdates
             });
           }
+          if (changes.lan_sharing !== undefined) {
+            await writeAuditLog(db, {
+              tenantId,
+              userId: session!.user_id,
+              action: "settings.lan_sharing",
+              details: lanSharing ? "on" : "off"
+            });
+          }
           await notifyConfigChanged(env, tenantId);
         }
       }
       const releases = await offeredReleases(db, channel);
       const pending = securityReleasesPending(releases, await listClientDevices(db, tenantId));
-      return new Response(JSON.stringify({ channel, offer: releases[0] ?? null, securityUpdates, pending }), {
+      return new Response(JSON.stringify({ channel, offer: releases[0] ?? null, securityUpdates, lanSharing, pending }), {
         headers: jsonHeaders
       });
     }
@@ -2973,12 +3009,8 @@ export default {
         skipped = skipped.concat(result.skipped);
         versions = result.versions;
       } else if (clientIds.length) {
-        await hubJson(env, tenant.id, "/enqueue", {
-          targets: clientIds,
-          action: "release-available",
-          version: offer?.version
-        });
-        sent = clientIds;
+        // The hub tells each the release meant for it; with LAN sharing, one whose site is still fetching it waits.
+        sent = (await hubJson<{ sent: string[] }>(env, tenant.id, "/check-update", { clientIds, version: offer?.version })).sent;
       }
       if (sent.length) {
         await writeAuditLog(db, {

@@ -9,6 +9,9 @@
  * Workstations page's Updates menu, never automatic. A security release (the
  * same release rebuilt with patched Debian packages) installs at the
  * workstation's next start unless the organization approves those too.
+ *
+ * Sharing on the local network (phase 5, off by default) lets the workstations
+ * at one site copy a release from each other instead of each downloading it.
  */
 
 import { escapeAttr } from "./escape";
@@ -37,6 +40,13 @@ export function renderUpdatesPaneHtml(): string {
             </select>
             <p class="form-hint">A security fix is the release a workstation runs, rebuilt with patched system packages. Installed at the next restart, it changes nothing until the workstation starts again, and a workstation it does not start on goes back to its old image by itself.</p>
           </div>
+          <div class="form-group">
+            <label class="form-checkbox-label">
+              <input type="checkbox" class="form-checkbox" id="lan-sharing">
+              <span>Share updates on the local network</span>
+            </label>
+            <p class="form-hint">At each site, one or two workstations download a release and the others copy it from them over the local network, which saves internet bandwidth. A workstation that holds a release then accepts connections on TCP port 8890 from its own subnet, for up to 48 hours, and serves only that release's files; each copy is checked against the release's signature, and a workstation that cannot reach another downloads the release itself.</p>
+          </div>
           <button type="submit" class="btn btn-primary">Save update settings</button>
         </form>
       </div>
@@ -52,7 +62,8 @@ export function renderUpdatesScript(nonce: string): string {
         const security = document.getElementById("security-updates");
         const offer = document.getElementById("update-offer");
         const pending = document.getElementById("update-pending");
-        if (!form || !select || !security || !offer || !pending) return;
+        const lanSharing = document.getElementById("lan-sharing");
+        if (!form || !select || !security || !offer || !pending || !lanSharing) return;
 
         // Security fixes some workstations do not run yet; a warning once one has waited too long.
         function showPending(list, mode) {
@@ -85,6 +96,7 @@ export function renderUpdatesScript(nonce: string): string {
         function show(data) {
           select.value = data.channel === "beta" ? "beta" : "stable";
           security.value = data.securityUpdates === "approval" ? "approval" : "next_boot";
+          lanSharing.checked = data.lanSharing === true;
           const o = data.offer;
           offer.textContent = o
             ? "Offered now: " + o.version + (o.kind === "security" ? " (security update)" : "") + ", " + Math.round((Number(o.sizeBytes) || 0) / 1048576) + " MB."
@@ -112,7 +124,7 @@ export function renderUpdatesScript(nonce: string): string {
             const res = await fetch(labkioskApi("/api/settings/updates"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ channel: select.value, securityUpdates: security.value })
+              body: JSON.stringify({ channel: select.value, securityUpdates: security.value, lanSharing: lanSharing.checked })
             });
             const data = await res.json();
             if (!res.ok) {

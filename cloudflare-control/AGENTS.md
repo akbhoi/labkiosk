@@ -199,7 +199,10 @@ cloudflare-control/
   change; at most every 10 minutes, 60 after an error), and `install-update` only from
   `POST /api/clients/install-update`; `/api/command` accepts neither. `tenants.security_updates`
   (`next_boot` default, or `approval`; migration `0029`) decides whether a workstation stages a
-  security release for its next boot by itself (phase 4).
+  security release for its next boot by itself (phase 4). `tenants.lan_sharing` (off by default;
+  `0030`) lets a site's workstations copy a release from each other (phase 5, `src/lan_sharing.ts`):
+  the hub holds `release-available` back from all but two seeds per site for up to 60 minutes and
+  answers `/lan-peers` for the offer's `lan`; site membership is live socket state, never D1.
 - **Tests** run a hub in-process: `LocalHubNamespace` (`src/local_do.ts`) implements the parts of
   the Durable Object runtime the hub uses on `node:sqlite`, and `tsconfig.runtime.json` maps
   `cloudflare:workers` to `test/shims/`. Real sockets need workerd: `pnpm dev` (`wrangler dev`) runs

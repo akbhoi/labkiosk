@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""
+Serve the system images this workstation holds verified to the workstations at
+its site, so a site fetches a release from the internet once or twice instead of
+once per machine (docs/OTA_UPDATES.md section 5.9, phase 5).
+
+    GET or HEAD /<version>/<name>
+
+answers one file of LABKIOSK_ROOT/images/<version>/ -- manifest.json, its
+signature, or a file the manifest lists -- with HTTP Range, for a version this
+disk downloaded and verified (`.verified` names its manifest's sha256). Nothing
+else: no listing, no other path, no writes.
+
+It is the only listener on the LAN (every other one is loopback), so:
+
+- labkiosk-share.service runs it as a dynamic, unprivileged user that cannot
+  read LABKIOSK_DATA (device token, Wi-Fi keys, configuration), for at most 48
+  hours. labkiosk-update starts it once it holds a release verified and the
+  organization shares releases; the agent stops it when the organization stops.
+- It answers only private IPv4 addresses in its own subnet, and the unit's
+  nftables rule drops anything else aimed at its port before it gets here.
+- A few uploads at a time, at idle I/O priority, so the screen stays responsive.
+
+Nothing here is trusted by the receiver: it checks every chunk against the
+signed manifest, so a broken or hostile server only costs it time.
+"""
+
+import hashlib
+import importlib.machinery
+import importlib.util
+import ipaddress
+import os
+import re
+import stat
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+# The updater's own manifest checks and names, and through it labkiosk-boot-slots'.
+update = load("labkiosk_update", os.path.join(HERE, "labkiosk-update"))
+slots = update.slots
+
+LAN_SHARE_PORT = update.LAN_SHARE_PORT
+# Uploads served at once; more are told to come back (503) and try another peer.
+MAX_UPLOADS = 4
+# A client that stops reading for this long is dropped.
+CLIENT_TIMEOUT_SECONDS = 30
+PATH_PATTERN = re.compile(r"^/([0-9A-Za-z.-]{1,64})/([0-9A-Za-z._-]{1,64})\Z")
+RANGE_PATTERN = re.compile(r"^bytes=([0-9]{1,15})-([0-9]{0,15})\Z")
+MARKER_BYTES = 128
+
+
+def log(message):
+    print(f"[SHARE] {message}", file=sys.stderr, flush=True)
+
+
+def open_regular(path):
+    """A file descriptor for a regular file, never through a symbolic link, or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        os.close(fd)
+        return None
+    return fd
+
+
+def read_small(path, limit):
+    fd = open_regular(path)
+    if fd is None:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read(limit + 1)
+    return data if len(data) <= limit else None
+
+
+def image_path(root, version, name):
+    """
+    images/<version>/<name> under root, or None for anything that would leave
+    images/. The patterns already refuse such names; this keeps every path the
+    server opens inside the image store whatever a later change lets through.
+    """
+    store = os.path.normpath(os.path.join(root, slots.IMAGES_DIR_NAME))
+    path = os.path.normpath(os.path.join(store, version, name))
+    if not path.startswith(store + os.sep) or os.path.dirname(os.path.dirname(path)) != store:
+        return None
+    return path
+
+
+def servable(root, version):
+    """
+    The files of images/<version> this disk may serve, as {name: expected size
+    or None}, or None when that version is not a verified download here.
+    """
+    if not slots.VERSION_PATTERN.match(version):
+        return None
+    manifest_path = image_path(root, version, update.MANIFEST_NAME)
+    marker_path = image_path(root, version, update.VERIFIED_NAME)
+    if manifest_path is None or marker_path is None:
+        return None
+    manifest_data = read_small(manifest_path, update.MAX_MANIFEST_BYTES)
+    marker = read_small(marker_path, MARKER_BYTES)
+    if manifest_data is None or marker is None:
+        return None
+    if marker.decode("ascii", "replace").strip() != hashlib.sha256(manifest_data).hexdigest():
+        return None
+    try:
+        manifest = update.validate_manifest(manifest_data)
+    except update.UpdateError as err:
+        log(f"{version} is not served: {err}")
+        return None
+    if manifest["version"] != version:
+        return None
+    files = {entry["name"]: entry["size"] for entry in manifest["files"]}
+    files[update.MANIFEST_NAME] = None
+    files[update.SIGNATURE_NAME] = None
+    return files
+
+
+def byte_range(header, size):
+    """(start, end) inclusive for a Range header, None for the whole file; ValueError when unsatisfiable."""
+    if header is None:
+        return None
+    match = RANGE_PATTERN.match(header.strip())
+    if not match:
+        raise ValueError(f"unsupported Range {header!r}")
+    start = int(match.group(1))
+    end = int(match.group(2)) if match.group(2) else size - 1
+    if start >= size or end < start:
+        raise ValueError(f"Range {header!r} is outside {size} bytes")
+    return start, min(end, size - 1)
+
+
+class ShareHandler(BaseHTTPRequestHandler):
+    server_version = "LabKioskShare"
+    sys_version = ""
+    timeout = CLIENT_TIMEOUT_SECONDS
+
+    def log_message(self, format, *args):
+        log(f"{self.client_address[0]} {format % args}")
+
+    def do_HEAD(self):
+        self.answer(body=False)
+
+    def do_GET(self):
+        self.answer(body=True)
+
+    def refuse(self, status):
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def answer(self, body):
+        match = PATH_PATTERN.match(self.path)
+        files = servable(self.server.root, match.group(1)) if match else None
+        if not files or match.group(2) not in files:
+            self.refuse(404)
+            return
+        name = match.group(2)
+        path = image_path(self.server.root, match.group(1), name)
+        fd = open_regular(path) if path else None
+        if fd is None:
+            self.refuse(404)
+            return
+        with os.fdopen(fd, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if files[name] is not None and size != files[name]:
+                # This copy no longer matches its manifest; never pass it on.
+                log(f"{match.group(1)}/{name} is {size} bytes, not {files[name]}; not served")
+                self.refuse(404)
+                return
+            try:
+                wanted = byte_range(self.headers.get("Range"), size)
+            except ValueError:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not self.server.uploads.acquire(blocking=False):
+                self.send_response(503)
+                self.send_header("Retry-After", "60")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            try:
+                start, end = wanted if wanted else (0, size - 1)
+                self.send_response(206 if wanted else 200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(end - start + 1))
+                self.send_header("Accept-Ranges", "bytes")
+                if wanted:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
+                if body:
+                    self.wfile.flush()
+                    self.connection.sendfile(handle, start, end - start + 1)
+            finally:
+                self.server.uploads.release()
+
+
+class ShareServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address, network, root):
+        self.network = network
+        self.root = root
+        self.uploads = threading.BoundedSemaphore(MAX_UPLOADS)
+        super().__init__(address, ShareHandler)
+
+    def verify_request(self, request, client_address):
+        """Only a private address in this workstation's own subnet gets an answer; others are hung up on."""
+        try:
+            address = ipaddress.ip_address(client_address[0])
+        except ValueError:
+            return False
+        return address.version == 4 and address.is_private and address in self.network
+
+
+def main():
+    if os.geteuid() == 0:
+        log("ERROR: must not run as root (labkiosk-share.service runs it as a dynamic user)")
+        return 1
+    agent = load("labkiosk_agent", os.path.join(os.sep, "opt", "labkiosk", "agent", "agent.py"))
+    try:
+        lan = agent.read_lan_address()
+    except (OSError, ValueError) as err:
+        log(f"ERROR: the LAN address could not be read: {err}")
+        return 1
+    if not lan:
+        log("ERROR: this workstation is not on a private IPv4 subnet; there is nothing to share on")
+        return 1
+    network = ipaddress.ip_network(f"{lan['address']}/{lan['prefix']}", strict=False)
+    server = ShareServer((lan["address"], LAN_SHARE_PORT), network, slots.BOOT_MEDIUM)
+    log(f"serving verified images to {network} on {lan['address']}:{LAN_SHARE_PORT}")
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

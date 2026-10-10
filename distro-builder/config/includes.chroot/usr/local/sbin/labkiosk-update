@@ -34,6 +34,12 @@ release is five files under one URL, published by build-iso.yml:
                      `install` does. Started by labkiosk-update-install.service,
                      which then reboots, when an administrator installs it.
 
+Phase 5: when the organization shares releases on its LAN, the control plane
+names the workstations at this one's site that hold the release; `run` copies
+it from them first (the same files, every chunk checked against the signed
+manifest, no proxy), and from the internet when none delivers. Holding it,
+it starts labkiosk-share.service to serve it to the rest of its site.
+
 A download is never inside images/ until it is complete and verified: GRUB's
 last resort boots any folder there that has the three files, and a half-written
 squashfs has them.
@@ -48,6 +54,7 @@ Output: JSON on stdout, progress on stderr.
 import argparse
 import hashlib
 import http.client
+import ipaddress
 import importlib.machinery
 import importlib.util
 import json
@@ -131,6 +138,23 @@ DEVICE_TOKEN_PATTERN = re.compile(r"^[0-9a-f]{64}\Z")
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_OFFER_BYTES = 16 * 1024
 MAX_DETAIL_LENGTH = 300
+
+# Phase 5: sharing a release on the local network (docs/OTA_UPDATES.md 5.9).
+# labkiosk-share listens on this port; usr/share/labkiosk/labkiosk-share.nft
+# and the console's Settings text name it too.
+LAN_SHARE_PORT = 8890
+LAN_SHARE_UNIT = "labkiosk-share.service"
+# A release is served for this long after this boot first held it, as long as
+# the hub names it as a peer (LAN_SHARE_SECONDS in src/lan_sharing.ts) and the
+# unit's RuntimeMaxSec; a later run never opens the port for it again.
+LAN_SHARE_SECONDS = 48 * 60 * 60
+LAN_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+# Peers tried before the internet, and how long one may stall: a LAN peer that
+# says nothing for this long is not going to.
+MAX_PEERS_TRIED = 3
+MAX_PEERS_OFFERED = 8
+PEER_TIMEOUT = 15
+SYSTEMCTL_TIMEOUT = 30
 
 
 def log(message):
@@ -385,9 +409,16 @@ def opener_for(running):
     return opener
 
 
-def fetch_small(opener, url, limit):
+def peer_opener_for(running):
+    """For a workstation at this site: straight to it, never through the organization's proxy."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener.addheaders = [("User-Agent", user_agent(running))]
+    return opener
+
+
+def fetch_small(opener, url, limit, timeout=HTTP_TIMEOUT):
     try:
-        with opener.open(url, timeout=HTTP_TIMEOUT) as response:
+        with opener.open(url, timeout=timeout) as response:
             data = response.read(limit + 1)
     except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
         raise UpdateError(f"could not fetch {url}: {err}") from err
@@ -396,7 +427,7 @@ def fetch_small(opener, url, limit):
     return data
 
 
-def fetch_file(opener, url, path, entry, start_chunk, progress):
+def fetch_file(opener, url, path, entry, start_chunk, progress, timeout=HTTP_TIMEOUT):
     """Append chunks start_chunk.. to path, checking each one before it is written."""
     chunk = entry["chunkSize"]
     offset = start_chunk * chunk
@@ -404,7 +435,7 @@ def fetch_file(opener, url, path, entry, start_chunk, progress):
     if offset:
         request.add_header("Range", f"bytes={offset}-")
     try:
-        response = opener.open(request, timeout=HTTP_TIMEOUT)
+        response = opener.open(request, timeout=timeout)
     except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
         raise UpdateError(f"could not fetch {url}: {err}") from err
     with response:
@@ -467,13 +498,16 @@ def free_old_images(root, boot_dir, env, keep):
     return removed
 
 
-def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV, report=None):
+def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV, report=None,
+             expected=None, timeout=HTTP_TIMEOUT):
     """
     Fetch, verify and store a signed release in root/images/<version>.
 
     `root` is the image store, written to directly: the caller makes it
     writable and serializes access (boot_partition_writable on a workstation).
     `report(version, percent)` hears the download's progress, whole percents.
+    With `expected`, a validly signed release of any other version is refused
+    before anything is written: a peer on the LAN cannot swap the release.
     """
     opener = opener or opener_for(running)
     boot_dir = os.path.join(root, slots.BOOT_DIR_NAME)
@@ -484,14 +518,16 @@ def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV
     with tempfile.TemporaryDirectory(prefix="labkiosk-release-") as scratch:
         manifest_path = os.path.join(scratch, MANIFEST_NAME)
         signature_path = os.path.join(scratch, SIGNATURE_NAME)
-        manifest_data = fetch_small(opener, release_url(base_url, MANIFEST_NAME), MAX_MANIFEST_BYTES)
-        signature_data = fetch_small(opener, release_url(base_url, SIGNATURE_NAME), MAX_SIGNATURE_BYTES)
+        manifest_data = fetch_small(opener, release_url(base_url, MANIFEST_NAME), MAX_MANIFEST_BYTES, timeout)
+        signature_data = fetch_small(opener, release_url(base_url, SIGNATURE_NAME), MAX_SIGNATURE_BYTES, timeout)
         write_file(manifest_path, manifest_data)
         write_file(signature_path, signature_data)
         signer = verify_signature(manifest_path, signature_path, keyring_dir, gpgv)
     manifest = validate_manifest(manifest_data)
     version = manifest["version"]
     log(f"{version} ({manifest['kind']}, {manifest['channel']}) is signed by {signer}")
+    if expected is not None and version != expected:
+        raise UpdateError(f"{base_url} holds {version}, not {expected}")
     if check_release(manifest, floor, running, env, root):
         log(f"{version} is already downloaded and verified")
         return {"downloaded": version, "kind": manifest["kind"], "channel": manifest["channel"],
@@ -546,7 +582,7 @@ def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV
     for entry in manifest["files"]:
         if have[entry["name"]] < len(entry["chunks"]):
             fetch_file(opener, release_url(base_url, entry["name"]), os.path.join(folder, entry["name"]),
-                       entry, have[entry["name"]], progress)
+                       entry, have[entry["name"]], progress, timeout)
 
     for entry in manifest["files"]:
         path = os.path.join(folder, entry["name"])
@@ -724,6 +760,29 @@ def parse_offered(value, what):
     return {"version": value["version"], "url": value["url"]}
 
 
+def parse_lan(value):
+    """
+    Phase 5: None when the organization does not share releases on its LAN, else
+    {"peers": [...]}, the private IPv4 addresses of the workstations at this
+    one's site that hold the release (none yet when it is the first).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("peers"), list) \
+            or len(value["peers"]) > MAX_PEERS_OFFERED:
+        raise UpdateError("the control plane's LAN sharing answer is malformed")
+    peers = []
+    for peer in value["peers"]:
+        try:
+            address = ipaddress.ip_address(peer if isinstance(peer, str) else "")
+        except ValueError as err:
+            raise UpdateError(f"the control plane named {peer!r} as a peer: {err}") from err
+        if address.version != 4 or not any(address in network for network in LAN_PRIVATE_NETWORKS):
+            raise UpdateError(f"the control plane named {peer!r} as a peer, which is not a private LAN address")
+        peers.append(str(address))
+    return {"peers": peers}
+
+
 def fetch_offer(opener, worker_url, token, running):
     """
     What this workstation's organization is offered:
@@ -733,8 +792,12 @@ def fetch_offer(opener, worker_url, token, running):
                          belongs to and newer than it, or None (phase 4)
         securityUpdates  next_boot or approval
 
-    A control plane from before phase 4 sends neither of the last two: no
-    security release is then offered, and none is ever staged.
+        lan              phase 5: where to copy it from on the LAN, or None
+                         when the organization does not share (parse_lan)
+
+    A control plane from before phase 4 sends neither securityUpdates nor
+    security: no security release is then offered, and none is ever staged.
+    One from before phase 5 sends no `lan`, which is None.
     """
     request = urllib.request.Request(
         worker_url + OFFER_PATH + "?" + urllib.parse.urlencode({"running": running}),
@@ -763,7 +826,26 @@ def fetch_offer(opener, worker_url, token, running):
     mode = body.get("securityUpdates", "approval")
     if mode not in SECURITY_UPDATE_MODES:
         raise UpdateError(f"the control plane's security update setting {mode!r} is unknown")
-    return {"release": release, "security": security, "securityUpdates": mode}
+    return {"release": release, "security": security, "securityUpdates": mode, "lan": parse_lan(body.get("lan"))}
+
+
+def set_sharing(enabled):
+    """
+    Serve this disk's verified releases to the workstations at its site
+    (labkiosk-share.service), or stop. A failure is logged: the release this
+    workstation holds is not affected by whether others can copy it.
+    """
+    verb = "start" if enabled else "stop"
+    try:
+        proc = subprocess.run(["systemctl", verb, "--no-block", LAN_SHARE_UNIT], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, timeout=SYSTEMCTL_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError) as err:
+        log(f"could not {verb} {LAN_SHARE_UNIT}: {err}")
+        return False
+    if proc.returncode != 0:
+        log(f"could not {verb} {LAN_SHARE_UNIT}: {(proc.stderr or proc.stdout).strip()[:300]}")
+        return False
+    return True
 
 
 def stored_kind(root, version):
@@ -776,7 +858,8 @@ def stored_kind(root, version):
     return validate_manifest(data)["kind"]
 
 
-def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=GPGV, state_path=None):
+def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=GPGV, state_path=None,
+        peer_opener=None, share=None):
     """
     Fetch the release this workstation should take next, if it is newer than
     the image running now: a security release for its own line first (phase
@@ -787,8 +870,16 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
     organization lets security releases install themselves; anything else waits,
     `ready`, for an administrator. Every step is written to the update state;
     an UpdateError is recorded there too, then raised.
+
+    Phase 5: with LAN sharing, the release is copied from a peer at this site
+    first (MAX_PEERS_TRIED of them), then fetched from the internet; once held,
+    it is served to the site (`share(True)`) for LAN_SHARE_SECONDS after this
+    boot first held it, and `share(False)` stops serving after that or when the
+    organization no longer shares.
     """
     opener = opener or opener_for(running)
+    peer_opener = peer_opener or peer_opener_for(running)
+    share = share or set_sharing
     try:
         previous = read_update_state(state_path)
     except UpdateError as err:
@@ -805,6 +896,12 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
                 or type(since) is not int or since <= 0:
             since = int(time.time())
         report(phase, version=version, kind=kind, since=since)
+        return since
+
+    def serve(since):
+        """Serve the release held since `since` to the site while the hub still names it a peer."""
+        if offer["lan"] is not None:
+            share(time.time() - since < LAN_SHARE_SECONDS)
 
     env = slots.read_env(os.path.join(root, slots.BOOT_DIR_NAME))
     boot = slots.classify(env, running)
@@ -815,6 +912,8 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
     report("checking")
     try:
         offer = fetch_offer(opener, worker_url, token, running)
+        if offer["lan"] is None:
+            share(False)
         target = offer["security"] or offer["release"]
         if target is None or version_key(target["version"]) <= version_key(running):
             report("up-to-date")
@@ -822,16 +921,28 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
         version = target["version"]
         if boot == "staged" and env.get("next") == version:
             kind = stored_kind(root, version)
-            settle("staged", version, kind)
+            serve(settle("staged", version, kind))
             return {"state": "staged", "downloaded": version, "kind": kind, "already": True}
         automatic = offer["securityUpdates"] == "next_boot"
         if automatic and boot == "rolled-back" and env.get("next") == version:
             raise UpdateError(f"{version} did not start on this workstation, which went back to {running}; "
                               "it is not tried again on its own")
-        result = download(
-            root, target["url"], running, floor, keyring_dir, opener, gpgv,
-            report=lambda v, percent: report("downloading", version=v, progress=percent),
-        )
+        def progress(v, percent):
+            report("downloading", version=v, progress=percent)
+
+        result = None
+        for peer in (offer["lan"] or {}).get("peers", [])[:MAX_PEERS_TRIED]:
+            try:
+                result = download(root, f"http://{peer}:{LAN_SHARE_PORT}/{version}", running, floor, keyring_dir,
+                                  peer_opener, gpgv, report=progress, expected=version, timeout=PEER_TIMEOUT)
+                log(f"copied {version} from {peer} on the local network")
+                break
+            except UpdateError as err:
+                # What was verified stays on disk; the next source resumes after it.
+                log(f"could not copy {version} from {peer}: {err}")
+        if result is None:
+            result = download(root, target["url"], running, floor, keyring_dir, opener, gpgv,
+                              report=progress, expected=version)
         if result["downloaded"] != version:
             raise UpdateError(f"the control plane offered {version} but its folder holds {result['downloaded']}")
         staged = automatic and result["kind"] == "security" and release_line(version) == release_line(running)
@@ -840,7 +951,7 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
     except UpdateError as err:
         report("error", detail=str(err))
         raise
-    settle("staged" if staged else "ready", version, result["kind"])
+    serve(settle("staged" if staged else "ready", version, result["kind"]))
     return {"state": "staged" if staged else "ready", **result}
 
 

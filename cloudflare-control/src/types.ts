@@ -79,6 +79,8 @@ export interface Tenant {
   update_channel?: UpdateChannel;
   /** What its workstations do with a security release for their line (phase 4). */
   security_updates?: SecurityUpdateMode;
+  /** 1 when its workstations at one site share a new system image over the LAN (phase 5). */
+  lan_sharing?: number;
 }
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */
@@ -236,6 +238,8 @@ export interface ClientTelemetry {
   agentVersion?: string;
   /** The update it is fetching or holding; absent from an agent too old to say. */
   update?: UpdateReport;
+  /** It waits for a workstation at its site to fetch the release it is due, since (ms; phase 5). */
+  updateWaitingSince?: number;
 }
 
 export interface RemoteCommand {

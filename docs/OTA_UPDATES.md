@@ -1,6 +1,6 @@
 # Over-the-Air Updates — Research
 
-**Status:** phases 1–3 (§9) implemented: the image-store installer, the §5.1 and §5.2 changes, GRUB's one-try boot and `labkiosk-boot-ok` (phase 1); the signed manifest and `labkiosk-update` (phase 2); the control plane, console approval and update curtain (phase 3, §5.10); the daily security rebuild and security releases at the next boot (phase 4, §5.11). Phase 5 is research. **Scope:** delivering new Lab Kiosk releases to installed
+**Status:** phases 1–5 (§9) implemented: the image-store installer, the §5.1 and §5.2 changes, GRUB's one-try boot and `labkiosk-boot-ok` (phase 1); the signed manifest and `labkiosk-update` (phase 2); the control plane, console approval and update curtain (phase 3, §5.10); the daily security rebuild and security releases at the next boot (phase 4, §5.11); sharing a release on the local network (phase 5, §5.12), not yet timed on a real site. **Scope:** delivering new Lab Kiosk releases to installed
 workstations without re-flashing the ISO. Written against `dev` at v2.5.0.
 
 ---
@@ -351,8 +351,9 @@ reports "updated to <v>"
 
 ### 5.7 Control plane
 
-*Phases 3 and 4 built a subset of this plan; §5.10 and §5.11 say what exists. The LAN-sharing
-columns, the download window and rate limit settings, and the Worker file route are not built.*
+*Phases 3 to 5 built a subset of this plan; §5.10 to §5.12 say what exists. The download window
+and rate limit settings and the Worker file route are not built, and LAN sharing keeps who is
+where in the organization's hub instead of the `client_devices` columns below (§5.12).*
 
 - **D1 (a new migration, 0019 or later, and `SCHEMA_SQL`):**
   - on `client_devices`: `agent_version`, `update_version`, `update_progress`, and for LAN
@@ -424,7 +425,7 @@ times. The rest travel over the LAN, which is usually 10 to 100 times faster tha
 **Speed, estimated rather than measured:** one 719 MiB copy takes about 7 s at full gigabit
 and about 70 s on 100 Mbit. In practice a slow disk or eMMC is often the limit. Allowing for
 that and the doubling, a whole site should finish in minutes once the seed has the image.
-Measure this in phase 5.
+Phase 5 did not measure it (§5.12).
 
 **Security: the only new thing listening on the network.** Today every listener is
 loopback-only (invariant 8), so this needs its own guard rails:
@@ -522,7 +523,7 @@ toolbar has an **Updates** menu (**Check for updates**, **Install update**) for 
 rule and need one reinstall from the 2.9.0 ISO (§8). A live USB session is updated by
 re-flashing.
 
-**Not built yet.** LAN sharing (phase 5). Phase 4 is §5.11.
+Phase 4 is §5.11 and phase 5 is §5.12.
 
 ### 5.11 What phase 4 built
 
@@ -589,6 +590,55 @@ and since when, in amber after 7 days. The change is audited as `settings.securi
 **Which images stage.** The updater in an image decides, so staging starts with the first feature
 release that carries phase 4. A 2.9.x image, and its security rebuilds (built from 2.9.x source),
 take security releases on approval.
+
+### 5.12 What phase 5 built
+
+Off by default: an organization turns it on under Settings → Updates (**Share updates on the
+local network**; `tenants.lan_sharing`, migration 0030; audited as `settings.lan_sharing`).
+
+**On the workstation.** The agent reports `lan` in its status, `{address, prefix}`: the private
+IPv4 address of the interface its default route uses, from `ip -j` (10/8, 172.16/12 or 192.168/16,
+prefix 16 to 30; anything else reports nothing and the workstation never shares). The hub config
+carries `lanSharing`; when it turns false the agent stops `labkiosk-share.service` (polkit lets
+`kiosk` stop that unit, never start it).
+
+**Who goes first** (`src/lan_sharing.ts`, `OrgHub`). A site is one organization, one public
+address (`CF-Connecting-IP`; an IPv6 address by its /64) and one reported subnet, all live on the
+hub's sockets; nothing about it is written to D1. When the hub tells a workstation of a release,
+it holds it back while two others at its site (`LAN_SEEDS_PER_SITE`) are fetching it, or were
+told of it in the last 5 minutes, and none holds it yet. A held workstation shows "waiting to copy
+the update nearby" on its card, and is told as soon as a site member holds the release, a seed
+drops out, or 60 minutes pass (`LAN_HOLD_MAX_MS`), whichever is first. **Check for updates** goes
+through the same hold (the hub's `/check-update`).
+
+**The offer.** `GET /api/devices/update` adds `lan`: `null` when the organization does not share,
+else `{peers}`, up to 8 LAN addresses of site members that report the release `ready` or `staged`
+in this boot within the last 48 hours, in random order so copies spread across every holder.
+
+**Fetching.** `labkiosk-update run` tries up to 3 peers at `http://<peer>:8890/<version>/` (no
+proxy; 15 s without data drops a peer), then the cloud. It is the same `download()` as from R2: the
+manifest's signature, then every chunk against the signed manifest, and a peer whose signed
+manifest names another version is refused before anything is written. Verified chunks are kept,
+so the next source resumes where a dropped peer stopped. Once the release is `ready` or `staged`
+and the offer's `lan` is not null, it starts `labkiosk-share.service`; a run with `lan: null`, or
+48 hours after this boot first held the release, stops it.
+
+**`labkiosk-share`.** A unit that is never enabled, as a dynamic user that cannot read
+`/etc/labkiosk`, for at most 48 hours a start (`RuntimeMaxSec`), at idle I/O priority. Before it
+starts, `labkiosk-share.nft` (the new `nftables` package) accepts TCP 8890 only from 10/8,
+172.16/12 and 192.168/16 and drops the rest; the table is deleted when it stops. The server
+answers only its own subnet, `GET`/`HEAD /<version>/<file>` with one `Range`, for a version whose
+`.verified` matches its manifest and whose manifest is valid, for `manifest.json`, its signature
+and the files it lists at their listed size, never through a symbolic link. Four uploads at a time;
+a fifth is told 503 and tries another peer or the cloud.
+
+**Differences from §5.9.** Whole files with `Range`, not a chunk path; no link-local peers; the
+server stops after 48 hours rather than when the site is done; the cloud fallback is per peer
+(15 s of silence), with the hub's 60-minute hold as the bound on waiting; seeds are the first
+workstations told, not chosen as wired or idle.
+
+**Not done.** The timing of §9 (5 to 10 VMs on one virtual LAN with a throttled uplink) has not
+been run; the unit tests cover a corrupted or foreign peer, an unreachable one and a busy one.
 
 ---
 
@@ -676,7 +726,7 @@ included, lacks the update units and the polkit rule (§5.10), so it too is rein
 | 2 | **Built.** Signed manifest in CI; R2 upload; `labkiosk-update` download and install run by hand | `distro-builder/tests/test_update.py` (resume, a damaged partial, tampered and foreign signatures, the floor, install re-verification); `boot-test.sh` scenarios 5–9: a download killed mid-squashfs is never booted and resumes, a tampered manifest and a signed downgrade are refused with nothing written, the finished download installs and is promoted. The download runs from the host against the mounted disk (the kiosk has no shell), so the "power cut" is a killed process, not a VM power cut |
 | 3 | **Built** (§5.10). Migration 0027; `GET /api/devices/update`, the console's check and install routes and the super admin Releases page, with negative tests; console update states and **Install update**; the update curtain; hub messages; `labkiosk-update run` / `install-pending` and their two units | `pnpm test`; `distro-builder/tests/test_update.py` and `test_client.py`; drive the console in a browser; a two-VM approval against `pnpm dev` |
 | 4 | **Built** (§5.11). `security-rebuild.yml` (latest two lines) and `tools/security-rebuild.py`; `make-release-manifest.py --kind security`; migration 0029 and `tenants.security_updates`; the `security` offer; `labkiosk-update run` staging for the next boot; the "installs at next restart", "not restarted in N days" and pending-fix console states | `distro-builder/tests/test_security_rebuild.py` (Debian version order against dpkg) and `test_update.py` (staging, approval, a mislabelled release, rollback, replacement); `pnpm test`; drive the console in a browser; the workflow by hand with `dry_run`, then a week of scheduled runs on a test organization |
-| 5 | LAN sharing: LAN address reporting, site grouping and seed choice in the Worker, `labkiosk-share` with `nftables`, cloud fallback | 5–10 VMs on one virtual LAN with a throttled uplink; time the whole site; a peer that serves corrupted chunks; client isolation (peers unreachable) |
+| 5 | **Built** (§5.12), not yet timed. Migration 0030 and `tenants.lan_sharing`; LAN address reporting, site grouping and seed choice in the Worker; `labkiosk-share` with `nftables`; cloud fallback | `distro-builder/tests/test_lan_sharing.py` (the server's paths, ranges and subnet, a corrupted or foreign peer, an unreachable one, the 48-hour stop) and `pnpm test` (sites, seeds, the hold, peers); drive Settings → Updates in a browser. Still to do: 5–10 VMs on one virtual LAN with a throttled uplink; time the whole site; a peer that serves corrupted chunks; client isolation (peers unreachable) |
 
 The Docker simulator can't exercise GRUB, live-boot or image switching. It can exercise the
 download, the update curtain and the reporting against the dev server.
@@ -706,9 +756,8 @@ the full image, so measure before building this.
 
 - **Approval permission.** Answered in phase 3: a new staff permission, `updates`, which
   `org_admin` holds by default. `settings` alone does not grant it.
-- **LAN sharing default.** On by default, as proposed (with the port open only while a release
-  spreads), or opt-in per organization? It is the first listener on the LAN, so this is a
-  security posture decision.
+- **LAN sharing default.** Answered in phase 5: opt-in per organization, off by default. It is
+  the first listener on the LAN.
 - **Security rebuilds for two release lines** double that CI job's runtime when both need one.
   Built with two (`LINES_KEPT`); confirm it is the right support window.
 - **Install duration.** "A few minutes" is an estimate: verifying about 700 MiB, one reboot,
