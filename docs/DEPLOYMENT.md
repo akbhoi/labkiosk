@@ -312,6 +312,15 @@ Releases page and the device update route answer `503`, and nothing else changes
 | `RELEASES` | R2 bucket `labkiosk-releases`, the releases CI uploads (declared in `wrangler.jsonc`) | `npx wrangler r2 bucket create labkiosk-releases` |
 | `RELEASES_BASE_URL` | Variable: the bucket's public https address, which workstations download from (the Worker hands each one `RELEASES_BASE_URL/releases/<version>`) | Dashboard → R2 → `labkiosk-releases` → **Settings** → **Public access**: connect a custom domain (preferred; the `r2.dev` address is rate-limited and meant for development). Then set the address as a variable on `labkiosk-controller` (section 3) |
 
+A custom domain under the platform domain, such as `releases.labkiosk.org`, needs two more
+things. The Worker's `*.labkiosk.org/*` route would otherwise answer it instead of the bucket,
+so add a route for `releases.labkiosk.org/*` with **Worker: None** (dashboard → the
+`labkiosk.org` zone → Workers Routes → Add route). And keep the
+name in `RESERVED_SLUGS` (`src/guard.ts`; `releases` is there) so no organization can register
+it. Then fetch one file, for example
+`curl -I https://releases.labkiosk.org/releases/<version>/manifest.json`, and check it is served
+by R2, not the Worker, before setting `RELEASES_BASE_URL`.
+
 The files are the same bits as the public ISO, and each workstation checks the manifest's
 signature with the keys in its own image before it uses a byte, so a public bucket is safe; what
 the Worker controls is only which release is offered and when.

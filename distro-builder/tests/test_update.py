@@ -628,6 +628,32 @@ class Units(unittest.TestCase):
                          ["labkiosk-update-download.service", "labkiosk-update-install.service"])
         self.assertNotIn("systemctl enable labkiosk-update", hook, "no update runs at boot")
 
+    @unittest.skipUnless(shutil.which("node"), "node runs the rule's JavaScript")
+    def test_the_polkit_rule_answers_as_polkitd_would(self):
+        hook = self.read("config/hooks/live/01-lockdown.hook.chroot")
+        start = hook.index("\n", hook.index("50-labkiosk-update.rules")) + 1
+        rule = hook[start:hook.index("\nEOF\n", start)]
+        # polkitd's API as the rule sees it: addRule, Result, action.lookup().
+        harness = """
+const rules = [];
+const polkit = { addRule: (f) => rules.push(f), Result: { YES: "yes", NOT_HANDLED: null } };
+%s
+const ask = (user, id, details) => rules[0]({ id, lookup: (k) => details[k] }, { user });
+const unitsAction = "org.freedesktop.systemd1.manage-units";
+console.log(JSON.stringify([
+  ask("kiosk", unitsAction, { verb: "start", unit: "labkiosk-update-download.service" }),
+  ask("kiosk", unitsAction, { verb: "start", unit: "labkiosk-update-install.service" }),
+  ask("kiosk", unitsAction, { verb: "stop", unit: "labkiosk-update-download.service" }),
+  ask("kiosk", unitsAction, { verb: "restart", unit: "labkiosk-update-install.service" }),
+  ask("kiosk", unitsAction, { verb: "start", unit: "ssh.service" }),
+  ask("kiosk", "org.freedesktop.systemd1.manage-unit-files", { verb: "start", unit: "labkiosk-update-install.service" }),
+  ask("nobody", unitsAction, { verb: "start", unit: "labkiosk-update-install.service" }),
+]));
+""" % rule
+        result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["yes", "yes", None, None, None, None, None])
+
     def test_the_agent_starts_only_these_units(self):
         agent = load("labkiosk_agent_units", os.path.join(CHROOT, "opt/labkiosk/agent/agent.py"))
         self.assertEqual(agent.UPDATE_DOWNLOAD_UNIT, "labkiosk-update-download.service")

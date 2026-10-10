@@ -23,6 +23,11 @@
 #   8. resume    the download continues where it stopped and is verified
 #   9. update    installed, the download gets its one try and becomes current
 #
+# First of all, the image's phase 3 wiring, read from its root filesystem: the
+# two update units, the updater they run, and the polkit rule that lets the
+# kiosk user start them (and polkitd to apply it). The console flow that starts
+# them needs a control plane and is tested end to end outside the VM.
+#
 # Scenario 5 kills the process, not the VM's power. What it proves is what a
 # power cut leaves behind: an unfinished download is never booted, and the
 # next run resumes it.
@@ -118,6 +123,28 @@ log "Image version $VERSION; test images $V_GOOD, $V_BROKEN, $V_UNHEALTHY"
 
 log "Unpacking the root filesystem"
 unsquashfs -q -f -d "$ROOTFS" "$LIVE/filesystem.squashfs" >/dev/null
+
+# --------------------------------------------------------------------------
+# The image's over-the-air wiring (phase 3)
+# --------------------------------------------------------------------------
+wiring_ok=1
+for unit in labkiosk-update-download.service labkiosk-update-install.service; do
+    if [ ! -f "$ROOTFS/etc/systemd/system/$unit" ]; then
+        fail "wiring: the image has no $unit"; wiring_ok=0
+    fi
+    if ! grep -q "\"$unit\"" "$ROOTFS/etc/polkit-1/rules.d/50-labkiosk-update.rules" 2>/dev/null; then
+        fail "wiring: the polkit rule does not let the kiosk user start $unit"; wiring_ok=0
+    fi
+done
+if [ ! -x "$ROOTFS/usr/local/sbin/labkiosk-update" ]; then
+    fail "wiring: /usr/local/sbin/labkiosk-update is not executable"; wiring_ok=0
+fi
+if [ ! -x "$ROOTFS/usr/lib/polkit-1/polkitd" ]; then
+    fail "wiring: the image has no polkitd to apply its rules"; wiring_ok=0
+fi
+if [ "$wiring_ok" -eq 1 ]; then
+    pass "wiring: update units, updater, polkit rule and polkitd are in the image"
+fi
 
 # --------------------------------------------------------------------------
 # Install with the real installer, from inside the image
