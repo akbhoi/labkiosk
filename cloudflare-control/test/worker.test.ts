@@ -6613,6 +6613,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(staff, /name="perms" value="updates"/);
     const releases = await (await call("/super/releases", { cookie: superSessionCookie })).text();
     assert.match(releases, /id="release-rows"/);
+    // A security release names the release it rebuilds, and its confirmation says it installs at the next restart.
+    assert.ok(releases.includes('"Rebuild of " + r.baseVersion') && releases.includes("install it at their next restart"));
     assert.match(releases, /href="\/super\/releases"[^>]*aria-current="page"|aria-current="page"[^>]*href="\/super\/releases"/);
   });
 
