@@ -7,7 +7,7 @@
  */
 
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage } from "./types";
+import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, SecurityUpdateMode, UpdateChannel } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
@@ -58,7 +58,11 @@ import {
   isUpdateChannel,
   listReleases,
   offeredRelease,
+  offeredReleases,
   releaseFolderUrl,
+  isSecurityUpdateMode,
+  securityReleasesPending,
+  workstationOffer,
   revokeRelease,
   syncReleases,
   UPDATE_PHASES,
@@ -74,7 +78,9 @@ function registryUpdate(row: ClientDevice | undefined): UpdateReport | undefined
     phase: phase as UpdatePhase,
     ...(row.update_version ? { version: row.update_version } : {}),
     ...(row.update_progress !== null && row.update_progress !== undefined ? { progress: Number(row.update_progress) } : {}),
-    ...(row.update_detail ? { detail: row.update_detail } : {})
+    ...(row.update_detail ? { detail: row.update_detail } : {}),
+    ...(row.update_kind === "feature" || row.update_kind === "security" ? { kind: row.update_kind } : {}),
+    ...(row.update_since ? { since: Number(row.update_since) } : {})
   };
 }
 
@@ -612,14 +618,19 @@ async function handleBootReport(
 }
 
 /**
- * GET /api/devices/update: the release this workstation's organization is
- * offered, and where to download it. Asked by the workstation's root updater
- * (labkiosk-update run) whenever the hub sends `release-available`.
+ * GET /api/devices/update?running=<version>: the release this workstation's
+ * organization is offered, and where to download it. Asked by the
+ * workstation's root updater (labkiosk-update run) whenever the hub sends
+ * `release-available`.
  *
- * The device token alone decides the organization. `release` is null when
- * nothing is offered; the updater then reports itself up to date when it runs
- * the offered version or newer. 503 when the platform has no public release
- * address, so a workstation never mistakes a missing setting for "up to date".
+ * The device token alone decides the organization. `release` is the newest
+ * release of its channel, null when nothing is offered; the updater then
+ * reports itself up to date when it runs that version or newer. Phase 4 adds
+ * `security`, the newest security release for the line `running` belongs to
+ * (null without `running`, as a 2.9.0 updater asks), and `securityUpdates`,
+ * whether the workstation installs that at its next boot by itself. 503 when
+ * the platform has no public release address, so a workstation never mistakes
+ * a missing setting for "up to date".
  */
 async function handleDeviceUpdate(
   request: Request,
@@ -631,17 +642,26 @@ async function handleDeviceUpdate(
   if (auth.error) return auth.error;
   const tenant = await findTenantById(db, auth.device.tenant_id);
   if (!tenant || tenant.status !== "active") return jsonError("This organization is not active", 403, jsonHeaders);
-  const offer = await offeredRelease(db, tenant.update_channel);
-  if (!offer) return new Response(JSON.stringify({ release: null }), { headers: jsonHeaders });
-  const folder = releaseFolderUrl(env, offer.version);
-  if (!folder) {
-    console.error("[Worker] A release is offered but RELEASES_BASE_URL is missing or not an https address");
-    return jsonError("Updates are not available from this server right now", 503, jsonHeaders);
+  const running = new URL(request.url).searchParams.get("running");
+  if (running !== null && !isReleaseVersion(running)) {
+    return jsonError("running must be a release version", 400, jsonHeaders);
   }
-  return new Response(
-    JSON.stringify({ release: { version: offer.version, kind: offer.kind, sizeBytes: offer.sizeBytes, url: folder } }),
-    { headers: jsonHeaders }
-  );
+  const offer = workstationOffer(await offeredReleases(db, tenant.update_channel), running);
+  const securityUpdates = isSecurityUpdateMode(tenant.security_updates) ? tenant.security_updates : "next_boot";
+  const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string } | null> = {};
+  for (const [name, release] of [["release", offer.release], ["security", offer.security]] as const) {
+    if (!release) {
+      described[name] = null;
+      continue;
+    }
+    const folder = releaseFolderUrl(env, release.version);
+    if (!folder) {
+      console.error("[Worker] A release is offered but RELEASES_BASE_URL is missing or not an https address");
+      return jsonError("Updates are not available from this server right now", 503, jsonHeaders);
+    }
+    described[name] = { version: release.version, kind: release.kind, sizeBytes: release.sizeBytes, url: folder };
+  }
+  return new Response(JSON.stringify({ ...described, securityUpdates }), { headers: jsonHeaders });
 }
 
 /**
@@ -2856,36 +2876,66 @@ export default {
     }
 
     // GET /api/settings/updates: which releases this organization's workstations
-    // are offered (its channel), and the release that means right now.
-    // POST /api/settings/updates { channel: "stable" | "beta" }.
+    // are offered (its channel), the release that means right now, what they do
+    // with a security release for their line, and the security releases some of
+    // its workstations still do not run.
+    // POST /api/settings/updates { channel?: "stable" | "beta",
+    //                              securityUpdates?: "next_boot" | "approval" }.
     if (path === "/api/settings/updates" && (method === "GET" || method === "POST")) {
       const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
       if (denied) return denied;
       const tenantId = currentTenant!.id;
-      let channel = currentTenant!.update_channel === "beta" ? "beta" : "stable";
+      let channel: UpdateChannel = currentTenant!.update_channel === "beta" ? "beta" : "stable";
+      let securityUpdates: SecurityUpdateMode = currentTenant!.security_updates === "approval" ? "approval" : "next_boot";
       if (method === "POST") {
-        let body: { channel?: unknown };
+        let body: { channel?: unknown; securityUpdates?: unknown };
         try {
           body = await request.json<typeof body>();
         } catch {
           return jsonError("The request body must be JSON", 400, jsonHeaders);
         }
-        if (!isUpdateChannel(body?.channel)) return jsonError("The channel is stable or beta", 400, jsonHeaders);
-        if (body.channel !== channel) {
-          channel = body.channel;
-          await updateTenant(db, tenantId, { update_channel: body.channel });
-          await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "settings.update_channel", details: channel });
+        if (!body || typeof body !== "object" || (body.channel === undefined && body.securityUpdates === undefined)) {
+          return jsonError("Send a channel or a securityUpdates setting", 400, jsonHeaders);
+        }
+        if (body.channel !== undefined && !isUpdateChannel(body.channel)) {
+          return jsonError("The channel is stable or beta", 400, jsonHeaders);
+        }
+        if (body.securityUpdates !== undefined && !isSecurityUpdateMode(body.securityUpdates)) {
+          return jsonError("securityUpdates is next_boot or approval", 400, jsonHeaders);
+        }
+        const changes: Partial<Tenant> = {};
+        if (isUpdateChannel(body.channel) && body.channel !== channel) changes.update_channel = channel = body.channel;
+        if (isSecurityUpdateMode(body.securityUpdates) && body.securityUpdates !== securityUpdates) {
+          changes.security_updates = securityUpdates = body.securityUpdates;
+        }
+        if (Object.keys(changes).length) {
+          await updateTenant(db, tenantId, changes);
+          if (changes.update_channel) {
+            await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "settings.update_channel", details: channel });
+          }
+          if (changes.security_updates) {
+            await writeAuditLog(db, {
+              tenantId,
+              userId: session!.user_id,
+              action: "settings.security_updates",
+              details: securityUpdates
+            });
+          }
           await notifyConfigChanged(env, tenantId);
         }
       }
-      const offer = await offeredRelease(db, channel === "beta" ? "beta" : "stable");
-      return new Response(JSON.stringify({ channel, offer }), { headers: jsonHeaders });
+      const releases = await offeredReleases(db, channel);
+      const pending = securityReleasesPending(releases, await listClientDevices(db, tenantId));
+      return new Response(JSON.stringify({ channel, offer: releases[0] ?? null, securityUpdates, pending }), {
+        headers: jsonHeaders
+      });
     }
 
     // POST /api/clients/check-update { clientIds }: ask these workstations to
     // check for the release their organization is offered now.
-    // POST /api/clients/install-update { clientIds }: install it on those that
-    // hold it downloaded and verified; the rest come back with the reason.
+    // POST /api/clients/install-update { clientIds }: install it -- or, on a
+    // workstation with a security release for its line, that one -- on those
+    // that hold it downloaded and verified; the rest come back with the reason.
     if ((path === "/api/clients/check-update" || path === "/api/clients/install-update") && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
       if (denied) return denied;
@@ -2911,15 +2961,17 @@ export default {
       if (install && !offer) return jsonError("No release is offered to this organization", 409, jsonHeaders);
       let sent: string[] = [];
       let skipped: Array<{ clientId: string; reason: string }> = unknown;
+      let versions = offer ? [offer.version] : [];
       if (clientIds.length && install) {
-        const result = await hubJson<{ sent: string[]; skipped: Array<{ clientId: string; reason: string }> }>(
+        const result = await hubJson<{ sent: string[]; skipped: Array<{ clientId: string; reason: string }>; versions: string[] }>(
           env,
           tenant.id,
           "/install-update",
-          { clientIds, version: offer!.version }
+          { clientIds }
         );
         sent = result.sent;
         skipped = skipped.concat(result.skipped);
+        versions = result.versions;
       } else if (clientIds.length) {
         await hubJson(env, tenant.id, "/enqueue", {
           targets: clientIds,
@@ -2933,12 +2985,13 @@ export default {
           tenantId: tenant.id,
           userId: session!.user_id,
           action: install ? "update.install" : "update.check",
-          details: `clients=${sent.join(",")}${offer ? ` version=${offer.version}` : ""}`
+          details: `clients=${sent.join(",")}${versions.length ? ` version=${versions.join(",")}` : ""}`
         });
       }
-      return new Response(JSON.stringify({ status: "ok", version: offer?.version ?? null, sent, skipped }), {
-        headers: jsonHeaders
-      });
+      return new Response(
+        JSON.stringify({ status: "ok", version: offer?.version ?? null, ...(install ? { versions } : {}), sent, skipped }),
+        { headers: jsonHeaders }
+      );
     }
 
     // POST /api/clients/remove: Decommission a workstation

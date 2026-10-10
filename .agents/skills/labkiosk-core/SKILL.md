@@ -41,8 +41,10 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
     only while a console is showing that screen; `{"type":"pong"}`.
   - workstation → hub: `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?,
     imageVersion?, agentVersion?, update?}` on connect and on change. `update` is `{phase,
-    version?, progress?, detail?}`, phase one of `live`, `idle`, `checking`, `downloading`, `ready`,
-    `installing`, `up-to-date`, `error` (`UPDATE_PHASES` in `src/releases.ts`; the agent reads it
+    version?, progress?, detail?, kind?, since?}`, phase one of `live`, `idle`, `checking`,
+    `downloading`, `ready`, `staged`, `installing`, `up-to-date`, `error`; `kind` (`feature` or
+    `security`, from the signed manifest) and `since` (unix seconds, when this boot first held it)
+    come with `ready` and `staged` (`UPDATE_PHASES` in `src/releases.ts`; the agent reads it
     from the root-owned `/run/labkiosk-update/update.json`, or reports `live` on a live session); `{"type":"frame", thumbnail}` while asked; and the ping, which must be
     **byte-for-byte** `{"type":"ping"}` (`WEBSOCKET_PING` = `HUB_PING`): the edge answers it without
     waking the hub. `json.dumps` adds a space and would bill every ping. Sent every 15 s; the hub
@@ -86,14 +88,22 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
   per workstation, so each gets it once.
 - **Update commands, hub-only** (never accepted by `/api/command`):
   - `release-available {version}`: the hub sends it to a workstation running an image older than
-    the offer that is not already checking, downloading, installing or holding it `ready` — on
-    connect, on a status change and on a config change, at most every 10 minutes (60 after an
-    `error`) — and for the console's `POST /api/clients/check-update`. The agent (not on live
-    media) starts `labkiosk-update-download.service`; the root updater then asks
-    `GET /api/devices/update` (device token) for `{release: {version, kind, sizeBytes, url} | null}`
-    and downloads from `url` (`RELEASES_BASE_URL` + `releases/<version>`; `503` when unset).
+    the release meant for it — a security release for its own major.minor line first, else the
+    newest of its channel (`updateTargetFor`) — that is not already checking, downloading,
+    installing or holding it `ready`/`staged` (one holding a security release `ready` is told again
+    once its organization allows `next_boot`), on connect, on a status change and on a config
+    change, at most every 10 minutes (60 after an `error`), and for the console's
+    `POST /api/clients/check-update`. The agent (not on live media) starts
+    `labkiosk-update-download.service`; the root updater then asks
+    `GET /api/devices/update?running=<image version>` (device token) for `{release, security,
+    securityUpdates}` (`release`/`security` are `{version, kind, sizeBytes, url} | null`;
+    `securityUpdates` is `next_boot` or `approval`; without `running`, as a 2.9.0 updater asks,
+    `security` is null) and downloads from `url` (`RELEASES_BASE_URL` + `releases/<version>`;
+    `503` when unset). A `security` release by its signed manifest, for the running line, under
+    `next_boot`, is staged for the next boot (`staged`), with no reboot.
   - `install-update {version}`: only from `POST /api/clients/install-update` (`updates`
-    permission), only to workstations online and `ready` for that version. The agent checks it
+    permission), only to workstations online and `ready` for the release meant for each (so one
+    command per version; a `staged` one is refused: it installs at its next restart). The agent checks it
     holds that version `ready`, starts `labkiosk-update-install.service` and shows the update
     curtain (`/api/status` `updateScreen`); `reboot`/`shutdown` are refused while it installs.
 

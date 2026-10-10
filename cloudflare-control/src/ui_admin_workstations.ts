@@ -8,6 +8,7 @@
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, WorkstationGroup } from "./types";
 import { escapeHtml, escapeAttr, escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
+import { SECURITY_WAIT_WARN_DAYS } from "./releases";
 
 export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, groups = [], tenantParam, baseDomain, nonce } = options;
@@ -571,6 +572,7 @@ function renderWorkstationsScripts(
           updateLine.title = line.title;
           updateLine.classList.toggle("kc-update-ready", line.tone === "ready");
           updateLine.classList.toggle("kc-update-error", line.tone === "error");
+          updateLine.classList.toggle("kc-update-warn", line.tone === "warn");
           updateLine.classList.toggle("hidden", !line.text);
         }
       }
@@ -592,7 +594,18 @@ function renderWorkstationsScripts(
           case "downloading":
             return { text: prefix + "downloading " + v + (typeof u.progress === "number" ? " (" + u.progress + "%)" : ""), title: "", tone: "" };
           case "ready":
-            return { text: prefix + v + " ready to install", title: "Downloaded and verified", tone: "ready" };
+            return u.kind === "security"
+              ? { text: prefix + "security fix " + v + " ready to install", title: "Downloaded and verified; this organization approves security releases", tone: "ready" }
+              : { text: prefix + v + " ready to install", title: "Downloaded and verified", tone: "ready" };
+          case "staged": {
+            // A security release waits for the next start; flag one that has waited too long.
+            const days = typeof u.since === "number" ? Math.floor((Date.now() / 1000 - u.since) / 86400) : 0;
+            const title = "Security fix, downloaded and verified. It installs when the workstation next starts; Reboot installs it now.";
+            // Short enough for the card; the title says the rest.
+            return days >= ${SECURITY_WAIT_WARN_DAYS}
+              ? { text: prefix + v + " \u00b7 not restarted in " + days + " days", title: "Security fix " + v + " installs at its next restart, and this workstation has not restarted in " + days + " days. Reboot installs it now.", tone: "warn" }
+              : { text: prefix + v + " installs at next restart", title: title, tone: "ready" };
+          }
           case "installing":
             return { text: prefix + "installing " + v, title: "", tone: "ready" };
           case "up-to-date":
@@ -1102,10 +1115,8 @@ function renderWorkstationsScripts(
           try {
             const data = await postUpdate("/api/clients/check-update", targets);
             const note = skippedSummary(data.skipped);
-            lkToast(
-              (data.version ? "Checking for " + data.version : "Checking for updates") + " on " + data.sent.length + " workstation(s)" + (note ? ". " + note : ""),
-              "success"
-            );
+            // Each workstation fetches the release meant for it, a security fix for its line first.
+            lkToast("Checking for updates on " + data.sent.length + " workstation(s)" + (note ? ". " + note : ""), "success");
           } catch (err) {
             lkToast(err.message, "error");
           }
@@ -1116,7 +1127,7 @@ function renderWorkstationsScripts(
           if (!targets) return;
           const agreed = await lkConfirm({
             title: "Install the update on " + targets.length + " workstation(s)?",
-            message: "Each selected workstation that has downloaded and verified the offered release restarts into it now, and whoever is at it is interrupted. If the new image fails to start, the workstation goes back to the one it runs today.",
+            message: "Each selected workstation that has downloaded and verified its update restarts into it now, and whoever is at it is interrupted. If the new image fails to start, the workstation goes back to the one it runs today.",
             confirmLabel: "Install and restart",
             tone: "danger"
           });
@@ -1125,9 +1136,10 @@ function renderWorkstationsScripts(
             const data = await postUpdate("/api/clients/install-update", targets);
             const note = skippedSummary(data.skipped);
             if (data.sent.length) {
-              lkToast("Installing " + data.version + " on " + data.sent.length + " workstation(s)" + (note ? ". " + note : ""), "success");
+              const versions = Array.isArray(data.versions) && data.versions.length ? data.versions.join(", ") : data.version;
+              lkToast("Installing " + versions + " on " + data.sent.length + " workstation(s)" + (note ? ". " + note : ""), "success");
             } else {
-              lkToast("No workstation was ready to install " + data.version + (note ? ". " + note : ""), "warning");
+              lkToast("No workstation was ready to install its update" + (note ? ". " + note : ""), "warning");
             }
             pollClients();
           } catch (err) {

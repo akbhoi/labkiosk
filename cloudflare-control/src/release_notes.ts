@@ -18,6 +18,7 @@
 
 import { Env, WorkersAiBinding } from "./types";
 import { BUG_REPORT_AI_MODEL, modelText } from "./bug_reports";
+import { compareVersions } from "./releases";
 
 /** The repository releases are published in. */
 export const RELEASES_REPO = "akbhoi/labkiosk";
@@ -60,13 +61,21 @@ export interface ReleaseNote {
 
 const now = () => Math.floor(Date.now() / 1000);
 
-/** The newest releases, newest first. */
+/**
+ * Newest version first. Not by date: a security rebuild of an older line
+ * (2.8.1, published after 2.9.0) is not the release a new install should take.
+ */
+function byVersion(a: { tag: string }, b: { tag: string }): number {
+  return compareVersions(b.tag.slice(1), a.tag.slice(1));
+}
+
+/** The newest releases, newest version first. */
 export async function listReleaseNotes(db: D1Database, limit = RELEASES_SHOWN): Promise<ReleaseNote[]> {
-  const result = await db
-    .prepare("SELECT * FROM release_notes ORDER BY published_at DESC LIMIT ?")
-    .bind(Math.max(1, Math.min(20, limit)))
-    .all<ReleaseNote>();
-  return result.results || [];
+  const result = await db.prepare("SELECT * FROM release_notes").all<ReleaseNote>();
+  return (result.results || [])
+    .filter((note) => TAG_PATTERN.test(note.tag))
+    .sort(byVersion)
+    .slice(0, Math.max(1, Math.min(20, limit)));
 }
 
 /** One sentence, on one line, no longer than a line of a changelog should be. */
@@ -256,10 +265,10 @@ export async function storeReleaseNotes(
       .run();
     stored++;
   }
-  const latest = await db
-    .prepare("SELECT tag FROM release_notes ORDER BY published_at DESC LIMIT 1")
-    .first<{ tag: string }>();
-  return { stored, latest: latest?.tag ?? null };
+  const tags = ((await db.prepare("SELECT tag FROM release_notes").all<{ tag: string }>()).results || []).filter((r) =>
+    TAG_PATTERN.test(r.tag)
+  );
+  return { stored, latest: tags.sort(byVersion)[0]?.tag ?? null };
 }
 
 /**

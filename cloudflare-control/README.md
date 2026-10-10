@@ -46,7 +46,7 @@ The control plane handles tenant routing, operator management dashboards, user p
 
 ```text
 cloudflare-control/
-├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0028)
+├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0029)
 ├── src/
 │   ├── index.ts               # Worker router, REST endpoints, scheduled(), queue()
 │   ├── guard.ts               # Tenant resolution, authorization guards, CSRF origin checks

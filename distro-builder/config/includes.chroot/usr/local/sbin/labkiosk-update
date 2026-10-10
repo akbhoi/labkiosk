@@ -26,6 +26,10 @@ release is five files under one URL, published by build-iso.yml:
                      /run/labkiosk-update/update.json for the agent to report.
                      Started by labkiosk-update-download.service when the
                      organization's hub sends `release-available`.
+                     Phase 4: a security release for the line this image runs
+                     comes first, and unless the organization approves those
+                     too it is given its one try at the next boot straight
+                     away (`staged`), with no restart.
     install-pending  give the release `run` left ready its one try, as
                      `install` does. Started by labkiosk-update-install.service,
                      which then reboots, when an administrator installs it.
@@ -118,7 +122,10 @@ GPGV = "/usr/bin/gpgv"
 # What `run` and `install-pending` say, for the agent to report (phase 3). In
 # /run beside the boot status, written by root: the agent trusts nothing else.
 UPDATE_STATE_FILE = os.path.join(slots.STATUS_DIR, "update.json")
-UPDATE_PHASES = ("checking", "downloading", "ready", "installing", "up-to-date", "idle", "error")
+UPDATE_PHASES = ("checking", "downloading", "ready", "staged", "installing", "up-to-date", "idle", "error")
+# What the organization chose for security releases (phase 4): installed at the
+# next boot without anyone's approval, or approved like any other release.
+SECURITY_UPDATE_MODES = ("next_boot", "approval")
 OFFER_PATH = "/api/devices/update"
 DEVICE_TOKEN_PATTERN = re.compile(r"^[0-9a-f]{64}\Z")
 MAX_CONFIG_BYTES = 64 * 1024
@@ -684,10 +691,36 @@ def use_proxy(agent, path):
         raise UpdateError(f"the proxy setting at {path} is unusable: {err}") from err
 
 
-def fetch_offer(opener, worker_url, token):
-    """The release this workstation's organization is offered, or None."""
+def release_line(version):
+    """The line a release belongs to, as (major, minor): (2, 8) for 2.8.1."""
+    numbers, _ = version_key(version)
+    return numbers[:2]
+
+
+def parse_offered(value, what):
+    """One offered release, {version, url}, or None when nothing is offered."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("url"), str) \
+            or not slots.VERSION_PATTERN.match(str(value.get("version") or "")):
+        raise UpdateError(f"the control plane's {what} is malformed")
+    return {"version": value["version"], "url": value["url"]}
+
+
+def fetch_offer(opener, worker_url, token, running):
+    """
+    What this workstation's organization is offered:
+
+        release          the newest release of its channel, or None
+        security         the newest security release for the line `running`
+                         belongs to and newer than it, or None (phase 4)
+        securityUpdates  next_boot or approval
+
+    A control plane from before phase 4 sends neither of the last two: no
+    security release is then offered, and none is ever staged.
+    """
     request = urllib.request.Request(
-        worker_url + OFFER_PATH,
+        worker_url + OFFER_PATH + "?" + urllib.parse.urlencode({"running": running}),
         headers={"Authorization": f"Bearer {token}", "User-Agent": "LabKioskUpdate/1"},
     )
     try:
@@ -703,48 +736,95 @@ def fetch_offer(opener, worker_url, token):
         body = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as err:
         raise UpdateError(f"the control plane's answer is not JSON: {err}") from err
-    release = body.get("release") if isinstance(body, dict) else None
-    if release is None:
-        return None
-    if not isinstance(release, dict) or not isinstance(release.get("url"), str) \
-            or not slots.VERSION_PATTERN.match(str(release.get("version") or "")):
-        raise UpdateError("the control plane's offer is malformed")
-    return {"version": release["version"], "url": release["url"]}
+    if not isinstance(body, dict):
+        raise UpdateError("the control plane's answer is not an object")
+    release = parse_offered(body.get("release"), "offer")
+    security = parse_offered(body.get("security"), "security offer")
+    if security is not None and (release_line(security["version"]) != release_line(running)
+                                 or version_key(security["version"]) <= version_key(running)):
+        raise UpdateError(f"the control plane offered {security['version']} as a security release for {running}")
+    mode = body.get("securityUpdates", "approval")
+    if mode not in SECURITY_UPDATE_MODES:
+        raise UpdateError(f"the control plane's security update setting {mode!r} is unknown")
+    return {"release": release, "security": security, "securityUpdates": mode}
+
+
+def stored_kind(root, version):
+    """The kind of a release on this disk, from its manifest; verified when it was downloaded."""
+    path = os.path.join(root, slots.IMAGES_DIR_NAME, version, MANIFEST_NAME)
+    try:
+        data = read_file(path, MAX_MANIFEST_BYTES)
+    except OSError as err:
+        raise UpdateError(f"{version} is staged but its manifest is unreadable: {err}") from err
+    return validate_manifest(data)["kind"]
 
 
 def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=GPGV, state_path=None):
     """
-    Download the release this workstation's organization is offered, if it is
-    newer than the image running now. Every step is written to the update
-    state; an UpdateError is recorded there too, then raised.
+    Fetch the release this workstation should take next, if it is newer than
+    the image running now: a security release for its own line first (phase
+    4), else the newest release of its organization's channel.
+
+    A security release -- by its signed manifest, not by what the control plane
+    says -- for the running line is staged for the next boot when the
+    organization lets security releases install themselves; anything else waits,
+    `ready`, for an administrator. Every step is written to the update state;
+    an UpdateError is recorded there too, then raised.
     """
     opener = opener or urllib.request.build_opener()
+    try:
+        previous = read_update_state(state_path)
+    except UpdateError as err:
+        log(f"the last update state is ignored: {err}")
+        previous = {}
 
     def report(phase, **fields):
         write_update_state(phase, path=state_path, **fields)
 
+    def settle(phase, version, kind):
+        """`ready` or `staged`, with when this boot first reached it, for the console's "N days"."""
+        since = previous.get("since")
+        if previous.get("phase") != phase or previous.get("version") != version \
+                or type(since) is not int or since <= 0:
+            since = int(time.time())
+        report(phase, version=version, kind=kind, since=since)
+
     env = slots.read_env(os.path.join(root, slots.BOOT_DIR_NAME))
-    if slots.classify(env, running) == "trial":
+    boot = slots.classify(env, running)
+    if boot == "trial":
         # The hub asks again in a few minutes, by when the boot check has passed.
         report("idle", detail=f"{running} is still on its first start")
         return {"state": "idle", "reason": "trial"}
     report("checking")
     try:
-        offer = fetch_offer(opener, worker_url, token)
-        if offer is None or version_key(offer["version"]) <= version_key(running):
+        offer = fetch_offer(opener, worker_url, token, running)
+        target = offer["security"] or offer["release"]
+        if target is None or version_key(target["version"]) <= version_key(running):
             report("up-to-date")
-            return {"state": "up-to-date", "offered": offer["version"] if offer else None}
+            return {"state": "up-to-date", "offered": target["version"] if target else None}
+        version = target["version"]
+        if boot == "staged" and env.get("next") == version:
+            kind = stored_kind(root, version)
+            settle("staged", version, kind)
+            return {"state": "staged", "downloaded": version, "kind": kind, "already": True}
+        automatic = offer["securityUpdates"] == "next_boot"
+        if automatic and boot == "rolled-back" and env.get("next") == version:
+            raise UpdateError(f"{version} did not start on this workstation, which went back to {running}; "
+                              "it is not tried again on its own")
         result = download(
-            root, offer["url"], running, floor, keyring_dir, opener, gpgv,
-            report=lambda version, percent: report("downloading", version=version, progress=percent),
+            root, target["url"], running, floor, keyring_dir, opener, gpgv,
+            report=lambda v, percent: report("downloading", version=v, progress=percent),
         )
-        if result["downloaded"] != offer["version"]:
-            raise UpdateError(f"the control plane offered {offer['version']} but its folder holds {result['downloaded']}")
+        if result["downloaded"] != version:
+            raise UpdateError(f"the control plane offered {version} but its folder holds {result['downloaded']}")
+        staged = automatic and result["kind"] == "security" and release_line(version) == release_line(running)
+        if staged:
+            install(root, version, running, floor, keyring_dir, gpgv)
     except UpdateError as err:
         report("error", detail=str(err))
         raise
-    report("ready", version=result["downloaded"])
-    return {"state": "ready", **result}
+    settle("staged" if staged else "ready", version, result["kind"])
+    return {"state": "staged" if staged else "ready", **result}
 
 
 def install_pending(root, running, floor, keyring_dir, gpgv=GPGV, state_path=None):

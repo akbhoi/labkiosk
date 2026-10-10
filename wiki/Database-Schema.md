@@ -15,7 +15,7 @@ This is the single most important rule when touching the database, and the test 
 
 Both must be changed together. `test/worker.test.ts` compares them and fails on drift with `Columns of "x" differ between SCHEMA_SQL and migrations/`.
 
-**Never edit an applied migration.** Add a new numbered file — `0028_feature.sql` — and mirror the change in `SCHEMA_SQL`.
+**Never edit an applied migration.** Add a new numbered file — `0030_feature.sql` — and mirror the change in `SCHEMA_SQL`.
 
 ```bash
 # Local
@@ -61,6 +61,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0026_contact_email_code.sql` | `email_codes` rebuilt so its `purpose` also allows `contact`: the contact page proves its sender's address with a code, as registration does |
 | `0027_ota_updates.sql` | Over-the-air updates: the platform table `releases`; `tenants.update_channel`; `client_devices.update_phase`, `update_version`, `update_progress`, `update_detail`, `agent_version` |
 | `0028_release_iso_sha256.sql` | `release_notes.iso_sha256`: the ISO's SHA-256 as GitHub computed it, shown as text on `/download` |
+| `0029_security_updates.sql` | Security releases at the next boot: `tenants.security_updates`; `client_devices.update_kind`, `update_since` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -111,6 +112,7 @@ One row per organization. This table has accumulated the most columns because it
 | `bug_reports_enabled` | INTEGER | `1` when the organization opted in to automatic bug reports; default `0` |
 | `bug_reports_terms_version` / `bug_reports_terms_accepted_at` | TEXT / INTEGER | The Automatic Bug Report Terms version accepted, and when; reports are sent only under the current version |
 | `update_channel` | TEXT | `stable` (default) \| `beta`: which classified releases its workstations are offered; `beta` also takes `stable` ones |
+| `security_updates` | TEXT | `next_boot` (default) \| `approval`: whether a security release for a workstation's line installs at its next start by itself, or waits for an administrator |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
@@ -169,9 +171,10 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 | `update_state` | TEXT | Last boot outcome reported: `installed`, `failed`, `rolled-back`, `fallback` or `error` |
 | `update_error` | TEXT | The reason, for `error` |
 | `update_state_at` | INTEGER | When the workstation recorded it; `0` = never. A report less than 60 s newer is ignored |
-| `update_phase` | TEXT | What the workstation last said about the update it is fetching or holding: `live`, `idle`, `checking`, `downloading`, `ready`, `installing`, `up-to-date` or `error`; written back by OrgHub, separate from `update_state` |
+| `update_phase` | TEXT | What the workstation last said about the update it is fetching or holding: `live`, `idle`, `checking`, `downloading`, `ready`, `staged`, `installing`, `up-to-date` or `error`; written back by OrgHub, separate from `update_state` |
 | `update_version` / `update_progress` / `update_detail` | TEXT / INTEGER / TEXT | The release that phase is about, the download's percent, and why the last attempt failed |
 | `agent_version` | TEXT | The agent version the workstation reports |
+| `update_kind` / `update_since` | TEXT / INTEGER | For `ready` and `staged`: the release's kind (`feature` or `security`, from its signed manifest), and since when (unix seconds) the workstation has held it in this boot |
 
 ### `workstation_issues`
 
@@ -337,7 +340,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0029_<description>.sql` (the next number after `0028`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0030_<description>.sql` (the next number after `0029`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

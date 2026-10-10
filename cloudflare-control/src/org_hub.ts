@@ -47,9 +47,12 @@ import {
   compareVersions,
   isReleaseVersion,
   normalizeUpdateReport,
-  offeredRelease,
-  sameUpdateReport
+  offeredReleases,
+  releaseLine,
+  sameUpdateReport,
+  updateTargetFor
 } from "./releases";
+import type { SecurityUpdateMode } from "./types";
 
 /** Text a workstation sends to prove it is alive; answered without waking the object. */
 export const HUB_PING = '{"type":"ping"}';
@@ -112,7 +115,7 @@ interface UpdateFields {
   imageVersion?: string;
   agentVersion?: string;
   update?: UpdateReport;
-  /** When it was last reminded of the offered release, and of which one. */
+  /** When it was last reminded of a release, and of which one (releaseNudgeDue's key). */
   nudgedAt?: number;
   nudgedVersion?: string;
 }
@@ -193,8 +196,8 @@ interface HubConfig {
   tenant: Tenant;
   whitelist: string[];
   deviceBroadcasts: Map<string, { url: string | null; epoch: number }>;
-  /** The release this organization's channel offers, or null. */
-  offer: ReleaseOffer | null;
+  /** The releases this organization's channel offers, newest first. */
+  releases: ReleaseOffer[];
   loadedAt: number;
 }
 
@@ -338,8 +341,8 @@ export class OrgHub {
           return delivered ? json({ status: "ok" }) : json({ error: "This workstation is not connected" }, 409);
         }
         case "/install-update": {
-          const body = (await request.json()) as { clientIds?: unknown; version?: unknown };
-          return json(await this.installUpdate(body.clientIds, body.version));
+          const body = (await request.json()) as { clientIds?: unknown };
+          return json(await this.installUpdate(body.clientIds));
         }
         case "/device-enrolled":
           this.deviceEnrolled(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
@@ -421,12 +424,12 @@ export class OrgHub {
       this.config = null;
       return null;
     }
-    const [whitelist, broadcasts, offer] = await Promise.all([
+    const [whitelist, broadcasts, releases] = await Promise.all([
       buildEffectiveWhitelist(db, tenant.id),
       listDeviceBroadcasts(db, tenant.id),
-      offeredRelease(db, tenant.update_channel)
+      offeredReleases(db, tenant.update_channel)
     ]);
-    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, offer, loadedAt: Date.now() };
+    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, loadedAt: Date.now() };
     return this.config;
   }
 
@@ -1107,8 +1110,9 @@ export class OrgHub {
   // ------------------------------------------------------------------ updates
 
   /**
-   * Remind a workstation of the release its organization is offered, when it
-   * runs an older image and is neither fetching nor holding that release.
+   * Remind a workstation of the release it should fetch -- a security release
+   * for its line first, else the newest one its organization is offered -- when
+   * it runs an older image and is neither fetching nor holding that release.
    *
    * This is how a release reaches workstations without any timer on them: a
    * release classified for the channel (configChanged), a workstation that
@@ -1120,53 +1124,63 @@ export class OrgHub {
   private async nudgeSocket(ws: WebSocket, a: DeviceAttachment): Promise<void> {
     const due = this.releaseNudgeDue(a);
     if (!due) return;
-    ws.serializeAttachment({ ...a, nudgedAt: Date.now(), nudgedVersion: due.version });
-    await this.enqueue({ targets: [a.clientId], action: "release-available", version: due.version });
+    ws.serializeAttachment({ ...a, nudgedAt: Date.now(), nudgedVersion: due.key });
+    await this.enqueue({ targets: [a.clientId], action: "release-available", version: due.release.version });
   }
 
   private async nudgeHttp(clientId: string, client: HttpClient): Promise<void> {
     const due = this.releaseNudgeDue(client);
     if (!due) return;
     client.nudgedAt = Date.now();
-    client.nudgedVersion = due.version;
-    await this.enqueue({ targets: [clientId], action: "release-available", version: due.version });
+    client.nudgedVersion = due.key;
+    await this.enqueue({ targets: [clientId], action: "release-available", version: due.release.version });
   }
 
-  private releaseNudgeDue(fields: UpdateFields): ReleaseOffer | null {
-    const offer = this.config?.offer ?? null;
-    if (!offer || !releaseNudgeWanted(offer, fields.update, fields.imageVersion)) return null;
-    if (fields.nudgedVersion === offer.version && fields.nudgedAt) {
+  /**
+   * The release to remind a workstation of now, and the key its reminder is
+   * throttled by: the version, or the version to stage when it already holds
+   * it ready, so allowing security releases at the next boot reaches it at once.
+   */
+  private releaseNudgeDue(fields: UpdateFields): { release: ReleaseOffer; key: string } | null {
+    const config = this.config;
+    if (!config) return null;
+    const target = releaseNudgeTarget(config.releases, fields.update, fields.imageVersion, config.tenant.security_updates);
+    if (!target) return null;
+    const key = fields.update?.phase === "ready" && fields.update.version === target.version ? `${target.version}:stage` : target.version;
+    if (fields.nudgedVersion === key && fields.nudgedAt) {
       const wait = fields.update?.phase === "error" ? RELEASE_NUDGE_AFTER_ERROR_MS : RELEASE_NUDGE_MS;
       if (Date.now() - fields.nudgedAt < wait) return null;
     }
-    return offer;
+    return { release: target, key };
   }
 
   /**
    * Ask the selected workstations to install the release they hold. Only a
-   * workstation online now that reports the offered `version` downloaded and
+   * workstation online now that reports the release meant for it -- the
+   * security release for its line, else the newest one -- downloaded and
    * verified (`ready`) is sent `install-update`; every other one is returned
    * with the reason, and is never updated later on its own.
    */
   async installUpdate(
-    rawIds: unknown,
-    rawVersion: unknown
-  ): Promise<{ sent: string[]; skipped: Array<{ clientId: string; reason: string }> }> {
+    rawIds: unknown
+  ): Promise<{ sent: string[]; skipped: Array<{ clientId: string; reason: string }>; versions: string[] }> {
     const ids = Array.isArray(rawIds) ? Array.from(new Set(rawIds.map(String))).filter((id) => CLIENT_ID_PATTERN.test(id)) : [];
-    const version = isReleaseVersion(rawVersion) ? rawVersion : "";
+    const releases = (await this.loadConfig(true))?.releases ?? [];
     const live = this.liveClients(false);
-    const sent: string[] = [];
+    const byVersion = new Map<string, string[]>();
     const skipped: Array<{ clientId: string; reason: string }> = [];
     for (const clientId of ids) {
       const status = live[clientId];
-      const reason = !version
-        ? "No release is offered to this organization"
-        : installRefusal(status, version);
-      if (reason) skipped.push({ clientId, reason });
-      else sent.push(clientId);
+      const target = installTargetFor(releases, status);
+      const reason = !target ? "No release is offered to this organization" : installRefusal(status, target.version);
+      if (reason || !target) {
+        skipped.push({ clientId, reason: reason ?? "No release is offered to this organization" });
+        continue;
+      }
+      byVersion.set(target.version, [...(byVersion.get(target.version) ?? []), clientId]);
     }
-    if (sent.length) await this.enqueue({ targets: sent, action: "install-update", version });
-    return { sent, skipped };
+    for (const [version, targets] of byVersion) await this.enqueue({ targets, action: "install-update", version });
+    return { sent: [...byVersion.values()].flat(), skipped, versions: [...byVersion.keys()] };
   }
 
   // ------------------------------------------------------------------- helpers
@@ -1218,21 +1232,50 @@ function updateFieldsChanged(a: UpdateFields, b: UpdateFields): boolean {
 }
 
 /**
- * Whether a workstation should be told about the offered release: it reports
- * updates at all (an older agent does not), runs from a disk, runs an older
- * image, and is not already fetching, holding or installing this release.
+ * The release a workstation should be told about, or null: it reports updates
+ * at all (an older agent does not), runs from a disk, and runs an image older
+ * than the release meant for it (updateTargetFor), which it is not already
+ * fetching, holding or installing.
+ *
+ * A workstation holding a security release for its line `ready` is reminded
+ * once its organization lets those install at the next boot, so it stages it.
+ * One whose updater predates phase 4 (it never reports `kind`) only ever
+ * fetches the newest release; holding that, it is left alone.
  */
-export function releaseNudgeWanted(
-  offer: ReleaseOffer | null,
+export function releaseNudgeTarget(
+  releases: readonly ReleaseOffer[],
   update: UpdateReport | undefined,
-  imageVersion: string | undefined
-): boolean {
-  if (!offer || !update || update.phase === "live") return false;
-  if (!imageVersion || !isReleaseVersion(imageVersion)) return false;
-  if (compareVersions(offer.version, imageVersion) <= 0) return false;
-  if (update.phase === "checking" || update.phase === "downloading" || update.phase === "installing") return false;
-  if (update.phase === "ready" && update.version === offer.version) return false;
-  return true;
+  imageVersion: string | undefined,
+  securityUpdates: SecurityUpdateMode | undefined
+): ReleaseOffer | null {
+  if (!update || update.phase === "live") return null;
+  if (!imageVersion || !isReleaseVersion(imageVersion)) return null;
+  const target = updateTargetFor(releases, imageVersion);
+  if (!target) return null;
+  if (update.phase === "checking" || update.phase === "downloading" || update.phase === "installing") return null;
+  const holding = update.phase === "ready" || update.phase === "staged";
+  if (holding && update.version === target.version) {
+    const stageable =
+      update.phase === "ready" &&
+      update.kind === "security" &&
+      securityUpdates !== "approval" &&
+      releaseLine(target.version) === releaseLine(imageVersion);
+    return stageable ? target : null;
+  }
+  if (holding && !update.kind && update.version === releases[0]?.version) return null;
+  return target;
+}
+
+/**
+ * The release a workstation would install if an administrator approved it now:
+ * what it should be holding (updateTargetFor), or the newest release for an
+ * updater from before phase 4 that holds that one; null when nothing is offered.
+ */
+export function installTargetFor(releases: readonly ReleaseOffer[], status: LiveStatus | undefined): ReleaseOffer | null {
+  const newest = releases[0] ?? null;
+  const update = status?.update;
+  if (update && !update.kind && update.phase === "ready" && newest && update.version === newest.version) return newest;
+  return updateTargetFor(releases, status?.imageVersion) ?? newest;
 }
 
 /** Why this workstation cannot install `version` now, or null when it can. */
@@ -1243,6 +1286,9 @@ export function installRefusal(status: LiveStatus | undefined, version: string):
   if (update.phase === "live") return "Live session; update it by re-flashing";
   if (update.phase === "installing") return "Already installing";
   if (status.imageVersion === version) return "Already up to date";
+  if (update.phase === "staged" && update.version === version) {
+    return "Installs at its next restart; restart it to install now";
+  }
   if (update.phase === "downloading" || update.phase === "checking") return "Still downloading";
   if (update.phase === "ready" && update.version === version) return null;
   if (update.phase === "error") return "Its last download failed";

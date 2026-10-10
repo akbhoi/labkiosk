@@ -1,0 +1,424 @@
+name: Security rebuild
+
+# Over-the-air updates, phase 4 (docs/OTA_UPDATES.md section 7). Every day,
+# for the latest two release lines that update over the air, compare the
+# packages of the line's newest release with the Debian security archive. When
+# one of them has a fix, rebuild that release's own source -- unchanged but for
+# its version, one patch up -- so live-build installs the fixed packages, boot-
+# test it, sign it as a `security` release of its base, and publish it to R2 and
+# GitHub like build-iso.yml does. A super admin still classifies it on the
+# Releases page before any workstation is offered it; organizations then
+# install it at their workstations' next start, or approve it.
+#
+# The decisions -- which lines, which packages, the version bump, the notes --
+# are distro-builder/tools/security-rebuild.py, tested in
+# distro-builder/tests/test_security_rebuild.py. The build, sign and publish
+# steps are build-iso.yml's, run on the rebuilt source.
+#
+# The tag is pushed with GITHUB_TOKEN, which starts no other workflow: build-iso
+# never builds a security release a second time.
+
+on:
+  schedule:
+    # 00:30 UTC is 06:00 in Asia/Kolkata, before the working day.
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+    inputs:
+      line:
+        description: "Only this release line, such as 2.9 (empty: the latest two)"
+        required: false
+        default: ""
+      force:
+        description: "Rebuild even when no installed package has a security update"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build and boot-test, but sign and publish nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-rebuild
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Choose the release lines
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      lines: ${{ steps.lines.outputs.lines }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: List the lines and their newest releases
+        id: lines
+        env:
+          LINE: ${{ inputs.line }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${LINE:-}" ]; then args+=(--line "$LINE"); fi
+          mapfile -t tags < <(git tag --list 'v*' 'V*')
+          lines="$(python3 distro-builder/tools/security-rebuild.py lines "${args[@]}" "${tags[@]}")"
+          echo "$lines" | jq .
+          echo "lines=$lines" >> "$GITHUB_OUTPUT"
+
+  rebuild:
+    name: Line ${{ matrix.line }} (${{ matrix.tag }})
+    needs: plan
+    if: needs.plan.outputs.lines != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      # One ISO build at a time: two lines rebuilt on the same day publish one
+      # after the other.
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.lines) }}
+    env:
+      ISO: labkiosk-debian12-amd64.iso
+      PUBLISH: ${{ github.event_name == 'schedule' || !inputs.dry_run }}
+
+    steps:
+      - name: Checkout the tools
+        uses: actions/checkout@v7
+
+      - name: Checkout ${{ matrix.tag }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.tag }}
+          path: rebuild-src
+
+      - name: Install the image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xorriso squashfs-tools
+
+      # The packages of the line's newest release, read from its published ISO
+      # once and kept: a release never changes after it is published.
+      - name: Cache the packages of ${{ matrix.tag }}
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/base/status
+          key: security-rebuild-dpkg-status-${{ matrix.tag }}
+
+      - name: Read the packages of ${{ matrix.tag }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/base"
+          mkdir -p "$work"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$work" \
+            --pattern "$ISO" --pattern "$ISO.sha256"
+          (cd "$work" && sha256sum -c "$ISO.sha256")
+          xorriso -osirrox on -indev "$work/$ISO" -extract /live/filesystem.squashfs "$work/filesystem.squashfs" >/dev/null 2>&1
+          unsquashfs -no-xattrs -d "$work/root" "$work/filesystem.squashfs" var/lib/dpkg/status >/dev/null
+          mv "$work/root/var/lib/dpkg/status" "$work/status"
+          rm -rf "$work/root" "$work/filesystem.squashfs" "$work/$ISO" "$work/$ISO.sha256"
+
+      - name: Look for security updates
+        id: check
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          python3 distro-builder/tools/security-rebuild.py check --status "$RUNNER_TEMP/base/status" \
+            --mirror https://deb.debian.org/debian-security > "$RUNNER_TEMP/check.json"
+          count="$(jq '.outdated | length' "$RUNNER_TEMP/check.json")"
+          jq -r '.outdated[] | "\(.package) \(.installed) -> \(.available)"' "$RUNNER_TEMP/check.json"
+          if [ "$count" -gt 0 ] || [ "${FORCE:-false}" = "true" ]; then
+            echo "rebuild=true" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.tag }}: $count packages have a security update; rebuilding as ${{ matrix.version }}."
+          else
+            echo "rebuild=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.tag }} is current with the Debian security archive."
+          fi
+
+      # Checked before the build, so a rebuild missing its key or its bucket
+      # fails in seconds, as on a tag in build-iso.yml.
+      - name: Check the over-the-air release settings
+        if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_RELEASES_BUCKET: ${{ vars.R2_RELEASES_BUCKET }}
+          RELEASE_NOTES_TOKEN: ${{ secrets.RELEASE_NOTES_TOKEN }}
+          CONTROLLER_URL: ${{ vars.CONTROLLER_URL }}
+        run: |
+          missing=""
+          for name in UPDATE_SIGNING_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY CLOUDFLARE_ACCOUNT_ID R2_RELEASES_BUCKET RELEASE_NOTES_TOKEN CONTROLLER_URL; do
+            if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::A security release is signed, uploaded to R2 and announced to the controller, and these are not set:$missing. See distro-builder/README.md 'Over-the-air releases'."
+            exit 1
+          fi
+          case "$CONTROLLER_URL" in
+            https://*) ;;
+            *) echo "::error::CONTROLLER_URL must be the controller's https:// address, such as https://labkiosk.org."; exit 1 ;;
+          esac
+
+      # The release's own source with one change: its version, in the four files
+      # that carry it. Committed now so the build's SOURCE_DATE_EPOCH and the tag
+      # name the exact tree that was built; pushed only once it is published.
+      - name: Bump ${{ matrix.base }} to ${{ matrix.version }}
+        if: steps.check.outputs.rebuild == 'true'
+        run: |
+          set -euo pipefail
+          python3 distro-builder/tools/security-rebuild.py bump --root rebuild-src \
+            --from "${{ matrix.base }}" --to "${{ matrix.version }}"
+          cd rebuild-src
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --all --quiet --message "chore(release): v${{ matrix.version }}, a security rebuild of ${{ matrix.tag }}"
+          git tag --annotate "v${{ matrix.version }}" --message "Lab Kiosk v${{ matrix.version }}: security rebuild of ${{ matrix.tag }}"
+          git log -1 --stat
+
+      - name: Free disk space on the runner
+        if: steps.check.outputs.rebuild == 'true'
+        run: |
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          echo "After:"; df -h / | tail -1
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.rebuild == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      # The builder image of the rebuilt source: the Dockerfile COPYs the source
+      # in, so it is built from that tree and nothing else.
+      - name: Build the ISO builder image
+        if: steps.check.outputs.rebuild == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: rebuild-src/distro-builder
+          file: rebuild-src/distro-builder/Dockerfile
+          push: false
+          load: true
+          tags: ghcr.io/akbhoi/labkiosk-iso-builder:security
+          cache-from: type=gha,scope=labkiosk-iso-builder
+
+      - name: Compile the ISO
+        if: steps.check.outputs.rebuild == 'true'
+        run: |
+          mkdir -p rebuild-src/distro-builder/out
+          docker run --privileged --rm \
+            -v "$PWD/rebuild-src/distro-builder/out:/build/out" \
+            ghcr.io/akbhoi/labkiosk-iso-builder:security
+
+      - name: Verify the checksum
+        if: steps.check.outputs.rebuild == 'true'
+        working-directory: rebuild-src/distro-builder/out
+        run: |
+          cat "$ISO.sha256"
+          sha256sum -c "$ISO.sha256"
+          ls -lh "$ISO"
+
+      # The point of the rebuild: refuse an image that still lacks a fix the
+      # archive has, as one built without the security archive would.
+      - name: Check the rebuilt image is current
+        if: steps.check.outputs.rebuild == 'true'
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/rebuilt"
+          rm -rf "$work"
+          mkdir -p "$work"
+          xorriso -osirrox on -indev "rebuild-src/distro-builder/out/$ISO" \
+            -extract /live/filesystem.squashfs "$work/filesystem.squashfs" >/dev/null 2>&1
+          unsquashfs -no-xattrs -d "$work/root" "$work/filesystem.squashfs" var/lib/dpkg/status >/dev/null
+          mv "$work/root/var/lib/dpkg/status" "$work/status"
+          rm -rf "$work/root" "$work/filesystem.squashfs"
+          python3 distro-builder/tools/security-rebuild.py check --status "$work/status" \
+            --mirror https://deb.debian.org/debian-security --fail-if-outdated > "$work/check.json"
+          python3 distro-builder/tools/security-rebuild.py notes --base-tag "${{ matrix.tag }}" \
+            --version "${{ matrix.version }}" --base-status "$RUNNER_TEMP/base/status" \
+            --new-status "$work/status" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Upload ISO Artifact
+        if: steps.check.outputs.rebuild == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: labkiosk-${{ matrix.version }}-iso
+          path: |
+            rebuild-src/distro-builder/out/labkiosk-debian12-amd64.iso
+            rebuild-src/distro-builder/out/labkiosk-debian12-amd64.iso.sha256
+          retention-days: 14
+          compression-level: 0
+
+      # The release's own boot test, which knows that release's behaviour.
+      - name: Boot-test the installed disk
+        if: steps.check.outputs.rebuild == 'true'
+        run: |
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+          sudo rebuild-src/distro-builder/tests/vm/boot-test.sh \
+            "rebuild-src/distro-builder/out/$ISO" "$RUNNER_TEMP/boot-test"
+
+      - name: Upload boot-test screenshots
+        if: failure() && steps.check.outputs.rebuild == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: boot-test-screenshots-${{ matrix.version }}
+          path: ${{ runner.temp }}/boot-test/*.ppm
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # As build-iso.yml signs a release, with two differences: the manifest says
+      # `security` and names the release it rebuilds, which is what lets a
+      # workstation on that line install it at its next start. The signature is
+      # verified against the keys the rebuilt image carries.
+      - name: Sign the security release
+        if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_SIGNING_PASSPHRASE: ${{ secrets.UPDATE_SIGNING_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          share=rebuild-src/distro-builder/config/includes.chroot/usr/share/labkiosk
+          release="$RUNNER_TEMP/release"
+          rm -rf "$release"
+          mkdir -p "$release"
+          xorriso -osirrox on -indev "rebuild-src/distro-builder/out/$ISO" \
+            -extract /live/vmlinuz "$release/vmlinuz" \
+            -extract /live/initrd.img "$release/initrd.img" \
+            -extract /live/filesystem.squashfs "$release/filesystem.squashfs" >/dev/null 2>&1
+          SOURCE_DATE_EPOCH="$(git -C rebuild-src log -1 --format=%ct)" python3 distro-builder/tools/make-release-manifest.py \
+            --live "$release" --version "${{ matrix.version }}" \
+            --security-floor "$(tr -d '[:space:]' < "$share/security-floor")" \
+            --channel stable --kind security --base-version "${{ matrix.base }}" \
+            --out "$release/manifest.json"
+
+          GNUPGHOME="$(mktemp -d)"
+          export GNUPGHOME
+          trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" | gpg --batch --import
+          printf '%s' "${UPDATE_SIGNING_PASSPHRASE:-}" | gpg --batch --yes --pinentry-mode loopback \
+            --passphrase-fd 0 --detach-sign --output "$release/manifest.json.sig" "$release/manifest.json"
+
+          keyrings=()
+          for keyring in "$share"/update-keys/*.gpg; do keyrings+=(--keyring "$PWD/$keyring"); done
+          GNUPGHOME="$(mktemp -d)" gpgv "${keyrings[@]}" "$release/manifest.json.sig" "$release/manifest.json"
+          ls -l "$release"
+
+      - name: Upload the security release to R2
+        if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_RELEASES_BUCKET: ${{ vars.R2_RELEASES_BUCKET }}
+        run: |
+          set -euo pipefail
+          endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="releases/${{ matrix.version }}"
+          if found="$(aws s3api head-object --endpoint-url "$endpoint" --bucket "$R2_RELEASES_BUCKET" \
+                        --key "$prefix/manifest.json" 2>&1)"; then
+            echo "::error::$prefix is already published in R2 but has no tag: an earlier run stopped halfway. Delete that folder from the bucket (it was never classified) and run this workflow again."
+            exit 1
+          elif ! printf '%s' "$found" | grep -q '(404)'; then
+            echo "::error::Could not check R2 for $prefix: $found"
+            exit 1
+          fi
+          for name in vmlinuz initrd.img filesystem.squashfs manifest.json.sig manifest.json; do
+            aws s3 cp --no-progress --endpoint-url "$endpoint" \
+              "$RUNNER_TEMP/release/$name" "s3://$R2_RELEASES_BUCKET/$prefix/$name"
+          done
+
+      # A tag of its own, on a commit no branch carries: the source of exactly
+      # this release. Pushed after R2 has the release, so a tag never names a
+      # release that is not there.
+      - name: Push the tag v${{ matrix.version }}
+        if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
+        working-directory: rebuild-src
+        run: git push origin "refs/tags/v${{ matrix.version }}"
+
+      # "Latest" on GitHub, which /download links, stays the newest line's.
+      - name: Create GitHub Release
+        if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ matrix.version }}
+          name: "Lab Kiosk v${{ matrix.version }} (security)"
+          body_path: ${{ runner.temp }}/notes.md
+          make_latest: ${{ matrix.newest && 'true' || 'false' }}
+          files: |
+            rebuild-src/distro-builder/out/labkiosk-debian12-amd64.iso
+            rebuild-src/distro-builder/out/labkiosk-debian12-amd64.iso.sha256
+          draft: false
+          prerelease: false
+
+      - name: Offer the release on the download page
+        if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
+        env:
+          RELEASE_NOTES_TOKEN: ${{ secrets.RELEASE_NOTES_TOKEN }}
+          CONTROLLER_URL: ${{ vars.CONTROLLER_URL }}
+          TAG: v${{ matrix.version }}
+          NEWEST: ${{ matrix.newest }}
+        run: |
+          set -euo pipefail
+          answer="$RUNNER_TEMP/release-notes-sync.json"
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl -sS --max-time 30 -o "$answer" -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $RELEASE_NOTES_TOKEN" "${CONTROLLER_URL%/}/api/release-notes/sync")" || status="000"
+            case "$status" in
+              200)
+                latest="$(jq -r '.latest // empty' "$answer")"
+                if [ "$NEWEST" != "true" ]; then
+                  # /download leads with the newest line; an older line's rebuild is listed below it.
+                  echo "/download read the releases again (newest: ${latest:-none})."
+                  exit 0
+                fi
+                if [ "$latest" = "$TAG" ]; then
+                  echo "/download now offers $latest."
+                  exit 0
+                fi
+                echo "GitHub does not list $TAG yet (newest: ${latest:-none})." ;;
+              401|503)
+                echo "::error::The controller refused the request ($status): RELEASE_NOTES_TOKEN must match the Worker's secret of the same name. The release is published; /download offers it after the next hourly run."
+                exit 1 ;;
+              *)
+                echo "The controller answered $status (attempt $attempt)." ;;
+            esac
+            sleep 10
+          done
+          echo "::error::/download does not offer $TAG yet. The release is published; the hourly run offers it within the hour."
+          exit 1
+
+      - name: Summary
+        if: always()
+        env:
+          REBUILD: ${{ steps.check.outputs.rebuild }}
+        run: |
+          {
+            echo "### Line ${{ matrix.line }} (${{ matrix.tag }})"
+            if [ "${REBUILD:-}" != "true" ]; then
+              echo "Current with the Debian security archive; nothing was built."
+            elif [ "$PUBLISH" != "true" ]; then
+              echo "Dry run: v${{ matrix.version }} was built and boot-tested, and nothing was published."
+            else
+              echo "v${{ matrix.version }} is published. Classify it on the Super Admin console's Releases page to offer it."
+            fi
+            if [ -s "$RUNNER_TEMP/notes.md" ]; then echo; cat "$RUNNER_TEMP/notes.md"; fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -527,8 +527,18 @@ distro-builder/
   user writes, so both are checked with the agent's own validators), asks `GET /api/devices/update`,
   downloads the offered release with the phase 2 code, and writes each step to
   `/run/labkiosk-update/update.json` (root-owned, 0644: `phase` = `checking`, `downloading`,
-  `ready`, `installing`, `up-to-date`, `idle` or `error`, with `version`, `progress`, `detail`).
-  `install-pending` installs the version `run` left `ready` (one try at the next boot).
+  `ready`, `staged`, `installing`, `up-to-date`, `idle` or `error`, with `version`, `progress`,
+  `detail`, and for `ready`/`staged` the signed manifest's `kind` and `since`, when this boot first
+  held it). `install-pending` installs the version `run` left `ready` (one try at the next boot).
+- **Phase 4: security releases at the next boot.** `run` sends `?running=<image version>` and
+  fetches the offer's `security` release (the newest for its own major.minor line) before the
+  newest `release`. When the **signed manifest** says `kind: security` for the running line and the
+  answer's `securityUpdates` is `next_boot`, `run` gives it its one try at the next boot at once
+  (`install`, no reboot) and reports `staged`; with `approval`, or a control plane that sends no
+  setting, it stays `ready`. A staged release is not written again on later runs, and one that
+  rolled back is never re-staged by itself. The release is built by `security-rebuild.yml` from its
+  base tag's own source (`tools/security-rebuild.py`; `make-release-manifest.py --kind security
+  --base-version`).
 - They run as `labkiosk-update-download.service` (oneshot, `run`, `Nice=10`,
   `IOSchedulingClass=idle`) and `labkiosk-update-install.service` (oneshot, `install-pending`, then
   `systemctl --no-block reboot`), both `ConditionKernelCommandLine=labkiosk.installed=1` and not
@@ -542,9 +552,10 @@ distro-builder/
   installing, and drops the screen on an install error or after 15 minutes without a restart.
   Contracts: `labkiosk-core` §2.
 - Disks installed before 2.9.0 have neither unit nor the polkit rule and need one reinstall from
-  the 2.9.0 ISO; a live session is updated by re-flashing. Phases 4–5 of `docs/OTA_UPDATES.md` §9
-  (security rebuilds staged at next boot, LAN sharing) are research; never document or depend on
-  them as features.
+  the 2.9.0 ISO; a live session is updated by re-flashing. An image's updater stages security
+  releases only from the first release carrying phase 4; a 2.9.x image (and its rebuilds) takes
+  them on approval. Phase 5 of `docs/OTA_UPDATES.md` §9 (LAN sharing) is research; never document
+  or depend on it as a feature.
 
 ---
 

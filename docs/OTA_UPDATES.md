@@ -1,6 +1,6 @@
 # Over-the-Air Updates — Research
 
-**Status:** phases 1–3 (§9) implemented: the image-store installer, the §5.1 and §5.2 changes, GRUB's one-try boot and `labkiosk-boot-ok` (phase 1); the signed manifest and `labkiosk-update` (phase 2); the control plane, console approval and update curtain (phase 3, §5.10). Phases 4–5 are research. **Scope:** delivering new Lab Kiosk releases to installed
+**Status:** phases 1–3 (§9) implemented: the image-store installer, the §5.1 and §5.2 changes, GRUB's one-try boot and `labkiosk-boot-ok` (phase 1); the signed manifest and `labkiosk-update` (phase 2); the control plane, console approval and update curtain (phase 3, §5.10); the daily security rebuild and security releases at the next boot (phase 4, §5.11). Phase 5 is research. **Scope:** delivering new Lab Kiosk releases to installed
 workstations without re-flashing the ISO. Written against `dev` at v2.5.0.
 
 ---
@@ -351,9 +351,8 @@ reports "updated to <v>"
 
 ### 5.7 Control plane
 
-*Phase 3 built a subset of this plan; §5.10 says what exists. The LAN-sharing columns, the
-download window, rate limit and `security_updates` settings, and the Worker file route are not
-built.*
+*Phases 3 and 4 built a subset of this plan; §5.10 and §5.11 say what exists. The LAN-sharing
+columns, the download window and rate limit settings, and the Worker file route are not built.*
 
 - **D1 (a new migration, 0019 or later, and `SCHEMA_SQL`):**
   - on `client_devices`: `agent_version`, `update_version`, `update_progress`, and for LAN
@@ -523,8 +522,70 @@ toolbar has an **Updates** menu (**Check for updates**, **Install update**) for 
 rule and need one reinstall from the 2.9.0 ISO (§8). A live USB session is updated by
 re-flashing.
 
-**Not built yet.** Security releases staged for the next boot without approval (phase 4) and
-LAN sharing (phase 5). A `security` release is offered and installed like a feature release.
+**Not built yet.** LAN sharing (phase 5). Phase 4 is §5.11.
+
+### 5.11 What phase 4 built
+
+**The security rebuild** (`.github/workflows/security-rebuild.yml`, §7). Every day at 06:00 IST,
+and by hand (one line, `force`, `dry_run`):
+
+1. From the repository's tags, the latest two stable lines from 2.9 on and the newest tag of each
+   (`distro-builder/tools/security-rebuild.py lines`). An older line has no updater, so nothing
+   rebuilt for it could reach a workstation.
+2. The installed packages of that tag's image: `var/lib/dpkg/status`, read from the squashfs of the
+   ISO its GitHub release carries (checked against its `.sha256`), cached by tag.
+3. Compared with Debian's `bookworm-security` `Packages` indices (`check`; Debian version order as
+   `dpkg --compare-versions`, tested against dpkg itself). Nothing newer, nothing built.
+4. Otherwise the tag's own source, with only its version raised one patch in the four files that
+   carry it (`bump`), committed and tagged locally, built with the builder image of that tree.
+5. The new image's packages are checked again (`check --fail-if-outdated`): an image still missing
+   a fix the archive has is refused, as one built without the security archive would be.
+6. That release's own `boot-test.sh`, then signed like a tag build but with
+   `make-release-manifest.py --kind security --base-version <base>`; the security floor stays the
+   base's.
+7. R2 (`releases/<version>/`, never overwritten), the tag pushed with `GITHUB_TOKEN` (which starts
+   no other workflow, so `build-iso.yml` never builds it again), the GitHub release with the
+   changed packages as its notes (`notes`; "Latest" only for the newest line), and the
+   `/download` sync. `/download` orders releases by version, so an older line's rebuild never
+   displaces the newest release there.
+
+A super admin classifies the rebuild on the Releases page like any release; nothing reaches a
+workstation before that.
+
+**The offer.** `GET /api/devices/update?running=<image version>` adds `security`, the newest
+classified `security` release for the line (major.minor) the workstation runs, newer than it, and
+`securityUpdates`, the organization's `tenants.security_updates` (`next_boot` by default, or
+`approval`; migration 0029, Settings → Updates). `release` is unchanged, so a 2.9.0 updater, which
+sends no `running`, works as before.
+
+**On the workstation.** `labkiosk-update run` fetches the `security` release before the newest
+one (a fix never waits behind an unapproved feature release, and replaces a downloaded one).
+When the release's **signed manifest** says `kind: security` for the running line and the setting
+is `next_boot`, it gives the release its one try at the next boot straight away (`install`:
+`next=<v>`, `next_tries=1`; no reboot) and reports `staged`, with the manifest's `kind` and
+`since`, when this boot first held it. The boot that follows is the install: GRUB's one try, the
+"Finishing a system update" curtain and the health check of §5.6, with rollback. A staged release
+is not written again on later runs; one that rolled back is never staged again by itself (the
+console shows the error; with `approval` an administrator can still install it). With `approval`,
+or a control plane that sends no setting, the release stays `ready` like a feature release. The
+Worker can therefore delay a security release but never make a feature release install itself.
+
+**The hub** reminds a workstation of the release meant for it (`updateTargetFor`): the security
+release for its line, else the newest. A `staged` workstation is left alone; one holding a
+security release `ready` is reminded once its organization switches to `next_boot`, so it stages
+it. An updater from before phase 4 never reports `kind` and only fetches the newest release;
+holding that, it is left alone. **Install update** sends each workstation the version meant for it
+and refuses a `staged` one ("Installs at its next restart; restart it to install now").
+
+**Console.** A workstation card shows "*v* installs at next restart", and in amber "…not restarted
+in *N* days" once it has waited 7 days (`SECURITY_WAIT_WARN_DAYS`), for **Reboot** to fix; with
+`approval`, "security fix *v* ready to install". Settings → Updates has the **Security fixes**
+choice and, per line, the newest security release some workstations do not run yet with how many
+and since when, in amber after 7 days. The change is audited as `settings.security_updates`.
+
+**Which images stage.** The updater in an image decides, so staging starts with the first feature
+release that carries phase 4. A 2.9.x image, and its security rebuilds (built from 2.9.x source),
+take security releases on approval.
 
 ---
 
@@ -561,16 +622,22 @@ LAN sharing (phase 5). A `security` release is offered and installed like a feat
 
 ### The pipeline
 
-1. **Watch.** A daily CI job compares the image's package list (live-build's
-   `chroot.packages.live`, published with every release) against the Debian security archive,
-   and against the LTS archive while the base is Debian 12.
-2. **Rebuild** with a patch version (`2.7.0` → `2.7.1`), marked `security`. No source change is
-   needed, because live-build fetches current packages on every build. *Check that the build
-   pulls from the security archive:* `auto/config` relies on live-build's default.
-3. **Test.** Boot the new image in QEMU with the same health check as `labkiosk-boot-ok`.
-4. **Publish.** Workstations download it automatically (sharing it over the LAN, §5.9) and boot
-   it at their next start, unless the organization chose `approval` for security releases.
-5. **Report.** The console shows which workstations still run a vulnerable Chromium or kernel.
+*Built in phase 4; §5.11 has the details.*
+
+1. **Watch.** A daily CI job compares the image's installed packages (its dpkg status, read from
+   the release's ISO) against Debian's `bookworm-security` archive. Debian LTS publishes to the
+   same suite, so this covers LTS while the base is Debian 12.
+2. **Rebuild** with a patch version (`2.9.0` → `2.9.1`), marked `security`. No source change is
+   needed beyond the version, because live-build fetches current packages on every build.
+   *Checked:* the v2.9.0 image's `/etc/apt/sources.list` lists `bookworm-security`, which
+   live-build adds by default, and its Chromium is the security archive's
+   `154.0.8037.92-1~deb12u1`. Each rebuild is checked again: one still missing a fix is refused.
+3. **Test.** The release's own `boot-test.sh` in QEMU, as for a tag build.
+4. **Publish.** Once a super admin classifies it, workstations download it automatically (later
+   sharing it over the LAN, §5.9) and boot it at their next start, unless the organization chose
+   `approval` for security releases.
+5. **Report.** Settings → Updates lists, per line, how many workstations do not run the newest
+   security release yet; each card says when one is staged, and since how many days.
 
 ### Debian 12 is on LTS now
 
@@ -605,7 +672,7 @@ included, lacks the update units and the polkit rule (§5.10), so it too is rein
 | 1 | **Done.** Image-store installer; §5.1 knock-on fixes; §5.2 state moves; GRUB one-try boot; `labkiosk-boot-ok`; boot reports to the console | `distro-builder/tests/vm/boot-test.sh` in `build-iso.yml` after every ISO build (QEMU + OVMF + KVM): install, promote a new image, a broken squashfs, recovery, an image whose kiosk never comes up. BIOS boot is covered only by the GRUB menu unit tests; a full install has not been timed |
 | 2 | **Built.** Signed manifest in CI; R2 upload; `labkiosk-update` download and install run by hand | `distro-builder/tests/test_update.py` (resume, a damaged partial, tampered and foreign signatures, the floor, install re-verification); `boot-test.sh` scenarios 5–9: a download killed mid-squashfs is never booted and resumes, a tampered manifest and a signed downgrade are refused with nothing written, the finished download installs and is promoted. The download runs from the host against the mounted disk (the kiosk has no shell), so the "power cut" is a killed process, not a VM power cut |
 | 3 | **Built** (§5.10). Migration 0027; `GET /api/devices/update`, the console's check and install routes and the super admin Releases page, with negative tests; console update states and **Install update**; the update curtain; hub messages; `labkiosk-update run` / `install-pending` and their two units | `pnpm test`; `distro-builder/tests/test_update.py` and `test_client.py`; drive the console in a browser; a two-VM approval against `pnpm dev` |
-| 4 | Security rebuild pipeline (latest two lines); next-boot staging; "installs at next restart" and "not restarted in N days" console states | a week of scheduled builds on a test organization |
+| 4 | **Built** (§5.11). `security-rebuild.yml` (latest two lines) and `tools/security-rebuild.py`; `make-release-manifest.py --kind security`; migration 0029 and `tenants.security_updates`; the `security` offer; `labkiosk-update run` staging for the next boot; the "installs at next restart", "not restarted in N days" and pending-fix console states | `distro-builder/tests/test_security_rebuild.py` (Debian version order against dpkg) and `test_update.py` (staging, approval, a mislabelled release, rollback, replacement); `pnpm test`; drive the console in a browser; the workflow by hand with `dry_run`, then a week of scheduled runs on a test organization |
 | 5 | LAN sharing: LAN address reporting, site grouping and seed choice in the Worker, `labkiosk-share` with `nftables`, cloud fallback | 5–10 VMs on one virtual LAN with a throttled uplink; time the whole site; a peer that serves corrupted chunks; client isolation (peers unreachable) |
 
 The Docker simulator can't exercise GRUB, live-boot or image switching. It can exercise the
@@ -639,18 +706,19 @@ the full image, so measure before building this.
 - **LAN sharing default.** On by default, as proposed (with the port open only while a release
   spreads), or opt-in per organization? It is the first listener on the LAN, so this is a
   security posture decision.
-- **Security rebuilds for two release lines** double that CI job's runtime. Confirm two lines
-  is the right support window.
+- **Security rebuilds for two release lines** double that CI job's runtime when both need one.
+  Built with two (`LINES_KEPT`); confirm it is the right support window.
 - **Install duration.** "A few minutes" is an estimate: verifying about 700 MiB, one reboot,
   and the health-check hold. Phase 1 did not measure it; time it on a slow disk.
 - **Squashfs size and minimum disk.** Answered in phase 1: the installer now refuses disks
   under **7 GiB**, counted in GiB so that a drive sold as "8 GB" still qualifies. Two images at
   about 720 MiB each fit with room to grow; the CI boot test installs onto an 8 GiB disk.
-- **`gpgv` in the built image.** Expected because of `apt`, but not checked.
+- **`gpgv` in the built image.** Answered: the v2.9.0 image's dpkg status lists `gpgv`
+  installed (`Priority: important`).
 - **Debian 12 LTS scope, and Chromium within it.** This comes from search results, not from
   Debian's pages. It decides how urgent the move to Debian 13 is.
-- **Whether live-build pulls from the security archive by default.** Confirm against a built
-  image's `chroot.packages.live`.
+- **Whether live-build pulls from the security archive by default.** Answered in phase 4: it
+  does (§7), and every security rebuild checks its own result against the archive.
 - **live-boot with `live-media=` pointing at an internal ext4 partition.** Answered in
   phase 1: installed disks boot this way (by the partition's UUID, the label only as a
   fallback), and the CI boot test exercises it under UEFI after every ISO build.

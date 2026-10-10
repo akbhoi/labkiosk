@@ -114,7 +114,8 @@ BOOT_REPORT_SETTLED_STATUSES = (200, 400, 404)
 # beside the boot status; the agent reports it and never writes it.
 UPDATE_STATE_FILE = "/run/labkiosk-update/update.json"
 IMAGE_VERSION_FILE = "/usr/share/labkiosk/version"
-UPDATE_PHASES = frozenset({"idle", "checking", "downloading", "ready", "installing", "up-to-date", "error"})
+UPDATE_PHASES = frozenset({"idle", "checking", "downloading", "ready", "staged", "installing", "up-to-date", "error"})
+UPDATE_KINDS = frozenset({"feature", "security"})
 UPDATE_VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
 MAX_UPDATE_DETAIL = 300
 # The only units the kiosk user may start (50-labkiosk-update.rules).
@@ -2842,6 +2843,12 @@ def read_update_report(path=UPDATE_STATE_FILE, owner_uid=0):
         report["progress"] = progress
     if isinstance(data.get("detail"), str) and data["detail"].strip():
         report["detail"] = data["detail"].strip()[:MAX_UPDATE_DETAIL]
+    # Phase 4: a security release `staged` for the next boot, and since when.
+    if data.get("kind") in UPDATE_KINDS:
+        report["kind"] = data["kind"]
+    since = data.get("since")
+    if isinstance(since, int) and not isinstance(since, bool) and since > 0:
+        report["since"] = since
     return report
 
 

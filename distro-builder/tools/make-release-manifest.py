@@ -11,9 +11,9 @@ signs the result with the release key and uploads both beside the files:
 
 The workstation (usr/local/sbin/labkiosk-update) accepts exactly the fields
 written here and checks every chunk hash before it writes the chunk to disk.
-Only `feature` releases are built so far: a `security` release must name the
-release whose source it rebuilds, which only the security rebuild pipeline
-(section 7) can vouch for.
+A `security` release (`--kind security --base-version 2.6.0`) is written only
+by security-rebuild.yml (section 7): the same source as its base release,
+rebuilt with newer Debian packages, one patch version up on the same line.
 """
 
 import argparse
@@ -31,6 +31,17 @@ CHUNK_SIZE = 8 * 1024 * 1024
 # The same pattern as labkiosk-boot-slots and labkiosk-update.
 VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
 CHANNELS = ("stable", "beta")
+KINDS = ("feature", "security")
+
+
+def line_of(version):
+    """(major, minor) of a release version: (2, 6) for 2.6.1."""
+    major, minor, _ = version.split("-", 1)[0].split(".")
+    return int(major), int(minor)
+
+
+def patch_of(version):
+    return int(version.split("-", 1)[0].split(".")[2])
 
 
 def hash_file(path, chunk_size):
@@ -47,12 +58,22 @@ def hash_file(path, chunk_size):
     return {"size": size, "sha256": whole.hexdigest(), "chunkSize": chunk_size, "chunks": chunks}
 
 
-def build_manifest(live_dir, version, security_floor, channel, built_at, chunk_size=CHUNK_SIZE):
+def build_manifest(live_dir, version, security_floor, channel, built_at, chunk_size=CHUNK_SIZE,
+                   kind="feature", base_version=None):
     for name, value in (("version", version), ("security floor", security_floor)):
         if not VERSION_PATTERN.match(value):
             raise ValueError(f"{name} {value!r} is not a release version")
     if channel not in CHANNELS:
         raise ValueError(f"channel must be one of {', '.join(CHANNELS)}")
+    if kind not in KINDS:
+        raise ValueError(f"kind must be one of {', '.join(KINDS)}")
+    if kind == "feature" and base_version is not None:
+        raise ValueError("only a security release names a base version")
+    if kind == "security":
+        if base_version is None or not VERSION_PATTERN.match(base_version):
+            raise ValueError(f"a security release needs the release it rebuilds as its base version, not {base_version!r}")
+        if "-" in version or line_of(version) != line_of(base_version) or patch_of(version) <= patch_of(base_version):
+            raise ValueError(f"a security release of {base_version} is a later patch on its line, not {version}")
     files = []
     for name in IMAGE_FILES:
         path = os.path.join(live_dir, name)
@@ -62,8 +83,8 @@ def build_manifest(live_dir, version, security_floor, channel, built_at, chunk_s
     return {
         "version": version,
         "channel": channel,
-        "kind": "feature",
-        "baseVersion": None,
+        "kind": kind,
+        "baseVersion": base_version,
         "files": files,
         "securityFloor": security_floor,
         "builtAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(built_at)),
@@ -76,6 +97,8 @@ def main(argv=None):
     parser.add_argument("--version", required=True)
     parser.add_argument("--security-floor", required=True)
     parser.add_argument("--channel", required=True, choices=CHANNELS)
+    parser.add_argument("--kind", choices=KINDS, default="feature")
+    parser.add_argument("--base-version", help="the release a security release rebuilds")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
 
@@ -83,7 +106,8 @@ def main(argv=None):
     epoch = os.environ.get("SOURCE_DATE_EPOCH")
     try:
         built_at = int(epoch) if epoch else int(time.time())
-        manifest = build_manifest(args.live, args.version, args.security_floor, args.channel, built_at)
+        manifest = build_manifest(args.live, args.version, args.security_floor, args.channel, built_at,
+                                  kind=args.kind, base_version=args.base_version)
     except ValueError as err:
         print(f"make-release-manifest: {err}", file=sys.stderr)
         return 1

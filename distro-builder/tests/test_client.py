@@ -1953,6 +1953,11 @@ class UpdateReportingAndInstall(unittest.TestCase):
         self.assertEqual(len(agent.read_update_report()["detail"]), agent.MAX_UPDATE_DETAIL)
         self.write(self.update_path, {"phase": "ready", "version": "../2.9.0", "progress": True, "at": 1})
         self.assertEqual(agent.read_update_report(), {"phase": "ready"}, "a bad version or progress is dropped")
+        self.write(self.update_path, {"phase": "staged", "version": "2.9.1", "kind": "security", "since": 1_790_000_000, "at": 1})
+        self.assertEqual(agent.read_update_report(),
+                         {"phase": "staged", "version": "2.9.1", "kind": "security", "since": 1_790_000_000})
+        self.write(self.update_path, {"phase": "staged", "kind": "urgent", "since": True, "at": 1})
+        self.assertEqual(agent.read_update_report(), {"phase": "staged"}, "a bad kind or date is dropped")
         self.write(self.update_path, {"phase": "rooted", "at": 1})
         self.assertEqual(agent.read_update_report(), {"phase": "idle"})
         self.live = True

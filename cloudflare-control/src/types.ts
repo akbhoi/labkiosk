@@ -77,10 +77,13 @@ export interface Tenant {
   remote_control_status?: RemoteControlStatus;
   /** Which classified releases its workstations are offered (migration 0027). */
   update_channel?: UpdateChannel;
+  /** What its workstations do with a security release for their line (phase 4). */
+  security_updates?: SecurityUpdateMode;
 }
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */
 export type UpdateChannel = "stable" | "beta";
+export type SecurityUpdateMode = "next_boot" | "approval";
 
 export interface BroadcastPreset {
   id: string;
@@ -144,6 +147,8 @@ export interface ClientDevice {
   update_progress?: number | null;
   /** Why the last update attempt failed, when it did. */
   update_detail?: string | null;
+  update_kind?: string | null;
+  update_since?: number | null;
   /** The workstation agent's own version. */
   agent_version?: string | null;
 }
