@@ -2491,6 +2491,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       const html = await (await call(page, cookie ? { cookie } : {})).text();
       assert.match(html, /window\.lkBusy = function/, `${page} does not emit the busy script`);
     }
+    // The home page demo once asked for its address in the browser's own
+    // prompt() box and answered in alert(): nothing else on the site does.
+    const home = await (await call("/")).text();
+    assert.doesNotMatch(home, /[^a-zA-Z.](alert|prompt|confirm)\(/, "a public page opens a browser dialog");
+    assert.match(home, /id="sim-modal"/);
+    assert.match(home, /id="sim-broadcast-form" hidden/);
+
     for (const sheet of [CONSOLE_STYLESHEET_PATH, SITE_STYLESHEET_PATH]) {
       const css = await (await call(sheet)).text();
       assert.match(css, /\.is-loading::before\s*\{/, `${sheet} does not style a working control`);

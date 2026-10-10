@@ -386,7 +386,7 @@ export const BUSY_SCRIPT = `
       var nativeFetch = window.fetch;
       if (typeof nativeFetch !== "function") return;
       window.fetch = function (input, init) {
-        var pending = nativeFetch.apply(this, arguments);
+        var pending = nativeFetch.apply(window, arguments);
         var control = armed || chained;
         var method = (init && init.method) || (input && typeof input === "object" && input.method) || "GET";
         if (!control || String(method).toUpperCase() === "GET") return pending;

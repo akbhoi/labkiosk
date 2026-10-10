@@ -411,6 +411,23 @@ ${FONT_LINKS}
     </div>
   </div>
 
+  <!-- The home page demo's dialog: what a demo button would do, and the address to broadcast -->
+  <div class="modal-overlay" id="sim-modal" role="dialog" aria-modal="true" aria-labelledby="sim-modal-title">
+    <div class="modal-box">
+      <button class="modal-close" data-action="close-modal" data-modal="sim" aria-label="Close dialog">✕</button>
+      <h2 class="modal-title" id="sim-modal-title">Demo</h2>
+      <p class="modal-sub" id="sim-modal-text" aria-live="polite"></p>
+      <form id="sim-broadcast-form" hidden>
+        <div class="form-group">
+          <label class="form-label" for="sim-broadcast-url">Page address</label>
+          <input type="url" class="form-input" id="sim-broadcast-url" required value="https://intranet.example.com" placeholder="https://intranet.example.com">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Broadcast to Every Screen</button>
+      </form>
+      <button type="button" class="btn btn-primary btn-block" id="sim-modal-ok" data-action="close-modal" data-modal="sim">OK</button>
+    </div>
+  </div>
+
   <!-- ISO Download Modal -->
   <div class="modal-overlay" id="iso-modal" role="dialog" aria-modal="true" aria-labelledby="iso-modal-title">
     <div class="modal-box" style="max-width: 540px;">
@@ -565,7 +582,7 @@ ${FONT_LINKS}
       } else if (action === 'sim-broadcast') {
         simulateBroadcast();
       } else if (action === 'sim-app') {
-        alert(target.dataset.message);
+        showSimMessage('User Portal demo', target.dataset.message);
       } else if (action === 'toggle-faq') {
         toggleFaq(target);
       } else if (action === 'cookie-accept') {
@@ -660,12 +677,34 @@ ${FONT_LINKS}
       bc.classList.toggle('active', view === 'curtain');
     }
 
-    function simulateBroadcast() {
-      const url = prompt('Enter a URL to broadcast to every workstation screen:', 'https://intranet.example.com');
-      if (url) {
-        alert('Broadcast Sent! All thin client screens are navigating to: ' + url);
-      }
+    // The demo's dialog. It used to be the browser's own alert and prompt
+    // boxes, which carry the browser's wording and look like nothing else here.
+    function showSimMessage(title, text) {
+      document.getElementById('sim-modal-title').textContent = title;
+      document.getElementById('sim-modal-text').textContent = text;
+      document.getElementById('sim-broadcast-form').hidden = true;
+      const ok = document.getElementById('sim-modal-ok');
+      ok.hidden = false;
+      openModal('sim-modal');
+      ok.focus();
     }
+
+    function simulateBroadcast() {
+      document.getElementById('sim-modal-title').textContent = 'Broadcast a page';
+      document.getElementById('sim-modal-text').textContent = 'Enter the address to open on every workstation screen.';
+      document.getElementById('sim-broadcast-form').hidden = false;
+      document.getElementById('sim-modal-ok').hidden = true;
+      openModal('sim-modal');
+      const field = document.getElementById('sim-broadcast-url');
+      field.focus();
+      field.select();
+    }
+
+    document.getElementById('sim-broadcast-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const url = document.getElementById('sim-broadcast-url').value.trim();
+      if (url) showSimMessage('Broadcast sent', 'Every workstation screen is navigating to ' + url);
+    });
 
     // FAQ Accordion Toggle
     function toggleFaq(el) {
@@ -1366,22 +1405,22 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
               <p style="font-size: 14px; color: var(--muted);">Click any approved application below to open it.</p>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; max-width: 800px; margin: 0 auto;">
-              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="User Portal demo: opening the Company Intranet as a full, native page.">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Opening the Company Intranet as a full, native page.">
                 <div style="font-size: 32px; margin-bottom: 8px;">🏢</div>
                 <div style="font-weight: 700; font-size: 14px;">Company Intranet</div>
                 <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">News &amp; Policies</div>
               </div>
-              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="User Portal demo: opening the Service Desk.">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Opening the Service Desk.">
                 <div style="font-size: 32px; margin-bottom: 8px;">🎧</div>
                 <div style="font-weight: 700; font-size: 14px;">Service Desk</div>
                 <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Tickets &amp; Requests</div>
               </div>
-              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="User Portal demo: opening the Training Portal.">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Opening the Training Portal.">
                 <div style="font-size: 32px; margin-bottom: 8px;">📚</div>
                 <div style="font-weight: 700; font-size: 14px;">Training Portal</div>
                 <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Courses &amp; Guides</div>
               </div>
-              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="User Portal demo: opening Self-Service Forms.">
+              <div class="sim-app-card" style="background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer;" data-action="sim-app" data-message="Opening Self-Service Forms.">
                 <div style="font-size: 32px; margin-bottom: 8px;">🧾</div>
                 <div style="font-weight: 700; font-size: 14px;">Self-Service Forms</div>
                 <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Applications &amp; Requests</div>
@@ -2996,6 +3035,8 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 0.8125rem; color: var(--text-muted); text-align: left; line-height: 1.5; }
     .check-row input { margin-top: 3px; }
     #login-form[hidden], #login-2fa-form[hidden] { display: none; }
+    #sim-broadcast-form[hidden], #sim-modal-ok[hidden] { display: none; }
+    #sim-modal-text { overflow-wrap: anywhere; }
     .check-row a { color: var(--accent-text); }
     .notice-box {
       background: var(--success-soft);
