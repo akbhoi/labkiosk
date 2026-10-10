@@ -132,6 +132,7 @@ chmod +x /usr/local/bin/labkiosk-install || true
 chmod +x /usr/local/sbin/labkiosk-localization || true
 chmod +x /usr/local/sbin/labkiosk-boot-slots || true
 chmod +x /usr/local/sbin/labkiosk-update || true
+chmod +x /usr/local/sbin/labkiosk-share || true
 # Not "|| true": without it nothing mounts the data partition on an installed disk.
 chmod 0755 /etc/systemd/system-generators/labkiosk-data-generator
 chmod +x /usr/local/bin/labkiosk-lock-keys || true
@@ -268,8 +269,10 @@ EOF
 # Over-the-air updates (labkiosk-update, phase 3): the agent may start the two
 # update units, and only start them. What they download is what the control
 # plane offers and the image's own keys have signed; when they install is an
-# administrator's decision, sent as a command. No other unit, and no verb but
-# start, is granted.
+# administrator's decision, sent as a command. It may also stop
+# labkiosk-share.service, which serves a downloaded release to the workstations
+# at its site, when the organization stops sharing (phase 5); root starts it.
+# No other unit, and no other verb, is granted.
 cat << 'EOF' > /etc/polkit-1/rules.d/50-labkiosk-update.rules
 polkit.addRule(function(action, subject) {
     if (subject.user !== "kiosk") {
@@ -279,6 +282,11 @@ polkit.addRule(function(action, subject) {
         action.lookup("verb") === "start" &&
         (action.lookup("unit") === "labkiosk-update-download.service" ||
          action.lookup("unit") === "labkiosk-update-install.service")) {
+        return polkit.Result.YES;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("verb") === "stop" &&
+        action.lookup("unit") === "labkiosk-share.service") {
         return polkit.Result.YES;
     }
     return polkit.Result.NOT_HANDLED;

@@ -149,7 +149,8 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-update
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-update \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share
 
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js

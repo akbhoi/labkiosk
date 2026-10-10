@@ -586,6 +586,14 @@ function renderWorkstationsScripts(
         if (!u) return image ? { text: image, title: "", tone: "" } : none;
         const prefix = image ? image + " \u00b7 " : "";
         const v = u.version || "";
+        // Sharing on the local network: another workstation at its site is fetching the release first.
+        if (client.updateWaitingSince && u.phase !== "downloading" && u.phase !== "installing") {
+          return {
+            text: prefix + "waiting to copy the update nearby",
+            title: "A workstation at the same site is downloading it; this one copies it over the local network once that is done, or downloads it itself after an hour.",
+            tone: ""
+          };
+        }
         switch (u.phase) {
           case "live":
             return { text: prefix + "live session", title: "Started from the USB stick; update it by re-flashing", tone: "" };
@@ -855,6 +863,7 @@ function renderWorkstationsScripts(
         c.imageVersion = status.imageVersion || c.imageVersion;
         c.agentVersion = status.agentVersion || c.agentVersion;
         if (status.update) c.update = status.update;
+        c.updateWaitingSince = status.online ? status.updateWaitingSince : undefined;
         if (!status.online) c.thumbnail = undefined;
         clientsData[status.clientId] = c;
       }

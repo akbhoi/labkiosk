@@ -36,11 +36,14 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
   token is `401`/`403` on the handshake or the POST.
 - **WebSocket** (`agent.py` `ControlChannel`, needs `python3-websocket`):
   - hub → workstation: `{"type":"config", whitelist, mode, targetUrl, broadcastUrl, broadcastEpoch,
-    commands?}` on connect and on every admin change (`notifyConfigChanged()`);
+    lanSharing, commands?}` on connect and on every admin change (`notifyConfigChanged()`);
     `{"type":"commands", commands}`; `{"type":"frames", on, intervalSeconds}` — frames are asked for
     only while a console is showing that screen; `{"type":"pong"}`.
   - workstation → hub: `{"type":"status", clientNum, activeUrl, isLocked, vncPassword?,
-    imageVersion?, agentVersion?, update?}` on connect and on change. `update` is `{phase,
+    imageVersion?, agentVersion?, update?, lan?}` on connect and on change. `lan` is
+    `{address, prefix}`, the private IPv4 address of the default route's interface (phase 5,
+    `normalizeLanReport` in `src/lan_sharing.ts`: 10/8, 172.16/12, 192.168/16, prefix 16–30), never
+    on a live session; `lanSharing: false` makes the agent stop `labkiosk-share.service`. `update` is `{phase,
     version?, progress?, detail?, kind?, since?}`, phase one of `live`, `idle`, `checking`,
     `downloading`, `ready`, `staged`, `installing`, `up-to-date`, `error`; `kind` (`feature` or
     `security`, from the signed manifest) and `since` (unix seconds, when this boot first held it)
@@ -93,13 +96,18 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
     installing or holding it `ready`/`staged` (one holding a security release `ready` is told again
     once its organization allows `next_boot`), on connect, on a status change and on a config
     change, at most every 10 minutes (60 after an `error`), and for the console's
-    `POST /api/clients/check-update`. The agent (not on live media) starts
+    `POST /api/clients/check-update` (the hub's `/check-update`). With `tenants.lan_sharing` on,
+    the hub holds it back from a workstation while two others at its site (organization, public
+    address, subnet) fetch the release and none holds it, for at most 60 minutes
+    (`lanDecision`). The agent (not on live media) starts
     `labkiosk-update-download.service`; the root updater then asks
     `GET /api/devices/update?running=<image version>` (device token) for `{release, security,
-    securityUpdates}` (`release`/`security` are `{version, kind, sizeBytes, url} | null`;
+    securityUpdates, lan}` (`release`/`security` are `{version, kind, sizeBytes, url} | null`;
+    `lan` is null when the organization does not share, else `{peers}`, up to 8 site members'
+    LAN addresses holding that release `ready`/`staged` within 48 h, from the hub's `/lan-peers`;
     `securityUpdates` is `next_boot` or `approval`; without `running`, as a 2.9.0 updater asks,
     `security` is null) and downloads from `url` (`RELEASES_BASE_URL` + `releases/<version>`;
-    `503` when unset). A `security` release by its signed manifest, for the running line, under
+    `503` when unset), after trying up to 3 peers at `http://<peer>:8890/<version>/`. A `security` release by its signed manifest, for the running line, under
     `next_boot`, is staged for the next boot (`staged`), with no reboot.
   - `install-update {version}`: only from `POST /api/clients/install-update` (`updates`
     permission), only to workstations online and `ready` for the release meant for each (so one

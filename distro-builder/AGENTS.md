@@ -31,7 +31,8 @@ distro-builder/
 │       │   ├── openbox/                # Empty keybindings (rc.xml) & autostart script
 │       │   ├── overlayroot.conf        # RAM overlay (overlayroot="tmpfs", recurse=0)
 │       │   ├── systemd/system/         # labkiosk-boot-ok.service, labkiosk-update-download.service,
-│       │   │                           #   labkiosk-update-install.service (Rule 8); nodm
+│       │   │                           #   labkiosk-update-install.service, labkiosk-share.service
+│       │   │                           #   (Rule 8); nodm
 │       │   │                           #   is configured through /etc/default/nodm in
 │       │   │                           #   01-lockdown.hook.chroot, and the agent is started by
 │       │   │                           #   the Openbox autostart
@@ -47,7 +48,8 @@ distro-builder/
 │       ├── usr/local/sbin/
 │       │   ├── labkiosk-localization   # The one program the agent may sudo (Rule 1e)
 │       │   ├── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
-│       │   └── labkiosk-update         # Root-only: signed release download and install (Rule 8)
+│       │   ├── labkiosk-update         # Root-only: signed release download and install (Rule 8)
+│       │   └── labkiosk-share          # Unprivileged: serves verified images to the site's LAN (Rule 8)
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
 │                                       #   plus the grub.pin build pin, version (the image's release)
 │                                       #   and boot/grub.cfg (every installed disk's boot menu)
@@ -543,7 +545,7 @@ distro-builder/
   `IOSchedulingClass=idle`) and `labkiosk-update-install.service` (oneshot, `install-pending`, then
   `systemctl --no-block reboot`), both `ConditionKernelCommandLine=labkiosk.installed=1` and not
   enabled. `/etc/polkit-1/rules.d/50-labkiosk-update.rules` (written by `01-lockdown.hook.chroot`)
-  lets `kiosk` **start** exactly these two units and nothing else.
+  lets `kiosk` **start** exactly these two units, and **stop** `labkiosk-share.service`, and nothing else.
 - The agent starts the download unit on the hub's `release-available` (never on live media), and
   the install unit on `install-update` only when the version it holds `ready` equals the
   command's. It reports `imageVersion`, `agentVersion` and `update` in its status, shows the update
@@ -554,8 +556,22 @@ distro-builder/
 - Disks installed before 2.9.0 have neither unit nor the polkit rule and need one reinstall from
   the 2.9.0 ISO; a live session is updated by re-flashing. An image's updater stages security
   releases only from the first release carrying phase 4; a 2.9.x image (and its rebuilds) takes
-  them on approval. Phase 5 of `docs/OTA_UPDATES.md` §9 (LAN sharing) is research; never document
-  or depend on it as a feature.
+  them on approval.
+- **Phase 5: sharing a release on the LAN** (`docs/OTA_UPDATES.md` §5.12; off unless the
+  organization turns it on). The agent reports `lan` (`{address, prefix}`, private IPv4 only) and
+  stops `labkiosk-share.service` when the config says `lanSharing: false`. `run` tries up to three
+  peers from the offer's `lan.peers` at `http://<peer>:8890/<version>/` with no proxy, then the
+  cloud: the same `download()`, so every chunk is checked against the signed manifest, and
+  `expected=version` refuses a peer's other signed release before anything is written. Holding the
+  release `ready` or `staged` with `lan` set, it starts `labkiosk-share.service` for 48 hours from
+  when this boot first held it, and stops it after that or when `lan` is null.
+- **`labkiosk-share` is the image's only LAN listener.** Never enabled; `DynamicUser=yes` with
+  `InaccessiblePaths=-/etc/labkiosk` (it can never read the device token or Wi-Fi keys);
+  `RuntimeMaxSec=48h`; `ExecStartPre` loads `usr/share/labkiosk/labkiosk-share.nft` (TCP 8890 from
+  10/8, 172.16/12 and 192.168/16 only) and `ExecStopPost` deletes the table. It serves only
+  `GET`/`HEAD /<version>/<file>` (one `Range`) for a version whose `.verified` matches its
+  manifest, files the manifest lists at their size, through `O_NOFOLLOW`, to its own subnet, four at
+  a time. Keep port 8890 equal in `labkiosk-update`, the nft rule and Settings → Updates (tested).
 
 ---
 

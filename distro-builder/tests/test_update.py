@@ -436,7 +436,10 @@ class Run(unittest.TestCase):
         return server, f"http://127.0.0.1:{server.server_address[1]}"
 
     def run_update(self, worker_url, token=TOKEN, running=RUNNING):
-        return update.run(self.root, running, FLOOR, self.keys, worker_url, token, gpgv=GPGV, state_path=self.state_path)
+        # What would start or stop labkiosk-share.service (phase 5), recorded instead.
+        self.sharing = getattr(self, "sharing", [])
+        return update.run(self.root, running, FLOOR, self.keys, worker_url, token, gpgv=GPGV, state_path=self.state_path,
+                          share=self.sharing.append)
 
     def state(self):
         with open(self.state_path, encoding="utf-8") as handle:
@@ -517,9 +520,10 @@ class Run(unittest.TestCase):
         self.publish("2.6.2")
         _, releases = self.serve()
         _, worker = self.control_plane({"version": "2.6.1", "url": f"{releases}/2.6.2"})
-        with self.assertRaisesRegex(update.UpdateError, "offered 2.6.1 but its folder holds 2.6.2"):
+        with self.assertRaisesRegex(update.UpdateError, "holds 2.6.2, not 2.6.1"):
             self.run_update(worker)
         self.assertEqual(self.state()["phase"], "error")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "downloads", "2.6.2")), "refused before anything is written")
 
     def test_a_malformed_offer_is_refused(self):
         for offer in ({"version": "../../etc", "url": "http://127.0.0.1:9/x"}, {"version": "2.6.1"}, "2.6.1"):
@@ -759,8 +763,9 @@ class Units(unittest.TestCase):
         rule = hook[start:hook.index("\nEOF\n", start)]
         self.assertIn('action.id === "org.freedesktop.systemd1.manage-units"', rule)
         self.assertIn('action.lookup("verb") === "start"', rule)
+        # And stop of the LAN sharing server (phase 5), which only root starts.
         self.assertEqual(sorted(set(re.findall(r'"(labkiosk-[a-z-]+\.service)"', rule))),
-                         ["labkiosk-update-download.service", "labkiosk-update-install.service"])
+                         ["labkiosk-share.service", "labkiosk-update-download.service", "labkiosk-update-install.service"])
         self.assertNotIn("systemctl enable labkiosk-update", hook, "no update runs at boot")
 
     @unittest.skipUnless(shutil.which("node"), "node runs the rule's JavaScript")
@@ -783,11 +788,14 @@ console.log(JSON.stringify([
   ask("kiosk", unitsAction, { verb: "start", unit: "ssh.service" }),
   ask("kiosk", "org.freedesktop.systemd1.manage-unit-files", { verb: "start", unit: "labkiosk-update-install.service" }),
   ask("nobody", unitsAction, { verb: "start", unit: "labkiosk-update-install.service" }),
+  ask("kiosk", unitsAction, { verb: "stop", unit: "labkiosk-share.service" }),
+  ask("kiosk", unitsAction, { verb: "start", unit: "labkiosk-share.service" }),
+  ask("nobody", unitsAction, { verb: "stop", unit: "labkiosk-share.service" }),
 ]));
 """ % rule
         result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=30, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), ["yes", "yes", None, None, None, None, None])
+        self.assertEqual(json.loads(result.stdout), ["yes", "yes", None, None, None, None, None, "yes", None, None])
 
     def test_the_agent_starts_only_these_units(self):
         agent = load("labkiosk_agent_units", os.path.join(CHROOT, "opt/labkiosk/agent/agent.py"))

@@ -37,14 +37,15 @@ labkiosk/
 │   └── config/includes.chroot/
 │       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
 │       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots,
-│                            sbin/labkiosk-update
+│                            sbin/labkiosk-update, sbin/labkiosk-share
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0029 (never edit an applied one)
+│   ├── migrations/          0001..0030 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
 │   │                        remote_relay.ts (one Durable Object per workstation's Remote Control session),
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
 │   │                        boot_report.ts, bug_reports.ts (Errors & Warnings, opt-in GitHub bug reports),
 │   │                        releases.ts (over-the-air releases: the R2 releases bucket, channels, the offer),
+│   │                        lan_sharing.ts (sites, seeds and peers for sharing a release on the LAN),
 │   │                        seo.ts (robots.txt, sitemap, noindex, canonical host, analytics CSP),
 │   │                        two_factor.ts (TOTP, recovery codes, sign-in alerts), turnstile.ts,
 │   │                        signup.ts, inbox.ts, conversations.ts, mail.ts, mail_store.ts, mime.ts (registration,
@@ -123,7 +124,8 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-update
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-update \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests

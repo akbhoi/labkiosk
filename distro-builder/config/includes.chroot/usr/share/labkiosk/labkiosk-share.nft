@@ -1,0 +1,15 @@
+#!/usr/sbin/nft -f
+# Loaded by labkiosk-share.service before the server starts, and deleted when it
+# stops. Its port answers private IPv4 sources only; the server itself also
+# answers only its own subnet. Nothing else on the workstation is filtered.
+
+table inet labkiosk_share
+delete table inet labkiosk_share
+
+table inet labkiosk_share {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		tcp dport 8890 ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept
+		tcp dport 8890 drop
+	}
+}

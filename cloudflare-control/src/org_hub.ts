@@ -53,6 +53,16 @@ import {
   updateTargetFor
 } from "./releases";
 import type { SecurityUpdateMode } from "./types";
+import {
+  LAN_HOLD_MAX_MS,
+  LanReport,
+  SiteMember,
+  lanDecision,
+  lanPeers,
+  normalizeLanReport,
+  sameLanReport,
+  siteKey
+} from "./lan_sharing";
 
 /** Text a workstation sends to prove it is alive; answered without waking the object. */
 export const HUB_PING = '{"type":"ping"}';
@@ -118,6 +128,10 @@ interface UpdateFields {
   /** When it was last reminded of a release, and of which one (releaseNudgeDue's key). */
   nudgedAt?: number;
   nudgedVersion?: string;
+  /** Where it is on its LAN, for sharing a release with its site (src/lan_sharing.ts). */
+  lan?: LanReport;
+  /** Since when it has waited for a site member to fetch the release it is due (ms). */
+  lanHeldSince?: number;
 }
 
 export interface DeviceMeta {
@@ -148,6 +162,8 @@ interface DeviceAttachment {
   update?: UpdateReport;
   nudgedAt?: number;
   nudgedVersion?: string;
+  lan?: LanReport;
+  lanHeldSince?: number;
   /** Whether this workstation has been asked to send frames. */
   streaming: boolean;
   /** Its registry row in D1 is behind. */
@@ -190,6 +206,8 @@ export interface LiveStatus {
   imageVersion?: string;
   agentVersion?: string;
   update?: UpdateReport;
+  /** It waits for a workstation at its site to fetch the release it is due, since (ms). */
+  updateWaitingSince?: number;
 }
 
 interface HubConfig {
@@ -207,6 +225,8 @@ export interface WorkstationConfig {
   targetUrl: string;
   broadcastUrl: string;
   broadcastEpoch: number;
+  /** Whether it may serve a release it holds to its site; when false it stops serving (phase 5). */
+  lanSharing: boolean;
 }
 
 export interface QueuedCommand {
@@ -344,6 +364,14 @@ export class OrgHub {
           const body = (await request.json()) as { clientIds?: unknown };
           return json(await this.installUpdate(body.clientIds));
         }
+        case "/check-update": {
+          const body = (await request.json()) as { clientIds?: unknown; version?: unknown };
+          return json({ sent: await this.checkUpdate(body.clientIds, isReleaseVersion(body.version) ? body.version : undefined) });
+        }
+        case "/lan-peers": {
+          const body = (await request.json()) as { clientId?: unknown; version?: unknown };
+          return json({ peers: await this.lanPeersFor(String(body.clientId || ""), String(body.version || "")) });
+        }
         case "/device-enrolled":
           this.deviceEnrolled(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
           return json({ status: "ok" });
@@ -477,6 +505,7 @@ export class OrgHub {
       targetUrl: active?.url || portalUrl,
       broadcastUrl: active?.url || "",
       broadcastEpoch: active?.epoch || 0,
+      lanSharing: tenant.lan_sharing === 1,
       portalUrl
     };
   }
@@ -617,7 +646,9 @@ export class OrgHub {
         typeof payload.agentVersion === "string" && /^[0-9A-Za-z.+-]{1,32}$/.test(payload.agentVersion)
           ? payload.agentVersion.slice(0, MAX_AGENT_VERSION_LENGTH)
           : previous?.agentVersion,
-      update: payload.update === undefined ? previous?.update : normalizeUpdateReport(payload.update) ?? previous?.update
+      update: payload.update === undefined ? previous?.update : normalizeUpdateReport(payload.update) ?? previous?.update,
+      // An agent that reports no usable LAN address is at no site, and neither waits nor serves.
+      lan: payload.lan === undefined ? previous?.lan : normalizeLanReport(payload.lan) ?? undefined
     };
   }
 
@@ -655,6 +686,8 @@ export class OrgHub {
         this.notifyConsoles({ type: "status", client: this.statusOf(updated, now) });
         await this.ensureAlarm(FLUSH_DELAY_MS);
         await this.nudgeSocket(ws, updated);
+        // A seed finished, failed or moved: those waiting at its site may go now.
+        await this.nudgeSite(siteKey(updated.ip, updated.lan), updated.clientId);
       }
     } else if (data.type === "frame") {
       const frame = acceptableFrame(data.thumbnail);
@@ -699,6 +732,8 @@ export class OrgHub {
     this.notifyConsoles({ type: "status", client: { ...this.statusOf(attachment, now), online: false } });
     this.recordEvent("disconnect", attachment.clientId, now, ws);
     await this.ensureAlarm(FLUSH_DELAY_MS);
+    // A seed that left no longer counts; someone else at its site takes its place.
+    await this.nudgeSite(siteKey(attachment.ip, attachment.lan), attachment.clientId, ws);
   }
 
   async removeDevice(clientId: string): Promise<void> {
@@ -967,7 +1002,8 @@ export class OrgHub {
       online,
       lastSeen,
       transport: "websocket",
-      ...updateFieldsOf(a)
+      ...updateFieldsOf(a),
+      ...(a.lanHeldSince ? { updateWaitingSince: a.lanHeldSince } : {})
     };
   }
 
@@ -1087,6 +1123,7 @@ export class OrgHub {
     this.updateStreaming();
     await this.flush();
     this.purgeExpiredCommands();
+    await this.nudgeWaiting();
 
     const busy =
       this.ctx.getWebSockets("console").length > 0 ||
@@ -1097,6 +1134,9 @@ export class OrgHub {
       (this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM commands").one() as { n: number }).n > 0;
     if (busy || pending) {
       await this.ctx.storage.setAlarm(Date.now() + (this.ctx.getWebSockets("console").length ? CONSOLE_SWEEP_MS : FLUSH_DELAY_MS));
+    } else {
+      const waitEnds = this.nextWaitEnd();
+      if (waitEnds !== null) await this.ctx.storage.setAlarm(waitEnds);
     }
   }
 
@@ -1123,9 +1163,114 @@ export class OrgHub {
    */
   private async nudgeSocket(ws: WebSocket, a: DeviceAttachment): Promise<void> {
     const due = this.releaseNudgeDue(a);
-    if (!due) return;
-    ws.serializeAttachment({ ...a, nudgedAt: Date.now(), nudgedVersion: due.key });
-    await this.enqueue({ targets: [a.clientId], action: "release-available", version: due.release.version });
+    if (!due) {
+      if (a.lanHeldSince) ws.serializeAttachment({ ...a, lanHeldSince: undefined });
+      return;
+    }
+    // Staging a release it already holds downloads nothing, so it never waits for its site.
+    if (due.key === due.release.version && (await this.waitForSite(ws, a, due.release.version))) return;
+    await this.tellOfRelease(ws, a, due.key, due.release.version);
+  }
+
+  private async tellOfRelease(ws: WebSocket, a: DeviceAttachment, key: string, version: string): Promise<void> {
+    ws.serializeAttachment({ ...a, nudgedAt: Date.now(), nudgedVersion: key, lanHeldSince: undefined });
+    await this.enqueue({ targets: [a.clientId], action: "release-available", version });
+  }
+
+  /**
+   * Phase 5: when its organization shares releases on the LAN, keep a
+   * workstation waiting while the seeds at its site fetch `version`, so a site
+   * downloads it from the internet once or twice instead of once per machine.
+   * True when it waits; it is told later, by nudgeSite or the alarm.
+   */
+  private async waitForSite(ws: WebSocket, a: DeviceAttachment, version: string): Promise<boolean> {
+    if (this.config?.tenant.lan_sharing !== 1) return false;
+    const now = Date.now();
+    if (lanDecision(a, version, this.siteMembers(), a.lanHeldSince, now) === "go") return false;
+    if (!a.lanHeldSince) {
+      const waiting: DeviceAttachment = { ...a, lanHeldSince: now };
+      ws.serializeAttachment(waiting);
+      this.notifyConsoles({ type: "status", client: this.statusOf(waiting, now) });
+    }
+    await this.ensureAlarm(LAN_HOLD_MAX_MS);
+    return true;
+  }
+
+  /** The organization's online WebSocket workstations, as lan_sharing.ts sees them. */
+  private siteMembers(except?: WebSocket): SiteMember[] {
+    const now = Date.now();
+    const members: SiteMember[] = [];
+    for (const ws of this.ctx.getWebSockets("device")) {
+      const a = ws === except ? null : this.deviceAttachment(ws);
+      if (a && now - this.lastSeenOf(ws, a) < SOCKET_STALE_MS) members.push(a);
+    }
+    return members;
+  }
+
+  /** Look again at the workstations waiting at `site`: one of them may go now. */
+  private async nudgeSite(site: string | null, changed: string, except?: WebSocket): Promise<void> {
+    if (!site || this.config?.tenant.lan_sharing !== 1) return;
+    for (const ws of this.ctx.getWebSockets("device")) {
+      if (ws === except) continue;
+      const a = this.deviceAttachment(ws);
+      if (a && a.clientId !== changed && a.lanHeldSince && siteKey(a.ip, a.lan) === site) await this.nudgeSocket(ws, a);
+    }
+  }
+
+  /** From the alarm: a workstation that waited LAN_HOLD_MAX_MS fetches the release itself. */
+  private async nudgeWaiting(): Promise<void> {
+    const now = Date.now();
+    for (const ws of this.ctx.getWebSockets("device")) {
+      const a = this.deviceAttachment(ws);
+      if (a?.lanHeldSince && now - a.lanHeldSince >= LAN_HOLD_MAX_MS) await this.nudgeSocket(ws, a);
+    }
+  }
+
+  /** When the first workstation now waiting stops waiting, or null when none waits. */
+  private nextWaitEnd(): number | null {
+    let next: number | null = null;
+    for (const ws of this.ctx.getWebSockets("device")) {
+      const since = this.deviceAttachment(ws)?.lanHeldSince;
+      if (since) next = Math.min(next ?? Infinity, since + LAN_HOLD_MAX_MS);
+    }
+    return next;
+  }
+
+  /**
+   * The LAN addresses of the site members `clientId` may copy `version` from,
+   * for GET /api/devices/update; none when the organization does not share.
+   */
+  async lanPeersFor(clientId: string, version: string): Promise<string[]> {
+    const config = await this.loadConfig();
+    if (config?.tenant.lan_sharing !== 1 || !isReleaseVersion(version)) return [];
+    const self = this.ctx.getWebSockets(`device:${clientId}`).map((ws) => this.deviceAttachment(ws)).find(Boolean);
+    if (!self) return [];
+    return lanPeers(self, version, this.siteMembers(), Date.now());
+  }
+
+  /**
+   * The console's Check for updates: tell each workstation of the release meant
+   * for it now, inside the reminder interval too. Where the organization shares
+   * on the LAN, one at a site whose seeds are still fetching it waits for them
+   * (it is told the moment one finishes), and counts as sent.
+   */
+  async checkUpdate(rawIds: unknown, fallbackVersion: string | undefined): Promise<string[]> {
+    const ids = Array.isArray(rawIds) ? Array.from(new Set(rawIds.map(String))).filter((id) => CLIENT_ID_PATTERN.test(id)) : [];
+    const config = await this.loadConfig(true);
+    const direct: string[] = [];
+    for (const clientId of ids) {
+      const ws = this.ctx.getWebSockets(`device:${clientId}`)[0];
+      const a = ws ? this.deviceAttachment(ws) : null;
+      const target = a && config ? updateTargetFor(config.releases, a.imageVersion) : null;
+      if (!ws || !a || !target) {
+        direct.push(clientId);
+        continue;
+      }
+      if (await this.waitForSite(ws, a, target.version)) continue;
+      await this.tellOfRelease(ws, this.deviceAttachment(ws)!, target.version, target.version);
+    }
+    if (direct.length) await this.enqueue({ targets: direct, action: "release-available", version: fallbackVersion });
+    return ids;
   }
 
   private async nudgeHttp(clientId: string, client: HttpClient): Promise<void> {
@@ -1228,7 +1373,12 @@ function updateFieldsOf(f: UpdateFields): Pick<LiveStatus, "imageVersion" | "age
 }
 
 function updateFieldsChanged(a: UpdateFields, b: UpdateFields): boolean {
-  return a.imageVersion !== b.imageVersion || a.agentVersion !== b.agentVersion || !sameUpdateReport(a.update, b.update);
+  return (
+    a.imageVersion !== b.imageVersion ||
+    a.agentVersion !== b.agentVersion ||
+    !sameUpdateReport(a.update, b.update) ||
+    !sameLanReport(a.lan, b.lan)
+  );
 }
 
 /**

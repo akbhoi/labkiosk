@@ -58,14 +58,16 @@ Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2e, 6–7). This
 ## Over-the-air updates (`src/releases.ts`)
 
 - `GET /api/devices/update?running=<version>` (`requireDevice()`): `{release, security,
-  securityUpdates}`. `release` is the newest unrevoked release of the organization's channel
+  securityUpdates, lan}`. `release` is the newest unrevoked release of the organization's channel
   (`tenants.update_channel`; `beta` also takes `stable`), `security` the newest `security` release
   for `running`'s major.minor line newer than it (null without `running`; `400` for a malformed
   one), `securityUpdates` the organization's `tenants.security_updates`. `503` while a release is
-  offered but `RELEASES_BASE_URL` is unset or not https.
-- `GET`/`POST /api/settings/updates` (`{channel?, securityUpdates?}`; the answer adds `pending`,
+  offered but `RELEASES_BASE_URL` is unset or not https. `lan` (phase 5, `src/lan_sharing.ts`) is
+  null unless `tenants.lan_sharing` is on, else `{peers}` from the hub's `/lan-peers`: site
+  members of the same organization only. Who is at which site is live on the hub's sockets, never D1.
+- `GET`/`POST /api/settings/updates` (`{channel?, securityUpdates?, lanSharing?}`; the answer adds `pending`,
   the security releases some of the organization's workstations on that line do not run yet),
-  `POST /api/clients/check-update` and
+  `POST /api/clients/check-update` (through the hub's `/check-update`, which applies the LAN hold) and
   `POST /api/clients/install-update` (`{clientIds}` ≤ 500; unknown ids come back in `skipped` as
   `Not found`; install answers `409` when nothing is offered) need `updates`. Install goes
   through the hub's `/install-update`, which sends `install-update` only to workstations online
@@ -75,7 +77,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2e, 6–7). This
   `POST /api/super/releases/revoke {version}` (`409` once revoked) are `requireSuperAdmin()`;
   `releases` is a platform table (no `tenant_id`). Both changes reload every organization's hub.
 - Audit actions: `release.classify`, `release.revoke`, `settings.update_channel`,
-  `settings.security_updates`, `update.check`, `update.install`. `/api/command` never accepts `release-available` or `install-update`.
+  `settings.security_updates`, `settings.lan_sharing`, `update.check`, `update.install`. `/api/command` never accepts `release-available` or `install-update`.
 
 ## Workstation problems and bug reports (Rule 2e)
 

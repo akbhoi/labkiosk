@@ -122,6 +122,17 @@ MAX_UPDATE_DETAIL = 300
 UPDATE_DOWNLOAD_UNIT = "labkiosk-update-download.service"
 UPDATE_INSTALL_UNIT = "labkiosk-update-install.service"
 SYSTEMCTL_TIMEOUT_SECONDS = 15
+# Phase 5: sharing a release on the local network. labkiosk-update starts the
+# server as root; the agent may only stop it (the same polkit rule), when the
+# organization turns sharing off.
+LAN_SHARE_UNIT = "labkiosk-share.service"
+# Where the address is learned: the kernel's route to an address never routed
+# (TEST-NET-1, RFC 5737), as derive_default_client_id() does. No packet is sent.
+LAN_PROBE_ADDRESS = "192.0.2.1"
+LAN_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+LAN_PREFIX_RANGE = range(16, 31)
+LAN_REPORT_TTL_SECONDS = 60
+IP_COMMAND_TIMEOUT_SECONDS = 5
 # The install screen comes down by itself if no restart follows: the install
 # failed in a way its unit could not report.
 UPDATE_SCREEN_TIMEOUT_SECONDS = 15 * 60
@@ -2724,6 +2735,10 @@ def current_status():
     if image_version():
         status["imageVersion"] = image_version()
     status["update"] = read_update_report()
+    # Only an installed disk keeps images to share; a live session is at no site.
+    lan = None if is_live_session() else lan_report()
+    if lan:
+        status["lan"] = lan
     return status
 
 
@@ -2850,6 +2865,95 @@ def read_update_report(path=UPDATE_STATE_FILE, owner_uid=0):
     if isinstance(since, int) and not isinstance(since, bool) and since > 0:
         report["since"] = since
     return report
+
+
+def _ip_json(args):
+    """The JSON iproute2 prints for `ip -j <args>`."""
+    proc = subprocess.run(
+        ["ip", "-j", *args], capture_output=True, text=True, timeout=IP_COMMAND_TIMEOUT_SECONDS, check=False
+    )
+    if proc.returncode != 0:
+        raise OSError(f"ip {' '.join(args)} failed: {(proc.stderr or proc.stdout).strip()[:200]}")
+    return json.loads(proc.stdout or "null")
+
+
+def read_lan_address():
+    """
+    This workstation's address on the network its traffic leaves by, and that
+    subnet's prefix length: {"address": "192.168.1.23", "prefix": 24}. None when
+    it is not on a private IPv4 subnet from /16 to /30, the only networks it
+    shares a release on (docs/OTA_UPDATES.md section 5.9). Raises OSError or
+    ValueError when iproute2 cannot say.
+    """
+    routes = _ip_json(["-4", "route", "get", LAN_PROBE_ADDRESS])
+    route = routes[0] if isinstance(routes, list) and routes and isinstance(routes[0], dict) else {}
+    device, source = route.get("dev"), route.get("prefsrc")
+    if not isinstance(device, str) or not NET_DEVICE_PATTERN.match(device) or not isinstance(source, str):
+        return None
+    address = ipaddress.ip_address(source)
+    if address.version != 4 or not any(address in network for network in LAN_PRIVATE_NETWORKS):
+        return None
+    for link in _ip_json(["-4", "addr", "show", "dev", device]) or []:
+        for info in (link.get("addr_info") or []) if isinstance(link, dict) else []:
+            if not isinstance(info, dict) or info.get("family") != "inet" or info.get("local") != source:
+                continue
+            prefix = info.get("prefixlen")
+            if isinstance(prefix, bool) or not isinstance(prefix, int) or prefix not in LAN_PREFIX_RANGE:
+                return None
+            network = ipaddress.ip_network(f"{source}/{prefix}", strict=False)
+            if address in (network.network_address, network.broadcast_address):
+                return None
+            return {"address": source, "prefix": prefix}
+    return None
+
+
+_lan_report = {"value": None, "at": None, "problem": None}
+
+
+def lan_report(now=None):
+    """read_lan_address(), at most once a minute; None when it cannot be read."""
+    now = time.monotonic() if now is None else now
+    cached = _lan_report
+    if cached["at"] is not None and now - cached["at"] < LAN_REPORT_TTL_SECONDS:
+        return cached["value"]
+    try:
+        value, problem = read_lan_address(), None
+    except (OSError, ValueError, subprocess.SubprocessError) as err:
+        value, problem = None, str(err)
+        if problem != cached["problem"]:
+            log(f"LAN address not reported: {problem}")
+    cached.update(value=value, at=now, problem=problem)
+    return value
+
+
+_lan_sharing = {"allowed": None}
+
+
+def apply_lan_sharing(allowed):
+    """
+    Stop serving releases on the LAN when the organization no longer shares
+    them. Starting is the root updater's: it serves only a release it verified.
+    """
+    if not isinstance(allowed, bool) or allowed == _lan_sharing["allowed"]:
+        return
+    _lan_sharing["allowed"] = allowed
+    if allowed or is_live_session():
+        return
+    try:
+        result = subprocess.run(
+            ["systemctl", "stop", "--no-block", LAN_SHARE_UNIT],
+            capture_output=True,
+            text=True,
+            timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        log(f"Could not stop {LAN_SHARE_UNIT}: {err}")
+        _lan_sharing["allowed"] = None
+        return
+    if result.returncode != 0:
+        log(f"Could not stop {LAN_SHARE_UNIT}: {(result.stderr or result.stdout).strip()[:300]}")
+        _lan_sharing["allowed"] = None
 
 
 def start_update_unit(unit):
@@ -3092,6 +3196,9 @@ def apply_control_update(data):
         with state_lock:
             state["broadcastEpoch"] = 0
             state["broadcastUrl"] = ""
+
+    if "lanSharing" in data:
+        apply_lan_sharing(data["lanSharing"])
 
     # Apply a just-completed enrolment to the running browser.
     with state_lock:

@@ -508,6 +508,13 @@ workstation installs it at its next start by itself (`next_boot`) or waits for a
 through the Worker; the workstation checks the manifest's signature before it uses any of them, and
 stages a release for its next start only when the signed manifest says `security`.
 
+`lan` is `null` unless the organization shares releases on its local network (Settings → Updates).
+Then it lists `peers`: up to 8 private LAN addresses of the organization's workstations at the same
+site (the same public address and subnet) that hold the release meant for this one, in random
+order. The workstation tries up to three of them on TCP port 8890 before `url`, checking every file
+against the same signed manifest, and once it holds the release it serves it to its site for up to
+48 hours.
+
 - **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
   organization. `403` when the organization is not active.
 - **Query:** `running` — the workstation's image version, such as `2.9.0`. Optional: without it
@@ -518,7 +525,8 @@ stages a release for its next start only when the signed manifest says `security
   {
     "release": { "version": "2.10.0", "kind": "feature", "sizeBytes": 735000000, "url": "https://releases.example.com/releases/2.10.0" },
     "security": { "version": "2.9.1", "kind": "security", "sizeBytes": 734000000, "url": "https://releases.example.com/releases/2.9.1" },
-    "securityUpdates": "next_boot"
+    "securityUpdates": "next_boot",
+    "lan": { "peers": ["192.168.10.21", "192.168.10.37"] }
   }
   ```
 
@@ -701,7 +709,8 @@ Decommissions a client device and revokes its bearer token.
 
 The Workstations page's **Updates** menu. `check-update` sends `release-available` to each
 workstation, which then asks [`GET /api/devices/update`](#get-apidevicesupdate) and downloads the
-offered release in the background. `install-update` sends `install-update` only to workstations
+offered release in the background; with LAN sharing on, all but two workstations per site wait
+for those two, up to an hour. `install-update` sends `install-update` only to workstations
 that are online and report `ready` for the release meant for them (a security release for their
 line before the newest one); each one restarts into it, and the rest are returned in `skipped`
 with the reason (`Offline`, `Still downloading`, `Live session; update it by re-flashing`,
@@ -877,12 +886,14 @@ audit log.
 The **Updates** tab of Settings: which classified releases the organization's workstations are
 offered, and what they do with a security release for the line they run. `stable` (the default)
 offers stable releases; `beta` also offers beta ones. `securityUpdates` is `next_boot` (the
-default: installed at each workstation's next start, without approval) or `approval`. Changes are
-audited as `settings.update_channel` and `settings.security_updates`, and the organization's hub
-tells its workstations at once.
+default: installed at each workstation's next start, without approval) or `approval`. `lanSharing`
+(default `false`) lets the workstations at one site copy a release from each other: two download it,
+the others wait up to an hour for them. Changes are audited as `settings.update_channel`,
+`settings.security_updates` and `settings.lan_sharing`, and the organization's hub tells its
+workstations at once.
 
 - **Access:** Organization Admin (requires `updates` permission)
-- **Request Body (`POST`):** `{ "channel": "beta", "securityUpdates": "approval" }` — either or both.
+- **Request Body (`POST`):** `{ "channel": "beta", "securityUpdates": "approval", "lanSharing": true }` — any of them.
 - **Response `200 OK`:**
 
   ```json
@@ -890,13 +901,14 @@ tells its workstations at once.
     "channel": "beta",
     "offer": { "version": "2.10.0", "kind": "feature", "sizeBytes": 735000000, "classifiedAt": 1791638060 },
     "securityUpdates": "next_boot",
+    "lanSharing": false,
     "pending": [{ "version": "2.9.1", "offeredAt": 1791638060, "workstations": 3 }]
   }
   ```
 
   `offer` is `null` when nothing is offered on that channel. `pending` lists, per line, the newest
   security release that some of the organization's workstations on that line do not run yet.
-- **Errors:** `400` for any other channel or setting, or a body with neither.
+- **Errors:** `400` for any other channel or setting, a `lanSharing` that is not a boolean, or a body with none of them.
 
 ---
 
