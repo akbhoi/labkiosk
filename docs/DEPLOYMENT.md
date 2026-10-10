@@ -267,15 +267,25 @@ outbox the tests read (`localOutbox()` in `src/mail.ts`) and each subject is log
 
 ### Release notes on /download
 
-Nothing to set up. The ISO build publishes each release on GitHub with the change list GitHub writes
+The ISO build publishes each release on GitHub with the change list GitHub writes
 from the merged pull requests. The Worker's hourly run reads the newest releases (anonymously, or with
 `GITHUB_ISSUES_TOKEN` when that is set, which avoids GitHub's limit on anonymous reads) into the
-`release_notes` table, and `/download` shows each one: its version, date, ISO and checksum exactly as
-GitHub published them. With the `AI` binding, Workers AI rewrites each change list as a few sentences
+`release_notes` table, and `/download` shows each one: its version, date, ISO and its SHA-256 (the
+digest GitHub computed when the ISO was uploaded) exactly as GitHub published them. With the `AI` binding, Workers AI rewrites each change list as a few sentences
 for the people who run workstations, and the page marks them as written by AI beside a link to the
 full notes; without it, the change list itself is shown. Edit a release's notes on GitHub and its
 summary is rewritten on the next run. Until the first run after a deploy, the page links GitHub's
 `releases/latest` address.
+
+So that a new release is offered the moment it exists, rather than after the next hourly run, the
+tag build calls `POST /api/release-notes/sync` right after it publishes the release. That reads the
+releases in at once; the AI summary still follows on the hourly run. It needs one token, the same on
+both sides, and the controller's address (a tag build fails its pre-check without them):
+
+| Setting | Where | Set it |
+| :--- | :--- | :--- |
+| `RELEASE_NOTES_TOKEN` | Worker secret **and** GitHub Actions secret, the same value: at least 32 characters, e.g. `openssl rand -hex 32` | `npx wrangler secret put RELEASE_NOTES_TOKEN`; repository → Settings → Secrets and variables → Actions → New repository secret |
+| `CONTROLLER_URL` | GitHub Actions variable: the controller's `https://` address, e.g. `https://labkiosk.org` | Repository → Settings → Secrets and variables → Actions → Variables |
 
 ### Automatic bug reports (optional)
 

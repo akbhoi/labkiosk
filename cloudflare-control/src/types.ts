@@ -341,6 +341,12 @@ export interface Env {
   /** "owner/repo" the issues are filed in. */
   GITHUB_ISSUES_REPO?: string;
   /**
+   * Bearer token the ISO build sends to POST /api/release-notes/sync after it
+   * publishes a release (secret, at least 32 characters). Without it the route
+   * answers 503 and /download picks a new release up on the next hourly run.
+   */
+  RELEASE_NOTES_TOKEN?: string;
+  /**
    * Outbound email through Cloudflare Email Service (src/mail.ts): signup codes,
    * approval decisions and replies written in the Super Admin console. Without
    * the binding and MAIL_FROM, signup and replies refuse with 503 rather than

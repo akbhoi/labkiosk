@@ -48,6 +48,8 @@ export interface ReleaseNote {
   iso_url: string | null;
   checksum_url: string | null;
   iso_bytes: number | null;
+  /** The ISO's SHA-256 (64 lowercase hex digits), as GitHub computed it on upload, or null. */
+  iso_sha256: string | null;
   /** The change list as GitHub published it. */
   source_body: string;
   /** JSON list of sentences written by the model, or null when there is none. */
@@ -174,28 +176,30 @@ interface GitHubRelease {
   draft?: unknown;
   prerelease?: unknown;
   published_at?: unknown;
-  assets?: Array<{ name?: unknown; browser_download_url?: unknown; size?: unknown }>;
+  assets?: Array<{ name?: unknown; browser_download_url?: unknown; size?: unknown; digest?: unknown }>;
 }
 
 /** An asset's download address, only when it is this repository's own release download. */
-function assetUrl(release: GitHubRelease, name: string): { url: string; size: number } | null {
+function assetUrl(release: GitHubRelease, name: string): { url: string; size: number; sha256: string | null } | null {
   const asset = (release.assets || []).find((a) => a?.name === name);
   const url = typeof asset?.browser_download_url === "string" ? asset.browser_download_url : "";
   if (!url.startsWith(`${RELEASES_URL}/download/`) || /[\s"'<>]/.test(url)) return null;
-  return { url, size: Math.max(0, Math.floor(Number(asset?.size) || 0)) };
+  // GitHub hashes every uploaded asset itself ("sha256:<hex>"): the same value the
+  // release's .sha256 file holds, without a second download to read it.
+  const digest = typeof asset?.digest === "string" ? /^sha256:([0-9a-f]{64})$/.exec(asset.digest) : null;
+  return { url, size: Math.max(0, Math.floor(Number(asset?.size) || 0)), sha256: digest ? digest[1] : null };
 }
 
 /**
- * Read the newest releases from GitHub into `release_notes`, then write the
- * summaries still missing. Returns how many releases were stored and how many
- * summaries were written. A failure to reach GitHub or the model is thrown for
- * the caller to log: the page keeps showing what it already has.
+ * Read the newest releases from GitHub into `release_notes`. Returns how many
+ * were stored and the newest one's tag. A failure to reach GitHub is thrown for
+ * the caller to report: the page keeps showing what it already has.
  */
-export async function syncReleaseNotes(
+export async function storeReleaseNotes(
   db: D1Database,
   env: Env,
   fetchImpl: typeof fetch = fetch
-): Promise<{ stored: number; summarized: number }> {
+): Promise<{ stored: number; latest: string | null }> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -222,8 +226,8 @@ export async function syncReleaseNotes(
     // A change list edited on GitHub is summarized again; an unchanged one keeps its summary.
     await db
       .prepare(
-        `INSERT INTO release_notes (tag, name, published_at, url, iso_url, checksum_url, iso_bytes, source_body, summary, summary_model, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+        `INSERT INTO release_notes (tag, name, published_at, url, iso_url, checksum_url, iso_bytes, iso_sha256, source_body, summary, summary_model, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
          ON CONFLICT(tag) DO UPDATE SET
            name = excluded.name,
            published_at = excluded.published_at,
@@ -231,6 +235,7 @@ export async function syncReleaseNotes(
            iso_url = excluded.iso_url,
            checksum_url = excluded.checksum_url,
            iso_bytes = excluded.iso_bytes,
+           iso_sha256 = excluded.iso_sha256,
            summary = CASE WHEN release_notes.source_body = excluded.source_body THEN release_notes.summary ELSE NULL END,
            summary_model = CASE WHEN release_notes.source_body = excluded.source_body THEN release_notes.summary_model ELSE NULL END,
            source_body = excluded.source_body,
@@ -244,13 +249,24 @@ export async function syncReleaseNotes(
         iso?.url ?? null,
         checksum?.url ?? null,
         iso?.size || null,
+        iso?.sha256 ?? null,
         body,
         ts
       )
       .run();
     stored++;
   }
+  const latest = await db
+    .prepare("SELECT tag FROM release_notes ORDER BY published_at DESC LIMIT 1")
+    .first<{ tag: string }>();
+  return { stored, latest: latest?.tag ?? null };
+}
 
+/**
+ * Write the summaries still missing, a few a run. A release the model cannot
+ * summarize is logged and left for a later run: the page shows its change list.
+ */
+export async function summarizeReleaseNotes(db: D1Database, env: Env): Promise<number> {
   let summarized = 0;
   if (env.AI) {
     const waiting = await db
@@ -271,5 +287,15 @@ export async function syncReleaseNotes(
       }
     }
   }
-  return { stored, summarized };
+  return summarized;
+}
+
+/** The hourly run: read the newest releases from GitHub, then summarize what is new. */
+export async function syncReleaseNotes(
+  db: D1Database,
+  env: Env,
+  fetchImpl: typeof fetch = fetch
+): Promise<{ stored: number; summarized: number }> {
+  const { stored } = await storeReleaseNotes(db, env, fetchImpl);
+  return { stored, summarized: await summarizeReleaseNotes(db, env) };
 }

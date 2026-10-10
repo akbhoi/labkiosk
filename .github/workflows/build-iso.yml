@@ -58,15 +58,21 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           R2_RELEASES_BUCKET: ${{ vars.R2_RELEASES_BUCKET }}
+          RELEASE_NOTES_TOKEN: ${{ secrets.RELEASE_NOTES_TOKEN }}
+          CONTROLLER_URL: ${{ vars.CONTROLLER_URL }}
         run: |
           missing=""
-          for name in UPDATE_SIGNING_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY CLOUDFLARE_ACCOUNT_ID R2_RELEASES_BUCKET; do
+          for name in UPDATE_SIGNING_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY CLOUDFLARE_ACCOUNT_ID R2_RELEASES_BUCKET RELEASE_NOTES_TOKEN CONTROLLER_URL; do
             if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
-            echo "::error::A release is signed and uploaded to R2, and these are not set:$missing. See distro-builder/README.md 'Over-the-air releases'."
+            echo "::error::A release is signed, uploaded to R2 and announced to the controller, and these are not set:$missing. See distro-builder/README.md 'Over-the-air releases'."
             exit 1
           fi
+          case "$CONTROLLER_URL" in
+            https://*) ;;
+            *) echo "::error::CONTROLLER_URL must be the controller's https:// address, such as https://labkiosk.org."; exit 1 ;;
+          esac
           version="$(tr -d '[:space:]' < distro-builder/config/includes.chroot/usr/share/labkiosk/version)"
           tag="${GITHUB_REF_NAME#[vV]}"
           if [ "$tag" != "$version" ]; then
@@ -222,3 +228,37 @@ jobs:
             distro-builder/out/labkiosk-debian12-amd64.iso.sha256
           draft: false
           prerelease: false
+
+      # /download lists the releases the controller has read from GitHub, which
+      # it otherwise does hourly: ask it to read them now, so the new ISO and
+      # its checksum are offered the moment the release exists. GitHub can take
+      # a few seconds to list a new release, hence the retries.
+      - name: Offer the release on the download page (on tag)
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+        env:
+          RELEASE_NOTES_TOKEN: ${{ secrets.RELEASE_NOTES_TOKEN }}
+          CONTROLLER_URL: ${{ vars.CONTROLLER_URL }}
+        run: |
+          set -euo pipefail
+          answer="$RUNNER_TEMP/release-notes-sync.json"
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl -sS --max-time 30 -o "$answer" -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $RELEASE_NOTES_TOKEN" "${CONTROLLER_URL%/}/api/release-notes/sync")" || status="000"
+            case "$status" in
+              200)
+                latest="$(jq -r '.latest // empty' "$answer")"
+                if [ "$latest" = "$GITHUB_REF_NAME" ]; then
+                  echo "/download now offers $latest."
+                  exit 0
+                fi
+                echo "GitHub does not list $GITHUB_REF_NAME yet (newest: ${latest:-none})." ;;
+              401|503)
+                echo "::error::The controller refused the request ($status): RELEASE_NOTES_TOKEN must match the Worker's secret of the same name. The release is published; /download offers it after the next hourly run."
+                exit 1 ;;
+              *)
+                echo "The controller answered $status (attempt $attempt)." ;;
+            esac
+            sleep 10
+          done
+          echo "::error::/download does not offer $GITHUB_REF_NAME yet. The release is published; the hourly run offers it within the hour."
+          exit 1

@@ -123,7 +123,8 @@ general | letter`) is what it is about; it names the tracking ID's prefix and th
 filters by. `reference` carries that prefix (`SUP-…`), or `LK-` for a conversation from before 0024.
 
 **Release notes** (`0025`). `release_notes` (keyed by tag) holds what GitHub published for each release
-(name, date, URLs of the ISO and its checksum, the change list) and `summary`, a JSON list of sentences
+(name, date, URLs of the ISO and its checksum, the change list; `iso_sha256` since `0028`, from GitHub's
+asset digest) and `summary`, a JSON list of sentences
 Workers AI wrote from that list (`summary_model` says which model; NULL shows the change list instead).
 A platform table like `ui_catalogs`: no `tenant_id`.
 

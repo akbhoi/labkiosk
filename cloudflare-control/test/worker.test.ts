@@ -1413,7 +1413,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       prerelease: false,
       published_at: published,
       assets: [
-        { name: "labkiosk-debian12-amd64.iso", size: 753926144, browser_download_url: `https://github.com/akbhoi/labkiosk/releases/download/${tag}/labkiosk-debian12-amd64.iso` },
+        { name: "labkiosk-debian12-amd64.iso", size: 753926144, digest: `sha256:${"ab".repeat(32)}`, browser_download_url: `https://github.com/akbhoi/labkiosk/releases/download/${tag}/labkiosk-debian12-amd64.iso` },
         { name: "labkiosk-debian12-amd64.iso.sha256", size: 94, browser_download_url: `https://github.com/akbhoi/labkiosk/releases/download/${tag}/labkiosk-debian12-amd64.iso.sha256` }
       ],
       ...extra
@@ -1431,21 +1431,31 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       release("v8.8.8", "2026-10-08T00:00:00Z", { prerelease: true }),
       release("nightly", "2026-10-08T00:00:00Z"),
       // An address that is not this repository's own release is never stored as a download.
-      release("v2.5.1", "2026-10-01T07:28:37Z", { assets: [{ name: "labkiosk-debian12-amd64.iso", size: 1, browser_download_url: "https://evil.example/labkiosk-debian12-amd64.iso" }] }),
+      release("v2.5.1", "2026-10-01T07:28:37Z", { assets: [{ name: "labkiosk-debian12-amd64.iso", size: 1, digest: `sha256:${"cd".repeat(32)}`, browser_download_url: "https://evil.example/labkiosk-debian12-amd64.iso" }] }),
+      // A digest that is not a SHA-256 is never shown as one.
+      release("v2.4.0", "2026-09-20T07:28:37Z", { body: "", assets: [{ name: "labkiosk-debian12-amd64.iso", size: 1, digest: "sha256:<b>not-a-hash</b>", browser_download_url: "https://github.com/akbhoi/labkiosk/releases/download/v2.4.0/labkiosk-debian12-amd64.iso" }] }),
       release("v2.5.0", "2026-09-26T14:51:11Z", { html_url: "https://evil.example/releases/tag/v2.5.0" })
     ];
 
     // Without the model, the releases are stored and shown from their own change list.
     const first = await syncReleaseNotes(db, { ...mockEnv, AI: undefined }, github(list));
-    assert.deepEqual(first, { stored: 3, summarized: 0 });
+    assert.deepEqual(first, { stored: 4, summarized: 0 });
     assert.match(asked[0], /^https:\/\/api\.github\.com\/repos\/akbhoi\/labkiosk\/releases\?per_page=\d+ labkiosk-controller$/);
     const stored = await listReleaseNotes(db);
-    assert.deepEqual(stored.map((r) => r.tag), ["v2.7.0", "v2.6.0", "v2.5.1"]);
+    assert.deepEqual(stored.map((r) => r.tag), ["v2.7.0", "v2.6.0", "v2.5.1", "v2.4.0"]);
     assert.equal(stored[2].iso_url, null);
+    assert.equal(stored[2].iso_sha256, null, "no download, no checksum");
+    assert.equal(stored[3].iso_sha256, null);
+    assert.equal(stored[0].iso_sha256, "ab".repeat(32));
     let page = await (await call("/download")).text();
     assert.ok(page.includes("Latest Release v2.7.0") && page.includes("Download v2.7.0 (.ISO)"));
     assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.7.0/labkiosk-debian12-amd64.iso"'));
     assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.7.0/labkiosk-debian12-amd64.iso.sha256"'));
+    // The checksum is on the page as text, not only behind a link to the .sha256 file.
+    assert.ok(page.includes(`<code class="checksum-value">${"ab".repeat(32)}</code>`));
+    assert.ok(page.includes(`<p class="changelog-checksum">SHA256 <code>${"ab".repeat(32)}</code></p>`));
+    assert.ok(!page.includes("not-a-hash"));
+    assert.ok(page.includes(">SHA256 file</a>"), "the .sha256 file stays one click away, for sha256sum -c");
     assert.ok(page.includes("7 October 2026") && page.includes("~720 MB"));
     assert.ok(page.includes("<li>Non-blocking cookie bar for website analytics consent</li>"));
     assert.ok(!page.includes("Summary written by AI") && !page.includes("@akbhoi") && !page.includes("evil.example"));
@@ -1486,7 +1496,38 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await assert.rejects(() => summarizeRelease(ai("I cannot help with that") as any, "v1.0.0", body), /highlights/);
     await assert.rejects(() => summarizeRelease(ai({ highlights: ["<b>bold</b>"] }) as any, "v1.0.0", body), /no usable/);
     await assert.rejects(() => syncReleaseNotes(db, mockEnv, github({ message: "rate limited" }, 403)), /403/);
-    assert.equal((await listReleaseNotes(db)).length, 3);
+    assert.equal((await listReleaseNotes(db)).length, 4);
+
+    // The ISO build asks for a release at once (POST /api/release-notes/sync), with the shared token only.
+    const token = "f".repeat(64);
+    const syncCall = (env: Env, auth?: string) =>
+      worker.fetch(new Request("https://labkiosk.org/api/release-notes/sync", { method: "POST", headers: auth ? { Authorization: auth } : {} }), env);
+    assert.equal((await syncCall(mockEnv, `Bearer ${token}`)).status, 503, "not configured: refused");
+    assert.equal((await syncCall({ ...mockEnv, RELEASE_NOTES_TOKEN: "short" }, "Bearer short")).status, 503, "a short token is no token");
+    const configured = { ...mockEnv, RELEASE_NOTES_TOKEN: token } as Env;
+    const realFetch = globalThis.fetch;
+    const githubCalls: string[] = [];
+    let githubAnswer: Response | null = null;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      githubCalls.push(String(input));
+      return githubAnswer || new Response(JSON.stringify([release("v2.9.0", "2026-10-10T10:18:00Z"), ...list]), { status: 200 });
+    }) as typeof fetch;
+    try {
+      for (const auth of [undefined, `Bearer ${"e".repeat(64)}`, token, `Basic ${token}`, `Bearer ${token}x`]) {
+        assert.equal((await syncCall(configured, auth)).status, 401, String(auth));
+      }
+      assert.equal(githubCalls.length, 0, "a refused call never reaches GitHub");
+      const synced = await syncCall(configured, `Bearer ${token}`);
+      assert.equal(synced.status, 200);
+      assert.deepEqual(await synced.json(), { stored: 5, latest: "v2.9.0" });
+      page = await (await call("/download")).text();
+      assert.ok(page.includes("Latest Release v2.9.0") && page.includes("releases/download/v2.9.0/labkiosk-debian12-amd64.iso"));
+      githubAnswer = new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
+      assert.equal((await syncCall(configured, `Bearer ${token}`)).status, 502);
+      assert.ok((await listReleaseNotes(db)).some((r) => r.tag === "v2.9.0"), "a failed read keeps what is stored");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
 
     // Nothing is known yet: the page links GitHub's "latest" address and says nothing of an operator's settings.
     await db.prepare("DELETE FROM release_notes").run();
