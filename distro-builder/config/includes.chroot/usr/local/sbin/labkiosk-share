@@ -86,6 +86,19 @@ def read_small(path, limit):
     return data if len(data) <= limit else None
 
 
+def image_path(root, version, name):
+    """
+    images/<version>/<name> under root, or None for anything that would leave
+    images/. The patterns already refuse such names; this keeps every path the
+    server opens inside the image store whatever a later change lets through.
+    """
+    store = os.path.normpath(os.path.join(root, slots.IMAGES_DIR_NAME))
+    path = os.path.normpath(os.path.join(store, version, name))
+    if not path.startswith(store + os.sep) or os.path.dirname(os.path.dirname(path)) != store:
+        return None
+    return path
+
+
 def servable(root, version):
     """
     The files of images/<version> this disk may serve, as {name: expected size
@@ -93,9 +106,12 @@ def servable(root, version):
     """
     if not slots.VERSION_PATTERN.match(version):
         return None
-    folder = os.path.join(root, slots.IMAGES_DIR_NAME, version)
-    manifest_data = read_small(os.path.join(folder, update.MANIFEST_NAME), update.MAX_MANIFEST_BYTES)
-    marker = read_small(os.path.join(folder, update.VERIFIED_NAME), MARKER_BYTES)
+    manifest_path = image_path(root, version, update.MANIFEST_NAME)
+    marker_path = image_path(root, version, update.VERIFIED_NAME)
+    if manifest_path is None or marker_path is None:
+        return None
+    manifest_data = read_small(manifest_path, update.MAX_MANIFEST_BYTES)
+    marker = read_small(marker_path, MARKER_BYTES)
     if manifest_data is None or marker is None:
         return None
     if marker.decode("ascii", "replace").strip() != hashlib.sha256(manifest_data).hexdigest():
@@ -154,7 +170,8 @@ class ShareHandler(BaseHTTPRequestHandler):
             self.refuse(404)
             return
         name = match.group(2)
-        fd = open_regular(os.path.join(self.server.root, slots.IMAGES_DIR_NAME, match.group(1), name))
+        path = image_path(self.server.root, match.group(1), name)
+        fd = open_regular(path) if path else None
         if fd is None:
             self.refuse(404)
             return

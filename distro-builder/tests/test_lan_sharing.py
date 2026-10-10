@@ -204,6 +204,14 @@ class ShareServer(ShareFixture):
             with self.subTest(path=path):
                 self.assertEqual(self.get(server, path)[0], 404)
 
+    def test_no_path_leaves_the_image_store(self):
+        store = os.path.join(self.root, "images")
+        self.assertEqual(share.image_path(self.root, "2.6.1", "vmlinuz"), os.path.join(store, "2.6.1", "vmlinuz"))
+        for version, name in ((".", "vmlinuz"), ("..", "boot"), ("2.6.1", ".."), ("2.6.1", "."), ("..", ".."),
+                              ("2.6.1/..", "vmlinuz"), ("/etc", "passwd"), ("2.6.1", "../../boot/grub/grubenv")):
+            with self.subTest(version=version, name=name):
+                self.assertIsNone(share.image_path(self.root, version, name))
+
     def test_ranges_resume_where_the_updater_asks(self):
         folder = self.hold("2.6.1")
         server = self.share_server()
@@ -420,9 +428,21 @@ class Packaging(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("nft"), "needs nft to check the rule")
     def test_the_rule_parses(self):
-        result = subprocess.run(["nft", "-c", "-f", os.path.join(CHROOT, "usr/share/labkiosk/labkiosk-share.nft")],
-                                capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        # `nft -c` still opens netlink, which needs CAP_NET_ADMIN: as root, else in a
+        # network namespace of its own, else through passwordless sudo (CI runners).
+        check = ["nft", "-c", "-f", os.path.join(CHROOT, "usr/share/labkiosk/labkiosk-share.nft")]
+        ways = [check] if os.geteuid() == 0 else [["unshare", "-rn", *check], ["sudo", "-n", *check]]
+        refused = []
+        for command in ways:
+            if not shutil.which(command[0]):
+                continue
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            if result.returncode == 0:
+                return
+            if "Operation not permitted" not in result.stderr and "password is required" not in result.stderr:
+                self.fail(f"{' '.join(command[:-1])} rejects the rule: {result.stderr}")
+            refused.append(f"{command[0]}: {result.stderr.strip()}")
+        self.skipTest("no way to give nft CAP_NET_ADMIN here: " + "; ".join(refused))
 
 
 if __name__ == "__main__":
