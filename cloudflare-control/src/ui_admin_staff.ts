@@ -181,6 +181,13 @@ function renderStaffPageHtml(staff: TenantUser[] = [], roleLabels: Map<string, s
         <div class="card card-flush">
           <div class="card-head">
             <h2 class="card-title">Staff Accounts <span id="staff-count" class="text-muted">(${staff.length})</span></h2>
+            <div class="filter-chips">
+              <button type="button" class="filter-chip active" data-filter="all">All</button>
+              <button type="button" class="filter-chip" data-filter="operator">Operators</button>
+              <button type="button" class="filter-chip" data-filter="assistant">Assistants</button>
+              <button type="button" class="filter-chip" data-filter="content_manager">Content</button>
+              <button type="button" class="filter-chip" data-filter="org_admin">Admins</button>
+            </div>
           </div>
           <div class="table-container">
             <table>
@@ -207,7 +214,7 @@ function renderStaffScripts(nonce: string): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
       // -------------------------------------------------------------
-      // Role Filter Handler (Level 2 Subpanel)
+      // Role Filter Handler (Level 2 Subpanel & Filter Chips)
       // -------------------------------------------------------------
       window.labkioskApplyFilter = function (filter) {
         const rows = document.querySelectorAll("#staff-tbody tr[data-role]");
@@ -241,7 +248,30 @@ function renderStaffScripts(nonce: string): string {
         if (countEl) {
           countEl.textContent = filter === "all" ? "(" + rows.length + ")" : "(" + visibleCount + " of " + rows.length + ")";
         }
+
+        // Synchronize active states across filter chips and subpanel
+        document.querySelectorAll(".filter-chip[data-filter]").forEach((chip) => {
+          chip.classList.toggle("active", chip.getAttribute("data-filter") === filter);
+        });
+        const subpanel = document.getElementById("app-subpanel");
+        if (subpanel) {
+          subpanel.querySelectorAll("[data-filter]").forEach((btn) => {
+            btn.classList.toggle("active", btn.getAttribute("data-filter") === filter);
+          });
+        }
       };
+
+      // Handle in-canvas filter chip clicks
+      document.addEventListener("click", (e) => {
+        const chip = e.target && e.target.closest ? e.target.closest(".filter-chip[data-filter]") : null;
+        if (chip) {
+          e.preventDefault();
+          const filter = chip.getAttribute("data-filter");
+          if (filter && typeof window.labkioskApplyFilter === "function") {
+            window.labkioskApplyFilter(filter);
+          }
+        }
+      });
 
       // -------------------------------------------------------------
       // Role Select Preset Defaults

@@ -24,7 +24,8 @@ import {
   verifyPassword,
   sha256Hex,
   generateDeviceToken,
-  generateEnrollmentKey
+  generateEnrollmentKey,
+  isEnrollmentKey
 } from "./auth";
 import { DEMO_SLUGS, DEMO_TENANTS } from "./demo";
 
@@ -36,7 +37,8 @@ CREATE TABLE IF NOT EXISTS users (
   salt TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('super_admin', 'org_admin')),
   name TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  two_factor_email INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS tenants (
@@ -143,6 +145,22 @@ CREATE TABLE IF NOT EXISTS workstation_issues (
   report_match TEXT CHECK (report_match IN ('new', 'existing'))
 );
 
+CREATE TABLE IF NOT EXISTS release_notes (
+  tag TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  published_at INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  iso_url TEXT,
+  checksum_url TEXT,
+  iso_bytes INTEGER,
+  source_body TEXT NOT NULL DEFAULT '',
+  summary TEXT,
+  summary_model TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_release_notes_published ON release_notes(published_at);
+
 CREATE TABLE IF NOT EXISTS bug_reports (
   signature TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -243,7 +261,7 @@ CREATE TABLE IF NOT EXISTS organization_profiles (
 
 CREATE TABLE IF NOT EXISTS email_codes (
   id TEXT PRIMARY KEY,
-  purpose TEXT NOT NULL CHECK (purpose IN ('signup')),
+  purpose TEXT NOT NULL CHECK (purpose IN ('signup', 'contact')),
   email TEXT NOT NULL,
   code_hash TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -299,7 +317,9 @@ CREATE TABLE IF NOT EXISTS conversations (
   last_message_at INTEGER NOT NULL,
   resolved_at INTEGER,
   resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-  mailbox TEXT
+  mailbox TEXT,
+  deleted_at INTEGER,
+  category TEXT NOT NULL DEFAULT 'general'
 );
 
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -341,6 +361,7 @@ CREATE INDEX IF NOT EXISTS idx_email_codes_expires ON email_codes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_kind ON conversations(kind, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_tenant ON conversations(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_mailbox ON conversations(mailbox, status, last_message_at);
+CREATE INDEX IF NOT EXISTS idx_conversations_category ON conversations(category, status);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversation_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messages(email_message_id);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_expires ON login_challenges(expires_at);
@@ -484,6 +505,13 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     if (!groupNames) {
       throw new Error("workstation group names are not unique yet (0012)");
     }
+    // 0026 lets the contact form's codes into email_codes: a CHECK again.
+    const emailCodes = await db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_codes'")
+      .first<{ sql: string }>();
+    if (!emailCodes?.sql?.includes("'contact'")) {
+      throw new Error("email_codes does not accept the contact form's codes yet (0026)");
+    }
     // 0014: live state moved to OrgHub; the organization carries its online count.
     await db.prepare("SELECT online_workstations, custom_hostname_status FROM tenants LIMIT 1").run();
     // 0015: the outcome of each workstation's last boot.
@@ -511,6 +539,14 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT code_hash FROM email_codes LIMIT 1").run();
     await db.prepare("SELECT reference, unread FROM conversations LIMIT 1").run();
     await db.prepare("SELECT direction, email_message_id FROM conversation_messages LIMIT 1").run();
+    // 0022: Mail's Deleted folder.
+    await db.prepare("SELECT deleted_at FROM conversations LIMIT 1").run();
+    // 0023: two-factor sign-in by emailed code.
+    await db.prepare("SELECT two_factor_email FROM users LIMIT 1").run();
+    // 0024: conversations filed by purpose.
+    await db.prepare("SELECT category FROM conversations LIMIT 1").run();
+    // 0025: what each release changed, for /download.
+    await db.prepare("SELECT tag, summary FROM release_notes LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -919,6 +955,27 @@ export async function regenerateEnrollmentKey(db: D1Database, tenantId: string):
   const key = generateEnrollmentKey();
   await updateTenant(db, tenantId, { enrollment_key: key });
   return key;
+}
+
+/**
+ * Keys issued before they carried a check character fail the workstation's own
+ * check, so an organization holding one could not enrol a workstation with it.
+ * Replace each (a key that happens to pass is left alone). Workstations already
+ * enrolled keep working: they hold a device token, not the key. Returns the
+ * organizations whose key was replaced.
+ */
+export async function rotateUncheckedEnrollmentKeys(db: D1Database, limit = 500): Promise<string[]> {
+  const rows = await db
+    .prepare("SELECT id, enrollment_key FROM tenants WHERE enrollment_key <> '' LIMIT ?")
+    .bind(Math.max(1, Math.min(5000, limit)))
+    .all<{ id: string; enrollment_key: string }>();
+  const rotated: string[] = [];
+  for (const row of rows.results || []) {
+    if (isEnrollmentKey(row.enrollment_key)) continue;
+    await regenerateEnrollmentKey(db, row.id);
+    rotated.push(row.id);
+  }
+  return rotated;
 }
 
 /** Find an active tenant by its enrollment key. */

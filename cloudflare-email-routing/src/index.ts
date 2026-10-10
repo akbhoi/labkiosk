@@ -13,7 +13,13 @@
  * When step 2 fails, the marker stays and the controller's hourly sweep files
  * the message later. Parsing, threading and the database belong to the
  * controller alone (cloudflare-control/src/inbox.ts).
+ *
+ * It also sends: the controller hands every outgoing message to `POST /send`
+ * over a Service Binding, and this Worker renders it with the templates in
+ * `src/templates/` and sends it (`src/send.ts`).
  */
+
+import { handleSend } from "./send";
 
 /** What the controller did with a message (cloudflare-control/src/inbox.ts, `IntakeResult`). */
 export type IntakeResult = { status: "filed"; reference: string } | { status: "dropped" } | { status: "missing" };
@@ -27,6 +33,8 @@ export interface Env {
   MAIL_ARCHIVE: R2Bucket;
   CONTROLLER: MailIntake;
   SUPPORT_FORWARD_TO?: string;
+  /** Sends what the controller hands to `POST /send`. */
+  EMAIL?: SendEmail;
 }
 
 /** The parts of `ForwardableEmailMessage` the handler uses (tests pass a stand-in). */
@@ -120,5 +128,10 @@ export async function handleEmail(message: InboundMessage, env: Env): Promise<vo
 export default {
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     await handleEmail(message, env);
+  },
+  // Reached only over a Service Binding: this Worker has no route and no workers.dev address.
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/send") return handleSend(request, env);
+    return new Response("Not Found", { status: 404 });
   }
 } satisfies ExportedHandler<Env>;

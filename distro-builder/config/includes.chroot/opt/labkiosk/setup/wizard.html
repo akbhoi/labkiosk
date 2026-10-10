@@ -648,7 +648,7 @@
                    placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false"
                    autocapitalize="characters" autocorrect="off" maxlength="23"
                    style="font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 1px;" data-i18n-placeholder="ui.placeholder-xxxxx-xxxxx-xxxxx-xxxxx">
-            <div class="hint-text" id="enrollment-key-hint">
+            <div class="hint-text" id="enrollment-key-hint" aria-live="polite">
               Twenty characters in four groups. Type it without hyphens &mdash; they are added for
               you &mdash; or paste it straight from <strong data-i18n="ui.settings-rarr-workstation-enrollment-key">Settings &rarr; Workstation Enrollment
               Key</strong> on the dashboard.
@@ -2017,6 +2017,30 @@
     // keyboard shortcuts to speak of, so the hyphens are inserted here.
     const ENROLLMENT_KEY_CHARS = 20;
     const ENROLLMENT_KEY_GROUP = 5;
+    // The characters a key is made of: generateEnrollmentKey leaves out I, L, O,
+    // U, 0 and 1 because they are misread, and makes the last character a check
+    // on the nineteen before it. So a key that holds one of those glyphs, or
+    // whose last character does not fit the rest, was mistyped, and that can be
+    // said the moment it is typed, with no server to ask. The agent checks the
+    // same thing (enrollment_key_is_valid in agent.py).
+    const ENROLLMENT_KEY_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+
+    // The check character for the characters before it: the Luhn algorithm over
+    // the key's alphabet, exactly as enrollmentKeyCheckCharacter in the control
+    // plane's src/auth.ts computes it. One wrong character, or two neighbours
+    // swapped, changes it.
+    function enrollmentKeyCheckCharacter(payload) {
+      const n = ENROLLMENT_KEY_ALPHABET.length;
+      let factor = 2;
+      let sum = 0;
+      for (let i = payload.length - 1; i >= 0; i--) {
+        const code = ENROLLMENT_KEY_ALPHABET.indexOf(payload[i]);
+        const addend = factor * code;
+        sum += Math.floor(addend / n) + (addend % n);
+        factor = factor === 2 ? 1 : 2;
+      }
+      return ENROLLMENT_KEY_ALPHABET[(n - (sum % n)) % n];
+    }
     const enrollmentKeyInput = document.getElementById('enrollment-key');
     const enrollmentKeyHint = document.getElementById('enrollment-key-hint');
     const ENROLLMENT_KEY_HINT_HTML = enrollmentKeyHint.innerHTML;
@@ -2031,6 +2055,35 @@
         .replace(/[^A-Z0-9]/g, '')
         .slice(0, ENROLLMENT_KEY_CHARS);
       return chars.replace(new RegExp(`(.{${ENROLLMENT_KEY_GROUP}})(?=.)`, 'g'), '$1-');
+    }
+
+    /**
+     * What is wrong with a key as typed, or null: characters no key contains
+     * (`characters`, with their positions counted without the hyphens), not all
+     * twenty there yet (`incomplete`), or all twenty there but the last one is
+     * not the check character of the rest (`mistyped`: a slip somewhere in it).
+     */
+    function enrollmentKeyProblem(value) {
+      const chars = normaliseEnrollmentKey(value).replace(/-/g, '');
+      const wrong = [];
+      for (let i = 0; i < chars.length; i++) {
+        if (!ENROLLMENT_KEY_ALPHABET.includes(chars[i])) wrong.push({ char: chars[i], position: i + 1 });
+      }
+      if (wrong.length) return { kind: 'characters', wrong };
+      if (chars.length !== ENROLLMENT_KEY_CHARS) return { kind: 'incomplete', count: chars.length };
+      return enrollmentKeyCheckCharacter(chars.slice(0, -1)) === chars[chars.length - 1] ? null : { kind: 'mistyped' };
+    }
+
+    /** The sentence for a key problem, as the hint under the field and the refusal on submit show it. */
+    function enrollmentKeyProblemText(problem) {
+      if (problem.kind === 'characters') {
+        const found = problem.wrong.map((w) => `${w.char} (${t('ui.js.key-character', 'character')} ${w.position})`).join(', ');
+        return t('ui.js.key-never-contains', 'A key never contains the letters I, L, O, U or the digits 0 and 1. Check: ') + found;
+      }
+      if (problem.kind === 'mistyped') {
+        return t('ui.js.key-mistyped', 'There is a typing mistake somewhere in this key: one character is wrong, or two are swapped. Check it against the dashboard.');
+      }
+      return `${problem.count} ${t('ui.js.key-of-twenty-entered', 'of 20 characters entered.')}`;
     }
 
     function formatEnrollmentKeyField() {
@@ -2056,15 +2109,17 @@
       }
 
       const count = el.value.replace(/-/g, '').length;
-      const complete = count === ENROLLMENT_KEY_CHARS;
-      el.style.borderColor = count === 0 ? '' : (complete ? 'var(--green)' : 'var(--border)');
-      enrollmentKeyHint.style.color = complete ? '#34d399' : 'var(--muted)';
+      const problem = enrollmentKeyProblem(el.value);
+      const mistyped = problem && problem.kind !== 'incomplete';
+      el.style.borderColor = count === 0 ? '' : (mistyped ? 'var(--red)' : (problem ? 'var(--border)' : 'var(--green)'));
+      el.setAttribute('aria-invalid', mistyped ? 'true' : 'false');
+      enrollmentKeyHint.style.color = mistyped ? 'var(--red)' : (problem ? 'var(--muted)' : '#34d399');
       if (count === 0) {
         enrollmentKeyHint.innerHTML = ENROLLMENT_KEY_HINT_HTML;
-      } else if (complete) {
-        enrollmentKeyHint.textContent = t('ui.js.complete-key-entered', 'Complete key entered.');
+      } else if (problem) {
+        enrollmentKeyHint.textContent = enrollmentKeyProblemText(problem);
       } else {
-        enrollmentKeyHint.textContent = `${count} of ${ENROLLMENT_KEY_CHARS} characters entered.`;
+        enrollmentKeyHint.textContent = t('ui.js.complete-key-entered', 'Complete key entered.');
       }
     }
 
@@ -2099,6 +2154,19 @@
       // Normalised again rather than trusted: the field may have been filled by
       // something that never raised an input event.
       const enrollmentKey = normaliseEnrollmentKey(enrollmentKeyInput.value);
+
+      // A key that cannot be one is refused here, at once: nothing is sent, so
+      // it costs no failed attempt against the organization's enrolment limit.
+      const keyProblem = enrollmentKeyProblem(enrollmentKey);
+      if (keyProblem) {
+        formatEnrollmentKeyField();
+        showStatus(
+          t('ui.js.key-not-valid', 'The enrollment key is not valid, so nothing was sent. ') + enrollmentKeyProblemText(keyProblem),
+          'error'
+        );
+        enrollmentKeyInput.focus();
+        return;
+      }
 
       submitBtn.disabled = true;
       submitBtn.querySelector('span').textContent = t('ui.js.connecting-verifying', 'Connecting & Verifying...');

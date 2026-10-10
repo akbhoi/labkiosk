@@ -116,9 +116,25 @@ codes, keyed `purpose:email`, purged hourly. `conversations` (`signup | remote_c
 Tasks and Mail inbox, read only by a super admin. `conversations.mailbox` is the platform address a
 mail conversation belongs to (NULL for a task); `conversation_messages.raw_key` points at the
 original in R2 (`mail/<message id>.eml`) and `attachments` is its JSON attachment list.
+`conversations.deleted_at` (`0022`) is when a mail conversation was moved to Deleted (NULL otherwise;
+tasks are never deleted); every list and count but the `deleted` view excludes those rows.
+`conversations.category` (`0024`: `registration | remote_control | support | sales | billing | legal |
+general | letter`) is what it is about; it names the tracking ID's prefix and the type the console
+filters by. `reference` carries that prefix (`SUP-…`), or `LK-` for a conversation from before 0024.
+
+**Release notes** (`0025`). `release_notes` (keyed by tag) holds what GitHub published for each release
+(name, date, URLs of the ISO and its checksum, the change list) and `summary`, a JSON list of sentences
+Workers AI wrote from that list (`summary_model` says which model; NULL shows the change list instead).
+A platform table like `ui_catalogs`: no `tenant_id`.
+
+**Email codes** (`0026`). `email_codes.purpose` is a CHECK (`signup`, `contact`). A new purpose is a
+rebuild of the table; it holds ten-minute codes and nothing refers to it, so `0026` drops and recreates
+it instead of copying. `assertSchemaCurrent` reads the table's definition, as it does for `users`.
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes
 as a JSON list of SHA-256 hashes. `login_challenges` is a password-checked sign-in waiting for its
 second factor, keyed by the SHA-256 of the browser's token, purged hourly. `user_devices` keys
 browsers by `(user_id, token_hash)` for new-browser alerts and `trusted_until`.
+`users.two_factor_email` (`0023`) is 1 when an organization account asked for an emailed code at
+sign-in; a super admin is always emailed one, whatever the column says.

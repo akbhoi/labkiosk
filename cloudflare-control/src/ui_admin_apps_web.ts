@@ -31,32 +31,20 @@ function renderAppsWebSubPanelHtml(
 ): string {
   const activeUrl = tenant?.broadcast_url;
   return `
-    <div class="sub-section-title">Navigation Views</div>
-    <div class="sub-action-list" id="sub-tab-list">
-      <button type="button" class="sub-action-item active" data-action="tab-broadcast">
-        <span class="row">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
-          Broadcast
-        </span>
-      </button>
-      <button type="button" class="sub-action-item" data-action="tab-portal">
-        <span class="row">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-          User Portal
-        </span>
-        <span class="sub-action-badge">${sites.length}</span>
-      </button>
-      <button type="button" class="sub-action-item" data-action="tab-whitelist">
-        <span class="row">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          Domain Allowlist
-        </span>
-        <span class="sub-action-badge">${config.whitelist.length}</span>
-      </button>
-    </div>
-
     <div class="sub-section-title">Quick Actions</div>
     <div class="sub-action-list">
+      <button type="button" class="sub-action-item" data-focus="app-title">
+        <span class="row">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          Add Portal App
+        </span>
+      </button>
+      <button type="button" class="sub-action-item" data-focus="domain-input">
+        <span class="row">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          Add Allowed Domain
+        </span>
+      </button>
       <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
         <span class="row">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
@@ -148,6 +136,23 @@ function renderAppsWebContentHtml(
         <p class="page-desc">Broadcast a page to every screen, choose the apps on the User Portal, and control which sites workstations may open.</p>
       </div>
     </div>
+
+    <nav class="segmented-nav" aria-label="Apps &amp; Web Navigation">
+      <button type="button" class="segmented-tab active" data-action="tab-broadcast">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg>
+        <span>Broadcast</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-portal">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        <span>User Portal</span>
+        <span class="badge badge-neutral text-xs">${sites.length}</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-whitelist">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span>Domain Allowlist</span>
+        <span class="badge badge-neutral text-xs">${config.whitelist.length}</span>
+      </button>
+    </nav>
 
     <!-- ============================================================== -->
     <!-- TAB 1: Broadcast                                       -->
@@ -342,10 +347,16 @@ function renderAppsWebScripts(nonce: string): string {
           const validTabs = ["broadcast", "portal", "whitelist"];
           if (!validTabs.includes(tabId)) tabId = "broadcast";
 
-          // Update Subpanel Tabs
-          const subBtns = document.querySelectorAll("#sub-tab-list .sub-action-item");
-          subBtns.forEach(btn => {
-            btn.classList.toggle("active", btn.getAttribute("data-action") === "tab-" + tabId);
+          // Update In-Canvas Segmented Tabs
+          const segTabs = document.querySelectorAll(".segmented-nav .segmented-tab");
+          segTabs.forEach(tab => {
+            tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
+          });
+
+          // Update Sub-Panel Tab Items if present
+          const subTabs = document.querySelectorAll("#sub-panel [data-action^='tab-']");
+          subTabs.forEach(tab => {
+            tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
           });
 
           // Update Tab Panes
@@ -363,6 +374,20 @@ function renderAppsWebScripts(nonce: string): string {
         }
 
         window.labkioskSwitchTab = switchTab;
+
+        // In-Canvas Segmented Tabs Click Listener
+        const segNav = document.querySelector(".segmented-nav");
+        if (segNav) {
+          segNav.addEventListener("click", function(e) {
+            const tab = e.target && e.target.closest ? e.target.closest(".segmented-tab") : null;
+            if (!tab) return;
+            const action = tab.getAttribute("data-action");
+            if (action && action.startsWith("tab-")) {
+              e.preventDefault();
+              switchTab(action.slice(4));
+            }
+          });
+        }
 
         /** Reload onto a tab, replacing ?tab= rather than appending another. */
         function reloadOnTab(tabId) {

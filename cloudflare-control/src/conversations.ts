@@ -17,6 +17,84 @@ export type ConversationKind = "signup" | "remote_control" | "support";
 export type ConversationStatus = "open" | "approved" | "rejected" | "closed";
 export type MessageDirection = "inbound" | "outbound" | "note" | "event";
 
+/**
+ * What a conversation is about (migration 0024). It names the prefix of the
+ * tracking id and the type the console files it under: `box` is the tab.
+ */
+export const CATEGORIES = {
+  registration: { prefix: "REG", label: "Registration", box: "tasks" },
+  remote_control: { prefix: "RMT", label: "Remote Control", box: "tasks" },
+  support: { prefix: "SUP", label: "Support", box: "support" },
+  sales: { prefix: "SAL", label: "Sales", box: "support" },
+  billing: { prefix: "BIL", label: "Billing", box: "support" },
+  legal: { prefix: "LGL", label: "Legal & privacy", box: "support" },
+  general: { prefix: "GEN", label: "General", box: "support" },
+  letter: { prefix: "LTR", label: "Letters", box: "support" }
+} as const;
+export type ConversationCategory = keyof typeof CATEGORIES;
+
+export function isCategory(value: unknown): value is ConversationCategory {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(CATEGORIES, value);
+}
+
+/** The label a customer and the console read for a category; "General" for one not known. */
+export function categoryLabel(category: string | null | undefined): string {
+  return isCategory(category) ? CATEGORIES[category].label : CATEGORIES.general.label;
+}
+
+/** The part of an address before the `@` that says what mail to it is about. */
+const MAILBOX_CATEGORIES: Record<string, ConversationCategory> = {
+  support: "support",
+  help: "support",
+  helpdesk: "support",
+  sales: "sales",
+  quote: "sales",
+  quotes: "sales",
+  pricing: "sales",
+  licensing: "sales",
+  billing: "billing",
+  accounts: "billing",
+  invoice: "billing",
+  invoices: "billing",
+  payments: "billing",
+  legal: "legal",
+  privacy: "legal",
+  abuse: "legal",
+  security: "legal",
+  compliance: "legal",
+  dpo: "legal"
+};
+
+/** What mail to a platform address is about: `sales@` is sales, an address not listed is general. */
+export function categoryForMailbox(mailbox: string | null | undefined): ConversationCategory {
+  const address = String(mailbox || "").toLowerCase();
+  const at = address.indexOf("@");
+  const local = (at > 0 ? address.slice(0, at) : address).split("+")[0];
+  return MAILBOX_CATEGORIES[local] ?? "general";
+}
+
+/** What a contact form message is about, from the topic the visitor chose. */
+export function categoryForTopic(topic: string): ConversationCategory {
+  const text = topic.toLowerCase();
+  if (/sales|pricing|quote|licen|purchase|demo/.test(text)) return "sales";
+  if (/billing|invoice|payment/.test(text)) return "billing";
+  if (/legal|privacy|security|abuse/.test(text)) return "legal";
+  if (/support|help|technical|problem|bug/.test(text)) return "support";
+  return "general";
+}
+
+/**
+ * What the contact page lets a person write about. Each is a type of mail, so
+ * a message arrives in the Super Admin console already sorted.
+ */
+export const CONTACT_REASONS: readonly { value: ConversationCategory; label: string }[] = [
+  { value: "sales", label: "Sales and licensing" },
+  { value: "support", label: "Technical support" },
+  { value: "billing", label: "Billing and invoices" },
+  { value: "legal", label: "Privacy, security or legal" },
+  { value: "general", label: "Something else" }
+];
+
 /** The kinds the Tasks tab shows; Support shows the rest. */
 export const TASK_KINDS: readonly ConversationKind[] = ["signup", "remote_control"];
 
@@ -37,6 +115,10 @@ export interface Conversation {
   resolved_by: string | null;
   /** The platform address a mail conversation belongs to (`support@labkiosk.org`); null for a task. */
   mailbox: string | null;
+  /** What it is about; names the tracking id's prefix and the type it is filed under (migration 0024). */
+  category: ConversationCategory;
+  /** When a mail conversation was moved to Deleted (migration 0022); null while it is not. */
+  deleted_at: number | null;
 }
 
 /** An attachment as the message list shows it; the bytes stay in the stored original. */
@@ -97,21 +179,25 @@ const now = () => Math.floor(Date.now() / 1000);
 /** Unambiguous characters for references people read aloud and type. */
 const REFERENCE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
 
-/** A short reference such as LK-7Q2M9X, carried in every email subject. */
-export function newReference(): string {
+/** Every prefix a tracking id can start with. `LK` is what all of them carried before 0024. */
+const REFERENCE_PREFIXES = ["LK", ...Object.values(CATEGORIES).map((c) => c.prefix)];
+const REFERENCE_PATTERN = `(?:${REFERENCE_PREFIXES.join("|")})-[A-Z0-9]{6}`;
+
+/** A tracking id such as SUP-7Q2M9X, carried in every email subject: the category's prefix and six characters. */
+export function newReference(category: ConversationCategory = "general"): string {
   const bytes = crypto.getRandomValues(new Uint8Array(6));
-  return "LK-" + Array.from(bytes, (b) => REFERENCE_ALPHABET[b % REFERENCE_ALPHABET.length]).join("");
+  return `${CATEGORIES[category].prefix}-` + Array.from(bytes, (b) => REFERENCE_ALPHABET[b % REFERENCE_ALPHABET.length]).join("");
 }
 
-/** The reference a subject carries, e.g. "Re: [LK-7Q2M9X] Your registration". */
+/** The tracking id a subject carries, e.g. "Re: [SUP-7Q2M9X] Your question". */
 export function referenceInSubject(subject: string): string | null {
-  const match = subject.match(/\[(LK-[A-Z0-9]{6})\]/i);
+  const match = subject.match(new RegExp(`\\[(${REFERENCE_PATTERN})\\]`, "i"));
   return match ? match[1].toUpperCase() : null;
 }
 
-/** "[LK-7Q2M9X] subject", without stacking a second reference. */
+/** "[SUP-7Q2M9X] subject", without stacking a second tracking id. */
 export function subjectWithReference(reference: string, subject: string): string {
-  const clean = subject.replace(/\[LK-[A-Z0-9]{6}\]\s*/gi, "").trim();
+  const clean = subject.replace(new RegExp(`\\[${REFERENCE_PATTERN}\\]\\s*`, "gi"), "").trim();
   return `[${reference}] ${clean}`;
 }
 
@@ -124,18 +210,26 @@ export async function createConversation(
     contactEmail: string;
     contactName?: string | null;
     mailbox?: string | null;
+    /** What it is about. Left out, a task is filed by its kind and mail by the address it was sent to. */
+    category?: ConversationCategory;
     /** A conversation the platform starts (a new outgoing email) has nothing unread. */
     unread?: boolean;
   }
 ): Promise<Conversation> {
   const ts = now();
+  const category: ConversationCategory =
+    data.kind === "signup"
+      ? "registration"
+      : data.kind === "remote_control"
+        ? "remote_control"
+        : (data.category ?? categoryForMailbox(data.mailbox));
   // A collision on the unique reference is astronomically unlikely, and it
   // fails loudly rather than threading two requests together.
   const conversation: Conversation = {
     id: crypto.randomUUID(),
     kind: data.kind,
     tenant_id: data.tenantId,
-    reference: newReference(),
+    reference: newReference(category),
     subject: data.subject.slice(0, 300),
     contact_email: data.contactEmail.toLowerCase(),
     contact_name: data.contactName ? data.contactName.slice(0, 120) : null,
@@ -146,12 +240,14 @@ export async function createConversation(
     last_message_at: ts,
     resolved_at: null,
     resolved_by: null,
-    mailbox: data.mailbox ? data.mailbox.toLowerCase() : null
+    mailbox: data.mailbox ? data.mailbox.toLowerCase() : null,
+    category,
+    deleted_at: null
   };
   await db
     .prepare(
-      `INSERT INTO conversations (id, kind, tenant_id, reference, subject, contact_email, contact_name, status, unread, created_at, updated_at, last_message_at, mailbox)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
+      `INSERT INTO conversations (id, kind, tenant_id, reference, subject, contact_email, contact_name, status, unread, created_at, updated_at, last_message_at, mailbox, category)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       conversation.id,
@@ -165,7 +261,8 @@ export async function createConversation(
       ts,
       ts,
       ts,
-      conversation.mailbox
+      conversation.mailbox,
+      conversation.category
     )
     .run();
   return conversation;
@@ -205,8 +302,10 @@ export async function addConversationMessage(
     attachments: data.attachments?.length ? JSON.stringify(data.attachments) : null,
     created_at: ts
   };
-  // An inbound message is what the platform owner has not read yet.
-  const unread = data.direction === "inbound" ? 1 : null;
+  // An inbound message is what the platform owner has not read yet, and an
+  // answer to a conversation in Deleted brings it back rather than hiding there.
+  const inbound = data.direction === "inbound";
+  const unread = inbound ? 1 : null;
   await db.batch([
     db
       .prepare(
@@ -230,7 +329,7 @@ export async function addConversationMessage(
       ),
     db
       .prepare(
-        `UPDATE conversations SET last_message_at = ?, updated_at = ?, unread = COALESCE(?, unread) WHERE id = ?`
+        `UPDATE conversations SET last_message_at = ?, updated_at = ?, unread = COALESCE(?, unread)${inbound ? ", deleted_at = NULL" : ""} WHERE id = ?`
       )
       .bind(ts, ts, unread, data.conversationId)
   ]);
@@ -279,51 +378,101 @@ export interface ConversationListRow extends Conversation {
   organization_subdomain: string | null;
 }
 
+/** The views of a box: by status, by read state, or what was moved to Deleted. */
+export const CONVERSATION_FILTERS = ["open", "closed", "all", "unread", "read", "deleted"] as const;
+export type ConversationFilter = (typeof CONVERSATION_FILTERS)[number];
+
+const FILTER_CLAUSES: Record<ConversationFilter, string> = {
+  open: "AND c.status = 'open' AND c.deleted_at IS NULL",
+  closed: "AND c.status <> 'open' AND c.deleted_at IS NULL",
+  all: "AND c.deleted_at IS NULL",
+  unread: "AND c.unread = 1 AND c.deleted_at IS NULL",
+  read: "AND c.unread = 0 AND c.deleted_at IS NULL",
+  deleted: "AND c.deleted_at IS NOT NULL"
+};
+
 /**
  * One box of the inbox. Open items come first, oldest first -- the order they
- * should be worked in -- then everything else, most recent first.
+ * should be worked in -- then everything else, most recent first. Only the
+ * `deleted` view shows what was moved to Deleted.
  */
 export async function listConversations(
   db: D1Database,
   kinds: readonly ConversationKind[],
-  filter: "open" | "closed" | "all",
+  filter: ConversationFilter,
   limit = 200,
-  mailbox: string | null = null
+  mailbox: string | null = null,
+  category: ConversationCategory | null = null
 ): Promise<ConversationListRow[]> {
   const marks = kinds.map(() => "?").join(", ");
-  const statusClause = filter === "open" ? "AND c.status = 'open'" : filter === "closed" ? "AND c.status <> 'open'" : "";
+  const statusClause = FILTER_CLAUSES[filter];
   const mailboxClause = mailbox ? "AND c.mailbox = ?" : "";
+  const categoryClause = category ? "AND c.category = ?" : "";
   const result = await db
     .prepare(
       `SELECT c.*, t.name AS organization_name, t.subdomain AS organization_subdomain,
               (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id = c.id) AS message_count
        FROM conversations c LEFT JOIN tenants t ON t.id = c.tenant_id
-       WHERE c.kind IN (${marks}) ${statusClause} ${mailboxClause}
+       WHERE c.kind IN (${marks}) ${statusClause} ${mailboxClause} ${categoryClause}
        ORDER BY CASE WHEN c.status = 'open' THEN 0 ELSE 1 END,
                 CASE WHEN c.status = 'open' THEN c.created_at ELSE -c.last_message_at END
        LIMIT ?`
     )
-    .bind(...kinds, ...(mailbox ? [mailbox.toLowerCase()] : []), Math.max(1, Math.min(500, limit)))
+    .bind(...kinds, ...(mailbox ? [mailbox.toLowerCase()] : []), ...(category ? [category] : []), Math.max(1, Math.min(500, limit)))
     .all<ConversationListRow>();
   return result.results || [];
 }
 
-/** Open items per box, and unread support conversations, for the console's badges. */
-export async function inboxCounts(db: D1Database): Promise<{ openTasks: number; openSupport: number; unreadSupport: number }> {
+/** Open items per box, and unread and deleted support conversations, for the console's badges. */
+export async function inboxCounts(
+  db: D1Database
+): Promise<{ openTasks: number; openSupport: number; unreadSupport: number; deletedSupport: number }> {
   const row = await db
     .prepare(
       `SELECT
          SUM(CASE WHEN kind IN ('signup', 'remote_control') AND status = 'open' THEN 1 ELSE 0 END) AS open_tasks,
-         SUM(CASE WHEN kind = 'support' AND status = 'open' THEN 1 ELSE 0 END) AS open_support,
-         SUM(CASE WHEN kind = 'support' AND unread = 1 THEN 1 ELSE 0 END) AS unread_support
+         SUM(CASE WHEN kind = 'support' AND status = 'open' AND deleted_at IS NULL THEN 1 ELSE 0 END) AS open_support,
+         SUM(CASE WHEN kind = 'support' AND unread = 1 AND deleted_at IS NULL THEN 1 ELSE 0 END) AS unread_support,
+         SUM(CASE WHEN kind = 'support' AND deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS deleted_support
        FROM conversations`
     )
-    .first<{ open_tasks: number | null; open_support: number | null; unread_support: number | null }>();
+    .first<{ open_tasks: number | null; open_support: number | null; unread_support: number | null; deleted_support: number | null }>();
   return {
     openTasks: Number(row?.open_tasks || 0),
     openSupport: Number(row?.open_support || 0),
-    unreadSupport: Number(row?.unread_support || 0)
+    unreadSupport: Number(row?.unread_support || 0),
+    deletedSupport: Number(row?.deleted_support || 0)
   };
+}
+
+export interface CategoryCount {
+  id: ConversationCategory;
+  label: string;
+  prefix: string;
+  open: number;
+  total: number;
+}
+
+/** Every type a box files under, with its open and total conversations (Deleted left out). */
+export async function categoryCounts(db: D1Database, box: "tasks" | "support"): Promise<CategoryCount[]> {
+  const result = await db
+    .prepare(
+      `SELECT category,
+              SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open,
+              COUNT(*) AS total
+       FROM conversations WHERE deleted_at IS NULL GROUP BY category`
+    )
+    .all<{ category: string; open: number | null; total: number | null }>();
+  const rows = new Map((result.results || []).map((r) => [r.category, r]));
+  return (Object.keys(CATEGORIES) as ConversationCategory[])
+    .filter((id) => CATEGORIES[id].box === box)
+    .map((id) => ({
+      id,
+      label: CATEGORIES[id].label,
+      prefix: CATEGORIES[id].prefix,
+      open: Number(rows.get(id)?.open || 0),
+      total: Number(rows.get(id)?.total || 0)
+    }));
 }
 
 export interface MailboxCount {
@@ -341,7 +490,7 @@ export async function mailboxCounts(db: D1Database): Promise<MailboxCount[]> {
               SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open,
               SUM(CASE WHEN unread = 1 THEN 1 ELSE 0 END) AS unread,
               COUNT(*) AS total
-       FROM conversations WHERE kind = 'support' AND mailbox IS NOT NULL
+       FROM conversations WHERE kind = 'support' AND mailbox IS NOT NULL AND deleted_at IS NULL
        GROUP BY mailbox ORDER BY mailbox LIMIT 200`
     )
     .all<{ mailbox: string; open: number | null; unread: number | null; total: number | null }>();
@@ -381,8 +530,14 @@ export async function listConversationMessages(db: D1Database, conversationId: s
   return result.results || [];
 }
 
-export async function markConversationRead(db: D1Database, id: string): Promise<void> {
-  await db.prepare("UPDATE conversations SET unread = 0 WHERE id = ?").bind(id).run();
+export async function markConversationRead(db: D1Database, id: string, read = true): Promise<void> {
+  await db.prepare("UPDATE conversations SET unread = ? WHERE id = ?").bind(read ? 0 : 1, id).run();
+}
+
+/** Move a conversation to Deleted, or back out of it. Nothing is removed. */
+export async function setConversationDeleted(db: D1Database, id: string, deleted: boolean): Promise<void> {
+  const ts = now();
+  await db.prepare("UPDATE conversations SET deleted_at = ?, updated_at = ? WHERE id = ?").bind(deleted ? ts : null, ts, id).run();
 }
 
 export async function setConversationStatus(
@@ -453,7 +608,7 @@ export async function markPhoneVerified(db: D1Database, tenantId: string, userId
 
 // ------------------------------------------------------------------- email codes
 
-export type EmailCodePurpose = "signup";
+export type EmailCodePurpose = "signup" | "contact";
 
 /** How long a code stays valid, how often one may be resent, and how many guesses it allows. */
 export const EMAIL_CODE_TTL_SECONDS = 600;

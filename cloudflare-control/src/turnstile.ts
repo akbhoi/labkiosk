@@ -1,7 +1,7 @@
 /**
- * Cloudflare Turnstile in front of the two public forms that make the
- * platform send or file mail for a stranger: the signup email code and the
- * contact form.
+ * Cloudflare Turnstile in front of what a stranger can ask the platform to
+ * do: send the registration code, send the contact form's code, and check a
+ * password at sign-in.
  *
  * Optional: it is on only when both TURNSTILE_SITE_KEY and
  * TURNSTILE_SECRET_KEY are set. Half a configuration is a mistake, and the

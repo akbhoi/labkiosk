@@ -25,6 +25,8 @@ export interface User {
   role: UserRole;
   name: string;
   created_at: number;
+  /** 1 when sign-in asks this account for an emailed code (migration 0023). */
+  two_factor_email?: number;
 }
 
 export interface Tenant {
@@ -316,6 +318,11 @@ export interface Env {
    * pretend a message went out.
    */
   EMAIL?: SendEmail;
+  /**
+   * labkiosk-email-routing, which renders and sends every outgoing message
+   * (`POST /send`). Without it, or when it fails, mail goes out through EMAIL.
+   */
+  MAILER?: Fetcher;
   /** Sender on the onboarded sending domain, e.g. "Lab Kiosk <support@labkiosk.org>". */
   MAIL_FROM?: string;
   /** Where customers reply, and the address the support inbox answers from, e.g. "support@labkiosk.org". */
@@ -326,8 +333,8 @@ export interface Env {
    */
   SUPPORT_FORWARD_TO?: string;
   /**
-   * Cloudflare Turnstile in front of the signup email code and the contact
-   * form (src/turnstile.ts). On only when both are set; one without the other
+   * Cloudflare Turnstile in front of the signup email code, the contact form's
+   * email code and sign-in (src/turnstile.ts). On only when both are set; one without the other
    * makes those forms refuse.
    */
   TURNSTILE_SITE_KEY?: string;

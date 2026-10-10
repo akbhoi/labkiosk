@@ -3,7 +3,8 @@
  *
  * - `/api/super/inbox...` (super admin only): list (by mailbox), read, reply,
  *   write a new email, add a note, approve or reject a task, mark a signup's
- *   phone as verified, close, reopen or delete a mail conversation, and
+ *   phone as verified, mark unread, close or reopen a mail conversation, move
+ *   it to Deleted, restore it or delete it for good, and
  *   download an inbound message's attachments or original. Every reply goes
  *   out as email from here.
  * - `fileStoredInboundMail()`: mail the `labkiosk-email-routing` Worker
@@ -11,7 +12,7 @@
  *   stored in R2, handed over through `MailIntake` (src/index.ts).
  *   `handleInboundEmail()` does the same for mail routed straight to this
  *   Worker's own `email()` handler. Either way the message is kept
- *   whole in R2 and filed into its conversation by the `[LK-XXXXXX]` reference
+ *   whole in R2 and filed into its conversation by the `[SUP-XXXXXX]` tracking id
  *   in the subject or by its threading headers, and only when it comes from
  *   that conversation's own contact; anything else starts a new conversation
  *   in the mailbox it was sent to.
@@ -24,7 +25,12 @@ import { notifyConfigChanged } from "./hub";
 import {
   addConversationMessage,
   AttachmentInfo,
+  categoryCounts,
+  categoryForMailbox,
+  categoryLabel,
   Conversation,
+  CONVERSATION_FILTERS,
+  ConversationFilter,
   ConversationKind,
   createConversation,
   deleteConversation,
@@ -34,6 +40,7 @@ import {
   findConversationByReference,
   findOrganizationProfile,
   inboxCounts,
+  isCategory,
   listConversationMessages,
   listConversations,
   mailboxCounts,
@@ -41,6 +48,7 @@ import {
   markPhoneVerified,
   MAX_MESSAGE_CHARS,
   referenceInSubject,
+  setConversationDeleted,
   setConversationStatus,
   TASK_KINDS
 } from "./conversations";
@@ -51,7 +59,7 @@ import { consoleUrlFor, RouteContext, sendOnConversation } from "./signup";
 
 const SUPPORT_KINDS: readonly ConversationKind[] = ["support"];
 const INBOX_PATH =
-  /^\/api\/super\/inbox(?:\/compose|\/([0-9a-f-]{36})(?:\/(reply|note|approve|reject|verify-phone|status|delete)|\/attachment\/([0-9a-f-]{36})\/(original|\d{1,2}))?)?$/;
+  /^\/api\/super\/inbox(?:\/compose|\/([0-9a-f-]{36})(?:\/(reply|note|approve|reject|verify-phone|status|unread|trash|restore|delete)|\/attachment\/([0-9a-f-]{36})\/(original|\d{1,2}))?)?$/;
 /** Email Routing's own limit: nothing larger reaches the Worker. */
 const MAX_INBOUND_BYTES = 25 * 1024 * 1024;
 /** Inbound messages larger than this are filed from their headers; the stored original is whole. */
@@ -99,6 +107,9 @@ function download(bytes: Uint8Array, filename: string): Response {
   });
 }
 
+/** How a letter is dated: "9 October 2026", in the platform's own time zone. */
+const LETTER_DATE = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
+
 /** POST /api/super/inbox/compose: start a conversation with an email written as one of the platform's addresses. */
 async function handleCompose(ctx: RouteContext): Promise<Response> {
   const { db, env, jsonHeaders, request, session } = ctx;
@@ -106,7 +117,16 @@ async function handleCompose(ctx: RouteContext): Promise<Response> {
   if (problem) return jsonError(problem, 503, jsonHeaders);
   const domain = mailDomain(env);
   if (!domain) return jsonError("Set SUPPORT_ADDRESS to say which domain the mailboxes are on", 503, jsonHeaders);
-  let body: { from?: unknown; to?: unknown; subject?: unknown; message?: unknown };
+  let body: {
+    from?: unknown;
+    to?: unknown;
+    subject?: unknown;
+    message?: unknown;
+    format?: unknown;
+    organization?: unknown;
+    signatory?: unknown;
+    signatoryTitle?: unknown;
+  };
   try {
     body = await request.json<typeof body>();
   } catch {
@@ -126,7 +146,15 @@ async function handleCompose(ctx: RouteContext): Promise<Response> {
   const message = String(body?.message ?? "").replace(/\r\n/g, "\n").trim().slice(0, MAX_MESSAGE_CHARS);
   if (!message) return jsonError("Write the message first", 400, jsonHeaders);
 
+  // A formal letter to a company, or an ordinary message.
+  const letter = body?.format === "letter";
+  const organization = String(body?.organization ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const signatoryTitle = String(body?.signatoryTitle ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+  // Who signs the letter: the name its writer gives it, else the account's.
+  const signatory = String(body?.signatory ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+
   const userId = session!.user_id;
+  const author = (await findUserById(db, userId))?.name || null;
   const conversation = await createConversation(db, {
     kind: "support",
     tenantId: null,
@@ -134,9 +162,25 @@ async function handleCompose(ctx: RouteContext): Promise<Response> {
     contactEmail: to.email,
     contactName: to.name || null,
     mailbox: `${fromLocal}@${domain}`,
+    category: letter ? "letter" : undefined,
     unread: false
   });
-  const sent = await sendOnConversation(env, db, conversation, message, { authorUserId: userId });
+  const sent = await sendOnConversation(env, db, conversation, message, {
+    authorUserId: userId,
+    authorName: author,
+    template: letter
+      ? {
+          name: "letter",
+          reference: conversation.reference,
+          date: LETTER_DATE.format(new Date()),
+          recipientName: to.name || null,
+          recipientOrganization: organization || null,
+          heading: subject,
+          signatory: signatory || author,
+          signatoryTitle: signatoryTitle || null
+        }
+      : undefined
+  });
   await writeAuditLog(db, {
     tenantId: null,
     userId,
@@ -172,20 +216,26 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
     return handleCompose(ctx);
   }
 
-  // GET /api/super/inbox?box=tasks|support&filter=open|closed|all&mailbox=<address>
+  // GET /api/super/inbox?box=tasks|support&filter=open|closed|all|unread|read|deleted&mailbox=<address>&category=<type>
   if (!id) {
     if (method !== "GET") return jsonError("Method not allowed", 405, jsonHeaders);
     const box = url.searchParams.get("box") === "support" ? "support" : "tasks";
     const filterParam = url.searchParams.get("filter");
-    const filter = filterParam === "closed" || filterParam === "all" ? filterParam : "open";
+    const filter: ConversationFilter = (CONVERSATION_FILTERS as readonly string[]).includes(filterParam || "")
+      ? (filterParam as ConversationFilter)
+      : "open";
     const mailbox = box === "support" ? (parseAddress(url.searchParams.get("mailbox") || "")?.email ?? null) : null;
-    const items = await listConversations(db, box === "support" ? SUPPORT_KINDS : TASK_KINDS, filter, 200, mailbox);
+    const categoryParam = url.searchParams.get("category");
+    const category = isCategory(categoryParam) ? categoryParam : null;
+    const items = await listConversations(db, box === "support" ? SUPPORT_KINDS : TASK_KINDS, filter, 200, mailbox, category);
     return json(
       {
         box,
         filter,
         mailbox,
+        category,
         items,
+        categories: await categoryCounts(db, box),
         counts: await inboxCounts(db),
         mailboxes: box === "support" ? await mailboxCounts(db) : [],
         mailDomain: mailDomain(env)
@@ -210,10 +260,28 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
     return download(found.bytes, found.attachment.filename);
   }
 
-  // POST .../delete: a mail conversation, its messages and their stored originals.
+  // POST .../trash and .../restore: a mail conversation into Deleted and back. Nothing is removed.
+  if (action === "trash" || action === "restore") {
+    if (method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
+    if (conversation.kind !== "support") return jsonError("Tasks stay on record and cannot be deleted", 400, jsonHeaders);
+    const deleted = action === "trash";
+    if (Boolean(conversation.deleted_at) !== deleted) {
+      await setConversationDeleted(db, id, deleted);
+      await writeAuditLog(db, {
+        tenantId: conversation.tenant_id,
+        userId: session!.user_id,
+        action: deleted ? "inbox.trash" : "inbox.restore",
+        details: `reference=${conversation.reference} mailbox=${conversation.mailbox || "-"}`
+      });
+    }
+    return json({ status: "ok", deleted }, jsonHeaders);
+  }
+
+  // POST .../delete: a mail conversation in Deleted, its messages and their stored originals, for good.
   if (action === "delete") {
     if (method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
     if (conversation.kind !== "support") return jsonError("Tasks stay on record and cannot be deleted", 400, jsonHeaders);
+    if (!conversation.deleted_at) return jsonError("Move the conversation to Deleted first", 409, jsonHeaders);
     const keys = (await listConversationMessages(db, id)).map((m) => m.raw_key).filter((key): key is string => Boolean(key));
     try {
       await deleteRawMail(env, keys);
@@ -270,6 +338,12 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
   if (!input) return jsonError("The request body must be JSON", 400, jsonHeaders);
   const userId = session!.user_id;
 
+  // POST .../unread: back among the unread, as it was before it was opened.
+  if (action === "unread") {
+    await markConversationRead(db, id, false);
+    return json({ status: "ok" }, jsonHeaders);
+  }
+
   // POST .../note { message }: visible only here.
   if (action === "note") {
     if (!input.message) return jsonError("Write the note first", 400, jsonHeaders);
@@ -286,6 +360,7 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
     const sent = await sendOnConversation(env, db, conversation, input.message, {
       subject: conversation.subject.startsWith("Re:") ? conversation.subject : `Re: ${conversation.subject}`,
       authorUserId: userId,
+      authorName: (await findUserById(db, userId))?.name || null,
       ...threading
     });
     if (input.close && conversation.kind === "support") await setConversationStatus(db, id, "closed", userId);
@@ -351,7 +426,19 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
         `${tenant.name} is now active on Lab Kiosk.${note}\n\n` +
         `Sign in to your console with the email address and password you registered with:\n${consoleUrlFor(ctx, tenant.subdomain)}\n\n` +
         `Your enrollment key and the setup steps for your workstations are under Settings.\n\nLab Kiosk`,
-      { subject: "Your organization is active", authorUserId: userId, ...threading }
+      {
+        subject: "Your organization is active",
+        authorUserId: userId,
+        ...threading,
+        template: {
+          name: "decision",
+          reference: conversation.reference,
+          outcome: "approved",
+          title: "Your organization is active",
+          category: categoryLabel(conversation.category),
+          action: { label: "Open your console", url: consoleUrlFor(ctx, tenant.subdomain) }
+        }
+      }
     );
     return json({ status: "ok", emailSent: sent }, jsonHeaders);
   }
@@ -370,7 +457,18 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
       `Hello ${conversation.contact_name || ""},\n\n` +
         `We are not able to activate ${tenant.name} on Lab Kiosk at this time.${note}\n\n` +
         `Reply to this email if you would like to discuss it.\n\nLab Kiosk`,
-      { subject: "About your registration", authorUserId: userId, ...threading }
+      {
+        subject: "About your registration",
+        authorUserId: userId,
+        ...threading,
+        template: {
+          name: "decision",
+          reference: conversation.reference,
+          outcome: "declined",
+          title: "About your registration",
+          category: categoryLabel(conversation.category)
+        }
+      }
     );
     return json({ status: "ok", emailSent: sent }, jsonHeaders);
   }
@@ -396,7 +494,19 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
             `Open Workstations in your console and choose Remote Control on any connected workstation:\n${consoleUrlFor(ctx, tenant.subdomain)}\n\nLab Kiosk`
         : `Hello ${conversation.contact_name || ""},\n\nWe are not able to turn on Remote Control for ${tenant.name} at this time.${note}\n\n` +
             `Reply to this email if you would like to discuss it.\n\nLab Kiosk`,
-      { subject: approve ? "Remote Control is on" : "About your Remote Control request", authorUserId: userId, ...threading }
+      {
+        subject: approve ? "Remote Control is on" : "About your Remote Control request",
+        authorUserId: userId,
+        ...threading,
+        template: {
+          name: "decision",
+          reference: conversation.reference,
+          outcome: approve ? "approved" : "declined",
+          title: approve ? "Remote Control is on" : "About your Remote Control request",
+          category: categoryLabel(conversation.category),
+          action: approve ? { label: "Open your console", url: consoleUrlFor(ctx, tenant.subdomain) } : null
+        }
+      }
     );
     return json({ status: "ok", emailSent: sent }, jsonHeaders);
   }
@@ -496,14 +606,17 @@ async function fileIncomingMail(env: Env, db: D1Database, mail: IncomingMail): P
     (await findConversationByEmailMessageIds(db, [parsed.inReplyTo || "", ...parsed.references]));
   if (conversation && conversation.contact_email !== author.address) conversation = null;
 
+  const isNew = !conversation;
   if (!conversation) {
+    const mailbox = parseAddress(mail.to)?.email ?? null;
     conversation = await createConversation(db, {
       kind: "support",
       tenantId: null,
       subject: parsed.subject || "(no subject)",
       contactEmail: sender.address,
       contactName: sender.name || null,
-      mailbox: parseAddress(mail.to)?.email ?? null
+      mailbox,
+      category: categoryForMailbox(mailbox)
     });
   } else if (conversation.kind === "support" && conversation.status === "closed" && !parsed.automated) {
     // The customer wrote again: the conversation needs attention again.
@@ -528,7 +641,48 @@ async function fileIncomingMail(env: Env, db: D1Database, mail: IncomingMail): P
     rawKey: mail.rawKey,
     attachments
   });
+  if (isNew && !parsed.automated) {
+    await sendReceipt(env, db, conversation, mail.from, parsed.messageId);
+  }
   return conversation;
+}
+
+/** Senders that are programs: a receipt to them is noise, or the start of a loop. */
+const NO_RECEIPT_SENDER = /^(?:mailer-daemon|postmaster|no-?reply|do-?not-?reply|donotreply|bounces?|notifications?|alerts?|news(?:letter)?)(?:[+._-].*)?$/;
+/** One receipt per sender in this long: a burst of mail from one address is answered once. */
+const RECEIPT_GAP_SECONDS = 24 * 3600;
+
+/**
+ * Tell the sender of a new conversation that it arrived, with its tracking id.
+ * Only a person gets one: not an automatic message, not a bounce (an empty
+ * envelope sender), not a no-reply address, and not an address that was sent a
+ * receipt in the last day. Best effort: the message is filed either way.
+ */
+async function sendReceipt(env: Env, db: D1Database, conversation: Conversation, envelopeFrom: string, messageId: string | null): Promise<void> {
+  if (mailConfigProblem(env)) return;
+  const local = conversation.contact_email.split("@")[0];
+  if (!parseAddress(envelopeFrom) || NO_RECEIPT_SENDER.test(local)) return;
+  const recent = await db
+    .prepare("SELECT COUNT(*) AS n FROM conversations WHERE contact_email = ? AND id <> ? AND created_at > ?")
+    .bind(conversation.contact_email, conversation.id, Math.floor(Date.now() / 1000) - RECEIPT_GAP_SECONDS)
+    .first<{ n: number }>();
+  if (Number(recent?.n || 0) > 0) return;
+  const type = categoryLabel(conversation.category);
+  await sendOnConversation(
+    env,
+    db,
+    conversation,
+    `Hello${conversation.contact_name ? ` ${conversation.contact_name}` : ""},\n\n` +
+      `Thank you for writing to Lab Kiosk. Your message "${conversation.subject}" has reached us, and a person will read it.\n\n` +
+      `Your tracking ID is ${conversation.reference}. Reply to this email to add anything: keeping the tracking ID in the subject keeps it all in one place.\n\nLab Kiosk`,
+    {
+      subject: "We received your message",
+      inReplyTo: messageId,
+      references: messageId ? [messageId] : [],
+      autoReply: true,
+      template: { name: "receipt", reference: conversation.reference, category: type, title: "We received your message" }
+    }
+  );
 }
 
 /**

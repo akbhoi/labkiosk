@@ -3,7 +3,8 @@
 	"name": "labkiosk-email-routing",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-09-01",
-	// No routes and no workers.dev URL: this Worker only receives mail. Point the
+	// No routes and no workers.dev URL: this Worker receives mail, and sends what the
+	// controller hands it over a Service Binding. Point the
 	// Email Routing catch-all of the platform's domain at it ("Send to a Worker",
 	// docs/DEPLOYMENT.md, "Email").
 	"workers_dev": false,
@@ -23,6 +24,13 @@
 			"binding": "CONTROLLER",
 			"service": "labkiosk-controller",
 			"entrypoint": "MailIntake"
+		}
+	],
+	// Outgoing mail: labkiosk-controller hands each message to this Worker over its
+	// MAILER Service Binding, and it is rendered (src/templates/) and sent from here.
+	"send_email": [
+		{
+			"name": "EMAIL"
 		}
 	],
 	// Optional, set in the dashboard: SUPPORT_FORWARD_TO, a verified Email Routing

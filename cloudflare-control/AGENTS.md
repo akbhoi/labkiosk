@@ -9,7 +9,7 @@
 
 ```text
 cloudflare-control/
-├── migrations/                         # Cloudflare D1 SQL migrations (0001..0021)
+├── migrations/                         # Cloudflare D1 SQL migrations (0001..0026)
 ├── .dev.vars.example                   # Local secrets template for `wrangler dev`
 ├── wrangler.jsonc                      # Routes, D1, the platform resources (Rule 2d), AI, hourly cron
 ├── tsconfig.runtime.json               # Test runtime: maps `cloudflare:workers` to test/shims/
@@ -24,13 +24,16 @@ cloudflare-control/
 │   ├── custom_hostname_workflow.ts     # The Workflow that runs those jobs with durable retries
 │   ├── boot_report.ts                  # Workstation boot reports, Errors & Warnings (Rule 2e)
 │   ├── bug_reports.ts                  # Opt-in automatic GitHub bug reports (Rule 2e)
+│   ├── release_notes.ts                # GitHub releases and their AI-written summaries, for /download
+│   ├── markdown.ts                     # Markdown to escaped HTML, for /docs
+│   ├── docs_content.generated.ts       # wiki/ as a module (tools/build-docs.mjs; `pnpm run docs`)
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
-│   ├── signup.ts                       # Registration with an email code, the contact form, Remote Control requests
-│   ├── two_factor.ts                   # Two-factor sign-in (TOTP, email code, recovery codes), sign-in alerts
-│   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the signup code and contact form
+│   ├── signup.ts                       # Registration and the contact form, each with an email code; Remote Control requests
+│   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional TOTP app, recovery codes), sign-in alerts
+│   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the registration code, the contact code and sign-in
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
-│   ├── mail.ts                         # Outbound email via the EMAIL send_email binding
+│   ├── mail.ts                         # Outbound email: hands each message to labkiosk-email-routing (MAILER), EMAIL as fallback
 │   ├── mail_store.ts                   # Incoming originals in R2 under mail/, markers under mail-pending/
 │   ├── mime.ts                         # Dependency-free parser for incoming email
 │   ├── guard.ts                        # Tenant resolution, authorization, CSRF origin guard (MANDATORY)
@@ -48,12 +51,12 @@ cloudflare-control/
 │   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
 │   │                                   #   radii and easing, plus the legacy aliases the public
 │   │                                   #   pages were written against
-│   ├── ui_layout.ts                    # Shared shell: 72px rail, 272px context panel, primitives
-│   ├── ui_landing.ts                   # Public SaaS Landing Page
+│   ├── ui_layout.ts                    # Shared shell: unified 240px sidebar, view tabs, primitives
+│   ├── ui_landing.ts                   # Public marketing & docs (/, /features, /specs, /pricing, /download, /docs)
 │   ├── ui_org_home.ts                  # The organization homepage at the subdomain root (/)
 │   ├── ui_portal.ts                    # User Portal at /home (cards grid)
 │   ├── ui_super.ts                     # Super Admin Master Console (/super)
-│   ├── ui_two_factor.ts                # The profile menu's Two-factor sign-in dialog (every console)
+│   ├── ui_two_factor.ts                # The Two-factor sign-in tab (Settings, and System in the super console)
 │   ├── ui_super_inbox.ts               # Its Tasks and Mail panes (/super/tasks, /super/mail)
 │   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /terms/bug-reports)
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
@@ -282,27 +285,41 @@ cloudflare-control/
 - **No inline event handler attributes anywhere** (`onclick=`, `onsubmit=`, `onmouseover=`, ...): they are blocked by the CSP. Use `data-action` attributes and delegated event listeners (or `addEventListener`).
 - `test/worker.test.ts` renders every page and fails if any script lacks the nonce or any `on*=` attribute is detected.
 
-### Rule 5b: Left-Side Multi-Level Panels Design & Seamless Transitions
+### Rule 5b: Unified 240px Sidebar & Strict View-Switching Tabs
 
-- The dashboard control planes (both Organization Admin `/admin/*` and Super Admin `/super/*`) use a unified **Left-Side Multi-Level Panels Architecture**:
-  - **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with the brand icon, exactly 4 primary module icons (Workstations, Apps & Web, Staff, Settings), live stats counter, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and panel expand/collapse toggle.
-  - **Level 2 (Secondary Action Panel — 272px)**: Context-aware sub-panel that expands seamlessly with hardware-accelerated CSS (`transform: translateX()`, `opacity`, `cubic-bezier(0.16, 1, 0.3, 1)`), providing module-specific tools, live filters, and batch commands. Subpanels strictly provide contextual tools and never duplicate the Level 1 Rail navigation (no redundant "Quick Navigation" or "Back to Workstations" lists).
-  - **Workstations Page Layout (`/admin/workstations`)**:
-    - **Sidebar Subpanel**: Removed duplicate batch commands. Dedicated to Workstation Groups management (`+ New Group`, member counts, filtering by group, and delete group actions).
+- The dashboard control planes (both Organization Admin `/admin/*` and Super Admin `/super/*`) use a consolidated **Unified 240px Sidebar Architecture**:
+  - **Unified Sidebar (`.nav-sidebar`, 240px)**: Consolidates primary module navigation (Workstations, Apps & Web, Staff, Settings) and contextual quick controls into a single persistent 240px sidebar (`--sidebar-width: 240px`). Includes live stats counters, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and responsive single mobile drawer sliding.
+  - **Contextual Tools & Quick Actions**: Module-specific quick actions, workstation group filters, and density toggles reside directly in the sidebar context section without duplicating top navigation buttons.
+  - **Strict View-Switching Tabs (`.segmented-nav`)**: Top tabs in all consoles (`ui_admin_workstations.ts`, `ui_admin_apps_web.ts`, `ui_admin_staff.ts`, `ui_admin_settings.ts`, `ui_super.ts`) strictly switch view panes client-side without anchor jumping, synchronizing `?tab=...` via `history.replaceState`.
+    - **Workstations Page Layout (`/admin/workstations`)**:
+    - **In-Canvas Controls & Sidebar Subpanel**: Features an in-canvas `.controls-bar` above the toolbar with telemetry quick-filter chips (`.filter-chips`, `.filter-chip`, `.chip-badge` for `All`, `Online`, `Offline`, `Locked`) and a grid density switcher (`.density-toggle`, `.density-btn` for `Thumbs` and `Compact`), synchronized two-way with the Level 2 subpanel buttons. The sidebar subpanel manages Workstation Groups (`+ New Group`, member counts, filtering by group, and delete group actions).
     - **Top Toolbar** (`.toolbar`): "Select All" and the selection count (`# selected`); `Lock` and `Unlock`; `Broadcast URL` (the one primary button), `Reset to Portal` and `Move to Group...`; and a **Session & Power** menu (a `popover`, `.menu-popover`) holding `Clear Session`, `Reboot` and `Shutdown`. The destructive commands sit one click further away because each interrupts whoever is at the screen; their button ids are unchanged, so the panel's `runToolbarAction()` still clicks them.
     - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, saving collapse states in `localStorage`.
+  - **Super Admin Console Layout (`/super/*`)**:
+    - **Rail**: `Organizations`, `Tasks`, `Mail`, `Catalogs`, `System`.
+    - **Views are declared once**: `viewsByTab` in `ui_super.ts` renders both the in-canvas `.segmented-nav` and the panel's "Views" list, so the two cannot drift. Tasks has `Requests`, `Subdomain changes` and `Custom domains` (an address request is a task and lives only there); Catalogs and System have two views each; Organizations is one directory with a status filter (`data-org-filter`, chips and panel in sync).
+    - **Mail's view tabs are its folders** (`data-inbox-filter`: `Inbox`, `Unread`, `Read`, `Closed`, `Deleted`, deep-linked as `?view=`), with `New message` (`data-inbox-compose`) beside them and in the panel. Delete moves a conversation to Deleted (`conversations.deleted_at`, migration `0022`); from there it is restored, or deleted for good (`POST …/trash | restore | delete`, the last `409` outside Deleted). An inbound answer restores it.
+    - **Tasks and Mail filter by type** (`data-inbox-category`, `?type=`): what a conversation is about (`CATEGORIES` in `conversations.ts`, `conversations.category`, migration `0024`), which is also the prefix of its tracking ID (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`; `LK` before 0024 still threads). Mail is typed by the address it was sent to, the contact form by its topic. New mail is written as a message or a formal letter (`LTR`).
+    - **Every email is a template** (`cloudflare-email-routing/src/templates/`: `code`, `receipt`, `reply`, `decision`, `letter`, `alert`, `notice`). A send site passes `template` to `sendMail()` / `sendOnConversation()`; the plain text it writes is the template's body. Never build email HTML in the controller. `sendMail()` hands the message to the email Worker (`MAILER`) and falls back to its own `EMAIL`. A new inbound conversation is answered with a `receipt` (`sendReceipt()` in `inbox.ts`): once a day per sender, never to an automatic message, a bounce or a no-reply address.
+    - **The header's counters are centred** (`.canvas-header` is a three-column grid) and `html` reserves its scrollbar gutter, so they sit at the same place on every page of both consoles.
+  - **User Portal App Launcher (`/home`)**:
+    - **Instant Application Filter & Category Pills**: Features an accessible instant search box (`#portal-search`) and category pills bar (`.portal-category-pills`, `.category-pill`) with client-side filtering and empty-match feedback (`.portal-no-match`), allowing workstation operators and users to locate apps on touchscreens and compact viewports.
   - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
     - Unifies Broadcast, User Portal Apps, and Domain Allowlist into a single, cohesive view with 3 tab panes (`Broadcast`, `User Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy paths (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
+    - **Dual Navigation (In-Canvas & Subpanel)**: Features in-canvas segmented tab pills (`.segmented-nav`, `.segmented-tab`) directly below `.page-head` synchronized two-way with the Level 2 subpanel buttons, providing intuitive, direct switching even when the sidebar subpanel is collapsed.
     - **Stabilized Sidebar Subpanel**: Fixed, non-shifting Level 2 subpanel featuring static tab view switchers (`📶 Broadcast`, `⊞ User Portal`, `🛡️ Domain Allowlist`), a `Preview User Portal &rarr;` shortcut opening `/home` in a new tab, and a static Module Overview card (total apps, allowed domains, live broadcast status). Eliminates dynamic layout shift.
-    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant "Standard Educational Presets" from Broadcast to prevent duplicate lists.
+    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant presets from Broadcast to prevent duplicate lists.
   - **Staff Page Layout (`/admin/staff`)**:
-    - **Sidebar Subpanel**: Active **"Role"** filter section (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with live count badges that filter the authorized operators table instantly without page reload.
+    - **Sidebar Subpanel & In-Canvas Filter Chips**: Active **"Role"** filter section in the subpanel and companion in-canvas quick filter chips (`.filter-chips`, `.filter-chip`) in the table header card (`All Roles`, `Operators`, `Assistants`, `Content`, `Admins`), synchronized two-way and updating visible row counts instantly without page reload.
     - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
   - **Settings Page Layout (`/admin/settings`)**:
-    - **Semantic Tab Panes**: Converted 9 fragile vertical scroll jumps into 5 distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`, `Errors & Warnings`) with instant client-side switching and deep linking (`?tab=...`).
-    - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode \| Kiosk Routing & Home URL; Subdomain \| Custom Domain; Homepage Identity \| Content Blocks; Enrollment Key & Admin Password \| Recent Activity).
+    - **Semantic Tab Panes & Segmented Nav**: Converted 9 fragile vertical scroll jumps into distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`, `Two-factor sign-in`, `Errors & Warnings`) with instant client-side switching, companion in-canvas `.segmented-nav` tabs, and deep linking (`?tab=...`).
+    - **Two-factor sign-in is a tab, not a dialog** (`ui_two_factor.ts`): `?tab=two-factor` here and `/super/system?tab=system-two-factor` in the super console, linked from the profile menu. It is the signed-in account's own, so `/admin/settings` opens for every staff account: without the `settings` permission it renders that tab alone (`accountOnly`), and nothing of the organization's.
+    - **The second factor is an emailed code by default** (`two_factor.ts`): a super admin is always asked; an organization account turns it on in that tab (`users.two_factor_email`, migration `0023`, `POST /api/auth/two-factor/email { password, enabled }`). An authenticator app is optional on top. Where email is not configured, an account with no app signs in with its password alone and the server logs why.
+    - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode | Kiosk Routing & Home URL; Subdomain | Custom Domain; Homepage Identity | Content Blocks; Enrollment Key & Admin Password | Recent Activity).
     - **Scrollable Activity Table (`.table-scrollable`)**: Recent Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
   - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
+  - **Container Queries & Responsive Shell**: `.app-canvas` acts as an inline-size container (`container-name: canvas`), intelligently stacking `.grid-2col` into a single column via `@container canvas (max-width: 680px)`, restructuring `.controls-bar` via `@container canvas (max-width: 760px)`, and adapting `.kc-actions` on compact cards. Mobile drawers auto-dismiss on `.rail-item`, `.sub-action-item`, `.segmented-tab`, and `.filter-chip` clicks, header stat pills scroll horizontally on compact screens without clipping, and touch targets maintain comfortable accessibility (`min-height: 44px`).
   - **Look, Motion & Accessibility**: a calm, neutral design in light and dark (Rule 5c): flat surfaces with hairline borders and small shadows, one accent blue for the primary action, status shown as dots and soft badges, red only on destructive actions. Inter for the interface, JetBrains Mono for ids, hosts and URLs. Compositor-only transitions, a cross-fade between console pages (`@view-transition`), all of it off under `prefers-reduced-motion`; `:focus-visible` outlines, `forced-colors` borders, and zero inline event handlers (`data-action` pattern).
 
 ### Rule 5c: One Design Language, Declared Once
@@ -401,6 +418,14 @@ cloudflare-control/
 - `/home` is the **user app grid** (`ui_portal.ts`), the launcher a user
   picks a site from.
 - `/admin` is the **organization console**, and `/admin/<page>` its sub-pages.
+- **The platform's own pages** (`/features`, `/specs`, `/pricing`, `/download`, `/docs`; `/wiki` redirects to `/docs`) are served on the platform's host only. On an organization's host they answer `301` to the platform, so an organization's address never shows Lab Kiosk's pricing under its own name. A trailing slash on any of them, or on `/home`, `/privacy`, `/terms`, `/admin` and `/super`, is `301` to the address without it. A path that does not exist answers a page with a way back to a browser, JSON to anything else.
+- **Every public page leads home.** The name in the header is a link to `/` and Home is the first tab, in the bar and in the phone menu; a test holds every page to it.
+- **`/contact` is a page, and its sender is proved.** Name, organization (optional), a reason from `CONTACT_REASONS` (`conversations.ts`; the reason is the type the message is filed under), email and message. `POST /api/contact/email-code` sends a six-digit code (`email_codes`, purpose `contact`, migration `0026`) and `POST /api/contact` files nothing without it; the sender then gets a receipt with the reference. Add a reason by adding a category.
+- **Turnstile stands in front of every form a stranger can use** when it is configured: the registration code, the contact code and sign-in (`turnstileRefusal`, one action each: `signup`, `contact`, `login`). The check is on the step that sends mail or looks at a password; the emailed code guards the step after it. Every public page carries the sign-in and registration forms, so every page render takes `formChecks`. Sign-in on an organization's own domain carries no check: a widget runs only on the host names its site key lists.
+- **`/download` states only what GitHub published.** The hourly run reads the releases into `release_notes` (`src/release_notes.ts`, migration `0025`) and Workers AI rewrites each change list for customers; the page marks those sentences as written by AI. Never write a version, a size, a checksum or a changelog into the page: a test fails on any.
+- **A claim on a public page is checked against the product, or it is not made.** No latency, price, lifetime, hardware model or response time that nobody measured or committed to: a test fails on those patterns. Change the product, change the page.
+- **`/docs` is the wiki.** `wiki/*.md` is the one copy of the documentation; `tools/build-docs.mjs` (`pnpm run docs`) writes it into `src/docs_content.generated.ts`, and `src/markdown.ts` renders each page at `/docs/<file name in lower case>` (`Home.md` is `/docs`; the sidebar is `_Sidebar.md`). The renderer escapes every character and writes a link only where `resolveDocsLink` returns one, so a wiki page cannot put markup on the site. After editing the wiki run `pnpm run docs` and commit both: a test fails while they differ. `/wiki/<Page>` answers `301` to its `/docs` address.
+- **One stylesheet, one address each.** The public pages link `/assets/site-<hash>.css` (`SITE_CSS` in `ui_landing.ts`, cached for a year under the hash of its text) instead of carrying their styles. `public/social-card.png` is the picture a shared link shows. The platform's other host name (`www.` beside the apex, or the reverse) answers each public page with `301` to `canonicalHost(env)`.
 - `/portal` no longer exists. All three paths used to render the same grid,
   which is why `home_route` could be set to any of them. An organization that had
   pointed its workstations at `/portal` would have had them reset to a 404, so

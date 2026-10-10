@@ -20,42 +20,6 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
     subPanelTitle: "Workstations",
     subPanelSubtitle: "Telemetry & groups",
     subPanelHtml: `
-      <div class="sub-section-title">Grid Density</div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item" data-density="thumbs">
-          <span class="row">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-            Screen Thumbnails
-          </span>
-        </button>
-        <button type="button" class="sub-action-item" data-density="compact">
-          <span class="row">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-            Compact List
-          </span>
-        </button>
-      </div>
-
-      <div class="sub-section-title">Telemetry Filters</div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item active" data-filter="all">
-          <span>All Workstations</span>
-          <span class="sub-action-badge" id="sub-filter-all-count">0</span>
-        </button>
-        <button type="button" class="sub-action-item" data-filter="online">
-          <span>Online (Active)</span>
-          <span class="sub-action-badge" id="sub-filter-online-count">0</span>
-        </button>
-        <button type="button" class="sub-action-item" data-filter="offline">
-          <span>Offline / Standby</span>
-          <span class="sub-action-badge" id="sub-filter-offline-count">0</span>
-        </button>
-        <button type="button" class="sub-action-item" data-filter="locked">
-          <span>Locked Screens</span>
-          <span class="sub-action-badge" id="sub-filter-locked-count">0</span>
-        </button>
-      </div>
-
       <div class="sub-section-head">
         <div class="sub-section-title">Workstation Groups</div>
         <button type="button" class="panel-link-btn" data-action="new-group" title="Create new group">+ New</button>
@@ -95,6 +59,40 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
       </div>
     </div>
 
+    <div class="controls-bar">
+      <div class="filter-chips" id="workstation-filter-chips" role="tablist" aria-label="Workstation telemetry filters">
+        <button type="button" class="filter-chip active" data-filter="all">
+          <span>All Workstations</span>
+          <span class="chip-badge" id="chip-count-all">0</span>
+        </button>
+        <button type="button" class="filter-chip" data-filter="online">
+          <span class="stat-dot dot-green"></span>
+          <span>Online</span>
+          <span class="chip-badge" id="chip-count-online">0</span>
+        </button>
+        <button type="button" class="filter-chip" data-filter="offline">
+          <span class="stat-dot dot-red"></span>
+          <span>Offline</span>
+          <span class="chip-badge" id="chip-count-offline">0</span>
+        </button>
+        <button type="button" class="filter-chip" data-filter="locked">
+          <span>Locked</span>
+          <span class="chip-badge" id="chip-count-locked">0</span>
+        </button>
+      </div>
+
+      <div class="density-toggle" role="radiogroup" aria-label="Grid density">
+        <button type="button" class="density-btn active" data-density="thumbs" title="Screen Thumbnails">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          <span>Thumbs</span>
+        </button>
+        <button type="button" class="density-btn" data-density="compact" title="Compact List">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          <span>Compact</span>
+        </button>
+      </div>
+    </div>
+
     <div class="toolbar" role="toolbar" aria-label="Workstation commands">
       <div class="toolbar-group">
         <button type="button" class="btn btn-ghost" id="btn-select-all" title="Select or deselect all visible workstations">
@@ -124,7 +122,7 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
           Reset to Portal
         </button>
-        <button type="button" class="btn btn-secondary" id="btn-move-group" style="display: none;">
+        <button type="button" class="btn btn-secondary hidden" id="btn-move-group">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Move to Group...
         </button>
@@ -353,6 +351,14 @@ function renderWorkstationsScripts(
         density = next === "compact" ? "compact" : "thumbs";
         var grid = document.getElementById("kiosk-grid");
         if (grid) grid.classList.toggle("compact", density === "compact");
+        var btns = document.querySelectorAll(".density-btn[data-density]");
+        for (var b = 0; b < btns.length; b++) {
+          btns[b].classList.toggle("active", btns[b].getAttribute("data-density") === density);
+        }
+        var subDens = document.querySelectorAll("#sub-panel [data-density]");
+        for (var sd = 0; sd < subDens.length; sd++) {
+          subDens[sd].classList.toggle("active", subDens[sd].getAttribute("data-density") === density);
+        }
         try {
           localStorage.setItem(DENSITY_KEY, density);
         } catch (err) {}
@@ -1222,7 +1228,11 @@ function renderWorkstationsScripts(
           "sub-filter-all-count": total,
           "sub-filter-online-count": online,
           "sub-filter-offline-count": offline,
-          "sub-filter-locked-count": locked
+          "sub-filter-locked-count": locked,
+          "chip-count-all": total,
+          "chip-count-online": online,
+          "chip-count-offline": offline,
+          "chip-count-locked": locked
         };
         for (var id in counts) {
           var node = document.getElementById(id);
@@ -1247,6 +1257,14 @@ function renderWorkstationsScripts(
 
       function applyFilter(name) {
         activeFilter = name || "all";
+        var chips = document.querySelectorAll(".filter-chip[data-filter]");
+        for (var c = 0; c < chips.length; c++) {
+          chips[c].classList.toggle("active", chips[c].getAttribute("data-filter") === activeFilter);
+        }
+        var subFilters = document.querySelectorAll("#sub-panel [data-filter]");
+        for (var s = 0; s < subFilters.length; s++) {
+          subFilters[s].classList.toggle("active", subFilters[s].getAttribute("data-filter") === activeFilter);
+        }
         var grid = document.getElementById("kiosk-grid");
         if (!grid) return;
         var shown = 0;
@@ -1371,6 +1389,23 @@ function renderWorkstationsScripts(
           }
         });
       }
+
+      document.addEventListener("click", function (e) {
+        const chip = e.target && e.target.closest ? e.target.closest(".filter-chip[data-filter]") : null;
+        if (chip) {
+          e.preventDefault();
+          const f = chip.getAttribute("data-filter");
+          if (f) applyFilter(f);
+          return;
+        }
+        const dBtn = e.target && e.target.closest ? e.target.closest(".density-btn[data-density]") : null;
+        if (dBtn) {
+          e.preventDefault();
+          const d = dBtn.getAttribute("data-density");
+          if (d) applyDensity(d);
+          return;
+        }
+      });
 
       applyDensity(density);
       pollClients().then(connectLive);

@@ -8,7 +8,8 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json",
     "test": "tsx --tsconfig tsconfig.runtime.json --test test/worker.test.ts",
-    "predev": "wrangler d1 migrations apply labkiosk-db --local"
+    "predev": "wrangler d1 migrations apply labkiosk-db --local",
+    "docs": "node tools/build-docs.mjs"
   },
   "keywords": [
     "kiosk",

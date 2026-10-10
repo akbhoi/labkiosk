@@ -202,6 +202,40 @@ LOCAL_WORKER_HOSTS = {
 # Kept in step with the maxlength="64" on the wizard's identifier input.
 CLIENT_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,62}\Z")
 
+# An organization's enrollment key as the control plane generates it
+# (generateEnrollmentKey in cloudflare-control/src/auth.ts): four groups of five
+# from an alphabet without I, L, O, U, 0 and 1, which are misread, the last
+# character being a check on the nineteen before it. A key that is not this
+# shape, or whose check character does not fit, was mistyped, and is refused
+# here without asking the server -- so a typo costs no attempt against the
+# organization's enrolment limit. Kept in step with the wizard.
+ENROLLMENT_KEY_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
+ENROLLMENT_KEY_PATTERN = re.compile(r"^[%s]{5}(?:-[%s]{5}){3}\Z" % (ENROLLMENT_KEY_ALPHABET, ENROLLMENT_KEY_ALPHABET))
+
+
+def enrollment_key_check_character(payload):
+    """
+    The check character for the characters before it: the Luhn algorithm over the
+    key's alphabet, exactly as enrollmentKeyCheckCharacter in the control plane
+    computes it. One wrong character, or two neighbours swapped, changes it.
+    """
+    n = len(ENROLLMENT_KEY_ALPHABET)
+    factor = 2
+    total = 0
+    for char in reversed(payload):
+        addend = factor * ENROLLMENT_KEY_ALPHABET.index(char)
+        total += addend // n + addend % n
+        factor = 1 if factor == 2 else 2
+    return ENROLLMENT_KEY_ALPHABET[(n - total % n) % n]
+
+
+def enrollment_key_is_valid(key):
+    """True for a key of the generated shape whose last character checks the rest."""
+    if not isinstance(key, str) or not ENROLLMENT_KEY_PATTERN.match(key):
+        return False
+    chars = key.replace("-", "")
+    return enrollment_key_check_character(chars[:-1]) == chars[-1]
+
 # Whole-disk device nodes the guided installer may target. Kept identical to
 # TARGET_DISK_PATTERN in /usr/local/bin/labkiosk-install, which re-checks it
 # because sudoers lets the kiosk user invoke that binary directly.
@@ -2227,6 +2261,20 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                     400,
                     {
                         "error": "Organization subdomain or custom domain, workstation name, and enrollment key are all required."
+                    },
+                )
+                return
+
+            if not enrollment_key_is_valid(enrollment_key):
+                self._send(
+                    400,
+                    {
+                        "error": (
+                            "The enrollment key is not valid: it is 20 characters in four groups "
+                            "(XXXXX-XXXXX-XXXXX-XXXXX), never contains the letters I, L, O, U or "
+                            "the digits 0 and 1, and its last character checks the rest. One "
+                            "character is wrong or two are swapped. Nothing was sent."
+                        )
                     },
                 )
                 return

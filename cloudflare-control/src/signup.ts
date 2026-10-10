@@ -26,8 +26,10 @@ import {
 } from "./db";
 import {
   addConversationMessage,
+  categoryLabel,
   checkEmailCode,
   Conversation,
+  CONTACT_REASONS,
   createConversation,
   createOrganizationProfile,
   discardEmailCode,
@@ -38,7 +40,7 @@ import {
   ProfileInput,
   subjectWithReference
 } from "./conversations";
-import { mailConfigProblem, sendMail, supportAddress, supportMailbox } from "./mail";
+import { mailConfigProblem, MailTemplate, sendMail, supportAddress, supportMailbox } from "./mail";
 import { turnstileRefusal } from "./turnstile";
 
 /** What every handler in this module is given by the router. */
@@ -132,7 +134,7 @@ export async function notifyPlatformOwner(env: Env, subject: string, body: strin
   const to = env.SUPPORT_FORWARD_TO;
   if (!to) return;
   try {
-    await sendMail(env, { to, subject, text: body });
+    await sendMail(env, { to, subject, text: body, template: { name: "notice", title: "For the platform owner" } });
   } catch (err) {
     console.error("[Signup] Could not notify the platform owner:", err);
   }
@@ -140,14 +142,24 @@ export async function notifyPlatformOwner(env: Env, subject: string, body: strin
 
 /**
  * Send a message on a conversation and record it there, whether or not the
- * provider accepted it. Returns false when it did not go out.
+ * provider accepted it. Returns false when it did not go out. Without a
+ * template of its own it goes out as a reply, signed by `authorName`.
  */
 export async function sendOnConversation(
   env: Env,
   db: D1Database,
   conversation: Conversation,
   body: string,
-  options: { subject?: string; authorUserId?: string | null; inReplyTo?: string | null; references?: string[] } = {}
+  options: {
+    subject?: string;
+    authorUserId?: string | null;
+    authorName?: string | null;
+    inReplyTo?: string | null;
+    references?: string[];
+    template?: MailTemplate;
+    /** An automatic answer (a receipt for an incoming email). */
+    autoReply?: boolean;
+  } = {}
 ): Promise<boolean> {
   const subject = subjectWithReference(conversation.reference, options.subject || conversation.subject);
   let messageId: string | null = null;
@@ -160,7 +172,14 @@ export async function sendOnConversation(
       text: body,
       inReplyTo: options.inReplyTo,
       references: options.references,
-      mailbox: conversation.mailbox
+      mailbox: conversation.mailbox,
+      autoReply: options.autoReply,
+      template: options.template ?? {
+        name: "reply",
+        reference: conversation.reference,
+        category: categoryLabel(conversation.category),
+        author: options.authorName ?? null
+      }
     }));
   } catch (err) {
     delivered = false;
@@ -226,7 +245,8 @@ export async function handleSignupEmailCode(ctx: RouteContext): Promise<Response
       text:
         `Your Lab Kiosk verification code is ${code}.\n\n` +
         `Enter it in the registration form to confirm this email address. It expires in ${EMAIL_CODE_TTL_SECONDS / 60} minutes.\n\n` +
-        `If you did not ask to register an organization, ignore this message; nothing happens without the code.`
+        `If you did not ask to register an organization, ignore this message; nothing happens without the code.`,
+      template: { name: "code", code, purpose: "signup", minutes: EMAIL_CODE_TTL_SECONDS / 60 }
     });
   } catch (err) {
     console.error("[Signup] Sending a verification code failed:", err);
@@ -430,7 +450,10 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
       `and may write to you about licensing first. You will receive an email as soon as the account is active, ` +
       `with the address of your console: ${signup.subdomain}.${ctx.baseDomain}.\n\n` +
       `Reply to this email if you have any questions.\n\nLab Kiosk`,
-    { subject: "We received your registration" }
+    {
+      subject: "We received your registration",
+      template: { name: "receipt", reference: conversation.reference, category: "Registration", title: "We received your registration" }
+    }
   );
   await notifyPlatformOwner(
     env,
@@ -443,10 +466,74 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
 
 // ------------------------------------------------------------------ contact form
 
-/** POST /api/contact: the public contact form, filed straight into Mail. */
+/**
+ * POST /api/contact/email-code { email, turnstileToken }: send the six-digit
+ * code that proves the address a message will be answered at. This is the
+ * step a stranger can make the platform send mail with, so it is the one
+ * Turnstile stands in front of; the code then stands in front of the message.
+ */
+export async function handleContactEmailCode(ctx: RouteContext): Promise<Response> {
+  const { db, env, jsonHeaders, clientIp } = ctx;
+  const problem = mailConfigProblem(env);
+  if (problem) {
+    console.error("[Contact]", problem);
+    return jsonError("The contact form is temporarily unavailable. Please write to us by email instead.", 503, jsonHeaders);
+  }
+  let body: { email?: unknown; turnstileToken?: unknown };
+  try {
+    body = await ctx.request.json<typeof body>();
+  } catch {
+    return jsonError("The request body must be JSON", 400, jsonHeaders);
+  }
+  const email = text(body?.email, 254).toLowerCase();
+  if (!isPlausibleEmail(email)) return jsonError("Please enter a valid email address", 400, jsonHeaders);
+  const refused = await turnstileRefusal(env, body?.turnstileToken, clientIp, "contact");
+  if (refused) return jsonError(refused.message, refused.status, jsonHeaders);
+
+  const addressKey = `contact-code:${clientIp}`;
+  const emailKey = `contact-code-email:${email}`;
+  const waitAddress = await rateLimitWait(db, addressKey, CODE_RATE_LIMIT.perAddress, CODE_RATE_LIMIT.windowSeconds);
+  const waitEmail = await rateLimitWait(db, emailKey, CODE_RATE_LIMIT.perEmail, CODE_RATE_LIMIT.windowSeconds);
+  if (waitAddress > 0 || waitEmail > 0) {
+    return jsonError(`Too many codes requested. Try again in ${Math.ceil(Math.max(waitAddress, waitEmail) / 60)} minute(s).`, 429, jsonHeaders);
+  }
+  const cooldown = await emailCodeCooldown(db, "contact", email);
+  if (cooldown > 0) return jsonError(`A code was just sent. You can ask for another in ${cooldown} seconds.`, 429, jsonHeaders);
+
+  await recordRateLimitHit(db, addressKey, CODE_RATE_LIMIT.windowSeconds);
+  await recordRateLimitHit(db, emailKey, CODE_RATE_LIMIT.windowSeconds);
+  const code = await issueEmailCode(db, "contact", email);
+  try {
+    await sendMail(env, {
+      to: email,
+      subject: `${code} is your Lab Kiosk verification code`,
+      text:
+        `Your Lab Kiosk verification code is ${code}.\n\n` +
+        `Enter it in the contact form to confirm this email address. It expires in ${EMAIL_CODE_TTL_SECONDS / 60} minutes.\n\n` +
+        `If you did not start a message to Lab Kiosk, ignore this one; nothing is sent without the code.`,
+      template: { name: "code", code, purpose: "contact", minutes: EMAIL_CODE_TTL_SECONDS / 60 }
+    });
+  } catch (err) {
+    console.error("[Contact] Sending a verification code failed:", err);
+    await discardEmailCode(db, "contact", email);
+    return jsonError("We could not send the code to that address. Check it and try again.", 502, jsonHeaders);
+  }
+  return json({ status: "ok", expiresIn: EMAIL_CODE_TTL_SECONDS }, jsonHeaders);
+}
+
+/**
+ * POST /api/contact { name, organization?, email, emailCode, reason, message }:
+ * the contact page's message, filed into Mail under the type its reason names.
+ * Nothing is filed for an address that was not proved with the emailed code.
+ */
 export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   const { db, env, jsonHeaders, clientIp } = ctx;
-  let body: { name?: unknown; organization?: unknown; email?: unknown; topic?: unknown; message?: unknown; turnstileToken?: unknown };
+  const problem = mailConfigProblem(env);
+  if (problem) {
+    console.error("[Contact]", problem);
+    return jsonError("The contact form is temporarily unavailable. Please write to us by email instead.", 503, jsonHeaders);
+  }
+  let body: { name?: unknown; organization?: unknown; email?: unknown; emailCode?: unknown; reason?: unknown; message?: unknown };
   try {
     body = await ctx.request.json<typeof body>();
   } catch {
@@ -455,37 +542,60 @@ export async function handleContactForm(ctx: RouteContext): Promise<Response> {
   const name = text(body?.name, 120);
   const organization = text(body?.organization, 160);
   const email = text(body?.email, 254).toLowerCase();
-  const topic = text(body?.topic, 60) || "General";
+  const emailCode = text(body?.emailCode, 12);
+  const reason = CONTACT_REASONS.find((r) => r.value === text(body?.reason, 40));
   const message = multiline(body?.message, 5000);
   if (!name || !email || !message) return jsonError("Your name, email address and a message are required", 400, jsonHeaders);
   if (!isPlausibleEmail(email)) return jsonError("Please enter a valid email address", 400, jsonHeaders);
-  const refused = await turnstileRefusal(env, body?.turnstileToken, clientIp, "contact");
-  if (refused) return jsonError(refused.message, refused.status, jsonHeaders);
+  if (!reason) return jsonError("Please choose what your message is about", 400, jsonHeaders);
+  if (!emailCode) return jsonError("Enter the code we emailed you. Use Send code if you do not have one.", 400, jsonHeaders);
 
   const key = `contact:${clientIp}`;
   const wait = await rateLimitWait(db, key, CONTACT_RATE_LIMIT.limit, CONTACT_RATE_LIMIT.windowSeconds);
   if (wait > 0) return jsonError(`Too many messages from this address. Try again in ${Math.ceil(wait / 60)} minute(s).`, 429, jsonHeaders);
+
+  const verdict = await checkEmailCode(db, "contact", email, emailCode);
+  if (verdict === "expired") return jsonError("That code has expired. Ask for a new one.", 400, jsonHeaders);
+  if (verdict === "wrong") return jsonError("That code is not correct", 400, jsonHeaders);
   await recordRateLimitHit(db, key, CONTACT_RATE_LIMIT.windowSeconds);
 
   const conversation = await createConversation(db, {
     kind: "support",
     tenantId: null,
-    subject: `[${topic}] ${organization || name}`,
+    subject: `${reason.label}: ${organization || name}`,
     contactEmail: email,
     contactName: name,
-    mailbox: supportMailbox(env)
+    mailbox: supportMailbox(env),
+    category: reason.value
   });
   await addConversationMessage(db, {
     conversationId: conversation.id,
     direction: "inbound",
-    body: `${message}\n\n-- Sent with the contact form${organization ? ` on behalf of ${organization}` : ""}.`,
+    body: `${message}\n\n-- Sent with the contact form${organization ? ` on behalf of ${organization}` : ""}. The sender proved this address with an emailed code.`,
     fromAddress: email,
     subject: conversation.subject
   });
+  // The code did its one job.
+  await discardEmailCode(db, "contact", email);
+
+  // The address is proved, so the sender gets a receipt with the reference to quote.
+  await sendOnConversation(
+    env,
+    db,
+    conversation,
+    `Hello ${name},\n\n` +
+      `We received your message (reference ${conversation.reference}) and will reply to this address. ` +
+      `To add to it, reply to this email and keep the reference in the subject.\n\nLab Kiosk`,
+    {
+      subject: "We received your message",
+      autoReply: true,
+      template: { name: "receipt", reference: conversation.reference, category: categoryLabel(conversation.category), title: "We received your message" }
+    }
+  );
   await notifyPlatformOwner(
     env,
     subjectWithReference(conversation.reference, `Contact form: ${conversation.subject}`),
-    `From: ${name} <${email}>\nOrganization: ${organization || "-"}\nTopic: ${topic}\n\n${message}\n\nReply from Mail in the Super Admin console.`
+    `From: ${name} <${email}> (address verified)\nOrganization: ${organization || "-"}\nAbout: ${reason.label}\n\n${message}\n\nReply from Mail in the Super Admin console.`
   );
   return json({ status: "ok", reference: conversation.reference }, jsonHeaders);
 }
@@ -548,7 +658,10 @@ export async function handleRemoteControlRequest(ctx: RouteContext, tenant: Tena
     `Hello ${requester.name},\n\n` +
       `We received your request to turn on Remote Control for ${tenant.name} (reference ${conversation.reference}). ` +
       `We will email you when it has been reviewed; licensing may need to be arranged first.\n\nLab Kiosk`,
-    { subject: "Remote Control request received" }
+    {
+      subject: "Remote Control request received",
+      template: { name: "receipt", reference: conversation.reference, category: "Remote Control", title: "We received your request" }
+    }
   );
   await notifyPlatformOwner(
     env,

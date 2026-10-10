@@ -2,12 +2,18 @@
  * Two-factor sign-in and sign-in alerts, for every account (organization staff
  * and super admins).
  *
+ * - The second factor is a six-digit code emailed to the account's address:
+ *   nothing to set up. A super admin is always asked for it; an organization
+ *   account turns it on under Settings (`users.two_factor_email`).
  * - An authenticator app (TOTP, RFC 6238: HMAC-SHA1, 30-second steps, six
- *   digits) is the second factor. Each account opts in under its own settings;
- *   turning it on hands out ten single-use recovery codes.
- * - After the password checks out, an account with two-factor sign-in gets a
- *   short-lived challenge instead of a session. The code from the app, a code
- *   emailed to the account's address, or a recovery code completes it.
+ *   digits) can be added on top; turning it on hands out ten single-use
+ *   recovery codes. With an app, sign-in asks for its code and an emailed one
+ *   stays available.
+ * - After the password checks out, such an account gets a short-lived
+ *   challenge instead of a session. The emailed code, the app's code or a
+ *   recovery code completes it.
+ * - Email that is not configured cannot carry a code: an account with no app
+ *   then signs in with its password alone, and the server logs why.
  * - A browser can be trusted for 30 days, so the code is not asked every time.
  * - A sign-in from a browser the account has not used before emails the
  *   account (the first browser an account ever uses sets the baseline silently).
@@ -16,7 +22,7 @@
  * `crypto.subtle` / `crypto.getRandomValues`.
  */
 
-import { Env, Session, UserRole } from "./types";
+import { Env, Session, User, UserRole } from "./types";
 import { jsonError } from "./guard";
 import { bufferToHex, parseCookies, sha256Hex, timingSafeEqual, verifyPassword } from "./auth";
 import { clearLoginFailures, createSession, findTenantById, findUserById, getLockoutRemaining, recordLoginFailure, writeAuditLog } from "./db";
@@ -142,9 +148,25 @@ async function findTwoFactor(db: D1Database, userId: string): Promise<TwoFactorR
   return db.prepare("SELECT * FROM user_two_factor WHERE user_id = ?").bind(userId).first<TwoFactorRow>();
 }
 
-/** True when the account signs in with a second factor. */
+/** True when the account has an authenticator app turned on. */
 export async function hasTwoFactor(db: D1Database, userId: string): Promise<boolean> {
   return Boolean((await findTwoFactor(db, userId))?.enabled_at);
+}
+
+/** What sign-in asks an account for after its password. */
+interface FactorState {
+  /** The authenticator app's row, when one is turned on. */
+  app: TwoFactorRow | null;
+  /** An emailed code is asked for (or, with an app, offered). */
+  email: boolean;
+  /** The account cannot turn the emailed code off. */
+  required: boolean;
+}
+
+async function factorState(db: D1Database, user: User): Promise<FactorState> {
+  const row = await findTwoFactor(db, user.id);
+  const required = user.role === "super_admin";
+  return { app: row?.enabled_at ? row : null, email: required || Boolean(user.two_factor_email), required };
 }
 
 function recoveryHashes(row: TwoFactorRow): string[] {
@@ -239,11 +261,18 @@ interface SignInTarget {
 
 /**
  * The password checked out. Either sign in now (no second factor, or a
- * trusted browser) or answer with a challenge for the second step.
+ * trusted browser) or answer with a challenge for the second step. An account
+ * without an authenticator app is emailed its code straight away.
  */
 export async function continueSignIn(ctx: RouteContext, cookies: CookieOptions, target: SignInTarget): Promise<Response> {
-  const { db, request, jsonHeaders } = ctx;
-  if (await hasTwoFactor(db, target.userId)) {
+  const { db, env, request, jsonHeaders } = ctx;
+  const user = await findUserById(db, target.userId);
+  const state = user ? await factorState(db, user) : null;
+  const mailProblem = mailConfigProblem(env);
+  if (user && state && !state.app && state.email && mailProblem) {
+    // The only second factor this account has cannot be delivered.
+    console.error(`[Auth] ${mailProblem} Signing in without an emailed code.`);
+  } else if (user && state && (state.app || state.email)) {
     const device = deviceTokenFrom(request);
     const trusted = device
       ? await db
@@ -253,18 +282,56 @@ export async function continueSignIn(ctx: RouteContext, cookies: CookieOptions, 
       : null;
     if (!trusted) {
       const token = bufferToHex(crypto.getRandomValues(new Uint8Array(32)));
+      const tokenHash = await sha256Hex(token);
       const ts = now();
       await db
         .prepare(
           `INSERT INTO login_challenges (token_hash, user_id, tenant_id, role, redirect, expires_at, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`
         )
-        .bind(await sha256Hex(token), target.userId, target.tenantId, target.role, target.redirect, ts + CHALLENGE_SECONDS, ts)
+        .bind(tokenHash, target.userId, target.tenantId, target.role, target.redirect, ts + CHALLENGE_SECONDS, ts)
         .run();
-      return new Response(JSON.stringify({ status: "two_factor", challenge: token, expiresIn: CHALLENGE_SECONDS }), { headers: jsonHeaders });
+      if (!state.app && !(await sendChallengeCode(env, db, tokenHash, user))) {
+        await db.prepare("DELETE FROM login_challenges WHERE token_hash = ?").bind(tokenHash).run();
+        return jsonError("The sign-in code could not be emailed. Try again in a moment.", 502, jsonHeaders);
+      }
+      return new Response(
+        JSON.stringify({
+          status: "two_factor",
+          challenge: token,
+          expiresIn: CHALLENGE_SECONDS,
+          method: state.app ? "app" : "email",
+          sentTo: state.app ? null : maskEmail(user.email)
+        }),
+        { headers: jsonHeaders }
+      );
     }
   }
   return completeSignIn(ctx, cookies, target, { method: "password", trustBrowser: false });
+}
+
+/** Email a fresh code for a challenge. False when it could not be sent. */
+async function sendChallengeCode(env: Env, db: D1Database, tokenHash: string, user: User): Promise<boolean> {
+  const code = String(uniformBelow(1_000_000)).padStart(6, "0");
+  await db
+    .prepare("UPDATE login_challenges SET email_code_hash = ?, email_codes_sent = email_codes_sent + 1, email_code_sent_at = ? WHERE token_hash = ?")
+    .bind(await sha256Hex(`${tokenHash}:${code}`), now(), tokenHash)
+    .run();
+  try {
+    await sendMail(env, {
+      to: user.email,
+      toName: user.name,
+      subject: `${code} is your Lab Kiosk sign-in code`,
+      text:
+        `Hello ${user.name},\n\nYour sign-in code is ${code}. It works for this sign-in only, for the next ten minutes.\n\n` +
+        `If you did not just enter your password, someone else knows it: change it now, and keep this code to yourself.\n\nLab Kiosk`,
+      template: { name: "code", code, purpose: "sign-in", minutes: CHALLENGE_SECONDS / 60, recipientName: user.name }
+    });
+    return true;
+  } catch (err) {
+    console.error("[Auth] Sending a sign-in code failed:", err);
+    return false;
+  }
 }
 
 async function completeSignIn(
@@ -338,7 +405,20 @@ async function sendSignInAlert(env: Env, db: D1Database, target: SignInTarget, f
         `When: ${when} UTC\nIP address: ${from.ip}\nBrowser: ${from.userAgent || "unknown"}\n\n` +
         `If this was you, there is nothing to do.\n\n` +
         `If it was not, change your password now in ${where}, and turn on two-factor sign-in there. ` +
-        `Changing the password signs every other browser out.\n\nLab Kiosk`
+        `Changing the password signs every other browser out.\n\nLab Kiosk`,
+      template: {
+        name: "alert",
+        title: "New sign-in to your account",
+        lead: `Hello ${user.name}, your Lab Kiosk account was just signed in to from a browser it has not used before.`,
+        details: [
+          ["When", `${when} UTC`],
+          ["IP address", from.ip],
+          ["Browser", from.userAgent || "unknown"]
+        ],
+        advice:
+          `If this was you, there is nothing to do. If it was not, change your password now in ${where}, and turn on two-factor sign-in there. ` +
+          `Changing the password signs every other browser out.`
+      }
     });
   } catch (err) {
     // The sign-in itself succeeded; only the notice failed.
@@ -371,8 +451,8 @@ export async function handleLoginVerify(ctx: RouteContext, cookies: CookieOption
   const challenge = await findChallenge(db, body.challenge);
   if (!challenge) return jsonError(EXPIRED, 401, jsonHeaders);
   const user = await findUserById(db, challenge.user_id);
-  const row = await findTwoFactor(db, challenge.user_id);
-  if (!user || !row?.enabled_at) {
+  const state = user ? await factorState(db, user) : null;
+  if (!user || !state || (!state.app && !state.email)) {
     await db.prepare("DELETE FROM login_challenges WHERE token_hash = ?").bind(challenge.token_hash).run();
     return jsonError(EXPIRED, 401, jsonHeaders);
   }
@@ -387,7 +467,7 @@ export async function handleLoginVerify(ctx: RouteContext, cookies: CookieOption
     const hash = await sha256Hex(`${challenge.token_hash}:${code}`);
     if (timingSafeEqual(hash, challenge.email_code_hash)) method = "email";
   }
-  if (!method && code) method = await checkAccountCode(db, row, code);
+  if (!method && code && state.app) method = await checkAccountCode(db, state.app, code);
 
   if (!method) {
     await recordLoginFailure(db, user.email);
@@ -412,7 +492,7 @@ export async function handleLoginVerify(ctx: RouteContext, cookies: CookieOption
   );
 }
 
-/** POST /api/auth/login/email-code { challenge }: email a code instead of using the app. */
+/** POST /api/auth/login/email-code { challenge }: email a code instead of using the app, or a new one. */
 export async function handleLoginEmailCode(ctx: RouteContext): Promise<Response> {
   const { db, env, request, jsonHeaders } = ctx;
   const body = await readJson<{ challenge?: unknown }>(request);
@@ -432,23 +512,8 @@ export async function handleLoginEmailCode(ctx: RouteContext): Promise<Response>
   const user = await findUserById(db, challenge.user_id);
   if (!user) return jsonError(EXPIRED, 401, jsonHeaders);
 
-  const code = String(uniformBelow(1_000_000)).padStart(6, "0");
-  await db
-    .prepare("UPDATE login_challenges SET email_code_hash = ?, email_codes_sent = email_codes_sent + 1, email_code_sent_at = ? WHERE token_hash = ?")
-    .bind(await sha256Hex(`${challenge.token_hash}:${code}`), now(), challenge.token_hash)
-    .run();
-  try {
-    await sendMail(env, {
-      to: user.email,
-      toName: user.name,
-      subject: `${code} is your Lab Kiosk sign-in code`,
-      text:
-        `Hello ${user.name},\n\nYour sign-in code is ${code}. It works for this sign-in only, for the next ten minutes.\n\n` +
-        `If you did not just enter your password, someone else knows it: change it now, and keep this code to yourself.\n\nLab Kiosk`
-    });
-  } catch (err) {
-    console.error("[Auth] Sending a sign-in code failed:", err);
-    return jsonError("The code could not be sent. Use your authenticator app or a recovery code.", 502, jsonHeaders);
+  if (!(await sendChallengeCode(env, db, challenge.token_hash, user))) {
+    return jsonError("The code could not be sent. Try again in a moment, or use your authenticator app or a recovery code.", 502, jsonHeaders);
   }
   return new Response(JSON.stringify({ status: "ok", sentTo: maskEmail(user.email) }), { headers: jsonHeaders });
 }
@@ -463,20 +528,22 @@ function maskEmail(email: string): string {
 
 /**
  * `/api/auth/two-factor...` for the signed-in account (any role):
- * - GET: whether it is on, and how many recovery codes are left
+ * - GET: whether emailed codes and the app are on, and how many recovery codes are left
+ * - POST /email { password, enabled }: turn the emailed code on or off (never off for a super admin)
  * - POST /setup { password }: a new secret to add to the app (not yet on)
  * - POST /enable { code }: turn it on with the first code; returns the recovery codes once
  * - POST /recovery-codes { password, code }: replace the recovery codes
  * - POST /disable { password, code }: turn it off
  */
 export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: string | null): Promise<Response> {
-  const { db, request, jsonHeaders, url } = ctx;
+  const { db, env, request, jsonHeaders, url } = ctx;
   const session: Session | null = ctx.session;
   if (!session) return jsonError("Authentication required", 401, jsonHeaders);
   const user = await findUserById(db, session.user_id);
   if (!user) return jsonError("Authentication required", 401, jsonHeaders);
   const action = url.pathname.slice("/api/auth/two-factor".length).replace(/^\//, "");
   const row = await findTwoFactor(db, user.id);
+  const state = await factorState(db, user);
   const json = (data: unknown) => new Response(JSON.stringify(data), { headers: jsonHeaders });
 
   if (action === "") {
@@ -485,12 +552,15 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
       enabled: Boolean(row?.enabled_at),
       enabledAt: row?.enabled_at ?? null,
       recoveryCodesLeft: row?.enabled_at ? recoveryHashes(row).length : 0,
-      email: user.email
+      email: user.email,
+      emailCodes: state.email,
+      required: state.required,
+      mailAvailable: !mailConfigProblem(env)
     });
   }
-  if (!["setup", "enable", "disable", "recovery-codes"].includes(action)) return jsonError("Not Found", 404, jsonHeaders);
+  if (!["email", "setup", "enable", "disable", "recovery-codes"].includes(action)) return jsonError("Not Found", 404, jsonHeaders);
   if (request.method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
-  const body = await readJson<{ password?: unknown; code?: unknown }>(request);
+  const body = await readJson<{ password?: unknown; code?: unknown; enabled?: unknown }>(request);
   if (!body) return jsonError("The request body must be JSON", 400, jsonHeaders);
 
   const lockedFor = await getLockoutRemaining(db, user.email);
@@ -504,6 +574,29 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
     return ok;
   };
   const audit = (action: string) => writeAuditLog(db, { tenantId: session.tenant_id || null, userId: user.id, action });
+
+  if (action === "email") {
+    if (typeof body.enabled !== "boolean") return jsonError("Say whether emailed codes are on or off", 400, jsonHeaders);
+    const enable = body.enabled;
+    if (!enable && state.required) return jsonError("A platform administrator always signs in with a code", 409, jsonHeaders);
+    if (enable && mailConfigProblem(env)) return jsonError("Email is not set up on this server, so codes cannot be sent", 503, jsonHeaders);
+    if (!(await passwordOk())) return jsonError("The password is not correct", 400, jsonHeaders);
+    if (Boolean(user.two_factor_email) !== enable) {
+      await db.prepare("UPDATE users SET two_factor_email = ? WHERE id = ?").bind(enable ? 1 : 0, user.id).run();
+      if (enable) {
+        // Other browsers signed in with the password alone are signed out.
+        await db.prepare("DELETE FROM sessions WHERE user_id = ? AND token <> ?").bind(user.id, sessionToken || "").run();
+      } else if (!state.app) {
+        // Nothing is asked after the password any more: trusted browsers mean nothing.
+        await db.batch([
+          db.prepare("DELETE FROM login_challenges WHERE user_id = ?").bind(user.id),
+          db.prepare("UPDATE user_devices SET trusted_until = NULL WHERE user_id = ?").bind(user.id)
+        ]);
+      }
+      await audit(enable ? "auth.two_factor_email_enable" : "auth.two_factor_email_disable");
+    }
+    return json({ status: "ok", emailCodes: enable || state.required });
+  }
 
   if (action === "setup") {
     if (row?.enabled_at) return jsonError("Two-factor sign-in is already on. Turn it off first to move it to a new app.", 409, jsonHeaders);

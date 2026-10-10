@@ -12,7 +12,20 @@ import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
 import { renderSuperAdminHtml } from "./ui_super";
-import { renderLandingHtml } from "./ui_landing";
+import {
+  renderLandingHtml,
+  renderFeaturesHtml,
+  renderSpecsHtml,
+  renderPricingHtml,
+  renderDownloadHtml,
+  renderDocsHtml,
+  renderContactHtml,
+  findDocsPage,
+  docsPath,
+  siteStylesheet,
+  SITE_STYLESHEET_PATH,
+  SOCIAL_IMAGE_PATH
+} from "./ui_landing";
 import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import {
   FAVICON_PATH,
@@ -24,9 +37,17 @@ import {
   BIMI_PATH,
   isIndexable,
   isPlatformHost,
+  canonicalHost,
+  INDEXABLE_PATHS,
   robotsTxt,
+  siteOrigin,
   sitemapXml
 } from "./seo";
+
+/** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
+const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
+/** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
+const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
@@ -64,6 +85,7 @@ import {
   buildEffectiveWhitelist,
   normalizeDomain,
   regenerateEnrollmentKey,
+  rotateUncheckedEnrollmentKeys,
   writeAuditLog,
   useAuditQueue,
   insertAuditEntries,
@@ -114,6 +136,7 @@ import {
   timingSafeEqual,
   validatePasswordStrength,
   isPlausibleEmail,
+  isEnrollmentKey,
   generateNonce
 } from "./auth";
 import {
@@ -140,6 +163,7 @@ import {
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
 import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
+import { listReleaseNotes, syncReleaseNotes } from "./release_notes";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -176,10 +200,10 @@ export class MailIntake extends WorkerEntrypoint<Env> {
   }
 }
 import { DEMO_SLUGS, DemoSlug, defaultDemoSlug, isDemoSlug, isDemoTenant } from "./demo";
-import { handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
+import { handleContactEmailCode, handleContactForm, handleRegister, handleRemoteControlRequest, handleSignupEmailCode, RouteContext } from "./signup";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
-import { TURNSTILE_ORIGIN, turnstileSiteKey } from "./turnstile";
+import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
 import {
   continueSignIn,
   handleLoginEmailCode,
@@ -645,6 +669,9 @@ export default {
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);
+    for (const tenantId of await rotateUncheckedEnrollmentKeys(db)) {
+      await writeAuditLog(db, { tenantId, userId: null, action: "settings.rotate_enrollment_key", details: "reason=check_character" });
+    }
     const stranded = await fileStrandedInboundMail(env, db);
     if (stranded) console.log(`[Worker] Filed ${stranded} incoming messages the email Worker could not hand over.`);
     const purgedIssues = await purgeOldWorkstationIssues(db);
@@ -654,6 +681,13 @@ export default {
     if (env.AUDIT_ARCHIVE) {
       const archived = await archiveOldAuditLogs(db, env.AUDIT_ARCHIVE);
       if (archived) console.log(`[Worker] Archived ${archived} audit entries older than ${AUDIT_RETENTION_DAYS} days to R2.`);
+    }
+    try {
+      const releases = await syncReleaseNotes(db, env);
+      if (releases.summarized) console.log(`[Worker] Release notes: ${releases.summarized} summaries written.`);
+    } catch (err) {
+      // /download keeps showing the releases it already has.
+      console.error("[Worker] Reading the releases from GitHub failed:", err);
     }
     const bugs = await processBugReports(db, env);
     if (bugs.filed || bugs.matched || bugs.linked || bugs.refreshed) {
@@ -701,6 +735,18 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+
+    // "/pricing/" is "/pricing": one address per page, so a link with a slash still lands.
+    if (
+      path.length > 1 &&
+      path.endsWith("/") &&
+      (method === "GET" || method === "HEAD") &&
+      (SLASHLESS_PAGES.has(path.slice(0, -1)) || (path.startsWith("/docs/") && path.length > "/docs/".length))
+    ) {
+      const slashless = new URL(request.url);
+      slashless.pathname = path.slice(0, -1);
+      return Response.redirect(slashless.toString(), 301);
+    }
 
     const db = getDatabase(env);
     await bootstrap(db, env);
@@ -752,6 +798,44 @@ export default {
           "Cache-Control": current ? "public, max-age=31536000, immutable" : "no-store"
         }
       });
+    }
+
+    // The public pages' stylesheet, served the same way.
+    if (path.startsWith("/assets/site-") && path.endsWith(".css") && method === "GET") {
+      const current = path === SITE_STYLESHEET_PATH;
+      return new Response(siteStylesheet(), {
+        headers: {
+          "Content-Type": "text/css; charset=utf-8",
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": current ? "public, max-age=31536000, immutable" : "no-store"
+        }
+      });
+    }
+
+    // The picture shared links show, from static assets.
+    if (path === SOCIAL_IMAGE_PATH && (method === "GET" || method === "HEAD")) {
+      if (!env.ASSETS) return jsonError("Not Found", 404, jsonHeaders);
+      const asset = await env.ASSETS.fetch(request);
+      if (!asset.ok) return asset;
+      const headers = new Headers(asset.headers);
+      headers.set("X-Content-Type-Options", "nosniff");
+      headers.set("Cache-Control", "public, max-age=86400");
+      return new Response(asset.body, { status: asset.status, headers });
+    }
+
+    // One address for each public page: the platform's other host name (`www.`
+    // beside the apex, or the reverse) answers with the canonical one. Only the
+    // pages people land on: the sitemap, the mail logo and the consoles keep
+    // answering on both.
+    if ((method === "GET" || method === "HEAD") && INDEXABLE_PATHS.includes(path) && !isDevHost(request)) {
+      const canonical = canonicalHost(env);
+      const base = (env.DEFAULT_DOMAIN || "").replace(/^\./, "").toLowerCase();
+      const host = hostname(request);
+      if (canonical && base && host !== canonical && (host === base || host === `www.${base}`)) {
+        const target = new URL(request.url);
+        target.hostname = canonical;
+        return Response.redirect(target.toString(), 301);
+      }
     }
 
     // --- Search engines -----------------------------------------------------
@@ -816,6 +900,7 @@ export default {
         path === "/api/auth/register" ||
         path === "/api/auth/register/email-code" ||
         path === "/api/contact" ||
+        path === "/api/contact/email-code" ||
         path === "/api/devices/enroll")
     ) {
       let success = true;
@@ -841,6 +926,12 @@ export default {
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
     const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.org";
+    // Turnstile stands in front of sign-in on the platform's own names. A widget
+    // only runs on the host names its site key lists, and an organization's own
+    // domain is not one of them, so sign-in there relies on the lockouts alone.
+    const loginTurnstile = isDev || isHostUnder(hostname(request), env.DEFAULT_DOMAIN);
+    /** What every public page needs to draw the checks its forms carry. */
+    const formChecks = { turnstileSiteKey: turnstileSiteKey(env), loginTurnstile };
 
     // A cookie-authenticated mutation must come from this site.
     if (path.startsWith("/api/")) {
@@ -904,7 +995,11 @@ export default {
       }
     }
 
-    // POST /api/contact: the public contact form, filed into Support.
+    // POST /api/contact/email-code, /api/contact: the contact page. A code proves
+    // the sender's address, then the message is filed into Mail.
+    if (path === "/api/contact/email-code" && method === "POST") {
+      return handleContactEmailCode(routeContext);
+    }
     if (path === "/api/contact" && method === "POST") {
       return handleContactForm(routeContext);
     }
@@ -917,9 +1012,14 @@ export default {
     // POST /api/auth/login: Operator or Super Admin Sign In
     if (path === "/api/auth/login" && method === "POST") {
       try {
-        const body = await request.json<{ email: string; password: string; tenant?: string }>();
+        const body = await request.json<{ email: string; password: string; tenant?: string; turnstileToken?: unknown }>();
         if (!body.email || !body.password) {
           return jsonError("Email and password required", 400, jsonHeaders);
+        }
+        // Before a password is looked at, so a script cannot guess at them.
+        if (loginTurnstile) {
+          const refused = await turnstileRefusal(env, body.turnstileToken, clientIp, "login");
+          if (refused) return jsonError(refused.message, refused.status, jsonHeaders);
         }
 
         const identifier = String(body.email).toLowerCase().trim();
@@ -1104,7 +1204,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
-            turnstileSiteKey: turnstileSiteKey(env),
+            ...formChecks,
             nonce
           }),
           { status: 401, headers: htmlHeaders }
@@ -1846,10 +1946,19 @@ export default {
     if (path === "/api/settings/enrollment-key" && method === "GET") {
       const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
       if (denied) return denied;
-      return new Response(
-        JSON.stringify({ enrollmentKey: currentTenant!.enrollment_key, subdomain: currentTenant!.subdomain }),
-        { headers: jsonHeaders }
-      );
+      // A key from before the check character cannot be typed into a workstation
+      // any more: hand out a new one rather than one the wizard would refuse.
+      let enrollmentKey = currentTenant!.enrollment_key;
+      if (enrollmentKey && !isEnrollmentKey(enrollmentKey)) {
+        enrollmentKey = await regenerateEnrollmentKey(db, currentTenant!.id);
+        await writeAuditLog(db, {
+          tenantId: currentTenant!.id,
+          userId: null,
+          action: "settings.rotate_enrollment_key",
+          details: "reason=check_character"
+        });
+      }
+      return new Response(JSON.stringify({ enrollmentKey, subdomain: currentTenant!.subdomain }), { headers: jsonHeaders });
     }
 
     // POST /api/settings/enrollment-key: rotate it (previously enrolled devices keep working)
@@ -2904,6 +3013,107 @@ export default {
       return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });
     }
 
+    // The platform's own pages belong to the platform's address. An organization's
+    // host (its subdomain or its own domain) has three paths, each with one job
+    // (Rule 5g), and must not also serve Lab Kiosk's pricing and download pages
+    // under the organization's name: send those to the platform.
+    if ((PLATFORM_PAGES.has(path) || path.startsWith("/docs/") || path.startsWith("/wiki/")) && (method === "GET" || method === "HEAD") && !isPlatformHost(request, env)) {
+      const platform = new URL(path, siteOrigin(request, url, env));
+      if (platform.origin !== url.origin) return Response.redirect(platform.toString(), 301);
+    }
+
+    // ==========================================
+    // Public Documentation & Wiki 301 Redirect
+    if (path === "/wiki" || path.startsWith("/wiki/")) {
+      // "/wiki/Quickstart" is the same page as "/docs/quickstart".
+      const wikiPage = findDocsPage(`/docs/${path.slice("/wiki/".length).toLowerCase()}`);
+      const redirectUrl = new URL(request.url);
+      redirectUrl.pathname = wikiPage ? docsPath(wikiPage.slug) : "/docs";
+      return Response.redirect(redirectUrl.toString(), 301);
+    }
+    // The documentation: the repository's wiki, one page per address under /docs.
+    const docsPage = findDocsPage(path);
+    if (docsPage) {
+      return new Response(
+        renderDocsHtml(
+          {
+            baseDomain,
+            contactEmail: "contact@labkiosk.org",
+            ...formChecks,
+            canonicalUrl,
+            nonce
+          },
+          docsPage
+        ),
+        { headers: htmlHeaders }
+      );
+    }
+
+    // ==========================================
+    // Dedicated Public Marketing Pages
+    if (path === "/features") {
+      return new Response(
+        renderFeaturesHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          ...formChecks,
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/specs") {
+      return new Response(
+        renderSpecsHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          ...formChecks,
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/contact") {
+      return new Response(
+        renderContactHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          ...formChecks,
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/pricing") {
+      return new Response(
+        renderPricingHtml({
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          ...formChecks,
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/download") {
+      return new Response(
+        renderDownloadHtml({
+          isoDownloadUrl: env.ISO_DOWNLOAD_URL,
+          releases: await listReleaseNotes(db),
+          baseDomain,
+          contactEmail: "contact@labkiosk.org",
+          ...formChecks,
+          canonicalUrl,
+          nonce
+        }),
+        { headers: htmlHeaders }
+      );
+    }
+
     // 1. Organization Admin Dashboard (/admin and /admin/*)
     if (path === "/admin" || path.startsWith("/admin/")) {
       // Legacy redirects: consolidated pages, and the staff page's old name.
@@ -2938,7 +3148,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
-            turnstileSiteKey: turnstileSiteKey(env),
+            ...formChecks,
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -3022,7 +3232,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
-            turnstileSiteKey: turnstileSiteKey(env),
+            ...formChecks,
             nonce
           }),
           { status: denied.status, headers: htmlHeaders }
@@ -3051,7 +3261,9 @@ export default {
         return false;
       };
 
-      const hasAccess = checkPermission(activePage);
+      // Settings opens for every staff account: without the `settings`
+      // permission it renders only the account's own two-factor sign-in.
+      const hasAccess = checkPermission(activePage) || activePage === "settings";
 
       if (!hasAccess) {
         const pages: AdminPageId[] = ["workstations", "apps-web", "staff", "settings"];
@@ -3070,7 +3282,7 @@ export default {
             isoDownloadUrl: env.ISO_DOWNLOAD_URL,
             baseDomain,
             contactEmail: "contact@labkiosk.org",
-            turnstileSiteKey: turnstileSiteKey(env),
+            ...formChecks,
             nonce
           }),
           { status: 403, headers: htmlHeaders }
@@ -3201,27 +3413,23 @@ export default {
       path === "/" ||
       path === "/login" ||
       path === "/register" ||
-      path === "/download" ||
-      path === "/iso" ||
-      path === "/contact"
+      path === "/iso"
     ) {
       const openModal =
         path === "/register" || url.searchParams.has("register")
           ? "register"
           : path === "/login" || url.searchParams.has("login")
             ? "login"
-            : path === "/download" || path === "/iso" || url.searchParams.has("download") || url.searchParams.has("iso")
+            : path === "/iso" || url.searchParams.has("download") || url.searchParams.has("iso")
               ? "iso"
-              : path === "/contact" || url.searchParams.has("contact")
-                ? "contact"
-                : undefined;
+              : undefined;
       return new Response(
         renderLandingHtml({
           openModal,
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
           baseDomain,
           contactEmail: "contact@labkiosk.org",
-          turnstileSiteKey: turnstileSiteKey(env),
+          ...formChecks,
           canonicalUrl,
           nonce
         }),
@@ -3229,6 +3437,18 @@ export default {
       );
     }
 
+    // A person who followed a bad link gets a page with a way back; a program gets JSON.
+    if ((method === "GET" || method === "HEAD") && !path.startsWith("/api/") && (request.headers.get("Accept") || "").includes("text/html")) {
+      return new Response(
+        renderStatusPageHtml({
+          title: "Page Not Found",
+          heading: "This page does not exist",
+          messageHtml: "The address may have been mistyped, or the page may have moved.",
+          homeHref: `${url.origin}/`
+        }),
+        { status: 404, headers: htmlHeaders }
+      );
+    }
     return jsonError("Not Found", 404, jsonHeaders);
   }
 };

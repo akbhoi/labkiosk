@@ -2,12 +2,13 @@
   "name": "labkiosk-email-routing",
   "version": "1.0.0",
   "private": true,
-  "description": "Email Routing destination Worker: keeps every message sent to the platform's domain in R2 and hands it to labkiosk-controller",
+  "description": "The platform's email Worker: keeps every message sent to the platform's domain in R2 and hands it to labkiosk-controller, and renders and sends every message the platform writes",
   "main": "src/index.ts",
   "scripts": {
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json",
-    "test": "tsx --test test/email.test.ts"
+    "test": "tsx --test test/email.test.ts test/mail.test.ts",
+    "preview": "tsx test/preview.ts"
   },
   "author": "Lab Kiosk Contributors",
   "license": "SEE LICENSE IN LICENSE",

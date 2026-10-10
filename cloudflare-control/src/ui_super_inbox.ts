@@ -2,7 +2,10 @@
  * Tasks and Mail in the Super Admin console: a list of conversations, oldest
  * open item first, beside the one that is open -- the full request, every
  * message sent and received with its attachments, and the reply box. Mail is
- * grouped by the platform address it was sent to, and new mail is written here.
+ * grouped by the platform address it was sent to and split into folders
+ * (Inbox, Unread, Read, Closed, Deleted), and new mail is written here. Both
+ * tabs filter by type: what a conversation is about, which is also the prefix
+ * of its tracking id (`CATEGORIES` in src/conversations.ts).
  *
  * Everything the list and the conversation show is data a stranger typed
  * (an organization name, an email body), so the client script builds DOM nodes
@@ -10,6 +13,7 @@
  */
 
 import { escapeAttr, escapeJson } from "./escape";
+import { CATEGORIES } from "./conversations";
 
 export type InboxBox = "tasks" | "support";
 
@@ -31,43 +35,109 @@ export function renderInboxPaneHtml(box: InboxBox): string {
   `;
 }
 
-/** The Level 2 panel for Tasks and Mail: mailboxes and the filter, wired by the inbox script. */
-export function renderInboxSubPanelHtml(box: InboxBox, counts: { open: number; unread?: number }): string {
-  const mail =
-    box === "support"
-      ? `
+/** What the console shows of the inbox counts (`inboxCounts()` in src/conversations.ts). */
+export interface InboxViewCounts {
+  open: number;
+  unread?: number;
+  deleted?: number;
+}
+
+/** Mail's folders, in the order the view tabs and the panel list them. `id` is the API's `filter`. */
+const MAIL_FOLDERS: ReadonlyArray<{ id: string; label: string; count?: keyof InboxViewCounts }> = [
+  { id: "open", label: "Inbox", count: "open" },
+  { id: "unread", label: "Unread", count: "unread" },
+  { id: "read", label: "Read" },
+  { id: "closed", label: "Closed" },
+  { id: "deleted", label: "Deleted", count: "deleted" }
+];
+
+const COMPOSE_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+
+function folderCount(counts: InboxViewCounts, key?: keyof InboxViewCounts): number {
+  return key ? Math.max(0, Math.floor(Number(counts[key]) || 0)) : 0;
+}
+
+/** Mail's view tabs (its folders) and the New message button, above the list. Wired by the inbox script. */
+export function renderMailViewBarHtml(counts: InboxViewCounts): string {
+  const tabs = MAIL_FOLDERS.map((folder, index) => {
+    const n = folderCount(counts, folder.count);
+    return `
+        <button type="button" class="segmented-tab${index === 0 ? " active" : ""}" data-inbox-filter="${escapeAttr(folder.id)}">
+          <span>${folder.label}</span>${n > 0 ? `<span class="chip-badge">${n}</span>` : ""}
+        </button>`;
+  }).join("");
+  return `
+    <div class="view-bar">
+      <nav class="segmented-nav" aria-label="Mail folders">${tabs}
+      </nav>
+      <button type="button" class="btn btn-secondary" data-inbox-compose>
+        ${COMPOSE_ICON}
+        <span>New message</span>
+      </button>
+    </div>
+  `;
+}
+
+/** The Level 2 panel for Tasks and Mail: folders or the filter, and mailboxes, wired by the inbox script. */
+export function renderInboxSubPanelHtml(box: InboxBox, counts: InboxViewCounts): string {
+  if (box === "support") {
+    const folders = MAIL_FOLDERS.map((folder, index) => {
+      const n = folderCount(counts, folder.count);
+      return `
+        <button type="button" class="sub-action-item${index === 0 ? " active" : ""}" data-inbox-filter="${escapeAttr(folder.id)}">
+          <span>${folder.label}</span>${n > 0 ? `<span class="sub-action-badge">${n}</span>` : ""}
+        </button>`;
+    }).join("");
+    return `
       <div class="sub-action-list">
-        <button type="button" class="sub-action-item" id="inbox-compose">
+        <button type="button" class="sub-action-item" data-inbox-compose>
           <span>New message</span>
+        </button>
+      </div>
+      <div class="sub-section-title">Folders</div>
+      <div class="sub-action-list">${folders}
+      </div>
+      <div class="sub-section-title">Type</div>
+      <div class="sub-action-list" id="inbox-categories">
+        <button type="button" class="sub-action-item active" data-inbox-category="">
+          <span>All types</span>
         </button>
       </div>
       <div class="sub-section-title">Mailboxes</div>
       <div class="sub-action-list" id="inbox-mailboxes">
         <button type="button" class="sub-action-item active" data-inbox-mailbox="">
-          <span>All mail</span>
+          <span>All mailboxes</span>
         </button>
-      </div>`
-      : "";
-  return `${mail}
-      <div class="sub-section-title">Show</div>
+      </div>
+      <div class="sub-section-title">How this works</div>
+      <div class="panel-note">
+        Mail sent to any address on the mail domain, and the website's contact form, grouped by the address it was sent to. Replies go out as that address, and answers come back into the same conversation. The start of a tracking ID says what the mail is about (SUP support, SAL sales, BIL billing, LGL legal, GEN general, LTR a letter you wrote). Deleted mail stays in Deleted until it is restored or deleted for good.
+      </div>
+  `;
+  }
+  const open = folderCount(counts, "open");
+  return `
+      <div class="sub-section-title">Show requests</div>
       <div class="sub-action-list">
         <button type="button" class="sub-action-item active" data-inbox-filter="open">
-          <span>Open</span><span class="sub-action-badge">${Number(counts.open) || 0}</span>
+          <span>Open</span>${open > 0 ? `<span class="sub-action-badge">${open}</span>` : ""}
         </button>
         <button type="button" class="sub-action-item" data-inbox-filter="closed">
-          <span>${box === "tasks" ? "Decided" : "Closed"}</span>
+          <span>Decided</span>
         </button>
         <button type="button" class="sub-action-item" data-inbox-filter="all">
           <span>Everything</span>
         </button>
       </div>
+      <div class="sub-section-title">Type</div>
+      <div class="sub-action-list" id="inbox-categories">
+        <button type="button" class="sub-action-item active" data-inbox-category="">
+          <span>All types</span>
+        </button>
+      </div>
       <div class="sub-section-title">How this works</div>
       <div class="panel-note">
-        ${
-          box === "tasks"
-            ? "Registrations and Remote Control requests, oldest first. Approving or rejecting emails the customer; a reply asks them something first, such as payment. Confirm a registration's phone number before approving it."
-            : "Mail sent to any address on the mail domain, and the website's contact form, grouped by the address it was sent to. Replies go out as that address, and answers come back into the same conversation. Attachments are kept with the original message."
-        }
+        Registrations and Remote Control requests, oldest first. Approving or rejecting emails the customer; a reply asks them something first, such as payment. Confirm a registration's phone number before approving it. A tracking ID starts with REG for a registration and RMT for Remote Control.
       </div>
   `;
 }
@@ -87,11 +157,18 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
         var listEl = document.getElementById("inbox-list");
         var detailEl = document.getElementById("inbox-detail");
         if (!listEl || !detailEl) return;
-        var filter = "open";
+        var FILTERS = BOX === "support" ? ["open", "unread", "read", "closed", "deleted"] : ["open", "closed", "all"];
+        var EMPTY_TEXT = BOX === "support"
+          ? { open: "The inbox is empty.", unread: "No unread mail.", read: "No read mail.", closed: "No closed mail.", deleted: "Nothing in Deleted." }
+          : { open: "No open tasks." };
+        var filter = new URLSearchParams(window.location.search).get("view") || "open";
+        if (FILTERS.indexOf(filter) < 0) filter = "open";
         var selectedId = new URLSearchParams(window.location.search).get("id");
 
         var mailbox = BOX === "support" ? (new URLSearchParams(window.location.search).get("mailbox") || "") : "";
         var mailDomain = "";
+        var category = new URLSearchParams(window.location.search).get("type") || "";
+        var CATEGORY_LABELS = ${escapeJson(Object.fromEntries(Object.entries(CATEGORIES).map(([id, c]) => [id, c.label])))};
 
         var KIND_LABELS = { signup: "Registration", remote_control: "Remote Control", support: "Mail" };
         var STATUS_BADGES = { open: "badge-yellow", approved: "badge-green", rejected: "badge-red", closed: "badge-neutral" };
@@ -154,9 +231,31 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             }
           }
           setBadge(document.querySelector('.rail-item[data-nav="support"]'), "rail-badge attention", counts.unreadSupport);
-          var open = document.querySelector('[data-inbox-filter="open"]');
-          var openBadge = open ? open.querySelector(".sub-action-badge") : null;
-          if (openBadge) openBadge.textContent = String(Number(BOX === "tasks" ? counts.openTasks : counts.openSupport) || 0);
+          var byFilter = BOX === "tasks"
+            ? { open: counts.openTasks }
+            : { open: counts.openSupport, unread: counts.unreadSupport, deleted: counts.deletedSupport };
+          document.querySelectorAll("[data-inbox-filter]").forEach(function (button) {
+            var name = button.dataset.inboxFilter;
+            if (!(name in byFilter)) return;
+            setBadge(button, button.classList.contains("segmented-tab") ? "chip-badge" : "sub-action-badge", byFilter[name]);
+          });
+          if (BOX === "tasks") {
+            document.querySelectorAll('[data-action="tab-requests"]').forEach(function (button) {
+              setBadge(button, button.classList.contains("segmented-tab") ? "chip-badge" : "sub-action-badge", counts.openTasks);
+            });
+          }
+        }
+
+        /** Show which view is on, in the view tabs and in the panel alike. */
+        function markFilter() {
+          document.querySelectorAll("[data-inbox-filter]").forEach(function (button) {
+            button.classList.toggle("active", button.dataset.inboxFilter === filter);
+          });
+        }
+
+        /** What a conversation is about, as its type reads everywhere. */
+        function typeLabel(c) {
+          return CATEGORY_LABELS[c.category] || KIND_LABELS[c.kind] || c.kind;
         }
 
         function emptyList(text) {
@@ -167,16 +266,18 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           try {
             var query = { box: BOX, filter: filter };
             if (BOX === "support" && mailbox) query.mailbox = mailbox;
+            if (category) query.category = category;
             var data = await api("/api/super/inbox?" + new URLSearchParams(query).toString());
             var items = Array.isArray(data.items) ? data.items : [];
             applyCounts(data.counts);
+            renderCategories(Array.isArray(data.categories) ? data.categories : []);
             if (BOX === "support") {
               mailDomain = data.mailDomain || "";
               renderMailboxes(Array.isArray(data.mailboxes) ? data.mailboxes : []);
             }
             listEl.replaceChildren();
             if (!items.length) {
-              emptyList(filter === "open" ? (BOX === "tasks" ? "No open tasks." : "No open mail.") : "Nothing here.");
+              emptyList(EMPTY_TEXT[filter] || "Nothing here.");
               return;
             }
             items.forEach(function (item) {
@@ -192,7 +293,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
               );
               var meta = el("div", "inbox-item-meta");
               meta.append(
-                el("span", "truncate", item.kind === "support" ? (item.mailbox || "Mail") : (KIND_LABELS[item.kind] || item.kind)),
+                el("span", "truncate", typeLabel(item) + (item.kind === "support" && item.mailbox ? " \u00b7 " + item.mailbox : "")),
                 el("span", "mono", item.reference),
                 el("span", null, when(item.status === "open" ? item.created_at : item.last_message_at))
               );
@@ -286,6 +387,34 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           return card;
         }
 
+        /** A conversation in Deleted: it is restored or removed for good, not answered. */
+        function deletedCard(c) {
+          var card = el("div", "card");
+          card.append(el("h2", "card-title", "In Deleted"));
+          card.append(el("p", "card-sub", "Restore this conversation to reply to it. An answer from " + c.contact_email + " also brings it back."));
+          var actions = el("div", "form-actions");
+          var restore = el("button", "btn btn-sm btn-primary", "Restore");
+          restore.type = "button";
+          restore.addEventListener("click", async function () {
+            await act(c.id, "restore", {}, "Conversation restored.");
+          });
+          var purge = el("button", "btn btn-sm btn-danger", "Delete permanently");
+          purge.type = "button";
+          purge.addEventListener("click", async function () {
+            var ok = await lkConfirm({
+              title: "Delete this conversation permanently?",
+              message: "Every message in it, its attachments and the stored originals are removed for good.",
+              confirmLabel: "Delete permanently",
+              tone: "danger"
+            });
+            if (!ok) return;
+            await leave(c.id, "delete", "Conversation deleted.");
+          });
+          actions.append(restore, el("span", "toolbar-spacer"), purge);
+          card.append(actions);
+          return card;
+        }
+
         function composeCard(data) {
           var c = data.conversation;
           var card = el("div", "card");
@@ -341,23 +470,12 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             await act(c.id, "note", { message: message() }, "Note added.");
           });
           if (c.kind === "support") {
+            button("Mark as unread", "btn-ghost", async function () {
+              await leave(c.id, "unread", "Marked as unread.");
+            });
             actions.append(el("span", "toolbar-spacer"));
             button("Delete", "btn-danger", async function () {
-              var ok = await lkConfirm({
-                title: "Delete this conversation?",
-                message: "Every message in it, its attachments and the stored originals are removed for good.",
-                confirmLabel: "Delete",
-                tone: "danger"
-              });
-              if (!ok) return;
-              try {
-                await api("/api/super/inbox/" + encodeURIComponent(c.id) + "/delete", {});
-                lkToast("Conversation deleted.", "success");
-                clearSelection();
-              } catch (err) {
-                lkToast(err.message, "error");
-              }
-              await loadList();
+              await leave(c.id, "trash", "Moved to Deleted.");
             });
           }
 
@@ -406,17 +524,18 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           left.append(el("h2", "card-title", c.subject));
           var meta = el("div", "row");
           meta.append(
-            badge(KIND_LABELS[c.kind] || c.kind, "badge-blue"),
+            badge(typeLabel(c), "badge-blue"),
             badge(c.status, STATUS_BADGES[c.status] || "badge-neutral"),
             el("span", "mono text-xs", c.reference),
             el("span", "text-xs text-muted", "opened " + when(c.created_at))
           );
+          if (c.deleted_at) meta.append(badge("deleted", "badge-red"));
           left.append(meta);
           title.append(left);
           head.append(title);
           var cards = [head];
           if (c.kind !== "support") cards.push(organizationCard(data));
-          cards.push(threadCard(data), composeCard(data));
+          cards.push(threadCard(data), c.deleted_at ? deletedCard(c) : composeCard(data));
           detailEl.replaceChildren.apply(detailEl, cards);
         }
 
@@ -449,6 +568,18 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           }
           await loadList();
           await openItem(id);
+        }
+
+        /** An action after which the conversation is no longer the one being read. */
+        async function leave(id, action, success) {
+          try {
+            await api("/api/super/inbox/" + encodeURIComponent(id) + "/" + action, {});
+            lkToast(success, "success");
+            clearSelection();
+          } catch (err) {
+            lkToast(err.message, "error");
+          }
+          await loadList();
         }
 
         function setParam(name, value) {
@@ -491,13 +622,34 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           return box;
         }
 
+        /** The Type list: every type of this tab, with how many are open. */
+        function renderCategories(list) {
+          var container = document.getElementById("inbox-categories");
+          if (!container) return;
+          var all = el("button", "sub-action-item" + (category ? "" : " active"));
+          all.type = "button";
+          all.dataset.inboxCategory = "";
+          all.append(el("span", null, "All types"));
+          var rows = [all];
+          list.forEach(function (type) {
+            var row = el("button", "sub-action-item" + (type.id === category ? " active" : ""));
+            row.type = "button";
+            row.dataset.inboxCategory = type.id;
+            row.title = type.prefix + "-\u2026: " + type.total + " conversation" + (type.total === 1 ? "" : "s") + ", " + type.open + " open";
+            row.append(el("span", "truncate", type.label));
+            if (type.open > 0) row.append(el("span", "sub-action-badge", type.open));
+            rows.push(row);
+          });
+          container.replaceChildren.apply(container, rows);
+        }
+
         function renderMailboxes(list) {
           var container = document.getElementById("inbox-mailboxes");
           if (!container) return;
           var all = el("button", "sub-action-item" + (mailbox ? "" : " active"));
           all.type = "button";
           all.dataset.inboxMailbox = "";
-          all.append(el("span", null, "All mail"));
+          all.append(el("span", null, "All mailboxes"));
           var rows = [all];
           var known = false;
           list.forEach(function (box) {
@@ -549,6 +701,33 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           var fromRow = el("div", "form-row mt-md mb-md");
           var fromGroup = field("From", fromInput);
           fromRow.append(fromGroup, el("span", "input-suffix", "@" + (mailDomain || "…")));
+          var formatInput = el("select", "form-select");
+          formatInput.id = "compose-format";
+          formatInput.append(new Option("Message", "message"), new Option("Formal letter", "letter"));
+          var nameInput = textInput("compose-name", "", "Ms N. Okafor");
+          nameInput.maxLength = 120;
+          var organizationInput = textInput("compose-organization", "", "Northfield Learning Trust");
+          organizationInput.maxLength = 160;
+          var signatoryInput = textInput("compose-signatory", "", "Your full name");
+          signatoryInput.maxLength = 120;
+          try {
+            // Remembered on this browser, so it is typed once.
+            signatoryInput.value = localStorage.getItem("labkiosk-letter-signatory") || "";
+          } catch (err) {
+            signatoryInput.value = "";
+          }
+          var titleInput = textInput("compose-signatory-title", "", "Customer Accounts");
+          titleInput.maxLength = 120;
+          var letterFields = el("div", "hidden");
+          letterFields.append(
+            field("Addressed to", nameInput, "The person the letter is for, as it should read above the text."),
+            field("Organization", organizationInput),
+            field("Signed by", signatoryInput, "Your name as it should read at the end of the letter. Left empty, your account's name is used."),
+            field("Your title", titleInput, "Shown under your name.")
+          );
+          formatInput.addEventListener("change", function () {
+            letterFields.classList.toggle("hidden", formatInput.value !== "letter");
+          });
           var toInput = textInput("compose-to", "", "name@example.com");
           toInput.type = "email";
           toInput.autocomplete = "off";
@@ -561,9 +740,11 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           bodyInput.maxLength = 20000;
           card.append(
             fromRow,
+            field("Format", formatInput, "A letter carries the date, who it is addressed to and your name, and gets an LTR tracking ID."),
             field("To", toInput),
+            letterFields,
             field("Subject", subjectInput),
-            field("Message", bodyInput, "Sent as plain text. Answers come back into this conversation.")
+            field("Message", bodyInput, "Sent in the Lab Kiosk layout, with a plain text copy. Answers come back into this conversation.")
           );
           var actions = el("div", "form-actions");
           var send = el("button", "btn btn-sm btn-primary", "Send email");
@@ -571,12 +752,26 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           send.addEventListener("click", async function () {
             send.disabled = true;
             try {
+              var letter = formatInput.value === "letter";
+              var recipient = toInput.value.trim();
+              var recipientName = nameInput.value.replace(/[<>"]/g, "").trim();
               var result = await api("/api/super/inbox/compose", {
                 from: fromInput.value.trim(),
-                to: toInput.value.trim(),
+                to: letter && recipientName ? recipientName + " <" + recipient + ">" : recipient,
                 subject: subjectInput.value.trim(),
-                message: bodyInput.value.trim()
+                message: bodyInput.value.trim(),
+                format: letter ? "letter" : "message",
+                organization: letter ? organizationInput.value.trim() : "",
+                signatory: letter ? signatoryInput.value.trim() : "",
+                signatoryTitle: letter ? titleInput.value.trim() : ""
               });
+              if (letter && signatoryInput.value.trim()) {
+                try {
+                  localStorage.setItem("labkiosk-letter-signatory", signatoryInput.value.trim());
+                } catch (err) {
+                  // Private browsing: the name is simply typed again next time.
+                }
+              }
               lkToast("Email sent.", "success");
               await loadList();
               await openItem(result.id);
@@ -594,8 +789,24 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           (mailbox ? toInput : fromInput).focus();
         }
 
-        var composeButton = document.getElementById("inbox-compose");
-        if (composeButton) composeButton.addEventListener("click", openCompose);
+        document.querySelectorAll("[data-inbox-compose]").forEach(function (button) {
+          button.addEventListener("click", openCompose);
+        });
+
+        var categoryList = document.getElementById("inbox-categories");
+        if (categoryList) {
+          categoryList.addEventListener("click", function (event) {
+            var target = event.target instanceof Element ? event.target.closest("[data-inbox-category]") : null;
+            if (!target) return;
+            category = target.dataset.inboxCategory || "";
+            setParam("type", category);
+            categoryList.querySelectorAll("[data-inbox-category]").forEach(function (b) {
+              b.classList.toggle("active", b === target);
+            });
+            if (BOX === "tasks" && window.labkioskSwitchTab) window.labkioskSwitchTab("requests");
+            loadList();
+          });
+        }
 
         var mailboxList = document.getElementById("inbox-mailboxes");
         if (mailboxList) {
@@ -614,13 +825,15 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
         document.querySelectorAll("[data-inbox-filter]").forEach(function (button) {
           button.addEventListener("click", function () {
             filter = button.dataset.inboxFilter;
-            document.querySelectorAll("[data-inbox-filter]").forEach(function (b) {
-              b.classList.toggle("active", b === button);
-            });
+            setParam("view", filter === "open" ? "" : filter);
+            markFilter();
+            // The filter is the request list's: show that list if another view of Tasks is open.
+            if (BOX === "tasks" && window.labkioskSwitchTab) window.labkioskSwitchTab("requests");
             loadList();
           });
         });
 
+        markFilter();
         loadList().then(function () { if (selectedId) openItem(selectedId); });
       })();
     </script>

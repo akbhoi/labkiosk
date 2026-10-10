@@ -1,25 +1,31 @@
 /**
- * "Two-factor sign-in" in every console's profile menu: the signed-in account
- * turns its own authenticator-app code on or off, and replaces its recovery
- * codes (src/two_factor.ts holds the rules).
+ * The "Two-factor sign-in" tab: the signed-in account turns the emailed
+ * sign-in code on or off, adds or removes an authenticator app, and replaces
+ * its recovery codes (src/two_factor.ts holds the rules).
  *
- * It lives in the shared shell rather than on a settings page, so staff
- * without the `settings` permission and super admins reach it the same way.
- * The script builds DOM nodes and sets textContent only (Rule 6).
+ * It is a tab of Settings in the organization console and of System in the
+ * Super Admin console, and the profile menu links to it. Staff without the
+ * `settings` permission open Settings with this tab alone, so every account
+ * reaches it. The script builds DOM nodes and sets textContent only (Rule 6).
  */
 
 import { escapeAttr } from "./escape";
 
-export function renderTwoFactorModalHtml(): string {
+/** The tab's two cards; `renderTwoFactorScript()` fills them. */
+export function renderTwoFactorPaneHtml(): string {
   return `
-  <div class="modal-overlay" id="two-factor-modal" role="dialog" aria-modal="true" aria-labelledby="two-factor-title">
-    <div class="modal-box modal-sm">
-      <h3 class="modal-title" id="two-factor-title">Two-factor sign-in</h3>
-      <button type="button" class="modal-close" data-two-factor-close aria-label="Close dialog">✕</button>
-      <p class="modal-desc">After your password, sign-in asks for a six-digit code from an authenticator app on your phone, such as Google Authenticator, Microsoft Authenticator or 1Password. A code by email works too, if the phone is not at hand.</p>
-      <div id="two-factor-body" aria-live="polite"></div>
-    </div>
-  </div>`;
+      <div class="grid-2col" id="two-factor">
+        <div class="card">
+          <h2 class="card-title">Emailed code</h2>
+          <p class="card-sub">After your password, sign-in emails a six-digit code to your address. There is nothing to set up.</p>
+          <div id="two-factor-email" aria-live="polite"></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Authenticator app</h2>
+          <p class="card-sub">Optional. Sign-in then asks for the code from an app on your phone, such as Google Authenticator, Microsoft Authenticator or 1Password, and works when email is slow.</p>
+          <div id="two-factor-body" aria-live="polite"></div>
+        </div>
+      </div>`;
 }
 
 export function renderTwoFactorScript(nonce: string): string {
@@ -27,9 +33,9 @@ export function renderTwoFactorScript(nonce: string): string {
   <script nonce="${escapeAttr(nonce)}">
     (function () {
       "use strict";
-      var modal = document.getElementById("two-factor-modal");
+      var emailBox = document.getElementById("two-factor-email");
       var body = document.getElementById("two-factor-body");
-      if (!modal || !body) return;
+      if (!emailBox || !body) return;
 
       function el(tag, className, text) {
         var node = document.createElement(tag);
@@ -62,6 +68,12 @@ export function renderTwoFactorScript(nonce: string): string {
 
       function errorLine() { return el("div", "form-error"); }
 
+      function callout(tone, text) {
+        var box = el("div", "callout" + (tone ? " callout-" + tone : ""));
+        box.append(el("div", null, text));
+        return box;
+      }
+
       async function api(path, payload) {
         var init = payload === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
         var res = await fetch(path, init);
@@ -76,6 +88,54 @@ export function renderTwoFactorScript(nonce: string): string {
         return isNaN(date.getTime()) ? "" : date.toLocaleDateString();
       }
 
+      // ------------------------------------------------------ emailed code
+      function renderEmail(state) {
+        emailBox.replaceChildren();
+        if (!state.mailAvailable) {
+          emailBox.append(callout("warning", "Email is not set up on this server, so a code cannot be sent" +
+            (state.emailCodes ? " and sign-in uses the password alone until it is." : ".")));
+          if (!state.emailCodes) return;
+        }
+        if (state.required) {
+          emailBox.append(callout("success", "On. Every sign-in emails a code to " + state.email + ". A platform administrator cannot turn this off."));
+          return;
+        }
+        emailBox.append(state.emailCodes
+          ? callout("success", "On. After your password, sign-in emails a code to " + state.email + ".")
+          : el("p", "text-muted", "Off. Signing in needs only your password."));
+        var password = input("two-factor-email-password", "password", "Your password", { autocomplete: "current-password" });
+        password.group.classList.add("mt-md");
+        var error = errorLine();
+        var actions = el("div", "form-actions");
+        async function set(enabled) {
+          error.textContent = "";
+          try {
+            await api("/api/auth/two-factor/email", { password: password.field.value, enabled: enabled });
+            lkToast(enabled ? "Sign-in now asks for an emailed code." : "Emailed codes are off.", "success");
+            await render();
+          } catch (err) {
+            error.textContent = err.message;
+          }
+        }
+        if (state.emailCodes) {
+          actions.append(button("Turn off", "btn-danger", async function () {
+            var ok = await lkConfirm({
+              title: "Turn off the emailed code?",
+              message: state.enabled
+                ? "Sign-in will ask for your authenticator app's code only."
+                : "Signing in will need only the password again, and trusted browsers are forgotten.",
+              confirmLabel: "Turn off",
+              tone: "danger"
+            });
+            if (ok) await set(false);
+          }));
+        } else {
+          actions.append(button("Turn on", "btn-primary", async function () { await set(true); }));
+        }
+        emailBox.append(password.group, error, actions);
+      }
+
+      // -------------------------------------------------- authenticator app
       function showRecoveryCodes(codes, intro) {
         body.replaceChildren();
         var note = el("div", "callout callout-success");
@@ -93,18 +153,19 @@ export function renderTwoFactorScript(nonce: string): string {
               lkToast("Copy failed: select the codes and copy them by hand.", "error");
             }
           }),
-          button("Done", "btn-primary", async function () { await render(); })
+          button("Done", "btn-secondary", async function () { await render(); })
         );
         body.append(note, list, hint, actions);
       }
 
       function renderOff() {
         body.replaceChildren();
-        body.append(el("p", "text-muted", "Two-factor sign-in is off for this account."));
+        body.append(el("p", "text-muted", "No authenticator app is set up for this account."));
         var password = input("two-factor-password", "password", "Your password", { autocomplete: "current-password" });
+        password.group.classList.add("mt-md");
         var error = errorLine();
         var actions = el("div", "form-actions");
-        actions.append(button("Set up", "btn-primary", async function () {
+        actions.append(button("Set up an app", "btn-secondary", async function () {
           error.textContent = "";
           try {
             var setup = await api("/api/auth/two-factor/setup", { password: password.field.value });
@@ -114,7 +175,6 @@ export function renderTwoFactorScript(nonce: string): string {
           }
         }));
         body.append(password.group, error, actions);
-        password.field.focus();
       }
 
       function renderSetup(setup) {
@@ -138,8 +198,8 @@ export function renderTwoFactorScript(nonce: string): string {
             error.textContent = "";
             try {
               var result = await api("/api/auth/two-factor/enable", { code: code.field.value.trim() });
-              lkToast("Two-factor sign-in is on.", "success");
-              showRecoveryCodes(result.recoveryCodes, "Two-factor sign-in is on. Other browsers signed in to this account were signed out. These are your recovery codes:");
+              lkToast("The authenticator app is on.", "success");
+              showRecoveryCodes(result.recoveryCodes, "The authenticator app is on. Other browsers signed in to this account were signed out. These are your recovery codes:");
             } catch (err) {
               error.textContent = err.message;
             }
@@ -153,7 +213,7 @@ export function renderTwoFactorScript(nonce: string): string {
       function renderOn(state) {
         body.replaceChildren();
         var status = el("div", "callout callout-success");
-        status.append(el("div", null, "Two-factor sign-in is on" + (state.enabledAt ? " since " + when(state.enabledAt) : "") + ". " +
+        status.append(el("div", null, "On" + (state.enabledAt ? " since " + when(state.enabledAt) : "") + ". " +
           state.recoveryCodesLeft + " recovery code" + (state.recoveryCodesLeft === 1 ? "" : "s") + " left."));
         var password = input("two-factor-password", "password", "Your password", { autocomplete: "current-password" });
         password.group.classList.add("mt-md");
@@ -171,18 +231,20 @@ export function renderTwoFactorScript(nonce: string): string {
               error.textContent = err.message;
             }
           }),
-          button("Turn off", "btn-danger", async function () {
+          button("Remove the app", "btn-danger", async function () {
             error.textContent = "";
             var ok = await lkConfirm({
-              title: "Turn off two-factor sign-in?",
-              message: "Signing in will need only the password again, and trusted browsers are forgotten.",
-              confirmLabel: "Turn off",
+              title: "Remove the authenticator app?",
+              message: state.emailCodes
+                ? "Sign-in will ask for an emailed code instead, and trusted browsers are forgotten."
+                : "Signing in will need only the password again, and trusted browsers are forgotten.",
+              confirmLabel: "Remove",
               tone: "danger"
             });
             if (!ok) return;
             try {
               await api("/api/auth/two-factor/disable", credentials());
-              lkToast("Two-factor sign-in is off.", "success");
+              lkToast("The authenticator app was removed.", "success");
               await render();
             } catch (err) {
               error.textContent = err.message;
@@ -193,38 +255,20 @@ export function renderTwoFactorScript(nonce: string): string {
       }
 
       async function render() {
+        emailBox.replaceChildren(el("p", "text-muted", "Loading…"));
         body.replaceChildren(el("p", "text-muted", "Loading…"));
         try {
           var state = await api("/api/auth/two-factor");
+          renderEmail(state);
           if (state.enabled) renderOn(state);
           else renderOff();
         } catch (err) {
-          body.replaceChildren(el("p", "form-error", "Could not load: " + err.message));
+          emailBox.replaceChildren(el("p", "form-error", "Could not load: " + err.message));
+          body.replaceChildren();
         }
       }
 
-      function open() {
-        modal.classList.add("active");
-        render();
-      }
-      function close() {
-        modal.classList.remove("active");
-        body.replaceChildren();
-      }
-
-      document.addEventListener("click", function (e) {
-        var target = e.target && e.target.closest ? e.target.closest("[data-action='open-two-factor'], [data-two-factor-close]") : null;
-        if (target) {
-          e.preventDefault();
-          if (target.hasAttribute("data-two-factor-close")) close();
-          else open();
-          return;
-        }
-        if (e.target === modal) close();
-      });
-      document.addEventListener("keydown", function (e) {
-        if (e.key === "Escape" && modal.classList.contains("active")) close();
-      });
+      render();
     })();
   </script>`;
 }

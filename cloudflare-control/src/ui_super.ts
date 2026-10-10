@@ -9,7 +9,8 @@ import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
-import { renderInboxPaneHtml, renderInboxScript, renderInboxSubPanelHtml } from "./ui_super_inbox";
+import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
+import { renderInboxPaneHtml, renderInboxScript, renderInboxSubPanelHtml, renderMailViewBarHtml } from "./ui_super_inbox";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
 export interface SuperConsoleTenant extends Tenant {
@@ -35,9 +36,59 @@ export interface SuperAdminOptions {
   catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
   activeTab?: "organizations" | "tasks" | "support" | "catalogs" | "system";
-  /** Open tasks and support conversations, for the rail badges (src/conversations.ts). */
-  inbox?: { openTasks: number; openSupport: number; unreadSupport: number };
+  /** Open tasks and mail, and unread and deleted mail, for the badges (src/conversations.ts). */
+  inbox?: { openTasks: number; openSupport: number; unreadSupport: number; deletedSupport?: number };
   nonce: string;
+}
+
+/** One view of a console tab: a pane the view tabs and the panel's Views list both switch to. */
+interface SuperView {
+  /** The pane is `#pane-<id>` and the controls carry `data-action="tab-<id>"`. */
+  id: string;
+  label: string;
+  iconSvg: string;
+  /** Shown as a badge; a zero is shown only with `showZero`. */
+  count?: number;
+  showZero?: boolean;
+}
+
+function viewCountHtml(view: SuperView, className: string): string {
+  if (view.count === undefined || (view.count <= 0 && !view.showZero)) return "";
+  return `<span class="${className}">${Math.max(0, Math.floor(view.count))}</span>`;
+}
+
+/** The view tabs above a tab's panes. A tab with one view has nothing to switch. */
+function renderViewTabsHtml(label: string, views: SuperView[]): string {
+  if (views.length < 2) return "";
+  return `
+    <nav class="segmented-nav" aria-label="${escapeAttr(label)} views">${views
+      .map(
+        (view, index) => `
+      <button type="button" class="segmented-tab${index === 0 ? " active" : ""}" data-action="tab-${escapeAttr(view.id)}">
+        ${view.iconSvg}
+        <span>${escapeHtml(view.label)}</span>
+        ${viewCountHtml(view, "chip-badge")}
+      </button>`
+      )
+      .join("")}
+    </nav>
+  `;
+}
+
+/** The same views in the Level 2 panel, in the same order and under the same names. */
+function renderViewListHtml(views: SuperView[]): string {
+  if (views.length < 2) return "";
+  return `
+      <div class="sub-section-title">Views</div>
+      <div class="sub-action-list">${views
+        .map(
+          (view, index) => `
+        <button type="button" class="sub-action-item${index === 0 ? " active" : ""}" data-action="tab-${escapeAttr(view.id)}">
+          <span>${escapeHtml(view.label)}</span>${viewCountHtml(view, "sub-action-badge")}
+        </button>`
+        )
+        .join("")}
+      </div>`;
 }
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
@@ -45,7 +96,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
   // Registrations are decided in Tasks; this list is an active organization asking for a new address.
   const pendingList = tenants.filter((t) => t.status !== "pending" && t.requested_subdomain);
-  const inbox = data.inbox || { openTasks: 0, openSupport: 0, unreadSupport: 0 };
+  const inbox = { deletedSupport: 0, ...(data.inbox || { openTasks: 0, openSupport: 0, unreadSupport: 0 }) };
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
   const totalClients = tenants.reduce((acc, t) => acc + (t.total_clients || 0), 0);
   const totalOnline = tenants.reduce((acc, t) => acc + (t.online_clients || 0), 0);
@@ -133,7 +184,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       const href = `/admin/workstations?tenant=${encodeURIComponent(t.subdomain)}`;
       const menuId = `org-menu-${t.id}`;
       return `
-    <tr>
+    <tr data-org-status="${escapeAttr(String(t.status))}" data-org-demo="${isDemo ? "1" : "0"}">
       <td class="cell-org">
         <div class="row"><span class="cell-title">${escapeHtml(t.name)}</span>${isDemo ? `<span class="badge badge-blue">Demo</span>` : ""}</div>
         ${isDemo ? `<div class="cell-sub cell-clamp">${escapeHtml(purpose)}</div>` : ""}
@@ -195,7 +246,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const navItems: NavItem[] = [
     {
       id: "organizations",
-      label: "Organizations Directory",
+      label: "Organizations",
       href: "/super/organizations",
       badge: tenants.length,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`
@@ -218,14 +269,14 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     },
     {
       id: "catalogs",
-      label: "Translation Catalogs",
+      label: "Catalogs",
       href: "/super/catalogs",
       badge: catalogList.length,
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`
     },
     {
       id: "system",
-      label: "System Health & Logs",
+      label: "System",
       href: "/super/system",
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`
     }
@@ -239,72 +290,116 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
 
   const activeTenantsCount = tenants.filter((t) => t.status === "active").length;
   const suspendedTenantsCount = tenants.filter((t) => t.status === "suspended").length;
+  const pendingTenantsCount = tenants.filter((t) => t.status === "pending").length;
+  const demoTenantsCount = tenants.filter((t) => isDemoTenant(t, superAdminId)).length;
 
-  let subPanelTitle = "Platform Governance";
-  let subPanelSubtitle = "Global tenant administration";
+  // Every tab's views are declared once: the view tabs in the canvas and the
+  // Views list in the panel are both rendered from this, so they cannot drift.
+  // A request to change an address is a task, so both kinds live under Tasks
+  // only; Organizations is the directory, and Mail's views are its folders.
+  const viewsByTab: Record<typeof activeTab, SuperView[]> = {
+    organizations: [],
+    tasks: [
+      { id: "requests", label: "Requests", count: inbox.openTasks, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>` },
+      { id: "subdomains", label: "Subdomain changes", count: pendingList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>` },
+      { id: "custom-domains", label: "Custom domains", count: pendingCustomList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
+    ],
+    support: [],
+    catalogs: [
+      { id: "catalogs-list", label: "Installed catalogs", count: catalogList.length, showZero: true, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>` },
+      { id: "catalogs-upload", label: "Upload or replace", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>` }
+    ],
+    system: [
+      { id: "system-arch", label: "Architecture & health", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>` },
+      { id: "system-audit", label: "Audit log", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>` },
+      { id: "system-two-factor", label: "Two-factor sign-in", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>` }
+    ]
+  };
+  const views = viewsByTab[activeTab] || [];
+
+  const orgFilters: Array<{ id: string; label: string; count: number }> = [
+    { id: "all", label: "All", count: tenants.length },
+    { id: "active", label: "Active", count: activeTenantsCount },
+    { id: "pending", label: "Pending", count: pendingTenantsCount },
+    { id: "suspended", label: "Suspended", count: suspendedTenantsCount },
+    { id: "demo", label: "Demos", count: demoTenantsCount }
+  ];
+
+  // The panel reads the same way on every tab: what you can switch to, then
+  // what narrows the list, then the figures, then the note.
+  let subPanelTitle = "Organizations";
+  let subPanelSubtitle = "Every registered organization";
   let subPanelHtml = "";
 
   if (activeTab === "organizations") {
-    subPanelTitle = "Organizations Directory";
-    subPanelSubtitle = "Tenant overview & filters";
     subPanelHtml = `
-      <div class="sub-section-title">Directory Overview</div>
+      <div class="sub-section-title">Show</div>
+      <div class="sub-action-list">${orgFilters
+        .map(
+          (f) => `
+        <button type="button" class="sub-action-item${f.id === "all" ? " active" : ""}" data-org-filter="${escapeAttr(f.id)}">
+          <span>${escapeHtml(f.label)}</span><span class="sub-action-badge">${f.count}</span>
+        </button>`
+        )
+        .join("")}
+      </div>
+
+      <div class="sub-section-title">Address requests</div>
+      <div class="sub-action-list">
+        <a class="sub-action-item" href="/super/tasks?tab=subdomains">
+          <span>Subdomain changes</span><span class="sub-action-badge">${pendingList.length}</span>
+        </a>
+        <a class="sub-action-item" href="/super/tasks?tab=custom-domains">
+          <span>Custom domains</span><span class="sub-action-badge">${pendingCustomList.length}</span>
+        </a>
+      </div>
+
+      <div class="sub-section-title">Overview</div>
       <div class="kv-list">
         <div class="kv-row"><span>Organizations</span><strong>${tenants.length}</strong></div>
-        <div class="kv-row"><span>Active</span><strong>${activeTenantsCount}</strong></div>
-        <div class="kv-row"><span>Suspended</span><strong>${suspendedTenantsCount}</strong></div>
         <div class="kv-row"><span>Workstations online</span><strong>${totalOnline} / ${totalClients}</strong></div>
       </div>
 
-      <div class="sub-section-title">Privacy Invariant</div>
+      <div class="sub-section-title">Privacy</div>
       <div class="panel-note">
-        Super Admins cannot access any organization's internal console or telemetry except the platform's demo organizations. Organization data isolation is enforced at the edge D1 layer.
+        An organization's console and telemetry are private to its own staff. Only the platform's demo organizations can be opened from here.
       </div>
     `;
   } else if (activeTab === "tasks") {
     subPanelTitle = "Tasks";
-    subPanelSubtitle = "Registrations & requests";
-    subPanelHtml = `${renderInboxSubPanelHtml("tasks", { open: inbox.openTasks })}
-      <div class="sub-section-title">Domain Requests</div>
-      <div class="kv-list">
-        <div class="kv-row"><span>Subdomain changes</span><span class="badge ${pendingList.length > 0 ? "badge-yellow" : "badge-neutral"}">${pendingList.length}</span></div>
-        <div class="kv-row"><span>Custom domains</span><span class="badge ${pendingCustomList.length > 0 ? "badge-yellow" : "badge-neutral"}">${pendingCustomList.length}</span></div>
-      </div>
-    `;
+    subPanelSubtitle = "Registrations and requests";
+    subPanelHtml = `${renderViewListHtml(views)}
+${renderInboxSubPanelHtml("tasks", { open: inbox.openTasks })}`;
   } else if (activeTab === "support") {
     subPanelTitle = "Mail";
     subPanelSubtitle = "All addresses and the contact form";
-    subPanelHtml = renderInboxSubPanelHtml("support", { open: inbox.openSupport });
+    subPanelHtml = renderInboxSubPanelHtml("support", {
+      open: inbox.openSupport,
+      unread: inbox.unreadSupport,
+      deleted: inbox.deletedSupport
+    });
   } else if (activeTab === "catalogs") {
-    subPanelTitle = "Translation Catalogs";
-    subPanelSubtitle = "Language & localization";
-    subPanelHtml = `
-      <div class="sub-section-title">Catalogs Overview</div>
+    subPanelTitle = "Catalogs";
+    subPanelSubtitle = "Interface translations";
+    subPanelHtml = `${renderViewListHtml(views)}
+
+      <div class="sub-section-title">Overview</div>
       <div class="kv-list">
         <div class="kv-row"><span>Installed languages</span><strong>${catalogList.length}</strong></div>
         <div class="kv-row"><span>Default language</span><strong>English (en-US)</strong></div>
       </div>
 
-      <div class="sub-section-title">Standard Locale Tags</div>
+      <div class="sub-section-title">Language tags</div>
       <div class="panel-note">
         Catalogs follow BCP 47 language tags (e.g. <code>hi-IN</code>, <code>fr-FR</code>, <code>de-DE</code>, <code>es-ES</code>, <code>ar-SA</code>). Kiosk clients fetch translations dynamically at boot.
       </div>
     `;
   } else {
-    subPanelTitle = "System Health";
-    subPanelSubtitle = "Diagnostics & audit logs";
-    subPanelHtml = `
-      <div class="sub-section-title">Quick Jump</div>
-      <div class="sub-action-list">
-        <a href="#platform-architecture" class="sub-action-item">
-          <span>Platform Architecture</span>
-        </a>
-        <a href="#platform-audit" class="sub-action-item">
-          <span>Platform Audit Logs</span>
-        </a>
-      </div>
+    subPanelTitle = "System";
+    subPanelSubtitle = "Health, audit log and sign-in";
+    subPanelHtml = `${renderViewListHtml(views)}
 
-      <div class="sub-section-title">Edge Security</div>
+      <div class="sub-section-title">Edge security</div>
       <div class="panel-note">
         Native Web Crypto PBKDF2 authentication with 100,000 iterations. Zero external runtime NPM packages. Immutable RAM overlay client OS.
       </div>
@@ -328,6 +423,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <div class="card card-flush">
         <div class="card-head">
           <h2 class="card-title">Registered Organizations (${tenants.length})</h2>
+          <div class="filter-chips">${orgFilters
+            .map(
+              (f) => `
+            <button type="button" class="filter-chip${f.id === "all" ? " active" : ""}" data-org-filter="${escapeAttr(f.id)}">${escapeHtml(f.label)}</button>`
+            )
+            .join("")}
+          </div>
         </div>
         <div class="table-container">
           <table>
@@ -341,18 +443,19 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
                 <th class="th-actions"><span class="visually-hidden">Actions</span></th>
               </tr>
             </thead>
-            <tbody>
+            <tbody id="org-rows">
               ${allRows}
+              <tr class="hidden" id="org-rows-empty"><td colspan="6" class="table-empty">No organizations match this filter.</td></tr>
             </tbody>
           </table>
         </div>
       </div>
   `;
 
-  const domainRequestsHtml = `
-      <div class="card mt-lg">
+  const subdomainRequestsCardHtml = `
+      <div class="card">
         <h2 class="card-title">Subdomain Change Requests (${pendingList.length})</h2>
-        <p class="card-sub">Active organizations asking to move to a new address. Registrations are decided above.</p>
+        <p class="card-sub">Active organizations asking to move to a new address. Registrations are decided in Tasks.</p>
         <div class="table-container">
           <table>
             <thead>
@@ -370,7 +473,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </table>
         </div>
       </div>
+  `;
 
+  const customDomainsCardHtml = `
       <div class="card">
         <h2 class="card-title">Pending Custom Domain Requests (${pendingCustomList.length})</h2>
         <p class="card-sub">Organizations requesting their own custom domains (e.g. <code>kiosk.example.com</code>).</p>
@@ -392,7 +497,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
   `;
 
-  const catalogsPaneHtml = `
+  const catalogsUploadCardHtml = `
       <div class="card">
         <h2 class="card-title">Upload / Replace Translation Catalog</h2>
         <p class="card-sub">Deploy multi-language user interfaces to the first-boot setup wizard and top bar.</p>
@@ -423,9 +528,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <button type="submit" class="btn btn-primary">Upload Translation Catalog</button>
         </form>
       </div>
+  `;
 
+  const catalogsTableCardHtml = `
       <div class="card">
         <h2 class="card-title">Workstation Interface Catalogs (i18n)</h2>
+        <p class="card-sub">Catalogs follow BCP 47 language tags. Kiosk clients fetch translations dynamically at boot.</p>
         <div class="table-container">
           <table>
             <thead>
@@ -467,7 +575,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
   `;
 
-  const systemPaneHtml = `
+  const architectureCardHtml = `
       <div class="card" id="platform-architecture">
         <h2 class="card-title">Platform Architecture &amp; Database Health</h2>
         <p class="card-sub">Cloudflare D1 edge database status and real-time operational telemetry.</p>
@@ -489,28 +597,160 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           </div>
         </div>
       </div>
-${auditCardHtml}
   `;
 
-  const tasksPaneHtml = `${renderInboxPaneHtml("tasks")}
-${domainRequestCount > 0 ? domainRequestsHtml : ""}`;
+  // Mail's view tabs are its folders, with New message beside them; every
+  // other tab's are its views.
+  const segmentedNavHtml =
+    activeTab === "support"
+      ? renderMailViewBarHtml({ open: inbox.openSupport, unread: inbox.unreadSupport, deleted: inbox.deletedSupport })
+      : renderViewTabsHtml(subPanelTitle, views);
 
   const panesByTab: Record<typeof activeTab, string> = {
     organizations: organizationsPaneHtml,
-    tasks: tasksPaneHtml,
+    tasks: `
+      <div class="tab-pane active" id="pane-requests">
+        ${renderInboxPaneHtml("tasks")}
+      </div>
+      <div class="tab-pane" id="pane-subdomains">
+        ${subdomainRequestsCardHtml}
+      </div>
+      <div class="tab-pane" id="pane-custom-domains">
+        ${customDomainsCardHtml}
+      </div>
+    `,
     support: renderInboxPaneHtml("support"),
-    catalogs: catalogsPaneHtml,
-    system: systemPaneHtml
+    catalogs: `
+      <div class="tab-pane active" id="pane-catalogs-list">
+        ${catalogsTableCardHtml}
+      </div>
+      <div class="tab-pane" id="pane-catalogs-upload">
+        ${catalogsUploadCardHtml}
+      </div>
+    `,
+    system: `
+      <div class="tab-pane active" id="pane-system-arch">
+        ${architectureCardHtml}
+      </div>
+      <div class="tab-pane" id="pane-system-audit">
+        ${auditCardHtml}
+      </div>
+      <div class="tab-pane" id="pane-system-two-factor">
+        ${renderTwoFactorPaneHtml()}
+      </div>
+    `
   };
 
   const contentHtml = `${bannerHtml}
+${segmentedNavHtml}
 ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const inboxScriptHtml =
     activeTab === "tasks" || activeTab === "support" ? renderInboxScript(nonce, activeTab, baseDomain, domainRequestCount) : "";
 
-  const scriptsHtml = `${inboxScriptHtml}
+  const tabSwitchScriptHtml = `
     <script nonce="${escapeAttr(nonce)}">
+      (function() {
+        function switchTab(tabId) {
+          if (!tabId) return;
+
+          var segTabs = document.querySelectorAll(".segmented-nav .segmented-tab[data-action^='tab-']");
+          segTabs.forEach(function(tab) {
+            tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
+          });
+
+          var subTabs = document.querySelectorAll("#sub-panel [data-action^='tab-']");
+          subTabs.forEach(function(tab) {
+            tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
+          });
+
+          var panes = document.querySelectorAll(".tab-pane");
+          if (!panes.length) return;
+          var found = false;
+          panes.forEach(function(pane) {
+            var isMatch = pane.id === "pane-" + tabId;
+            pane.classList.toggle("active", isMatch);
+            if (isMatch) found = true;
+          });
+
+          if (!found) {
+            panes[0].classList.add("active");
+            var firstAction = panes[0].id.replace(/^pane-/, "tab-");
+            segTabs.forEach(function(tab) {
+              tab.classList.toggle("active", tab.getAttribute("data-action") === firstAction);
+            });
+            subTabs.forEach(function(tab) {
+              tab.classList.toggle("active", tab.getAttribute("data-action") === firstAction);
+            });
+            tabId = panes[0].id.replace(/^pane-/, "");
+          }
+
+          try {
+            var url = new URL(window.location.href);
+            url.searchParams.set("tab", tabId);
+            window.history.replaceState({}, "", url.toString());
+          } catch (_) {}
+        }
+
+        window.labkioskSwitchTab = switchTab;
+
+        var segNav = document.querySelector(".segmented-nav");
+        if (segNav) {
+          segNav.addEventListener("click", function(e) {
+            var tab = e.target && e.target.closest ? e.target.closest(".segmented-tab") : null;
+            if (!tab) return;
+            var action = tab.getAttribute("data-action");
+            if (action && action.startsWith("tab-")) {
+              e.preventDefault();
+              switchTab(action.slice(4));
+            }
+          });
+        }
+
+        var subPanel = document.getElementById("sub-panel");
+        if (subPanel) {
+          subPanel.addEventListener("click", function(e) {
+            var item = e.target && e.target.closest ? e.target.closest("[data-action^='tab-']") : null;
+            if (!item) return;
+            var action = item.getAttribute("data-action");
+            if (action && action.startsWith("tab-")) {
+              e.preventDefault();
+              switchTab(action.slice(4));
+            }
+          });
+        }
+
+        var initialTab = new URLSearchParams(window.location.search).get("tab");
+        if (initialTab) {
+          switchTab(initialTab);
+        }
+      })();
+    </script>
+  `;
+
+  const scriptsHtml = `${inboxScriptHtml}
+${tabSwitchScriptHtml}
+${activeTab === "system" ? renderTwoFactorScript(nonce) : ""}
+    <script nonce="${escapeAttr(nonce)}">
+      // The directory filter: the chips above the table and the panel's Show list are one control.
+      (function () {
+        const controls = document.querySelectorAll("[data-org-filter]");
+        const rows = document.querySelectorAll("#org-rows > tr[data-org-status]");
+        const empty = document.getElementById("org-rows-empty");
+        if (!controls.length || !empty) return;
+        function apply(name) {
+          let shown = 0;
+          rows.forEach((row) => {
+            const match = name === "all" || (name === "demo" ? row.dataset.orgDemo === "1" : row.dataset.orgStatus === name);
+            row.classList.toggle("hidden", !match);
+            if (match) shown += 1;
+          });
+          empty.classList.toggle("hidden", shown > 0);
+          controls.forEach((control) => control.classList.toggle("active", control.dataset.orgFilter === name));
+        }
+        controls.forEach((control) => control.addEventListener("click", () => apply(control.dataset.orgFilter)));
+      })();
+
       document.querySelectorAll(".btn-approve-sub").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const tenantId = btn.dataset.tenant;

@@ -52,9 +52,18 @@ import {
 import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
 import { PALETTE } from "../src/ui_tokens";
-import { envelopeFor, localOutbox, parseAddress } from "../src/mail";
+import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
+import { ENROLLMENT_KEY_ALPHABET, enrollmentKeyCheckCharacter, generateEnrollmentKey, isEnrollmentKey } from "../src/auth";
+import { rotateUncheckedEnrollmentKeys } from "../src/db";
+import { listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
+import { DOCS_NAV, DOCS_PAGES } from "../src/docs_content.generated";
+import { headingId, renderMarkdown } from "../src/markdown";
+import { renderPortalHtml } from "../src/ui_portal";
+import type { PortalSite, Tenant } from "../src/types";
+import { SITE_STYLESHEET_PATH } from "../src/ui_landing";
+import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
 
@@ -77,6 +86,23 @@ function request(path: string, init: RequestInit & { cookie?: string; bearer?: s
   if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   return new Request(`${BASE}${path}`, { ...init, headers });
+}
+
+/** A page's text outside its script blocks, found by position rather than by pattern. */
+function outsideScripts(html: string): string {
+  const lower = html.toLowerCase();
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const open = lower.indexOf("<script", at);
+    if (open < 0) return out + html.slice(at);
+    out += html.slice(at, open);
+    const close = lower.indexOf("</script", open);
+    if (close < 0) return out;
+    const end = lower.indexOf(">", close);
+    if (end < 0) return out;
+    at = end + 1;
+  }
 }
 
 function json(body: unknown): RequestInit {
@@ -142,6 +168,19 @@ function lastMailTo(email: string) {
   return mail!;
 }
 
+/** Ask for the contact form's code, read it from the outbox, and send the message. */
+async function submitContact(body: Record<string, unknown>, ip: string, env: Env = mockEnv) {
+  const from = { "CF-Connecting-IP": ip };
+  const email = String(body.email);
+  const codeRes = await worker.fetch(request("/api/contact/email-code", { ...json({ email }), headers: from }), env);
+  assert.equal(codeRes.status, 200, `a code is sent to ${email}`);
+  const code = lastMailTo(email).subject.match(/^(\d{6}) is your Lab Kiosk verification code$/)?.[1];
+  assert.ok(code, "the code is in the subject");
+  const res = await worker.fetch(request("/api/contact", { ...json({ ...body, emailCode: code }), headers: from }), env);
+  const data = (await res.json()) as any;
+  return { res, data, code: code! };
+}
+
 let signupAddress = 0;
 
 /** Ask for a code, read it from the outbox, and submit the registration. */
@@ -158,10 +197,30 @@ async function submitSignup(overrides: Record<string, unknown> = {}, env: Env = 
   return { res, data };
 }
 
+/**
+ * A sign-in to its session response: the password, then the emailed code a
+ * super admin (or an account with emailed codes on) is asked for.
+ */
+async function signIn(
+  creds: { email: string; password: string; tenant?: string },
+  env: Env = mockEnv,
+  headers: Record<string, string> = {}
+): Promise<Response> {
+  const post = (path: string, body: unknown) => worker.fetch(request(path, { ...json(body), headers }), env);
+  const res = await post("/api/auth/login", creds);
+  if (res.status !== 200) return res;
+  const data = (await res.clone().json()) as any;
+  if (data.status !== "two_factor") return res;
+  assert.equal(data.method, "email", "an account without an app is emailed its code");
+  const code = lastMailTo(creds.email).subject.match(/^(\d{6}) is your Lab Kiosk sign-in code$/)?.[1];
+  assert.ok(code, "the sign-in code was emailed");
+  return post("/api/auth/login/verify", { challenge: data.challenge, code });
+}
+
 async function superCookie(): Promise<string> {
-  const res = await call("/api/auth/login", json({ email: mockEnv.SUPER_ADMIN_EMAIL, password: mockEnv.SUPER_ADMIN_PASSWORD }));
+  const res = await signIn({ email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! });
   assert.equal(res.status, 200, "the super admin signs in");
-  return res.headers.get("Set-Cookie")!.split(";")[0];
+  return res.headers.getSetCookie().find((c) => c.startsWith("labkiosk_session=") || !c.startsWith("labkiosk_device="))!.split(";")[0];
 }
 
 /** The task a registration or request opened, by its reference. */
@@ -281,6 +340,43 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /const requestedModal = "login"/);
   });
 
+  test("Serves dedicated public pages: /features, /specs, /pricing, /download, /docs and 301 redirects /wiki", async () => {
+    const features = await (await call("/features")).text();
+    assert.match(features, /Enterprise Kiosk/);
+    assert.match(features, /Tamper-Proof OS Lockdown/);
+
+    const specs = await (await call("/specs")).text();
+    assert.match(specs, /Technical Specifications/);
+    assert.match(specs, /class="specs-table-container"/);
+
+    const pricing = await (await call("/pricing")).text();
+    assert.match(pricing, /Transparent Licensing/);
+    assert.match(pricing, /Accredited Education Grant/);
+    assert.match(pricing, /Commercial &amp; Large Fleet/);
+
+    const download = await (await call("/download")).text();
+    assert.match(download, /Download/);
+    assert.match(download, /SHA256 Checksum/);
+    // The page points at what is published; it never states a version or a checksum of its own.
+    assert.ok(download.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso.sha256"'));
+    assert.ok(!/\bv\d+\.\d+\.\d+\b/.test(download), "no version number is written into the page");
+    assert.ok(!/\b[0-9a-f]{64}\b/.test(download), "no checksum is written into the page");
+    // The footer is on every page: its section links go to the home page, where the sections are.
+    assert.ok(download.includes('href="/#audiences"') && download.includes('href="/#security"') && !/href="#(audiences|security)"/.test(download));
+
+    const docs = await (await call("/docs")).text();
+    assert.match(docs, /Documentation/);
+    assert.match(docs, /Architecture Overview/);
+
+    const wikiRedirect = await call("/wiki");
+    assert.equal(wikiRedirect.status, 301);
+    assert.equal(new URL(wikiRedirect.headers.get("Location")!).pathname, "/docs");
+
+    const wikiSubRedirect = await call("/wiki/getting-started");
+    assert.equal(wikiSubRedirect.status, 301);
+    assert.equal(new URL(wikiSubRedirect.headers.get("Location")!).pathname, "/docs");
+  });
+
   // -------------------------------------------------------- registration
 
   test("Rejects registration with a weak password", async () => {
@@ -340,7 +436,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200, JSON.stringify(data));
     assert.equal(data.status, "ok");
     assert.equal(data.pending, true);
-    assert.match(data.reference, /^LK-[A-Z0-9]{6}$/);
+    assert.match(data.reference, /^REG-[A-Z0-9]{6}$/, "a registration's tracking ID says so");
     assert.equal(res.headers.get("Set-Cookie"), null, "no session before approval");
 
     const receipt = lastMailTo("operator@greenwood.example");
@@ -426,7 +522,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
   });
 
-  test("Turnstile guards the signup code and the contact form once it is configured", async () => {
+  test("Turnstile guards the registration code, the contact code and sign-in once it is configured", async () => {
     const turnstileEnv: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite", TURNSTILE_SECRET_KEY: "0x4AAAAAAAsecret" };
     const post = (path: string, body: unknown, env = turnstileEnv) =>
       worker.fetch(request(path, { ...json(body), headers: { "CF-Connecting-IP": "203.0.113.77" } }), env);
@@ -439,16 +535,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       return new Response(JSON.stringify(verdicts.shift() ?? { success: false }), { headers: { "Content-Type": "application/json" } });
     });
     try {
-      const contact = { name: "Tess", organization: "Town Library", email: "tess@town.example", message: "Hello" };
-      assert.equal((await post("/api/contact", contact)).status, 400, "no token, no message");
+      // The contact form: the check stands in front of the code its message needs.
+      const contact = { email: "tess@town.example" };
+      assert.equal((await post("/api/contact/email-code", contact)).status, 400, "no token, no code");
       assert.equal(seen.length, 0, "nothing to verify without a token");
 
       verdicts.push({ success: false });
-      assert.equal((await post("/api/contact", { ...contact, turnstileToken: "bad" })).status, 400);
+      assert.equal((await post("/api/contact/email-code", { ...contact, turnstileToken: "bad" })).status, 400);
       verdicts.push({ success: true, action: "signup" });
-      assert.equal((await post("/api/contact", { ...contact, turnstileToken: "other-form" })).status, 400, "a token from the other form does not count");
+      assert.equal((await post("/api/contact/email-code", { ...contact, turnstileToken: "other-form" })).status, 400, "a token from the other form does not count");
       verdicts.push({ success: true, action: "contact" });
-      const accepted = await post("/api/contact", { ...contact, turnstileToken: "good" });
+      const accepted = await post("/api/contact/email-code", { ...contact, turnstileToken: "good" });
       assert.equal(accepted.status, 200);
       const last = seen.at(-1)!;
       assert.equal(last.get("secret"), "0x4AAAAAAAsecret");
@@ -459,9 +556,31 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       verdicts.push({ success: true, action: "signup" });
       assert.equal((await post("/api/auth/register/email-code", { email: "new@town.example", turnstileToken: "good" })).status, 200);
 
+      // Sign-in: no password is looked at before the check passes.
+      const credentials = { email: "operator@greenwood.example", password: "OrganizationPassword123!" };
+      const checked = seen.length;
+      assert.equal((await post("/api/auth/login", credentials)).status, 400, "sign-in needs the check");
+      assert.equal(seen.length, checked);
+      verdicts.push({ success: true, action: "contact" });
+      assert.equal((await post("/api/auth/login", { ...credentials, turnstileToken: "other-form" })).status, 400);
+      verdicts.push({ success: true, action: "login" });
+      const signedIn = await post("/api/auth/login", { ...credentials, turnstileToken: "good" });
+      assert.equal(signedIn.status, 200);
+      assert.ok(signedIn.headers.get("Set-Cookie"));
+      // An organization's own domain is not a host name the widget runs on, so
+      // sign-in there carries no check and relies on the lockouts.
+      const elsewhere = await worker.fetch(
+        new Request("https://kiosk.customer.example/api/auth/login", { ...json(credentials), headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.77" } }),
+        turnstileEnv
+      );
+      assert.equal(elsewhere.status, 200);
+      const elsewherePage = await (await worker.fetch(new Request("https://kiosk.customer.example/?login=1", { headers: { Accept: "text/html" } }), turnstileEnv)).text();
+      assert.ok(!elsewherePage.includes('id="login-turnstile"'), "and its sign-in form draws none");
+
       // Half a configuration refuses rather than running unprotected.
       const half: Env = { ...mockEnv, TURNSTILE_SITE_KEY: "0x4AAAAAAAsite" };
-      assert.equal((await post("/api/contact", contact, half)).status, 503);
+      assert.equal((await post("/api/contact/email-code", contact, half)).status, 503);
+      assert.equal((await post("/api/auth/login", credentials, half)).status, 503);
     } finally {
       fetchMock.mock.restore();
     }
@@ -470,11 +589,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const on = await worker.fetch(request("/"), turnstileEnv);
     const onHtml = await on.text();
     assert.match(onHtml, /<script nonce="[^"]+" src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit&amp;onload=lkTurnstileReady" async defer><\/script>/);
-    assert.ok(onHtml.includes('id="reg-turnstile"') && onHtml.includes('id="contact-turnstile"'));
+    assert.ok(onHtml.includes('id="reg-turnstile"') && onHtml.includes('id="login-turnstile"'));
+    // Every public page carries the sign-in and registration forms, so every one carries their checks.
+    for (const page of ["/pricing", "/docs", "/contact"]) {
+      const html = await (await worker.fetch(request(page), turnstileEnv)).text();
+      assert.ok(html.includes('id="reg-turnstile"') && html.includes('id="login-turnstile"'), `${page} draws the checks`);
+    }
+    assert.ok((await (await worker.fetch(request("/contact"), turnstileEnv)).text()).includes('id="contact-turnstile"'));
     assert.match(on.headers.get("Content-Security-Policy") || "", /script-src [^;]*https:\/\/challenges\.cloudflare\.com/);
     assert.match(on.headers.get("Content-Security-Policy") || "", /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
     const off = await call("/");
-    assert.doesNotMatch(await off.text(), /turnstile\/v0\/api\.js|id="(?:reg|contact)-turnstile"/, "no widget while it is off");
+    assert.doesNotMatch(await off.text(), /turnstile\/v0\/api\.js|id="(?:reg|contact|login)-turnstile"/, "no widget while it is off");
     assert.doesNotMatch(off.headers.get("Content-Security-Policy") || "", /https:\/\/challenges\.cloudflare\.com/);
   });
 
@@ -503,8 +628,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/two-factor/setup", json({ password }))).status, 401);
     const { data: off } = await callJson("/api/auth/two-factor", { cookie });
     assert.equal(off.enabled, false);
+    assert.equal(off.emailCodes, false, "an organization account chooses the emailed code");
+    assert.equal(off.required, false);
     const { data: superState } = await callJson("/api/auth/two-factor", { cookie: await superCookie() });
     assert.equal(superState.enabled, false, "super admins have it too");
+    assert.equal(superState.emailCodes, true, "a super admin is always emailed a code");
+    assert.equal(superState.required, true);
 
     const otherBrowser = session(await login());
     assert.equal((await call("/api/auth/two-factor/setup", { ...json({ password: "wrong" }), cookie })).status, 400, "setup needs the password");
@@ -586,6 +715,57 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "123456" }), cookie })).status, 409, "a new setup starts over");
   });
 
+  test("Two-factor sign-in: an emailed code needs no setup, and a super admin cannot turn it off", async () => {
+    const email = "operator@lakeside.example";
+    const password = "LakesidePass789!";
+    const cookie = await registerApprovedOrganization({ name: "Lakeside Library", contactName: "Lena Lake", email, password, subdomain: "lakeside" });
+    const set = (body: unknown, as?: string) => call("/api/auth/two-factor/email", { ...json(body), cookie: as });
+
+    // Only the signed-in account, with its password, and only a clear on or off.
+    assert.equal((await set({ password, enabled: true })).status, 401);
+    assert.equal((await call("/api/auth/two-factor/email", { cookie })).status, 405);
+    assert.equal((await set({ password: "wrong", enabled: true }, cookie)).status, 400);
+    assert.equal((await set({ password, enabled: "yes" }, cookie)).status, 400);
+    assert.equal(((await (await call("/api/auth/login", json({ email, password }))).json()) as any).status, "ok", "off: the password is enough");
+
+    const otherBrowser = (await call("/api/auth/login", json({ email, password }))).headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await set({ password, enabled: true }, cookie)).status, 200);
+    assert.equal((await callJson("/api/auth/two-factor", { cookie })).data.emailCodes, true);
+    assert.equal((await callJson("/api/auth/me", { cookie: otherBrowser })).data.user, null, "browsers signed in with the password alone are signed out");
+
+    // The password now gives a challenge and an emailed code, with no app anywhere.
+    const { res: step, data: challenge } = await callJson("/api/auth/login", json({ email, password }));
+    assert.equal(challenge.status, "two_factor");
+    assert.equal(challenge.method, "email");
+    assert.equal(challenge.sentTo, "o•••@lakeside.example");
+    assert.equal(step.headers.get("Set-Cookie"), null, "no session before the code");
+    const code = lastMailTo(email).subject.match(/^(\d{6}) is your Lab Kiosk sign-in code$/)![1];
+    const wrong = code === "000000" ? "111111" : "000000";
+    assert.equal((await call("/api/auth/login/verify", json({ challenge: challenge.challenge, code: wrong }))).status, 400);
+    assert.equal((await call("/api/auth/login/verify", json({ challenge: challenge.challenge, code: "abcde-fghjk" }))).status, 400, "no recovery codes without an app");
+    const signedIn = await call("/api/auth/login/verify", json({ challenge: challenge.challenge, code }));
+    assert.equal(signedIn.status, 200);
+    assert.equal((await call("/api/auth/login/verify", json({ challenge: challenge.challenge, code }))).status, 401, "a code signs in once");
+
+    // Off again: the password is enough.
+    assert.equal((await set({ password, enabled: false }, cookie)).status, 200);
+    assert.equal(((await (await call("/api/auth/login", json({ email, password }))).json()) as any).status, "ok");
+
+    // A super admin cannot turn it off.
+    const admin = await superCookie();
+    assert.equal((await set({ password: mockEnv.SUPER_ADMIN_PASSWORD, enabled: false }, admin)).status, 409);
+
+    // Where email is not configured a code cannot be sent: the password alone signs in, and the choice is refused.
+    const noMail = { ...mockEnv, EMAIL: {}, MAIL_FROM: "Lab Kiosk <support@email.labkiosk.org>" } as unknown as Env;
+    const direct = await worker.fetch(
+      request("/api/auth/login", json({ email: mockEnv.SUPER_ADMIN_EMAIL, password: mockEnv.SUPER_ADMIN_PASSWORD })),
+      noMail
+    );
+    assert.equal(((await direct.json()) as any).status, "ok");
+    const refused = await worker.fetch(request("/api/auth/two-factor/email", { ...json({ password, enabled: true }), cookie }), noMail);
+    assert.equal(refused.status, 503);
+  });
+
   test("Two-factor sign-in: a challenge takes five wrong codes, then the password is needed again", async () => {
     const email = "operator@hillside.example";
     const password = "HillsidePass789!";
@@ -665,19 +845,36 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   // ------------------------------------------------------------ support inbox
 
-  test("The contact form opens a support conversation the super admin answers by email", async () => {
-    const missing = await call("/api/contact", { ...json({ name: "Sam", email: "sam@example.net" }), headers: { "CF-Connecting-IP": "203.0.113.70" } });
-    assert.equal(missing.status, 400, "a message is required");
-    const sent = await callJson("/api/contact", {
-      ...json({ name: "Sam Lee", organization: "City Library", email: "Sam@Example.net", topic: "Pricing", message: "How much for 60 computers?" }),
-      headers: { "CF-Connecting-IP": "203.0.113.70" }
-    });
+  test("The contact form files a message only for an address proved with an emailed code", async () => {
+    const from = { "CF-Connecting-IP": "203.0.113.70" };
+    const message = { name: "Sam Lee", organization: "City Library", email: "Sam@Example.net", reason: "sales", message: "How much for 60 computers?" };
+    const post = (body: unknown) => callJson("/api/contact", { ...json(body), headers: from });
+    assert.equal((await post({ name: "Sam", email: "sam@example.net", reason: "sales", emailCode: "123456" })).res.status, 400, "a message is required");
+    assert.equal((await post({ ...message, reason: "gossip", emailCode: "123456" })).res.status, 400, "the reason is one of the list");
+    const noCode = await post(message);
+    assert.equal(noCode.res.status, 400);
+    assert.match(noCode.data.error, /code/);
+    assert.equal((await post({ ...message, emailCode: "123456" })).res.status, 400, "a code nobody was sent is refused");
+    assert.equal((await call("/api/contact/email-code", { ...json({ email: "not an address" }), headers: from })).status, 400);
+
+    const sent = await submitContact(message, "203.0.113.70");
     assert.equal(sent.res.status, 200);
-    assert.match(sent.data.reference, /^LK-[0-9A-Z]{6}$/);
+    assert.match(sent.data.reference, /^SAL-[0-9A-Z]{6}$/, "the reason decides the type the message is filed under");
+    const codeMail = [...localOutbox()].reverse().find((m) => m.to === "sam@example.net" && /verification code$/.test(m.subject))!;
+    assert.ok(codeMail.html.includes("contact form") && codeMail.html.includes(sent.code), "the code email says what it is for");
+    // The code worked once.
+    assert.equal((await post({ ...message, emailCode: sent.code })).res.status, 400);
+    // The sender, whose address is now proved, gets a receipt with the reference.
+    const receipt = lastMailTo("sam@example.net");
+    assert.ok(receipt.subject.includes(sent.data.reference) && /We received your message/.test(receipt.subject));
+    // A second code is not sent straight after the first.
+    assert.equal((await call("/api/contact/email-code", { ...json({ email: "second@example.net" }), headers: from })).status, 200);
+    assert.equal((await call("/api/contact/email-code", { ...json({ email: "second@example.net" }), headers: from })).status, 429);
 
     const admin = await superCookie();
     const item = await taskByReference(admin, sent.data.reference, "support");
     assert.equal(item.kind, "support");
+    assert.equal(item.category, "sales");
     assert.equal(item.contact_email, "sam@example.net");
     const { data: tasks } = await callJson("/api/super/inbox?box=tasks&filter=all", { cookie: admin });
     assert.ok(!(tasks.items as any[]).some((i) => i.reference === sent.data.reference), "support stays out of Tasks");
@@ -702,7 +899,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(detail.conversation.status, "closed");
     assert.deepEqual(
       detail.messages.map((m: any) => m.direction),
-      ["inbound", "outbound"]
+      ["inbound", "outbound", "outbound"],
+      "the message, its receipt, the reply"
     );
   });
 
@@ -907,19 +1105,617 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/super/inbox/compose", json(good))).status, 401);
     assert.equal((await call("/api/super/inbox/compose", { ...json(good), cookie: orgSessionCookie })).status, 403);
 
-    // Delete removes the conversation, its messages and the stored original; tasks stay.
     const { data: detail } = await callJson(`/api/super/inbox/${filed!.id}`, { cookie: admin });
     const rawKey = (detail.messages as any[]).find((m) => m.direction === "inbound").raw_key;
     assert.ok(await loadRawMail(inboxEnv, rawKey));
-    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, json({}))).status, 401);
-    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { ...json({}), cookie: orgSessionCookie })).status, 403);
-    assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { cookie: admin })).status, 405);
     const { data: tasks } = await callJson("/api/super/inbox?box=tasks&filter=all", { cookie: admin });
     const task = (tasks.items as any[])[0];
+    const idsIn = async (filter: string) =>
+      ((await callJson(`/api/super/inbox?box=support&filter=${filter}`, { cookie: admin })).data.items as any[]).map((i) => i.id);
+    const base = `/api/super/inbox/${filed!.id}`;
+
+    // Read and unread: opening it above marked it read; it can be put back.
+    for (const action of ["unread", "trash", "restore", "delete"]) {
+      assert.equal((await call(`${base}/${action}`, json({}))).status, 401, `${action} needs a session`);
+      assert.equal((await call(`${base}/${action}`, { ...json({}), cookie: orgSessionCookie })).status, 403, `${action} is the platform's`);
+      assert.equal((await call(`${base}/${action}`, { cookie: admin })).status, 405, `${action} is a POST`);
+    }
+    assert.ok((await idsIn("read")).includes(filed!.id));
+    assert.ok(!(await idsIn("unread")).includes(filed!.id));
+    assert.equal((await call(`${base}/unread`, { ...json({}), cookie: admin })).status, 200);
+    assert.ok((await idsIn("unread")).includes(filed!.id));
+    assert.ok(!(await idsIn("read")).includes(filed!.id));
+
+    // Deleting moves it to Deleted: out of every other view and count, nothing removed.
+    assert.equal((await call(`/api/super/inbox/${task.id}/trash`, { ...json({}), cookie: admin })).status, 400, "tasks stay on record");
     assert.equal((await call(`/api/super/inbox/${task.id}/delete`, { ...json({}), cookie: admin })).status, 400, "tasks stay on record");
+    assert.equal((await call(`${base}/delete`, { ...json({}), cookie: admin })).status, 409, "only from Deleted");
+    const before = (await callJson("/api/super/inbox?box=support", { cookie: admin })).data.counts;
+    assert.equal((await call(`${base}/trash`, { ...json({}), cookie: admin })).status, 200);
+    const { data: trashed } = await callJson("/api/super/inbox?box=support&filter=deleted", { cookie: admin });
+    assert.deepEqual((trashed.items as any[]).map((i) => i.id), [filed!.id]);
+    assert.equal(trashed.counts.deletedSupport, 1);
+    assert.equal(trashed.counts.unreadSupport, before.unreadSupport - 1, "deleted mail is not counted as unread");
+    assert.equal(trashed.counts.openSupport, before.openSupport - 1);
+    for (const filter of ["open", "all", "unread", "read", "closed"]) {
+      assert.ok(!(await idsIn(filter)).includes(filed!.id), `not in ${filter}`);
+    }
+    assert.ok(!(trashed.mailboxes as any[]).some((m) => m.mailbox === "sales@labkiosk.org" && m.total > 1));
+    assert.ok(await loadRawMail(inboxEnv, rawKey), "the stored original is kept");
+
+    // Restore brings it back, and so does an answer from its contact.
+    assert.equal((await call(`${base}/restore`, { ...json({}), cookie: admin })).status, 200);
+    assert.ok((await idsIn("open")).includes(filed!.id));
+    assert.equal((await call(`${base}/trash`, { ...json({}), cookie: admin })).status, 200);
+    const answer = inboundMessage(
+      ["From: Buyer <buyer@company.example>", `Subject: Re: [${filed!.reference}] Quote for 120 seats`, "", "Any news?"].join("\n"),
+      "buyer@company.example",
+      "sales@labkiosk.org"
+    );
+    assert.equal((await handleInboundEmail(answer.message, inboxEnv, db))!.id, filed!.id);
+    assert.deepEqual(await idsIn("deleted"), []);
+    assert.ok((await idsIn("unread")).includes(filed!.id));
+
+    // Delete permanently removes the conversation, its messages and the stored original.
+    assert.equal((await call(`${base}/trash`, { ...json({}), cookie: admin })).status, 200);
     assert.equal((await call(`/api/super/inbox/${filed!.id}/delete`, { ...json({}), cookie: admin })).status, 200);
     assert.equal((await call(`/api/super/inbox/${filed!.id}`, { cookie: admin })).status, 404);
     assert.equal(await loadRawMail(inboxEnv, rawKey), null, "the stored original is gone too");
+  });
+
+  test("Mail is filed by what it is about, and a new sender gets a receipt with the tracking ID", async () => {
+    const db = getDatabase(mockEnv);
+    const admin = await superCookie();
+    const from = "ines@customer.example";
+    const mail = (subject: string, to: string, extra: string[] = []) =>
+      inboundMessage([`From: Ines Ortiz <${from}>`, `Subject: ${subject}`, "Message-ID: <first@customer.example>", ...extra, "", "Hello."].join("\n"), from, to).message;
+    const receipts = () => localOutbox().filter((m) => m.to === from && /We received your message/.test(m.subject));
+
+    // The address it was sent to names the type and the prefix of the tracking ID.
+    const billing = (await handleInboundEmail(mail("Invoice 2231 <b>", "billing@labkiosk.org"), inboxEnv, db))!;
+    assert.match(billing.reference, /^BIL-[A-Z0-9]{6}$/);
+    assert.equal(billing.category, "billing");
+
+    // The sender is told it arrived: the tracking ID, in the shared layout, marked as an automatic reply.
+    assert.equal(receipts().length, 1);
+    const receipt = receipts()[0];
+    assert.equal(receipt.subject, `[${billing.reference}] We received your message`);
+    assert.equal(receipt.from, "Lab Kiosk <billing@email.labkiosk.org>");
+    assert.equal(receipt.replyTo, "billing@labkiosk.org");
+    assert.equal(receipt.headers["Auto-Submitted"], "auto-replied");
+    assert.equal(receipt.headers["In-Reply-To"], "<first@customer.example>");
+    assert.ok(receipt.text.includes(billing.reference));
+    assert.ok(receipt.html.includes("Tracking ID") && receipt.html.includes(billing.reference) && receipt.html.includes("lk-card"));
+    assert.ok(receipt.html.includes("Invoice 2231 &lt;b&gt;") && !receipt.html.includes("Invoice 2231 <b>"), "what the sender typed is escaped");
+    const { data: thread } = await callJson(`/api/super/inbox/${billing.id}`, { cookie: admin });
+    assert.deepEqual((thread.messages as any[]).map((m) => m.direction), ["inbound", "outbound"], "the receipt is on record");
+
+    // One receipt a day per sender, and none for an automatic message or a no-reply address.
+    const second = (await handleInboundEmail(mail("Another question", "hello@labkiosk.org"), inboxEnv, db))!;
+    assert.match(second.reference, /^GEN-/, "an address that names nothing is general");
+    assert.equal(receipts().length, 1);
+    const robot = "robot@machine.example";
+    await handleInboundEmail(
+      inboundMessage([`From: ${robot}`, "Subject: Out of office", "Auto-Submitted: auto-replied", "", "Away."].join("\n"), robot, "support@labkiosk.org").message,
+      inboxEnv,
+      db
+    );
+    const noreply = "no-reply@shop.example";
+    const fromNoReply = (await handleInboundEmail(
+      inboundMessage([`From: ${noreply}`, "Subject: Your order", "", "Thanks."].join("\n"), noreply, "support@labkiosk.org").message,
+      inboxEnv,
+      db
+    ))!;
+    assert.match(fromNoReply.reference, /^SUP-/);
+    assert.ok(!localOutbox().some((m) => m.to === robot || m.to === noreply), "programs are not answered");
+
+    // The Type filter, and the counts it shows.
+    const list = async (query: string) => (await callJson(`/api/super/inbox?box=support&filter=all${query}`, { cookie: admin })).data;
+    const onlyBilling = await list("&category=billing");
+    assert.ok((onlyBilling.items as any[]).length > 0 && (onlyBilling.items as any[]).every((i) => i.category === "billing"));
+    assert.ok((onlyBilling.items as any[]).some((i) => i.id === billing.id));
+    assert.deepEqual(
+      (onlyBilling.categories as any[]).map((c) => `${c.id}:${c.prefix}`),
+      ["support:SUP", "sales:SAL", "billing:BIL", "legal:LGL", "general:GEN", "letter:LTR"]
+    );
+    assert.ok((onlyBilling.categories as any[]).find((c) => c.id === "billing").open >= 1);
+    assert.equal(((await list("&category=nonsense")).items as any[]).length, ((await list("")).items as any[]).length, "an unknown type filters nothing");
+    const tasks = (await callJson("/api/super/inbox?box=tasks&filter=all&category=registration", { cookie: admin })).data;
+    assert.deepEqual((tasks.categories as any[]).map((c) => c.id), ["registration", "remote_control"]);
+    assert.ok((tasks.items as any[]).every((i) => i.kind === "signup" && /^(REG|LK)-/.test(i.reference)));
+
+    // A conversation from before the prefixes keeps its LK- reference, and a reply still finds it.
+    await db.prepare("UPDATE conversations SET reference = 'LK-ABC234' WHERE id = ?").bind(billing.id).run();
+    assert.equal(referenceInSubject("Re: [lk-abc234] Invoice"), "LK-ABC234");
+    assert.equal(subjectWithReference("SUP-7Q2M9X", "Re: [LK-ABC234] [BIL-222222] Invoice"), "[SUP-7Q2M9X] Re: Invoice");
+    const reply = (await handleInboundEmail(mail("Re: [LK-ABC234] Invoice 2231", "billing@labkiosk.org"), inboxEnv, db))!;
+    assert.equal(reply.id, billing.id);
+
+    // A formal letter written in the console: its own type, prefix and template.
+    const composed = await callJson("/api/super/inbox/compose", {
+      ...json({
+        from: "accounts",
+        to: "Ngozi Okafor <ngozi@northfield.example>",
+        subject: "Renewal of your license",
+        message: "Dear Ms Okafor,\n\nYour license ends soon.\n\nYours sincerely,",
+        format: "letter",
+        organization: "Northfield <script>alert(1)</script> Trust",
+        signatory: "Asha  Verma",
+        signatoryTitle: "Customer Accounts"
+      }),
+      cookie: admin
+    });
+    assert.equal(composed.res.status, 200);
+    const letter = lastMailTo("ngozi@northfield.example");
+    assert.match(letter.subject, /^\[LTR-[A-Z0-9]{6}\] Renewal of your license$/);
+    assert.match(letter.html, /Ref\. LTR-[A-Z0-9]{6}/);
+    assert.match(letter.html, /\d{1,2} [A-Z][a-z]+ \d{4}/, "a letter is dated");
+    assert.ok(letter.html.includes("Ngozi Okafor") && letter.html.includes("Customer Accounts"));
+    assert.ok(letter.html.includes("Asha Verma"), "a letter is signed with the name its writer gave");
+    assert.ok(letter.html.includes("&lt;script&gt;") && !letter.html.includes("<script>"), "the organization is escaped");
+    const { data: letterThread } = await callJson(`/api/super/inbox/${composed.data.id}`, { cookie: admin });
+    assert.equal(letterThread.conversation.category, "letter");
+  });
+
+  test("Every email goes out in the shared layout, through the email Worker when it is bound", async () => {
+    // Codes, alerts and decisions each use their own template.
+    const code = [...localOutbox()].reverse().find((m) => /sign-in code$/.test(m.subject))!;
+    assert.ok(code.html.includes("Your sign-in code") && code.html.includes(code.subject.slice(0, 6)));
+    const approval = [...localOutbox()].reverse().find((m) => /Your organization is active$/.test(m.subject))!;
+    assert.ok(approval.html.includes("Approved") && approval.html.includes("Open your console"));
+    for (const mail of localOutbox()) {
+      assert.ok(mail.html.startsWith("<!DOCTYPE html>") && mail.html.includes("lk-card"), `${mail.subject} is in the layout`);
+      assert.ok(!/<script/i.test(mail.html), `${mail.subject} carries no script`);
+    }
+
+    // With the Service Binding, the controller hands the message over and sends nothing itself.
+    const handed: any[] = [];
+    const direct: any[] = [];
+    const mailer = (status: number, body: unknown) =>
+      ({
+        fetch: async (url: string, init: RequestInit) => {
+          handed.push({ url, body: JSON.parse(String(init.body)) });
+          return new Response(JSON.stringify(body), { status });
+        }
+      }) as unknown as Fetcher;
+    const email = { send: async (message: unknown) => (direct.push(message), { messageId: "<direct@labkiosk.org>" }) } as unknown as SendEmail;
+    const outgoing = {
+      to: "pat@library.example",
+      toName: "Pat Morgan",
+      subject: "[SUP-7Q2M9X] Re: Enrolment",
+      text: "Hello Pat,\n\nTry the new key.",
+      mailbox: "support@labkiosk.org",
+      template: { name: "reply" as const, reference: "SUP-7Q2M9X", category: "Support", author: "Asha" }
+    };
+
+    const viaWorker = await sendMail({ ...inboxEnv, MAILER: mailer(200, { messageId: "<worker@labkiosk.org>" }), EMAIL: email }, outgoing);
+    assert.equal(viaWorker.messageId, "<worker@labkiosk.org>");
+    assert.equal(direct.length, 0);
+    assert.equal(handed.length, 1);
+    assert.match(handed[0].url, /\/send$/);
+    assert.deepEqual(handed[0].body.from, { email: "support@email.labkiosk.org", name: "Lab Kiosk" });
+    assert.deepEqual(handed[0].body.to, { email: "pat@library.example", name: "Pat Morgan" });
+    assert.equal(handed[0].body.replyTo, "support@labkiosk.org");
+    assert.deepEqual(handed[0].body.template, outgoing.template);
+    assert.deepEqual(handed[0].body.brand, { name: "Lab Kiosk", siteUrl: "https://labkiosk.org", replyAddress: "support@labkiosk.org" });
+    assert.equal(handed[0].body.html, undefined, "the email Worker renders");
+
+    // When that Worker does not send, the message goes out directly, rendered with the same template.
+    const fallback = await sendMail({ ...inboxEnv, MAILER: mailer(502, { error: "down" }), EMAIL: email }, outgoing);
+    assert.equal(fallback.messageId, "<direct@labkiosk.org>");
+    assert.equal(direct.length, 1);
+    assert.ok(direct[0].html.includes("SUP-7Q2M9X") && direct[0].html.includes("lk-card") && direct[0].text === outgoing.text);
+
+    // With no way left to send, the failure is the caller's to report.
+    await assert.rejects(() => sendMail({ ...inboxEnv, MAILER: mailer(502, { error: "down" }) }, outgoing), /down/);
+    assert.equal(mailConfigProblem({ ...inboxEnv, MAILER: mailer(200, {}) }), null, "the Service Binding alone is enough to send");
+  });
+
+  test("The enrollment key carries a check character the workstation can verify by itself", async () => {
+    // The same pairs the agent is held to (ENROLLMENT_KEY_VECTORS in distro-builder/tests/test_client.py).
+    const vectors: Array<[string, string]> = [
+      ["AAAAAAAAAAAAAAAAAAA", "A"],
+      ["ABCDEFGHJKMNPQRSTVW", "H"],
+      ["YZ23456789ABCDEFGHJ", "4"],
+      ["9999999999999999999", "X"],
+      ["2222222222222222222", "P"]
+    ];
+    const grouped = (chars: string) => [0, 5, 10, 15].map((i) => chars.slice(i, i + 5)).join("-");
+
+    // The wizard's own copy of the algorithm, run as the browser would run it.
+    const wizard = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "distro-builder/config/includes.chroot/opt/labkiosk/setup/wizard.html"),
+      "utf8"
+    );
+    const start = wizard.indexOf("function enrollmentKeyCheckCharacter(payload) {");
+    const end = wizard.indexOf("\n    }\n", start);
+    assert.ok(start > 0 && end > start, "the wizard has its check character function");
+    assert.ok(wizard.includes(`const ENROLLMENT_KEY_ALPHABET = '${ENROLLMENT_KEY_ALPHABET}';`));
+    const wizardCheck = new Function(
+      "ENROLLMENT_KEY_ALPHABET",
+      `${wizard.slice(start, end + 7)}; return enrollmentKeyCheckCharacter;`
+    )(ENROLLMENT_KEY_ALPHABET) as (payload: string) => string;
+
+    for (const [payload, check] of vectors) {
+      assert.equal(enrollmentKeyCheckCharacter(payload), check, payload);
+      assert.equal(wizardCheck(payload), check, `the wizard agrees on ${payload}`);
+      assert.ok(isEnrollmentKey(grouped(payload + check)));
+    }
+
+    // Every key issued passes, and the wizard agrees with each one.
+    for (let i = 0; i < 200; i++) {
+      const key = generateEnrollmentKey();
+      assert.match(key, /^[A-HJKMNP-TV-Z2-9]{5}(-[A-HJKMNP-TV-Z2-9]{5}){3}$/);
+      assert.ok(isEnrollmentKey(key), key);
+      const flat = key.replace(/-/g, "");
+      assert.equal(wizardCheck(flat.slice(0, -1)), flat[19]);
+    }
+
+    // One wrong character anywhere is always caught; so is the wrong shape.
+    const good = "ABCDEFGHJKMNPQRSTVWH";
+    for (let position = 0; position < 20; position++) {
+      for (const other of ENROLLMENT_KEY_ALPHABET) {
+        if (other === good[position]) continue;
+        assert.ok(!isEnrollmentKey(grouped(good.slice(0, position) + other + good.slice(position + 1))));
+      }
+    }
+    for (const bad of ["", good, grouped(good).toLowerCase(), grouped(good) + "-AAAAA", grouped(good).slice(0, -1), grouped(good).slice(0, -1) + "0", `${grouped(good)}\n`]) {
+      assert.ok(!isEnrollmentKey(bad), JSON.stringify(bad));
+    }
+
+    // Keys from before the check character are replaced: when the organization looks at its key...
+    const db = getDatabase(mockEnv);
+    const old = "ABCDE-FGHJK-MNPQR-STVWX";
+    assert.ok(!isEnrollmentKey(old));
+    const tenantId = (await db.prepare("SELECT id FROM tenants WHERE subdomain = 'greenwood'").first<{ id: string }>())!.id;
+    await db.prepare("UPDATE tenants SET enrollment_key = ? WHERE id = ?").bind(old, tenantId).run();
+    const { data: shown } = await callJson("/api/settings/enrollment-key?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.notEqual(shown.enrollmentKey, old);
+    assert.ok(isEnrollmentKey(shown.enrollmentKey));
+    assert.equal((await callJson("/api/settings/enrollment-key?tenant=greenwood", { cookie: orgSessionCookie })).data.enrollmentKey, shown.enrollmentKey, "a checked key is left alone");
+
+    // ...and for every organization in the hourly run, leaving checked keys as they are.
+    await db.prepare("UPDATE tenants SET enrollment_key = ? WHERE id = ?").bind(old, tenantId).run();
+    const before = await db.prepare("SELECT id, enrollment_key FROM tenants WHERE id <> ?").bind(tenantId).all<{ id: string; enrollment_key: string }>();
+    const rotated = await rotateUncheckedEnrollmentKeys(db);
+    assert.ok(rotated.includes(tenantId));
+    const after = await db.prepare("SELECT id, enrollment_key FROM tenants").all<{ id: string; enrollment_key: string }>();
+    for (const row of after.results) assert.ok(row.enrollment_key === "" || isEnrollmentKey(row.enrollment_key), row.id);
+    for (const row of before.results) {
+      if (isEnrollmentKey(row.enrollment_key)) assert.equal(after.results.find((r) => r.id === row.id)!.enrollment_key, row.enrollment_key);
+    }
+    assert.deepEqual(await rotateUncheckedEnrollmentKeys(db), [], "nothing left to rotate");
+  });
+
+  test("The download page shows what GitHub published for each release, summarized for customers", async () => {
+    const db = getDatabase(mockEnv);
+    const body = [
+      "## What's Changed",
+      "* feat(ota): signed release downloads with labkiosk-update (phase 2) by @akbhoi in https://github.com/akbhoi/labkiosk/pull/22",
+      "* Non-blocking cookie bar for website analytics consent by @akbhoi in https://github.com/akbhoi/labkiosk/pull/25",
+      "* Fix v2.7.0 release: patch image CVEs and bump version by @akbhoi in https://github.com/akbhoi/labkiosk/pull/26",
+      "",
+      "**Full Changelog**: https://github.com/akbhoi/labkiosk/compare/v2.6.0...v2.7.0"
+    ].join("\r\n");
+    assert.deepEqual(plainHighlights(body), [
+      "Signed release downloads with labkiosk-update (phase 2)",
+      "Non-blocking cookie bar for website analytics consent",
+      "Fix v2.7.0 release: patch image CVEs and bump version"
+    ]);
+
+    const release = (tag: string, published: string, extra: Record<string, unknown> = {}) => ({
+      tag_name: tag,
+      name: `Lab Kiosk ${tag}`,
+      html_url: `https://github.com/akbhoi/labkiosk/releases/tag/${tag}`,
+      body,
+      draft: false,
+      prerelease: false,
+      published_at: published,
+      assets: [
+        { name: "labkiosk-debian12-amd64.iso", size: 753926144, browser_download_url: `https://github.com/akbhoi/labkiosk/releases/download/${tag}/labkiosk-debian12-amd64.iso` },
+        { name: "labkiosk-debian12-amd64.iso.sha256", size: 94, browser_download_url: `https://github.com/akbhoi/labkiosk/releases/download/${tag}/labkiosk-debian12-amd64.iso.sha256` }
+      ],
+      ...extra
+    });
+    const asked: string[] = [];
+    const github = (list: unknown, status = 200) =>
+      (async (url: string, init: RequestInit) => {
+        asked.push(`${url} ${(init.headers as Record<string, string>)["User-Agent"]}`);
+        return new Response(JSON.stringify(list), { status });
+      }) as unknown as typeof fetch;
+    const list = [
+      release("v2.7.0", "2026-10-07T03:09:04Z"),
+      release("v2.6.0", "2026-10-05T03:50:09Z"),
+      release("v9.9.9", "2026-10-08T00:00:00Z", { draft: true }),
+      release("v8.8.8", "2026-10-08T00:00:00Z", { prerelease: true }),
+      release("nightly", "2026-10-08T00:00:00Z"),
+      // An address that is not this repository's own release is never stored as a download.
+      release("v2.5.1", "2026-10-01T07:28:37Z", { assets: [{ name: "labkiosk-debian12-amd64.iso", size: 1, browser_download_url: "https://evil.example/labkiosk-debian12-amd64.iso" }] }),
+      release("v2.5.0", "2026-09-26T14:51:11Z", { html_url: "https://evil.example/releases/tag/v2.5.0" })
+    ];
+
+    // Without the model, the releases are stored and shown from their own change list.
+    const first = await syncReleaseNotes(db, { ...mockEnv, AI: undefined }, github(list));
+    assert.deepEqual(first, { stored: 3, summarized: 0 });
+    assert.match(asked[0], /^https:\/\/api\.github\.com\/repos\/akbhoi\/labkiosk\/releases\?per_page=\d+ labkiosk-controller$/);
+    const stored = await listReleaseNotes(db);
+    assert.deepEqual(stored.map((r) => r.tag), ["v2.7.0", "v2.6.0", "v2.5.1"]);
+    assert.equal(stored[2].iso_url, null);
+    let page = await (await call("/download")).text();
+    assert.ok(page.includes("Latest Release v2.7.0") && page.includes("Download v2.7.0 (.ISO)"));
+    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.7.0/labkiosk-debian12-amd64.iso"'));
+    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.7.0/labkiosk-debian12-amd64.iso.sha256"'));
+    assert.ok(page.includes("7 October 2026") && page.includes("~720 MB"));
+    assert.ok(page.includes("<li>Non-blocking cookie bar for website analytics consent</li>"));
+    assert.ok(!page.includes("Summary written by AI") && !page.includes("@akbhoi") && !page.includes("evil.example"));
+
+    // With the model: its sentences, escaped, marked as written by AI; what it should not have written is dropped.
+    const prompts: any[] = [];
+    const ai = (answer: unknown) => ({
+      run: async (_model: string, input: any) => {
+        prompts.push(input);
+        return { output_text: typeof answer === "string" ? answer : JSON.stringify(answer) };
+      }
+    });
+    const good = {
+      highlights: [
+        "Workstations can now download signed updates.",
+        "The website asks before it counts visits <script>alert(1)</script>",
+        "See https://evil.example for more",
+        "Security fixes for the workstation image & its packages."
+      ]
+    };
+    const second = await syncReleaseNotes(db, { ...mockEnv, AI: ai(good) }, github(list));
+    assert.equal(second.summarized, 3);
+    assert.ok(JSON.stringify(prompts[0]).includes("signed release downloads") && JSON.stringify(prompts[0]).includes("Never add a feature"));
+    page = await (await call("/download")).text();
+    assert.ok(page.includes("<li>Workstations can now download signed updates.</li>"));
+    assert.ok(page.includes("<li>Security fixes for the workstation image &amp; its packages.</li>"), "the model's words are escaped");
+    assert.ok(page.includes("Summary written by AI"));
+    assert.ok(!page.includes("<script>alert(1)") && !page.includes("evil.example"), "markup and addresses from the model are dropped");
+
+    // An unchanged change list keeps its summary and is not sent to the model again; an edited one is redone.
+    prompts.length = 0;
+    assert.equal((await syncReleaseNotes(db, { ...mockEnv, AI: ai(good) }, github(list))).summarized, 0);
+    assert.equal(prompts.length, 0);
+    const edited = [{ ...list[0], body: `${body}\r\n* Another change by @akbhoi in https://github.com/akbhoi/labkiosk/pull/40` }, ...list.slice(1)];
+    assert.equal((await syncReleaseNotes(db, { ...mockEnv, AI: ai({ highlights: ["An edited list is summarized again."] }) }, github(edited))).summarized, 1);
+
+    // An answer that cannot be used is thrown away, and GitHub failing changes nothing.
+    await assert.rejects(() => summarizeRelease(ai("I cannot help with that") as any, "v1.0.0", body), /highlights/);
+    await assert.rejects(() => summarizeRelease(ai({ highlights: ["<b>bold</b>"] }) as any, "v1.0.0", body), /no usable/);
+    await assert.rejects(() => syncReleaseNotes(db, mockEnv, github({ message: "rate limited" }, 403)), /403/);
+    assert.equal((await listReleaseNotes(db)).length, 3);
+
+    // Nothing is known yet: the page links GitHub's "latest" address and says nothing of an operator's settings.
+    await db.prepare("DELETE FROM release_notes").run();
+    page = await (await call("/download")).text();
+    assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso"'));
+    const home = await (await call("/")).text();
+    assert.ok(home.includes('href="https://github.com/akbhoi/labkiosk/releases/latest/download/labkiosk-debian12-amd64.iso"'));
+    for (const html of [page, home]) assert.ok(!/ISO_DOWNLOAD_URL|worker secret|No pre-built release ISO/.test(html));
+  });
+
+  test("Public pages have one address each, on the platform's host", async () => {
+    const at = (url: string, headers: Record<string, string> = {}) => worker.fetch(new Request(url, { headers, redirect: "manual" }), mockEnv);
+
+    // A trailing slash is the same page.
+    for (const path of ["/features", "/pricing", "/download", "/docs", "/privacy", "/terms"]) {
+      const res = await at(`https://labkiosk.org${path}/?x=1`);
+      assert.equal(res.status, 301, path);
+      assert.equal(res.headers.get("Location"), `https://labkiosk.org${path}?x=1`);
+    }
+    assert.equal((await at("https://labkiosk.org/api/status/")).status, 404, "an API path is not rewritten");
+
+    // An organization's host does not serve the platform's pages under its own name.
+    for (const host of ["greenwood.labkiosk.org", "web-demo.labkiosk.org"]) {
+      for (const path of ["/features", "/specs", "/pricing", "/download", "/docs"]) {
+        const res = await at(`https://${host}${path}`);
+        assert.equal(res.status, 301, `${host}${path}`);
+        assert.equal(res.headers.get("Location"), `https://labkiosk.org${path}`);
+      }
+      assert.equal((await at(`https://${host}/wiki`)).headers.get("Location"), "https://labkiosk.org/wiki");
+    }
+    for (const path of ["/features", "/specs", "/pricing", "/download", "/docs"]) {
+      assert.equal((await at(`https://labkiosk.org${path}`)).status, 200);
+      const www = await at(`https://www.labkiosk.org${path}?x=1`);
+      assert.equal(www.status, 301, "www answers with the one address");
+      assert.equal(www.headers.get("Location"), `https://labkiosk.org${path}?x=1`);
+      assert.equal((await at(`http://127.0.0.1:8787${path}`)).status, 200, "a development host is the platform");
+    }
+
+    // A page that does not exist: a page with a way back for a person, JSON for a program.
+    const lost = await at("https://labkiosk.org/no-such-page", { Accept: "text/html,application/xhtml+xml" });
+    assert.equal(lost.status, 404);
+    assert.match(lost.headers.get("Content-Type") || "", /text\/html/);
+    const lostHtml = await lost.text();
+    assert.ok(lostHtml.includes("This page does not exist") && lostHtml.includes('href="https://labkiosk.org/"'));
+    const lostApi = await at("https://labkiosk.org/api/no-such-route", { Accept: "text/html" });
+    assert.equal(lostApi.status, 404);
+    assert.match(lostApi.headers.get("Content-Type") || "", /json/);
+    assert.match((await at("https://labkiosk.org/no-such-page")).headers.get("Content-Type") || "", /json/);
+  });
+
+  test("The public pages describe the product as it is built, and claim nothing that was not measured", async () => {
+    const specs = await (await call("/specs")).text();
+    const home = await (await call("/")).text();
+    const features = await (await call("/features")).text();
+    const pricing = await (await call("/pricing")).text();
+    // 2 GB runs it; 4 GB is the reference (wiki/Installation-Guide.md).
+    assert.ok(specs.includes("2 GB RAM") && home.includes("2 GB RAM"));
+    for (const page of [specs, home, features, pricing]) {
+      assert.ok(!/LightDM|GNU gettext|Immutable Audit|URLBlocklist: \[/.test(page));
+      assert.ok(!/non-profits, and personal non-commercial/.test(page), "the license is quoted as LICENSE grants it");
+      // Figures and promises nobody measured or committed to stay off the site.
+      for (const claim of [
+        /\b10 ms\b/,
+        /100\s?ms|100 milliseconds/i,
+        /\$\s?\d/,
+        /Tested on|Verified Hardware|OptiPlex|ThinkCentre/,
+        /\d+\+? years|\d+ to \d+ years|\d+-year-old/,
+        /within 24 hours|one working day/i,
+        /Production Ready|Edge Active/,
+        /end-to-end/i
+      ]) {
+        assert.ok(!claim.test(outsideScripts(page)), `the public pages do not say ${claim}`);
+      }
+    }
+  });
+
+  test("The public pages share one cached stylesheet and a picture for shared links", async () => {
+    const home = await (await call("/")).text();
+    assert.ok(home.includes(`<link rel="stylesheet" href="${SITE_STYLESHEET_PATH}">`));
+    assert.match(SITE_STYLESHEET_PATH, /^\/assets\/site-[0-9a-f]{8}\.css$/);
+    assert.ok(!/<style>[\s\S]{2000,}<\/style>/.test(home), "the stylesheet is not written into the page");
+    const css = await call(SITE_STYLESHEET_PATH);
+    assert.equal(css.status, 200);
+    assert.equal(css.headers.get("Content-Type"), "text/css; charset=utf-8");
+    assert.equal(css.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+    assert.ok((await css.text()).includes(".docs-table"));
+    // A page from before a deploy still gets styles, and a browser does not keep them.
+    const old = await call("/assets/site-00000000.css");
+    assert.equal(old.status, 200);
+    assert.equal(old.headers.get("Cache-Control"), "no-store");
+    // The picture is a real file of the right size for a large card.
+    const card = new Uint8Array(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "social-card.png")));
+    const cardView = new DataView(card.buffer, card.byteOffset, card.byteLength);
+    assert.equal(String.fromCharCode(card[1], card[2], card[3]), "PNG");
+    assert.deepEqual([cardView.getUint32(16), cardView.getUint32(20)], [1200, 630]);
+    assert.ok(card.length < 300 * 1024);
+  });
+
+  test("The User Portal shows a site that carries no category under the default", () => {
+    const site = { id: "s1", tenant_id: "t1", title: "Atlas", url: "https://atlas.example/", domain: "atlas.example", order_index: 0, is_active: 1, created_at: 0 };
+    const tenant = { id: "t1", name: "Greenwood", subdomain: "greenwood" } as Tenant;
+    for (const category of [null, undefined, "", "  "]) {
+      const other = { ...site, id: "s2", title: "Ledger", category: "Finance" } as PortalSite;
+      const html = renderPortalHtml(tenant, [{ ...site, category } as unknown as PortalSite, other], "nonce");
+      assert.ok(html.includes('data-category="general"') && html.includes('<span class="card-category">General</span>'));
+      assert.ok(html.includes('class="category-pill" data-category="general">General</button>'), "and it can be filtered to");
+    }
+    const named = renderPortalHtml(tenant, [{ ...site, category: "Maps & Travel" } as PortalSite], "nonce");
+    assert.ok(named.includes('data-category="maps &amp; travel"') && named.includes("Maps &amp; Travel</span>"));
+  });
+
+  test("Every public page leads home, and Contact is a page of its own", async () => {
+    for (const page of ["/", "/features", "/specs", "/pricing", "/download", "/docs", "/docs/quickstart", "/contact"]) {
+      const html = await (await call(page)).text();
+      assert.ok(html.includes('<a class="brand" href="/" aria-label="Lab Kiosk home">'), `${page}: the name leads home`);
+      assert.match(html, /<nav class="nav-links"[^>]*>\s*<a href="\/"[^>]*>Home<\/a>/, `${page}: Home is the first tab`);
+      assert.ok(html.includes('<a href="/" data-action="close-drawer">'), `${page}: Home is in the phone menu`);
+      assert.match(html, /<a href="\/contact"[^>]*>Contact<\/a>/, `${page}: Contact is a link to its page`);
+      assert.ok(!html.includes('href="/#contact"') && !html.includes("contact-modal"), `${page}: no contact dialog`);
+    }
+    // Home is the marked tab on the home page only.
+    assert.match(await (await call("/")).text(), /<a href="\/" class="active">Home<\/a>/);
+    assert.match(await (await call("/pricing")).text(), /<a href="\/">Home<\/a>/);
+
+    const res = await call("/contact");
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /<a href="\/contact" class="active">Contact<\/a>/);
+    for (const id of ["contact-name", "contact-org", "contact-reason", "contact-email", "contact-send-code", "contact-code", "contact-message", "contact-submit"]) {
+      assert.ok(html.includes(`id="${id}"`), `the form has ${id}`);
+    }
+    for (const reason of ["sales", "support", "billing", "legal", "general"]) assert.ok(html.includes(`<option value="${reason}">`));
+    assert.ok(html.includes(`<link rel="canonical" href="https://labkiosk.org/contact">`));
+    // The platform's page, at one address.
+    const at = (url: string) => worker.fetch(new Request(url, { headers: { Accept: "text/html" }, redirect: "manual" }), mockEnv);
+    assert.equal((await at("https://greenwood.labkiosk.org/contact")).headers.get("Location"), "https://labkiosk.org/contact");
+    assert.equal((await at("https://labkiosk.org/contact/")).headers.get("Location"), "https://labkiosk.org/contact");
+  });
+
+  test("The documentation is the wiki, rendered page by page", async () => {
+    // The generated module is the wiki folder, file for file.
+    const wikiDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "wiki");
+    const files = fs.readdirSync(wikiDir).filter((name) => name.endsWith(".md") && !name.startsWith("_")).sort();
+    assert.deepEqual(DOCS_PAGES.map((page) => page.file).sort(), files, "run `pnpm run docs` after adding or removing a wiki page");
+    for (const page of DOCS_PAGES) {
+      const source = fs.readFileSync(path.join(wikiDir, page.file), "utf8").replace(/\r\n/g, "\n");
+      assert.equal(page.markdown, source, `${page.file} changed: run \`pnpm run docs\` in cloudflare-control`);
+    }
+    const slugs = new Set(DOCS_PAGES.map((page) => page.slug));
+    for (const group of DOCS_NAV) for (const slug of group.pages) assert.ok(slugs.has(slug), `${slug} is a page`);
+    assert.ok(DOCS_NAV.length >= 4 && slugs.has("") && slugs.has("quickstart"));
+
+    // Every page is served at its own address, in the shell, with its sidebar; every link inside leads somewhere.
+    const hrefs = new Set<string>();
+    for (const page of DOCS_PAGES) {
+      const at = page.slug ? `/docs/${page.slug}` : "/docs";
+      const res = await call(at);
+      assert.equal(res.status, 200, at);
+      const html = await res.text();
+      assert.ok(html.includes('class="docs-article docs-page"') && html.includes('aria-current="page"'), at);
+      assert.ok(html.includes(`wiki/${page.file}</a> in the repository`), `${at} names its source`);
+      assert.ok(html.includes(`<link rel="canonical" href="https://labkiosk.org${at}">`), `${at} is canonical`);
+      const article = html.slice(html.indexOf('<article class="docs-article docs-page">'), html.indexOf("</article>"));
+      assert.ok(!/<script|<img|<iframe|\son[a-z]+=|href="javascript:/i.test(article), `${at} renders no markup of its own`);
+      for (const m of article.matchAll(/href="([^"]+)"/g)) hrefs.add(m[1].replace(/&amp;/g, "&"));
+    }
+    for (const href of hrefs) {
+      if (href.startsWith("#") || href.startsWith("https://") || href.startsWith("http://")) continue;
+      assert.ok(href.startsWith("/docs"), `${href} is a documentation address`);
+      assert.equal((await call(href.split("#")[0])).status, 200, `${href} is served`);
+    }
+    assert.ok([...hrefs].some((h) => h === "/docs/quickstart") && [...hrefs].some((h) => h.startsWith("https://github.com/akbhoi/labkiosk/blob/main/docs/")));
+
+    // Addresses: the wiki's own names redirect, an unknown page is not found, a slash is dropped.
+    const at = (url: string) => worker.fetch(new Request(url, { headers: { Accept: "text/html" }, redirect: "manual" }), mockEnv);
+    assert.equal((await at("https://labkiosk.org/wiki/Quickstart")).headers.get("Location"), "https://labkiosk.org/docs/quickstart");
+    assert.equal((await at("https://labkiosk.org/wiki")).headers.get("Location"), "https://labkiosk.org/docs");
+    assert.equal((await at("https://labkiosk.org/docs/quickstart/")).headers.get("Location"), "https://labkiosk.org/docs/quickstart");
+    assert.equal((await at("https://labkiosk.org/docs/no-such-page")).status, 404);
+    assert.equal((await at("https://greenwood.labkiosk.org/docs/quickstart")).headers.get("Location"), "https://labkiosk.org/docs/quickstart");
+  });
+
+  test("Markdown is rendered with every character escaped", () => {
+    const link = (target: string) =>
+      target.startsWith("https://") ? { href: target, external: true } : target === "Other-Page" ? { href: "/docs/other-page", external: false } : null;
+    const { html, headings } = renderMarkdown(
+      [
+        "# Title & more",
+        "",
+        "A paragraph with **bold**, *emphasis*, `code <b>` and a [link](Other-Page), an [outside one](https://example.org/a?b=1&c=2)",
+        "and a [dead one](javascript:alert(1)) on a second line. <script>alert(1)</script>",
+        "",
+        "## Steps",
+        "",
+        "1. First",
+        "2. Second",
+        "   - nested `x`",
+        "",
+        "- one",
+        "- two",
+        "",
+        "| Name | What |",
+        "| :--- | :--- |",
+        "| `a\\|b` | <i>x</i> |",
+        "",
+        "> A note.",
+        "",
+        "```html",
+        "<script>alert(2)</script>",
+        "```",
+        "",
+        "---",
+        "",
+        "## Steps"
+      ].join("\n"),
+      link
+    );
+    assert.deepEqual(headings.map((h) => `${h.level}:${h.id}`), ["1:title--more", "2:steps", "2:steps-1"]);
+    assert.ok(html.includes('<h1 id="title--more">Title &amp; more</h1>'));
+    assert.ok(html.includes("<strong>bold</strong>") && html.includes("<em>emphasis</em>") && html.includes("<code>code &lt;b&gt;</code>"));
+    assert.ok(html.includes('<a href="/docs/other-page">link</a>'));
+    assert.ok(html.includes('<a href="https://example.org/a?b=1&amp;c=2" target="_blank" rel="noopener noreferrer">outside one</a>'));
+    assert.ok(html.includes("dead one") && !html.includes("javascript:alert(1)\""), "a link that leads nowhere is text");
+    assert.ok(html.includes("<ol><li>First</li><li>Second<ul><li>nested <code>x</code></li></ul></li></ol>"));
+    assert.ok(html.includes("<ul><li>one</li><li>two</li></ul>"));
+    assert.ok(html.includes("<th>Name</th><th>What</th>") && html.includes("<td><code>a|b</code></td><td>&lt;i&gt;x&lt;/i&gt;</td>"));
+    assert.ok(html.includes("<blockquote><p>A note.</p></blockquote>") && html.includes("<hr>"));
+    assert.ok(html.includes("<pre><code>&lt;script&gt;alert(2)&lt;/script&gt;</code></pre>"));
+    assert.ok(!html.toLowerCase().includes("<script") && !html.toLowerCase().includes("<i>"), "nothing in the source becomes markup");
+    assert.equal(headingId("What's new in 2.7.0?"), "whats-new-in-270");
   });
 
   test("Mail sent from the platform's own sending domain is a loop", async () => {
@@ -1110,10 +1906,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ------------------------------------------------------------ super admin
 
   test("Logs in as Super Admin and accesses Super Admin Console on /super", async () => {
-    const { res: loginRes, data: loginData } = await callJson(
-      "/api/auth/login",
-      json({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" })
+    // The password alone is not a session for a super admin: a code is emailed.
+    const first = await callJson("/api/auth/login", json({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" }));
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.status, "two_factor");
+    assert.equal(first.data.method, "email");
+    assert.equal(first.data.sentTo, "a•••@labkiosk.org");
+    assert.equal(first.res.headers.get("Set-Cookie"), null, "no session before the code");
+    assert.equal(
+      (await call("/api/auth/login/verify", json({ challenge: first.data.challenge, code: "000000" }))).status,
+      400,
+      "a wrong code is refused"
     );
+
+    const loginRes = await signIn({ email: "admin@labkiosk.org", password: "SuperAdminPassword2026!" });
+    const loginData = (await loginRes.clone().json()) as any;
     assert.equal(loginRes.status, 200);
     assert.equal(loginData.status, "ok");
     assert.equal(loginData.role, "super_admin");
@@ -1151,10 +1958,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(pingRes.status, 200);
 
     // Sign in with new rotated password - must succeed
-    const newLoginRes = await worker.fetch(
-      request("/api/auth/login", json({ email: "admin@labkiosk.org", password: "NewRotatedPassword2026!" })),
-      rotatedEnv
-    );
+    const newLoginRes = await signIn({ email: "admin@labkiosk.org", password: "NewRotatedPassword2026!" }, rotatedEnv);
     assert.equal(newLoginRes.status, 200);
     const newLoginData = (await newLoginRes.json()) as any;
     assert.equal(newLoginData.status, "ok");
@@ -1858,6 +2662,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 200);
     assert.match(data.enrollmentKey, /^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$/);
+    assert.ok(isEnrollmentKey(data.enrollmentKey), "its last character checks the rest");
     enrollmentKey = data.enrollmentKey;
   });
 
@@ -3318,7 +4123,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
   test("Sign-in, registration and enrolment sit behind the rate limiter", async () => {
     const limited = { ...mockEnv, AUTH_RATE_LIMITER: { limit: async () => ({ success: false }) } as RateLimit };
-    for (const path of ["/api/auth/login", "/api/auth/register", "/api/auth/register/email-code", "/api/contact", "/api/devices/enroll"]) {
+    for (const path of ["/api/auth/login", "/api/auth/register", "/api/auth/register/email-code", "/api/contact", "/api/contact/email-code", "/api/devices/enroll"]) {
       const res = await worker.fetch(request(path, json({})), limited as Env);
       assert.equal(res.status, 429, `${path} is throttled`);
     }
@@ -3865,8 +4670,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(support.includes('data-box="support"'), "Mail shows the conversation list");
     const system = await (await call("/super/system", { cookie: superSessionCookie })).text();
     assert.ok(system.includes("Platform Architecture"));
-    for (const page of [system, await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text()]) {
-      assert.ok(page.includes('data-action="open-two-factor"') && page.includes('id="two-factor-modal"'), "every console offers two-factor sign-in");
+    // Two-factor sign-in is a tab, and every console's profile menu links to it.
+    assert.ok(system.includes('id="pane-system-two-factor"') && system.includes('id="two-factor-email"'));
+    assert.ok(system.includes('href="/super/system?tab=system-two-factor"'));
+    const workstations = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(workstations, /href="\/admin\/settings\?(tenant=greenwood&amp;)?tab=two-factor"/, "the profile menu links to the tab");
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.ok(settings.includes('data-action="tab-two-factor"') && settings.includes('id="pane-two-factor"') && settings.includes('id="two-factor-email"'));
+    for (const page of [system, workstations, settings]) {
+      assert.ok(!page.includes("two-factor-modal") && !page.includes("open-two-factor"), "no dialog any more");
     }
     assert.ok(!system.includes('id="inbox"'));
     // The old address of the queue still lands.
@@ -3977,12 +4789,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // reach the demo console threw you to the platform console, and nothing in
     // the UI led back. The server decides now: it is the only side that knows
     // the host and which consoles the account may open.
-    const login = (body: object, headers: Record<string, string> = {}) =>
-      call("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...headers },
-        body: JSON.stringify(body)
-      });
+    const login = (body: { email: string; password: string }, headers: Record<string, string> = {}) =>
+      signIn(body, mockEnv, headers);
 
     const superCreds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
 
@@ -4020,12 +4828,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // on the apex with ?tenant=web-demo, the server still saw no organization and sent a
     // super admin to /super -- which is the whole complaint, unfixed. The page
     // now sends the organization it was showing.
-    const login = (body: object) =>
-      call("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
+    const login = (body: { email: string; password: string; tenant?: string }) => signIn(body);
 
     const creds = { email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! };
 
@@ -4244,6 +5047,16 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(meData.user.email, "alice@greenwood.example");
     assert.equal(meData.tenantRole, "operator");
     assert.deepEqual(meData.permissions, ["workstations"]);
+
+    // Settings opens for her too, holding her own two-factor sign-in and nothing of the organization's.
+    const ownSettings = await call("/admin/settings?tenant=greenwood", { cookie: operatorCookie });
+    assert.equal(ownSettings.status, 200);
+    const ownSettingsHtml = await ownSettings.text();
+    assert.ok(ownSettingsHtml.includes('id="two-factor-email"'));
+    for (const marker of ['id="section-enrollment"', 'id="section-password"', 'id="pane-general"', 'id="org-name"']) {
+      assert.ok(!ownSettingsHtml.includes(marker), `${marker} needs the settings permission`);
+    }
+    assert.equal((await call("/api/workstation-issues?tenant=greenwood", { cookie: operatorCookie })).status, 403);
 
     // 4. Allowed: Operator can view workstations list via /api/clients
     const { res: clientsRes } = await callJson("/api/clients?tenant=greenwood", {
@@ -5059,6 +5872,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
     assert.deepEqual(locs, [
       "https://www.labkiosk.org/",
+      "https://www.labkiosk.org/features",
+      "https://www.labkiosk.org/specs",
+      "https://www.labkiosk.org/pricing",
+      "https://www.labkiosk.org/download",
+      "https://www.labkiosk.org/docs",
+      ...DOCS_PAGES.filter((page) => page.slug).map((page) => `https://www.labkiosk.org/docs/${page.slug}`),
+      "https://www.labkiosk.org/contact",
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
       "https://www.labkiosk.org/terms/bug-reports"
@@ -5077,7 +5897,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const indexable: [string, string][] = [
       ["www.labkiosk.org", "/"],
       ["www.labkiosk.org", "/?login=1"],
-      ["labkiosk.org", "/privacy"],
+      ["www.labkiosk.org", "/features"],
+      ["www.labkiosk.org", "/specs"],
+      ["www.labkiosk.org", "/pricing"],
+      ["www.labkiosk.org", "/download"],
+      ["www.labkiosk.org", "/docs"],
+      ["www.labkiosk.org", "/privacy"],
       ["www.labkiosk.org", "/terms"],
       ["www.labkiosk.org", "/terms/bug-reports"]
     ];
@@ -5089,7 +5914,6 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const hidden: [string, string, string | undefined][] = [
       ["www.labkiosk.org", "/login", undefined],
       ["www.labkiosk.org", "/register", undefined],
-      ["www.labkiosk.org", "/download", undefined],
       ["www.labkiosk.org", "/?tenant=greenwood", undefined],
       ["www.labkiosk.org", "/super/organizations", superSessionCookie],
       ["greenwood.labkiosk.org", "/", undefined],
@@ -5113,7 +5937,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(canonical(landing), "https://www.labkiosk.org/");
     assert.match(landing, /<meta property="og:url" content="https:\/\/www\.labkiosk\.org\/">/);
     assert.match(landing, /<meta property="og:title" content="Lab Kiosk OS - /);
-    assert.match(landing, /<meta name="twitter:card" content="summary">/);
+    assert.match(landing, /<meta name="twitter:card" content="summary_large_image">/);
+    assert.match(landing, /<meta property="og:image" content="https:\/\/www\.labkiosk\.org\/social-card\.png">/);
+    // The other host name of the platform sends a public page to the canonical one.
+    const other = await onHost("labkiosk.org", "/pricing");
+    assert.equal(other.status, 301);
+    assert.equal(other.headers.get("Location"), "https://www.labkiosk.org/pricing");
     assert.match(landing, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
     const ld = landing.match(/<script type="application\/ld\+json" nonce="[^"]+">([\s\S]*?)<\/script>/);
     assert.ok(ld, "the landing page carries structured data with the nonce");
@@ -5152,7 +5981,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("The Zaraz analytics loader may run on the platform's public pages and nowhere else", async () => {
     const scriptSrc = (res: Response) =>
       (res.headers.get("Content-Security-Policy") || "").split("; ").find((d) => d.startsWith("script-src ")) || "";
-    for (const path of ["/", "/privacy", "/terms", "/login", "/download", "/contact"]) {
+    for (const path of ["/", "/features", "/specs", "/pricing", "/download", "/docs", "/privacy", "/terms", "/login", "/contact"]) {
       const src = scriptSrc(await onHost("www.labkiosk.org", path));
       assert.match(src, /^script-src 'nonce-[^']+' https:\/\/www\.labkiosk\.org\/cdn-cgi\/zaraz\/s\.js$/, `www${path} allows exactly the Zaraz loader`);
     }
