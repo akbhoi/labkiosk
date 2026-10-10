@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS release_notes (
   iso_url TEXT,
   checksum_url TEXT,
   iso_bytes INTEGER,
+  iso_sha256 TEXT,
   source_body TEXT NOT NULL DEFAULT '',
   summary TEXT,
   summary_model TEXT,
@@ -576,6 +577,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT version, channel, revoked_at FROM releases LIMIT 1").run();
     await db.prepare("SELECT update_channel FROM tenants LIMIT 1").run();
     await db.prepare("SELECT update_phase, update_version, update_progress, update_detail, agent_version FROM client_devices LIMIT 1").run();
+    // 0028: the ISO's checksum, for /download.
+    await db.prepare("SELECT iso_sha256 FROM release_notes LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

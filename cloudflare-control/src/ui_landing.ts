@@ -2139,10 +2139,11 @@ function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
                 : `<p class="changelog-note">The changes in this release are listed in its notes on GitHub.</p>`
             }
             ${writtenByAi ? `<p class="changelog-note">Summary written by AI from this release\u2019s change list. The full list is in the release notes.</p>` : ""}
+            ${note.iso_sha256 ? `<p class="changelog-checksum">SHA256 <code>${escapeHtml(note.iso_sha256)}</code></p>` : ""}
             <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
               ${releaseUrl ? `<a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Release notes</a>` : ""}
               ${isoUrl ? `<a href="${escapeHtml(isoUrl)}" class="btn btn-secondary btn-sm">Download ${escapeHtml(note.tag)} ISO${size ? ` (${escapeHtml(size)})` : ""}</a>` : ""}
-              ${checksumUrl ? `<a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">SHA256</a>` : ""}
+              ${checksumUrl && !note.iso_sha256 ? `<a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">SHA256</a>` : ""}
             </div>
           </div>`;
 }
@@ -2223,9 +2224,15 @@ function downloadMainHtml(mirrorUrl: string | null, releases: ReleaseNote[]): st
 
         <div class="checksum-box">
           <strong>SHA256 Checksum:</strong><br>
-          Published with every release as
+          ${
+            latest?.iso_sha256
+              ? `<code class="checksum-value">${escapeHtml(latest.iso_sha256)}</code><br>
+          Compare it with the output of <code>sha256sum ${RELEASE_ISO_NAME}</code> before writing the image. It is also published with the release as
+          <a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer">${RELEASE_CHECKSUM_NAME}</a>.`
+              : `Published with every release as
           <a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer">${RELEASE_CHECKSUM_NAME}</a>.
-          Compare it with the output of <code>sha256sum ${RELEASE_ISO_NAME}</code> before writing the image.
+          Compare it with the output of <code>sha256sum ${RELEASE_ISO_NAME}</code> before writing the image.`
+          }
         </div>
       </div>
 
@@ -3489,6 +3496,13 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
       color: var(--text-muted);
       word-break: break-all;
     }
+    .checksum-value {
+      display: block;
+      margin: 6px 0;
+      color: var(--text-main);
+      font-size: 0.875rem;
+      user-select: all;
+    }
     .steps-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
@@ -3529,6 +3543,8 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .changelog-version { font-size: 1.0625rem; font-weight: 700; font-family: var(--font-mono); color: var(--text-main); }
     .changelog-date { font-size: 0.8125rem; color: var(--text-muted); }
     .changelog-note { margin-top: 10px; font-size: 0.75rem; color: var(--text-subtle); }
+    .changelog-checksum { margin-top: 10px; font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono); word-break: break-all; }
+    .changelog-checksum code { display: block; margin-top: 4px; color: var(--text-main); user-select: all; }
     .changelog-bullets { list-style: disc; padding-left: 20px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.6; }
 
     /* Documentation Layout */

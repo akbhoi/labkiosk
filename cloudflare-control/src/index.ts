@@ -175,6 +175,7 @@ import {
   createSessionCookie,
   clearSessionCookie,
   timingSafeEqual,
+  sha256Hex,
   validatePasswordStrength,
   isPlausibleEmail,
   isEnrollmentKey,
@@ -204,7 +205,7 @@ import {
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
 import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
-import { listReleaseNotes, syncReleaseNotes } from "./release_notes";
+import { listReleaseNotes, storeReleaseNotes, syncReleaseNotes } from "./release_notes";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -536,6 +537,43 @@ async function handleWorkstationRequest(
   return new Response(res.body, { status: res.status, headers: jsonHeaders });
 }
 
+/** The shortest RELEASE_NOTES_TOKEN accepted: a 32-byte random value, hex encoded. */
+const RELEASE_NOTES_TOKEN_MIN_LENGTH = 32;
+
+/**
+ * POST /api/release-notes/sync: the ISO build calls this the moment it has
+ * published a release (build-iso.yml), so /download offers the new ISO at once
+ * instead of after the next hourly run. It only re-reads GitHub's public
+ * release list, the hourly run's first half; the summaries stay with that run.
+ *
+ * Bearer RELEASE_NOTES_TOKEN (a secret shared with the repository's Actions).
+ * 200 {stored, latest}; 401 a wrong token; 502 GitHub could not be read;
+ * 503 the token is not configured, or too short to be one.
+ */
+async function handleReleaseNotesSync(
+  request: Request,
+  env: Env,
+  db: D1Database,
+  headers: Record<string, string>
+): Promise<Response> {
+  const expected = env.RELEASE_NOTES_TOKEN || "";
+  if (expected.length < RELEASE_NOTES_TOKEN_MIN_LENGTH) {
+    return jsonError("Release notes sync is not configured", 503, headers);
+  }
+  const supplied = /^Bearer (\S+)$/.exec(request.headers.get("Authorization") || "")?.[1] || "";
+  // Both sides hashed first: equal lengths, so the comparison says nothing about the token's.
+  if (!supplied || !timingSafeEqual(await sha256Hex(supplied), await sha256Hex(expected))) {
+    return jsonError("Unauthorized", 401, headers);
+  }
+  try {
+    const result = await storeReleaseNotes(db, env);
+    return new Response(JSON.stringify(result), { status: 200, headers });
+  } catch (err) {
+    console.error("[Worker] Reading the releases from GitHub failed:", err);
+    return jsonError("The releases could not be read from GitHub", 502, headers);
+  }
+}
+
 /**
  * POST /api/devices/boot-report: an installed workstation reports what its last
  * boot did with its system image (a new image installed, a failed first boot,
@@ -843,6 +881,9 @@ export default {
     }
     if (path === "/api/devices/boot-report" && method === "POST") {
       return handleBootReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/release-notes/sync" && method === "POST") {
+      return handleReleaseNotesSync(request, env, db, jsonHeaders);
     }
     if (path === "/api/devices/update" && method === "GET") {
       return handleDeviceUpdate(request, env, db, jsonHeaders);

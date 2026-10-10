@@ -14,6 +14,7 @@ Every knob, where it is set, and what happens if it is wrong.
 | `SUPER_ADMIN_PASSWORD` | **Yes**, with a D1 binding | The worker refuses to serve |
 | `CF_API_TOKEN` | For custom domains | Approving a custom domain cannot create its Cloudflare for SaaS custom hostname. An API token for the platform zone with **Zone · SSL and Certificates · Edit**. |
 | `CF_ZONE_ID` | For custom domains | As above. The zone id of the platform domain (zone **Overview** → *API* → *Zone ID*). |
+| `RELEASE_NOTES_TOKEN` | For releases | `POST /api/release-notes/sync` answers `503`, so `/download` offers a new release only after the next hourly run, and a tag build fails. At least 32 characters; the same value as the repository's Actions secret of that name. |
 | `GITHUB_ISSUES_TOKEN` | No | Automatic bug reports stay unavailable to every organization. A fine-grained token for the one repository in `GITHUB_ISSUES_REPO` with **Issues: Read and write** (and **Pull requests: Read** for a private repository). |
 
 There is no default super admin in a production path. Changing `SUPER_ADMIN_EMAIL` migrates the account to the new address; rotate the password from inside `/super` instead, since that path verifies the current password and revokes the account's other sessions.

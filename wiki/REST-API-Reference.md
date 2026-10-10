@@ -115,6 +115,12 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
 | `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
+### Release build
+
+| Endpoint | Method | Description |
+| :--- | :--- | :--- |
+| `/api/release-notes/sync` | `POST` | The ISO build, right after publishing a release: re-reads GitHub's releases so `/download` offers the new one at once. `Authorization: Bearer <RELEASE_NOTES_TOKEN>`. `200 {stored, latest}`; `401` wrong token; `502` GitHub unreadable; `503` token not configured |
+
 ### Super admin
 
 | Endpoint | Method | Description |

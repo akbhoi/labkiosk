@@ -60,6 +60,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0025_release_notes.sql` | `release_notes`: each GitHub release with its change list and a summary written for customers, for `/download`. A platform table, no `tenant_id` |
 | `0026_contact_email_code.sql` | `email_codes` rebuilt so its `purpose` also allows `contact`: the contact page proves its sender's address with a code, as registration does |
 | `0027_ota_updates.sql` | Over-the-air updates: the platform table `releases`; `tenants.update_channel`; `client_devices.update_phase`, `update_version`, `update_progress`, `update_detail`, `agent_version` |
+| `0028_release_iso_sha256.sql` | `release_notes.iso_sha256`: the ISO's SHA-256 as GitHub computed it, shown as text on `/download` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -336,7 +337,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0028_<description>.sql` (the next number after `0027`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0029_<description>.sql` (the next number after `0028`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.
