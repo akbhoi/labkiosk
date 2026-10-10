@@ -1455,6 +1455,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(page.includes(`<code class="checksum-value">${"ab".repeat(32)}</code>`));
     assert.ok(page.includes(`<p class="changelog-checksum">SHA256 <code>${"ab".repeat(32)}</code></p>`));
     assert.ok(!page.includes("not-a-hash"));
+    assert.ok(page.includes(">SHA256 file</a>"), "the .sha256 file stays one click away, for sha256sum -c");
     assert.ok(page.includes("7 October 2026") && page.includes("~720 MB"));
     assert.ok(page.includes("<li>Non-blocking cookie bar for website analytics consent</li>"));
     assert.ok(!page.includes("Summary written by AI") && !page.includes("@akbhoi") && !page.includes("evil.example"));

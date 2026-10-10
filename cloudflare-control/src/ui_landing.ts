@@ -2143,7 +2143,7 @@ function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
             <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
               ${releaseUrl ? `<a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Release notes</a>` : ""}
               ${isoUrl ? `<a href="${escapeHtml(isoUrl)}" class="btn btn-secondary btn-sm">Download ${escapeHtml(note.tag)} ISO${size ? ` (${escapeHtml(size)})` : ""}</a>` : ""}
-              ${checksumUrl && !note.iso_sha256 ? `<a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">SHA256</a>` : ""}
+              ${checksumUrl ? `<a href="${escapeHtml(checksumUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">${note.iso_sha256 ? "SHA256 file" : "SHA256"}</a>` : ""}
             </div>
           </div>`;
 }
