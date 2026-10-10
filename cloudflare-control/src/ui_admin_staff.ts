@@ -30,15 +30,14 @@ export function buildStaffPage(options: AdminPageInput): AdminPageParts {
 
   const allRoles = [...standardRoles, ...extraRoles];
 
-  const roleButtonsHtml = allRoles
+  const roleChipsHtml = [{ id: "all", label: "All Roles" }, ...allRoles]
     .map((r) => {
-      const count = staff.filter((t) => t.role === r.id).length;
+      const count = r.id === "all" ? staff.length : staff.filter((t) => t.role === r.id).length;
       return `
-        <button type="button" class="sub-action-item" data-filter="${escapeAttr(r.id)}">
-          <span>${escapeHtml(r.label)}</span>
-          <span class="sub-action-badge">${count}</span>
-        </button>
-      `;
+              <button type="button" class="filter-chip${r.id === "all" ? " active" : ""}" data-filter="${escapeAttr(r.id)}">
+                <span>${escapeHtml(r.label)}</span>
+                <span class="chip-badge">${count}</span>
+              </button>`;
     })
     .join("");
 
@@ -46,30 +45,8 @@ export function buildStaffPage(options: AdminPageInput): AdminPageParts {
 
   return {
     title: "Staff & Delegation",
-    contentHtml: renderStaffPageHtml(staff, roleLabels),
-    scriptsHtml: renderStaffScripts(nonce),
-    subPanelTitle: "Staff Directory",
-    subPanelSubtitle: "Sub-admin delegation",
-    subPanelHtml: `
-      <div class="sub-section-title">Actions</div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item" data-focus="operator-name">
-          <span class="row">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-            Add Staff Member
-          </span>
-        </button>
-      </div>
-
-      <div class="sub-section-title">Role</div>
-      <div class="sub-action-list" id="sub-role-list">
-        <button type="button" class="sub-action-item active" data-filter="all">
-          <span>All Roles</span>
-          <span class="sub-action-badge">${staff.length}</span>
-        </button>
-        ${roleButtonsHtml}
-      </div>
-    `
+    contentHtml: renderStaffPageHtml(staff, roleLabels, roleChipsHtml),
+    scriptsHtml: renderStaffScripts(nonce)
   };
 }
 
@@ -78,7 +55,7 @@ function permissionLabel(permission: string): string {
   return permission.charAt(0).toUpperCase() + permission.slice(1);
 }
 
-function renderStaffPageHtml(staff: TenantUser[] = [], roleLabels: Map<string, string> = new Map()): string {
+function renderStaffPageHtml(staff: TenantUser[], roleLabels: Map<string, string>, roleChipsHtml: string): string {
   const rowsHtml = staff
     .map((t) => {
       const permsList = (t.permissions || []).map((p) => `<span class="badge badge-neutral">${escapeHtml(permissionLabel(p))}</span>`).join("");
@@ -181,12 +158,7 @@ function renderStaffPageHtml(staff: TenantUser[] = [], roleLabels: Map<string, s
         <div class="card card-flush">
           <div class="card-head">
             <h2 class="card-title">Staff Accounts <span id="staff-count" class="text-muted">(${staff.length})</span></h2>
-            <div class="filter-chips">
-              <button type="button" class="filter-chip active" data-filter="all">All</button>
-              <button type="button" class="filter-chip" data-filter="operator">Operators</button>
-              <button type="button" class="filter-chip" data-filter="assistant">Assistants</button>
-              <button type="button" class="filter-chip" data-filter="content_manager">Content</button>
-              <button type="button" class="filter-chip" data-filter="org_admin">Admins</button>
+            <div class="filter-chips" id="staff-role-chips">${roleChipsHtml}
             </div>
           </div>
           <div class="table-container">
@@ -214,7 +186,7 @@ function renderStaffScripts(nonce: string): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
       // -------------------------------------------------------------
-      // Role Filter Handler (Level 2 Subpanel & Filter Chips)
+      // Role filter chips
       // -------------------------------------------------------------
       window.labkioskApplyFilter = function (filter) {
         const rows = document.querySelectorAll("#staff-tbody tr[data-role]");
@@ -249,16 +221,9 @@ function renderStaffScripts(nonce: string): string {
           countEl.textContent = filter === "all" ? "(" + rows.length + ")" : "(" + visibleCount + " of " + rows.length + ")";
         }
 
-        // Synchronize active states across filter chips and subpanel
         document.querySelectorAll(".filter-chip[data-filter]").forEach((chip) => {
           chip.classList.toggle("active", chip.getAttribute("data-filter") === filter);
         });
-        const subpanel = document.getElementById("app-subpanel");
-        if (subpanel) {
-          subpanel.querySelectorAll("[data-filter]").forEach((btn) => {
-            btn.classList.toggle("active", btn.getAttribute("data-filter") === filter);
-          });
-        }
       };
 
       // Handle in-canvas filter chip clicks

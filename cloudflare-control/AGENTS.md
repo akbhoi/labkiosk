@@ -43,15 +43,15 @@ cloudflare-control/
 │   ├── auth.ts                         # Native Web Crypto PBKDF2 authentication, CSP nonces
 │   ├── d1_adapter.ts                   # Node 22+ native `node:sqlite` mock for local unit tests
 │   ├── ui.ts                           # Organization admin console: picks the page, fills the shell
-│   ├── ui_admin_shared.ts              # Tenant API scope + Level 2 context panel behaviour
+│   ├── ui_admin_shared.ts              # Tenant API scope + header counters
 │   ├── ui_admin_workstations.ts        # One module per admin page (Rule 5f): its markup, its
-│   ├── ui_admin_apps_web.ts            #   context panel and its client script together.
+│   ├── ui_admin_apps_web.ts            #   client script together.
 │   ├── ui_admin_staff.ts               #   apps_web unifies broadcasts, portal apps and
 │   ├── ui_admin_settings.ts            #   the domain allowlist in three tabs
 │   ├── ui_tokens.ts                    # The one declaration of the design language: colours,
 │   │                                   #   radii and easing, plus the legacy aliases the public
 │   │                                   #   pages were written against
-│   ├── ui_layout.ts                    # Shared shell: unified 240px sidebar, view tabs, primitives
+│   ├── ui_layout.ts                    # Shared shell: icon rail, view tabs, primitives
 │   ├── ui_landing.ts                   # Public marketing & docs (/, /features, /specs, /pricing, /download, /docs)
 │   ├── ui_org_home.ts                  # The organization homepage at the subdomain root (/)
 │   ├── ui_portal.ts                    # User Portal at /home (cards grid)
@@ -285,32 +285,31 @@ cloudflare-control/
 - **No inline event handler attributes anywhere** (`onclick=`, `onsubmit=`, `onmouseover=`, ...): they are blocked by the CSP. Use `data-action` attributes and delegated event listeners (or `addEventListener`).
 - `test/worker.test.ts` renders every page and fails if any script lacks the nonce or any `on*=` attribute is detected.
 
-### Rule 5b: Unified 240px Sidebar & Strict View-Switching Tabs
+### Rule 5b: Icon Rail, No Context Panel & Strict View-Switching Tabs
 
-- The dashboard control planes (both Organization Admin `/admin/*` and Super Admin `/super/*`) use a consolidated **Unified 240px Sidebar Architecture**:
-  - **Unified Sidebar (`.nav-sidebar`, 240px)**: Consolidates primary module navigation (Workstations, Apps & Web, Staff, Settings) and contextual quick controls into a single persistent 240px sidebar (`--sidebar-width: 240px`). Includes live stats counters, bottom-left interactive profile avatar button with anchored popover menu (user details, role badge, password/settings shortcut, and POST sign-out), and responsive single mobile drawer sliding.
-  - **Contextual Tools & Quick Actions**: Module-specific quick actions, workstation group filters, and density toggles reside directly in the sidebar context section without duplicating top navigation buttons.
+- The dashboard control planes (both Organization Admin `/admin/*` and Super Admin `/super/*`) share one shell: an **icon-only navigation rail** and a canvas that holds everything else.
+  - **Icon rail (`.nav-sidebar`, `--sidebar-width: 68px`)**: navigation only. Each module (Workstations, Apps & Web, Staff, Settings) is a 24 px icon named by a `.rail-tooltip` on hover and keyboard focus and by `aria-label` (no native `title`: the name would show twice); the current one carries `aria-current="page"`. The bottom-left avatar opens the profile menu beside the rail (user details, role badge, password/settings shortcut, theme, POST sign-out). At ≤ 1024 px the rail is a `--drawer-width` (240px) drawer with the names written out, since a phone has nothing to hover with.
+  - **No context panel.** The sidebar used to carry a second panel under the navigation that repeated each page's view tabs and filters; tabs and sub-tabs read as one merged list. A page's view tabs (`.segmented-nav`), filters (`.filter-chips`, or a labelled `.chip-row`) and shortcuts (a button in `.page-head`) live in its canvas. Never render page controls in the rail, and never render one control in two places.
   - **Strict View-Switching Tabs (`.segmented-nav`)**: Top tabs in all consoles (`ui_admin_workstations.ts`, `ui_admin_apps_web.ts`, `ui_admin_staff.ts`, `ui_admin_settings.ts`, `ui_super.ts`) strictly switch view panes client-side without anchor jumping, synchronizing `?tab=...` via `history.replaceState`.
     - **Workstations Page Layout (`/admin/workstations`)**:
-    - **In-Canvas Controls & Sidebar Subpanel**: Features an in-canvas `.controls-bar` above the toolbar with telemetry quick-filter chips (`.filter-chips`, `.filter-chip`, `.chip-badge` for `All`, `Online`, `Offline`, `Locked`) and a grid density switcher (`.density-toggle`, `.density-btn` for `Thumbs` and `Compact`), synchronized two-way with the Level 2 subpanel buttons. The sidebar subpanel manages Workstation Groups (`+ New Group`, member counts, filtering by group, and delete group actions).
-    - **Top Toolbar** (`.toolbar`): "Select All" and the selection count (`# selected`); `Lock` and `Unlock`; `Broadcast URL` (the one primary button), `Reset to Portal` and `Move to Group...`; and a **Session & Power** menu (a `popover`, `.menu-popover`) holding `Clear Session`, `Reboot` and `Shutdown`. The destructive commands sit one click further away because each interrupts whoever is at the screen; their button ids are unchanged, so the panel's `runToolbarAction()` still clicks them.
+    - **In-Canvas Controls**: a `.controls-bar` above the toolbar with telemetry quick-filter chips (`.filter-chips`, `.filter-chip`, `.chip-badge` for `All`, `Online`, `Offline`, `Locked`) and a grid density switcher (`.density-toggle`, `.density-btn` for `Thumbs` and `Compact`); under it the **Groups** `.chip-row` (`#group-filter-chips`): one chip per workstation group with its member count and a delete button (`.chip-group`), `Ungrouped`, and `+ New group`. Status and group chips are one filter (`activeFilter`).
+    - **Top Toolbar** (`.toolbar`): "Select All" and the selection count (`# selected`); `Lock` and `Unlock`; `Broadcast URL` (the one primary button), `Reset to Portal` and `Move to Group...`; and a **Session & Power** menu (a `popover`, `.menu-popover`) holding `Clear Session`, `Reboot` and `Shutdown`. The destructive commands sit one click further away because each interrupts whoever is at the screen; their button ids are unchanged.
     - **Main Viewport**: Workstations are partitioned into collapsible `.group-section` containers with header chevrons and group selection checkboxes, saving collapse states in `localStorage`.
   - **Super Admin Console Layout (`/super/*`)**:
     - **Rail**: `Organizations`, `Tasks`, `Mail`, `Catalogs`, `System`.
-    - **Views are declared once**: `viewsByTab` in `ui_super.ts` renders both the in-canvas `.segmented-nav` and the panel's "Views" list, so the two cannot drift. Tasks has `Requests`, `Subdomain changes` and `Custom domains` (an address request is a task and lives only there); Catalogs and System have two views each; Organizations is one directory with a status filter (`data-org-filter`, chips and panel in sync).
-    - **Mail's view tabs are its folders** (`data-inbox-filter`: `Inbox`, `Unread`, `Read`, `Closed`, `Deleted`, deep-linked as `?view=`), with `New message` (`data-inbox-compose`) beside them and in the panel. Delete moves a conversation to Deleted (`conversations.deleted_at`, migration `0022`); from there it is restored, or deleted for good (`POST …/trash | restore | delete`, the last `409` outside Deleted). An inbound answer restores it.
-    - **Tasks and Mail filter by type** (`data-inbox-category`, `?type=`): what a conversation is about (`CATEGORIES` in `conversations.ts`, `conversations.category`, migration `0024`), which is also the prefix of its tracking ID (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`; `LK` before 0024 still threads). Mail is typed by the address it was sent to, the contact form by its topic. New mail is written as a message or a formal letter (`LTR`).
+    - **Views are declared once**: `viewsByTab` in `ui_super.ts` renders the in-canvas `.segmented-nav`. Tasks has `Requests`, `Subdomain changes` and `Custom domains` (an address request is a task and lives only there); Catalogs and System have two views each; Organizations is one directory with a status filter (`data-org-filter` chips, each with its count).
+    - **Mail's view tabs are its folders** (`data-inbox-filter`: `Inbox`, `Unread`, `Read`, `Closed`, `Deleted`, deep-linked as `?view=`), with `New message` (`data-inbox-compose`) beside them. Delete moves a conversation to Deleted (`conversations.deleted_at`, migration `0022`); from there it is restored, or deleted for good (`POST …/trash | restore | delete`, the last `409` outside Deleted). An inbound answer restores it.
+    - **Tasks and Mail filter by type** (`data-inbox-category`, `?type=`; a `.chip-row` above the list, as are Tasks' `Open / Decided / Everything` and Mail's mailboxes, `data-inbox-mailbox`): what a conversation is about (`CATEGORIES` in `conversations.ts`, `conversations.category`, migration `0024`), which is also the prefix of its tracking ID (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`; `LK` before 0024 still threads). Mail is typed by the address it was sent to, the contact form by its topic. New mail is written as a message or a formal letter (`LTR`).
     - **Every email is a template** (`cloudflare-email-routing/src/templates/`: `code`, `receipt`, `reply`, `decision`, `letter`, `alert`, `notice`). A send site passes `template` to `sendMail()` / `sendOnConversation()`; the plain text it writes is the template's body. Never build email HTML in the controller. `sendMail()` hands the message to the email Worker (`MAILER`) and falls back to its own `EMAIL`. A new inbound conversation is answered with a `receipt` (`sendReceipt()` in `inbox.ts`): once a day per sender, never to an automatic message, a bounce or a no-reply address.
     - **The header's counters are centred** (`.canvas-header` is a three-column grid) and `html` reserves its scrollbar gutter, so they sit at the same place on every page of both consoles.
   - **User Portal App Launcher (`/home`)**:
     - **Instant Application Filter & Category Pills**: Features an accessible instant search box (`#portal-search`) and category pills bar (`.portal-category-pills`, `.category-pill`) with client-side filtering and empty-match feedback (`.portal-no-match`), allowing workstation operators and users to locate apps on touchscreens and compact viewports.
   - **Consolidated "Apps & Web" Module (`/admin/apps-web`)**:
     - Unifies Broadcast, User Portal Apps, and Domain Allowlist into a single, cohesive view with 3 tab panes (`Broadcast`, `User Portal Apps`, and `Domain Allowlist`), with deep linking via `?tab=...` and instant client-side tab switching (`history.replaceState`). Legacy paths (`/admin/broadcast`, `/admin/portal`, `/admin/whitelist`) 302-redirect to `/admin/apps-web?tab=<tab>`.
-    - **Dual Navigation (In-Canvas & Subpanel)**: Features in-canvas segmented tab pills (`.segmented-nav`, `.segmented-tab`) directly below `.page-head` synchronized two-way with the Level 2 subpanel buttons, providing intuitive, direct switching even when the sidebar subpanel is collapsed.
-    - **Stabilized Sidebar Subpanel**: Fixed, non-shifting Level 2 subpanel featuring static tab view switchers (`📶 Broadcast`, `⊞ User Portal`, `🛡️ Domain Allowlist`), a `Preview User Portal &rarr;` shortcut opening `/home` in a new tab, and a static Module Overview card (total apps, allowed domains, live broadcast status). Eliminates dynamic layout shift.
-    - **Cleaned Main Tabs**: Context formerly trapped in the subpanel was migrated directly into the relevant main tabs. Removed redundant presets from Broadcast to prevent duplicate lists.
+    - **Navigation**: in-canvas segmented tab pills (`.segmented-nav`, `.segmented-tab`) directly below `.page-head`; `Preview User Portal` (opens `/home` in a new tab) is a button in `.page-head`.
+    - **Cleaned Main Tabs**: Removed redundant presets from Broadcast to prevent duplicate lists.
   - **Staff Page Layout (`/admin/staff`)**:
-    - **Sidebar Subpanel & In-Canvas Filter Chips**: Active **"Role"** filter section in the subpanel and companion in-canvas quick filter chips (`.filter-chips`, `.filter-chip`) in the table header card (`All Roles`, `Operators`, `Assistants`, `Content`, `Admins`), synchronized two-way and updating visible row counts instantly without page reload.
+    - **Role Filter Chips**: quick filter chips (`.filter-chips`, `.filter-chip`, `#staff-role-chips`) in the table header card, one per role in use with its count (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus any other stored role), updating visible row counts instantly without page reload.
     - **Standard Accessible Checkboxes**: Uses styled `.form-checkbox` and `.form-checkbox-label` components with clean SVG checkmark tick mark, dark theme palette, hover highlights, and focus rings. Role dropdown preselects corresponding permission checkboxes automatically.
   - **Settings Page Layout (`/admin/settings`)**:
     - **Semantic Tab Panes & Segmented Nav**: Converted 9 fragile vertical scroll jumps into distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`, `Two-factor sign-in`, `Errors & Warnings`) with instant client-side switching, companion in-canvas `.segmented-nav` tabs, and deep linking (`?tab=...`).
@@ -319,7 +318,7 @@ cloudflare-control/
     - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode | Kiosk Routing & Home URL; Subdomain | Custom Domain; Homepage Identity | Content Blocks; Enrollment Key & Admin Password | Recent Activity).
     - **Scrollable Activity Table (`.table-scrollable`)**: Recent Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
   - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
-  - **Container Queries & Responsive Shell**: `.app-canvas` acts as an inline-size container (`container-name: canvas`), intelligently stacking `.grid-2col` into a single column via `@container canvas (max-width: 680px)`, restructuring `.controls-bar` via `@container canvas (max-width: 760px)`, and adapting `.kc-actions` on compact cards. Mobile drawers auto-dismiss on `.rail-item`, `.sub-action-item`, `.segmented-tab`, and `.filter-chip` clicks, header stat pills scroll horizontally on compact screens without clipping, and touch targets maintain comfortable accessibility (`min-height: 44px`).
+  - **Container Queries & Responsive Shell**: `.app-canvas` acts as an inline-size container (`container-name: canvas`), intelligently stacking `.grid-2col` into a single column via `@container canvas (max-width: 680px)`, restructuring `.controls-bar` via `@container canvas (max-width: 760px)`, and adapting `.kc-actions` on compact cards. Mobile drawers auto-dismiss on `.rail-item`, `.segmented-tab`, and `.filter-chip` clicks, header stat pills scroll horizontally on compact screens without clipping, and touch targets maintain comfortable accessibility (`min-height: 44px`).
   - **Look, Motion & Accessibility**: a calm, neutral design in light and dark (Rule 5c): flat surfaces with hairline borders and small shadows, one accent blue for the primary action, status shown as dots and soft badges, red only on destructive actions. Inter for the interface, JetBrains Mono for ids, hosts and URLs. Compositor-only transitions, a cross-fade between console pages (`@view-transition`), all of it off under `prefers-reduced-motion`; `:focus-visible` outlines, `forced-colors` borders, and zero inline event handlers (`data-action` pattern).
 
 ### Rule 5c: One Design Language, Declared Once
@@ -359,26 +358,31 @@ cloudflare-control/
   (a field's border is its only outline). The accent fill is `#2563eb` in both themes
   because white on the brighter `#3b82f6` measures 3.7:1.
 
-### Rule 5d: The Context Panel Is Wired, Not Decorative
+### Rule 5d: Every Control Is Wired, and Shows When It Is Working
 
-- Every control the Level 2 panel renders does something. It shipped as markup
-  only once: `data-filter`, `data-action`, `data-preset` and `data-quick-domain`
-  were read by nothing, the three "Add ..." shortcuts pointed at element ids that
-  did not exist, the five settings jump links pointed at sections that did not
-  exist, and the four telemetry counts never moved off the zero they rendered with.
-  That is roughly thirty dead controls in the product's most-used surface.
-- `renderSubPanelScripts()` in `ui_admin_shared.ts` owns the behaviour and is emitted on every
-  admin page. A panel control is a `data-` attribute that function reads, or it does
-  not go in the panel.
-- A command the panel triggers delegates to the page's own button rather than
-  re-implementing the call, so there is one code path per action. Where the page
-  has no such button, the panel navigates to the page that does.
-- Whether a `data-filter` / `data-density` control is disabled is decided by **what the page
-  provides** (`window.labkioskApplyFilter` / `window.labkioskApplyDensity`), never by which page
-  it is. Keying it on "not the workstations page" silently disabled the Operators role filter.
+- Every control a page renders does something. The old context panel shipped as
+  markup only: `data-filter`, `data-action`, `data-preset` and `data-quick-domain`
+  were read by nothing, three shortcuts pointed at element ids that did not exist,
+  and four counts never moved off zero -- roughly thirty dead controls. The panel
+  is gone (Rule 5b); the lesson is not. A control is a `data-` attribute a script
+  on that page reads, or it does not go on the page.
+- One control, one place, one code path per action. Do not render the same
+  filter or tab twice and keep the copies in sync.
+- **A click that starts a request shows it.** Sign-in used to send its request
+  and leave the button exactly as it was, so a slow answer read as a frozen page.
+  `BUSY_SCRIPT` (`ui_tokens.ts`), emitted by the console shell and the public
+  pages, marks the control whose click or form submit started a non-GET `fetch`
+  with `.is-loading` (`BUSY_CSS`: a spinner, plus `aria-busy`) until the answer
+  arrives, and holds it through the reload that usually follows. A confirmation
+  dialog (`lkConfirm` / `lkPrompt`) hands the mark back to the button that opened
+  it; a second click on a working control is dropped. Handlers write nothing for
+  this. `window.lkBusy(control, on)` is the same switch for work that is not a
+  request. A new surface with its own forms emits `BUSY_SCRIPT` and includes
+  `BUSY_CSS`.
 - The header counters (`stat-online-count`, `stat-total-count`, `stat-locked-count`) are real on
-  every page: the workstations grid updates them from its own poll, and `renderSubPanelScripts()`
-  polls `/api/clients` every 15 s everywhere else, hiding them for a caller refused `workstations`.
+  every page: the workstations grid updates them from its own poll, and
+  `renderHeaderCountersScript()` polls `/api/clients` every 15 s everywhere else, hiding them
+  for a caller refused `workstations`.
 
 ### Rule 5e: The Tenant Rides Along on a Dev Host
 
@@ -397,7 +401,7 @@ cloudflare-control/
 
 ### Rule 5f: One Module Per Admin Page
 
-- A page of the organization console owns its markup, its context-panel contents and
+- A page of the organization console owns its markup and
   its client script in one `ui_admin_<page>.ts`, exported as a single
   `build<Page>Page(options): AdminPageParts`. `ui.ts` picks the builder and
   fills the shell; it renders nothing itself.
@@ -405,7 +409,7 @@ cloudflare-control/
   2,450-line module, hundreds of lines from the handlers meant to read them,
   and that distance is precisely why thirty dead controls sat there unnoticed.
 - `ui_admin_shared.ts` holds only what every page needs: `renderApiScopeScript`
-  (Rule 5e) and `renderSubPanelScripts` (Rule 5d).
+  (Rule 5e) and `renderHeaderCountersScript` (Rule 5d).
 - `test/dump_admin_html.ts` renders all four pages from fixed inputs. Diff its
   output across a refactor of these modules; the split that created them was
   verified byte-for-byte that way.
@@ -502,7 +506,7 @@ pnpm dev                        # predev applies migrations/ to local D1
 | **"No D1 database bound" on startup** | Worker failed closed because `env.DB` was missing. | Bind `DB` in `wrangler.jsonc`, or set `ALLOW_LOCAL_DB=1` for local development/tests only. |
 | **Workstations disagree about the active broadcast** | Broadcast state was stored in isolate memory, which differs across edge colos. | Store `broadcast_url` and `broadcast_epoch` in the `tenants` table in D1. |
 | **A form inside the console renders as a white box with black text** | The markup used a class the shell never declared (`input-field`). An undeclared class styles nothing, so the control falls back to the browser default. | Use `.form-input` / `.form-select` / `.form-textarea` from `ui_layout.ts`. A test renders every console page and fails on any class the stylesheet does not carry. |
-| **A control in the left context panel does nothing** | Its `data-` attribute is not one `renderSubPanelScripts()` reads, or its target element id does not exist on that page. | Add the case to that function, or take the control out. See Rule 5d. |
+| **A control does nothing** | Its `data-` attribute is not one a script on that page reads, or its target element id does not exist on that page. | Wire it in the page's own script, or take the control out. See Rule 5d. |
 | **Every dashboard API call answers `400 No organization selected` under `pnpm dev`** | The call was written as a bare `fetch("/api/...")`. There is no organization subdomain on a dev host, so nothing resolves the tenant. | Call `labkioskApi(path)`. See Rule 5e. |
 | **A page looks subtly off-brand next to the consoles** | It declared its own `:root`. Four surfaces each had one, on four different backgrounds. | Render `:root` from `rootTokensCss()` in `ui_tokens.ts`. See Rule 5c. |
 | **Text or an icon is fine in one theme and invisible in the other** | A literal colour (`#fff`, `#93c5fd`, `rgba(255,255,255,…)`) in markup, a stylesheet or an SVG `stroke`. | Use a `PALETTE` token, a declared class, or `currentColor`. A test rejects literals. See Rule 5c. |
@@ -512,11 +516,11 @@ pnpm dev                        # predev applies migrations/ to local D1
 | **Single-Site Lockdown URL rejected without scheme** | URL lacked `https://` prefix (e.g. `canvas.example.com`). | `safeHttpUrl()` in `escape.ts` automatically prepends `https://` for scheme-less domains. |
 | **Cloudflare Dashboard env vars overwritten on deploy** | Defining `vars` in `wrangler.jsonc` overrides Cloudflare dashboard variables. | Omit `vars` block from `wrangler.jsonc`. Manage production secrets via Cloudflare Dashboard / `wrangler secret`. |
 | **Creating a workstation group does nothing; console logs `escapeAttr is not defined`** | The client script rebuilt the group list by calling the server-only `escapeHtml`/`escapeAttr` inside an escaped `\${...}`. | Build nodes with `el()`/`textContent`/`dataset`/`new Option()`. A test rejects either name in any console script. |
-| **The Operators role filter is greyed out** | `renderSubPanelScripts()` disabled every `data-filter` on pages other than Workstations. | Disable a panel control only when the page defines no handler for it (`window.labkioskApplyFilter`). |
+| **A button looks frozen after a click** | Its request is under way and nothing shows it, or the page does not emit `BUSY_SCRIPT`. | Emit `BUSY_SCRIPT` and include `BUSY_CSS` on that surface; for work that is not a `fetch`, call `window.lkBusy(control, true/false)`. See Rule 5d. |
 | **An operator with the staff permission becomes a co-administrator** | Staff routes stored any role and any permission string, `*` included, and let a delegate edit their own row. | `STAFF_ROLES` / `STAFF_PERMISSIONS` validation plus `staffDelegationProblem()` on create, update and delete. |
 | **Moving ~100+ workstations to a group fails** | D1 binds at most 100 parameters per statement and the `IN (...)` list was built in one go. | Cap at `MAX_BATCH_TARGETS` and write in `D1_IN_LIST_CHUNK` slices. |
 | **A broadcast to selected workstations reverts to the portal after 2–3 seconds** | Only a broadcast to `"all"` was stored (on the tenant); a list of ids only queued a command, and the next heartbeat's `targetUrl` sent the screens back. | Record per workstation on `client_devices` (migration `0010`); the heartbeat serves the newer of organization-wide and per-workstation. |
-| **Online / Total read 0 everywhere except the grid** | Only the Workstations page polled telemetry. | `renderSubPanelScripts()` polls `/api/clients` on the other pages. |
+| **Online / Total read 0 everywhere except the grid** | Only the Workstations page polled telemetry. | `renderHeaderCountersScript()` polls `/api/clients` on the other pages. |
 | **After an organization renames its subdomain, its workstations land on "This page is blocked"** | Each agent allows the server it enrolled with (the old subdomain), and the allowlist the hub sent never named the organization's own address. | `configFor()` in `org_hub.ts` always adds the portal's host; the agent applies a new target before it writes the policy. |
 | **An admin change reaches workstations only minutes later** | The route saved it to D1 but never told the hub, so connected workstations kept the hub's cached configuration. | Call `notifyConfigChanged(env, tenantId)` after the write (Rule 2d). |
 | **Every idle workstation is a billed hub request every 15 s** | The ping was not byte-identical to the auto-response request (`json.dumps` writes `{"type": "ping"}` with a space), so the edge woke the hub for each one. | Send the literal `{"type":"ping"}`; a client test compares the agent's constant with `HUB_PING`. |

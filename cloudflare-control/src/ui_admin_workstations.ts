@@ -2,8 +2,7 @@
  * The workstation grid: live telemetry, per-machine remote control, selectable batch
  * commands, and admin-managed collapsible workstation groups.
  *
- * The page markup, its context-panel contents and its client script live
- * together here.
+ * The page markup and its client script live together here.
  */
 
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, WorkstationGroup } from "./types";
@@ -14,43 +13,25 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, groups = [], tenantParam, baseDomain, nonce } = options;
   return {
     title: "Workstation Grid & Control",
-    contentHtml: renderWorkstationsPageHtml(tenantParam),
+    contentHtml: renderWorkstationsPageHtml(tenantParam, groups),
     modalsHtml: renderWorkstationsModalsHtml(tenant, presets, groups),
-    scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups),
-    subPanelTitle: "Workstations",
-    subPanelSubtitle: "Telemetry & groups",
-    subPanelHtml: `
-      <div class="sub-section-head">
-        <div class="sub-section-title">Workstation Groups</div>
-        <button type="button" class="panel-link-btn" data-action="new-group" title="Create new group">+ New</button>
-      </div>
-      <div class="sub-action-list" id="sub-group-list">
-        <button type="button" class="sub-action-item" data-filter="group:all">
-          <span>All Groups</span>
-          <span class="sub-action-badge" id="sub-group-all-count">0</span>
-        </button>
-        ${groups
-          .map(
-            (g) => `
-        <div class="sub-action-group-row">
-          <button type="button" class="sub-action-item" data-filter="group:${escapeAttr(g.name)}">
-            <span class="truncate">${escapeHtml(g.name)}</span>
-            <span class="sub-action-badge" id="sub-group-${escapeAttr(g.id)}-count">0</span>
-          </button>
-          <button type="button" class="icon-btn" data-action="delete-group" data-id="${escapeAttr(g.id)}" data-name="${escapeAttr(g.name)}" title="Delete group ${escapeAttr(g.name)}" aria-label="Delete group ${escapeAttr(g.name)}">✕</button>
-        </div>`
-          )
-          .join("")}
-        <button type="button" class="sub-action-item" data-filter="group:__ungrouped__">
-          <span>Ungrouped</span>
-          <span class="sub-action-badge" id="sub-group-ungrouped-count">0</span>
-        </button>
-      </div>
-    `
+    scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups)
   };
 }
 
-function renderWorkstationsPageHtml(tenantParam: string): string {
+function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGroup[]): string {
+  const groupChipsHtml = groups
+    .map(
+      (g) => `
+        <span class="chip-group">
+          <button type="button" class="filter-chip" data-filter="group:${escapeAttr(g.name)}">
+            <span class="truncate">${escapeHtml(g.name)}</span>
+            <span class="chip-badge" id="group-${escapeAttr(g.id)}-count">0</span>
+          </button>
+          <button type="button" class="icon-btn" data-action="delete-group" data-id="${escapeAttr(g.id)}" data-name="${escapeAttr(g.name)}" title="Delete group ${escapeAttr(g.name)}" aria-label="Delete group ${escapeAttr(g.name)}">✕</button>
+        </span>`
+    )
+    .join("");
   return `
     <div class="page-head">
       <div>
@@ -91,6 +72,17 @@ function renderWorkstationsPageHtml(tenantParam: string): string {
           <span>Compact</span>
         </button>
       </div>
+    </div>
+
+    <div class="chip-row">
+      <span class="chip-row-label" id="group-chips-label">Groups</span>
+      <div class="filter-chips" id="group-filter-chips" role="group" aria-labelledby="group-chips-label">${groupChipsHtml}
+        <button type="button" class="filter-chip" data-filter="group:__ungrouped__">
+          <span>Ungrouped</span>
+          <span class="chip-badge" id="group-ungrouped-count">0</span>
+        </button>
+      </div>
+      <button type="button" class="panel-link-btn" data-action="new-group" title="Create a workstation group">+ New group</button>
     </div>
 
     <div class="toolbar" role="toolbar" aria-label="Workstation commands">
@@ -354,10 +346,6 @@ function renderWorkstationsScripts(
         var btns = document.querySelectorAll(".density-btn[data-density]");
         for (var b = 0; b < btns.length; b++) {
           btns[b].classList.toggle("active", btns[b].getAttribute("data-density") === density);
-        }
-        var subDens = document.querySelectorAll("#sub-panel [data-density]");
-        for (var sd = 0; sd < subDens.length; sd++) {
-          subDens[sd].classList.toggle("active", subDens[sd].getAttribute("data-density") === density);
         }
         try {
           localStorage.setItem(DENSITY_KEY, density);
@@ -675,7 +663,7 @@ function renderWorkstationsScripts(
           const ids = Object.keys(clientsData).sort();
 
           if (!ids.length) {
-            grid.innerHTML = '<div class="empty-lab-state"><p class="empty-lab-title">No Thin Clients Connected</p><p>Workstations appear here once enrolled with the organization key.</p></div>';
+            grid.innerHTML = '<div class="empty-lab-state"><p class="empty-lab-title">No Workstations Connected</p><p>Workstations appear here once enrolled with the organization key.</p></div>';
             document.getElementById("stat-online-count").textContent = "0";
             document.getElementById("stat-total-count").textContent = "0";
             document.getElementById("stat-locked-count").textContent = "0";
@@ -737,14 +725,12 @@ function renderWorkstationsScripts(
             }
           }
 
-          // Update sidebar group counts
-          const allGrpBadge = document.getElementById("sub-group-all-count");
-          if (allGrpBadge) allGrpBadge.textContent = String(ids.length);
-          const unGrpBadge = document.getElementById("sub-group-ungrouped-count");
+          // Update the group chips' counts
+          const unGrpBadge = document.getElementById("group-ungrouped-count");
           if (unGrpBadge) unGrpBadge.textContent = String((groupCounts["__ungrouped__"] && groupCounts["__ungrouped__"].total) || 0);
 
           for (const g of groupsList) {
-            const b = document.getElementById("sub-group-" + g.id + "-count");
+            const b = document.getElementById("group-" + g.id + "-count");
             if (b) b.textContent = String((groupCounts[g.name] && groupCounts[g.name].total) || 0);
           }
 
@@ -1058,34 +1044,35 @@ function renderWorkstationsScripts(
           if (!res.ok) return;
           const data = await res.json();
           groupsList = data.groups || [];
-          renderSidebarGroupList();
+          renderGroupChips();
           updateMoveGroupSelect();
         } catch (err) {
           console.warn("fetchGroups:", err);
         }
       }
 
-      function renderSidebarGroupList() {
-        const list = document.getElementById("sub-group-list");
+      function renderGroupChips() {
+        const list = document.getElementById("group-filter-chips");
         if (!list) return;
 
         // Group names are typed by staff: built as nodes with textContent and
         // dataset, never concatenated into markup (Rule 4).
-        function filterButton(filter, label, badgeId, count) {
-          const btn = el("button", "sub-action-item" + (activeFilter === filter ? " active" : ""));
+        function filterChip(filter, label, badgeId) {
+          const previous = document.getElementById(badgeId);
+          const btn = el("button", "filter-chip" + (activeFilter === filter ? " active" : ""));
           btn.type = "button";
           btn.dataset.filter = filter;
           const name = el("span", null, label);
-          const badge = el("span", "sub-action-badge", count);
+          const badge = el("span", "chip-badge", previous ? previous.textContent : 0);
           badge.id = badgeId;
           btn.append(name, badge);
           return btn;
         }
 
-        const nodes = [filterButton("group:all", "All Groups", "sub-group-all-count", Object.keys(clientsData).length)];
+        const nodes = [];
         for (const g of groupsList) {
-          const row = el("div", "sub-action-group-row");
-          const btn = filterButton("group:" + g.name, g.name, "sub-group-" + g.id + "-count", 0);
+          const row = el("span", "chip-group");
+          const btn = filterChip("group:" + g.name, g.name, "group-" + g.id + "-count");
           btn.firstChild.className = "truncate";
           const del = el("button", "icon-btn", "✕");
           del.type = "button";
@@ -1097,7 +1084,7 @@ function renderWorkstationsScripts(
           row.append(btn, del);
           nodes.push(row);
         }
-        nodes.push(filterButton("group:__ungrouped__", "Ungrouped", "sub-group-ungrouped-count", 0));
+        nodes.push(filterChip("group:__ungrouped__", "Ungrouped", "group-ungrouped-count"));
         list.replaceChildren(...nodes);
       }
 
@@ -1222,13 +1209,9 @@ function renderWorkstationsScripts(
         }
       }
 
-      // --------------------------------------------------------- context panel hooks
+      // --------------------------------------------------------- filter chip counts
       function setPanelCounts(total, online, offline, locked) {
         var counts = {
-          "sub-filter-all-count": total,
-          "sub-filter-online-count": online,
-          "sub-filter-offline-count": offline,
-          "sub-filter-locked-count": locked,
           "chip-count-all": total,
           "chip-count-online": online,
           "chip-count-offline": offline,
@@ -1260,10 +1243,6 @@ function renderWorkstationsScripts(
         var chips = document.querySelectorAll(".filter-chip[data-filter]");
         for (var c = 0; c < chips.length; c++) {
           chips[c].classList.toggle("active", chips[c].getAttribute("data-filter") === activeFilter);
-        }
-        var subFilters = document.querySelectorAll("#sub-panel [data-filter]");
-        for (var s = 0; s < subFilters.length; s++) {
-          subFilters[s].classList.toggle("active", subFilters[s].getAttribute("data-filter") === activeFilter);
         }
         var grid = document.getElementById("kiosk-grid");
         if (!grid) return;
@@ -1396,6 +1375,13 @@ function renderWorkstationsScripts(
           e.preventDefault();
           const f = chip.getAttribute("data-filter");
           if (f) applyFilter(f);
+          return;
+        }
+        const groupAction = e.target && e.target.closest ? e.target.closest('[data-action="new-group"], [data-action="delete-group"]') : null;
+        if (groupAction) {
+          e.preventDefault();
+          if (groupAction.dataset.action === "new-group") window.labkioskOpenNewGroupDialog();
+          else window.labkioskDeleteGroup(groupAction.dataset.id, groupAction.dataset.name);
           return;
         }
         const dBtn = e.target && e.target.closest ? e.target.closest(".density-btn[data-density]") : null;

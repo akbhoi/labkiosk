@@ -21,7 +21,7 @@ cloudflare-control/
 │   ├── bug_reports.ts      Opt-in redacted GitHub bug reports, Workers AI triage
 │   ├── d1_adapter.ts       node:sqlite mock for local tests
 │   ├── ui.ts               Organization admin console router: selects page, wraps shell
-│   ├── ui_admin_shared.ts  Shared context panel actions & client scripts
+│   ├── ui_admin_shared.ts  Tenant API scope & header counters
 │   ├── ui_admin_workstations.ts Workstations fleet, groups & commands
 │   ├── ui_admin_apps_web.ts     Apps & Web: broadcast, portal & allowlist
 │   ├── ui_admin_staff.ts     Staff accounts, roles & permissions

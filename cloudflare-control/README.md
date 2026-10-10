@@ -57,10 +57,10 @@ cloudflare-control/
 │   ├── bug_reports.ts         # Optional automatic GitHub bug reports (hourly cron)
 │   ├── d1_adapter.ts          # Node 22+ native node:sqlite mock for local testing
 │   ├── ui.ts                  # Organization admin console: picks the page, fills the shell
-│   ├── ui_admin_shared.ts     # Tenant API scope + Level 2 context panel behaviour
+│   ├── ui_admin_shared.ts     # Tenant API scope + header counters
 │   ├── ui_admin_*.ts          # One module per admin page (markup + panel + script)
 │   ├── ui_tokens.ts           # The one declaration of the design language (colours, radii, easing)
-│   ├── ui_layout.ts           # Shared shell: 72px rail, 272px context panel, primitives
+│   ├── ui_layout.ts           # Shared shell: icon rail, view tabs, primitives
 │   ├── ui_landing.ts          # Public SaaS landing page and registration
 │   ├── ui_org_home.ts         # The organization homepage served at the subdomain root
 │   ├── ui_portal.ts           # User Portal (Approved Apps Grid)

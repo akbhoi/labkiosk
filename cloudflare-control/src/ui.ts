@@ -2,9 +2,8 @@
  * The Organization Admin console: which page to build, and the shell to put it in.
  *
  * This module used to be all of it -- six page renderers, six script
- * renderers, every context panel and both shared script helpers in 2,450
- * lines. Each page now owns its markup, its panel and its client script in one
- * file, and what is left here is the routing between them.
+ * renderers and both shared script helpers in 2,450 lines. Each page now
+ * owns its markup and its client script in one file, and what is left here is the routing between them.
  */
 
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
@@ -13,7 +12,7 @@ import {
   AdminPageInput,
   AdminPageParts,
   renderApiScopeScript,
-  renderSubPanelScripts
+  renderHeaderCountersScript
 } from "./ui_admin_shared";
 import { buildWorkstationsPage } from "./ui_admin_workstations";
 import { buildAppsWebPage } from "./ui_admin_apps_web";
@@ -61,6 +60,20 @@ const PAGE_BUILDERS: Record<AdminPageId, (input: AdminPageInput) => AdminPagePar
   staff: buildStaffPage,
   settings: buildSettingsPage
 };
+
+/** A stored role as the profile menu reads it: "Content Manager", not "content_manager". */
+const ROLE_LABELS: Record<string, string> = {
+  super_admin: "Super Admin",
+  org_admin: "Administrator",
+  sub_admin: "Sub-Admin",
+  operator: "Operator",
+  assistant: "Assistant",
+  content_manager: "Content Manager"
+};
+
+function roleLabel(role: string): string {
+  return ROLE_LABELS[role] || role.replace(/_/g, " ");
+}
 
 export function renderDashboardHtml(options: DashboardOptions): string {
   const {
@@ -150,13 +163,11 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   const build = PAGE_BUILDERS[activePage] || PAGE_BUILDERS.workstations;
   const page = build(pageInput);
 
-  // The tenant scope has to be in place before any page script runs, and the
-  // context panel is part of the shell, so its behaviour ships with every page
-  // rather than being re-implemented per page.
+  // The tenant scope has to be in place before any page script runs.
   const scriptsHtml =
     renderApiScopeScript(nonce, tenantParam) +
     page.scriptsHtml +
-    renderSubPanelScripts(nonce, activePage, tenantParam);
+    renderHeaderCountersScript(nonce, activePage);
 
   return renderLayoutHtml({
     title: `${labName} • ${page.title}`,
@@ -165,11 +176,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     brandSubtitle: `${subdomain}.${baseDomain} • Control Console`,
     navItems,
     activeNavId: activePage,
-    subPanelTitle: page.subPanelTitle,
-    subPanelSubtitle: page.subPanelSubtitle,
-    subPanelHtml: page.subPanelHtml,
     stats,
-    userMeta: currentUser ? { name: currentUser.name, email: currentUser.email, role: currentUser.role } : undefined,
+    userMeta: currentUser ? { name: currentUser.name, email: currentUser.email, role: roleLabel(currentUser.role) } : undefined,
     contentHtml: page.contentHtml,
     modalsHtml: page.modalsHtml || "",
     scriptsHtml,

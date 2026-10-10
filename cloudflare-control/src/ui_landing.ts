@@ -22,7 +22,7 @@ import { fnv1a } from "./ui_layout";
 import { DOCS_NAV, DOCS_PAGES, DocsPage } from "./docs_content.generated";
 import { LinkResolver, renderMarkdown } from "./markdown";
 import { LATEST_CHECKSUM_URL, LATEST_ISO_URL, RELEASES_URL, RELEASE_CHECKSUM_NAME, RELEASE_ISO_NAME, ReleaseNote, releaseHighlights } from "./release_notes";
-import { FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
+import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
 import { CONTACT_REASONS } from "./conversations";
@@ -1044,6 +1044,7 @@ ${FONT_LINKS}
     });
   </script>
   <script nonce="${escapeAttr(data.nonce)}">${THEME_TOGGLE_SCRIPT}</script>
+  <script nonce="${escapeAttr(data.nonce)}">${BUSY_SCRIPT}</script>
   ${
     turnstileKey
       ? `<script nonce="${escapeAttr(data.nonce)}" src="${TURNSTILE_ORIGIN}/turnstile/v0/api.js?render=explicit&amp;onload=lkTurnstileReady" async defer></script>`
@@ -2596,6 +2597,7 @@ const SITE_CSS = `${rootTokensCss(LEGACY_LANDING_ALIASES)}
       border: 1px solid transparent;
       white-space: nowrap;
     }
+${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .btn-ghost { background: var(--bg-surface); color: var(--text-main); border-color: var(--border); box-shadow: var(--shadow-sm); }
     .btn-ghost:hover { background: var(--bg-card-hover); border-color: var(--border-input); }
     .btn-primary { background: var(--accent); color: var(--accent-fg); box-shadow: var(--shadow-sm); }

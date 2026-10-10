@@ -6,16 +6,18 @@ Sign in with the account created when your organization registered, or an operat
 
 ---
 
-## 1. Unified Navigation Architecture
+## 1. Navigation
 
-The Operator Lab Console features a unified **Left-Side Multi-Level Panels Architecture**:
+The console has one narrow **navigation rail** down the left edge. It shows icons only; point at an icon (or reach it with the keyboard) to see its name.
 
-- **Level 1 (Primary Rail — 72px)**: Slim, persistent vertical bar with brand glyph, primary module navigation, live stats badge, bottom-left profile avatar button with anchored menu (user details, role badge, password/settings shortcut, and POST sign-out), and sidebar collapse toggle.
-  1. 🖥️ **Workstations** (`/admin/workstations`)
-  2. 🌐 **Apps & Web** (`/admin/apps-web`)
-  3. 👥 **Staff** (`/admin/staff`)
-  4. ⚙️ **Settings** (`/admin/settings`)
-- **Level 2 (Secondary Action Panel — 272px)**: Contextual tools, live filters, workstation groups, and quick actions designed to stay stable without unexpected layout shifting.
+1. **Workstations** (`/admin/workstations`)
+2. **Apps & Web** (`/admin/apps-web`)
+3. **Staff** (`/admin/staff`)
+4. **Settings** (`/admin/settings`)
+
+Your initial at the bottom of the rail opens the profile menu: your account, the password and two-factor shortcuts, the theme switch and sign-out. On a phone the rail becomes a drawer, opened from the menu button, with every name written out.
+
+Everything else belongs to the page you are on: its view tabs, its filters and its actions sit above its content. A button that is waiting for the server shows a spinner until the answer arrives.
 
 ---
 
@@ -33,13 +35,13 @@ Every enrolled workstation appears as a live telemetry card refreshed from `/api
 
 Workstations in the main canvas are partitioned into collapsible **Group Sections** with headers, chevron collapse toggles, and group-wide selection checkboxes. Collapse states persist in `localStorage`.
 
-### Workstation Groups Management (Level 2 Sidebar)
+### Workstation Groups
 
-The left subpanel is dedicated to group management:
+The **Groups** row above the toolbar manages groups:
 
-- **`+ New Group`**: Prompt to name and create a new workstation group (e.g. *"Row 1"*, *"Lab A"*, *"Physics"*).
-- **Group Filter List**: Filter the main canvas to view all machines or machines in a specific group, with live device count pills.
-- **Delete Group**: Deletes a group and resets member devices to unassigned (`NULL`).
+- **`+ New group`**: Name and create a workstation group (e.g. *"Row 1"*, *"Lab A"*, *"Physics"*).
+- **Group chips**: Filter the grid to one group, or to the ungrouped workstations, each with a live count. **All Workstations** in the row above shows everything again.
+- **`✕` beside a group**: Deletes the group and leaves its workstations ungrouped.
 
 ### Light and Dark Theme
 
@@ -72,14 +74,7 @@ Individual cards offer targeted actions: **Lock / Unlock**, **Navigate**, **Relo
 
 Consolidates portal apps, browser allowlists, and broadcast controls into a single 3-tab module:
 
-### Sidebar Subpanel (Level 2)
-
-- **Static Tab Switchers**:
-  - `📶 Broadcast` (`tab=broadcast`)
-  - `⊞ User Portal` (`tab=portal`, with live app count badge)
-  - `🛡️ Domain Allowlist` (`tab=whitelist`, with domain count badge)
-- **Quick Shortcut**: `Preview User Portal &rarr;` (opens `/home` in a new tab).
-- **Module Overview Card**: Persistent display of Total Portal Apps, Allowed Domains, and Live Broadcast Status.
+**Preview User Portal**, beside the page title, opens `/home` in a new tab. The tab labels show how many portal apps and allowed domains there are.
 
 ### Tab 1: Broadcast (`?tab=broadcast`)
 
@@ -112,9 +107,9 @@ Controls Chromium's enterprise managed URL policy (`URLAllowlist`):
 
 Allows organization administrators to delegate lab control to colleagues with granular permission scoping:
 
-### Role Filtering (Level 2 Sidebar)
+### Role Filtering
 
-- **Role Filters**: Filter staff accounts by role (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with real-time count badges.
+- **Role chips** (in the Staff Accounts header): Filter staff accounts by role (`All Roles`, `Operator`, `Assistant`, `Content Manager`, `Co-Administrator`, plus dynamic roles) with real-time count badges.
 
 ### Invite & Create Operator Account
 
