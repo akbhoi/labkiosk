@@ -333,7 +333,9 @@ by R2, not the Worker, before setting `RELEASES_BASE_URL`. A Worker's `{"error":
 means the route above is missing.
 
 Workstations up to 2.10.0 download with Python's default `User-Agent` (`Python-urllib/3.11`),
-which Cloudflare's Browser Integrity Check answers with `403`. Turn it off for that host
+which Cloudflare's Browser Integrity Check answers with `403`; later ones send
+`LabKioskUpdate/<running version>` on every request, which analytics and WAF rules can match. Every
+workstation still on 2.10.0 or earlier fetches its next update the old way, so turn the check off for that host
 (dashboard → the zone → Rules → Configuration Rules: hostname equals `releases.labkiosk.org`,
 Browser Integrity Check **Off**) and check with
 `curl -sS -o /dev/null -w '%{http_code}\n' -A 'Python-urllib/3.11' https://releases.labkiosk.org/releases/<version>/manifest.json`,
