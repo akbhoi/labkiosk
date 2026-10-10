@@ -329,7 +329,16 @@ so add a route for `releases.labkiosk.org/*` with **Worker: None** (dashboard �
 name in `RESERVED_SLUGS` (`src/guard.ts`; `releases` is there) so no organization can register
 it. Then fetch one file, for example
 `curl -I https://releases.labkiosk.org/releases/<version>/manifest.json`, and check it is served
-by R2, not the Worker, before setting `RELEASES_BASE_URL`.
+by R2, not the Worker, before setting `RELEASES_BASE_URL`. A Worker's `{"error":"Not Found"}`
+means the route above is missing.
+
+Workstations up to 2.10.0 download with Python's default `User-Agent` (`Python-urllib/3.11`),
+which Cloudflare's Browser Integrity Check answers with `403`. Turn it off for that host
+(dashboard → the zone → Rules → Configuration Rules: hostname equals `releases.labkiosk.org`,
+Browser Integrity Check **Off**) and check with
+`curl -sS -o /dev/null -w '%{http_code}\n' -A 'Python-urllib/3.11' https://releases.labkiosk.org/releases/<version>/manifest.json`,
+which must print `200`. The files are signed and every chunk is checked, so the bot checks add
+nothing there.
 
 The files are the same bits as the public ISO, and each workstation checks the manifest's
 signature with the keys in its own image before it uses a byte, so a public bucket is safe; what
