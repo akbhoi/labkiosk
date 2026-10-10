@@ -368,6 +368,23 @@ def release_url(base_url, name):
     return base_url.rstrip("/") + "/" + name
 
 
+def user_agent(running):
+    """
+    `LabKioskUpdate/<running image>` on every request: the release host and the
+    control plane can tell update traffic from a script's, and which images
+    still fetch. A version that does not parse is left out, not sent.
+    """
+    if slots.VERSION_PATTERN.match(running or ""):
+        return f"LabKioskUpdate/{running}"
+    return "LabKioskUpdate"
+
+
+def opener_for(running):
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("User-Agent", user_agent(running))]
+    return opener
+
+
 def fetch_small(opener, url, limit):
     try:
         with opener.open(url, timeout=HTTP_TIMEOUT) as response:
@@ -458,7 +475,7 @@ def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV
     writable and serializes access (boot_partition_writable on a workstation).
     `report(version, percent)` hears the download's progress, whole percents.
     """
-    opener = opener or urllib.request.build_opener()
+    opener = opener or opener_for(running)
     boot_dir = os.path.join(root, slots.BOOT_DIR_NAME)
     env = slots.read_env(boot_dir)
     if slots.classify(env, running) == "trial":
@@ -721,7 +738,7 @@ def fetch_offer(opener, worker_url, token, running):
     """
     request = urllib.request.Request(
         worker_url + OFFER_PATH + "?" + urllib.parse.urlencode({"running": running}),
-        headers={"Authorization": f"Bearer {token}", "User-Agent": "LabKioskUpdate/1"},
+        headers={"Authorization": f"Bearer {token}", "User-Agent": user_agent(running)},
     )
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT) as response:
@@ -771,7 +788,7 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
     `ready`, for an administrator. Every step is written to the update state;
     an UpdateError is recorded there too, then raised.
     """
-    opener = opener or urllib.request.build_opener()
+    opener = opener or opener_for(running)
     try:
         previous = read_update_state(state_path)
     except UpdateError as err:

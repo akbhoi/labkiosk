@@ -379,6 +379,7 @@ class OfferHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         server = self.server
         server.asked.append(self.headers.get("Authorization"))
+        server.agents.append(self.headers.get("User-Agent"))
         path, _, query = self.path.partition("?")
         server.queries.append(query)
         if path != "/api/devices/update":
@@ -428,6 +429,7 @@ class Run(unittest.TestCase):
         server.body = body
         server.asked = []
         server.queries = []
+        server.agents = []
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -466,6 +468,18 @@ class Run(unittest.TestCase):
         self.phases.clear()
         self.assertTrue(self.run_update(worker)["already"])
         self.assertEqual(self.phases[-1][:2], ("ready", "2.6.1"))
+
+    def test_every_request_names_the_updater_and_the_running_image(self):
+        self.publish("2.6.1")
+        releases_server, releases = self.serve()
+        plane, worker = self.control_plane({"version": "2.6.1", "kind": "feature", "sizeBytes": 1, "url": f"{releases}/2.6.1"})
+        self.assertEqual(self.run_update(worker)["state"], "ready")
+        expected = f"LabKioskUpdate/{RUNNING}"
+        self.assertEqual(plane.agents, [expected], "the update check")
+        self.assertTrue(releases_server.requests)
+        self.assertEqual(releases_server.agents, {expected}, "the manifest, its signature and every file")
+        self.assertEqual(update.user_agent("2.6.0\n"), "LabKioskUpdate", "a version that does not parse is not sent")
+        self.assertEqual(update.user_agent(None), "LabKioskUpdate")
 
     def test_nothing_offered_or_nothing_newer_is_up_to_date(self):
         for offer in (None, {"version": RUNNING, "url": "http://127.0.0.1:9/x"}, {"version": "2.5.9", "url": "http://127.0.0.1:9/x"}):

@@ -285,7 +285,7 @@ both sides, and the controller's address (a tag build fails its pre-check withou
 | Setting | Where | Set it |
 | :--- | :--- | :--- |
 | `RELEASE_NOTES_TOKEN` | Worker secret **and** GitHub Actions secret, the same value: at least 32 characters, e.g. `openssl rand -hex 32` | `npx wrangler secret put RELEASE_NOTES_TOKEN`; repository → Settings → Secrets and variables → Actions → New repository secret |
-| `CONTROLLER_URL` | GitHub Actions variable: the controller's `https://` address, e.g. `https://labkiosk.org` | Repository → Settings → Secrets and variables → Actions → Variables |
+| `CONTROLLER_URL` | GitHub Actions variable: the controller's `https://` address, the one that answers without a redirect (`https://www.labkiosk.org` while the zone redirects the apex to `www`) | Repository → Settings → Secrets and variables → Actions → Variables |
 
 ### Automatic bug reports (optional)
 
@@ -329,7 +329,18 @@ so add a route for `releases.labkiosk.org/*` with **Worker: None** (dashboard �
 name in `RESERVED_SLUGS` (`src/guard.ts`; `releases` is there) so no organization can register
 it. Then fetch one file, for example
 `curl -I https://releases.labkiosk.org/releases/<version>/manifest.json`, and check it is served
-by R2, not the Worker, before setting `RELEASES_BASE_URL`.
+by R2, not the Worker, before setting `RELEASES_BASE_URL`. A Worker's `{"error":"Not Found"}`
+means the route above is missing.
+
+Workstations up to 2.10.0 download with Python's default `User-Agent` (`Python-urllib/3.11`),
+which Cloudflare's Browser Integrity Check answers with `403`; later ones send
+`LabKioskUpdate/<running version>` on every request, which analytics and WAF rules can match. Every
+workstation still on 2.10.0 or earlier fetches its next update the old way, so turn the check off for that host
+(dashboard → the zone → Rules → Configuration Rules: hostname equals `releases.labkiosk.org`,
+Browser Integrity Check **Off**) and check with
+`curl -sS -o /dev/null -w '%{http_code}\n' -A 'Python-urllib/3.11' https://releases.labkiosk.org/releases/<version>/manifest.json`,
+which must print `200`. The files are signed and every chunk is checked, so the bot checks add
+nothing there.
 
 The files are the same bits as the public ISO, and each workstation checks the manifest's
 signature with the keys in its own image before it uses a byte, so a public bucket is safe; what

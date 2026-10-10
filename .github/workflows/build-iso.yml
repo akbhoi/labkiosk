@@ -242,9 +242,14 @@ jobs:
           set -euo pipefail
           answer="$RUNNER_TEMP/release-notes-sync.json"
           for attempt in 1 2 3 4 5 6; do
-            status="$(curl -sS --max-time 30 -o "$answer" -w '%{http_code}' -X POST \
-              -H "Authorization: Bearer $RELEASE_NOTES_TOKEN" "${CONTROLLER_URL%/}/api/release-notes/sync")" || status="000"
+            reply="$(curl -sS --max-time 30 -o "$answer" -w '%{http_code} %{redirect_url}' -X POST \
+              -H "Authorization: Bearer $RELEASE_NOTES_TOKEN" "${CONTROLLER_URL%/}/api/release-notes/sync")" || reply="000 "
+            status="${reply%% *}"
             case "$status" in
+              301|302|303|307|308)
+                # A redirect turns the POST into a GET, or drops it: the address itself is wrong.
+                echo "::error::$CONTROLLER_URL redirects ($status to ${reply#* }). Set the CONTROLLER_URL variable to the address that answers without a redirect. The release is published; /download lists it after the next hourly run."
+                exit 1 ;;
               200)
                 latest="$(jq -r '.latest // empty' "$answer")"
                 if [ "$latest" = "$GITHUB_REF_NAME" ]; then

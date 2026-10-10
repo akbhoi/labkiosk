@@ -30,7 +30,7 @@ BLOCK = 64 * 1024
 
 class ReleaseHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    # Set per server: directory, rate, cut_after, requests (a list), lock.
+    # Set per server: directory, rate, cut_after, requests (a list), agents (a set), lock.
 
     def log_message(self, format, *args):
         pass
@@ -41,6 +41,7 @@ class ReleaseHandler(http.server.BaseHTTPRequestHandler):
         path = os.path.join(server.directory, *parts)
         with server.lock:
             server.requests.append((parts[-1], self.headers.get("Range")))
+            server.agents.add(self.headers.get("User-Agent"))
         if any(part in ("", ".", "..") for part in parts) or not os.path.isfile(path):
             self.send_error(404)
             return
@@ -99,6 +100,7 @@ def make_server(directory, port=0, rate=None, cut_after=None):
     server.rate = rate
     server.cut_after = cut_after
     server.requests = []
+    server.agents = set()
     server.lock = threading.Lock()
     return server
 
