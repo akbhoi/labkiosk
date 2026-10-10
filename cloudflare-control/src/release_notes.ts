@@ -78,6 +78,16 @@ export async function listReleaseNotes(db: D1Database, limit = RELEASES_SHOWN): 
     .slice(0, Math.max(1, Math.min(20, limit)));
 }
 
+/**
+ * The newest release that has an ISO: what a new install starts from. A
+ * security release ships its image to workstations over the air and has none,
+ * so it is listed with the others but never offered as the download.
+ */
+export async function latestIsoRelease(db: D1Database): Promise<ReleaseNote | null> {
+  const result = await db.prepare("SELECT * FROM release_notes WHERE iso_url IS NOT NULL").all<ReleaseNote>();
+  return (result.results || []).filter((note) => TAG_PATTERN.test(note.tag)).sort(byVersion)[0] ?? null;
+}
+
 /** One sentence, on one line, no longer than a line of a changelog should be. */
 function tidy(text: unknown): string {
   return String(text ?? "")

@@ -240,6 +240,14 @@ class Workflow(unittest.TestCase):
         self.assertNotIn(-1, positions, dict(zip(order, positions)))
         self.assertEqual(positions, sorted(positions), "each step comes after the one it depends on")
 
+    def test_the_github_release_carries_the_package_list_and_no_iso(self):
+        start = self.workflow.index("- name: Create GitHub Release")
+        step = self.workflow[start:self.workflow.index("- name:", start + 1)]
+        self.assertIn("files: ${{ runner.temp }}/rebuilt/dpkg-status", step)
+        self.assertIn('make_latest: "false"', step, "GitHub's latest stays the newest release with an ISO")
+        self.assertNotIn(".iso", step)
+        self.assertIn("--pattern dpkg-status", self.workflow, "the next run reads a security release's packages from it")
+
 
 if __name__ == "__main__":
     unittest.main()

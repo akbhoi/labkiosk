@@ -1535,6 +1535,22 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.deepEqual((await listReleaseNotes(db)).map((r) => r.tag).slice(0, 3), ["v2.9.0", "v2.7.1", "v2.7.0"]);
       page = await (await call("/download")).text();
       assert.ok(page.includes("Latest Release v2.9.0"));
+      // A security release has no ISO: it is listed, and the download stays the newest release that has one.
+      const security = release("v2.9.1", "2026-10-12T06:00:00Z", {
+        name: "Lab Kiosk v2.9.1 (security)",
+        body: "## Security rebuild of v2.9.0",
+        assets: [{ name: "dpkg-status", size: 1024, browser_download_url: "https://github.com/akbhoi/labkiosk/releases/download/v2.9.1/dpkg-status" }]
+      });
+      githubAnswer = new Response(JSON.stringify([security, release("v2.9.0", "2026-10-10T10:18:00Z"), ...list]), { status: 200 });
+      assert.deepEqual(await (await syncCall(configured, `Bearer ${token}`)).json(), { stored: 6, latest: "v2.9.1" });
+      assert.equal((await listReleaseNotes(db))[0].tag, "v2.9.1");
+      page = await (await call("/download")).text();
+      assert.ok(page.includes("Latest Release v2.9.0") && page.includes("Download v2.9.0 (.ISO)"));
+      assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.9.0/labkiosk-debian12-amd64.iso"'));
+      assert.ok(!page.includes("Download v2.9.1") && !page.includes("releases/download/v2.9.1/labkiosk"), "no ISO is offered for it");
+      const card = page.slice(page.indexOf('<span class="changelog-version">v2.9.1</span>'), page.indexOf('<span class="changelog-version">v2.9.0</span>'));
+      assert.ok(card.includes("Security update") && card.includes("no ISO of its own") && !card.includes(">Latest<"), card);
+      assert.ok(page.slice(page.indexOf('<span class="changelog-version">v2.9.0</span>')).includes(">Latest<"));
       githubAnswer = new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
       assert.equal((await syncCall(configured, `Bearer ${token}`)).status, 502);
       assert.ok((await listReleaseNotes(db)).some((r) => r.tag === "v2.9.0"), "a failed read keeps what is stored");

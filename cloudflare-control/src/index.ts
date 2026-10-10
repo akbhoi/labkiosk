@@ -211,7 +211,7 @@ import {
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
 import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
-import { listReleaseNotes, storeReleaseNotes, syncReleaseNotes } from "./release_notes";
+import { latestIsoRelease, listReleaseNotes, storeReleaseNotes, syncReleaseNotes } from "./release_notes";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -3425,6 +3425,7 @@ export default {
         renderDownloadHtml({
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
           releases: await listReleaseNotes(db),
+          download: await latestIsoRelease(db),
           baseDomain,
           contactEmail: "contact@labkiosk.org",
           ...formChecks,

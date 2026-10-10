@@ -93,6 +93,8 @@ export interface LandingOptions {
   isoDownloadUrl?: string;
   /** The newest releases, for /download (src/release_notes.ts); empty until the hourly run has read them. */
   releases?: ReleaseNote[];
+  /** The newest release with an ISO, offered as the download on /download; null until one is known. */
+  download?: ReleaseNote | null;
   /** Apex / base domain for organization subdomains (defaults to labkiosk.org). */
   baseDomain?: string;
   /** Primary contact email (defaults to contact@labkiosk.org). */
@@ -2120,7 +2122,13 @@ function isoSizeLabel(bytes: number | null | undefined): string {
   return mb > 0 ? `~${mb} MB` : "";
 }
 
-/** One release in the version history: what changed, and where its files are. */
+/** A security rebuild's GitHub release, named by security-rebuild.yml. */
+const SECURITY_RELEASE_NAME = /\(security\)$/;
+
+/**
+ * One release in the version history: what changed, and where its files are.
+ * `newest` marks the release offered as the download.
+ */
 function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
   const { items, writtenByAi } = releaseHighlights(note);
   const releaseUrl = safeHttpUrl(note.url);
@@ -2131,7 +2139,7 @@ function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
           <div class="changelog-card">
             <div class="changelog-head">
               <span class="changelog-version">${escapeHtml(note.tag)}</span>
-              <span class="changelog-date">${newest ? `<span class="badge badge-green">Latest</span> ` : ""}${escapeHtml(RELEASE_DATE.format(new Date(note.published_at * 1000)))}</span>
+              <span class="changelog-date">${newest ? `<span class="badge badge-green">Latest</span> ` : ""}${SECURITY_RELEASE_NAME.test(note.name) ? `<span class="badge badge-yellow">Security update</span> ` : ""}${escapeHtml(RELEASE_DATE.format(new Date(note.published_at * 1000)))}</span>
             </div>
             ${
               items.length
@@ -2139,6 +2147,7 @@ function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
                 : `<p class="changelog-note">The changes in this release are listed in its notes on GitHub.</p>`
             }
             ${writtenByAi ? `<p class="changelog-note">Summary written by AI from this release\u2019s change list. The full list is in the release notes.</p>` : ""}
+            ${isoUrl ? "" : `<p class="changelog-note">This release has no ISO of its own: installed workstations running its line receive it over the air. A new install starts from the ISO above.</p>`}
             ${note.iso_sha256 ? `<p class="changelog-checksum">SHA256 <code>${escapeHtml(note.iso_sha256)}</code></p>` : ""}
             <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
               ${releaseUrl ? `<a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Release notes</a>` : ""}
@@ -2148,10 +2157,12 @@ function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
           </div>`;
 }
 
-function downloadMainHtml(mirrorUrl: string | null, releases: ReleaseNote[]): string {
+function downloadMainHtml(mirrorUrl: string | null, releases: ReleaseNote[], download: ReleaseNote | null): string {
   // Everything about a release on this page is what GitHub published for it:
-  // nothing here names a version, a size or a checksum of its own.
-  const latest = releases[0] || null;
+  // nothing here names a version, a size or a checksum of its own. The
+  // download is the newest release with an ISO; a newer security release,
+  // which has none, is listed below it.
+  const latest = download;
   const isoUrl = mirrorUrl || (latest?.iso_url ? safeHttpUrl(latest.iso_url) : null) || LATEST_ISO_URL;
   const checksumUrl = (latest?.checksum_url ? safeHttpUrl(latest.checksum_url) : null) || LATEST_CHECKSUM_URL;
   const size = isoSizeLabel(latest?.iso_bytes) || "~720 MB";
@@ -2160,7 +2171,7 @@ function downloadMainHtml(mirrorUrl: string | null, releases: ReleaseNote[]): st
         Download ${latest ? escapeHtml(latest.tag) : "the latest release"} (.ISO)
       </a>`;
   const historyHtml = releases.length
-    ? releases.map((note, index) => releaseCardHtml(note, index === 0)).join("")
+    ? releases.map((note) => releaseCardHtml(note, note.tag === latest?.tag)).join("")
     : `
           <div class="changelog-card">
             <div class="changelog-head">
@@ -2503,7 +2514,7 @@ export function renderDownloadHtml(data: LandingOptions): string {
     title: "Lab Kiosk OS - Download Bootable ISO & Flashing Guide",
     description: "Download the latest Lab Kiosk Debian 12 live-build ISO image, SHA256 checksums, 3-step flashing instructions, and Docker build commands.",
     activeNav: "download",
-    mainHtml: downloadMainHtml(mirrorUrl, data.releases || [])
+    mainHtml: downloadMainHtml(mirrorUrl, data.releases || [], data.download ?? null)
   });
 }
 

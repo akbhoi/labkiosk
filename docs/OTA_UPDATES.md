@@ -532,8 +532,9 @@ and by hand (one line, `force`, `dry_run`):
 1. From the repository's tags, the latest two stable lines from 2.9 on and the newest tag of each
    (`distro-builder/tools/security-rebuild.py lines`). An older line has no updater, so nothing
    rebuilt for it could reach a workstation.
-2. The installed packages of that tag's image: `var/lib/dpkg/status`, read from the squashfs of the
-   ISO its GitHub release carries (checked against its `.sha256`), cached by tag.
+2. The installed packages of that tag's image (`var/lib/dpkg/status`): the `dpkg-status` its GitHub
+   release carries when it is a security release, otherwise read from the squashfs of its ISO
+   (checked against its `.sha256`); cached by tag.
 3. Compared with Debian's `bookworm-security` `Packages` indices (`check`; Debian version order as
    `dpkg --compare-versions`, tested against dpkg itself). Nothing newer, nothing built.
 4. Otherwise the tag's own source, with only its version raised one patch in the four files that
@@ -545,9 +546,11 @@ and by hand (one line, `force`, `dry_run`):
    base's.
 7. R2 (`releases/<version>/`, never overwritten), the tag pushed with `GITHUB_TOKEN` (which starts
    no other workflow, so `build-iso.yml` never builds it again), the GitHub release with the
-   changed packages as its notes (`notes`; "Latest" only for the newest line), and the
-   `/download` sync. `/download` orders releases by version, so an older line's rebuild never
-   displaces the newest release there.
+   changed packages as its notes (`notes`) and the image's `dpkg-status`, and the `/download`
+   sync. The ISO is built and boot-tested but not published: workstations take the image from
+   R2, and a new install starts from the newest feature release's ISO and is offered the
+   security release for its line. So the GitHub release is never "Latest", and `/download`
+   offers the newest release that has an ISO, listing security releases by version beside it.
 
 A super admin classifies the rebuild on the Releases page like any release; nothing reaches a
 workstation before that.
@@ -625,7 +628,7 @@ take security releases on approval.
 *Built in phase 4; §5.11 has the details.*
 
 1. **Watch.** A daily CI job compares the image's installed packages (its dpkg status, read from
-   the release's ISO) against Debian's `bookworm-security` archive. Debian LTS publishes to the
+   the release's ISO, or the `dpkg-status` a security release publishes) against Debian's `bookworm-security` archive. Debian LTS publishes to the
    same suite, so this covers LTS while the base is Debian 12.
 2. **Rebuild** with a patch version (`2.9.0` → `2.9.1`), marked `security`. No source change is
    needed beyond the version, because live-build fetches current packages on every build.

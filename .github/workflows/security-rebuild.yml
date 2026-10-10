@@ -5,8 +5,11 @@ name: Security rebuild
 # packages of the line's newest release with the Debian security archive. When
 # one of them has a fix, rebuild that release's own source -- unchanged but for
 # its version, one patch up -- so live-build installs the fixed packages, boot-
-# test it, sign it as a `security` release of its base, and publish it to R2 and
-# GitHub like build-iso.yml does. A super admin still classifies it on the
+# test it, sign it as a `security` release of its base, and publish it to R2
+# like build-iso.yml does. Its GitHub release carries the notes and the image's
+# package list, but no ISO: workstations download the image from R2, and a new
+# install starts from the newest feature release's ISO and takes the security
+# release when it is offered. A super admin still classifies it on the
 # Releases page before any workstation is offered it; organizations then
 # install it at their workstations' next start, or approve it.
 #
@@ -105,8 +108,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xorriso squashfs-tools
 
-      # The packages of the line's newest release, read from its published ISO
-      # once and kept: a release never changes after it is published.
+      # The packages of the line's newest release, read once and kept: a release
+      # never changes after it is published. A security release publishes its
+      # package list as `dpkg-status`; a feature release, its ISO.
       - name: Cache the packages of ${{ matrix.tag }}
         id: cache
         uses: actions/cache@v4
@@ -123,6 +127,12 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/base"
           mkdir -p "$work"
+          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if grep -qx 'dpkg-status' <<< "$assets"; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$work" --pattern dpkg-status
+            mv "$work/dpkg-status" "$work/status"
+            exit 0
+          fi
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$work" \
             --pattern "$ISO" --pattern "$ISO.sha256"
           (cd "$work" && sha256sum -c "$ISO.sha256")
@@ -245,13 +255,13 @@ jobs:
           xorriso -osirrox on -indev "rebuild-src/distro-builder/out/$ISO" \
             -extract /live/filesystem.squashfs "$work/filesystem.squashfs" >/dev/null 2>&1
           unsquashfs -no-xattrs -d "$work/root" "$work/filesystem.squashfs" var/lib/dpkg/status >/dev/null
-          mv "$work/root/var/lib/dpkg/status" "$work/status"
+          mv "$work/root/var/lib/dpkg/status" "$work/dpkg-status"
           rm -rf "$work/root" "$work/filesystem.squashfs"
-          python3 distro-builder/tools/security-rebuild.py check --status "$work/status" \
+          python3 distro-builder/tools/security-rebuild.py check --status "$work/dpkg-status" \
             --mirror https://deb.debian.org/debian-security --fail-if-outdated > "$work/check.json"
           python3 distro-builder/tools/security-rebuild.py notes --base-tag "${{ matrix.tag }}" \
             --version "${{ matrix.version }}" --base-status "$RUNNER_TEMP/base/status" \
-            --new-status "$work/status" > "$RUNNER_TEMP/notes.md"
+            --new-status "$work/dpkg-status" > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
 
       - name: Upload ISO Artifact
@@ -354,7 +364,10 @@ jobs:
         working-directory: rebuild-src
         run: git push origin "refs/tags/v${{ matrix.version }}"
 
-      # "Latest" on GitHub, which /download links, stays the newest line's.
+      # The record of what changed, without an ISO: workstations take the image
+      # from R2. `dpkg-status` is the next run's base for this line. "Latest" on
+      # GitHub, which /download links before it knows any release, stays the
+      # newest release that has an ISO.
       - name: Create GitHub Release
         if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
         uses: softprops/action-gh-release@v3
@@ -362,14 +375,13 @@ jobs:
           tag_name: v${{ matrix.version }}
           name: "Lab Kiosk v${{ matrix.version }} (security)"
           body_path: ${{ runner.temp }}/notes.md
-          make_latest: ${{ matrix.newest && 'true' || 'false' }}
-          files: |
-            rebuild-src/distro-builder/out/labkiosk-debian12-amd64.iso
-            rebuild-src/distro-builder/out/labkiosk-debian12-amd64.iso.sha256
+          make_latest: "false"
+          files: ${{ runner.temp }}/rebuilt/dpkg-status
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
 
-      - name: Offer the release on the download page
+      - name: List the release on the download page
         if: steps.check.outputs.rebuild == 'true' && env.PUBLISH == 'true'
         env:
           RELEASE_NOTES_TOKEN: ${{ secrets.RELEASE_NOTES_TOKEN }}
@@ -386,24 +398,24 @@ jobs:
               200)
                 latest="$(jq -r '.latest // empty' "$answer")"
                 if [ "$NEWEST" != "true" ]; then
-                  # /download leads with the newest line; an older line's rebuild is listed below it.
+                  # /download lists releases by version; an older line's rebuild is listed below the newest.
                   echo "/download read the releases again (newest: ${latest:-none})."
                   exit 0
                 fi
                 if [ "$latest" = "$TAG" ]; then
-                  echo "/download now offers $latest."
+                  echo "/download now lists $latest; its ISO stays the newest feature release's."
                   exit 0
                 fi
                 echo "GitHub does not list $TAG yet (newest: ${latest:-none})." ;;
               401|503)
-                echo "::error::The controller refused the request ($status): RELEASE_NOTES_TOKEN must match the Worker's secret of the same name. The release is published; /download offers it after the next hourly run."
+                echo "::error::The controller refused the request ($status): RELEASE_NOTES_TOKEN must match the Worker's secret of the same name. The release is published; /download lists it after the next hourly run."
                 exit 1 ;;
               *)
                 echo "The controller answered $status (attempt $attempt)." ;;
             esac
             sleep 10
           done
-          echo "::error::/download does not offer $TAG yet. The release is published; the hourly run offers it within the hour."
+          echo "::error::/download does not list $TAG yet. The release is published; the hourly run lists it within the hour."
           exit 1
 
       - name: Summary
