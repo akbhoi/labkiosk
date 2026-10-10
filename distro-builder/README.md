@@ -238,7 +238,7 @@ It needs, before the first tag:
 | Actions secret | `CLOUDFLARE_ACCOUNT_ID` | Already set for the Worker deploy; it names the R2 endpoint |
 | Actions variable | `R2_RELEASES_BUCKET` | The R2 bucket the releases go to |
 | Actions secret | `RELEASE_NOTES_TOKEN` | The same value as the Worker secret of that name: after publishing, the build asks the controller to read the release in, so `/download` offers it at once ([`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md#release-notes-on-download)) |
-| Actions variable | `CONTROLLER_URL` | The controller's `https://` address, e.g. `https://labkiosk.org` |
+| Actions variable | `CONTROLLER_URL` | The controller's `https://` address, the one that answers without a redirect (`https://www.labkiosk.org` while the zone redirects the apex to `www`) |
 
 A tag must equal `usr/share/labkiosk/version`; a pre-release tag (`v2.7.0-rc1`) is published on the `beta` channel, any other on `stable`. When a release fixes a security hole, raise `usr/share/labkiosk/security-floor` to its version: workstations running it then refuse every older release, however validly signed.
 

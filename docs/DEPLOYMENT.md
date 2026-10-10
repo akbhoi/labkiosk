@@ -285,7 +285,7 @@ both sides, and the controller's address (a tag build fails its pre-check withou
 | Setting | Where | Set it |
 | :--- | :--- | :--- |
 | `RELEASE_NOTES_TOKEN` | Worker secret **and** GitHub Actions secret, the same value: at least 32 characters, e.g. `openssl rand -hex 32` | `npx wrangler secret put RELEASE_NOTES_TOKEN`; repository → Settings → Secrets and variables → Actions → New repository secret |
-| `CONTROLLER_URL` | GitHub Actions variable: the controller's `https://` address, e.g. `https://labkiosk.org` | Repository → Settings → Secrets and variables → Actions → Variables |
+| `CONTROLLER_URL` | GitHub Actions variable: the controller's `https://` address, the one that answers without a redirect (`https://www.labkiosk.org` while the zone redirects the apex to `www`) | Repository → Settings → Secrets and variables → Actions → Variables |
 
 ### Automatic bug reports (optional)
 
