@@ -16,8 +16,8 @@ Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2e, 6–7). This
 3. **Guard it**: `requireTenantPermission(db, session, tenant, "<perm>", …)` (or
    `requireTenantAdmin()` for membership-only reads), `requireSuperAdmin()` for platform routes,
    `requireDevice()` for workstation routes (identity from the token, never the body). Permissions:
-   `workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`. Anything exposing staff
-   emails needs `staff`.
+   `workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`, `updates`. Anything
+   exposing staff emails needs `staff`.
 4. Cookie-authenticated `POST`/`DELETE` under `/api/` already pass `rejectCrossSiteMutation()` in
    `index.ts`; a dev-host `Origin` (`localhost`…) is same-site **only when the request itself is
    on a dev host**. Do not add state-changing routes outside `/api/`.
@@ -54,6 +54,24 @@ Authoritative detail: `cloudflare-control/AGENTS.md` (Rules 1–2e, 6–7). This
   state organization-wide for `"all"`, per workstation (`setClientsBroadcast()`) otherwise, then
   hands the command to the hub (`hubJson(env, tenantId, "/enqueue", …)`). Commands and payloads:
   see `labkiosk-core`.
+
+## Over-the-air updates (`src/releases.ts`)
+
+- `GET /api/devices/update` (`requireDevice()`): `{release: {version, kind, sizeBytes, url} | null}`,
+  the newest unrevoked release of the organization's channel (`tenants.update_channel`; `beta`
+  also takes `stable`). `503` while a release is offered but `RELEASES_BASE_URL` is unset or not
+  https.
+- `GET`/`POST /api/settings/updates` (`{channel}`), `POST /api/clients/check-update` and
+  `POST /api/clients/install-update` (`{clientIds}` ≤ 500; unknown ids come back in `skipped` as
+  `Not found`; install answers `409` when nothing is offered) need `updates`. Install goes
+  through the hub's `/install-update`, which sends `install-update` only to workstations online
+  and `ready` for that version and returns the rest with a reason.
+- `GET /api/super/releases` (syncs from the optional `RELEASES` bucket, `503` without it),
+  `POST /api/super/releases/classify {version, channel: beta|stable|null}` and
+  `POST /api/super/releases/revoke {version}` (`409` once revoked) are `requireSuperAdmin()`;
+  `releases` is a platform table (no `tenant_id`). Both changes reload every organization's hub.
+- Audit actions: `release.classify`, `release.revoke`, `settings.update_channel`, `update.check`,
+  `update.install`. `/api/command` never accepts `release-available` or `install-update`.
 
 ## Workstation problems and bug reports (Rule 2e)
 

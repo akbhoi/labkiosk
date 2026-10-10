@@ -20,13 +20,23 @@ release is five files under one URL, published by build-iso.yml:
                      file, the floor) and give it one try at the next boot, as
                      `labkiosk-boot-slots try` does.
     status           print what is downloaded, in progress and staged, as JSON.
+    run              phase 3: ask the control plane which release this
+                     workstation's organization is offered, and download it as
+                     `download` does, recording each step in
+                     /run/labkiosk-update/update.json for the agent to report.
+                     Started by labkiosk-update-download.service when the
+                     organization's hub sends `release-available`.
+    install-pending  give the release `run` left ready its one try, as
+                     `install` does. Started by labkiosk-update-install.service,
+                     which then reboots, when an administrator installs it.
 
 A download is never inside images/ until it is complete and verified: GRUB's
 last resort boots any folder there that has the three files, and a half-written
 squashfs has them.
 
-Nothing triggers this yet: it runs as root, by hand. Phase 3 adds the timer, the
-release offer from the control plane and the organization's approval.
+No timer runs any of this. The kiosk user may start exactly the two units
+above (a polkit rule in 01-lockdown.hook.chroot), and nothing else: what is
+offered comes from the control plane, what is accepted from the signature.
 
 Output: JSON on stdout, progress on stderr.
 """
@@ -40,9 +50,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -59,6 +71,16 @@ def load_boot_slots():
 
 
 slots = load_boot_slots()
+
+
+def load_agent():
+    """The agent's own validation of the files it writes; root re-checks them with it."""
+    path = os.path.join(os.sep, "opt", "labkiosk", "agent", "agent.py")
+    loader = importlib.machinery.SourceFileLoader("labkiosk_agent", path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 # The release-signing public keys this image trusts: the current key and the
 # next one, so the signing key can be rotated without stranding a workstation.
@@ -92,6 +114,16 @@ HTTP_TIMEOUT = 60
 READ_BLOCK = 1024 * 1024
 
 GPGV = "/usr/bin/gpgv"
+
+# What `run` and `install-pending` say, for the agent to report (phase 3). In
+# /run beside the boot status, written by root: the agent trusts nothing else.
+UPDATE_STATE_FILE = os.path.join(slots.STATUS_DIR, "update.json")
+UPDATE_PHASES = ("checking", "downloading", "ready", "installing", "up-to-date", "idle", "error")
+OFFER_PATH = "/api/devices/update"
+DEVICE_TOKEN_PATTERN = re.compile(r"^[0-9a-f]{64}\Z")
+MAX_CONFIG_BYTES = 64 * 1024
+MAX_OFFER_BYTES = 16 * 1024
+MAX_DETAIL_LENGTH = 300
 
 
 def log(message):
@@ -411,12 +443,13 @@ def free_old_images(root, boot_dir, env, keep):
     return removed
 
 
-def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV):
+def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV, report=None):
     """
     Fetch, verify and store a signed release in root/images/<version>.
 
     `root` is the image store, written to directly: the caller makes it
     writable and serializes access (boot_partition_writable on a workstation).
+    `report(version, percent)` hears the download's progress, whole percents.
     """
     opener = opener or urllib.request.build_opener()
     boot_dir = os.path.join(root, slots.BOOT_DIR_NAME)
@@ -474,10 +507,17 @@ def download(root, base_url, running, floor, keyring_dir, opener=None, gpgv=GPGV
     done = [0]
 
     def progress(count):
-        before = done[0] * 10 // max(remaining, 1)
+        before = done[0] * 100 // max(remaining, 1)
         done[0] += count
-        if done[0] * 10 // max(remaining, 1) != before:
-            log(f"{done[0] * 100 // max(remaining, 1)}% of {remaining} bytes")
+        percent = done[0] * 100 // max(remaining, 1)
+        if percent != before:
+            if percent // 10 != before // 10:
+                log(f"{percent}% of {remaining} bytes")
+            if report:
+                report(version, percent)
+
+    if report:
+        report(version, 0)
 
     for entry in manifest["files"]:
         if have[entry["name"]] < len(entry["chunks"]):
@@ -562,6 +602,166 @@ def status(root, running):
 
 
 # --------------------------------------------------------------------------
+# Phase 3: the release the control plane offers
+# --------------------------------------------------------------------------
+
+def write_update_state(phase, path=None, **fields):
+    """What the updater is doing, for the agent to report; root-owned, 0644."""
+    path = path or UPDATE_STATE_FILE
+    if phase not in UPDATE_PHASES:
+        raise ValueError(f"unknown update phase {phase!r}")
+    payload = {key: value for key, value in fields.items() if value is not None}
+    if isinstance(payload.get("detail"), str):
+        payload["detail"] = payload["detail"][:MAX_DETAIL_LENGTH]
+    payload.update(phase=phase, at=int(time.time()))
+    os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+    temp = path + ".new"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    os.chmod(temp, 0o644)
+    os.replace(temp, path)
+
+
+def read_update_state(path=None):
+    path = path or UPDATE_STATE_FILE
+    try:
+        data = json.loads(read_file(path, MAX_OFFER_BYTES).decode("utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise UpdateError(f"{path} is unreadable: {err}") from err
+    return data if isinstance(data, dict) else {}
+
+
+def read_enrolment(agent, path):
+    """
+    The control plane's address and this workstation's device token.
+
+    The kiosk user writes that file, so both are validated as the agent
+    validates them, and nothing else in it is read.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError as err:
+        raise UpdateError("this workstation is not enrolled yet") from err
+    except OSError as err:
+        # A symbolic link (O_NOFOLLOW), or anything else that is not a plain file.
+        raise UpdateError(f"{path} could not be opened: {err}") from err
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise UpdateError(f"{path} is not a file")
+        raw = handle.read(MAX_CONFIG_BYTES + 1)
+    if len(raw) > MAX_CONFIG_BYTES:
+        raise UpdateError(f"{path} is larger than {MAX_CONFIG_BYTES} bytes")
+    try:
+        config = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise UpdateError(f"{path} is not valid JSON: {err}") from err
+    if not isinstance(config, dict):
+        raise UpdateError(f"{path} does not hold a JSON object")
+    worker_url = agent.validate_worker_url(str(config.get("workerUrl") or ""))
+    token = str(config.get("deviceToken") or "")
+    if not worker_url:
+        raise UpdateError("this workstation has no valid control plane address")
+    if not DEVICE_TOKEN_PATTERN.match(token):
+        raise UpdateError("this workstation has no valid device token")
+    return worker_url, token
+
+
+def use_proxy(agent, path):
+    """Send the updater's requests where the agent sends its own: the organization's proxy, if any."""
+    raw = {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as err:
+        raise UpdateError(f"the proxy setting at {path} is unusable: {err}") from err
+    try:
+        agent.apply_proxy_to_environment(agent.validate_proxy_config(raw))
+    except ValueError as err:
+        raise UpdateError(f"the proxy setting at {path} is unusable: {err}") from err
+
+
+def fetch_offer(opener, worker_url, token):
+    """The release this workstation's organization is offered, or None."""
+    request = urllib.request.Request(
+        worker_url + OFFER_PATH,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": "LabKioskUpdate/1"},
+    )
+    try:
+        with opener.open(request, timeout=HTTP_TIMEOUT) as response:
+            data = response.read(MAX_OFFER_BYTES + 1)
+    except urllib.error.HTTPError as err:
+        raise UpdateError(f"the control plane refused the update check (HTTP {err.code})") from err
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as err:
+        raise UpdateError(f"the control plane could not be reached: {err}") from err
+    if len(data) > MAX_OFFER_BYTES:
+        raise UpdateError("the control plane's answer is too large")
+    try:
+        body = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise UpdateError(f"the control plane's answer is not JSON: {err}") from err
+    release = body.get("release") if isinstance(body, dict) else None
+    if release is None:
+        return None
+    if not isinstance(release, dict) or not isinstance(release.get("url"), str) \
+            or not slots.VERSION_PATTERN.match(str(release.get("version") or "")):
+        raise UpdateError("the control plane's offer is malformed")
+    return {"version": release["version"], "url": release["url"]}
+
+
+def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=GPGV, state_path=None):
+    """
+    Download the release this workstation's organization is offered, if it is
+    newer than the image running now. Every step is written to the update
+    state; an UpdateError is recorded there too, then raised.
+    """
+    opener = opener or urllib.request.build_opener()
+
+    def report(phase, **fields):
+        write_update_state(phase, path=state_path, **fields)
+
+    env = slots.read_env(os.path.join(root, slots.BOOT_DIR_NAME))
+    if slots.classify(env, running) == "trial":
+        # The hub asks again in a few minutes, by when the boot check has passed.
+        report("idle", detail=f"{running} is still on its first start")
+        return {"state": "idle", "reason": "trial"}
+    report("checking")
+    try:
+        offer = fetch_offer(opener, worker_url, token)
+        if offer is None or version_key(offer["version"]) <= version_key(running):
+            report("up-to-date")
+            return {"state": "up-to-date", "offered": offer["version"] if offer else None}
+        result = download(
+            root, offer["url"], running, floor, keyring_dir, opener, gpgv,
+            report=lambda version, percent: report("downloading", version=version, progress=percent),
+        )
+        if result["downloaded"] != offer["version"]:
+            raise UpdateError(f"the control plane offered {offer['version']} but its folder holds {result['downloaded']}")
+    except UpdateError as err:
+        report("error", detail=str(err))
+        raise
+    report("ready", version=result["downloaded"])
+    return {"state": "ready", **result}
+
+
+def install_pending(root, running, floor, keyring_dir, gpgv=GPGV, state_path=None):
+    """Give the release `run` left ready in this boot its one try at the next boot."""
+    pending = read_update_state(state_path)
+    version = pending.get("version") if pending.get("phase") == "ready" else None
+    if not isinstance(version, str) or not slots.VERSION_PATTERN.match(version):
+        raise UpdateError("no downloaded release is waiting to be installed")
+    write_update_state("installing", path=state_path, version=version)
+    try:
+        return install(root, version, running, floor, keyring_dir, gpgv)
+    except UpdateError as err:
+        write_update_state("error", path=state_path, version=version, detail=str(err))
+        raise
+
+
+# --------------------------------------------------------------------------
 # The workstation
 # --------------------------------------------------------------------------
 
@@ -580,6 +780,8 @@ def main():
     install_parser = sub.add_parser("install", help="boot a downloaded release once, at the next boot")
     install_parser.add_argument("version")
     sub.add_parser("status", help="print what is downloaded and staged as JSON")
+    sub.add_parser("run", help="download the release the control plane offers this workstation")
+    sub.add_parser("install-pending", help="boot the release `run` downloaded once, at the next boot")
     args = parser.parse_args()
 
     try:
@@ -588,13 +790,26 @@ def main():
         running = workstation()
         if args.command == "status":
             result = status(slots.BOOT_MEDIUM, running)
+        elif args.command == "run":
+            agent = load_agent()
+            try:
+                worker_url, token = read_enrolment(agent, agent.CONFIG_FILE)
+                use_proxy(agent, agent.PROXY_CONFIG_FILE)
+                floor = read_security_floor()
+            except UpdateError as err:
+                write_update_state("error", detail=str(err))
+                raise
+            with slots.boot_partition_writable():
+                result = run(slots.BOOT_MEDIUM, running, floor, KEYRING_DIR, worker_url, token)
         else:
             floor = read_security_floor()
             with slots.boot_partition_writable():
                 if args.command == "download":
                     result = download(slots.BOOT_MEDIUM, args.url, running, floor, KEYRING_DIR)
-                else:
+                elif args.command == "install":
                     result = install(slots.BOOT_MEDIUM, args.version, running, floor, KEYRING_DIR)
+                else:
+                    result = install_pending(slots.BOOT_MEDIUM, running, floor, KEYRING_DIR)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as err:
         log(f"ERROR: {err}")
         print(json.dumps({"error": str(err)}))

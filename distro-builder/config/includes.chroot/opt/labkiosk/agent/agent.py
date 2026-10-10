@@ -110,6 +110,20 @@ BOOT_REPORT_INTERVAL_SECONDS = 30
 # Answers after which a report is settled: recorded (200), or one the control
 # plane will never take (400 malformed, 404 a Worker without the route).
 BOOT_REPORT_SETTLED_STATUSES = (200, 400, 404)
+# Over-the-air updates, phase 3. labkiosk-update (root) writes what it is doing
+# beside the boot status; the agent reports it and never writes it.
+UPDATE_STATE_FILE = "/run/labkiosk-update/update.json"
+IMAGE_VERSION_FILE = "/usr/share/labkiosk/version"
+UPDATE_PHASES = frozenset({"idle", "checking", "downloading", "ready", "installing", "up-to-date", "error"})
+UPDATE_VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
+MAX_UPDATE_DETAIL = 300
+# The only units the kiosk user may start (50-labkiosk-update.rules).
+UPDATE_DOWNLOAD_UNIT = "labkiosk-update-download.service"
+UPDATE_INSTALL_UNIT = "labkiosk-update-install.service"
+SYSTEMCTL_TIMEOUT_SECONDS = 15
+# The install screen comes down by itself if no restart follows: the install
+# failed in a way its unit could not report.
+UPDATE_SCREEN_TIMEOUT_SECONDS = 15 * 60
 WIZARD_HTML_FILE = "/opt/labkiosk/setup/wizard.html"
 BLOCKED_HTML_FILE = "/opt/labkiosk/setup/blocked.html"
 CHROMIUM_POLICY_FILE = "/etc/chromium/policies/managed/policies.json"
@@ -299,6 +313,10 @@ state = {
     # to the wizard's re-enrolment form rather than left on a page Chromium
     # blocks, which is a page the kiosk bar cannot appear on.
     "enrolmentRejected": False,
+    # An administrator's install of a system update is under way: the screen
+    # says so, and reboot or shutdown commands wait for it. Unlock leaves it.
+    "updateInstalling": "",
+    "updateInstallingSince": 0.0,
 }
 REENROL_URL = "http://127.0.0.1:8888/setup#reenrol"
 # Set by an enrolment so the heartbeat runs at once instead of finishing a
@@ -2094,6 +2112,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/status":
             live = is_live_session()
             online = test_connectivity()["ok"]
+            screen = update_screen()
             with state_lock:
                 self._send(
                     200,
@@ -2125,6 +2144,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # Only meaningful on live media; an installed disk has
                         # nothing to install to and the wizard hides the tab.
                         "installRequested": live and install_mode_requested(),
+                        # A system update installing or finishing: the kiosk
+                        # bar's curtain says so (None otherwise).
+                        "updateScreen": screen,
                     },
                 )
             return
@@ -2623,10 +2645,24 @@ def execute_command(cmd_data):
     elif action == "reload":
         with state_lock:
             state["reloadEpoch"] = int(time.time() * 1000)
-    elif action == "reboot":
-        run_x11(["systemctl", "reboot"])
-    elif action == "shutdown":
-        run_x11(["systemctl", "poweroff"])
+    elif action in ("reboot", "shutdown"):
+        with state_lock:
+            installing = state["updateInstalling"]
+        if installing:
+            # The install restarts the machine itself; cutting it short would
+            # leave the new image half-staged.
+            log(f"Ignoring {action}: the update to {installing} is installing.")
+            return
+        run_x11(["systemctl", "reboot" if action == "reboot" else "poweroff"])
+    elif action == "release-available":
+        # The organization is offered a newer release: the root updater asks the
+        # control plane which one, and fetches it in the background.
+        if is_live_session():
+            log("A release is available; a live session is updated by re-flashing.")
+        else:
+            start_update_unit(UPDATE_DOWNLOAD_UNIT)
+    elif action == "install-update":
+        begin_update_install(cmd_data.get("version"))
     elif action == "clear-session":
         # The end of a session: sign every user out without a reboot.
         # Ending Chromium is enough, because the kiosk watchdog deletes the
@@ -2683,6 +2719,10 @@ def current_status():
     vnc_password = read_vnc_password()
     if vnc_password:
         status["vncPassword"] = vnc_password
+    status["agentVersion"] = AGENT_VERSION
+    if image_version():
+        status["imageVersion"] = image_version()
+    status["update"] = read_update_report()
     return status
 
 
@@ -2709,12 +2749,10 @@ def post_telemetry():
         return json.loads(response.read().decode("utf-8"))
 
 
-def read_boot_report(path=BOOT_STATUS_FILE, owner_uid=0):
+def read_root_json(path, owner_uid=0):
     """
-    This boot's outcome as labkiosk-boot-slots recorded it, when it is one to
-    report: a new image installed, a failed first boot, a rollback, a fallback
-    or an error. None when there is nothing to report (a live session, a routine
-    boot, a check still running). ValueError when the file is not what root wrote.
+    A small JSON object root wrote under /run/labkiosk-update, or None when
+    there is none. ValueError when the file is not what root wrote.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -2735,7 +2773,18 @@ def read_boot_report(path=BOOT_STATUS_FILE, owner_uid=0):
         raise ValueError(f"{path} is not valid JSON: {err}") from err
     if not isinstance(data, dict):
         raise ValueError(f"{path} does not hold a JSON object")
-    if data.get("state") not in BOOT_REPORT_STATES:
+    return data
+
+
+def read_boot_report(path=BOOT_STATUS_FILE, owner_uid=0):
+    """
+    This boot's outcome as labkiosk-boot-slots recorded it, when it is one to
+    report: a new image installed, a failed first boot, a rollback, a fallback
+    or an error. None when there is nothing to report (a live session, a routine
+    boot, a check still running). ValueError when the file is not what root wrote.
+    """
+    data = read_root_json(path, owner_uid)
+    if data is None or data.get("state") not in BOOT_REPORT_STATES:
         return None
     at = data.get("at")
     if not isinstance(at, int) or isinstance(at, bool):
@@ -2745,6 +2794,130 @@ def read_boot_report(path=BOOT_STATUS_FILE, owner_uid=0):
         if isinstance(data.get(field), str) and data[field]:
             report[field] = data[field]
     return report
+
+
+_image_version = None
+
+
+def image_version(path=IMAGE_VERSION_FILE):
+    """The system image this workstation runs, or "" when it cannot be read."""
+    global _image_version
+    if _image_version is None:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                value = handle.read(64).strip()
+        except OSError as err:
+            log(f"System image version unreadable at {path}: {err}")
+            value = ""
+        _image_version = value if UPDATE_VERSION_PATTERN.match(value) else ""
+    return _image_version
+
+
+_update_state_problem = None
+
+
+def read_update_report(path=UPDATE_STATE_FILE, owner_uid=0):
+    """
+    What this workstation says about system updates: a live session (updated
+    by re-flashing), or labkiosk-update's last state, or idle when it has none.
+    """
+    global _update_state_problem
+    if is_live_session():
+        return {"phase": "live"}
+    try:
+        data = read_root_json(path, owner_uid)
+    except ValueError as err:
+        if _update_state_problem != str(err):
+            _update_state_problem = str(err)
+            log(f"Update state not reported: {err}")
+        return {"phase": "error", "detail": "The update state is unreadable"}
+    _update_state_problem = None
+    if data is None or data.get("phase") not in UPDATE_PHASES:
+        return {"phase": "idle"}
+    report = {"phase": data["phase"]}
+    if isinstance(data.get("version"), str) and UPDATE_VERSION_PATTERN.match(data["version"]):
+        report["version"] = data["version"]
+    progress = data.get("progress")
+    if isinstance(progress, int) and not isinstance(progress, bool) and 0 <= progress <= 100:
+        report["progress"] = progress
+    if isinstance(data.get("detail"), str) and data["detail"].strip():
+        report["detail"] = data["detail"].strip()[:MAX_UPDATE_DETAIL]
+    return report
+
+
+def start_update_unit(unit):
+    """Ask systemd to start one of the two update units. True when it took the job."""
+    if unit not in (UPDATE_DOWNLOAD_UNIT, UPDATE_INSTALL_UNIT):
+        raise ValueError(f"{unit} is not an update unit")
+    try:
+        result = subprocess.run(
+            ["systemctl", "start", "--no-block", unit],
+            capture_output=True,
+            text=True,
+            timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        log(f"Could not start {unit}: {err}")
+        return False
+    if result.returncode != 0:
+        log(f"Could not start {unit}: {(result.stderr or result.stdout).strip()[:300]}")
+        return False
+    log(f"Started {unit}")
+    return True
+
+
+def begin_update_install(version):
+    """
+    Install the release an administrator chose, if it is the one this
+    workstation holds downloaded and verified; the install unit then restarts
+    the machine. Until it does, the screen says an update is installing.
+    """
+    version = str(version or "")
+    if is_live_session():
+        log("Not installing an update on a live session; it is updated by re-flashing.")
+        return False
+    report = read_update_report()
+    if not UPDATE_VERSION_PATTERN.match(version) or report.get("phase") != "ready" or report.get("version") != version:
+        log(f"Not installing {version[:40]!r}: this workstation holds {json.dumps(report)}")
+        return False
+    with state_lock:
+        state["updateInstalling"] = version
+        state["updateInstallingSince"] = time.monotonic()
+    if start_update_unit(UPDATE_INSTALL_UNIT):
+        return True
+    with state_lock:
+        state["updateInstalling"] = ""
+    return False
+
+
+def update_screen(clock=time.monotonic):
+    """
+    What the kiosk bar's curtain says about a system update, or None.
+
+    `installing` from an administrator's install until the restart, unless the
+    install reports an error or no restart follows; `finishing` while a new
+    image passes its first-start check.
+    """
+    with state_lock:
+        version = state["updateInstalling"]
+        since = state["updateInstallingSince"]
+    if version:
+        report = read_update_report()
+        if report.get("phase") == "error" or clock() - since > UPDATE_SCREEN_TIMEOUT_SECONDS:
+            log(f"The install of {version} did not restart this workstation: {report.get('detail', 'no restart followed')}")
+            with state_lock:
+                state["updateInstalling"] = ""
+        else:
+            return {"kind": "installing", "version": version}
+    try:
+        boot = read_root_json(BOOT_STATUS_FILE)
+    except ValueError:
+        return None
+    if boot and boot.get("state") == "finishing" and isinstance(boot.get("version"), str) \
+            and UPDATE_VERSION_PATTERN.match(boot["version"]):
+        return {"kind": "finishing", "version": boot["version"]}
+    return None
 
 
 def post_boot_report(report):

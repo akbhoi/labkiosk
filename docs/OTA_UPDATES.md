@@ -1,6 +1,6 @@
 # Over-the-Air Updates — Research
 
-**Status:** phase 1 (§9) implemented: the image-store installer, the §5.1 and §5.2 changes, GRUB's one-try boot and `labkiosk-boot-ok`. Phases 2–5 are research. **Scope:** delivering new Lab Kiosk releases to installed
+**Status:** phases 1–3 (§9) implemented: the image-store installer, the §5.1 and §5.2 changes, GRUB's one-try boot and `labkiosk-boot-ok` (phase 1); the signed manifest and `labkiosk-update` (phase 2); the control plane, console approval and update curtain (phase 3, §5.10). Phases 4–5 are research. **Scope:** delivering new Lab Kiosk releases to installed
 workstations without re-flashing the ISO. Written against `dev` at v2.5.0.
 
 ---
@@ -58,16 +58,16 @@ security update channel that also carries features.
 | One-try boot: `boot/grub/grubenv` holds `current`, `previous`, `next`, `next_tries`; GRUB spends the try before it boots `next`. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every boot: it makes `next` current once the agent and browser stay up, or reboots into the old image, and writes the outcome to `/run/labkiosk-update/status.json`. The agent posts failures, rollbacks and successful installs to `POST /api/devices/boot-report` | `labkiosk-boot-slots`, `agent.py`, `src/boot_report.ts` |
 | Reinstalling is refused on an installed disk (`is_live_session()`, keyed on `labkiosk.installed=1` or the legacy `/etc/labkiosk-installed`), and `POST /api/install` returns 400 | `labkiosk-install`, `agent.py` |
 | The agent runs as the unprivileged `kiosk` user, restarted in a loop by the Openbox autostart. Its only root paths are two single-binary sudo rules (installer, localization). `labkiosk-boot-slots` has no sudo rule | `etc/openbox/autostart`, `01-lockdown.hook.chroot` |
-| The command set is `lock/unlock/navigate/reload/reboot/shutdown/clear-session/mute`. There is no update or exec path | `agent.py` `execute_command()` |
+| The command set is `lock/unlock/navigate/reload/reboot/shutdown/clear-session/mute`, plus `release-available` and `install-update`, which only the hub sends (§5.10). There is no exec path | `agent.py` `execute_command()` |
 | Commands already go to **selected workstations or groups** as batches (≤ 500 ids). The extension already draws a full-screen **lock curtain** with a message, in a Shadow DOM | `labkiosk-control` skill; `extension/content.js` |
-| The agent version appears only in the `User-Agent` string. D1 stores the image version a boot report names (`client_devices.image_version`, with `update_state`, `update_error`, `update_state_at`), but no agent version | `agent.py` `AGENT_VERSION`; `src/db.ts` `client_devices` |
+| D1 stores the image version a boot report names (`client_devices.image_version`, with `update_state`, `update_error`, `update_state_at`). Since phase 3 the agent also reports `imageVersion`, `agentVersion` and its update phase to the hub, kept in `agent_version`, `update_phase`, `update_version`, `update_progress`, `update_detail` | `agent.py` `AGENT_VERSION`; `src/db.ts` `client_devices` |
 | At install time nothing is written into a system image. ROOT gets only `boot/grub/` (`grub.cfg` copied verbatim, `grubenv`, `labkiosk-password.cfg` for the boot-menu password, `labkiosk-data.cfg` with the DATA partition's UUID) and `images/<version>/`. The empty `/etc/machine-id` ships in the image; localization lives in `localization.json` on DATA and the agent re-applies it (regenerating the locale) at every start | `labkiosk-install`, `01-lockdown.hook.chroot`, `agent.py` `apply_saved_localization()` |
 | `DATA` is mounted at `/etc/labkiosk` by the partition UUID GRUB passes as `labkiosk.data=`, never by label, **owned by `kiosk`**, mode 0700. NetworkManager profiles are bind-mounted from it | `labkiosk-data-generator`, `labkiosk-data-permissions` |
 | The live kernel command line pins `timezone=Asia/Kolkata username=kiosk` for live-config; the installed boot menu leaves `timezone=` out | `distro-builder/auto/config`, `usr/share/labkiosk/boot/grub.cfg` |
 | v2.5.0 ISO: 753 926 144 bytes (719 MiB). CI publishes it as a GitHub Release on `v*` tags | Release `v2.5.0`, `.github/workflows/build-iso.yml` |
 | App layer (`/opt/labkiosk` + `/usr/local`): about 420 KB in source | `du` on `includes.chroot` |
 | Of the 39 commits that touched `distro-builder/config`, 20 changed only `/opt/labkiosk` or `/usr/local`. The other 19 changed hooks, package lists, bootloaders, Chromium policy base or Openbox config | `git log` over this repo |
-| Worker already binds R2 (`labkiosk-audit-archive`) and D1 (migrations 0001–0018) | `wrangler.jsonc`, `migrations/` |
+| Worker binds R2 (`labkiosk-audit-archive`, and the optional `RELEASES` bucket `labkiosk-releases`) and D1 (migrations 0001–0027) | `wrangler.jsonc`, `migrations/` |
 
 ---
 
@@ -211,7 +211,7 @@ existing keys must never be renamed or change meaning.
 
 A root-owned `labkiosk-update` (Python, same conventions as `labkiosk-install`: JSON-only
 stdout, `\Z` regexes, explicit errors). It runs as `labkiosk-update-download.service`, started
-from a timer and nudged when the hub announces a release.
+when the hub announces a release. Phase 3 has no timer (§5.10).
 
 ```text
 1. GET /api/devices/update         → the release offered to this organization, or nothing
@@ -302,10 +302,10 @@ reports "updated to <v>"
   machine has a hardware watchdog for systemd's `RuntimeWatchdogSec` to use. After a power cycle
   GRUB falls back, because the one try was spent. This is the only case that needs a person,
   and it never ends with a broken system.
-- **Permission:** approving an install needs the `settings` permission, since it changes the
-  operating system of the organization's machines. The `workstations` permission, used for
-  daily lock and navigate, isn't enough. Approvals go in the audit log (who, when, which
-  machines, which version). *This choice is open for confirmation (§12).*
+- **Permission:** approving an install needs the `updates` permission (phase 3), since it
+  changes the operating system of the organization's machines. The `workstations` permission,
+  used for daily lock and navigate, isn't enough. Approvals go in the audit log
+  (`update.install`: who, when, which machines, which version).
 
 **Security releases install at the next boot, without approval.**
 
@@ -350,6 +350,10 @@ reports "updated to <v>"
   is offline at boot doesn't roll back a healthy image.
 
 ### 5.7 Control plane
+
+*Phase 3 built a subset of this plan; §5.10 says what exists. The LAN-sharing columns, the
+download window, rate limit and `security_updates` settings, and the Worker file route are not
+built.*
 
 - **D1 (a new migration, 0019 or later, and `SCHEMA_SQL`):**
   - on `client_devices`: `agent_version`, `update_version`, `update_progress`, and for LAN
@@ -461,6 +465,67 @@ start anyway, to check what peers send.
 - **An on-site cache server:** works, but asks the organization to run a machine. Peer sharing
   needs nothing extra.
 
+### 5.10 What phase 3 built
+
+**Releases (super admin).** CI uploads each signed release to the R2 bucket bound as
+`RELEASES` (`labkiosk-releases`) under `releases/<version>/`. The **Releases** tab of the Super
+Admin console (`/super/releases`, `GET /api/super/releases`) records any new folder whose
+`manifest.json` parses and has `manifest.json.sig` beside it, in the platform table `releases`
+(migration 0027; no `tenant_id`). A release reaches no workstation until a super admin
+classifies it **Beta** or **Stable**; **Withdraw** takes it out of its channel, and **Revoke**
+withdraws it for good. Each change is audited (`release.classify`, `release.revoke`) and every
+organization's hub reloads its offer.
+
+**The offer.** An organization's `update_channel` (`stable` by default, or `beta`, in
+Settings → Updates) decides what it is offered: the newest unrevoked `stable` release, and on
+`beta` also `beta` ones. `GET /api/devices/update` (device token) returns that release and the
+folder to download it from: `RELEASES_BASE_URL` (the bucket's public address) plus
+`releases/<version>`, or 503 when that variable is unset or not https. Workstations download
+from that public address, not through the Worker; the signature, not the address, is what they
+trust.
+
+**On the workstation.** No timer runs anything.
+
+- The agent reports `imageVersion`, `agentVersion` and `update` (`{phase, version?, progress?,
+  detail?}`, phases `live`, `idle`, `checking`, `downloading`, `ready`, `installing`,
+  `up-to-date`, `error`) in its hub status. The updater writes the phase to
+  `/run/labkiosk-update/update.json` (root-owned, 0644); a live session reports `live`.
+- The hub sends `release-available` when a workstation runs an image older than the offer and
+  isn't already fetching or holding it: on connect, on a status change and on a config change,
+  at most every 10 minutes (60 after an error). The console's **Check for updates** sends it
+  too.
+- On `release-available` the agent starts `labkiosk-update-download.service`
+  (`labkiosk-update run`, `Nice=10`, idle I/O). `run` reads `workerUrl` and `deviceToken` from
+  `config.json` and the proxy from `proxy.json`, both checked with the agent's own validators,
+  asks `GET /api/devices/update`, and downloads with the phase 2 code. A live session never
+  starts it.
+- **Install update** in the console (`POST /api/clients/install-update`, `updates` permission)
+  sends `install-update` only to selected workstations that are online and report `ready` for
+  the offered version; the rest come back with a reason (offline, live session, still
+  downloading, too old to update over the air, and so on) and are never updated later on their
+  own. The agent checks the version it holds equals the command's and starts
+  `labkiosk-update-install.service`: `install-pending` gives that release its one try at the
+  next boot, then the unit reboots.
+- The kiosk bar shows an update curtain, "Installing a system update", and "Finishing a system
+  update" while the new image's boot check runs. It is separate from the operator's lock, so
+  `unlock` leaves it, and `reboot` and `shutdown` are refused while installing. An install
+  error, or no restart within 15 minutes, takes it down.
+- Both units carry `ConditionKernelCommandLine=labkiosk.installed=1` and are not enabled. A
+  polkit rule (`/etc/polkit-1/rules.d/50-labkiosk-update.rules`, from `01-lockdown.hook.chroot`)
+  lets `kiosk` start exactly these two units and nothing else.
+- `POST /api/command` never accepts `release-available` or `install-update`.
+
+**Console.** Each workstation card shows its image version and update phase. The Workstations
+toolbar has an **Updates** menu (**Check for updates**, **Install update**) for accounts holding
+`updates`, and the Staff page has an **Updates** permission.
+
+**Getting there.** Disks installed before this release have neither the units nor the polkit
+rule and need one reinstall from the 2.9.0 ISO (§8). A live USB session is updated by
+re-flashing.
+
+**Not built yet.** Security releases staged for the next boot without approval (phase 4) and
+LAN sharing (phase 5). A `security` release is offered and installed like a feature release.
+
 ---
 
 ## 6. Relationship to Android A/B updates
@@ -528,6 +593,9 @@ start anyway, to check what peers send.
    across as they do today.
 3. From release N+1 on, updates arrive over the air and install on approval.
 
+Release N is 2.9.0, the first with phase 3. A disk installed by an earlier release, phase 1 or 2
+included, lacks the update units and the polkit rule (§5.10), so it too is reinstalled once.
+
 ---
 
 ## 9. Phased plan
@@ -536,7 +604,7 @@ start anyway, to check what peers send.
 |---|---|---|
 | 1 | **Done.** Image-store installer; §5.1 knock-on fixes; §5.2 state moves; GRUB one-try boot; `labkiosk-boot-ok`; boot reports to the console | `distro-builder/tests/vm/boot-test.sh` in `build-iso.yml` after every ISO build (QEMU + OVMF + KVM): install, promote a new image, a broken squashfs, recovery, an image whose kiosk never comes up. BIOS boot is covered only by the GRUB menu unit tests; a full install has not been timed |
 | 2 | **Built.** Signed manifest in CI; R2 upload; `labkiosk-update` download and install run by hand | `distro-builder/tests/test_update.py` (resume, a damaged partial, tampered and foreign signatures, the floor, install re-verification); `boot-test.sh` scenarios 5–9: a download killed mid-squashfs is never booted and resumes, a tampered manifest and a signed downgrade are refused with nothing written, the finished download installs and is promoted. The download runs from the host against the mounted disk (the kiosk has no shell), so the "power cut" is a killed process, not a VM power cut |
-| 3 | D1 migration; device and approval routes with negative tests; console states and **Install update**; the update curtain in the extension; hub messages | `pnpm test`; drive the console in a browser; a two-VM approval against `pnpm dev` |
+| 3 | **Built** (§5.10). Migration 0027; `GET /api/devices/update`, the console's check and install routes and the super admin Releases page, with negative tests; console update states and **Install update**; the update curtain; hub messages; `labkiosk-update run` / `install-pending` and their two units | `pnpm test`; `distro-builder/tests/test_update.py` and `test_client.py`; drive the console in a browser; a two-VM approval against `pnpm dev` |
 | 4 | Security rebuild pipeline (latest two lines); next-boot staging; "installs at next restart" and "not restarted in N days" console states | a week of scheduled builds on a test organization |
 | 5 | LAN sharing: LAN address reporting, site grouping and seed choice in the Worker, `labkiosk-share` with `nftables`, cloud fallback | 5–10 VMs on one virtual LAN with a throttled uplink; time the whole site; a peer that serves corrupted chunks; client isolation (peers unreachable) |
 
@@ -566,8 +634,8 @@ the full image, so measure before building this.
 
 ## 12. Open questions and unverified points
 
-- **Approval permission.** `settings`, as proposed, or a new dedicated permission? A new
-  permission changes staff delegation (invariant 5) and needs its own migration.
+- **Approval permission.** Answered in phase 3: a new staff permission, `updates`, which
+  `org_admin` holds by default. `settings` alone does not grant it.
 - **LAN sharing default.** On by default, as proposed (with the port open only while a release
   spreads), or opt-in per organization? It is the first listener on the LAN, so this is a
   security posture decision.

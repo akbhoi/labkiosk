@@ -7,7 +7,7 @@
  */
 
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Env, LabConfig, ClientTelemetry, Tenant, User, TenantUserRole, Session, AuditEntryMessage } from "./types";
+import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
@@ -51,6 +51,47 @@ const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home"
 import { renderStatusPageHtml } from "./ui_status";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
+import {
+  classifyRelease,
+  findRelease,
+  isReleaseVersion,
+  isUpdateChannel,
+  listReleases,
+  offeredRelease,
+  releaseFolderUrl,
+  revokeRelease,
+  syncReleases,
+  UPDATE_PHASES,
+  UpdatePhase,
+  UpdateReport
+} from "./releases";
+
+/** A workstation's last update report, as its registry row keeps it. */
+function registryUpdate(row: ClientDevice | undefined): UpdateReport | undefined {
+  const phase = row?.update_phase;
+  if (!phase || !UPDATE_PHASES.includes(phase as UpdatePhase)) return undefined;
+  return {
+    phase: phase as UpdatePhase,
+    ...(row.update_version ? { version: row.update_version } : {}),
+    ...(row.update_progress !== null && row.update_progress !== undefined ? { progress: Number(row.update_progress) } : {}),
+    ...(row.update_detail ? { detail: row.update_detail } : {})
+  };
+}
+
+/**
+ * Tell every active organization with workstations online that the releases
+ * changed, so each hub reloads its offer and reminds its workstations. One
+ * with none online loads the offer when its first workstation connects.
+ */
+async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void> {
+  const tenants = (await listAllTenants(db)).filter((t) => t.status === "active" && Number(t.online_clients) > 0);
+  for (let i = 0; i < tenants.length; i += 20) {
+    const results = await Promise.allSettled(tenants.slice(i, i + 20).map((t) => notifyConfigChanged(env, t.id)));
+    results.forEach((r, j) => {
+      if (r.status === "rejected") console.error(`[Worker] Could not tell ${tenants[i + j].id}'s hub about a release change:`, r.reason);
+    });
+  }
+}
 import {
   initSchema,
   ensureSuperAdmin,
@@ -239,7 +280,7 @@ const MAX_PERSON_NAME_LENGTH = 120;
  * The permissions a staff account may hold. `*` is never stored: full access
  * comes only from owning the organization or holding the `org_admin` role.
  */
-const STAFF_PERMISSIONS = new Set(["workstations", "broadcast", "portal", "whitelist", "staff", "settings"]);
+const STAFF_PERMISSIONS = new Set(["workstations", "broadcast", "portal", "whitelist", "staff", "settings", "updates"]);
 const STAFF_ROLES = new Set<TenantUserRole>(["org_admin", "sub_admin", "operator", "assistant", "content_manager"]);
 
 /** A permissions array from a request, or null when it holds anything unknown. */
@@ -533,6 +574,39 @@ async function handleBootReport(
 }
 
 /**
+ * GET /api/devices/update: the release this workstation's organization is
+ * offered, and where to download it. Asked by the workstation's root updater
+ * (labkiosk-update run) whenever the hub sends `release-available`.
+ *
+ * The device token alone decides the organization. `release` is null when
+ * nothing is offered; the updater then reports itself up to date when it runs
+ * the offered version or newer. 503 when the platform has no public release
+ * address, so a workstation never mistakes a missing setting for "up to date".
+ */
+async function handleDeviceUpdate(
+  request: Request,
+  env: Env,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const tenant = await findTenantById(db, auth.device.tenant_id);
+  if (!tenant || tenant.status !== "active") return jsonError("This organization is not active", 403, jsonHeaders);
+  const offer = await offeredRelease(db, tenant.update_channel);
+  if (!offer) return new Response(JSON.stringify({ release: null }), { headers: jsonHeaders });
+  const folder = releaseFolderUrl(env, offer.version);
+  if (!folder) {
+    console.error("[Worker] A release is offered but RELEASES_BASE_URL is missing or not an https address");
+    return jsonError("Updates are not available from this server right now", 503, jsonHeaders);
+  }
+  return new Response(
+    JSON.stringify({ release: { version: offer.version, kind: offer.kind, sizeBytes: offer.sizeBytes, url: folder } }),
+    { headers: jsonHeaders }
+  );
+}
+
+/**
  * Routes that may name a tenant without a session, either because they are
  * public and read-only (the user portal, the wizard status probe) or because
  * they carry their own credential (`/api/telemetry` uses a device token, and
@@ -769,6 +843,9 @@ export default {
     }
     if (path === "/api/devices/boot-report" && method === "POST") {
       return handleBootReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/update" && method === "GET") {
+      return handleDeviceUpdate(request, env, db, jsonHeaders);
     }
     if (path === "/api/devices/remote" && method === "GET") {
       return handleDeviceRemote(request, env, db, jsonHeaders);
@@ -1218,8 +1295,9 @@ export default {
         redirectUrl.pathname = path === "/super/approvals" ? "/super/tasks" : "/super/mail";
         return Response.redirect(redirectUrl.toString(), 302);
       }
-      let activeTab: "organizations" | "tasks" | "support" | "catalogs" | "system" = "organizations";
+      let activeTab: "organizations" | "tasks" | "support" | "releases" | "catalogs" | "system" = "organizations";
       if (path === "/super/tasks") activeTab = "tasks";
+      else if (path === "/super/releases") activeTab = "releases";
       else if (path === "/super/mail") activeTab = "support";
       else if (path === "/super/catalogs") activeTab = "catalogs";
       else if (path === "/super/system") activeTab = "system";
@@ -1385,6 +1463,66 @@ export default {
         details: tag,
       });
       return new Response(JSON.stringify({ status: "ok", tag }), { headers: jsonHeaders });
+    }
+
+    // GET /api/super/releases: the releases CI uploaded, as the releases bucket
+    // holds them. Each call first records any new release it finds there.
+    if (path === "/api/super/releases" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      if (!env.RELEASES) return jsonError("This server has no releases bucket (RELEASES binding)", 503, jsonHeaders);
+      const sync = await syncReleases(env.RELEASES, db);
+      return new Response(
+        JSON.stringify({
+          releases: await listReleases(db),
+          added: sync.added,
+          problems: sync.problems,
+          downloadsConfigured: releaseFolderUrl(env, "0.0.0") !== null
+        }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // POST /api/super/releases/classify { version, channel: "beta" | "stable" | null }
+    // POST /api/super/releases/revoke { version }
+    // Classifying puts a release in front of every organization on that channel;
+    // revoking withdraws it for good. Either way each organization's hub reloads,
+    // so connected workstations hear of the change at once.
+    if ((path === "/api/super/releases/classify" || path === "/api/super/releases/revoke") && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { version?: unknown; channel?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!isReleaseVersion(body?.version)) return jsonError("A release version is required", 400, jsonHeaders);
+      const version = body.version;
+      const release = await findRelease(db, version);
+      if (!release) return jsonError("Release not found", 404, jsonHeaders);
+      if (release.revoked_at) return jsonError("This release was revoked", 409, jsonHeaders);
+      const revoke = path.endsWith("/revoke");
+      let details = version;
+      if (revoke) {
+        await revokeRelease(db, version);
+        details = `${version} revoked`;
+      } else {
+        const channel = body.channel === null || body.channel === "" ? null : body.channel;
+        if (channel !== null && !isUpdateChannel(channel)) {
+          return jsonError("The channel is beta, stable or none", 400, jsonHeaders);
+        }
+        await classifyRelease(db, version, channel, session!.user_id);
+        details = `${version} -> ${channel || "unclassified"}`;
+      }
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: revoke ? "release.revoke" : "release.classify",
+        details
+      });
+      await notifyOrganizationsOnline(env, db);
+      return new Response(JSON.stringify({ status: "ok", releases: await listReleases(db) }), { headers: jsonHeaders });
     }
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
@@ -2564,7 +2702,10 @@ export default {
           // Of no use without Remote Control, which the platform approves per organization.
           vncPassword:
             tenant.remote_control_status === "approved" ? status?.vncPassword || row?.vnc_password || undefined : undefined,
-          groupName: row?.group_name || undefined
+          groupName: row?.group_name || undefined,
+          imageVersion: status?.imageVersion || row?.image_version || undefined,
+          agentVersion: status?.agentVersion || row?.agent_version || undefined,
+          update: status?.update ?? registryUpdate(row)
         };
       };
       for (const row of rows) clients[row.client_id] = toTelemetry(live.clients[row.client_id], row);
@@ -2671,6 +2812,92 @@ export default {
         return jsonError("A workstation id and session are required", 400, jsonHeaders);
       }
       return relayUpgrade(env, currentTenant!.id, clientId, "console", await hashRelayToken(token), session!.user_id);
+    }
+
+    // GET /api/settings/updates: which releases this organization's workstations
+    // are offered (its channel), and the release that means right now.
+    // POST /api/settings/updates { channel: "stable" | "beta" }.
+    if (path === "/api/settings/updates" && (method === "GET" || method === "POST")) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
+      if (denied) return denied;
+      const tenantId = currentTenant!.id;
+      let channel = currentTenant!.update_channel === "beta" ? "beta" : "stable";
+      if (method === "POST") {
+        let body: { channel?: unknown };
+        try {
+          body = await request.json<typeof body>();
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        if (!isUpdateChannel(body?.channel)) return jsonError("The channel is stable or beta", 400, jsonHeaders);
+        if (body.channel !== channel) {
+          channel = body.channel;
+          await updateTenant(db, tenantId, { update_channel: body.channel });
+          await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "settings.update_channel", details: channel });
+          await notifyConfigChanged(env, tenantId);
+        }
+      }
+      const offer = await offeredRelease(db, channel === "beta" ? "beta" : "stable");
+      return new Response(JSON.stringify({ channel, offer }), { headers: jsonHeaders });
+    }
+
+    // POST /api/clients/check-update { clientIds }: ask these workstations to
+    // check for the release their organization is offered now.
+    // POST /api/clients/install-update { clientIds }: install it on those that
+    // hold it downloaded and verified; the rest come back with the reason.
+    if ((path === "/api/clients/check-update" || path === "/api/clients/install-update") && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
+      if (denied) return denied;
+      let body: { clientIds?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!Array.isArray(body?.clientIds)) return jsonError("Client IDs array required", 400, jsonHeaders);
+      const requested = Array.from(new Set(body.clientIds.map((c) => String(c ?? "").trim()).filter(Boolean)));
+      if (!requested.length) return jsonError("Client IDs array required", 400, jsonHeaders);
+      if (requested.length > MAX_BATCH_TARGETS) {
+        return jsonError(`At most ${MAX_BATCH_TARGETS} workstations can be addressed at once`, 400, jsonHeaders);
+      }
+      const tenant = currentTenant!;
+      // Only this organization's own workstations; an unknown id is reported, never queued.
+      const known = new Set((await listClientDevices(db, tenant.id)).map((row) => row.client_id));
+      const clientIds = requested.filter((id) => known.has(id));
+      const unknown = requested.filter((id) => !known.has(id)).map((clientId) => ({ clientId, reason: "Not found" }));
+      const offer = await offeredRelease(db, tenant.update_channel);
+      const install = path.endsWith("/install-update");
+      if (install && !offer) return jsonError("No release is offered to this organization", 409, jsonHeaders);
+      let sent: string[] = [];
+      let skipped: Array<{ clientId: string; reason: string }> = unknown;
+      if (clientIds.length && install) {
+        const result = await hubJson<{ sent: string[]; skipped: Array<{ clientId: string; reason: string }> }>(
+          env,
+          tenant.id,
+          "/install-update",
+          { clientIds, version: offer!.version }
+        );
+        sent = result.sent;
+        skipped = skipped.concat(result.skipped);
+      } else if (clientIds.length) {
+        await hubJson(env, tenant.id, "/enqueue", {
+          targets: clientIds,
+          action: "release-available",
+          version: offer?.version
+        });
+        sent = clientIds;
+      }
+      if (sent.length) {
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: install ? "update.install" : "update.check",
+          details: `clients=${sent.join(",")}${offer ? ` version=${offer.version}` : ""}`
+        });
+      }
+      return new Response(JSON.stringify({ status: "ok", version: offer?.version ?? null, sent, skipped }), {
+        headers: jsonHeaders
+      });
     }
 
     // POST /api/clients/remove: Decommission a workstation

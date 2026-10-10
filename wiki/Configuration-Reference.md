@@ -66,7 +66,21 @@ Copied from `.dev.vars.example`. Not read in production, and not committed.
 
 ```text
 www  super  labkiosk  api  admin  portal  status  mail  app  kiosk  root
+
+platform services   releases  release  updates  update  ota  download  downloads  mirror
+                    cdn  static  assets  media  files  images  img
+                    docs  wiki  blog  help  support  billing
+                    dashboard  console  platform  system  internal
+                    dev  staging  stage  test  testing  beta  preview
+sign-in, accounts   account  accounts  login  signin  signup  register  auth  sso  oauth
+                    security  official  team  staff
+mail and DNS        abuse  postmaster  hostmaster  webmaster  noreply  no-reply
+                    smtp  imap  pop  pop3  webmail  ns1  ns2  autodiscover  autoconfig  mta-sts
+                    git  vpn  ftp
 ```
+
+`releases` is the hostname of the over-the-air release bucket (`RELEASES_BASE_URL`); the sign-in
+names keep a lookalike organization from passing as the platform.
 
 These can be neither registered nor resolved as an organization. Add to the set **before** you start using a hostname for platform purposes, not after.
 

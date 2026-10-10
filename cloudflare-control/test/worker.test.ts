@@ -38,7 +38,8 @@ import {
   readIssueStatus,
   redactProblemText
 } from "../src/bug_reports";
-import { HUB_PING, HUB_PONG } from "../src/org_hub";
+import { HUB_PING, HUB_PONG, installRefusal, releaseNudgeWanted } from "../src/org_hub";
+import { compareVersions, isReleaseVersion, normalizeUpdateReport } from "../src/releases";
 import {
   RemoteRelay,
   RELAY_JOIN_SECONDS,
@@ -3787,7 +3788,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ------------------------------------------------------ registration rules
 
   test("Rejects reserved subdomains and implausible emails at registration", async () => {
-    for (const subdomain of ["admin", "www", "super", "api"]) {
+    for (const subdomain of ["admin", "www", "super", "api", "releases", "updates", "login", "support", "mta-sts"]) {
       const { res, data } = await callJson(
         "/api/auth/register",
         json(signupBody({ name: "Reserved", email: `reserved-${subdomain}@example.com`, password: "ReservedPass123!", subdomain }))
@@ -6071,6 +6072,342 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.match(svg, /<rect width="48" height="48" fill="#[0-9a-fA-F]{6}"\/>/, "a solid square background");
     }
     assert.equal((await onHost("greenwood.labkiosk.org", "/bimi.svg")).status, 404);
+  });
+  // ------------------------------------------------ over-the-air updates (phase 3)
+
+  /** An R2 bucket holding the given objects, as much of one as the releases sync reads. */
+  const fakeReleasesBucket = (objects: Record<string, string>) =>
+    ({
+      list: async ({ prefix = "", delimiter }: { prefix?: string; delimiter?: string }) => {
+        const prefixes = new Set<string>();
+        for (const key of Object.keys(objects)) {
+          if (!key.startsWith(prefix)) continue;
+          const rest = key.slice(prefix.length);
+          const cut = delimiter ? rest.indexOf(delimiter) : -1;
+          if (cut >= 0) prefixes.add(prefix + rest.slice(0, cut + 1));
+        }
+        return { objects: [], delimitedPrefixes: [...prefixes], truncated: false };
+      },
+      get: async (key: string) =>
+        key in objects ? { size: objects[key].length, text: async () => objects[key] } : null,
+      head: async (key: string) => (key in objects ? { size: objects[key].length } : null)
+    }) as unknown as R2Bucket;
+
+  const releaseManifest = (version: string, kind = "feature") =>
+    JSON.stringify({
+      version,
+      channel: "stable",
+      kind,
+      baseVersion: null,
+      securityFloor: "2.6.0",
+      builtAt: "2026-10-09T00:00:00Z",
+      files: [
+        { name: "vmlinuz", size: 8_000_000, sha256: "a".repeat(64), chunkSize: 8388608, chunks: [] },
+        { name: "initrd.img", size: 40_000_000, sha256: "b".repeat(64), chunkSize: 8388608, chunks: [] },
+        { name: "filesystem.squashfs", size: 900_000_000, sha256: "c".repeat(64), chunkSize: 8388608, chunks: [] }
+      ]
+    });
+
+  const releasesEnv = {
+    ...mockEnv,
+    RELEASES: fakeReleasesBucket({
+      "releases/2.9.0/manifest.json": releaseManifest("2.9.0"),
+      "releases/2.9.0/manifest.json.sig": "sig",
+      "releases/2.9.1-rc1/manifest.json": releaseManifest("2.9.1-rc1"),
+      "releases/2.9.1-rc1/manifest.json.sig": "sig",
+      // A folder without its signature is reported, never recorded.
+      "releases/3.0.0/manifest.json": releaseManifest("3.0.0"),
+      // A manifest naming another version is reported too.
+      "releases/3.1.0/manifest.json": releaseManifest("2.9.0"),
+      "releases/3.1.0/manifest.json.sig": "sig"
+    }),
+    RELEASES_BASE_URL: "https://releases.example.org/"
+  } as Env;
+  /** Enrol from an address of its own: an earlier test throttles the default one. */
+  const enrolOta = async (clientId: string) => {
+    const { res, data } = await callJson("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId }),
+      headers: { "CF-Connecting-IP": "198.51.100.77" }
+    });
+    assert.equal(res.status, 200, `enrolling ${clientId}`);
+    return data.deviceToken as string;
+  };
+  const callWith = (env: Env, path: string, init: RequestInit & { cookie?: string; bearer?: string } = {}) =>
+    worker.fetch(request(path, init), env);
+
+  /** Sign in a new staff account of Greenwood holding exactly these permissions. */
+  const staffWith = async (email: string, permissions: string[]) => {
+    const password = "UpdatesStaff123!";
+    const created = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: email.split("@")[0], email, password, role: "operator", permissions }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(created.status, 200, `creating ${email}`);
+    const login = await call("/api/auth/login", json({ email, password }));
+    return login.headers.get("Set-Cookie")!.split(";")[0];
+  };
+
+  test("Release versions order as the workstation's updater orders them", () => {
+    assert.ok(compareVersions("2.9.0", "2.8.0") > 0);
+    assert.ok(compareVersions("2.9.0-rc1", "2.9.0") < 0);
+    assert.ok(compareVersions("2.9.0-rc.2", "2.9.0-rc.10") < 0, "numeric identifiers compare as numbers");
+    assert.ok(compareVersions("2.10.0", "2.9.9") > 0);
+    assert.equal(compareVersions("2.9.0", "2.9.0"), 0);
+    assert.ok(!isReleaseVersion("2.9"));
+    assert.ok(!isReleaseVersion("2.9.0\n"));
+    assert.ok(!isReleaseVersion("../2.9.0"));
+  });
+
+  test("A workstation is reminded of a release only when it runs an older image and holds nothing newer", () => {
+    const offer = { version: "2.9.0", kind: "feature" as const, sizeBytes: 1 };
+    assert.equal(releaseNudgeWanted(offer, { phase: "idle" }, "2.8.0"), true);
+    assert.equal(releaseNudgeWanted(offer, { phase: "error", detail: "x" }, "2.8.0"), true);
+    assert.equal(releaseNudgeWanted(offer, { phase: "ready", version: "2.8.5" }, "2.8.0"), true, "an older download is replaced");
+    assert.equal(releaseNudgeWanted(null, { phase: "idle" }, "2.8.0"), false, "nothing offered");
+    assert.equal(releaseNudgeWanted(offer, undefined, "2.8.0"), false, "an agent too old to report updates");
+    assert.equal(releaseNudgeWanted(offer, { phase: "live" }, "2.8.0"), false, "a live session is re-flashed");
+    assert.equal(releaseNudgeWanted(offer, { phase: "idle" }, "2.9.0"), false, "already running it");
+    assert.equal(releaseNudgeWanted(offer, { phase: "idle" }, "3.0.0"), false, "running a newer one");
+    assert.equal(releaseNudgeWanted(offer, { phase: "idle" }, undefined), false);
+    assert.equal(releaseNudgeWanted(offer, { phase: "downloading", version: "2.9.0" }, "2.8.0"), false);
+    assert.equal(releaseNudgeWanted(offer, { phase: "ready", version: "2.9.0" }, "2.8.0"), false);
+    assert.equal(releaseNudgeWanted(offer, { phase: "installing", version: "2.9.0" }, "2.8.0"), false);
+  });
+
+  test("Only an online workstation holding the release verified may be told to install it", () => {
+    const base = { clientId: "A", clientNum: 1, ip: "", isLocked: false, activeUrl: "", lastSeen: 0, online: true, transport: "websocket" as const, imageVersion: "2.8.0" };
+    assert.equal(installRefusal({ ...base, update: { phase: "ready", version: "2.9.0" } }, "2.9.0"), null);
+    assert.equal(installRefusal(undefined, "2.9.0"), "Offline");
+    assert.equal(installRefusal({ ...base, online: false, update: { phase: "ready", version: "2.9.0" } }, "2.9.0"), "Offline");
+    assert.match(String(installRefusal({ ...base }, "2.9.0")), /too old/);
+    assert.match(String(installRefusal({ ...base, update: { phase: "live" } }, "2.9.0")), /re-flashing/);
+    assert.match(String(installRefusal({ ...base, update: { phase: "ready", version: "2.8.5" } }, "2.9.0")), /not downloaded/);
+    assert.match(String(installRefusal({ ...base, update: { phase: "downloading", version: "2.9.0" } }, "2.9.0")), /downloading/);
+    assert.match(String(installRefusal({ ...base, update: { phase: "error" } }, "2.9.0")), /failed/);
+    assert.match(String(installRefusal({ ...base, imageVersion: "2.9.0", update: { phase: "up-to-date" } }, "2.9.0")), /up to date/);
+  });
+
+  test("A workstation's update report is validated, and anything unusable is dropped", () => {
+    assert.deepEqual(normalizeUpdateReport({ phase: "downloading", version: "2.9.0", progress: 140.7 }), {
+      phase: "downloading",
+      version: "2.9.0",
+      progress: 100
+    });
+    assert.equal(normalizeUpdateReport({ phase: "rooted" }), null);
+    assert.equal(normalizeUpdateReport("ready"), null);
+    assert.deepEqual(normalizeUpdateReport({ phase: "ready", version: "<script>" }), { phase: "ready" });
+    assert.equal(normalizeUpdateReport({ phase: "error", detail: "x".repeat(900) })!.detail!.length, 300);
+  });
+
+  test("Releases: only a super admin lists or classifies them, and the bucket is required", async () => {
+    for (const cookie of [undefined, orgSessionCookie]) {
+      const res = await callWith(releasesEnv, "/api/super/releases", { cookie });
+      assert.ok([401, 403].includes(res.status), `listing answered ${res.status}`);
+      for (const path of ["/api/super/releases/classify", "/api/super/releases/revoke"]) {
+        const write = await callWith(releasesEnv, path, { ...json({ version: "2.9.0", channel: "stable" }), cookie });
+        assert.ok([401, 403].includes(write.status), `${path} answered ${write.status}`);
+      }
+    }
+    assert.equal((await call("/api/super/releases", { cookie: superSessionCookie })).status, 503, "no RELEASES binding");
+    const crossSite = await callWith(releasesEnv, "/api/super/releases/classify", {
+      ...json({ version: "2.9.0", channel: "stable" }),
+      cookie: superSessionCookie,
+      headers: { Origin: "https://evil.example" }
+    });
+    assert.equal(crossSite.status, 403, "a cross-site classification is refused");
+  });
+
+  test("Releases: found in the bucket, reported when broken, and offered only once classified", async () => {
+    const listed = await callWith(releasesEnv, "/api/super/releases", { cookie: superSessionCookie });
+    assert.equal(listed.status, 200);
+    const body = await listed.json<any>();
+    assert.deepEqual(body.releases.map((r: any) => r.version), ["2.9.0", "2.9.1-rc1"].sort((a, b) => compareVersions(b, a)));
+    assert.equal(body.downloadsConfigured, true);
+    assert.ok(body.releases.every((r: any) => r.channel === null), "nothing is offered until classified");
+    assert.equal(body.releases.find((r: any) => r.version === "2.9.0").sizeBytes, 948_000_000);
+    const problems = Object.fromEntries(body.problems.map((p: any) => [p.version, p.problem]));
+    assert.match(problems["3.0.0"], /sig is missing/);
+    assert.match(problems["3.1.0"], /holds the manifest of 2\.9\.0/);
+
+    const classify = (payload: unknown) =>
+      callWith(releasesEnv, "/api/super/releases/classify", { ...json(payload), cookie: superSessionCookie });
+    assert.equal((await classify({ version: "9.9.9", channel: "stable" })).status, 404);
+    assert.equal((await classify({ version: "2.9.0", channel: "nightly" })).status, 400);
+    assert.equal((await classify({ version: "2.9.0; DROP TABLE releases", channel: "stable" })).status, 400);
+    assert.equal((await classify({ version: "2.9.0", channel: "beta" })).status, 200);
+
+    const { logs } = await (await call("/api/super/audit-logs?limit=50", { cookie: superSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "release.classify" && /2\.9\.0 -> beta/.test(l.details)));
+  });
+
+  test("Update settings: the channel belongs to staff holding the updates permission", async () => {
+    const anonymous = await call("/api/settings/updates?tenant=greenwood");
+    assert.ok([401, 403].includes(anonymous.status));
+    assert.equal((await call("/api/settings/updates?tenant=greenwood", { cookie: rivalSessionCookie })).status, 403);
+    const settingsOnly = await staffWith("settings-only@greenwood.example", ["settings"]);
+    assert.equal((await call("/api/settings/updates?tenant=greenwood", { cookie: settingsOnly })).status, 403, "settings is not updates");
+    const crossSite = await call("/api/settings/updates?tenant=greenwood", {
+      ...json({ channel: "beta" }),
+      cookie: orgSessionCookie,
+      headers: { Origin: "https://evil.example" }
+    });
+    assert.equal(crossSite.status, 403);
+    const bad = await call("/api/settings/updates?tenant=greenwood", { ...json({ channel: "nightly" }), cookie: orgSessionCookie });
+    assert.equal(bad.status, 400);
+
+    const { res, data } = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(res.status, 200);
+    assert.equal(data.channel, "stable", "every organization starts on stable");
+    assert.equal(data.offer, null, "2.9.0 is beta only");
+  });
+
+  test("A workstation asks for its organization's release with its own token, and the address must be set", async () => {
+    const token = await enrolOta("WS-OTA");
+    assert.equal((await callWith(releasesEnv, "/api/devices/update")).status, 401);
+    assert.equal((await callWith(releasesEnv, "/api/devices/update", { bearer: "f".repeat(64) })).status, 401);
+
+    const stable = await (await callWith(releasesEnv, "/api/devices/update", { bearer: token })).json<any>();
+    assert.equal(stable.release, null, "a stable organization is not offered a beta release");
+
+    const switched = await callJson("/api/settings/updates?tenant=greenwood", { ...json({ channel: "beta" }), cookie: orgSessionCookie });
+    assert.equal(switched.res.status, 200);
+    assert.equal(switched.data.offer.version, "2.9.0", "a beta organization is offered the newest of beta and stable");
+
+    const offered = await (await callWith(releasesEnv, "/api/devices/update", { bearer: token })).json<any>();
+    assert.deepEqual(offered.release, {
+      version: "2.9.0",
+      kind: "feature",
+      sizeBytes: 948_000_000,
+      url: "https://releases.example.org/releases/2.9.0"
+    });
+    assert.equal((await callWith(mockEnv, "/api/devices/update", { bearer: token })).status, 503, "no public address configured");
+    const plainHttp = { ...releasesEnv, RELEASES_BASE_URL: "http://releases.example.org" } as Env;
+    assert.equal((await callWith(plainHttp, "/api/devices/update", { bearer: token })).status, 503, "https only");
+  });
+
+  test("A connected workstation hears of the release, reports its download, and installs only on request", async () => {
+    const tenantId = await greenwoodId();
+    await enrolOta("WS-OTA2");
+    const ready = await hubs().connectDevice({ tenantId, clientId: "WS-OTA", ip: "10.0.0.21", portal: portalContext() });
+    const idle = await hubs().connectDevice({ tenantId, clientId: "WS-OTA2", ip: "10.0.0.22", portal: portalContext() });
+    const released = (socket: typeof ready) =>
+      ofType(socket, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>).filter((c) => c.action === "release-available");
+
+    await ready.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, imageVersion: "2.8.0", agentVersion: "2.9.0", update: { phase: "idle" } });
+    assert.deepEqual(released(ready).map((c) => c.version), ["2.9.0"], "told at once about the offered release");
+    await ready.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, imageVersion: "2.8.0", agentVersion: "2.9.0", update: { phase: "checking" } });
+    await ready.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, imageVersion: "2.8.0", agentVersion: "2.9.0", update: { phase: "idle" } });
+    assert.equal(released(ready).length, 1, "not reminded again straight away");
+
+    await ready.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, imageVersion: "2.8.0", agentVersion: "2.9.0", update: { phase: "downloading", version: "2.9.0", progress: 40 } });
+    await ready.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, imageVersion: "2.8.0", agentVersion: "2.9.0", update: { phase: "ready", version: "2.9.0" } });
+    await idle.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, imageVersion: "2.8.0", agentVersion: "2.9.0", update: { phase: "error", detail: "Signature check failed" } });
+
+    const { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.deepEqual(data.clients["WS-OTA"].update, { phase: "ready", version: "2.9.0" });
+    assert.equal(data.clients["WS-OTA"].imageVersion, "2.8.0");
+    assert.equal(data.clients["WS-OTA"].agentVersion, "2.9.0");
+
+    await hubs().runAlarm(tenantId);
+    const row = await getDatabase(mockEnv)
+      .prepare("SELECT image_version, agent_version, update_phase, update_version FROM client_devices WHERE id = ?")
+      .bind(`${tenantId}:WS-OTA`)
+      .first<any>();
+    assert.deepEqual({ ...row }, { image_version: "2.8.0", agent_version: "2.9.0", update_phase: "ready", update_version: "2.9.0" });
+
+    // Guards on the two console routes.
+    for (const path of ["/api/clients/check-update", "/api/clients/install-update"]) {
+      const route = `${path}?tenant=greenwood`;
+      assert.ok([401, 403].includes((await call(route, json({ clientIds: ["WS-OTA"] }))).status), `${path}: anonymous`);
+      assert.equal((await call(route, { ...json({ clientIds: ["WS-OTA"] }), cookie: rivalSessionCookie })).status, 403, `${path}: another organization`);
+      const workstationsOnly = await staffWith(`ws-only-${path.length}@greenwood.example`, ["workstations", "settings"]);
+      assert.equal((await call(route, { ...json({ clientIds: ["WS-OTA"] }), cookie: workstationsOnly })).status, 403, `${path}: no updates permission`);
+      assert.equal(
+        (await call(route, { ...json({ clientIds: ["WS-OTA"] }), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } })).status,
+        403,
+        `${path}: cross-site`
+      );
+      const tooMany = Array.from({ length: 501 }, (_, i) => `PC-${i}`);
+      assert.equal((await call(route, { ...json({ clientIds: tooMany }), cookie: orgSessionCookie })).status, 400, `${path}: capped`);
+      assert.equal((await call(route, { ...json({ clientIds: "WS-OTA" }), cookie: orgSessionCookie })).status, 400, `${path}: not a list`);
+    }
+
+    // A rival's workstation id is never queued, even when named.
+    const install = await callJson("/api/clients/install-update?tenant=greenwood", {
+      ...json({ clientIds: ["WS-OTA", "WS-OTA2", "NOT-OURS"] }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(install.res.status, 200);
+    assert.equal(install.data.version, "2.9.0");
+    assert.deepEqual(install.data.sent, ["WS-OTA"]);
+    const reasons = Object.fromEntries(install.data.skipped.map((s: any) => [s.clientId, s.reason]));
+    assert.equal(reasons["NOT-OURS"], "Not found");
+    assert.match(reasons["WS-OTA2"], /last download failed/);
+    const installs = ofType(ready, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>).filter((c) => c.action === "install-update");
+    assert.deepEqual(installs.map((c) => c.version), ["2.9.0"]);
+    assert.equal(
+      ofType(idle, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>).filter((c) => c.action === "install-update").length,
+      0
+    );
+
+    // A staff member holding only `updates` may check for updates, and nothing else.
+    const updatesOnly = await staffWith("updates-only@greenwood.example", ["updates"]);
+    const before = released(idle).length;
+    const check = await callJson("/api/clients/check-update?tenant=greenwood", { ...json({ clientIds: ["WS-OTA2"] }), cookie: updatesOnly });
+    assert.equal(check.res.status, 200);
+    assert.deepEqual(check.data.sent, ["WS-OTA2"]);
+    assert.equal(released(idle).length, before + 1, "an explicit check is sent even inside the reminder interval");
+    assert.equal((await call("/api/clients?tenant=greenwood", { cookie: updatesOnly })).status, 403);
+    const own = await call("/admin/settings?tenant=greenwood", { cookie: updatesOnly });
+    assert.match(await own.text(), /id="form-update-channel"/, "an updates-only account sees the channel in Settings");
+
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "update.install" && /WS-OTA/.test(l.details)));
+    assert.ok(logs.some((l: any) => l.action === "settings.update_channel"));
+
+    // Revoked: offered to nobody, and installing it is refused.
+    const revoke = await callWith(releasesEnv, "/api/super/releases/revoke", { ...json({ version: "2.9.0" }), cookie: superSessionCookie });
+    assert.equal(revoke.status, 200);
+    assert.equal((await callWith(releasesEnv, "/api/super/releases/revoke", { ...json({ version: "2.9.0" }), cookie: superSessionCookie })).status, 409);
+    assert.equal(
+      (await callWith(releasesEnv, "/api/super/releases/classify", { ...json({ version: "2.9.0", channel: "stable" }), cookie: superSessionCookie })).status,
+      409,
+      "a revoked release cannot come back"
+    );
+    const afterRevoke = await call("/api/clients/install-update?tenant=greenwood", { ...json({ clientIds: ["WS-OTA"] }), cookie: orgSessionCookie });
+    assert.equal(afterRevoke.status, 409);
+    const token = await enrolOta("WS-OTA3");
+    assert.equal((await (await callWith(releasesEnv, "/api/devices/update", { bearer: token })).json<any>()).release, null);
+
+    await ready.closeFromClient();
+    await idle.closeFromClient();
+    await call("/api/settings/updates?tenant=greenwood", { ...json({ channel: "stable" }), cookie: orgSessionCookie });
+  });
+
+  test("The consoles offer updates only to those who may use them", async () => {
+    const admin = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(admin, /id="btn-check-updates"/);
+    assert.match(admin, /id="btn-install-update"/);
+    const workstationsOnly = await staffWith("ws-view@greenwood.example", ["workstations"]);
+    const operator = await (await call("/admin/workstations?tenant=greenwood", { cookie: workstationsOnly })).text();
+    assert.doesNotMatch(operator, /id="btn-install-update"/);
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /data-action="tab-updates"/);
+    assert.match(settings, /id="pane-updates"/);
+    const staff = await (await call("/admin/staff?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(staff, /name="perms" value="updates"/);
+    const releases = await (await call("/super/releases", { cookie: superSessionCookie })).text();
+    assert.match(releases, /id="release-rows"/);
+    assert.match(releases, /href="\/super\/releases"[^>]*aria-current="page"|aria-current="page"[^>]*href="\/super\/releases"/);
+  });
+
+  test("A delegate cannot grant the updates permission without holding it", async () => {
+    const delegate = await staffWith("staff-delegate@greenwood.example", ["staff", "workstations"]);
+    const res = await call("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Escalated", email: "escalated@greenwood.example", password: "Escalated123!", role: "operator", permissions: ["workstations", "updates"] }),
+      cookie: delegate
+    });
+    assert.equal(res.status, 403);
   });
 });
 

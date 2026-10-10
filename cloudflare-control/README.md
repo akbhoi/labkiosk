@@ -28,7 +28,7 @@ The control plane handles tenant routing, operator management dashboards, user p
    - Query overrides (`?tenant=local-demo`) and `X-Tenant` headers are permitted **only** on local development hosts (`localhost`, `127.0.0.1`, `*.local`) or for authenticated platform super-admins (restricted to the platform-owned demos `web-demo`, `local-demo` and `docker-demo`).
    - Organization admin consoles reside at `/admin` on their own subdomain (`https://<subdomain>.<baseDomain>/admin`); apex domain `/admin` redirects to the organization's subdomain.
    - Super admins are restricted from accessing any organization's admin console, telemetry, or VNC remote-control *except* for the platform's own demo organizations (`web-demo` (the hosted site), `local-demo` (a local VM) and `docker-demo` (the Docker simulator)), preserving each organization's privacy.
-   - Organization admins can delegate management tasks to sub-admins and operators via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`); `*` is never stored.
+   - Organization admins can delegate management tasks to sub-admins and operators via `tenant_users` with granular permissions (`workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`, `updates`); `*` is never stored.
    - Every database query in `src/db.ts` filters explicitly by `tenant_id`.
    - Live workstation state lives in each organization's OrgHub Durable Object (`src/org_hub.ts`), named by tenant ID; D1 `client_devices` is the registry it writes back to, and nothing two requests must agree on lives in isolate memory.
    - Active broadcast URL and epoch reside in D1 (`tenants.broadcast_url` / `broadcast_epoch`), preventing colo isolate drift.
@@ -46,7 +46,7 @@ The control plane handles tenant routing, operator management dashboards, user p
 
 ```text
 cloudflare-control/
-├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0019)
+├── migrations/                # Cloudflare D1 SQL schema migrations (0001..0027)
 ├── src/
 │   ├── index.ts               # Worker router, REST endpoints, scheduled(), queue()
 │   ├── guard.ts               # Tenant resolution, authorization guards, CSRF origin checks
@@ -55,6 +55,7 @@ cloudflare-control/
 │   ├── auth.ts                # Web Crypto PBKDF2 authentication, nonces, password policy
 │   ├── boot_report.ts         # Workstation boot reports and the Errors & Warnings list
 │   ├── bug_reports.ts         # Optional automatic GitHub bug reports (hourly cron)
+│   ├── releases.ts            # Optional over-the-air releases: RELEASES bucket, channels, the offer
 │   ├── d1_adapter.ts          # Node 22+ native node:sqlite mock for local testing
 │   ├── ui.ts                  # Organization admin console: picks the page, fills the shell
 │   ├── ui_admin_shared.ts     # Tenant API scope + header counters
@@ -183,3 +184,10 @@ Installed workstations report boot outcomes to `POST /api/devices/boot-report`, 
 - `GITHUB_ISSUES_REPO`: a variable, the repository issues are filed in, as `owner/repo`.
 
 See "Automatic bug reports" in the [Production Deployment Guide](../docs/DEPLOYMENT.md#automatic-bug-reports-optional) for the token's permissions and how reports are triaged.
+
+### Optional: Over-the-Air Updates
+Installed workstations download signed system releases in the background and install them when someone holding the `updates` permission chooses **Install update**. A super admin classifies each release **Beta** or **Stable** under Super Admin → Releases; each organization picks its channel under **Settings → Updates**. It needs:
+- `RELEASES`: the R2 bucket `labkiosk-releases` (declared in `wrangler.jsonc`; `npx wrangler r2 bucket create labkiosk-releases`).
+- `RELEASES_BASE_URL`: a variable, the bucket's public https address, preferably a custom domain.
+
+See "Over-the-air updates" in the [Production Deployment Guide](../docs/DEPLOYMENT.md#over-the-air-updates-optional) and [`docs/OTA_UPDATES.md`](../docs/OTA_UPDATES.md).

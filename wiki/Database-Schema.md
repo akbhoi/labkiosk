@@ -15,7 +15,7 @@ This is the single most important rule when touching the database, and the test 
 
 Both must be changed together. `test/worker.test.ts` compares them and fails on drift with `Columns of "x" differ between SCHEMA_SQL and migrations/`.
 
-**Never edit an applied migration.** Add a new numbered file — `0019_feature.sql` — and mirror the change in `SCHEMA_SQL`.
+**Never edit an applied migration.** Add a new numbered file — `0028_feature.sql` — and mirror the change in `SCHEMA_SQL`.
 
 ```bash
 # Local
@@ -59,6 +59,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0024_conversation_category.sql` | `conversations.category`: what a conversation is about, which names its tracking ID's prefix (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`) |
 | `0025_release_notes.sql` | `release_notes`: each GitHub release with its change list and a summary written for customers, for `/download`. A platform table, no `tenant_id` |
 | `0026_contact_email_code.sql` | `email_codes` rebuilt so its `purpose` also allows `contact`: the contact page proves its sender's address with a code, as registration does |
+| `0027_ota_updates.sql` | Over-the-air updates: the platform table `releases`; `tenants.update_channel`; `client_devices.update_phase`, `update_version`, `update_progress`, `update_detail`, `agent_version` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -108,6 +109,7 @@ One row per organization. This table has accumulated the most columns because it
 | `online_workstations` | INTEGER | Kept by the organization's OrgHub, so the super admin list needs no query per organization |
 | `bug_reports_enabled` | INTEGER | `1` when the organization opted in to automatic bug reports; default `0` |
 | `bug_reports_terms_version` / `bug_reports_terms_accepted_at` | TEXT / INTEGER | The Automatic Bug Report Terms version accepted, and when; reports are sent only under the current version |
+| `update_channel` | TEXT | `stable` (default) \| `beta`: which classified releases its workstations are offered; `beta` also takes `stable` ones |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
@@ -166,6 +168,9 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 | `update_state` | TEXT | Last boot outcome reported: `installed`, `failed`, `rolled-back`, `fallback` or `error` |
 | `update_error` | TEXT | The reason, for `error` |
 | `update_state_at` | INTEGER | When the workstation recorded it; `0` = never. A report less than 60 s newer is ignored |
+| `update_phase` | TEXT | What the workstation last said about the update it is fetching or holding: `live`, `idle`, `checking`, `downloading`, `ready`, `installing`, `up-to-date` or `error`; written back by OrgHub, separate from `update_state` |
+| `update_version` / `update_progress` / `update_detail` | TEXT / INTEGER / TEXT | The release that phase is about, the download's percent, and why the last attempt failed |
+| `agent_version` | TEXT | The agent version the workstation reports |
 
 ### `workstation_issues`
 
@@ -253,6 +258,23 @@ Interface translations for the setup wizard and kiosk bar. **No `tenant_id`, on 
 | `entry_count` | INTEGER | |
 | `updated_at` / `updated_by` | INTEGER / TEXT | |
 
+### `releases`
+
+The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when a super admin opens Super Admin → Releases. **No `tenant_id`**: releases are the platform's. A release reaches no workstation until it is classified, and a revoked one never again.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `version` | TEXT PK | e.g. `2.9.1` |
+| `channel` | TEXT | `beta` \| `stable`, or NULL (not offered) |
+| `kind` | TEXT | `feature` \| `security` |
+| `base_version` / `security_floor` | TEXT | From the manifest |
+| `size_bytes` | INTEGER | Total of the three image files |
+| `built_at` | TEXT | From the manifest |
+| `manifest` | TEXT | `manifest.json` as CI wrote it; workstations check its signature themselves |
+| `found_at` | INTEGER | When it was recorded |
+| `classified_at` / `classified_by` | INTEGER / TEXT | Last classification, and the super admin who made it |
+| `revoked_at` | INTEGER | Set once, for good |
+
 ### `tenant_users`
 
 Staff accounts delegated by an organization.
@@ -262,7 +284,7 @@ Staff accounts delegated by an organization.
 | `id` | TEXT PK | |
 | `tenant_id` / `user_id` | TEXT | Unique together; both `ON DELETE CASCADE` |
 | `role` | TEXT | `org_admin` \| `sub_admin` \| `operator` \| `assistant` \| `content_manager` (default `operator`) |
-| `permissions` | TEXT | JSON array of `workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`; `*` is never stored |
+| `permissions` | TEXT | JSON array of `workstations`, `broadcast`, `portal`, `whitelist`, `staff`, `settings`, `updates`; `*` is never stored |
 | `created_at` | INTEGER | |
 
 An `org_admin` row, or owning the organization (`tenants.user_id`), means full access. A delegate holding `staff` can grant only what they hold themselves and cannot appoint an `org_admin`.
@@ -314,7 +336,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0019_<description>.sql` (the next number after `0018`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0028_<description>.sql` (the next number after `0027`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

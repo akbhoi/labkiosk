@@ -685,7 +685,7 @@ const BAR_INTRO_MS = 2500;
             <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
             <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
           </svg>
-          <h1 class="lock-title">Attention Please</h1>
+          <h1 class="lock-title" id="lock-title">Attention Please</h1>
           <p class="lock-msg" id="lock-text">This screen has been locked by an administrator. Please wait.</p>
         </div>
       </div>
@@ -1006,7 +1006,7 @@ const BAR_INTRO_MS = 2500;
           // seconds, so ticks would stretch the grace period unpredictably. A
           // locked screen stays locked rather than jumping to the wizard.
           const offlineFor = Date.now() - offlineSince;
-          if (offlineFor > OFFLINE_REDIRECT_MS && !isAgentPage(window.location.href) && !(data && data.isLocked)) {
+          if (offlineFor > OFFLINE_REDIRECT_MS && !isAgentPage(window.location.href) && !(data && (data.isLocked || data.updateScreen))) {
             console.warn("[LabKiosk] Workstation offline for >6s, redirecting to network configuration");
             window.location.replace(`${AGENT_SETUP_URL}#offline`);
             return;
@@ -1020,13 +1020,38 @@ const BAR_INTRO_MS = 2500;
         // Lock Curtain & Bar Visibility
         const curtain = shadowRoot.getElementById("lock-curtain");
         const lockText = shadowRoot.getElementById("lock-text");
+        const lockTitle = shadowRoot.getElementById("lock-title");
         const bar = shadowRoot.getElementById("kiosk-bar");
+        // The curtain's own words, kept to put back after an update screen.
+        if (lockTitle && !lockTitle.dataset.lockDefault) lockTitle.dataset.lockDefault = lockTitle.textContent;
+        if (lockText && !lockText.dataset.lockDefault) lockText.dataset.lockDefault = lockText.textContent;
+        const screen = data.updateScreen && typeof data.updateScreen === "object" ? data.updateScreen : null;
         if (curtain) {
-          if (data.isLocked) {
+          if (screen) {
+            // A system update is installing (the workstation restarts by
+            // itself) or finishing its first start. Nobody can use the screen
+            // meanwhile, and nobody should switch it off.
             isLocked = true;
             curtain.classList.remove("hidden");
             if (bar) bar.classList.remove("visible");
-            if (data.lockMessage && lockText) lockText.textContent = data.lockMessage;
+            const version = typeof screen.version === "string" ? screen.version : "";
+            if (lockTitle) {
+              lockTitle.textContent = screen.kind === "finishing"
+                ? t("bar.update-finishing-title", "Finishing a system update")
+                : t("bar.update-installing-title", "Installing a system update");
+            }
+            if (lockText) {
+              lockText.textContent = (screen.kind === "finishing"
+                ? t("bar.update-finishing-text", "This workstation is checking its new software. It will be ready in a few minutes.")
+                : t("bar.update-installing-text", "This workstation restarts by itself in a moment. Please do not switch it off.")) +
+                (version ? " (" + version + ")" : "");
+            }
+          } else if (data.isLocked) {
+            isLocked = true;
+            curtain.classList.remove("hidden");
+            if (bar) bar.classList.remove("visible");
+            if (lockTitle) lockTitle.textContent = lockTitle.dataset.lockDefault;
+            if (lockText) lockText.textContent = data.lockMessage || lockText.dataset.lockDefault;
           } else {
             isLocked = false;
             curtain.classList.add("hidden");

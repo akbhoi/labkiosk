@@ -117,7 +117,7 @@ Consumes the `labkiosk-audit` queue: `writeAuditLog()` sends entries there, and 
 
 `DEV_HOSTS` covers `localhost`, `127.0.0.1`, `0.0.0.0`, `[::1]`, `host.docker.internal`, and `host.containers.internal`.
 
-`RESERVED_SLUGS`: `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`.
+`RESERVED_SLUGS`: `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`, plus platform service, sign-in and mail/DNS names such as `releases`, `login` and `mta-sts` (the full list is in [Configuration Reference](Configuration-Reference#reserved-subdomains)).
 
 ---
 

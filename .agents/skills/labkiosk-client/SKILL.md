@@ -57,7 +57,15 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   back to the deprecated `schoolName`). Persistence is reported, not assumed:
   `enrolment_is_persistent()` checks the **filesystem type** at `/etc/labkiosk`.
 - Commands: `execute_command()` implements `lock, unlock, navigate, reload, reboot, shutdown,
-  clear-session, mute`. `reload` bumps `reloadEpoch` (never `xdotool`). `clear-session` calls
+  clear-session, mute`, plus the hub-only `release-available` (starts
+  `labkiosk-update-download.service`; not on live media) and `install-update` (checks the version
+  held `ready` in `/run/labkiosk-update/update.json` equals the command's, then starts
+  `labkiosk-update-install.service`). Both units are started through `systemctl` under the polkit
+  rule `50-labkiosk-update.rules`, the agent's only way to them. While installing, `reboot` and
+  `shutdown` are refused and `/api/status` carries `updateScreen` (the curtain's "Installing" or
+  "Finishing a system update"), dropped on an install error or after 15 minutes. `current_status()`
+  adds `imageVersion`, `agentVersion` and `update` (`read_update_report()`; `live` on live media).
+  Details: `distro-builder/AGENTS.md` Rule 8. `reload` bumps `reloadEpoch` (never `xdotool`). `clear-session` calls
   `restart_browser()`; the Openbox autostart and `docker-test/entrypoint.sh` watchdogs `rm -rf`
   the profile and cache before every relaunch — keep that wipe there (deleting from the agent races
   Chromium's writes); a test pins both launchers.

@@ -5,6 +5,7 @@
  * platform's own demo organizations (web-demo, local-demo, docker-demo).
  */
 
+import { renderReleasesPaneHtml, renderReleasesScript } from "./ui_super_releases";
 import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
@@ -35,7 +36,7 @@ export interface SuperAdminOptions {
   tenants: SuperConsoleTenant[];
   catalogs?: SuperConsoleCatalog[];
   baseDomain?: string;
-  activeTab?: "organizations" | "tasks" | "support" | "catalogs" | "system";
+  activeTab?: "organizations" | "tasks" | "support" | "releases" | "catalogs" | "system";
   /** Open tasks and mail, and unread and deleted mail, for the badges (src/conversations.ts). */
   inbox?: { openTasks: number; openSupport: number; unreadSupport: number; deletedSupport?: number };
   nonce: string;
@@ -252,6 +253,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`
     },
     {
+      id: "releases",
+      label: "Releases",
+      href: "/super/releases",
+      iconSvg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`
+    },
+    {
       id: "catalogs",
       label: "Catalogs",
       href: "/super/catalogs",
@@ -288,6 +295,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       { id: "custom-domains", label: "Custom domains", count: pendingCustomList.length, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>` }
     ],
     support: [],
+    releases: [],
     catalogs: [
       { id: "catalogs-list", label: "Installed catalogs", count: catalogList.length, showZero: true, iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>` },
       { id: "catalogs-upload", label: "Upload or replace", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>` }
@@ -312,6 +320,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     organizations: "Organizations",
     tasks: "Tasks",
     support: "Mail",
+    releases: "Releases",
     catalogs: "Catalogs",
     system: "System"
   };
@@ -533,6 +542,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </div>
     `,
     support: renderInboxPaneHtml("support", { open: inbox.openSupport, unread: inbox.unreadSupport, deleted: inbox.deletedSupport }),
+    releases: renderReleasesPaneHtml(),
     catalogs: `
       <div class="tab-pane active" id="pane-catalogs-list">
         ${catalogsTableCardHtml}
@@ -623,6 +633,7 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
   const scriptsHtml = `${inboxScriptHtml}
 ${tabSwitchScriptHtml}
 ${activeTab === "system" ? renderTwoFactorScript(nonce) : ""}
+${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.
       (function () {

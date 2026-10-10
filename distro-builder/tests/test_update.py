@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 labkiosk-update against a release served on loopback and an image store in a
-temporary directory (over-the-air updates, phase 2).
+temporary directory (over-the-air updates, phases 2 and 3).
 
 The signing key is made fresh for every run with gpg; the workstation's side
 verifies with gpgv, as it does on a real disk. Needs gpg and gpgv, which every
@@ -11,6 +11,8 @@ Debian and Ubuntu system has.
 """
 
 import hashlib
+import http.server
+import re
 import importlib.machinery
 import importlib.util
 import json
@@ -19,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.dont_write_bytecode = True
@@ -360,6 +363,305 @@ class Update(unittest.TestCase):
         # All of vmlinuz, and the one verified chunk of initrd.img.
         self.assertEqual(result["downloading"], [{"version": "2.6.1", "bytes": 2 * CHUNK + 5}])
         self.assertEqual(result["images"], [{"version": "2.6.0", "verified": False}])
+
+
+TOKEN = "ab" * 32
+
+
+class OfferHandler(http.server.BaseHTTPRequestHandler):
+    """GET /api/devices/update as the Worker answers it, for one device token."""
+
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        server = self.server
+        server.asked.append(self.headers.get("Authorization"))
+        if self.path != "/api/devices/update":
+            self.send_error(404)
+            return
+        if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+            self.send_error(401)
+            return
+        body = json.dumps({"release": server.offer}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class Run(unittest.TestCase):
+    """Phase 3: `run` asks the control plane what to fetch; `install-pending` installs it."""
+
+    # The image store, keys and release server of the phase 2 tests, without
+    # running those tests a second time.
+    setUpClass = Update.__dict__["setUpClass"]
+    tearDownClass = Update.__dict__["tearDownClass"]
+    publish = Update.publish
+    write_manifest = Update.write_manifest
+    serve = Update.serve
+    env = Update.env
+
+    def setUp(self):
+        Update.setUp(self)
+        self.state_path = os.path.join(self.tmp, "run", "update.json")
+        self.phases = []
+        original = update.write_update_state
+
+        def recording(phase, path=None, **fields):
+            self.phases.append((phase, fields.get("version"), fields.get("progress")))
+            original(phase, path=path, **fields)
+
+        update.write_update_state = recording
+        self.addCleanup(setattr, update, "write_update_state", original)
+
+    def control_plane(self, offer):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), OfferHandler)
+        server.daemon_threads = True
+        server.offer = offer
+        server.asked = []
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+    def run_update(self, worker_url, token=TOKEN, running=RUNNING):
+        return update.run(self.root, running, FLOOR, self.keys, worker_url, token, gpgv=GPGV, state_path=self.state_path)
+
+    def state(self):
+        with open(self.state_path, encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_the_offered_release_is_downloaded_and_left_ready(self):
+        self.publish("2.6.1")
+        _, releases = self.serve()
+        plane, worker = self.control_plane({"version": "2.6.1", "kind": "feature", "sizeBytes": 1, "url": f"{releases}/2.6.1"})
+        result = self.run_update(worker)
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(plane.asked, [f"Bearer {TOKEN}"], "asked once, with this workstation's own token")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "images", "2.6.1", ".verified")))
+        state = self.state()
+        self.assertEqual((state["phase"], state["version"]), ("ready", "2.6.1"))
+        self.assertEqual(os.stat(self.state_path).st_mode & 0o777, 0o644)
+        phases = [phase for phase, _, _ in self.phases]
+        self.assertEqual(phases[0], "checking")
+        self.assertEqual(phases[-1], "ready")
+        progress = [p for phase, _, p in self.phases if phase == "downloading"]
+        self.assertEqual(progress[0], 0)
+        self.assertEqual(progress[-1], 100)
+        self.assertEqual(progress, sorted(progress), "progress only goes up")
+        # The grubenv is untouched: nothing is installed without an administrator.
+        self.assertEqual(self.env(), {"current": RUNNING})
+
+        # Asked again (after a restart, say), it finds the release already there.
+        self.phases.clear()
+        self.assertTrue(self.run_update(worker)["already"])
+        self.assertEqual(self.phases[-1][:2], ("ready", "2.6.1"))
+
+    def test_nothing_offered_or_nothing_newer_is_up_to_date(self):
+        for offer in (None, {"version": RUNNING, "url": "http://127.0.0.1:9/x"}, {"version": "2.5.9", "url": "http://127.0.0.1:9/x"}):
+            with self.subTest(offer=offer):
+                _, worker = self.control_plane(offer)
+                self.assertEqual(self.run_update(worker)["state"], "up-to-date")
+                self.assertEqual(self.state()["phase"], "up-to-date")
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "images"))), ["2.5.1", "2.6.0"], "nothing was touched")
+
+    def test_nothing_is_asked_during_the_one_try(self):
+        slots.write_env(self.boot_dir, {"current": "2.5.1", "next": RUNNING, "next_tries": "0"})
+        plane, worker = self.control_plane({"version": "2.6.1", "url": "http://127.0.0.1:9/x"})
+        self.assertEqual(self.run_update(worker)["state"], "idle")
+        self.assertEqual(plane.asked, [])
+        self.assertEqual(self.state()["phase"], "idle")
+
+    def test_a_refused_token_is_an_error_the_agent_reports(self):
+        plane, worker = self.control_plane({"version": "2.6.1", "url": "http://127.0.0.1:9/x"})
+        with self.assertRaisesRegex(update.UpdateError, "HTTP 401"):
+            self.run_update(worker, token="cd" * 32)
+        state = self.state()
+        self.assertEqual(state["phase"], "error")
+        self.assertIn("HTTP 401", state["detail"])
+
+    def test_a_release_signed_by_another_key_ends_in_an_error_not_ready(self):
+        self.publish("2.6.1", home=self.other_home)
+        _, releases = self.serve()
+        _, worker = self.control_plane({"version": "2.6.1", "url": f"{releases}/2.6.1"})
+        with self.assertRaises(update.UpdateError):
+            self.run_update(worker)
+        self.assertEqual(self.state()["phase"], "error")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "images", "2.6.1")))
+
+    def test_an_offer_whose_folder_holds_another_release_is_refused(self):
+        self.publish("2.6.2")
+        _, releases = self.serve()
+        _, worker = self.control_plane({"version": "2.6.1", "url": f"{releases}/2.6.2"})
+        with self.assertRaisesRegex(update.UpdateError, "offered 2.6.1 but its folder holds 2.6.2"):
+            self.run_update(worker)
+        self.assertEqual(self.state()["phase"], "error")
+
+    def test_a_malformed_offer_is_refused(self):
+        for offer in ({"version": "../../etc", "url": "http://127.0.0.1:9/x"}, {"version": "2.6.1"}, "2.6.1"):
+            with self.subTest(offer=offer):
+                _, worker = self.control_plane(offer)
+                with self.assertRaisesRegex(update.UpdateError, "malformed"):
+                    self.run_update(worker)
+
+    def test_install_pending_installs_only_what_run_left_ready(self):
+        with self.assertRaisesRegex(update.UpdateError, "no downloaded release"):
+            update.install_pending(self.root, RUNNING, FLOOR, self.keys, gpgv=GPGV, state_path=self.state_path)
+        self.publish("2.6.1")
+        _, releases = self.serve()
+        _, worker = self.control_plane({"version": "2.6.1", "url": f"{releases}/2.6.1"})
+        self.run_update(worker)
+        result = update.install_pending(self.root, RUNNING, FLOOR, self.keys, gpgv=GPGV, state_path=self.state_path)
+        self.assertEqual(result, {"next": "2.6.1", "current": RUNNING})
+        self.assertEqual(self.env(), {"current": RUNNING, "next": "2.6.1", "next_tries": "1"})
+        self.assertEqual(self.state()["phase"], "installing")
+
+    def test_install_pending_refuses_a_download_changed_since_and_says_so(self):
+        self.publish("2.6.1")
+        _, releases = self.serve()
+        _, worker = self.control_plane({"version": "2.6.1", "url": f"{releases}/2.6.1"})
+        self.run_update(worker)
+        with open(os.path.join(self.root, "images", "2.6.1", "vmlinuz"), "ab") as handle:
+            handle.write(b"x")
+        with self.assertRaises(update.UpdateError):
+            update.install_pending(self.root, RUNNING, FLOOR, self.keys, gpgv=GPGV, state_path=self.state_path)
+        self.assertEqual(self.state()["phase"], "error")
+        self.assertEqual(self.env(), {"current": RUNNING}, "nothing was staged")
+
+
+class Enrolment(unittest.TestCase):
+    """`run` reads the kiosk user's files as root, and trusts nothing in them."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.agent = load("labkiosk_agent_for_update", os.path.join(CHROOT, "opt/labkiosk/agent/agent.py"))
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="lk-enrol-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = os.path.join(self.tmp, "config.json")
+
+    def write(self, data):
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write(data if isinstance(data, str) else json.dumps(data))
+
+    def test_a_valid_enrolment_is_read(self):
+        self.write({"workerUrl": "https://greenwood.labkiosk.org", "deviceToken": TOKEN, "other": "ignored"})
+        self.assertEqual(update.read_enrolment(self.agent, self.path), ("https://greenwood.labkiosk.org", TOKEN))
+
+    def test_an_unusable_enrolment_is_refused(self):
+        cases = {
+            "not enrolled": None,
+            "no valid control plane": {"workerUrl": "http://evil.example", "deviceToken": TOKEN},
+            "no valid device token": {"workerUrl": "https://greenwood.labkiosk.org", "deviceToken": "x" * 64},
+            "not valid JSON": "{",
+            "JSON object": "[]",
+        }
+        for problem, data in cases.items():
+            with self.subTest(problem=problem):
+                if os.path.lexists(self.path):
+                    os.unlink(self.path)
+                if data is not None:
+                    self.write(data)
+                with self.assertRaisesRegex(update.UpdateError, problem):
+                    update.read_enrolment(self.agent, self.path)
+
+    def test_a_symbolic_link_is_not_followed(self):
+        target = os.path.join(self.tmp, "elsewhere.json")
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump({"workerUrl": "https://greenwood.labkiosk.org", "deviceToken": TOKEN}, handle)
+        os.symlink(target, self.path)
+        with self.assertRaisesRegex(update.UpdateError, "could not be opened"):
+            update.read_enrolment(self.agent, self.path)
+
+    def test_the_proxy_is_the_agents_own_and_validated(self):
+        proxy = os.path.join(self.tmp, "proxy.json")
+        saved = {name: os.environ.get(name) for name in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY")}
+
+        def restore():
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+        self.addCleanup(restore)
+        with open(proxy, "w", encoding="utf-8") as handle:
+            json.dump({"enabled": True, "host": "proxy.greenwood.example", "port": 3128, "bypass": "intranet.example"}, handle)
+        update.use_proxy(self.agent, proxy)
+        self.assertEqual(os.environ["https_proxy"], "http://proxy.greenwood.example:3128")
+        self.assertIn("intranet.example", os.environ["no_proxy"])
+        with open(proxy, "w", encoding="utf-8") as handle:
+            json.dump({"enabled": True, "host": "bad host;", "port": 3128}, handle)
+        with self.assertRaisesRegex(update.UpdateError, "proxy"):
+            update.use_proxy(self.agent, proxy)
+        update.use_proxy(self.agent, os.path.join(self.tmp, "missing.json"))
+        self.assertNotIn("https_proxy", os.environ, "no proxy file, no proxy")
+
+
+class Units(unittest.TestCase):
+    """The two units the agent may start, and the rule that lets it start nothing else."""
+
+    def read(self, rel):
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_the_units_run_the_updater_and_only_on_an_installed_disk(self):
+        download = self.read("config/includes.chroot/etc/systemd/system/labkiosk-update-download.service")
+        install = self.read("config/includes.chroot/etc/systemd/system/labkiosk-update-install.service")
+        self.assertIn("ExecStart=/usr/local/sbin/labkiosk-update run\n", download)
+        self.assertIn("ExecStart=/usr/local/sbin/labkiosk-update install-pending\n", install)
+        for unit in (download, install):
+            self.assertIn("ConditionKernelCommandLine=labkiosk.installed=1", unit)
+            self.assertNotIn("[Install]", unit, "started on demand, never at boot")
+        self.assertIn("ExecStartPost=/bin/systemctl --no-block reboot", install)
+
+    def test_the_polkit_rule_grants_start_of_the_two_units_only(self):
+        hook = self.read("config/hooks/live/01-lockdown.hook.chroot")
+        start = hook.index("50-labkiosk-update.rules")
+        rule = hook[start:hook.index("\nEOF\n", start)]
+        self.assertIn('action.id === "org.freedesktop.systemd1.manage-units"', rule)
+        self.assertIn('action.lookup("verb") === "start"', rule)
+        self.assertEqual(sorted(set(re.findall(r'"(labkiosk-[a-z-]+\.service)"', rule))),
+                         ["labkiosk-update-download.service", "labkiosk-update-install.service"])
+        self.assertNotIn("systemctl enable labkiosk-update", hook, "no update runs at boot")
+
+    @unittest.skipUnless(shutil.which("node"), "node runs the rule's JavaScript")
+    def test_the_polkit_rule_answers_as_polkitd_would(self):
+        hook = self.read("config/hooks/live/01-lockdown.hook.chroot")
+        start = hook.index("\n", hook.index("50-labkiosk-update.rules")) + 1
+        rule = hook[start:hook.index("\nEOF\n", start)]
+        # polkitd's API as the rule sees it: addRule, Result, action.lookup().
+        harness = """
+const rules = [];
+const polkit = { addRule: (f) => rules.push(f), Result: { YES: "yes", NOT_HANDLED: null } };
+%s
+const ask = (user, id, details) => rules[0]({ id, lookup: (k) => details[k] }, { user });
+const unitsAction = "org.freedesktop.systemd1.manage-units";
+console.log(JSON.stringify([
+  ask("kiosk", unitsAction, { verb: "start", unit: "labkiosk-update-download.service" }),
+  ask("kiosk", unitsAction, { verb: "start", unit: "labkiosk-update-install.service" }),
+  ask("kiosk", unitsAction, { verb: "stop", unit: "labkiosk-update-download.service" }),
+  ask("kiosk", unitsAction, { verb: "restart", unit: "labkiosk-update-install.service" }),
+  ask("kiosk", unitsAction, { verb: "start", unit: "ssh.service" }),
+  ask("kiosk", "org.freedesktop.systemd1.manage-unit-files", { verb: "start", unit: "labkiosk-update-install.service" }),
+  ask("nobody", unitsAction, { verb: "start", unit: "labkiosk-update-install.service" }),
+]));
+""" % rule
+        result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["yes", "yes", None, None, None, None, None])
+
+    def test_the_agent_starts_only_these_units(self):
+        agent = load("labkiosk_agent_units", os.path.join(CHROOT, "opt/labkiosk/agent/agent.py"))
+        self.assertEqual(agent.UPDATE_DOWNLOAD_UNIT, "labkiosk-update-download.service")
+        self.assertEqual(agent.UPDATE_INSTALL_UNIT, "labkiosk-update-install.service")
+        self.assertEqual(agent.UPDATE_STATE_FILE, update.UPDATE_STATE_FILE)
+        self.assertEqual(agent.UPDATE_VERSION_PATTERN.pattern, slots.VERSION_PATTERN.pattern)
+        with self.assertRaises(ValueError):
+            agent.start_update_unit("ssh.service")
 
 
 class Manifest(unittest.TestCase):

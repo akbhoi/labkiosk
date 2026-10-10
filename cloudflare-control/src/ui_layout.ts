@@ -1264,6 +1264,9 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
     .kc-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
     .kc-ip { font-family: var(--font-mono); font-size: 0.6875rem; white-space: nowrap; }
+    .kc-update { font-size: 0.6875rem; color: var(--text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .kc-update-ready { color: var(--accent-text); }
+    .kc-update-error { color: var(--danger-text); }
 
     /* Compact density: one line per machine and no thumbnails at all. */
     .kiosk-grid.compact { grid-template-columns: 1fr; gap: 6px; }
@@ -1274,6 +1277,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
       padding: 8px 12px;
     }
     .kiosk-grid.compact .kc-thumb-box { display: none; }
+    .kiosk-grid.compact .kc-update { flex: 0 1 auto; }
     .kiosk-grid.compact .kc-head { flex: 0 0 auto; min-width: 190px; }
     .kiosk-grid.compact .kc-footer {
       flex: 1;

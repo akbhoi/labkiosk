@@ -136,7 +136,7 @@ labkiosk.example.edu            ->  platform apex: landing page, no tenant
 - the caller's session already owns that tenant, or
 - the route is explicitly public (`/`, `/home`, `/privacy`, `/terms`, `/terms/bug-reports`, `/api/status`, `/api/portal-sites`, `/api/devices/enroll`, `/api/telemetry`, and `GET` `/api/i18n` and `/i18n/<tag>.json`, the interface catalogs a workstation reads before it is enrolled).
 
-`X-Forwarded-Host` is never read. A set of [reserved slugs](Configuration-Reference#reserved-subdomains) — `www`, `super`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `labkiosk`, `root` — can be neither registered nor resolved as an organization.
+`X-Forwarded-Host` is never read. A set of [reserved slugs](Configuration-Reference#reserved-subdomains) (`www`, `super`, `api`, `admin`, `releases`, `login` and more) can be neither registered nor resolved as an organization.
 
 ---
 

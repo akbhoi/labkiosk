@@ -1,0 +1,17 @@
+[Unit]
+Description=Lab Kiosk: download the system update this organization is offered
+Documentation=file:///usr/local/sbin/labkiosk-update
+# Only an installed disk keeps an image store; a live session is re-flashed.
+ConditionKernelCommandLine=labkiosk.installed=1
+After=network-online.target labkiosk-boot-ok.service
+Wants=network-online.target
+
+[Service]
+# Started by the agent (as kiosk, through the polkit rule in
+# 01-lockdown.hook.chroot) when the organization's hub sends release-available.
+# No timer: nothing runs unless the control plane offers a release.
+Type=oneshot
+ExecStart=/usr/local/sbin/labkiosk-update run
+# A download must never slow the screen someone is using.
+Nice=10
+IOSchedulingClass=idle
