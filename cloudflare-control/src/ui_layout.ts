@@ -1,11 +1,11 @@
 /**
- * Modern Responsive Dashboard Shell & Left-Side Multi-Level Panels Layout
- * Provides Level 1 primary navigation rail (72px), Level 2 context action panel (272px),
- * seamless hardware-accelerated transitions, fluid content canvas, and 2026 design tokens.
+ * The console shell: an icon-only navigation rail (names on hover, a labelled
+ * drawer on a phone), the canvas header and footer, toasts, dialogs and the
+ * primitives every console page is built from.
  */
 
 import { escapeHtml, escapeAttr } from "./escape";
-import { FONT_LINKS, THEME_TOGGLE_SCRIPT, rootTokensCss, themeHeadHtml } from "./ui_tokens";
+import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, THEME_TOGGLE_SCRIPT, rootTokensCss, themeHeadHtml } from "./ui_tokens";
 
 export interface NavItem {
   id: string;
@@ -41,9 +41,6 @@ export interface LayoutOptions {
   brandHref?: string;
   navItems: NavItem[];
   activeNavId: string;
-  subPanelTitle?: string;
-  subPanelSubtitle?: string;
-  subPanelHtml?: string;
   stats?: StatItem[];
   userMeta?: { name: string; email?: string; role: string };
   logoutAction?: string;
@@ -145,7 +142,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
 
     /* ---------------------------------------------------------------------- */
-    /* Unified Navigation Sidebar (240px)                                     */
+    /* Navigation rail (68px; a 240px labelled drawer on a phone)             */
     /* ---------------------------------------------------------------------- */
     .nav-sidebar,
     .nav-rail {
@@ -273,47 +270,6 @@ const CONSOLE_CSS = `${rootTokensCss()}
       border: 1px solid var(--border);
       line-height: 1.4;
       flex-shrink: 0;
-    }
-
-    .sidebar-context {
-      position: static;
-      width: 100%;
-      border-right: none;
-      border-top: 1px solid var(--border-subtle);
-      background: transparent;
-      transform: none;
-      opacity: 1;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-    }
-
-    .context-header {
-      padding: 12px 14px 6px;
-    }
-
-    .context-title {
-      font-size: 0.75rem;
-      font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-
-    .context-subtitle {
-      font-size: 0.6875rem;
-      color: var(--text-subtle);
-      margin-top: 1px;
-    }
-
-    .context-body {
-      padding: 6px 10px 14px;
-      flex: 1;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
     }
 
     .sidebar-footer {
@@ -462,9 +418,104 @@ const CONSOLE_CSS = `${rootTokensCss()}
 
     .rail-icon { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; }
 
-    /* In unified sidebar, label is always visible */
+    /* The name of a rail item, shown beside it on hover or keyboard focus.
+       The phone drawer writes the names out instead. */
     .rail-tooltip {
       display: none;
+      position: absolute;
+      left: calc(100% + 12px);
+      top: 50%;
+      translate: -4px -50%;
+      padding: 5px 10px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-surface);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-lg);
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1.3;
+      white-space: nowrap;
+      text-transform: none;
+      pointer-events: none;
+      opacity: 0;
+      z-index: 1070;
+      transition: opacity 0.12s ease, translate 0.16s var(--ease-out);
+    }
+
+    /* ---------------------------------------------------------------------- */
+    /* The rail: icons only, wherever there is a pointer to hover with        */
+    /* ---------------------------------------------------------------------- */
+    @media (min-width: 1025px) {
+      /* Nothing in the rail scrolls, so its tooltips and the profile menu may
+         reach over the canvas. */
+      .nav-sidebar,
+      .nav-rail { overflow: visible; }
+
+      .sidebar-header { padding: 14px 0 12px; justify-content: center; }
+      .sidebar-brand { width: auto; }
+      .brand-meta,
+      .sidebar-label,
+      .sidebar-user-info { display: none; }
+
+      .sidebar-nav,
+      .rail-nav { align-items: center; gap: 6px; padding: 12px 0; }
+
+      .sidebar-item,
+      .rail-item {
+        width: 48px;
+        height: 48px;
+        padding: 0;
+        gap: 0;
+        justify-content: center;
+        border-radius: var(--radius);
+      }
+      .sidebar-icon,
+      .rail-icon { width: 26px; height: 26px; }
+      .sidebar-icon svg,
+      .rail-item svg { width: 24px; height: 24px; }
+
+      .rail-tooltip { display: block; }
+      .rail-item:hover > .rail-tooltip,
+      .rail-item:focus-visible > .rail-tooltip,
+      .rail-user-btn:hover > .rail-tooltip,
+      .rail-user-btn:focus-visible > .rail-tooltip {
+        opacity: 1;
+        translate: 0 -50%;
+      }
+      /* The open menu already says who is signed in. */
+      .rail-user-btn[aria-expanded="true"] > .rail-tooltip { opacity: 0; }
+
+      .rail-item > .rail-badge {
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        margin-left: 0;
+        min-width: 17px;
+        padding: 0 4px;
+        text-align: center;
+      }
+
+      .sidebar-footer,
+      .rail-bottom { padding: 10px 0 12px; align-items: center; }
+      .sidebar-user-btn,
+      .rail-user-btn {
+        width: 48px;
+        height: 48px;
+        padding: 0;
+        justify-content: center;
+        border-radius: var(--radius);
+        position: relative;
+      }
+      .sidebar-user-avatar,
+      .rail-user-avatar { width: 36px; height: 36px; font-size: 0.875rem; }
+
+      .rail-profile-menu {
+        left: calc(100% + 10px);
+        right: auto;
+        bottom: 0;
+        width: 260px;
+      }
     }
 
     .rail-badge {
@@ -518,9 +569,6 @@ const CONSOLE_CSS = `${rootTokensCss()}
       width: 18px;
       height: 18px;
       transition: transform 0.28s var(--ease-spring);
-    }
-    .app-layout.subpanel-collapsed .rail-action-btn svg {
-      transform: rotate(180deg);
     }
 
     .rail-user-avatar {
@@ -693,149 +741,6 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .profile-logout-btn:hover {
       background: var(--danger-soft);
     }
-
-    /* ---------------------------------------------------------------------- */
-    /* Level 2: Secondary Context Action Panel (animated & collapsible)       */
-    /* ---------------------------------------------------------------------- */
-    .sub-panel,
-    .sidebar-context {
-      position: static;
-      width: 100%;
-      border-right: none;
-      border-top: 1px solid var(--border-subtle);
-      background: transparent;
-      transform: none;
-      opacity: 1;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-    }
-
-    .app-layout.subpanel-collapsed .sub-panel,
-    .app-layout.subpanel-collapsed .sidebar-context {
-      display: none;
-    }
-
-    .sub-panel-header {
-      padding: 18px 12px 10px 20px;
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
-    .sub-panel-title-wrap { flex: 1; min-width: 0; }
-    .sub-panel-title {
-      font-size: 0.9375rem;
-      font-weight: 600;
-      color: var(--text-main);
-      letter-spacing: -0.01em;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .sub-panel-subtitle {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      margin-top: 1px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .sub-panel-close-btn {
-      background: transparent;
-      border: none;
-      color: var(--text-subtle);
-      cursor: pointer;
-      width: 28px;
-      height: 28px;
-      border-radius: var(--radius-sm);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: color 0.15s ease, background-color 0.15s ease;
-    }
-    .sub-panel-close-btn:hover {
-      color: var(--text-main);
-      background: var(--hover);
-    }
-
-    .sub-panel-content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 8px 12px 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      scrollbar-width: thin;
-      scrollbar-color: var(--border-input) transparent;
-    }
-
-    /* Sub-panel Section Elements */
-    /* Sections in the panel are flat siblings; space them by their headings. */
-    .sub-panel-content > :is(.sub-section-title, .sub-section-head):not(:first-child) { margin-top: 18px; }
-    .sub-section-title {
-      font-size: 0.6875rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--text-subtle);
-      margin-bottom: 6px;
-      padding: 0 8px;
-    }
-
-    .sub-action-list {
-      display: flex;
-      flex-direction: column;
-      gap: 1px;
-    }
-
-    .sub-action-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      min-height: 32px;
-      padding: 5px 8px;
-      border-radius: var(--radius-sm);
-      color: var(--text-muted);
-      text-decoration: none;
-      font-size: 0.8125rem;
-      font-weight: 500;
-      background: transparent;
-      border: none;
-      cursor: pointer;
-      width: 100%;
-      text-align: left;
-      font-family: inherit;
-      transition: background-color 0.12s ease, color 0.12s ease;
-    }
-    .sub-action-item:hover:not(:disabled) {
-      color: var(--text-main);
-      background: var(--hover);
-    }
-    .sub-action-item:disabled {
-      opacity: 0.45;
-      cursor: default;
-    }
-    .sub-action-item.active {
-      color: var(--text-main);
-      background: var(--active);
-      font-weight: 600;
-    }
-    .sub-action-badge {
-      font-size: 0.75rem;
-      font-variant-numeric: tabular-nums;
-      padding: 0 4px;
-      min-width: 20px;
-      text-align: right;
-      color: var(--text-subtle);
-      font-weight: 500;
-    }
-    .sub-action-item.active .sub-action-badge { color: var(--text-muted); }
 
     /* ---------------------------------------------------------------------- */
     /* App Canvas (Fluid Content)                                             */
@@ -1496,13 +1401,18 @@ const CONSOLE_CSS = `${rootTokensCss()}
       border-color: var(--accent);
       box-shadow: 0 0 0 1px var(--accent), var(--shadow-sm);
     }
-    .sub-action-group-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 2px;
+    /* A row of chips with its own name in front: workstation groups, mail types. */
+    .chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 14px; }
+    .chip-row-label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-subtle);
     }
-    .sub-action-group-row > .sub-action-item { flex: 1; min-width: 0; }
+    .filter-chip > .truncate { max-width: 180px; }
+    /* A chip with its own remove button: the pair reads as one pill. */
+    .chip-group { display: inline-flex; align-items: center; gap: 1px; }
     .panel-link-btn {
       background: transparent;
       border: none;
@@ -1533,8 +1443,6 @@ const CONSOLE_CSS = `${rootTokensCss()}
       transition: color 0.12s ease, background-color 0.12s ease;
     }
     .icon-btn:hover { color: var(--danger-text); background: var(--danger-soft); }
-    .sub-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-    .sub-section-head > .sub-section-title { margin-bottom: 0; }
 
     /* A saved broadcast preset, and one allowed domain. */
     .preset-item {
@@ -1704,6 +1612,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .btn:active:not(:disabled) { transform: scale(0.98); }
     .btn svg { flex-shrink: 0; width: 15px; height: 15px; }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+${BUSY_CSS}    .btn.is-loading::before, .menu-item.is-loading::before, .profile-menu-item.is-loading::before { margin-inline-end: 0; }
     .btn-primary { background: var(--accent); color: var(--accent-fg); box-shadow: var(--shadow-sm); }
     .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
     .btn-secondary {
@@ -2023,7 +1932,8 @@ const CONSOLE_CSS = `${rootTokensCss()}
       padding: 16px 20px;
       border-bottom: 1px solid var(--border);
     }
-    .card-head > .card-title { margin-bottom: 0; }
+    .card-head > .card-title { margin-bottom: 0; white-space: nowrap; }
+    .card-head > .filter-chips { justify-content: flex-end; }
     .card-head .card-sub { margin-bottom: 0; }
 
     /* Badges: soft tints, sentence case. */
@@ -2224,7 +2134,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
 
     @media (max-width: 1024px) {
       .nav-sidebar,
-      .nav-rail { transform: translateX(-100%); }
+      .nav-rail { width: var(--drawer-width); transform: translateX(-100%); }
       .app-canvas { margin-left: 0 !important; }
       .btn-mobile-menu { display: inline-flex; }
       .panel-backdrop { display: block; }
@@ -2353,7 +2263,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
       ::view-transition-group(*) { animation-duration: 0.18s; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .nav-sidebar, .nav-rail, .sub-panel, .sidebar-context, .app-canvas, .rail-profile-menu, .lk-toast, .lk-dialog,
+      .nav-sidebar, .nav-rail, .rail-tooltip, .app-canvas, .rail-profile-menu, .lk-toast, .lk-dialog,
       .lk-dialog-overlay, .modal-box, .group-chevron, .rail-action-btn svg, .panel-backdrop {
         transition: none;
       }
@@ -2363,7 +2273,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
       .form-input, .form-select, .form-textarea, .form-checkbox, .lk-dialog, .modal-box, .rail-profile-menu {
         border: 1px solid CanvasText;
       }
-      .rail-item.active, .segmented-tab.active, .sub-action-item.active {
+      .rail-item.active, .segmented-tab.active, .filter-chip.active {
         outline: 2px solid Highlight;
         outline-offset: -2px;
       }
@@ -2395,9 +2305,6 @@ export function renderLayoutHtml(options: LayoutOptions): string {
     brandIconSvg,
     navItems,
     activeNavId,
-    subPanelTitle = "Module Actions",
-    subPanelSubtitle = "Quick tools & filters",
-    subPanelHtml = "",
     stats = [],
     userMeta,
     logoutAction = "/api/auth/logout",
@@ -2418,10 +2325,10 @@ export function renderLayoutHtml(options: LayoutOptions): string {
     .map((item) => {
       const isActive = item.id === activeNavId;
       return `
-        <a href="${escapeAttr(item.href)}" class="sidebar-item rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" title="${escapeAttr(item.label)}">
+        <a href="${escapeAttr(item.href)}" class="sidebar-item rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" aria-label="${escapeAttr(item.label)}"${isActive ? ' aria-current="page"' : ""}>
           <span class="sidebar-icon rail-icon">${item.iconSvg}</span>
           <span class="sidebar-label">${escapeHtml(item.label)}</span>
-          <span class="rail-tooltip">${escapeHtml(item.label)}</span>
+          <span class="rail-tooltip" aria-hidden="true">${escapeHtml(item.label)}</span>
           ${renderRailBadge(item)}
         </a>
       `;
@@ -2455,7 +2362,7 @@ ${FONT_LINKS}
 </head>
 <body>
   <div class="app-layout" id="app-layout">
-    <!-- Unified Navigation Sidebar (240px) -->
+    <!-- Navigation rail: icons, named on hover; a labelled drawer on a phone -->
     <aside class="nav-sidebar nav-rail" id="nav-sidebar">
       <div class="sidebar-header">
         <a href="${escapeAttr(brandHref)}" class="sidebar-brand brand-glyph" title="${escapeAttr(brandTitle)}">
@@ -2471,31 +2378,9 @@ ${FONT_LINKS}
         ${railItemsHtml}
       </nav>
 
-      ${subPanelHtml ? `
-      <!-- Contextual Action Panel Section -->
-      <aside class="sub-panel" id="sub-panel">
-        ${subPanelTitle ? `
-        <div class="sub-panel-header context-header">
-          <div class="sub-panel-title-wrap">
-            <h3 class="sub-panel-title context-title">${escapeHtml(subPanelTitle)}</h3>
-            ${subPanelSubtitle ? `<p class="sub-panel-subtitle context-subtitle">${escapeHtml(subPanelSubtitle)}</p>` : ""}
-          </div>
-          <button class="sub-panel-close-btn" id="btn-close-subpanel" data-action="toggle-subpanel" title="Collapse Panel">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="15 18 9 12 15 6"></polyline>
-            </svg>
-          </button>
-        </div>
-        ` : ""}
-        <div class="sub-panel-content context-body">
-          ${subPanelHtml}
-        </div>
-      </aside>
-      ` : ""}
-
       <div class="sidebar-footer rail-bottom">
         <div class="sidebar-profile-wrap rail-profile-wrap">
-          <button type="button" class="sidebar-user-btn rail-user-btn" id="btn-user-profile" aria-expanded="false" aria-haspopup="true" title="${escapeAttr(userMeta?.name || 'User Profile')} (${escapeAttr(userMeta?.role || 'Admin')})">
+          <button type="button" class="sidebar-user-btn rail-user-btn" id="btn-user-profile" aria-expanded="false" aria-haspopup="true" aria-label="${escapeAttr(userMeta?.name || 'User Profile')} (${escapeAttr(userMeta?.role || 'Admin')}): account menu">
             <div class="sidebar-user-avatar rail-user-avatar">
               <span>${escapeHtml((userMeta?.name || 'A').slice(0, 1).toUpperCase())}</span>
             </div>
@@ -2503,6 +2388,7 @@ ${FONT_LINKS}
               <span class="sidebar-user-name user-name">${escapeHtml(userMeta?.name || 'Administrator')}</span>
               <span class="sidebar-user-role user-role">${escapeHtml(userMeta?.role || 'Admin')}</span>
             </div>
+            <span class="rail-tooltip" aria-hidden="true">${escapeHtml(userMeta?.name || 'Account')}</span>
           </button>
           <div class="rail-profile-menu" id="rail-profile-menu" role="menu" aria-label="User profile menu">
             <div class="profile-menu-header">
@@ -2819,23 +2705,6 @@ ${FONT_LINKS}
     (function() {
       "use strict";
       const layout = document.getElementById("app-layout");
-      const storageKey = "labkiosk_subpanel_collapsed";
-
-      // Restore collapsed state from localStorage
-      try {
-        if (localStorage.getItem(storageKey) === "1") {
-          layout.classList.add("subpanel-collapsed");
-        }
-      } catch (e) {}
-
-      function toggleSubpanel() {
-        layout.classList.toggle("subpanel-collapsed");
-        try {
-          const isCollapsed = layout.classList.contains("subpanel-collapsed");
-          localStorage.setItem(storageKey, isCollapsed ? "1" : "0");
-        } catch (e) {}
-      }
-
       function toggleMobileMenu() {
         layout.classList.toggle("mobile-open");
       }
@@ -2845,10 +2714,7 @@ ${FONT_LINKS}
         const target = e.target && e.target.closest ? e.target.closest("[data-action]") : null;
         if (!target) return;
         const action = target.getAttribute("data-action");
-        if (action === "toggle-subpanel") {
-          e.preventDefault();
-          toggleSubpanel();
-        } else if (action === "toggle-mobile-menu") {
+        if (action === "toggle-mobile-menu") {
           e.preventDefault();
           toggleMobileMenu();
         } else if (action && action.startsWith("tab-")) {
@@ -2860,16 +2726,8 @@ ${FONT_LINKS}
 
         // Close mobile drawer on navigation click
         if (layout.classList.contains("mobile-open")) {
-          const navClick = target.closest(".sidebar-item, .rail-item, .sub-action-item, .segmented-tab, .filter-chip, .density-btn");
+          const navClick = target.closest(".sidebar-item, .rail-item, .segmented-tab, .filter-chip, .density-btn");
           if (navClick) layout.classList.remove("mobile-open");
-        }
-      });
-
-      // Keyboard shortcut: Ctrl+B or Cmd+B to toggle sub-panel
-      document.addEventListener("keydown", function(e) {
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
-          e.preventDefault();
-          toggleSubpanel();
         }
       });
 
@@ -2924,6 +2782,7 @@ ${FONT_LINKS}
     })();
   </script>
   <script nonce="${escapeAttr(nonce)}">${THEME_TOGGLE_SCRIPT}</script>
+  <script nonce="${escapeAttr(nonce)}">${BUSY_SCRIPT}</script>
 </body>
 </html>`;
 }

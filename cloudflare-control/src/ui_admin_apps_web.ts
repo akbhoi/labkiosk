@@ -15,54 +15,8 @@ export function buildAppsWebPage(options: AdminPageInput): AdminPageParts {
   return {
     title: "Apps & Web Control",
     contentHtml: renderAppsWebContentHtml(tenant, config, sites, presets, tenantParam),
-    scriptsHtml: renderAppsWebScripts(nonce),
-    subPanelTitle: "Apps & Web",
-    subPanelSubtitle: "Apps & domain control",
-    subPanelHtml: renderAppsWebSubPanelHtml(tenant, config, sites, presets, tenantParam)
+    scriptsHtml: renderAppsWebScripts(nonce)
   };
-}
-
-function renderAppsWebSubPanelHtml(
-  tenant: Tenant | undefined,
-  config: LabConfig,
-  sites: PortalSite[],
-  _presets: BroadcastPreset[],
-  tenantParam: string
-): string {
-  const activeUrl = tenant?.broadcast_url;
-  return `
-    <div class="sub-section-title">Quick Actions</div>
-    <div class="sub-action-list">
-      <button type="button" class="sub-action-item" data-focus="app-title">
-        <span class="row">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-          Add Portal App
-        </span>
-      </button>
-      <button type="button" class="sub-action-item" data-focus="domain-input">
-        <span class="row">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-          Add Allowed Domain
-        </span>
-      </button>
-      <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="sub-action-item">
-        <span class="row">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-          Preview User Portal
-        </span>
-      </a>
-    </div>
-
-    <div class="sub-section-title">Module Summary</div>
-    <div class="kv-list">
-      <div class="kv-row"><span>Portal apps</span><strong>${sites.length}</strong></div>
-      <div class="kv-row"><span>Allowed domains</span><strong>${config.whitelist.length}</strong></div>
-      <div class="kv-row">
-        <span>Broadcast</span>
-        <span class="badge ${activeUrl ? "badge-green" : "badge-neutral"}">${activeUrl ? "Live" : "Portal"}</span>
-      </div>
-    </div>
-  `;
 }
 
 function renderAppsWebContentHtml(
@@ -135,6 +89,10 @@ function renderAppsWebContentHtml(
         <h1 class="page-title">Apps &amp; Web</h1>
         <p class="page-desc">Broadcast a page to every screen, choose the apps on the User Portal, and control which sites workstations may open.</p>
       </div>
+      <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        Preview User Portal
+      </a>
     </div>
 
     <nav class="segmented-nav" aria-label="Apps &amp; Web Navigation">
@@ -353,12 +311,6 @@ function renderAppsWebScripts(nonce: string): string {
             tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
           });
 
-          // Update Sub-Panel Tab Items if present
-          const subTabs = document.querySelectorAll("#sub-panel [data-action^='tab-']");
-          subTabs.forEach(tab => {
-            tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
-          });
-
           // Update Tab Panes
           const panes = document.querySelectorAll(".tab-pane");
           panes.forEach(pane => {
@@ -448,7 +400,7 @@ function renderAppsWebScripts(nonce: string): string {
           });
         }
 
-        // Launch preset buttons (cards and subpanel)
+        // Launch preset buttons
         document.querySelectorAll(".btn-launch-preset").forEach(btn => {
           btn.addEventListener("click", async () => {
             const url = btn.getAttribute("data-url");

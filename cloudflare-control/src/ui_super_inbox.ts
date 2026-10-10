@@ -17,13 +17,13 @@ import { CATEGORIES } from "./conversations";
 
 export type InboxBox = "tasks" | "support";
 
-export function renderInboxPaneHtml(box: InboxBox): string {
+export function renderInboxPaneHtml(box: InboxBox, counts: InboxViewCounts): string {
   const label = box === "tasks" ? "Tasks" : "Mail";
   const placeholder =
     box === "tasks"
       ? "Select a task to see the full request and decide it."
       : "Select a message to read it and reply, or write a new one.";
-  return `
+  return `${renderInboxFiltersHtml(box, counts)}
       <div class="inbox-layout" id="inbox" data-box="${escapeAttr(box)}">
         <div class="inbox-list" id="inbox-list" role="list" aria-label="${escapeAttr(label)}">
           <div class="inbox-empty">Loading…</div>
@@ -32,6 +32,11 @@ export function renderInboxPaneHtml(box: InboxBox): string {
           <div class="card"><p class="empty-note">${placeholder}</p></div>
         </div>
       </div>
+      <p class="panel-note mt-md">${
+        box === "tasks"
+          ? "Registrations and Remote Control requests, oldest first. Approving or rejecting emails the customer; a reply asks them something first, such as payment. Confirm a registration's phone number before approving it. A tracking ID starts with REG for a registration and RMT for Remote Control."
+          : "Mail sent to any address on the mail domain, and the website's contact form, grouped by the address it was sent to. Replies go out as that address, and answers come back into the same conversation. The start of a tracking ID says what the mail is about (SUP support, SAL sales, BIL billing, LGL legal, GEN general, LTR a letter you wrote). Deleted mail stays in Deleted until it is restored or deleted for good."
+      }</p>
   `;
 }
 
@@ -42,7 +47,7 @@ export interface InboxViewCounts {
   deleted?: number;
 }
 
-/** Mail's folders, in the order the view tabs and the panel list them. `id` is the API's `filter`. */
+/** Mail's folders, in the order the view tabs list them. `id` is the API's `filter`. */
 const MAIL_FOLDERS: ReadonlyArray<{ id: string; label: string; count?: keyof InboxViewCounts }> = [
   { id: "open", label: "Inbox", count: "open" },
   { id: "unread", label: "Unread", count: "unread" },
@@ -78,68 +83,36 @@ export function renderMailViewBarHtml(counts: InboxViewCounts): string {
   `;
 }
 
-/** The Level 2 panel for Tasks and Mail: folders or the filter, and mailboxes, wired by the inbox script. */
-export function renderInboxSubPanelHtml(box: InboxBox, counts: InboxViewCounts): string {
+/** What narrows the list, above it: the view (Tasks), the type and the mailbox (Mail). Wired by the inbox script. */
+function renderInboxFiltersHtml(box: InboxBox, counts: InboxViewCounts): string {
+  const typeRow = `
+      <div class="chip-row">
+        <span class="chip-row-label">Type</span>
+        <div class="filter-chips" id="inbox-categories">
+          <button type="button" class="filter-chip active" data-inbox-category=""><span>All types</span></button>
+        </div>
+      </div>`;
   if (box === "support") {
-    const folders = MAIL_FOLDERS.map((folder, index) => {
-      const n = folderCount(counts, folder.count);
-      return `
-        <button type="button" class="sub-action-item${index === 0 ? " active" : ""}" data-inbox-filter="${escapeAttr(folder.id)}">
-          <span>${folder.label}</span>${n > 0 ? `<span class="sub-action-badge">${n}</span>` : ""}
-        </button>`;
-    }).join("");
-    return `
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item" data-inbox-compose>
-          <span>New message</span>
-        </button>
-      </div>
-      <div class="sub-section-title">Folders</div>
-      <div class="sub-action-list">${folders}
-      </div>
-      <div class="sub-section-title">Type</div>
-      <div class="sub-action-list" id="inbox-categories">
-        <button type="button" class="sub-action-item active" data-inbox-category="">
-          <span>All types</span>
-        </button>
-      </div>
-      <div class="sub-section-title">Mailboxes</div>
-      <div class="sub-action-list" id="inbox-mailboxes">
-        <button type="button" class="sub-action-item active" data-inbox-mailbox="">
-          <span>All mailboxes</span>
-        </button>
-      </div>
-      <div class="sub-section-title">How this works</div>
-      <div class="panel-note">
-        Mail sent to any address on the mail domain, and the website's contact form, grouped by the address it was sent to. Replies go out as that address, and answers come back into the same conversation. The start of a tracking ID says what the mail is about (SUP support, SAL sales, BIL billing, LGL legal, GEN general, LTR a letter you wrote). Deleted mail stays in Deleted until it is restored or deleted for good.
-      </div>
-  `;
+    return `${typeRow}
+      <div class="chip-row">
+        <span class="chip-row-label">Mailbox</span>
+        <div class="filter-chips" id="inbox-mailboxes">
+          <button type="button" class="filter-chip active" data-inbox-mailbox=""><span>All mailboxes</span></button>
+        </div>
+      </div>`;
   }
   const open = folderCount(counts, "open");
   return `
-      <div class="sub-section-title">Show requests</div>
-      <div class="sub-action-list">
-        <button type="button" class="sub-action-item active" data-inbox-filter="open">
-          <span>Open</span>${open > 0 ? `<span class="sub-action-badge">${open}</span>` : ""}
-        </button>
-        <button type="button" class="sub-action-item" data-inbox-filter="closed">
-          <span>Decided</span>
-        </button>
-        <button type="button" class="sub-action-item" data-inbox-filter="all">
-          <span>Everything</span>
-        </button>
-      </div>
-      <div class="sub-section-title">Type</div>
-      <div class="sub-action-list" id="inbox-categories">
-        <button type="button" class="sub-action-item active" data-inbox-category="">
-          <span>All types</span>
-        </button>
-      </div>
-      <div class="sub-section-title">How this works</div>
-      <div class="panel-note">
-        Registrations and Remote Control requests, oldest first. Approving or rejecting emails the customer; a reply asks them something first, such as payment. Confirm a registration's phone number before approving it. A tracking ID starts with REG for a registration and RMT for Remote Control.
-      </div>
-  `;
+      <div class="chip-row">
+        <span class="chip-row-label">Show</span>
+        <div class="filter-chips">
+          <button type="button" class="filter-chip active" data-inbox-filter="open">
+            <span>Open</span>${open > 0 ? `<span class="chip-badge">${open}</span>` : ""}
+          </button>
+          <button type="button" class="filter-chip" data-inbox-filter="closed"><span>Decided</span></button>
+          <button type="button" class="filter-chip" data-inbox-filter="all"><span>Everything</span></button>
+        </div>
+      </div>${typeRow}`;
 }
 
 /**
@@ -237,16 +210,16 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           document.querySelectorAll("[data-inbox-filter]").forEach(function (button) {
             var name = button.dataset.inboxFilter;
             if (!(name in byFilter)) return;
-            setBadge(button, button.classList.contains("segmented-tab") ? "chip-badge" : "sub-action-badge", byFilter[name]);
+            setBadge(button, "chip-badge", byFilter[name]);
           });
           if (BOX === "tasks") {
             document.querySelectorAll('[data-action="tab-requests"]').forEach(function (button) {
-              setBadge(button, button.classList.contains("segmented-tab") ? "chip-badge" : "sub-action-badge", counts.openTasks);
+              setBadge(button, "chip-badge", counts.openTasks);
             });
           }
         }
 
-        /** Show which view is on, in the view tabs and in the panel alike. */
+        /** Show which view is on. */
         function markFilter() {
           document.querySelectorAll("[data-inbox-filter]").forEach(function (button) {
             button.classList.toggle("active", button.dataset.inboxFilter === filter);
@@ -626,18 +599,18 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
         function renderCategories(list) {
           var container = document.getElementById("inbox-categories");
           if (!container) return;
-          var all = el("button", "sub-action-item" + (category ? "" : " active"));
+          var all = el("button", "filter-chip" + (category ? "" : " active"));
           all.type = "button";
           all.dataset.inboxCategory = "";
           all.append(el("span", null, "All types"));
           var rows = [all];
           list.forEach(function (type) {
-            var row = el("button", "sub-action-item" + (type.id === category ? " active" : ""));
+            var row = el("button", "filter-chip" + (type.id === category ? " active" : ""));
             row.type = "button";
             row.dataset.inboxCategory = type.id;
             row.title = type.prefix + "-\u2026: " + type.total + " conversation" + (type.total === 1 ? "" : "s") + ", " + type.open + " open";
             row.append(el("span", "truncate", type.label));
-            if (type.open > 0) row.append(el("span", "sub-action-badge", type.open));
+            if (type.open > 0) row.append(el("span", "chip-badge", type.open));
             rows.push(row);
           });
           container.replaceChildren.apply(container, rows);
@@ -646,24 +619,24 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
         function renderMailboxes(list) {
           var container = document.getElementById("inbox-mailboxes");
           if (!container) return;
-          var all = el("button", "sub-action-item" + (mailbox ? "" : " active"));
+          var all = el("button", "filter-chip" + (mailbox ? "" : " active"));
           all.type = "button";
           all.dataset.inboxMailbox = "";
           all.append(el("span", null, "All mailboxes"));
           var rows = [all];
           var known = false;
           list.forEach(function (box) {
-            var row = el("button", "sub-action-item" + (box.mailbox === mailbox ? " active" : ""));
+            var row = el("button", "filter-chip" + (box.mailbox === mailbox ? " active" : ""));
             row.type = "button";
             row.dataset.inboxMailbox = box.mailbox;
             row.title = box.total + " conversation" + (box.total === 1 ? "" : "s") + ", " + box.open + " open";
             row.append(el("span", "truncate", box.mailbox));
-            if (box.unread > 0) row.append(el("span", "sub-action-badge", box.unread));
+            if (box.unread > 0) row.append(el("span", "chip-badge", box.unread));
             if (box.mailbox === mailbox) known = true;
             rows.push(row);
           });
           if (mailbox && !known) {
-            var current = el("button", "sub-action-item active");
+            var current = el("button", "filter-chip active");
             current.type = "button";
             current.dataset.inboxMailbox = mailbox;
             current.append(el("span", "truncate", mailbox));

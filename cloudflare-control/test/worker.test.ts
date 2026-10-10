@@ -2444,41 +2444,69 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(parsed >= pages.length, `only ${parsed} scripts were parsed across ${pages.length} pages`);
   });
 
-  test("Every data- control in the context panel is one the panel script reads", async () => {
-    // The panel shipped once as markup with no behaviour at all, and later a
-    // density toggle was added whose attribute was left out of the delegated
-    // selector -- so the buttons rendered, highlighted on hover, and did
-    // nothing. Neither failure shows up in a typecheck.
-    const pages = [
-      "/admin/workstations?tenant=greenwood",
-      "/admin/apps-web?tenant=greenwood",
-      "/admin/staff?tenant=greenwood",
-      "/admin/settings?tenant=greenwood"
+  test("The rail is icons named on hover, and no console page carries a context panel", async () => {
+    // The sidebar used to hold a second panel under the navigation, repeating
+    // the view tabs and filters that were already above the content. A page's
+    // controls now live in the page; the rail only navigates.
+    const pages: Array<[string, string]> = [
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/super/organizations", superSessionCookie],
+      ["/super/tasks", superSessionCookie],
+      ["/super/mail", superSessionCookie],
+      ["/super/catalogs", superSessionCookie],
+      ["/super/system", superSessionCookie]
     ];
 
-    for (const page of pages) {
-      const html = await (await call(page, { cookie: orgSessionCookie })).text();
-      const panel = html.match(/<aside class="sub-panel"[\s\S]*?<\/aside>/);
-      assert.ok(panel, `${page} has no context panel`);
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, { cookie })).text();
+      assert.doesNotMatch(html, /sub-panel|sub-action-item|sub-section-title|toggle-subpanel/, `${page} still renders a context panel`);
 
-      const used = new Set((panel![0].match(/\sdata-(focus|density|filter|action|preset|quick-domain)=/g) || []).map((a) => a.trim().slice(0, -1)));
-      assert.ok(used.size > 0, `${page} renders a panel with no controls at all`);
-
-      // The one selector the delegated listener matches against.
-      const selector = html.match(/event\.target\.closest\("([^"]+)"\)/);
-      assert.ok(selector, `${page} does not delegate panel clicks`);
-
-      for (const attribute of used) {
-        assert.ok(
-          selector![1].includes(`[${attribute}]`),
-          `${page} renders ${attribute} but the panel listener never matches it`
-        );
+      const items = html.match(/<a [^>]*class="sidebar-item rail-item[^>]*>[\s\S]*?<\/a>/g) || [];
+      assert.ok(items.length >= 4, `${page} renders ${items.length} rail items`);
+      for (const item of items) {
+        // The name is what a screen reader says and what hovering shows; a
+        // native title on top of it would show the name twice.
+        assert.match(item, /aria-label="[^"]+"/, `${page}: a rail item has no name`);
+        assert.match(item, /<span class="rail-tooltip"[^>]*>[^<]+<\/span>/, `${page}: a rail item has no tooltip`);
+        assert.doesNotMatch(item.slice(0, item.indexOf(">")), /\stitle=/, `${page}: a rail item carries a native title as well`);
       }
+      assert.equal((html.match(/aria-current="page"/g) || []).length, 1, `${page} marks one rail item as the current page`);
+    }
+  });
+
+  test("A button shows that its request is under way, on the consoles and the sign-in pages", async () => {
+    // Sign-in sent its request and left the button exactly as it was, so a slow
+    // answer read as a frozen page. The shell and the public pages emit one
+    // script that marks the control whose click started a request.
+    const pages: Array<[string, string]> = [
+      ["/", ""],
+      ["/contact", ""],
+      ["/admin/workstations?tenant=greenwood", orgSessionCookie],
+      ["/super/organizations", superSessionCookie]
+    ];
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, cookie ? { cookie } : {})).text();
+      assert.match(html, /window\.lkBusy = function/, `${page} does not emit the busy script`);
+    }
+    // The home page demo once asked for its address in the browser's own
+    // prompt() box and answered in alert(): nothing else on the site does.
+    const home = await (await call("/")).text();
+    assert.doesNotMatch(home, /[^a-zA-Z.](alert|prompt|confirm)\(/, "a public page opens a browser dialog");
+    assert.match(home, /id="sim-modal"/);
+    assert.match(home, /id="sim-broadcast-form" hidden/);
+
+    for (const sheet of [CONSOLE_STYLESHEET_PATH, SITE_STYLESHEET_PATH]) {
+      const css = await (await call(sheet)).text();
+      assert.match(css, /\.is-loading::before\s*\{/, `${sheet} does not style a working control`);
+      assert.match(css, /@keyframes lk-spin/, `${sheet} has no spinner animation`);
     }
   });
 
   test("Every link the console renders goes somewhere, and the portal preview goes to the grid", async () => {
-    // Moving the app grid from / to /home left the context panel's "Preview
+    // Moving the app grid from / to /home left the console's "Preview
     // User Portal" link pointing at /, which had quietly become the organization
     // homepage. It did not 404 and it did not fail a typecheck -- it simply
     // opened the wrong page, which is the whole failure mode Rule 5g warns
@@ -5349,18 +5377,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(pc1Shut, "PC-01 must receive the shutdown command");
   });
 
-  test("Workstations console sidebar renders Workstation Groups and removes duplicate commands", async () => {
+  test("Workstations console renders its groups as chips and no duplicate commands", async () => {
     const res = await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie });
     assert.equal(res.status, 200);
     const html = await res.text();
 
-    // Verify sidebar has Workstation Groups
-    assert.match(html, /Workstation Groups/);
-    assert.match(html, /data-filter="group:all"/);
-    assert.match(html, /data-filter="group:__ungrouped__"/);
+    // The groups are a row of filter chips above the grid
+    assert.match(html, /id="group-filter-chips"/);
+    assert.match(html, /class="filter-chip" data-filter="group:__ungrouped__"/);
     assert.match(html, /data-action="new-group"/);
+    assert.match(html, /closest\('\[data-action="new-group"\], \[data-action="delete-group"\]'\)/);
 
-    // Verify duplicate "Batch Commands" block is absent from sidebar
+    // Verify duplicate "Batch Commands" block is absent
     assert.ok(!html.includes("Batch Commands"));
     assert.ok(!html.includes("data-action=\"open-lock-all\""));
 
@@ -5375,16 +5403,16 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(html, /id="btn-shutdown-all"/);
   });
 
-  test("Staff console sidebar renders Role filter and standard form-checkbox styling", async () => {
+  test("Staff console renders the Role filter chips and standard form-checkbox styling", async () => {
     const res = await call("/admin/staff?tenant=greenwood", {
       cookie: orgSessionCookie
     });
     assert.equal(res.status, 200);
     const html = await res.text();
 
-    // 1. Context subpanel renders "Role" section and filter options
-    assert.match(html, /<div class="sub-section-title"[^>]*>Role<\/div>/);
-    assert.match(html, /id="sub-role-list"/);
+    // 1. The role filter is a row of chips in the table's header, each with its count
+    assert.match(html, /id="staff-role-chips"/);
+    assert.match(html, /class="filter-chip active" data-filter="all">\s*<span>All Roles<\/span>\s*<span class="chip-badge">\d+<\/span>/);
     assert.match(html, /data-filter="all"/);
     assert.match(html, /data-filter="operator"/);
     assert.match(html, /data-filter="assistant"/);
@@ -5407,7 +5435,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     const html = await res.text();
 
-    // 1. Context subpanel renders tab switching buttons (not scrolling anchor jumps)
+    // 1. The view tabs switch panes (not scrolling anchor jumps)
     assert.match(html, /data-action="tab-general"/);
     assert.match(html, /data-action="tab-domains"/);
     assert.match(html, /data-action="tab-homepage"/);

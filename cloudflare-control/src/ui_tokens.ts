@@ -105,9 +105,8 @@ const INVARIANT_TOKENS = `      --accent-gradient: linear-gradient(135deg, var(-
       --radius-lg: 14px;
       --radius-xl: 18px;
       --radius-pill: 9999px;
-      --rail-width: 72px;
-      --subpanel-width: 272px;
-      --sidebar-width: 240px;
+      --sidebar-width: 68px;
+      --drawer-width: 240px;
       --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
       --ease-out: cubic-bezier(0.2, 0, 0, 1);
       --transition-fast: 0.15s ease;
@@ -248,5 +247,153 @@ export const THEME_TOGGLE_SCRIPT = `
 
       if (systemDark && systemDark.addEventListener) systemDark.addEventListener("change", relabel);
       relabel();
+    })();
+`;
+
+/**
+ * The "working" state of a control: a spinner in front of its label while the
+ * request its click started is under way. Part of every stylesheet whose page
+ * emits `BUSY_SCRIPT`.
+ */
+export const BUSY_CSS = `
+    @keyframes lk-spin { to { transform: rotate(360deg); } }
+    .is-loading { cursor: progress; opacity: 0.8; }
+    .is-loading > svg:first-child { display: none; }
+    .is-loading::before {
+      content: "";
+      display: inline-block;
+      flex-shrink: 0;
+      width: 0.9em;
+      height: 0.9em;
+      margin-inline-end: 0.5em;
+      vertical-align: -0.1em;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: lk-spin 0.6s linear infinite;
+    }
+    @media (prefers-reduced-motion: reduce) { .is-loading::before { animation-duration: 1.8s; } }
+`;
+
+/**
+ * Shows that a click is being worked on. A button that sends a request used to
+ * look exactly as it did before the click until the answer came back, so a slow
+ * sign-in read as a frozen page.
+ *
+ * No handler has to ask for it: the control whose click (or whose form's
+ * submit) is being handled is remembered for that turn of the event loop, and a
+ * request that changes something (any method but GET) started in it marks the
+ * control until the answer arrives. A confirmation dialog hands the mark back
+ * to the control that opened it. A second click on a working control is
+ * dropped. `window.lkBusy(control, on)` is the same switch for a handler whose
+ * work is not a request.
+ *
+ * Emitted inside a nonce'd `<script>`.
+ */
+export const BUSY_SCRIPT = `
+    (function () {
+      "use strict";
+      var CONTROL = "button, a.btn, input[type='submit'], [role='button']";
+      var RELEASE_DELAY_MS = 200;
+      var counts = new WeakMap();
+      var armed = null;
+      var chained = null;
+      var opener = null;
+      var leaving = false;
+
+      function hold(control) {
+        var n = counts.get(control) || 0;
+        counts.set(control, n + 1);
+        if (!n) {
+          control.classList.add("is-loading");
+          control.setAttribute("aria-busy", "true");
+        }
+        chained = control;
+      }
+
+      function drop(control) {
+        var n = (counts.get(control) || 0) - 1;
+        if (n > 0) { counts.set(control, n); return; }
+        counts.delete(control);
+        control.classList.remove("is-loading");
+        control.removeAttribute("aria-busy");
+        if (chained === control) chained = null;
+      }
+
+      // The answer usually leads straight to a reload or another request; keep
+      // the mark across that gap, and for good once the page is on its way out.
+      function release(control) {
+        setTimeout(function () { if (!leaving) drop(control); }, RELEASE_DELAY_MS);
+      }
+
+      function arm(control) {
+        if (!control) return;
+        armed = control;
+        setTimeout(function () { if (armed === control) armed = null; }, 0);
+      }
+
+      window.lkBusy = function (control, on) {
+        if (!control || !control.classList) return;
+        if (on) hold(control);
+        else if (counts.get(control)) drop(control);
+      };
+
+      document.addEventListener("click", function (event) {
+        var control = event.target && event.target.closest ? event.target.closest(CONTROL) : null;
+        if (!control) return;
+        if (control.classList.contains("is-loading")) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        if (control.closest(".lk-dialog")) {
+          arm(opener);
+        } else {
+          opener = control;
+          arm(control);
+        }
+      }, true);
+
+      document.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter" || !event.target || !event.target.closest) return;
+        if (event.target.closest(".lk-dialog")) arm(opener);
+      }, true);
+
+      function submitControl(event) {
+        var form = event.target;
+        return event.submitter || (form && form.querySelector ? form.querySelector("button[type='submit'], button:not([type]), input[type='submit']") : null);
+      }
+
+      document.addEventListener("submit", function (event) { arm(submitControl(event)); }, true);
+
+      // A form the page lets the browser send (sign-out) navigates away by itself.
+      window.addEventListener("submit", function (event) {
+        var control = submitControl(event);
+        setTimeout(function () { if (control && !event.defaultPrevented) hold(control); }, 0);
+      });
+
+      window.addEventListener("beforeunload", function () { leaving = true; });
+      window.addEventListener("pageshow", function () {
+        leaving = false;
+        var stale = document.querySelectorAll(".is-loading");
+        for (var i = 0; i < stale.length; i++) {
+          counts.delete(stale[i]);
+          stale[i].classList.remove("is-loading");
+          stale[i].removeAttribute("aria-busy");
+        }
+      });
+
+      var nativeFetch = window.fetch;
+      if (typeof nativeFetch !== "function") return;
+      window.fetch = function (input, init) {
+        var pending = nativeFetch.apply(window, arguments);
+        var control = armed || chained;
+        var method = (init && init.method) || (input && typeof input === "object" && input.method) || "GET";
+        if (!control || String(method).toUpperCase() === "GET") return pending;
+        hold(control);
+        var done = function () { release(control); };
+        pending.then(done, done);
+        return pending;
+      };
     })();
 `;
