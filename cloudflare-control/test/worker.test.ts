@@ -60,6 +60,8 @@ import { rotateUncheckedEnrollmentKeys } from "../src/db";
 import { listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
 import { DOCS_NAV, DOCS_PAGES } from "../src/docs_content.generated";
 import { headingId, renderMarkdown } from "../src/markdown";
+import { renderPortalHtml } from "../src/ui_portal";
+import type { PortalSite, Tenant } from "../src/types";
 import { SITE_STYLESHEET_PATH } from "../src/ui_landing";
 import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
@@ -1580,6 +1582,19 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(String.fromCharCode(card[1], card[2], card[3]), "PNG");
     assert.deepEqual([cardView.getUint32(16), cardView.getUint32(20)], [1200, 630]);
     assert.ok(card.length < 300 * 1024);
+  });
+
+  test("The User Portal shows a site that carries no category under the default", () => {
+    const site = { id: "s1", tenant_id: "t1", title: "Atlas", url: "https://atlas.example/", domain: "atlas.example", order_index: 0, is_active: 1, created_at: 0 };
+    const tenant = { id: "t1", name: "Greenwood", subdomain: "greenwood" } as Tenant;
+    for (const category of [null, undefined, "", "  "]) {
+      const other = { ...site, id: "s2", title: "Ledger", category: "Finance" } as PortalSite;
+      const html = renderPortalHtml(tenant, [{ ...site, category } as unknown as PortalSite, other], "nonce");
+      assert.ok(html.includes('data-category="general"') && html.includes('<span class="card-category">General</span>'));
+      assert.ok(html.includes('class="category-pill" data-category="general">General</button>'), "and it can be filtered to");
+    }
+    const named = renderPortalHtml(tenant, [{ ...site, category: "Maps & Travel" } as PortalSite], "nonce");
+    assert.ok(named.includes('data-category="maps &amp; travel"') && named.includes("Maps &amp; Travel</span>"));
   });
 
   test("Every public page leads home, and Contact is a page of its own", async () => {

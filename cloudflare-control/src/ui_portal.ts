@@ -9,7 +9,10 @@ import { FONT_LINKS, rootTokensCss, themeHeadHtml, LEGACY_PORTAL_ALIASES } from 
 export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string): string {
   const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
 
-  const categories = Array.from(new Set(sites.map((s) => s.category).filter(Boolean)));
+  // The column is NOT NULL with a default, but a row is not trusted to carry one:
+  // a site without a category is shown under the default instead of failing the page.
+  const categoryOf = (site: PortalSite): string => (typeof site.category === "string" && site.category.trim()) || "General";
+  const categories = Array.from(new Set(sites.map(categoryOf)));
 
   // Card content is operator-supplied. Cards are anchors rather than divs with an
   // inline navigation handler, so a hostile URL cannot become executable markup,
@@ -20,10 +23,10 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
       if (!href) return "";
       const thumb = safeHttpUrl(site.thumbnail_url) || FALLBACK_THUMBNAIL;
       return `
-    <a class="app-card" href="${escapeHtml(href)}" rel="noopener noreferrer" data-title="${escapeAttr(site.title.toLowerCase())}" data-domain="${escapeAttr(site.domain.toLowerCase())}" data-category="${escapeAttr(site.category.toLowerCase())}">
+    <a class="app-card" href="${escapeHtml(href)}" rel="noopener noreferrer" data-title="${escapeAttr(site.title.toLowerCase())}" data-domain="${escapeAttr(site.domain.toLowerCase())}" data-category="${escapeAttr(categoryOf(site).toLowerCase())}">
       <div class="card-thumb">
         <img class="card-thumb-img" src="${escapeHtml(thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">
-        <span class="card-category">${escapeHtml(site.category)}</span>
+        <span class="card-category">${escapeHtml(categoryOf(site))}</span>
       </div>
       <div class="card-body">
         <div class="card-header">
