@@ -3788,7 +3788,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ------------------------------------------------------ registration rules
 
   test("Rejects reserved subdomains and implausible emails at registration", async () => {
-    for (const subdomain of ["admin", "www", "super", "api"]) {
+    for (const subdomain of ["admin", "www", "super", "api", "releases", "updates", "login", "support", "mta-sts"]) {
       const { res, data } = await callJson(
         "/api/auth/register",
         json(signupBody({ name: "Reserved", email: `reserved-${subdomain}@example.com`, password: "ReservedPass123!", subdomain }))

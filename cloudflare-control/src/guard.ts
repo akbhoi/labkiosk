@@ -80,7 +80,21 @@ const RESERVED_SLUGS = new Set([
   "mail",
   "app",
   "kiosk",
-  "root"
+  "root",
+  // Platform services that are, or may become, hostnames of their own
+  // (releases.labkiosk.org serves the over-the-air release bucket).
+  "releases", "release", "updates", "update", "ota", "download", "downloads", "mirror",
+  "cdn", "static", "assets", "media", "files", "images", "img",
+  "docs", "wiki", "blog", "help", "support", "billing",
+  "dashboard", "console", "platform", "system", "internal",
+  "dev", "staging", "stage", "test", "testing", "beta", "preview",
+  // Sign-in and accounts: a lookalike organization here could phish.
+  "account", "accounts", "login", "signin", "signup", "register", "auth", "sso", "oauth",
+  "security", "official", "team", "staff",
+  // Mail and DNS conventions.
+  "abuse", "postmaster", "hostmaster", "webmaster", "noreply", "no-reply",
+  "smtp", "imap", "pop", "pop3", "webmail", "ns1", "ns2", "autodiscover", "autoconfig", "mta-sts",
+  "git", "vpn", "ftp"
 ]);
 
 /**

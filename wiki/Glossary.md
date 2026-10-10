@@ -156,7 +156,7 @@ The Durable Object, one per workstation, that carries a Remote Control session: 
 
 ### Reserved slug
 
-A subdomain the platform keeps for itself: `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root`. Neither registerable nor resolvable as an organization.
+A subdomain the platform keeps for itself, such as `www`, `super`, `api`, `admin`, `releases` or `login` (full list: [Configuration Reference](Configuration-Reference#reserved-subdomains)). Neither registerable nor resolvable as an organization.
 
 ### Rollback
 
