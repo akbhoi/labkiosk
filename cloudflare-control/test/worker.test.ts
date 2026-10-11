@@ -23,6 +23,19 @@ import { DEMO_SLUGS } from "../src/demo";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
+import {
+  COUNTRIES,
+  GEO_DATA_PATH,
+  NO_POSTAL_CODE,
+  POSTAL_FORMATS,
+  STATES,
+  TAX_IDS,
+  cleanPostalCode,
+  cleanTaxId,
+  needsPostalCode,
+  postalCodeProblem,
+  taxIdProblem
+} from "../src/geo";
 import { isHostUnder } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -419,6 +432,63 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const unsent = await callJson("/api/auth/register", json(signupBody({ email: "nocode@example.com", subdomain: "nocode" })));
     assert.equal(unsent.res.status, 400);
     assert.match(unsent.data.error, /expired/);
+  });
+
+  test("A registration's country decides its state, postal code and tax ID", async () => {
+    // Each attempt from its own address, so the per-address limit stays out of the way.
+    let attempt = 0;
+    const register = (overrides: Record<string, unknown>) =>
+      callJson("/api/auth/register", { ...json(signupBody(overrides)), headers: { "CF-Connecting-IP": `203.0.113.${++attempt}` } });
+    const refused = async (overrides: Record<string, unknown>, pattern: RegExp, why: string) => {
+      const { res, data } = await register(overrides);
+      assert.equal(res.status, 400, why);
+      assert.match(data.error, pattern, why);
+    };
+    await refused({ country: "Atlantis" }, /country/, "a country that is not on the list");
+    await refused({ country: "" }, /country/, "no country");
+    await refused({ postalCode: "7510" }, /postal code/, "a PIN code has six digits");
+    await refused({ postalCode: "" }, /postal code/, "India's addresses carry one");
+    await refused({ region: "Atlantis" }, /state or union territory/, "a state India does not have");
+    await refused({ region: "" }, /state or union territory/, "India's states are listed, so one is chosen");
+    await refused({ taxId: "12345" }, /GSTIN/, "a GSTIN has fifteen characters");
+    await refused({ country: "US", region: "California", postalCode: "751001", taxId: "" }, /postal code/, "the code is checked against the country sent");
+    // The ISO code and the name are the same country; what passes these checks fails only on the email code.
+    for (const country of ["IN", "in", "India"]) {
+      const { data } = await register({ country, email: "geo@example.com", subdomain: "geo-check" });
+      assert.match(data.error, /expired/, `${country} is accepted`);
+    }
+    const emirates = await register({
+      country: "AE", region: "Dubai", postalCode: "", taxId: "100123456700003", email: "geo@example.com", subdomain: "geo-check"
+    });
+    assert.match(emirates.data.error, /expired/, "a country without postal codes needs none");
+
+    // The table is consistent with itself: every example passes its own pattern.
+    const codes = new Set(COUNTRIES.map((row) => row[0]));
+    assert.equal(codes.size, COUNTRIES.length, "no country is listed twice");
+    for (const [code, , dial] of COUNTRIES) {
+      assert.match(code, /^[A-Z]{2}$/);
+      assert.match(dial, /^[1-9]\d{0,3}$/, `${code} has a calling code`);
+    }
+    for (const [code, [, example]] of Object.entries(POSTAL_FORMATS)) {
+      assert.ok(codes.has(code), `${code} is a listed country`);
+      assert.equal(postalCodeProblem(code, cleanPostalCode(example)), null, `${code}'s example postal code passes`);
+      assert.ok(needsPostalCode(code), `${code} cannot both have a format and no postal code`);
+    }
+    for (const [code, format] of Object.entries(TAX_IDS)) {
+      assert.ok(codes.has(code), `${code} is a listed country`);
+      if (format.pattern) assert.equal(taxIdProblem(code, cleanTaxId(format.example)), null, `${code}'s example tax ID passes`);
+    }
+    for (const code of [...Object.keys(STATES), ...NO_POSTAL_CODE]) assert.ok(codes.has(code), `${code} is a listed country`);
+
+    // The form reads the same table, as an immutable file.
+    const table = await call(GEO_DATA_PATH);
+    assert.equal(table.status, 200);
+    assert.equal(table.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+    assert.equal(((await table.json()) as { countries: unknown[] }).countries.length, COUNTRIES.length);
+    assert.equal((await call("/assets/geo-00000000.json")).headers.get("Cache-Control"), "no-store");
+    const landing = await (await call("/register")).text();
+    assert.ok(landing.includes(GEO_DATA_PATH), "the registration form asks for the current table");
+    assert.match(landing, /<select class="form-input" id="reg-country"/);
   });
 
   test("A wrong code is refused and stops working after five guesses", async () => {

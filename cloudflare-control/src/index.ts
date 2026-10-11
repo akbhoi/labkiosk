@@ -27,6 +27,7 @@ import {
   SOCIAL_IMAGE_PATH
 } from "./ui_landing";
 import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { GEO_DATA_PATH, GEO_JSON } from "./geo";
 import {
   FAVICON_PATH,
   ZARAZ_LOADER_PATH,
@@ -1051,6 +1052,17 @@ export default {
           "Content-Type": "text/css; charset=utf-8",
           "X-Content-Type-Options": "nosniff",
           "Cache-Control": current ? "public, max-age=31536000, immutable" : "no-store"
+        }
+      });
+    }
+
+    // The registration form's country table (src/geo.ts), served the same way.
+    if (path.startsWith("/assets/geo-") && path.endsWith(".json") && method === "GET") {
+      return new Response(GEO_JSON, {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": path === GEO_DATA_PATH ? "public, max-age=31536000, immutable" : "no-store"
         }
       });
     }
