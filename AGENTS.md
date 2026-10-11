@@ -11,6 +11,7 @@ This file is deliberately short: the rules every change must respect, and where 
 |---|---|
 | Client OS, agent, extension, wizard, installer, ISO build | [`distro-builder/AGENTS.md`](distro-builder/AGENTS.md) (authoritative) |
 | Cloudflare Worker, D1, consoles, security | [`cloudflare-control/AGENTS.md`](cloudflare-control/AGENTS.md) (authoritative) |
+| Every email: templates, layout, subjects, sending, receiving | [`cloudflare-email-routing/README.md`](cloudflare-email-routing/README.md) — all email changes go there only |
 | Task procedures, loaded on demand | [`.agents/skills/`](.agents/skills/) — see the table below |
 
 ## Skills — open the one that matches the task
@@ -148,6 +149,10 @@ from the simulator.
   Every id list: ≤ 500, chunked under D1's 100-parameter limit.
 - Every template or script block: the nonce, no inline handlers, no `escapeHtml`/`escapeAttr` in
   client code.
+- **Email changes go in `cloudflare-email-routing/` only**: every email's design, layout and templates,
+  a code message's subject and the automatic headers live in `src/templates/` and `src/send.ts`. The
+  controller only picks the template and the recipient (`sendMail()`); never build or restyle email there.
+  Verify with `pnpm --prefix cloudflare-email-routing test` and `pnpm --prefix cloudflare-email-routing run preview`.
 - Every schema change: a new migration **and** `SCHEMA_SQL`; parent-table CHECK changes use the
   cascade-safe rebuild (`labkiosk-d1-schema`).
 - On Windows, `python3` may be the Microsoft Store stub — run `python`. Never write build files with

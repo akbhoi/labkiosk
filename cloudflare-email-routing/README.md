@@ -38,6 +38,19 @@ mail client honours them. Every value is escaped, and only an http(s) address be
 | `alert` | A security notice about the recipient's own account |
 | `notice` | Plain text in the scaffold: what anything without its own template goes out as |
 
+**This folder is the one place email changes.** The controller chooses the template, the recipient
+and the plain text; how a message looks, a code message's subject and its automatic headers are
+decided here.
+
+**One-time codes.** The subject never carries the code ("Your Lab Kiosk sign-in OTP"), and neither
+does the preview line: both show on a locked phone and in every inbox list. `POST /send` replaces
+whatever subject the controller wrote for a `code` message (`mailSubject()`). The body names the
+code ("Verification code", "Sign-in code") directly above the digits, written as one unbroken run,
+which is what Gmail's apps (the **Copy code** chip) and Apple Mail (AutoFill) look for. No email
+client runs scripts, so there is no copy button: a double-click or long press selects the whole code
+everywhere, and Apple Mail selects it with one click (`user-select: all`). A code or a security alert
+goes out with `Auto-Submitted: auto-generated`, so an out-of-office reply never answers it.
+
 To add one: a file beside the others exporting its data type and `render…()`, its case in
 `templates/index.ts`, and a sample in `test/samples.ts` (a test fails without one). To see them:
 
