@@ -3,7 +3,7 @@ Description=Lab Kiosk: encrypted swap partition, behind compressed RAM
 Documentation=file:///usr/local/sbin/labkiosk-swap
 ConditionKernelCommandLine=labkiosk.installed=1
 After=local-fs.target
-Before=nodm.service
+Before=labkiosk-session.service
 
 [Service]
 Type=oneshot

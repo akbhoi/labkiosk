@@ -390,7 +390,7 @@ def apply_keymap(root, layout, variant):
         if systemd_is_running():
             run(["localectl", "set-x11-keymap", layout, "pc105", variant], check=False)
         # The running X session only changes when it is told to, and there may
-        # not be one -- this also runs from the wizard before nodm starts.
+        # not be one -- this also runs from the wizard before the kiosk session starts.
         env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
         cmd = ["setxkbmap", "-layout", layout]
         if variant:

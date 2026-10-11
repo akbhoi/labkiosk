@@ -197,7 +197,7 @@ class Hostname(unittest.TestCase):
 
     def test_the_service_runs_before_the_network(self):
         unit = read(CHROOT, "etc/systemd/system/labkiosk-hostname.service")
-        self.assertIn("Before=network-pre.target NetworkManager.service nodm.service", unit)
+        self.assertIn("Before=network-pre.target NetworkManager.service labkiosk-session.service", unit)
         self.assertIn("systemctl enable labkiosk-hostname.service",
                       read(ROOT, "config/hooks/live/01-lockdown.hook.chroot"))
 

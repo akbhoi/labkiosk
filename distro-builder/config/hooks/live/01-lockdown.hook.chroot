@@ -5,17 +5,24 @@ echo "[Hook] Applying Lab Kiosk Lockdown, Display & User Setup..."
 
 # 1. Create the unprivileged kiosk user.
 #    All virtual terminals (getty) are masked and SSH is absent, so passwordless
-#    login is securely restricted to the local nodm auto-display session.
+#    login is securely restricted to the local kiosk session
+#    (labkiosk-session.service).
+#
+#    Not in the `tty` group: that group may write to every terminal, which a
+#    browser escape would get for free, and nothing in the session needs it.
+#    The X server's own terminal, tty7, is handed to the kiosk user by
+#    labkiosk-session.service, and to nobody else.
 #
 #    There used to be a second account here, `user`, described as a fallback.
-#    Nothing could ever log into it: nodm is pinned to NODM_USER=kiosk, there is
+#    Nothing could ever log into it: the session is pinned to User=kiosk, there is
 #    no getty and no SSH, and live-config's user-setup is pre-seeded away below
 #    so it never creates one either. It was an unreachable account carrying an
 #    empty password and membership of input/video/tty, so it is gone.
 #
 #    `passwd -d` (empty) rather than `passwd -l` (locked) is deliberate and must
-#    stay: a locked kiosk account previously deadlocked nodm's PAM stack and
-#    produced a black screen on boot. See the pitfall table in AGENTS.md. What
+#    stay: a locked kiosk account previously deadlocked the display manager's
+#    PAM stack (nodm's, before labkiosk-session) and produced a black screen on
+#    boot. See the pitfall table in AGENTS.md. What
 #    makes that acceptable is that no PAM service can be reached to use the empty
 #    password -- every getty is masked, serial-getty and debug-shell are masked,
 #    and there is no SSH server in the image.
@@ -23,9 +30,14 @@ KIOSK_USER="kiosk"
 KIOSK_HOME="/home/$KIOSK_USER"
 
 if ! id -u "$KIOSK_USER" >/dev/null 2>&1; then
-    useradd -m -s /bin/bash -G audio,video,input,render,tty "$KIOSK_USER"
+    useradd -m -s /bin/bash -G audio,video,input,render "$KIOSK_USER"
 else
-    usermod -a -G audio,video,input,render,tty "$KIOSK_USER" || true
+    usermod -a -G audio,video,input,render "$KIOSK_USER" || true
+fi
+# Not "|| true": an image whose kiosk user can write to every terminal must not
+# be built.
+if id -nG "$KIOSK_USER" | tr ' ' '\n' | grep -qx tty; then
+    gpasswd -d "$KIOSK_USER" tty
 fi
 passwd -d "$KIOSK_USER" || true
 
@@ -58,7 +70,8 @@ chown -R "$KIOSK_USER:$KIOSK_USER" "$KIOSK_HOME"
 
 passwd -l root || true
 
-# Pre-seed live-config so it does not overwrite nodm or create duplicate users.
+# Pre-seed live-config so it does not set up a display manager (nodm, before
+# labkiosk-session; no longer installed) or create duplicate users.
 #
 # sudo and policykit are pre-seeded for the same reason, and they matter more:
 # live-config's 0040-sudo appends "kiosk ALL=(ALL) NOPASSWD: ALL" to
@@ -76,47 +89,54 @@ touch /var/lib/live/config/policykit
 mkdir -p /etc/live
 cat << 'EOF' > /etc/live/config.conf
 LIVE_USERNAME="kiosk"
-LIVE_USER_DEFAULT_GROUPS="audio,video,input,render,tty"
+LIVE_USER_DEFAULT_GROUPS="audio,video,input,render"
 EOF
 
-# 2. Configure X11 permissions and nodm autologin display manager.
-#    rootless Xorg requires xserver-xorg-legacy with needs_root_rights=yes to run
-#    smoothly across varied display hardware (including Hyper-V and VirtualBox).
+# 2. The kiosk session: X started by the kiosk user, not by root.
+#
+#    labkiosk-session.service runs xinit as kiosk in a logind session on tty7,
+#    in place of nodm, which started the X server itself as root. Xorg.wrap
+#    then keeps root only where it has to: needs_root_rights=auto runs the
+#    server as kiosk whenever the graphics have a kernel modesetting driver
+#    (Intel, AMD, nouveau, Hyper-V's and QEMU's), and as root only on the rest,
+#    such as plain VESA. allowed_users=console: only a process on a virtual
+#    console -- the session's tty7 -- may start it at all.
 mkdir -p /etc/X11
 cat << 'EOF' > /etc/X11/Xwrapper.config
-allowed_users=anybody
-needs_root_rights=yes
+allowed_users=console
+needs_root_rights=auto
 EOF
-chmod u+s /usr/lib/xorg/Xorg.wrap 2>/dev/null || true
-echo "/usr/sbin/nodm" > /etc/X11/default-display-manager
+# Not "|| true": without the setuid bit the machines that need root for X get a
+# black screen.
+chmod u+s /usr/lib/xorg/Xorg.wrap
 
-# Configure PAM for nodm to guarantee autologin succeeds without account lock
-# checks. `auth` and `account` are permitted outright because nodm starts a
-# session for a user fixed in /etc/default/nodm: there is no password to check
+# The session's PAM stack. `auth` and `account` are permitted outright because
+# the session is for a user fixed in the unit: there is no password to check
 # and no prompt for anyone to answer.
 #
 # `password` is pam_deny rather than pam_permit. Nothing should ever change a
 # credential through the autologin stack, and pam_permit there reports success
-# without doing anything -- a silent no-op that looks like it worked. `session`
-# is left as pam_permit: a locked-down session stack here is what previously
-# deadlocked the display manager into a black screen on boot.
+# without doing anything -- a silent no-op that looks like it worked.
+#
+# `session` registers the session with logind (pam_systemd). That is what
+# gives the kiosk user the graphics card and input devices of tty7's seat, and
+# without it a rootless X server cannot start. Nothing else is in the session
+# stack: a locked-down one there is what previously deadlocked the display
+# manager into a black screen on boot.
 mkdir -p /etc/pam.d
-cat << 'EOF' > /etc/pam.d/nodm
+cat << 'EOF' > /etc/pam.d/labkiosk-session
 #%PAM-1.0
 auth     required   pam_permit.so
 account  required   pam_permit.so
 password required   pam_deny.so
-session  required   pam_permit.so
+session  required   pam_systemd.so class=user type=x11
 EOF
-
-mkdir -p /etc/default
-cat << 'EOF' > /etc/default/nodm
-NODM_ENABLED=true
-NODM_USER=kiosk
-NODM_XSESSION=/home/kiosk/.xsession
-NODM_MIN_SESSION_TIME=2
-NODM_X_OPTIONS=":0 -nolisten tcp"
-EOF
+rm -f /etc/X11/default-display-manager /etc/pam.d/nodm /etc/default/nodm
+# Not "|| true": a kiosk that boots to a text console is no kiosk.
+if [ ! -x /usr/bin/xinit ] || [ ! -f /lib/x86_64-linux-gnu/security/pam_systemd.so ]; then
+    echo "[Hook] ERROR: xinit or pam_systemd is missing; the kiosk session cannot start." >&2
+    exit 1
+fi
 
 # 3. Ownership so the agent can do its job as the kiosk user.
 #
@@ -127,7 +147,8 @@ EOF
 #    kiosk could then rewrite the kiosk's own enforcement. The agent only reads
 #    from these paths. The two it genuinely writes to are granted below.
 chmod +x /etc/openbox/autostart || true
-chmod +x /opt/labkiosk/agent/agent.py || true
+# Not "|| true": the session runs the agent as a program (etc/openbox/autostart).
+chmod 0755 /opt/labkiosk/agent/agent.py
 chmod +x /usr/local/bin/labkiosk-install || true
 chmod +x /usr/local/sbin/labkiosk-localization || true
 chmod +x /usr/local/sbin/labkiosk-boot-slots || true
@@ -136,7 +157,7 @@ chmod +x /usr/local/sbin/labkiosk-share || true
 # Not "|| true": without them the journal never reaches the data partition and
 # the swap partition is never used.
 chmod 0755 /usr/local/sbin/labkiosk-logs /usr/local/sbin/labkiosk-swap /usr/local/sbin/labkiosk-hostname \
-    /usr/local/sbin/labkiosk-data-unlock
+    /usr/local/sbin/labkiosk-data-unlock /usr/local/sbin/labkiosk-health
 # Not "|| true": without it nothing mounts the data partition on an installed disk.
 chmod 0755 /etc/systemd/system-generators/labkiosk-data-generator
 chmod +x /usr/local/bin/labkiosk-lock-keys || true
@@ -302,6 +323,25 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
+# Nothing else. The kiosk session is a logind session that is active on its
+# seat, and polkit's defaults give such a user many rights a desktop user
+# expects (the time zone, the hostname, mounting disks, ...). The rules above
+# are the kiosk user's only ones; time zone and keyboard go through the one
+# sudoers entry for labkiosk-localization below. Taking an inhibitor
+# lock (keeping the screen on during a video) asks for nothing and stays open,
+# as it was before the session was registered with logind.
+cat << 'EOF' > /etc/polkit-1/rules.d/99-labkiosk-deny.rules
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "kiosk") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id.indexOf("org.freedesktop.login1.inhibit-") === 0) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    return polkit.Result.NO;
+});
+EOF
+
 # Sudoers permissions for the guided disk installer.
 mkdir -p /etc/sudoers.d
 cat << 'EOF' > /etc/sudoers.d/50-labkiosk-install
@@ -319,7 +359,8 @@ EOF
 chmod 0440 /etc/sudoers.d/51-labkiosk-localization
 
 # 7. Enable kiosk services.
-systemctl enable nodm.service || true
+systemctl set-default graphical.target
+systemctl enable labkiosk-session.service
 # Confirms a new system image after its one try, or reboots into the old one
 # (labkiosk-boot-slots). A no-op off an installed disk.
 systemctl enable labkiosk-boot-ok.service || true
@@ -338,6 +379,24 @@ systemctl enable labkiosk-swap.service
 #     lost. tmpfiles only adjusts this folder (z), it never creates it.
 rm -rf /var/log/journal
 
+# 7b2. The firewall: /etc/nftables.conf drops everything that arrives except
+# replies, DHCP, neighbour discovery and ping. Not "|| true", and the file is
+# checked to be ours: nftables ships its own, which filters nothing.
+if ! grep -q '^table inet labkiosk_firewall {' /etc/nftables.conf; then
+    echo "[Hook] ERROR: /etc/nftables.conf is not Lab Kiosk's firewall." >&2
+    exit 1
+fi
+systemctl enable nftables.service
+
+# 7b3. The clock from the network's own time servers (DHCP option 42), which
+# NetworkManager's dispatcher hands to systemd-timesyncd: many organizations
+# block the public NTP pool, and a clock minutes off breaks every HTTPS
+# connection. NetworkManager only runs dispatcher scripts owned by root and
+# writable by nobody else.
+chown root:root /etc/NetworkManager/dispatcher.d/50-labkiosk-ntp
+chmod 0755 /etc/NetworkManager/dispatcher.d/50-labkiosk-ntp
+systemctl enable NetworkManager-dispatcher.service
+
 # 7c. A hostname of each workstation's own, before the network comes up
 # (labkiosk-hostname): stored at installation, or derived from the network card.
 systemctl enable labkiosk-hostname.service
@@ -346,6 +405,19 @@ systemctl enable labkiosk-hostname.service
 # keyboard, and recreates it empty if the chip no longer releases the key
 # (labkiosk-data-unlock). Elsewhere it does nothing.
 systemctl enable labkiosk-data-unlock.service
+
+# 7e. Disk health (labkiosk-health): SMART for SATA and NVMe, the card's own
+# wear figures for eMMC, shortly after boot and every six hours, for the agent
+# to report a disk that is wearing out. smartmontools' own daemon stays off:
+# it would mail root, and there is nobody to read root's mail.
+systemctl enable labkiosk-health.timer
+systemctl disable smartmontools.service
+systemctl mask smartmontools.service
+
+# 7f. AppArmor profiles for the agent and x11vnc (/etc/apparmor.d/labkiosk-*),
+# in complain mode: they block nothing yet, and log whatever the two do beyond
+# them. The Debian kernel enables AppArmor; apparmor.service loads the profiles.
+systemctl enable apparmor.service
 
 # Configure Hyper-V & generic VM display/storage drivers in initramfs
 mkdir -p /etc/initramfs-tools
@@ -430,14 +502,14 @@ chmod 0755 /usr/local/sbin/labkiosk-data-permissions
 cat << 'EOF' > /etc/systemd/system/labkiosk-data-permissions.service
 [Unit]
 Description=Ensure /etc/labkiosk is writable by the Lab Kiosk agent
-# local-fs.target is where the LABKIOSK_DATA mount lands; nodm is what starts the
-# session the agent runs in, so this has to be settled before either matters.
+# local-fs.target is where the LABKIOSK_DATA mount lands; labkiosk-session is
+# what starts the session the agent runs in, so this has to be settled before either matters.
 # etc-labkiosk.mount is named explicitly because it is "nofail": systemd then
 # leaves that mount unordered against local-fs.target, so waiting for the
 # target alone would not wait for the partition. On live media the generator
 # creates no such unit, and ordering after a unit that does not exist is a no-op.
 After=local-fs.target etc-labkiosk.mount
-Before=nodm.service
+Before=labkiosk-session.service
 
 [Service]
 Type=oneshot

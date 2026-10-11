@@ -1,0 +1,12 @@
+[Unit]
+Description=Lab Kiosk: check the disks' health shortly after boot and every six hours
+Documentation=file:///usr/local/sbin/labkiosk-health
+
+[Timer]
+# Late enough that the kiosk session is up, so the confinement line describes it.
+OnBootSec=90s
+OnUnitActiveSec=6h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

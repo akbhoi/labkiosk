@@ -1,0 +1,40 @@
+[Unit]
+Description=Lab Kiosk: the kiosk session (X, Openbox, the agent and the browser) as the kiosk user
+Documentation=file:///etc/openbox/autostart
+# In place of a display manager. nodm, which this replaced, started the X server
+# itself, as root, before the session; here the kiosk user starts it from a
+# logind session on tty7, so Xorg runs without root wherever the graphics have
+# a kernel modesetting driver -- every Intel, AMD and NVIDIA (nouveau) GPU and
+# most virtual ones. Xorg.wrap (/etc/X11/Xwrapper.config) only keeps root for
+# the few that do not, such as plain VESA.
+After=systemd-user-sessions.service systemd-logind.service plymouth-quit-wait.service
+Conflicts=getty@tty7.service
+After=getty@tty7.service
+# A screen that keeps failing is still retried: there is nobody to start it.
+StartLimitIntervalSec=0
+
+[Service]
+User=kiosk
+WorkingDirectory=~
+# labkiosk-session's PAM stack checks no password (the user is fixed here) and
+# registers the session with logind (pam_systemd), which is what lets a
+# rootless X server open the graphics card and the input devices.
+PAMName=labkiosk-session
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty7
+UtmpMode=user
+# xinit ends when Openbox's session ends or the X server dies; either way the
+# whole session starts again, as nodm did.
+ExecStart=/usr/bin/xinit /home/kiosk/.xsession -- /usr/bin/Xorg :0 vt7 -keeptty -novtswitch -nolisten tcp
+Restart=always
+RestartSec=2
+
+[Install]
+Alias=display-manager.service
+WantedBy=graphical.target

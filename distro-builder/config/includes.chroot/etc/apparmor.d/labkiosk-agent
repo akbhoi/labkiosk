@@ -1,0 +1,82 @@
+# Lab Kiosk: the workstation agent (/opt/labkiosk/agent/agent.py).
+#
+# In complain mode: nothing is blocked, and whatever the agent does that this
+# profile does not list is logged by the kernel ("apparmor="ALLOWED""), kept in
+# the journal on LABKIOSK_DATA and printed by the boot test. Once a release has
+# shown no such lines it can be switched to enforce mode by dropping the flag.
+#
+# The profile attaches because the session runs the script itself
+# (/etc/openbox/autostart), not `python3 agent.py`: AppArmor matches the path
+# that was executed.
+
+abi <abi/3.0>,
+
+include <tunables/global>
+
+profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+  include <abstractions/openssl>
+  include <abstractions/python>
+  include <abstractions/ssl_certs>
+  include <abstractions/X>
+
+  # The loopback API, the control plane over HTTPS and its WebSocket, Remote
+  # Control's pipe to x11vnc, and NetworkManager's netlink view of the links.
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+  network unix stream,
+  network netlink raw,
+
+  /opt/labkiosk/agent/agent.py r,
+  /usr/bin/env ix,
+  /usr/bin/python3* ix,
+
+  /opt/labkiosk/** r,
+  /usr/share/labkiosk/** r,
+  /usr/share/zoneinfo/** r,
+
+  # Its enrolment, settings, logs and restart reports on LABKIOSK_DATA, and the
+  # browser policy it rewrites when the allowlist changes.
+  owner /etc/labkiosk/ r,
+  owner /etc/labkiosk/** rwk,
+  /etc/labkiosk/logs/reports/ r,
+  /etc/labkiosk/logs/reports/* r,
+  owner /etc/chromium/policies/managed/* rw,
+  /etc/labkiosk-installed r,
+
+  # What root left for it: boot and update state, disk health, the clock.
+  /run/labkiosk-update/* r,
+  /run/labkiosk-health/disks.json r,
+  /run/systemd/timesync/synchronized r,
+  /run/live/medium/boot/grub/** r,
+  @{PROC}/cmdline r,
+  @{PROC}/@{pid}/mounts r,
+  @{PROC}/@{pid}/cmdline r,
+  /sys/class/net/** r,
+  /sys/firmware/efi/ r,
+  /sys/firmware/efi/efivars/SecureBoot-* r,
+
+  # Its log, screen thumbnails and the per-boot VNC secret.
+  owner /tmp/lab-agent.log w,
+  owner /tmp/kiosk_thumb*.jpg rw,
+  owner /tmp/labkiosk/vnc.secret r,
+  owner /tmp/chromium-profile/** r,
+
+  # The programs it runs as itself.
+  /usr/bin/amixer ix,
+  /usr/bin/nmcli ix,
+  /usr/bin/pkill ix,
+  /usr/bin/scrot ix,
+  /usr/bin/setxkbmap ix,
+  /usr/bin/systemctl ix,
+  /usr/sbin/ip ix,
+  /usr/bin/ip ix,
+
+  # Root's helpers, through their sudoers entries. They are not confined by
+  # this profile: each re-validates its arguments against the system's own
+  # tables (01-lockdown.hook.chroot).
+  /usr/bin/sudo Ux,
+}

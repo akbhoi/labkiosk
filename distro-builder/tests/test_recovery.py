@@ -531,7 +531,7 @@ class ImageConfiguration(unittest.TestCase):
         self.assertIn("rm -rf /var/log/journal", hook)
         for unit in ("labkiosk-logs.service", "labkiosk-swap.service"):
             text = read(CHROOT, "etc/systemd/system", unit)
-            self.assertIn("Before=nodm.service", text)
+            self.assertIn("Before=labkiosk-session.service", text)
             self.assertIn("WantedBy=multi-user.target", text)
         self.assertIn("ConditionKernelCommandLine=labkiosk.installed=1",
                       read(CHROOT, "etc/systemd/system/labkiosk-logs.service"))

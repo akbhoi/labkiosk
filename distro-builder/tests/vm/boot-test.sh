@@ -18,6 +18,9 @@
 # journal, which labkiosk-logs keeps there. Its journal must also show the
 # encrypted swap partition in use behind compressed RAM, the kernel must say
 # Secure Boot was enforced, and the hostname the installer stored must be set.
+# After scenario 4, the journal of every boot must show the firewall loaded, X
+# run by the kiosk user, the agent and x11vnc under their AppArmor profiles and
+# the disk checked; what the profiles would still have blocked is printed.
 #
 # Then the signed download of phase 2. The kiosk has no shell, so the ISO's
 # own labkiosk-update runs from the host on the disk's mounted image store,
@@ -446,6 +449,49 @@ else
     screenshot unhealthy
     fail "unhealthy: still running after $UNHEALTHY_TIMEOUT s"
     stop_vm
+fi
+
+log "4b. hardening: firewall, session, AppArmor and disk health, from the journal on DATA"
+# Every boot so far is in it: scenario 4 ended in a clean reboot, which wrote
+# out the journal.
+rm -rf "$WORK/journal"
+mkdir "$WORK/journal"
+debugfs_data "rdump /logs/journal $WORK/journal" >/dev/null
+journal() { journalctl --directory="$WORK/journal/journal" --output=cat "$@" 2>/dev/null || true; }
+if journal --unit=nftables.service | grep -q '^Finished nftables'; then
+    pass "firewall: nftables.service loaded the ruleset"
+else
+    fail "firewall: nftables.service did not finish: $(journal --unit=nftables.service | tail -n 3 | tr '\n' ' ')"
+fi
+health_lines="$(journal --unit=labkiosk-health.service | grep '^\[HEALTH\]' || true)"
+if printf '%s\n' "$health_lines" | grep -qx '\[HEALTH\] Display server: Xorg runs as kiosk\.'; then
+    pass "session: Xorg ran as the kiosk user, not root"
+else
+    fail "session: expected Xorg to run as kiosk, labkiosk-health said: $(printf '%s\n' "$health_lines" | grep 'Display server' | sort -u | tr '\n' ' ')"
+fi
+if printf '%s\n' "$health_lines" | grep -q '^\[HEALTH\] AppArmor: agent labkiosk-agent (complain); x11vnc labkiosk-x11vnc (complain)\.$'; then
+    pass "apparmor: the agent and x11vnc ran under their profiles, in complain mode"
+else
+    fail "apparmor: expected both profiles attached, labkiosk-health said: $(printf '%s\n' "$health_lines" | grep 'AppArmor' | sort -u | tr '\n' ' ')"
+fi
+if printf '%s\n' "$health_lines" | grep -q '^\[HEALTH\] Disk vda '; then
+    pass "disk health: $(printf '%s\n' "$health_lines" | grep '^\[HEALTH\] Disk vda ' | tail -n 1)"
+else
+    fail "disk health: labkiosk-health checked no disk: $(printf '%s\n' "$health_lines" | tail -n 3 | tr '\n' ' ')"
+fi
+# Complain mode blocks nothing; what it would have blocked is what the profiles
+# still lack. Listed for whoever tightens them, never a failure.
+complaints="$(journalctl --directory="$WORK/journal/journal" --output=cat _TRANSPORT=kernel _TRANSPORT=audit 2>/dev/null \
+    | grep -E 'apparmor="(ALLOWED|DENIED)".*profile="labkiosk-' \
+    | while read -r line; do
+        printf '%s\n' "$line" | grep -oE '(operation|profile|name|requested_mask)="[^"]*"' | tr '\n' ' '
+        echo
+    done | sort | uniq -c | sort -rn || true)"
+if [ -n "$complaints" ]; then
+    log "apparmor: what the profiles do not cover yet (complain mode, nothing was blocked):"
+    printf '%s\n' "$complaints" | head -n 60
+else
+    log "apparmor: no complaints from either profile"
 fi
 
 # --------------------------------------------------------------------------

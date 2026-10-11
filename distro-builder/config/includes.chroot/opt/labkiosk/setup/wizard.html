@@ -1794,7 +1794,8 @@
     }
 
     // The machine facts an administrator checks here, with no shell: the
-    // hostname, and whether the firmware enforced Secure Boot for this boot.
+    // hostname, whether the firmware enforced Secure Boot for this boot, and
+    // whether a time server has set the clock (HTTPS fails on a wrong one).
     async function loadSystemFacts() {
       const line = document.getElementById('diag-system');
       const secureBoot = {
@@ -1807,7 +1808,10 @@
         const res = await fetch('http://127.0.0.1:8888/api/status', { cache: 'no-store' });
         const data = await res.json();
         line.textContent = t('ui.js.hostname', 'Hostname: ') + (data.hostname || '?') + ' · ' +
-          t('ui.js.secure-boot', 'Secure Boot: ') + (secureBoot[data.secureBoot] || secureBoot.unknown);
+          t('ui.js.secure-boot', 'Secure Boot: ') + (secureBoot[data.secureBoot] || secureBoot.unknown) + ' · ' +
+          t('ui.js.clock', 'Clock: ') + (data.clockSynchronized
+            ? t('ui.js.clock-synchronized', 'Set from a time server')
+            : t('ui.js.clock-not-synchronized', 'Not set from a time server yet'));
       } catch (err) {
         console.warn('Could not read the workstation status:', err);
         line.textContent = t('ui.js.could-not-reach-the-local-agent.2', 'Could not reach the local agent service.');

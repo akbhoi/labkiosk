@@ -1,0 +1,30 @@
+# Lab Kiosk: x11vnc, the screen Remote Control shows, on 127.0.0.1 only.
+#
+# In complain mode, as labkiosk-agent says: nothing is blocked, and anything
+# x11vnc does beyond this list is logged. It runs no commands (-nocmds), so it
+# executes nothing at all.
+
+abi <abi/3.0>,
+
+include <tunables/global>
+
+profile labkiosk-x11vnc /usr/bin/x11vnc flags=(complain) {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+  include <abstractions/X>
+
+  # Its port on loopback, which the agent connects to.
+  network inet stream,
+  network inet6 stream,
+  network unix stream,
+
+  /usr/bin/x11vnc mr,
+
+  # The per-boot password the session stores (-storepasswd) and reads (-rfbauth).
+  owner /tmp/labkiosk/ r,
+  owner /tmp/labkiosk/vnc.pass rw,
+
+  # The X display it shows.
+  /tmp/.X11-unix/X0 rw,
+  owner @{HOME}/.Xauthority r,
+}

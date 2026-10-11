@@ -121,6 +121,15 @@ BOOT_REPORT_SETTLED_STATUSES = (200, 400, 404)
 # the next start: one <boot id>.json each, deleted by it after seven days. The
 # agent cannot write there, so it keeps its own list of the ones it has sent.
 RESTART_REPORTS_DIR = "/etc/labkiosk/logs/reports"
+# Disk health, as labkiosk-health (root) found it at its last check: shortly
+# after boot and every six hours. The agent reports the disks wearing out or
+# failing; the Worker lists each disk once per state, so sending the same
+# finding after every check costs nothing.
+DISK_HEALTH_FILE = "/run/labkiosk-health/disks.json"
+DISK_PROBLEM_STATES = ("warning", "failing")
+DISK_FIELDS = ("device", "model", "serial", "state", "summary")
+MAX_DISK_HEALTH_BYTES = 16 * 1024
+MAX_DISKS_REPORTED = 8
 RESTART_REPORTS_SENT_FILE = "/etc/labkiosk/restart-reports-sent.json"
 RESTART_REPORT_NAME_PATTERN = re.compile(r"^([0-9a-f]{32})\.json\Z")
 # A report carries at most 16 KB of journal; anything far larger is not root's.
@@ -696,6 +705,20 @@ def secure_boot_state(efi_dir=EFI_DIR, var_path=SECURE_BOOT_VAR):
     if len(raw) != 5:
         return "unknown"
     return "on" if raw[4] == 1 else "off"
+
+
+# systemd-timesyncd touches this file each time it sets the clock from a time
+# server, and only then.
+CLOCK_SYNCHRONIZED_FILE = "/run/systemd/timesync/synchronized"
+
+
+def clock_synchronized(path=CLOCK_SYNCHRONIZED_FILE):
+    """
+    Has a time server set the clock since boot? A clock that never was can be
+    far enough off for every HTTPS connection to fail, which is worth seeing on
+    the diagnostics page before anything else.
+    """
+    return os.path.exists(path)
 
 
 def enrolment_is_persistent():
@@ -2209,6 +2232,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # Shown in the wizard's diagnostics: how to check
                         # Secure Boot on a machine with no shell.
                         "secureBoot": secure_boot_state(),
+                        "clockSynchronized": clock_synchronized(),
                         "hostname": socket.gethostname(),
                         # The kiosk bar asks for this to know which interface
                         # catalog to fetch, once per boot.
@@ -2830,10 +2854,10 @@ def post_telemetry():
         return json.loads(response.read().decode("utf-8"))
 
 
-def read_root_json(path, owner_uid=0):
+def read_root_json(path, owner_uid=0, max_bytes=MAX_BOOT_STATUS_BYTES):
     """
-    A small JSON object root wrote under /run/labkiosk-update, or None when
-    there is none. ValueError when the file is not what root wrote.
+    A small JSON object root wrote under /run, or None when there is none.
+    ValueError when the file is not what root wrote.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -2845,9 +2869,9 @@ def read_root_json(path, owner_uid=0):
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid:
             raise ValueError(f"{path} is not a file written by root")
-        raw = handle.read(MAX_BOOT_STATUS_BYTES + 1)
-    if len(raw) > MAX_BOOT_STATUS_BYTES:
-        raise ValueError(f"{path} is larger than {MAX_BOOT_STATUS_BYTES} bytes")
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"{path} is larger than {max_bytes} bytes")
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as err:
@@ -3318,12 +3342,113 @@ def report_restarts(progress):
         save_sent_restart_reports(sent)
 
 
+def read_disk_problems(path=DISK_HEALTH_FILE, owner_uid=0):
+    """
+    The disks labkiosk-health found wearing out or failing, as the Worker takes
+    them. None when it has not checked yet. ValueError when the file is not
+    what root wrote.
+    """
+    data = read_root_json(path, owner_uid, MAX_DISK_HEALTH_BYTES)
+    if data is None:
+        return None
+    disks = data.get("disks")
+    if not isinstance(disks, list):
+        raise ValueError(f"{path} does not list disks")
+    problems = []
+    for disk in disks[:MAX_DISKS_REPORTED]:
+        if not isinstance(disk, dict) or disk.get("state") not in DISK_PROBLEM_STATES:
+            continue
+        if not all(isinstance(disk.get(field), str) for field in DISK_FIELDS):
+            raise ValueError(f"{path} has a disk without {', '.join(DISK_FIELDS)}")
+        problems.append({field: disk[field] for field in DISK_FIELDS})
+    return problems
+
+
+def post_disk_health(problems):
+    """Send the problem disks. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}/api/devices/disk-health",
+        data=json.dumps({"disks": problems}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=15) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_disk_health(progress, path=DISK_HEALTH_FILE):
+    """
+    Send the result of each disk check that found a problem, once.
+
+    `progress["checked"]` is the modification time of the check last dealt
+    with; "logged" the problems already written to the log. Offline, a token
+    being replaced or a workstation not written yet (409) is tried again next
+    round; anything else waits for the next check.
+    """
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    try:
+        checked = os.stat(path).st_mtime_ns
+    except FileNotFoundError:
+        return
+    except OSError as err:
+        message = f"Disk health not read: {err}"
+        if message not in progress["logged"]:
+            progress["logged"].add(message)
+            log(message)
+        return
+    if checked == progress["checked"]:
+        return
+    try:
+        problems = read_disk_problems(path)
+    except ValueError as err:
+        log(f"Disk health not reported: {err}")
+        progress["checked"] = checked
+        return
+    if not problems:
+        progress["checked"] = checked
+        return
+    for disk in problems:
+        log(f"Disk {disk['device']} is {'failing' if disk['state'] == 'failing' else 'wearing out'}: {disk['summary']}")
+    try:
+        status = post_disk_health(problems)
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        if "offline" not in progress["logged"]:
+            progress["logged"].add("offline")
+            log(f"Disk health not reported yet: {err}")
+        return
+    progress["logged"].discard("offline")
+    if status == 200:
+        log("Reported the disk problems to the organization.")
+    elif status in BOOT_REPORT_SETTLED_STATUSES:
+        log(f"The control plane did not take the disk health report (HTTP {status}); not sending it again.")
+    elif status == 429:
+        log("The control plane has taken enough disk reports from this workstation today; the next check sends again.")
+    else:
+        log(f"Disk health report not recorded yet (HTTP {status}); trying again.")
+        return
+    progress["checked"] = checked
+
+
 def boot_report_loop():
     settled = None
     restarts = {"sent": load_sent_restart_reports(), "logged": set(), "held": False}
+    disks = {"checked": None, "logged": set()}
     while True:
         settled = report_boot_outcome(settled)
         report_restarts(restarts)
+        report_disk_health(disks)
         time.sleep(BOOT_REPORT_INTERVAL_SECONDS)
 
 

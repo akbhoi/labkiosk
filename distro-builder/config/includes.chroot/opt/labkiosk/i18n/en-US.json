@@ -216,5 +216,8 @@
   "ui.js.secure-boot-legacy-bios": "Off (started in legacy BIOS mode)",
   "ui.js.secure-boot-unknown": "Unknown",
   "ui.js.hostname": "Hostname: ",
-  "ui.js.secure-boot": "Secure Boot: "
+  "ui.js.secure-boot": "Secure Boot: ",
+  "ui.js.clock": "Clock: ",
+  "ui.js.clock-synchronized": "Set from a time server",
+  "ui.js.clock-not-synchronized": "Not set from a time server yet"
 }

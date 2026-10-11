@@ -135,7 +135,8 @@ jobs:
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-update \
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share \
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-logs \
-            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-data-unlock
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-data-unlock \
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health
           if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
             echo "::error::__pycache__ was written into the image overlay"
             exit 1
@@ -300,5 +301,6 @@ jobs:
             distro-builder/docker-build.sh \
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-swap \
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-hostname \
+            distro-builder/config/includes.chroot/etc/NetworkManager/dispatcher.d/50-labkiosk-ntp \
             distro-builder/tests/vm/boot-test.sh \
             docker-test/entrypoint.sh

@@ -10,7 +10,7 @@ After=etc-labkiosk.mount labkiosk-data-permissions.service systemd-journald.serv
 Wants=labkiosk-data-permissions.service
 # The kiosk user, and so the agent, must not be running while root prepares a
 # folder inside the partition that user owns.
-Before=nodm.service
+Before=labkiosk-session.service
 
 [Service]
 Type=oneshot
