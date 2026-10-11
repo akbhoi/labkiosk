@@ -123,7 +123,7 @@ Outgoing traffic is not filtered; which sites a user may open is the browser pol
 
 ### AppArmor, in complain mode
 
-`apparmor.service` loads two profiles: `labkiosk-agent` (attached to `/opt/labkiosk/agent/agent.py`) and `labkiosk-x11vnc` (attached to `/usr/bin/x11vnc`). Both are in **complain mode**: they block nothing, and what they would block is logged by the kernel to the journal (kept on `LABKIOSK_DATA` on an installed disk) and printed by the VM boot test. The session runs the agent as `/opt/labkiosk/agent/agent.py` itself, not `python3 agent.py`, because AppArmor attaches a profile to the path that was executed. `sudo` is unconfined from the agent's profile (`Ux`): root's helpers re-validate their arguments. Chromium has no profile; its own sandbox stays its main protection.
+`labkiosk-apparmor.service` loads two profiles (Debian's own `apparmor.service` skips live systems, and the kiosk always runs from live-boot's overlay; the profiles other packages ship stay unloaded): `labkiosk-agent` (attached to `/opt/labkiosk/agent/agent.py`) and `labkiosk-x11vnc` (attached to `/usr/bin/x11vnc`). Both are in **complain mode**: they block nothing, and what they would block is logged by the kernel to the journal (kept on `LABKIOSK_DATA` on an installed disk) and printed by the VM boot test. The session runs the agent as `/opt/labkiosk/agent/agent.py` itself, not `python3 agent.py`, because AppArmor attaches a profile to the path that was executed. `sudo` is unconfined from the agent's profile (`Ux`): root's helpers re-validate their arguments. Chromium has no profile; its own sandbox stays its main protection.
 
 ---
 

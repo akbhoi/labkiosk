@@ -356,10 +356,18 @@ umount_root
 start_vm
 promoted="current=$V_GOOD previous=$VERSION"
 deadline=$((SECONDS + PROMOTE_TIMEOUT))
+# What the screen shows halfway through the health window: kept only if the
+# scenario fails, since a VM that rolls back reboots before it can be captured.
+midway=$((SECONDS + 300))
 while [ "$SECONDS" -lt "$deadline" ] && vm_running && [ "$(env_now)" != "$promoted" ]; do
+    if [ -n "$midway" ] && [ "$SECONDS" -ge "$midway" ]; then
+        screenshot promote-midway
+        midway=""
+    fi
     sleep 10
 done
 if [ "$(env_now)" = "$promoted" ]; then
+    rm -f "$WORK/promote-midway.ppm"
     pass "promote: grubenv $promoted after $((PROMOTE_TIMEOUT - deadline + SECONDS)) s"
 elif vm_running; then
     screenshot promote
@@ -473,6 +481,10 @@ if printf '%s\n' "$health_lines" | grep -q '^\[HEALTH\] AppArmor: agent labkiosk
     pass "apparmor: the agent and x11vnc ran under their profiles, in complain mode"
 else
     fail "apparmor: expected both profiles attached, labkiosk-health said: $(printf '%s\n' "$health_lines" | grep 'AppArmor' | sort -u | tr '\n' ' ')"
+    log "apparmor: what labkiosk-apparmor.service and the kernel said:"
+    journal --unit=labkiosk-apparmor.service | tail -n 40
+    journalctl --directory="$WORK/journal/journal" --output=cat _TRANSPORT=kernel 2>/dev/null \
+        | grep -i 'apparmor' | sort | uniq -c | head -n 40 || true
 fi
 if printf '%s\n' "$health_lines" | grep -q '^\[HEALTH\] Disk vda '; then
     pass "disk health: $(printf '%s\n' "$health_lines" | grep '^\[HEALTH\] Disk vda ' | tail -n 1)"
@@ -489,9 +501,24 @@ complaints="$(journalctl --directory="$WORK/journal/journal" --output=cat _TRANS
     done | sort | uniq -c | sort -rn || true)"
 if [ -n "$complaints" ]; then
     log "apparmor: what the profiles do not cover yet (complain mode, nothing was blocked):"
-    printf '%s\n' "$complaints" | head -n 60
+    # Not a pipe: head closing it early kills printf with SIGPIPE, which
+    # pipefail turns into a failed boot test.
+    head -n 60 <<< "$complaints"
 else
     log "apparmor: no complaints from either profile"
+fi
+# A failed health check says which half of it failed, and the session's own
+# output (X, Openbox, the browser) says why; both are on DATA.
+if [ "$FAILED" -ne 0 ]; then
+    log "boot-ok: what labkiosk-boot-slots said on every boot so far:"
+    journal --unit=labkiosk-boot-ok.service | tail -n 40
+    log "session: the end of labkiosk-session's output:"
+    journal --unit=labkiosk-session.service | tail -n 80
+    # pam_systemd moves the session's processes into a session scope, so what
+    # X, Openbox and the browser print is found by the kiosk user's uid.
+    log "session: what the kiosk user's processes printed:"
+    journalctl --directory="$WORK/journal/journal" --output=short-monotonic \
+        _UID="$(awk -F: '$1 == "kiosk" { print $3 }' "$ROOTFS/etc/passwd")" 2>/dev/null | tail -n 200 || true
 fi
 
 # --------------------------------------------------------------------------

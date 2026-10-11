@@ -1,0 +1,21 @@
+[Unit]
+Description=Lab Kiosk: load the agent's and x11vnc's AppArmor profiles
+Documentation=file:///etc/apparmor.d/labkiosk-agent file:///etc/apparmor.d/labkiosk-x11vnc
+# Debian's apparmor.service skips every live system (ConditionPathExists=
+# !/run/live/overlay/work), and the kiosk always runs from live-boot's overlay,
+# so these two profiles are loaded here instead. Only these two: the profiles
+# other packages ship stay unloaded, as they were, so nothing new can be denied
+# on the unattended boot path. A profile attaches only at exec, so this runs
+# before the session starts the agent; the session does not wait on its result.
+DefaultDependencies=no
+After=local-fs.target sys-kernel-security.mount
+Before=sysinit.target labkiosk-session.service
+ConditionSecurity=apparmor
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/apparmor_parser --replace /etc/apparmor.d/labkiosk-agent /etc/apparmor.d/labkiosk-x11vnc
+
+[Install]
+WantedBy=sysinit.target

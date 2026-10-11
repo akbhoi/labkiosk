@@ -304,21 +304,45 @@ def agent_answers():
         return False
 
 
-def browser_running(proc_dir="/proc"):
+def command_lines(proc_dir="/proc"):
+    """Every process's command line, as bytes, read one at a time."""
     try:
         pids = [name for name in os.listdir(proc_dir) if name.isdigit()]
     except OSError:
-        return False
+        return
     for pid in pids:
         try:
             with open(os.path.join(proc_dir, pid, "cmdline"), "rb") as handle:
-                argv = handle.read().split(b"\0")
+                line = handle.read()
         except OSError:
             continue  # The process ended while the list was being read.
-        if argv and os.path.basename(argv[0].decode("utf-8", "replace")).startswith("chromium") \
-                and BROWSER_PROFILE_ARG.encode() in argv:
-            return True
-    return False
+        yield line
+
+
+def is_kiosk_browser(cmdline):
+    """
+    Chromium with the kiosk's profile. Chromium rewrites its process title to
+    its arguments joined by spaces, so the command line is split on both NUL
+    and whitespace rather than read as the NUL-separated argv exec gave it.
+    """
+    words = cmdline.replace(b"\0", b" ").split()
+    return bool(words) and os.path.basename(words[0]).startswith(b"chromium") \
+        and BROWSER_PROFILE_ARG.encode() in words
+
+
+def browser_running(proc_dir="/proc"):
+    return any(is_kiosk_browser(line) for line in command_lines(proc_dir))
+
+
+def browser_like_processes(proc_dir="/proc", limit=3, width=300):
+    """What Chromium processes there are, for the log when the browser was not recognised."""
+    found = []
+    for line in command_lines(proc_dir):
+        if b"chromium" in line:
+            found.append(line.replace(b"\0", b" ").decode("utf-8", "replace").strip()[:width])
+            if len(found) >= limit:
+                break
+    return found
 
 
 def wait_until_healthy(probe, clock=time.monotonic, sleep=time.sleep,
@@ -400,7 +424,13 @@ def cmd_check():
         return {"state": "installed", "version": running}
 
     write_status("failed", version=running, previous=env.get("current", ""))
-    log(f"{running} did not pass its health check; rebooting into {env.get('current', '')}")
+    browser = browser_running()
+    log(f"{running} did not pass its health check (agent answers: {'yes' if agent_answers() else 'no'}; "
+        f"kiosk browser running: {'yes' if browser else 'no'}); "
+        f"rebooting into {env.get('current', '')}")
+    if not browser:
+        for line in browser_like_processes():
+            log(f"a Chromium process that is not the kiosk browser: {line}")
     run(["systemctl", "reboot"])
     return {"state": "failed", "version": running}
 

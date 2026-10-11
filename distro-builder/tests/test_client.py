@@ -1394,6 +1394,21 @@ class BootHealthCheck(unittest.TestCase):
                              + bootslots.BROWSER_PROFILE_ARG.encode() + b"\0")
             self.assertTrue(bootslots.browser_running(proc))
 
+    def test_the_browser_is_recognised_after_it_rewrites_its_process_title(self):
+        # Chromium replaces its argv with one string, its arguments joined by spaces.
+        with tempfile.TemporaryDirectory() as proc:
+            os.makedirs(os.path.join(proc, "100"))
+            with open(os.path.join(proc, "100", "cmdline"), "wb") as handle:
+                handle.write(b"/usr/lib/chromium/chromium --kiosk --user-data-dir=/tmp/other "
+                             b"--load-extension=/opt/labkiosk/extension -- http://127.0.0.1:8888/setup\0")
+            self.assertFalse(bootslots.browser_running(proc))
+            self.assertEqual(len(bootslots.browser_like_processes(proc)), 1)
+            os.makedirs(os.path.join(proc, "101"))
+            with open(os.path.join(proc, "101", "cmdline"), "wb") as handle:
+                handle.write(b"/usr/lib/chromium/chromium --kiosk " + bootslots.BROWSER_PROFILE_ARG.encode()
+                             + b" --load-extension=/opt/labkiosk/extension -- http://127.0.0.1:8888/setup\0")
+            self.assertTrue(bootslots.browser_running(proc))
+
     def test_the_health_check_looks_for_the_browser_the_launchers_start(self):
         self.assertEqual(bootslots.BROWSER_PROFILE_ARG, f"--user-data-dir={agent.BROWSER_PROFILE_DIR}")
 
