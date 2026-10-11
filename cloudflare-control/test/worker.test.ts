@@ -28,7 +28,7 @@ import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
 import { getDatabase } from "../src/database";
-import { purgeOldWorkstationIssues } from "../src/boot_report";
+import { MAX_RESTART_REPORTS_PER_DAY, purgeOldWorkstationIssues, RESTART_LOG_RETENTION_DAYS } from "../src/boot_report";
 import {
   BUG_REPORT_AI_MODEL,
   BUG_REPORT_TERMS_VERSION,
@@ -2973,6 +2973,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         details: "2.6.0 failed its first boot; back on 2.5.1.",
         occurred_at: undefined,
         created_at: undefined,
+        has_log: 0,
         report_state: "none",
         report_match: null,
         issue_url: null,
@@ -3069,6 +3070,164 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       bearer: data.deviceToken
     });
     assert.equal(res.status, 409);
+  });
+
+  // ---------------------------------------------------------- restart reports
+
+  const restartReport = (overrides: Record<string, unknown> = {}) => {
+    const endedAt = nowSeconds() - 3600;
+    return {
+      bootId: "0123456789abcdef0123456789abcdef",
+      kind: "unexpected_restart",
+      version: "2.5.1",
+      startedAt: endedAt - 7200,
+      endedAt,
+      log: "Oct 11 09:00:01 kiosk kernel: something\nOct 11 09:00:02 kiosk systemd[1]: last words",
+      ...overrides
+    };
+  };
+
+  test("Refuses a restart report without a valid device token", async () => {
+    const before = (await issuesOf(orgSessionCookie, "greenwood")).length;
+    assert.equal((await call("/api/devices/restart-report?tenant=greenwood", json(restartReport()))).status, 401);
+    const forged = await call("/api/devices/restart-report", { ...json(restartReport()), bearer: "f".repeat(64) });
+    assert.equal(forged.status, 401);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, before);
+  });
+
+  test("Refuses a malformed restart report", async () => {
+    const before = (await issuesOf(orgSessionCookie, "greenwood")).length;
+    const now = nowSeconds();
+    const bad: unknown[] = [
+      [],
+      restartReport({ bootId: "../../etc/passwd" }),
+      restartReport({ bootId: "0123456789ABCDEF0123456789ABCDEF" }),
+      restartReport({ kind: "update_failed" }),
+      restartReport({ version: "2.5.1; rm -rf /" }),
+      restartReport({ startedAt: "yesterday" }),
+      restartReport({ startedAt: now - 600, endedAt: now - 1200 }),
+      restartReport({ startedAt: now - 9 * 86400, endedAt: now - 8 * 86400 }),
+      restartReport({ endedAt: now + 3600 }),
+      restartReport({ log: { lines: [] } })
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/restart-report", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    const unreadable = await call("/api/devices/restart-report", { method: "POST", body: "{", bearer: deviceToken });
+    assert.equal(unreadable.status, 400);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, before);
+  });
+
+  test("Records a restart once, with its log, in the token's own organization", async () => {
+    const report = {
+      ...restartReport({ log: "first line\r\nsecond\u0007line\n" + "x".repeat(20000) + "\nlast line" }),
+      // Ignored: the token decides the organization and the workstation.
+      tenant: "riverside",
+      clientId: "PC-EVIL"
+    };
+    const first = await callJson("/api/devices/restart-report", { ...json(report), bearer: deviceToken });
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.recorded, true);
+    // The agent re-sends after a lost reply.
+    const again = await callJson("/api/devices/restart-report", { ...json(report), bearer: deviceToken });
+    assert.equal(again.res.status, 200);
+    assert.equal(again.data.recorded, false);
+
+    const restarts = (await issuesOf(orgSessionCookie, "greenwood")).filter((i: any) => i.kind === "unexpected_restart");
+    assert.equal(restarts.length, 1);
+    const issue: any = restarts[0];
+    assert.equal(issue.client_id, "PC-01");
+    assert.equal(issue.severity, "warning");
+    assert.equal(issue.image_version, "2.5.1");
+    assert.equal(issue.occurred_at, report.endedAt);
+    assert.equal(issue.has_log, 1);
+    assert.equal(issue.report_state, "none", "a restart is never an automatic bug report");
+    assert.equal(
+      issue.details,
+      "Running 2.5.1, it ran for 2 hours and restarted without shutting down: a power cut, a forced power-off, a hang or a crash."
+    );
+    assert.ok(!("log_text" in issue), "the list does not carry the logs");
+    assert.equal((await issuesOf(rivalSessionCookie, "riverside")).filter((i: any) => i.kind === "unexpected_restart").length, 0);
+
+    const { res, data } = await callJson(`/api/workstation-issues/log?tenant=greenwood&id=${issue.id}`, { cookie: orgSessionCookie });
+    assert.equal(res.status, 200);
+    assert.equal(data.log.length, 16 * 1024, "only the end of the journal is kept");
+    assert.ok(data.log.endsWith("\nlast line"));
+    assert.ok(!data.log.includes("\r") && !data.log.includes("\u0007"));
+
+    const watchdog = await callJson("/api/devices/restart-report", {
+      ...json(restartReport({ bootId: "f".repeat(32), kind: "watchdog_reset", version: null })),
+      bearer: deviceToken
+    });
+    assert.equal(watchdog.data.recorded, true);
+    const reset: any = (await issuesOf(orgSessionCookie, "greenwood")).find((i: any) => i.kind === "watchdog_reset");
+    assert.equal(reset.severity, "error");
+    assert.equal(reset.image_version, null);
+    assert.equal(reset.details, "It ran for 2 hours and stopped responding; the hardware watchdog restarted it.");
+  });
+
+  test("Shows a restart's log only to the organization's settings staff", async () => {
+    const issue: any = (await issuesOf(orgSessionCookie, "greenwood")).find((i: any) => i.kind === "unexpected_restart");
+    const path = `/api/workstation-issues/log?tenant=greenwood&id=${issue.id}`;
+    assert.ok([401, 403].includes((await call(path)).status));
+    const rival = await call(path, { cookie: rivalSessionCookie });
+    assert.ok([401, 403].includes(rival.status), "another organization is refused");
+    const rivalOwn = await call(`/api/workstation-issues/log?tenant=riverside&id=${issue.id}`, { cookie: rivalSessionCookie });
+    assert.equal(rivalOwn.status, 404, "an issue id from another organization is not found in one's own");
+    const { data: created } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      ...json({
+        name: "Lou Logs",
+        email: "lou@greenwood.example",
+        password: "LouPassword123!",
+        role: "operator",
+        permissions: ["workstations"]
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(created.status, "ok");
+    const login = await call("/api/auth/login", json({ email: "lou@greenwood.example", password: "LouPassword123!" }));
+    const operatorCookie = login.headers.get("Set-Cookie")!.split(";")[0];
+    assert.equal((await call(path, { cookie: operatorCookie })).status, 403);
+    await callJson(`/api/tenant/staff/${created.operator.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    assert.equal((await call("/api/workstation-issues/log?tenant=greenwood&id=a%20b", { cookie: orgSessionCookie })).status, 400);
+    assert.equal((await call("/api/workstation-issues/log?tenant=greenwood&id=missing", { cookie: orgSessionCookie })).status, 404);
+  });
+
+  test("Limits restart reports per workstation per day", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LOOP" }));
+    const token = data.deviceToken;
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 200);
+    const fresh = await call("/api/devices/restart-report", { ...json(restartReport({ bootId: "a".repeat(32) })), bearer: data.deviceToken });
+    assert.equal(fresh.status, 200);
+    for (let n = 1; n < MAX_RESTART_REPORTS_PER_DAY; n++) {
+      const bootId = n.toString(16).padStart(32, "b");
+      const res = await call("/api/devices/restart-report", { ...json(restartReport({ bootId })), bearer: token });
+      assert.equal(res.status, 200, `report ${n}`);
+    }
+    const over = await call("/api/devices/restart-report", { ...json(restartReport({ bootId: "c".repeat(32) })), bearer: token });
+    assert.equal(over.status, 429);
+    const unknown = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-NEW" }));
+    const early = await call("/api/devices/restart-report", { ...json(restartReport()), bearer: unknown.data.deviceToken });
+    assert.equal(early.status, 409, "a workstation the hub has not written yet is asked to report again later");
+  });
+
+  test("Clears restart logs past their retention and keeps the issue", async () => {
+    const db = getDatabase(mockEnv);
+    const { id: tenantId } = (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant;
+    const old = nowSeconds() - (RESTART_LOG_RETENTION_DAYS + 1) * 86400;
+    await db
+      .prepare(
+        "INSERT INTO workstation_issues (id, tenant_id, client_id, severity, kind, occurred_at, created_at, log_text) VALUES ('old-restart', ?, 'PC-01', 'warning', 'unexpected_restart', ?, ?, 'old log')"
+      )
+      .bind(tenantId, old, old)
+      .run();
+    await purgeOldWorkstationIssues(db);
+    const { data } = await callJson("/api/workstation-issues/log?tenant=greenwood&id=old-restart", { cookie: orgSessionCookie });
+    assert.equal(data.log, null);
+    const recent: any = (await issuesOf(orgSessionCookie, "greenwood")).find((i: any) => i.kind === "unexpected_restart" && i.id !== "old-restart");
+    assert.equal(recent.has_log, 1, "a recent restart keeps its log");
+    await db.prepare("DELETE FROM workstation_issues WHERE id = 'old-restart'").run();
   });
 
   // ---------------------------------------------------------- bug reports

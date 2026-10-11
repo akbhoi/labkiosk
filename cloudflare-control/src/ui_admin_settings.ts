@@ -342,7 +342,7 @@ ${renderUpdatesPaneHtml()}
     <div class="tab-pane" id="pane-issues">
       <div class="card" id="section-issues">
         <h2 class="card-title">Errors &amp; Warnings</h2>
-        <p class="card-sub">Problems workstations reported, such as a system update that failed its first start and was rolled back. Kept for 90 days.</p>
+        <p class="card-sub">Problems workstations reported, such as a system update that failed its first start, or a restart without a shutdown. Kept for 90 days; a restart's log for 30.</p>
         <div class="form-group" id="bug-report-optin" hidden>
           <label class="form-checkbox-label">
             <input type="checkbox" class="form-checkbox" id="bug-reports-enabled">
@@ -797,8 +797,45 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             update_failed: "Update failed",
             update_rolled_back: "Update rolled back",
             boot_fallback: "Started a fallback image",
-            boot_error: "Boot record error"
+            boot_error: "Boot record error",
+            unexpected_restart: "Restarted without shutting down",
+            watchdog_reset: "Stopped responding"
           };
+          // The end of the journal a workstation sent with a restart, fetched
+          // when someone asks for it: a log can be 16 KiB, the list is 100 rows.
+          function issueLogToggle(issue) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "btn btn-ghost btn-sm issue-log-toggle";
+            button.textContent = "Show log";
+            let view = null;
+            button.addEventListener("click", async () => {
+              if (view) {
+                view.hidden = !view.hidden;
+                button.textContent = view.hidden ? "Show log" : "Hide log";
+                return;
+              }
+              button.disabled = true;
+              try {
+                const res = await fetch(labkioskApi("/api/workstation-issues/log?id=" + encodeURIComponent(issue.id)));
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+                view = document.createElement("pre");
+                view.className = "issue-log";
+                view.textContent = typeof data.log === "string" && data.log
+                  ? data.log
+                  : "The log is no longer kept; logs are cleared 30 days after a restart.";
+                button.after(view);
+                button.textContent = "Hide log";
+              } catch (err) {
+                console.warn("Could not load the log:", err);
+                lkToast("Could not load the log: " + err.message, "error");
+              } finally {
+                button.disabled = false;
+              }
+            });
+            return button;
+          }
           const pad = (n) => String(n).padStart(2, "0");
           // Where a sent problem stands: the issue it opened or joined, and that issue's status on GitHub.
           const reportStatus = {
@@ -980,6 +1017,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
                 detail.textContent = issue.details;
                 problem.appendChild(detail);
               }
+              if (issue.has_log === 1) problem.appendChild(issueLogToggle(issue));
               if (issue.report_state === "sent" && typeof issue.issue_url === "string" &&
                   issue.issue_url.startsWith("https://github.com/")) {
                 problem.appendChild(bugReportLine(issue));

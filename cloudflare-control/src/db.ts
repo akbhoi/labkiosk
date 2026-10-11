@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS workstation_issues (
   created_at INTEGER NOT NULL,
   report_state TEXT NOT NULL DEFAULT 'none' CHECK (report_state IN ('none', 'pending', 'sent')),
   bug_signature TEXT,
-  report_match TEXT CHECK (report_match IN ('new', 'existing'))
+  report_match TEXT CHECK (report_match IN ('new', 'existing')),
+  log_text TEXT
 );
 
 CREATE TABLE IF NOT EXISTS release_notes (
@@ -590,6 +591,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT update_kind, update_since FROM client_devices LIMIT 1").run();
     // 0030: sharing updates on the local network.
     await db.prepare("SELECT lan_sharing FROM tenants LIMIT 1").run();
+    // 0031: the log of a boot that ended without shutting down.
+    await db.prepare("SELECT log_text FROM workstation_issues LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

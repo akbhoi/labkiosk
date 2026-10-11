@@ -204,10 +204,13 @@ import {
   rejectCrossSiteSocket
 } from "./guard";
 import {
+  getWorkstationIssueLog,
   listWorkstationIssues,
   parseBootReport,
+  parseRestartReport,
   purgeOldWorkstationIssues,
   recordBootReport,
+  recordRestartReport,
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
 import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
@@ -618,6 +621,46 @@ async function handleBootReport(
 }
 
 /**
+ * POST /api/devices/restart-report: an installed workstation reports a boot
+ * that ended without shutting down, with the end of that boot's journal. The
+ * device token alone decides the organization and the workstation.
+ *
+ * Listed in Settings -> Errors & Warnings, the log beside it.
+ *
+ * 200 recorded or already recorded; 400 malformed (the agent drops it);
+ * 409 the workstation's row does not exist yet and 429 too many today (the
+ * agent tries again at its next boot).
+ */
+async function handleRestartReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+  const now = Math.floor(Date.now() / 1000);
+
+  let report;
+  try {
+    report = parseRestartReport(await request.json(), now);
+  } catch (err: any) {
+    return jsonError(`Restart report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const outcome = await recordRestartReport(db, device.tenant_id, device.client_id, report, now);
+  if (outcome === "unknown-workstation") {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  if (outcome === "too-many") {
+    return jsonError("Too many restart reports from this workstation today; send it again later", 429, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok", recorded: outcome === "recorded" }), {
+    status: 200,
+    headers: jsonHeaders
+  });
+}
+
+/**
  * GET /api/devices/update?running=<version>: the release this workstation's
  * organization is offered, and where to download it. Asked by the
  * workstation's root updater (labkiosk-update run) whenever the hub sends
@@ -915,6 +958,9 @@ export default {
     }
     if (path === "/api/devices/boot-report" && method === "POST") {
       return handleBootReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/restart-report" && method === "POST") {
+      return handleRestartReport(request, db, jsonHeaders);
     }
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);
@@ -2285,6 +2331,20 @@ export default {
         }),
         { headers: jsonHeaders }
       );
+    }
+
+    // GET /api/workstation-issues/log?id=<issue>: the journal a workstation sent
+    // with a restart it did not shut down for. Settings permission, like the list.
+    if (path === "/api/workstation-issues/log" && method === "GET") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const issueId = url.searchParams.get("id") || "";
+      if (!/^[0-9A-Za-z-]{1,64}$/.test(issueId)) {
+        return jsonError("id is not an issue id", 400, jsonHeaders);
+      }
+      const log = await getWorkstationIssueLog(db, currentTenant!.id, issueId);
+      if (log === undefined) return jsonError("No such issue", 404, jsonHeaders);
+      return new Response(JSON.stringify({ id: issueId, log }), { headers: jsonHeaders });
     }
 
     // POST /api/settings/bug-reports: opt this organization in to (or out of)
