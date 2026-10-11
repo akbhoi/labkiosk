@@ -508,6 +508,11 @@ if [ "$FAILED" -ne 0 ]; then
     journal --unit=labkiosk-boot-ok.service | tail -n 40
     log "session: the end of labkiosk-session's output:"
     journal --unit=labkiosk-session.service | tail -n 80
+    # pam_systemd moves the session's processes into a session scope, so what
+    # X, Openbox and the browser print is found by the kiosk user's uid.
+    log "session: what the kiosk user's processes printed:"
+    journalctl --directory="$WORK/journal/journal" --output=short-monotonic \
+        _UID="$(awk -F: '$1 == "kiosk" { print $3 }' "$ROOTFS/etc/passwd")" 2>/dev/null | tail -n 200 || true
 fi
 
 # --------------------------------------------------------------------------
