@@ -26,6 +26,7 @@ import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
 import {
   COUNTRIES,
   GEO_DATA_PATH,
+  KEEPS_LEADING_ZERO,
   NO_POSTAL_CODE,
   POSTAL_FORMATS,
   STATES,
@@ -36,6 +37,7 @@ import {
   postalCodeProblem,
   taxIdProblem
 } from "../src/geo";
+import { normalizePhone } from "../src/signup";
 import { isHostUnder } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -478,7 +480,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.ok(codes.has(code), `${code} is a listed country`);
       if (format.pattern) assert.equal(taxIdProblem(code, cleanTaxId(format.example)), null, `${code}'s example tax ID passes`);
     }
-    for (const code of [...Object.keys(STATES), ...NO_POSTAL_CODE]) assert.ok(codes.has(code), `${code} is a listed country`);
+    for (const code of [...Object.keys(STATES), ...NO_POSTAL_CODE, ...KEEPS_LEADING_ZERO]) assert.ok(codes.has(code), `${code} is a listed country`);
+    // Italy's numbers keep their 0 after +39: the form must not strip it, and the server takes it.
+    assert.ok(KEEPS_LEADING_ZERO.includes("IT"));
+    assert.equal(normalizePhone("+39 06 6982 1234"), "+390669821234");
 
     // The form reads the same table, as an immutable file.
     const table = await call(GEO_DATA_PATH);

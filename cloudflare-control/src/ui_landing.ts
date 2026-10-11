@@ -1111,8 +1111,11 @@ ${FONT_LINKS}
     }
 
     function checkPhone() {
-      // Digits only, and never a leading 0: the calling code replaces it.
-      const digits = regPhone.value.replace(/[^0-9]/g, '').replace(/^0+/, '');
+      // Digits only. A leading 0 is dropped, because the calling code replaces it,
+      // except in the few countries whose numbers keep it (Italy's +39 06 ...).
+      const keepsZero = Boolean(geo && dialCountry) && geo.keepZero.includes(dialCountry[0]);
+      const typed = regPhone.value.replace(/[^0-9]/g, '');
+      const digits = keepsZero ? typed : typed.replace(/^0+/, '');
       if (regPhone.value !== digits) regPhone.value = digits;
       let problem = '';
       if (digits && (digits.length < 4 || digits.length > 14)) problem = 'Enter the number without the country code.';
@@ -1157,6 +1160,9 @@ ${FONT_LINKS}
       document.getElementById('reg-dial-code').textContent = '+' + row[2];
       dialButton.setAttribute('aria-label', 'Country calling code: ' + row[1] + ' +' + row[2]);
       dialButton.classList.remove('is-invalid');
+      document.getElementById('reg-phone-hint').textContent =
+        (geo.keepZero.includes(row[0]) ? 'Without the country code; keep the leading 0. ' : 'Without the country code or a leading 0. ') +
+        'We call or message this number to confirm it before approval.';
       checkPhone();
       if (!regCountry.value) {
         regCountry.value = row[0];

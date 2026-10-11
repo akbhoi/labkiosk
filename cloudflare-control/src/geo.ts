@@ -542,6 +542,13 @@ export const TAX_IDS: Readonly<Record<string, TaxIdFormat>> = {
   ZA: { label: "VAT number", pattern: "^4\\d{9}$", example: "4123456789" }
 };
 
+/**
+ * Countries whose national numbers keep their leading 0 after the calling code
+ * (+39 06 ... in Italy, +225 07 ... in Côte d'Ivoire). Everywhere else the 0 is a
+ * trunk prefix that the calling code replaces, and the form drops it.
+ */
+export const KEEPS_LEADING_ZERO: readonly string[] = ["CG", "CI", "IT", "SM", "VA"];
+
 /** The label for a country with no entry in TAX_IDS. */
 export const DEFAULT_TAX_ID_LABEL = "Tax ID";
 
@@ -605,6 +612,7 @@ export const GEO_JSON = JSON.stringify({
   states: STATES,
   postal: POSTAL_FORMATS,
   noPostal: NO_POSTAL_CODE,
+  keepZero: KEEPS_LEADING_ZERO,
   tax: TAX_IDS,
   taxLabel: DEFAULT_TAX_ID_LABEL
 });
