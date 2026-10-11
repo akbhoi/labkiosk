@@ -84,6 +84,8 @@ export function renderCode(t: CodeTemplate, subject: string, brand: Brand): stri
         "center"
       ) +
       paragraphs(copy.unexpected, `font-size:14px;line-height:22px;color:${COLOR.muted}`),
-    reason: copy.reason
+    reason: copy.reason,
+    // A sign-in code that was not asked for means the password is known: the way to change it is one click away.
+    changePassword: t.purpose === "sign-in"
   });
 }

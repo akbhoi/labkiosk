@@ -210,7 +210,18 @@ export interface LayoutParts {
   reason: string;
   /** The conversation's tracking id, repeated in the footer. */
   reference?: string | null;
+  /**
+   * A "Change password" link beside the reply address, for a message about the
+   * recipient's own account. It opens the console's password settings on the
+   * platform's site: an organization account is sent on to its own console, a
+   * super admin to a demo console, whose password card changes their own
+   * password, and anyone signed out to the sign-in page first.
+   */
+  changePassword?: boolean;
 }
+
+/** Where an account's password is changed, from the platform's site. */
+export const CHANGE_PASSWORD_PATH = "/admin/settings#section-password";
 
 /** A whole message: the scaffold around one template's body. */
 export function layout(parts: LayoutParts): string {
@@ -224,8 +235,10 @@ export function layout(parts: LayoutParts): string {
     .join("")
     .slice(0, 2)
     .toUpperCase();
+  const changePassword = parts.changePassword && site ? new URL(CHANGE_PASSWORD_PATH, site).toString() : null;
   const footerLinks = [
     reply ? `<a href="mailto:${esc(reply)}" style="color:${COLOR.muted};text-decoration:underline">${esc(reply)}</a>` : "",
+    changePassword ? `<a href="${esc(changePassword)}" style="color:${COLOR.muted};text-decoration:underline">Change password</a>` : "",
     site && host ? `<a href="${esc(site)}" style="color:${COLOR.muted};text-decoration:underline">${esc(host)}</a>` : ""
   ]
     .filter(Boolean)

@@ -62,6 +62,21 @@ test("A code is easy to find and copy, and stays out of the subject and the prev
   assert.equal(mailSubject({ name: "notice" }, "[REG-1] New registration", BRAND), "[REG-1] New registration", "other subjects are kept");
 });
 
+test("A message about the recipient's own account links to changing its password, beside the reply address", () => {
+  const render = (file: string, brand = BRAND) => {
+    const sample = SAMPLES.find((s) => s.file === file)!;
+    return renderMailHtml({ template: sample.template, subject: sample.subject, text: sample.text, brand });
+  };
+  const link = '<a href="https://labkiosk.org/admin/settings#section-password" style="color:#64748b;text-decoration:underline">Change password</a>';
+  for (const file of ["code-sign-in", "alert"]) {
+    assert.ok(render(file).includes(`>support@labkiosk.org</a> &nbsp;&middot;&nbsp; ${link} &nbsp;&middot;&nbsp; <a`), `${file}: on the support address's line`);
+    assert.ok(!render(file, { ...BRAND, siteUrl: null }).includes("Change password"), `${file}: no site, no link`);
+  }
+  for (const file of ["code-signup", "receipt", "reply", "decision-approved", "letter", "notice"]) {
+    assert.ok(!render(file).includes("Change password"), `${file} is not about an account's password`);
+  }
+});
+
 test("Nothing a person typed reaches a message unescaped", () => {
   const templates: MailTemplate[] = [
     { name: "notice", title: HOSTILE },

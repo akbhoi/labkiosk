@@ -26,6 +26,7 @@ export function renderAlert(t: AlertTemplate, subject: string, brand: Brand): st
     preheader: t.lead,
     title: t.title,
     bodyHtml: paragraphs(t.lead) + details(t.details) + paragraphs(t.advice),
-    reason: "You are receiving this because it concerns the security of your Lab Kiosk account."
+    reason: "You are receiving this because it concerns the security of your Lab Kiosk account.",
+    changePassword: true
   });
 }
