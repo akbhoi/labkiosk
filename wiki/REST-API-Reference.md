@@ -18,7 +18,7 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
 | **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Operator Lab Dashboard, Super Admin console |
-| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report` and `/api/devices/restart-report` |
+| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report` and `/api/devices/disk-health` |
 | **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
 Session tokens are random 32-byte hex strings; only their SHA-256 hash is stored in D1. Device tokens are handled the same way — the plaintext token exists only on the workstation that was issued it.
@@ -33,7 +33,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `requireTenantAdmin()` | `401` anonymous, `400` no organization, `403` wrong tenant (and a super admin outside its own demos) | `GET /api/broadcast-presets`, `GET /api/whitelist`, the `/admin` pages |
 | `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*` (but `/api/settings/updates`), `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/console/remote`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `updates`: `/api/settings/updates`, `/api/clients/check-update`, `/api/clients/install-update`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
 | `requireSuperAdmin()` | `401` / `403` | all `/api/super/*` |
-| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/remote` |
+| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/remote` |
 | `rejectCrossSiteMutation()` | `403` | every cookie-authenticated `POST`/`DELETE` under `/api/` |
 
 ### Rate limiting
@@ -115,6 +115,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/telemetry` | `POST` | The HTTP fallback: a three-second heartbeat carrying the same |
 | `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
 | `/api/devices/restart-report` | `POST` | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
+| `/api/devices/disk-health` | `POST` | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
 | `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
 ### Release build
@@ -310,6 +311,22 @@ A boot of an installed workstation that ended without shutting down: a power cut
 **Request:** `bootId` (32 hex digits), `kind` (`unexpected_restart` | `watchdog_reset`), `version` (or `null`), `startedAt`, `endedAt` (Unix seconds; `endedAt` within the last 7 days and not before `startedAt`), `log` (the last 16 KB are kept).
 
 **`200 OK`** → `{ "status": "ok", "recorded": true }`; `recorded: false` for a boot already reported. **`400`** malformed, not sent again. **`409`** the workstation has not checked in yet, sent again later. **`429`** more than 24 in a day from this workstation; the rest wait for its next start.
+
+---
+
+### `POST /api/devices/disk-health`
+
+The machine's own disks that `labkiosk-health` (root, 90 s after boot and every six hours) found wearing out or failing, from SMART (SATA, NVMe) or an eMMC card's wear figures. The agent sends them after each check that found a problem; a healthy disk, or one with no data (a virtual disk), is never sent. Each disk is listed in `workstation_issues` as `disk_health` once per state — severity `warning` for a disk wearing out, `error` for one failing — with details such as `Disk Example SSD 256GB (nvme0n1): Wearing out: 93% of its rated life used. Plan to replace it.` (a failing disk ends `Replace it before it stops working.`). Never filed as an automatic bug report.
+
+**Access:** `Authorization: Bearer <deviceToken>`; the token decides the organization and the workstation.
+
+**Request:** `disks`, 1 to 8 objects with `device` (a kernel disk name: `sda`, `nvme0n1`, `mmcblk0`, …), `model`, `serial`, `state` (`warning` | `failing`) and `summary`.
+
+```json
+{ "disks": [ { "device": "nvme0n1", "model": "Example SSD 256GB", "serial": "S1234", "state": "warning", "summary": "Wearing out: 93% of its rated life used." } ] }
+```
+
+**`200 OK`** → `{ "status": "ok", "recorded": 1 }`; `recorded` counts the disks newly listed (`0` when each is already listed in that state). **`400`** malformed, not sent again. **`401`** bad token. **`409`** the workstation has not checked in yet, sent again later. **`429`** more than 8 disk issues in a day from this workstation; the next check sends again.
 
 ---
 
@@ -571,7 +588,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/setup` | `GET` | Serves `wizard.html`. Returns `403` once the workstation is enrolled unless accessed via `#network` with admin authentication. |
-| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`, `secureBoot` (`on`, `off`, `legacy-bios` or `unknown`), `hostname`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
+| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`, `secureBoot` (`on`, `off`, `legacy-bios` or `unknown`), `clockSynchronized` (true once a time server has set the clock since boot), `hostname`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
 | `/api/localization/options` | `GET` | Continents, countries, timezones, locales, keyboard layouts and interface catalogs, all read from the workstation's own tzdata, locale and X11 tables. |
 | `/api/localization/languages` | `GET` | Interface languages the organization's control plane offers, with the installed ones marked. |
 | `/api/localization/language/download` | `POST` | Downloads one catalog from the control plane into `/etc/labkiosk/i18n`. Administrator token required once installed. |

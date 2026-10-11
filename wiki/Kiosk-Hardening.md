@@ -64,18 +64,27 @@ The single exception on an installed disk is `/etc/labkiosk`, mounted from the `
 | `DontZap "true"` | same file | Ctrl+Alt+Backspace cannot kill X |
 | Empty `rc.xml` keybindings | `/etc/openbox/rc.xml` | Alt+Tab, Alt+F4, Ctrl+Alt+Del are inert |
 | No SSH server | package list | Nothing listens for remote login |
+| `kiosk` not in the `tty` group | `01-lockdown.hook.chroot` (`gpasswd -d` if present) | A browser escape cannot write to every terminal |
 
 ### Why the `kiosk` account has an *empty* password, not a locked one
 
-`passwd -d "$KIOSK_USER"` is deliberate and must stay. A **locked** kiosk account previously deadlocked nodm's PAM stack into a black screen on boot.
+`passwd -d "$KIOSK_USER"` is deliberate and must stay. A **locked** kiosk account previously deadlocked the display manager's PAM stack (nodm's, before `labkiosk-session`) into a black screen on boot.
 
-What makes an empty password safe here is that **no login path exists to use it**: nodm is pinned to `NODM_USER=kiosk` and starts a session for a fixed user with no password to check, every getty is masked, and no SSH server is installed. There is no prompt anywhere that would accept it.
+What makes an empty password safe here is that **no login path exists to use it**: `labkiosk-session.service` is pinned to `User=kiosk` and its PAM stack checks no password, every getty is masked, and no SSH server is installed. There is no prompt anywhere that would accept it.
 
 `kiosk` holds two narrow sudo grants — `NOPASSWD` on `/usr/local/bin/labkiosk-install` (`/etc/sudoers.d/50-labkiosk-install`), which is what lets the setup wizard run the guided installer, and on `/usr/local/sbin/labkiosk-localization` (`/etc/sudoers.d/51-labkiosk-localization`) for language and region. There is no general sudo access: live-config's `sudo` and `policykit` components, which would otherwise grant the live user `NOPASSWD: ALL` and every polkit action at every boot, are pre-seeded away — on the ISO and on installed disks, which boot through live-boot too. `labkiosk-boot-slots`, which chooses the image an installed disk boots, has no sudo rule at all.
 
-### Polkit power policy
+### The session runs without root
 
-`/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants `kiosk` reboot and power-off through logind, and nothing else. That grant is what makes the operator's remote shutdown command work: the agent runs as `kiosk`, so without it the command would be accepted and then silently do nothing.
+There is no display manager. `labkiosk-session.service` (`User=kiosk`, `Alias=display-manager.service`, wanted by `graphical.target`, the default target) runs `xinit /home/kiosk/.xsession -- /usr/bin/Xorg :0 vt7 -keeptty -novtswitch -nolisten tcp` on `tty7` and starts it again whenever it ends. Its PAM stack, `/etc/pam.d/labkiosk-session`, is `pam_permit` for `auth` and `account`, `pam_deny` for `password`, and `pam_systemd.so class=user type=x11` for `session`: that registers a logind session, which is what hands the kiosk user the seat's graphics card and input devices.
+
+`/etc/X11/Xwrapper.config` is `allowed_users=console` and `needs_root_rights=auto`, and `Xorg.wrap` stays setuid. So X runs **as `kiosk`** wherever the GPU has a kernel modesetting driver (Intel, AMD, nouveau, QEMU, Hyper-V's DRM driver), and as root only on graphics without one, such as plain VESA (and Hyper-V while `hyperv_fb` is the driver loaded). Only a process on a virtual console may start it at all.
+
+### Polkit: the kiosk user's rights, and nothing else
+
+`/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants `kiosk` reboot and power-off through logind. That grant is what makes the operator's remote shutdown command work: the agent runs as `kiosk`, so without it the command would be accepted and then silently do nothing. The other `50-*` rules grant NetworkManager and the update units.
+
+`99-labkiosk-deny.rules` answers **no** for `kiosk` on every other action. As the active logind session on its seat, the kiosk user would otherwise get polkit's desktop defaults — setting the time zone, the hostname, mounting disks. The one exception is `org.freedesktop.login1.inhibit-*` (left to the defaults), so a page can still keep the screen on during a video.
 
 ### Never asleep
 
@@ -99,6 +108,22 @@ fs.suid_dumpable = 0
 ```
 
 Core dumps are disabled outright in `/etc/security/limits.conf` (`* hard core 0`, `* soft core 0`).
+
+### Firewall
+
+`/etc/nftables.conf` is table `inet labkiosk_firewall`, loaded by `nftables.service` (enabled by `01-lockdown.hook.chroot`, which refuses to build if `/etc/nftables.conf` is not this file). Nothing on a workstation answers the network — the agent and x11vnc listen on `127.0.0.1`, Remote Control is a connection the agent opens outward — and the firewall keeps it that way if a package or a bug ever starts a listener. Input and forward policy is **drop**; what is let in:
+
+- loopback, and replies to connections the workstation opened (established/related);
+- DHCP replies (UDP 67 → 68) and DHCPv6 replies from link-local addresses (547 → 546);
+- ping, IPv4 and IPv6, limited to 5 per second;
+- IPv6 neighbour discovery, router adverts, multicast listener queries and packet-too-big;
+- TCP 8890 from private IPv4 ranges, for [sharing a system update on the LAN](../docs/OTA_UPDATES.md) — `labkiosk-share.nft` still adds its own table while a release is shared.
+
+Outgoing traffic is not filtered; which sites a user may open is the browser policy's job. The file never says `flush ruleset`, so a reload keeps the sharing table.
+
+### AppArmor, in complain mode
+
+`apparmor.service` loads two profiles: `labkiosk-agent` (attached to `/opt/labkiosk/agent/agent.py`) and `labkiosk-x11vnc` (attached to `/usr/bin/x11vnc`). Both are in **complain mode**: they block nothing, and what they would block is logged by the kernel to the journal (kept on `LABKIOSK_DATA` on an installed disk) and printed by the VM boot test. The session runs the agent as `/opt/labkiosk/agent/agent.py` itself, not `python3 agent.py`, because AppArmor attaches a profile to the path that was executed. `sudo` is unconfined from the agent's profile (`Ux`): root's helpers re-validate their arguments. Chromium has no profile; its own sandbox stays its main protection.
 
 ---
 

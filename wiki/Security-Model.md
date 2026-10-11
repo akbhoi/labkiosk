@@ -124,6 +124,10 @@ Off for every organization until one of its administrators accepts the Automatic
 | :--- | :--- |
 | `overlayroot="tmpfs"` | Persistence of anything — malware, cached credentials, saved files |
 | Locked root, masked gettys, no SSH | Any route to a shell |
+| X started by `kiosk` (`labkiosk-session.service`), rootless wherever the GPU has a kernel modesetting driver; `kiosk` not in the `tty` group | A browser escape inheriting a root X server or write access to every terminal |
+| `99-labkiosk-deny.rules`: polkit says no to `kiosk` beyond its power, network and update grants | The active session's desktop defaults (time zone, hostname, mounting disks) |
+| nftables firewall: input dropped except replies, DHCP, neighbour discovery, ping and LAN update sharing (TCP 8890, private addresses) | A listener a package or bug starts being reachable from the network |
+| AppArmor profiles for the agent and x11vnc, in complain mode | Nothing yet — they log what they would block, ahead of enforce mode |
 | `DontVTSwitch`, `DontZap`, empty Openbox keybindings | Escaping the X session |
 | sysctl hardening, no core dumps | Kernel information disclosure |
 | Chromium deny-all `URLBlocklist` + allowlist | Unapproved browsing |
@@ -163,7 +167,9 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 
 | Choice | Reason |
 | :--- | :--- |
-| `kiosk` has an **empty**, not locked, password | A locked account deadlocked nodm's PAM stack into a black screen. No login path exists to use it — every getty is masked and no SSH server is installed. |
+| `kiosk` has an **empty**, not locked, password | A locked account deadlocked the display manager's PAM stack (nodm's, before `labkiosk-session`) into a black screen. No login path exists to use it — the session's PAM stack is pinned to `kiosk` and checks no password, every getty is masked and no SSH server is installed. |
+| X runs as root on graphics without a kernel modesetting driver | `needs_root_rights=auto` keeps root only where Xorg needs it (plain VESA, Hyper-V while `hyperv_fb` is loaded); everywhere else it runs as `kiosk`. |
+| AppArmor profiles in complain mode, none for Chromium | Enforcing before a release has shown no complaints risks blocking the agent; Chromium's own sandbox is its protection. |
 | No blanket `ExtensionInstallBlocklist` | It makes Chromium refuse `--load-extension` entirely, silently removing the kiosk's own nav bar and lock curtain. |
 | Camera and microphone are **not** blocked | Language labs and video pages need them. |
 | `grub.pin` is empty in the repository | A committed hash is one password shared by every customer, unrotatable and permanent in git history. |

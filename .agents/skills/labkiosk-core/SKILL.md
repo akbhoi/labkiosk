@@ -133,7 +133,7 @@ report; `409` (row not written by the hub yet), `401`/`403` and network errors a
 
 ## 2c. Restart reports — agent → Worker `POST /api/devices/restart-report`
 
-On an installed disk `labkiosk-logs.service` (root, before nodm) bind-mounts
+On an installed disk `labkiosk-logs.service` (root, before `labkiosk-session.service`) bind-mounts
 `LABKIOSK_DATA/logs/journal` on `/var/log/journal` (the image ships without that folder, so journald
 keeps `/run` until then), keeps every boot's journal for 7 days (128 MiB in all), and records each
 boot in `logs/boot-state.json`; `stop` marks it `clean` only while systemd is `stopping`. A previous
@@ -148,6 +148,25 @@ SHA-256 of tenant, workstation and boot id), at most 24 a day per workstation, w
 `log_text` (0031) for 30 days, read by `GET /api/workstation-issues/log?id=` (`settings`). Restart
 issues are never `pending` for automatic bug reports. `RESTART_KINDS` in `src/boot_report.ts` and
 `labkiosk-logs` must agree (tested).
+
+## 2d. Disk health — agent → Worker `POST /api/devices/disk-health`
+
+`labkiosk-health` (root, `labkiosk-health.timer`: 90 s after boot, then every 6 h) checks the
+machine's own disks (not removable, not USB) — `smartctl` JSON for SATA/NVMe, sysfs
+`life_time`/`pre_eol_info` for eMMC — and writes `/run/labkiosk-health/disks.json`. `failing`: SMART
+self-assessment failed, an NVMe critical warning, spare below threshold; `warning`: ≥ 90 % of rated
+life used, reallocated/pending/uncorrectable sectors, NVMe media errors, a pre-fail attribute past
+its threshold; a disk without data (virtual) is `unknown` and never sent. The agent
+(`report_disk_health()`, in `boot_report_loop()`) posts, once per check, `{"disks":[{device, model,
+serial, state: "warning"|"failing", summary}]}` (1–8 disks) with the device token. `200
+{"status":"ok","recorded":n}`; `400` malformed and `404` settle the check, as does `429` (more than 8
+disk issues per workstation per day; the next check sends again); `409` (workstation row not written
+yet), other statuses and network errors retry. The Worker (`parseDiskHealthReport`,
+`recordDiskHealthReport` in `src/boot_report.ts`) lists each disk once per state in
+`workstation_issues` as kind `disk_health` (id from SHA-256 of tenant, workstation, device, serial
+and state), severity `warning`, or `error` when failing, details `Disk <model> (<device>): <summary>
+Plan to replace it.` / `… Replace it before it stops working.` Never `pending` for automatic bug
+reports.
 
 ## 3. Enrolment — wizard → agent `POST /api/setup` → Worker `POST /api/devices/enroll`
 

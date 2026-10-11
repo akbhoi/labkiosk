@@ -160,7 +160,7 @@ How your own account signs in. Every staff account can open Settings for this ta
 
 ### 5. Errors & Warnings (`?tab=issues`)
 
-Problems workstations reported themselves, kept apart from Recent Activity (which records what people did) and deleted after 90 days. These are the outcomes of a system image update on an installed workstation, sent by the agent to `POST /api/devices/boot-report`, and restarts that happened without a shutdown, sent to `POST /api/devices/restart-report`:
+Problems workstations reported themselves, kept apart from Recent Activity (which records what people did) and deleted after 90 days. These are the outcomes of a system image update on an installed workstation, sent by the agent to `POST /api/devices/boot-report`, restarts that happened without a shutdown, sent to `POST /api/devices/restart-report`, and disks wearing out or failing, sent to `POST /api/devices/disk-health`:
 
 | Problem | Severity | Meaning |
 | :--- | :--- | :--- |
@@ -170,6 +170,7 @@ Problems workstations reported themselves, kept apart from Recent Activity (whic
 | **Boot record error** | Error | The boot record could not be read or written; the details say why. |
 | **Restarted without shutting down** | Warning | The workstation lost power, was switched off at the button, hung or crashed, and started again. |
 | **Stopped responding** | Error | The workstation hung and its hardware watchdog restarted it. |
+| **Disk wearing out or failing** | Warning, or Error when failing | The workstation's own disk reports wear or faults (SMART, or an eMMC card's wear figures), e.g. *Disk Example SSD 256GB (nvme0n1): Wearing out: 93% of its rated life used. Plan to replace it.* A failing disk ends *Replace it before it stops working.* Each disk is listed once per state, and never sent as an automatic bug report. |
 
 Each row shows when the workstation recorded it (its own clock), the workstation and image version, and the details. A restart carries the end of the workstation's system log from before it: **Show log** opens it. Logs are cleared after 30 days and are never sent with automatic bug reports.
 

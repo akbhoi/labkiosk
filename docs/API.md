@@ -97,6 +97,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
 | `/api/devices/restart-report` | `POST` | Device Token | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
+| `/api/devices/disk-health` | `POST` | Device Token | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
 | `/api/devices/update` | `GET` | Device Token | The system release this workstation's organization is offered and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
 | `/api/settings/updates` | `GET`, `POST` | Organization Admin (`updates`) | The organization's update channel and the release it is offered; `POST {"channel": "stable"\|"beta"}` changes the channel |
 | `/api/clients/check-update` | `POST` | Organization Admin (`updates`) | `{"clientIds"}`: ask these workstations to check for and download the offered release |
@@ -524,6 +525,33 @@ listed in `workstation_issues` as `unexpected_restart` (severity `warning`) or `
   reported; `400` malformed, not sent again; `409` the workstation has not checked in yet, sent
   again later; `429` more than 24 reports from this workstation in a day, sent at its next start.
 
+#### `POST /api/devices/disk-health`
+
+The machine's own disks (not removable, not USB) that `labkiosk-health` (root, 90 s after boot and
+every six hours) found wearing out or failing: SMART through `smartctl` for SATA and NVMe, the
+card's wear figures for eMMC. The agent sends the problem disks after each check; a healthy disk,
+or one with no health data (a virtual disk), is never sent. Each disk is listed in
+`workstation_issues` as `disk_health` once per state — severity `warning` for a disk wearing out,
+`error` for one failing — under Settings → Errors & Warnings, with details such as
+`Disk Example SSD 256GB (nvme0n1): Wearing out: 93% of its rated life used. Plan to replace it.`
+(a failing disk ends `Replace it before it stops working.`). Never filed as an automatic bug report.
+
+- **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
+  organization and the workstation.
+- **Request Body:** `disks`, 1 to 8 objects with `device` (a kernel disk name such as `sda`,
+  `nvme0n1` or `mmcblk0`), `model`, `serial`, `state` (`warning` | `failing`) and `summary` (text;
+  control characters become spaces).
+
+  ```json
+  { "disks": [ { "device": "nvme0n1", "model": "Example SSD 256GB", "serial": "S1234",
+                 "state": "warning", "summary": "Wearing out: 93% of its rated life used." } ] }
+  ```
+
+- **Responses:** `200 {"status":"ok","recorded":1}`, counting the disks newly listed (`0` when each
+  is already listed in that state); `400` malformed, not sent again; `401` bad token; `409` the
+  workstation has not checked in yet, sent again later; `429` more than 8 disk issues from this
+  workstation in a day, sent again after its next check.
+
 #### `GET /api/devices/update`
 
 The system release this workstation's organization is offered, asked by the workstation's root
@@ -897,7 +925,8 @@ Rotates the organization's workstation enrollment key. Existing workstations ret
 The **Errors & Warnings** sub-tab of Settings lists what workstations reported about themselves
 (failed or rolled-back updates and boot errors, from
 [`POST /api/devices/boot-report`](#post-apidevicesboot-report), and restarts without a shutdown,
-from [`POST /api/devices/restart-report`](#post-apidevicesrestart-report)), kept for 90 days and separate from
+from [`POST /api/devices/restart-report`](#post-apidevicesrestart-report), and disks wearing out or
+failing, from [`POST /api/devices/disk-health`](#post-apidevicesdisk-health)), kept for 90 days and separate from
 the audit log. `GET /api/workstation-issues` returns the list and the organization's automatic bug
 report setting (fields in the [summary matrix](#-api-summary-matrix)). `POST
 /api/settings/bug-reports` turns automatic, redacted GitHub bug reports on or off; turning them on
@@ -1068,13 +1097,18 @@ on live media, which keeps nothing by design.
     "persistentStorage": true,
     "installRequested": false,
     "secureBoot": "on",
+    "clockSynchronized": true,
     "hostname": "labkiosk-3fa92c"
   }
   ```
 
 `secureBoot` is `on` when the firmware enforced Secure Boot for this boot, `off` when it did not,
 `legacy-bios` when the machine did not start through UEFI, and `unknown` when the firmware variable
-cannot be read. The setup wizard's **Agent Log & Diagnostics** shows it with `hostname`.
+cannot be read. `clockSynchronized` is true once a time server has set the clock since boot
+(`/run/systemd/timesync/synchronized` exists); a clock that never was can be far enough off for
+every HTTPS connection to fail. The setup wizard's **Agent Log & Diagnostics** shows both with
+`hostname`: `Hostname: … · Secure Boot: … · Clock: Set from a time server` (or `Not set from a time
+server yet`).
 
 #### `GET /api/localization/options`
 

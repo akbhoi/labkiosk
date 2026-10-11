@@ -80,10 +80,11 @@ sudo bash build-iso.sh
 | Boot & partitioning | `grub-efi-amd64-bin`, `grub-pc-bin`, `grub-common`, `grub2-common`, `shim-signed`, `grub-efi-amd64-signed`, `efibootmgr`, `parted`, `dosfstools`, `e2fsprogs`, `rsync`, `sudo`, `xz-utils` |
 | Virtualisation | `hyperv-daemons` |
 | Firmware | `intel-microcode`, `amd64-microcode`, `firmware-linux-free`, `firmware-misc-nonfree` (includes Intel Arc and NVIDIA nouveau), `firmware-realtek`, `firmware-iwlwifi`, `firmware-amd-graphics`, `firmware-sof-signed`, `firmware-intel-sound`, `firmware-atheros`, `firmware-ath9k-htc`, `firmware-brcm80211`, `firmware-libertas`, `firmware-ti-connectivity`, `firmware-zd1211`, `firmware-bnx2`, `firmware-bnx2x` |
-| X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `intel-media-va-driver-non-free`, `i965-va-driver`, `mesa-va-drivers` (hardware video decoding: Intel, Arc included, AMD/Radeon and nouveau), `xinit`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
-| Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji` |
+| X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `intel-media-va-driver-non-free`, `i965-va-driver`, `mesa-va-drivers` (hardware video decoding: Intel, Arc included, AMD/Radeon and nouveau), `xinit`, `libpam-systemd` (the kiosk session's logind registration, which lets X run without root), `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
+| Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji`, `fonts-noto-cjk` (Chinese, Japanese and Korean) |
 | Remote & network | `x11vnc`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
 | Memory & recovery | `systemd-zram-generator` (compressed RAM as the first swap), `cryptsetup-bin` (the installed disk's swap partition, encrypted with a key for one boot, and the data partition, encrypted with the TPM), `libtss2-esys-3.0.2-0`, `libtss2-mu0`, `libtss2-rc0`, `libtss2-tcti-device0` (what systemd needs to reach the TPM) |
+| Security & health | `nftables` (the firewall, and the LAN update sharing rule), `apparmor` (profiles for the agent and x11vnc), `smartmontools` (`labkiosk-health`'s disk checks; its own daemon is masked), `gpgv` (verifies downloaded system images) |
 
 ### Keeping the image small
 
@@ -102,12 +103,12 @@ sudo bash build-iso.sh
 
 | Hook | Does |
 | :--- | :--- |
-| `config/hooks/live/01-lockdown.hook.chroot` | Creates the `kiosk` user, configures nodm autologin and its PAM stack, masks every getty, writes the Xorg lockdown snippet, the polkit power rule, the sudoers rule, the units that mount `LABKIOSK_DATA` on an installed disk, enables `labkiosk-boot-ok.service`, pre-seeds live-config's `sudo` and `policykit` components away, ships an empty `/etc/machine-id`, and generates the Chromium policy from its base |
+| `config/hooks/live/01-lockdown.hook.chroot` | Creates the `kiosk` user (not in the `tty` group), enables `labkiosk-session.service` as the default `graphical.target`'s session and writes its PAM stack and `Xwrapper.config` (`needs_root_rights=auto`), masks every getty, writes the Xorg lockdown snippet, the polkit rules (power, network, updates, and `99-labkiosk-deny.rules` for everything else), the sudoers rules, enables `nftables.service` (refusing to build if `/etc/nftables.conf` is not Lab Kiosk's), `apparmor.service`, `NetworkManager-dispatcher.service` and `labkiosk-health.timer`, masks `smartmontools.service`, the units that mount `LABKIOSK_DATA` on an installed disk, enables `labkiosk-boot-ok.service`, pre-seeds live-config's `sudo` and `policykit` components away, ships an empty `/etc/machine-id`, and generates the Chromium policy from its base |
 | `config/hooks/live/02-security.hook.chroot` | sysctl hardening, disables core dumps, sets GRUB timeout and `consoleblank=0`, disables recovery mode, applies `--unrestricted` and any pinned boot password |
 
 ### Rootfs overlay
 
-`config/includes.chroot/` is injected verbatim into the image: the agent, the extension, the wizard, the installer, `labkiosk-boot-slots` and `labkiosk-boot-ok.service`, the installed disk's boot menu (`usr/share/labkiosk/boot/grub.cfg`), the image's version (`usr/share/labkiosk/version`), the `labkiosk-data-generator` systemd generator, `overlayroot.conf`, and the Openbox config.
+`config/includes.chroot/` is injected verbatim into the image: the agent, the extension, the wizard, the installer, `labkiosk-boot-slots` and `labkiosk-boot-ok.service`, the installed disk's boot menu (`usr/share/labkiosk/boot/grub.cfg`), the image's version (`usr/share/labkiosk/version`), the `labkiosk-data-generator` systemd generator, `labkiosk-session.service`, the firewall (`etc/nftables.conf`), the AppArmor profiles (`etc/apparmor.d/labkiosk-agent`, `labkiosk-x11vnc`), the DHCP time-server dispatcher script (`etc/NetworkManager/dispatcher.d/50-labkiosk-ntp`), `labkiosk-health` with its service and timer, `overlayroot.conf`, and the Openbox config.
 
 > **Line endings.** `.gitattributes` pins every script, hook, and config in this tree to `eol=lf`, because the repository builds a Linux image. A CRLF hook dies with `$'\r': command not found`. Never write these files with a tool that translates newlines — Python's `Path.write_text` does, on Windows.
 

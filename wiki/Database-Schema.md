@@ -182,7 +182,7 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 ### `workstation_issues`
 
 Errors and warnings workstations report, kept apart from `audit_logs` (which records what people
-did). Fed by `POST /api/devices/boot-report` and `POST /api/devices/restart-report`; read by Settings →
+did). Fed by `POST /api/devices/boot-report`, `POST /api/devices/restart-report` and `POST /api/devices/disk-health`; read by Settings →
 Errors & Warnings; the hourly cron deletes rows older than 90 days, and restart logs after 30.
 
 | Column | Type | Notes |
@@ -191,7 +191,7 @@ Errors & Warnings; the hourly cron deletes rows older than 90 days, and restart 
 | `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
 | `client_id` | TEXT | The workstation, from its device token |
 | `severity` | TEXT | `error` or `warning` (CHECK) |
-| `kind` | TEXT | `update_failed`, `update_rolled_back`, `boot_error`, `boot_fallback`, `unexpected_restart`, `watchdog_reset` |
+| `kind` | TEXT | `update_failed`, `update_rolled_back`, `boot_error`, `boot_fallback`, `unexpected_restart`, `watchdog_reset`, `disk_health` (one row per disk and state) |
 | `image_version` | TEXT | The image the workstation was running |
 | `details` | TEXT | One readable line; an `error`'s reason, cut to 300 characters |
 | `occurred_at` | INTEGER | When the workstation recorded it (its clock) |
