@@ -28,7 +28,12 @@ import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
 import { getDatabase } from "../src/database";
-import { MAX_RESTART_REPORTS_PER_DAY, purgeOldWorkstationIssues, RESTART_LOG_RETENTION_DAYS } from "../src/boot_report";
+import {
+  MAX_DISK_REPORTS_PER_DAY,
+  MAX_RESTART_REPORTS_PER_DAY,
+  purgeOldWorkstationIssues,
+  RESTART_LOG_RETENTION_DAYS
+} from "../src/boot_report";
 import {
   BUG_REPORT_AI_MODEL,
   BUG_REPORT_TERMS_VERSION,
@@ -3210,6 +3215,105 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const unknown = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-NEW" }));
     const early = await call("/api/devices/restart-report", { ...json(restartReport()), bearer: unknown.data.deviceToken });
     assert.equal(early.status, 409, "a workstation the hub has not written yet is asked to report again later");
+  });
+
+  // ---------------------------------------------------------- disk health
+
+  const diskReport = (overrides: Record<string, unknown> = {}) => ({
+    disks: [
+      {
+        device: "nvme0n1",
+        model: "Example SSD 256GB",
+        serial: "S123",
+        state: "warning",
+        summary: "Wearing out: 93% of its rated life used.",
+        ...overrides
+      }
+    ]
+  });
+
+  test("Refuses a disk health report without a valid device token", async () => {
+    const before = (await issuesOf(orgSessionCookie, "greenwood")).length;
+    assert.equal((await call("/api/devices/disk-health?tenant=greenwood", json(diskReport()))).status, 401);
+    const forged = await call("/api/devices/disk-health", { ...json(diskReport()), bearer: "f".repeat(64) });
+    assert.equal(forged.status, 401);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, before);
+  });
+
+  test("Refuses a malformed disk health report", async () => {
+    const before = (await issuesOf(orgSessionCookie, "greenwood")).length;
+    const bad: unknown[] = [
+      [],
+      { disks: [] },
+      { disks: "nvme0n1" },
+      { disks: Array.from({ length: 9 }, () => diskReport().disks[0]) },
+      diskReport({ device: "../../etc/passwd" }),
+      diskReport({ device: "nvme0n1p1" }),
+      diskReport({ state: "ok" }),
+      diskReport({ state: "unknown" }),
+      diskReport({ summary: "" }),
+      diskReport({ summary: { text: "worn" } }),
+      diskReport({ model: 42 })
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/disk-health", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    const unreadable = await call("/api/devices/disk-health", { method: "POST", body: "{", bearer: deviceToken });
+    assert.equal(unreadable.status, 400);
+    assert.equal((await issuesOf(orgSessionCookie, "greenwood")).length, before);
+  });
+
+  test("Records a problem disk once per state, in the token's own organization", async () => {
+    const report = {
+      ...diskReport({ model: "Example\u0007 SSD 256GB" }),
+      // Ignored: the token decides the organization and the workstation.
+      tenant: "riverside",
+      clientId: "PC-EVIL"
+    };
+    const first = await callJson("/api/devices/disk-health", { ...json(report), bearer: deviceToken });
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.recorded, 1);
+    // The agent sends the same finding after every check.
+    const again = await callJson("/api/devices/disk-health", { ...json(report), bearer: deviceToken });
+    assert.equal(again.data.recorded, 0);
+
+    let disks = (await issuesOf(orgSessionCookie, "greenwood")).filter((i: any) => i.kind === "disk_health");
+    assert.equal(disks.length, 1);
+    const issue: any = disks[0];
+    assert.equal(issue.client_id, "PC-01");
+    assert.equal(issue.severity, "warning");
+    assert.equal(issue.report_state, "none", "a worn disk is never an automatic bug report");
+    assert.equal(issue.details, "Disk Example SSD 256GB (nvme0n1): Wearing out: 93% of its rated life used. Plan to replace it.");
+    assert.equal((await issuesOf(rivalSessionCookie, "riverside")).filter((i: any) => i.kind === "disk_health").length, 0);
+
+    const failing = await callJson("/api/devices/disk-health", {
+      ...json(diskReport({ state: "failing", summary: "Failing: its own self-assessment says it is failing." })),
+      bearer: deviceToken
+    });
+    assert.equal(failing.data.recorded, 1, "a disk that gets worse is listed again");
+    disks = (await issuesOf(orgSessionCookie, "greenwood")).filter((i: any) => i.kind === "disk_health");
+    const error: any = disks.find((i: any) => i.severity === "error");
+    assert.equal(
+      error.details,
+      "Disk Example SSD 256GB (nvme0n1): Failing: its own self-assessment says it is failing. Replace it before it stops working."
+    );
+  });
+
+  test("Limits disk health issues per workstation per day", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-DISKS" }));
+    const token = data.deviceToken;
+    const unknown = await call("/api/devices/disk-health", { ...json(diskReport()), bearer: token });
+    assert.equal(unknown.status, 409, "a workstation the hub has not written yet is asked to report again later");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 200);
+    for (let n = 0; n < MAX_DISK_REPORTS_PER_DAY; n++) {
+      const res = await callJson("/api/devices/disk-health", { ...json(diskReport({ serial: `S${n}` })), bearer: token });
+      assert.equal(res.data.recorded, 1, `disk ${n}`);
+    }
+    const over = await call("/api/devices/disk-health", { ...json(diskReport({ serial: "S-OVER" })), bearer: token });
+    assert.equal(over.status, 429);
+    const known = await call("/api/devices/disk-health", { ...json(diskReport({ serial: "S0" })), bearer: token });
+    assert.equal(known.status, 200, "a finding already listed is still answered");
   });
 
   test("Clears restart logs past their retention and keeps the issue", async () => {

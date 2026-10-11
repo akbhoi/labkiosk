@@ -343,6 +343,139 @@ export async function recordRestartReport(
   return result.meta.changes ? "recorded" : "duplicate";
 }
 
+// ------------------------------------------------------------ disk health
+
+/**
+ * A disk that is wearing out or failing, as labkiosk-health (root, on the
+ * workstation) read it from SMART or the eMMC card's own wear figures. The
+ * agent sends the machine's problem disks with POST /api/devices/disk-health
+ * after each check; a healthy disk is never sent.
+ */
+export const DISK_HEALTH_STATES = ["warning", "failing"] as const;
+export type DiskHealthState = (typeof DISK_HEALTH_STATES)[number];
+
+/** The kernel names labkiosk-health checks (its DISK_NAME_PATTERN). */
+const DISK_DEVICE_PATTERN = /^(sd[a-z]{1,3}|vd[a-z]{1,3}|hd[a-z]{1,3}|nvme[0-9]{1,3}n[0-9]{1,3}|mmcblk[0-9]{1,3})$/;
+/** labkiosk-health checks at most this many disks. */
+export const MAX_DISKS_PER_REPORT = 8;
+const MAX_DISK_FIELD = 120;
+const MAX_DISK_SUMMARY = 300;
+/**
+ * At most this many disk issues per workstation per day. A disk is listed once
+ * per state, so a real workstation never meets this; one inventing disks
+ * cannot flood Errors & Warnings.
+ */
+export const MAX_DISK_REPORTS_PER_DAY = 8;
+
+export interface DiskHealth {
+  device: string;
+  model: string;
+  serial: string;
+  state: DiskHealthState;
+  summary: string;
+}
+
+/** Printable text of a bounded length: the console renders it with textContent. */
+function diskText(value: unknown, field: string, max: number): string {
+  if (typeof value !== "string") throw new Error(`${field} must be text`);
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/ {2,}/g, " ").trim().slice(0, max);
+}
+
+/** Validate a disk health report from a workstation; throws with the reason on anything malformed. */
+export function parseDiskHealthReport(input: unknown): DiskHealth[] {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("The disk health report must be a JSON object");
+  }
+  const disks = (input as Record<string, unknown>).disks;
+  if (!Array.isArray(disks) || disks.length === 0 || disks.length > MAX_DISKS_PER_REPORT) {
+    throw new Error(`disks must list 1 to ${MAX_DISKS_PER_REPORT} disks`);
+  }
+  return disks.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`disks[${index}] must be an object`);
+    }
+    const disk = entry as Record<string, unknown>;
+    if (typeof disk.device !== "string" || !DISK_DEVICE_PATTERN.test(disk.device)) {
+      throw new Error(`disks[${index}].device is not a disk`);
+    }
+    if (typeof disk.state !== "string" || !(DISK_HEALTH_STATES as readonly string[]).includes(disk.state)) {
+      throw new Error(`disks[${index}].state must be warning or failing`);
+    }
+    const summary = diskText(disk.summary, `disks[${index}].summary`, MAX_DISK_SUMMARY);
+    if (!summary) throw new Error(`disks[${index}].summary is empty`);
+    return {
+      device: disk.device,
+      model: diskText(disk.model ?? "", `disks[${index}].model`, MAX_DISK_FIELD),
+      serial: diskText(disk.serial ?? "", `disks[${index}].serial`, MAX_DISK_FIELD),
+      state: disk.state as DiskHealthState,
+      summary
+    };
+  });
+}
+
+/** One line an administrator can act on, for the Errors & Warnings list. */
+export function describeDiskHealth(disk: DiskHealth): string {
+  const name = disk.model ? `${disk.model} (${disk.device})` : disk.device;
+  const advice = disk.state === "failing" ? "Replace it before it stops working." : "Plan to replace it.";
+  return `Disk ${name}: ${disk.summary} ${advice}`;
+}
+
+export type DiskHealthOutcome = { recorded: number } | "unknown-workstation" | "too-many";
+
+/**
+ * List each problem disk in Errors & Warnings, once per disk and state: the
+ * issue's id is derived from the organization, the workstation, the disk and
+ * its state, so the agent sending the same finding every six hours writes
+ * nothing twice, and a disk that goes from wearing out to failing is listed
+ * again. Never an automatic bug report: a worn disk is hardware, not a bug.
+ */
+export async function recordDiskHealthReport(
+  db: D1Database,
+  tenantId: string,
+  clientId: string,
+  disks: DiskHealth[],
+  now: number
+): Promise<DiskHealthOutcome> {
+  const device = await db
+    .prepare("SELECT id FROM client_devices WHERE tenant_id = ? AND client_id = ?")
+    .bind(tenantId, clientId)
+    .first<{ id: string }>();
+  if (!device) return "unknown-workstation";
+
+  const recent = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM workstation_issues
+        WHERE tenant_id = ? AND client_id = ? AND kind = 'disk_health' AND created_at > ?`
+    )
+    .bind(tenantId, clientId, now - 86400)
+    .first<{ n: number }>();
+  let budget = MAX_DISK_REPORTS_PER_DAY - (recent?.n || 0);
+
+  let recorded = 0;
+  for (const disk of disks) {
+    const id = `disk-${(await sha256Hex(`${tenantId}:${clientId}:${disk.device}:${disk.serial}:${disk.state}`)).slice(0, 32)}`;
+    const existing = await db
+      .prepare("SELECT id FROM workstation_issues WHERE id = ? AND tenant_id = ?")
+      .bind(id, tenantId)
+      .first<{ id: string }>();
+    if (existing) continue;
+    if (budget <= 0) return recorded ? { recorded } : "too-many";
+    const result = await db
+      .prepare(
+        `INSERT OR IGNORE INTO workstation_issues
+           (id, tenant_id, client_id, severity, kind, image_version, details, occurred_at, created_at, report_state)
+         VALUES (?, ?, ?, ?, 'disk_health', NULL, ?, ?, ?, 'none')`
+      )
+      .bind(id, tenantId, clientId, disk.state === "failing" ? "error" : "warning", describeDiskHealth(disk), now, now)
+      .run();
+    if (result.meta.changes) {
+      recorded += 1;
+      budget -= 1;
+    }
+  }
+  return { recorded };
+}
+
 /**
  * The log kept with one of an organization's issues. `undefined` when the
  * organization has no such issue; `null` when it has no log (any other kind,

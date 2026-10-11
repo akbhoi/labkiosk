@@ -208,6 +208,8 @@ import {
   listWorkstationIssues,
   parseBootReport,
   parseRestartReport,
+  parseDiskHealthReport,
+  recordDiskHealthReport,
   purgeOldWorkstationIssues,
   recordBootReport,
   recordRestartReport,
@@ -621,6 +623,43 @@ async function handleBootReport(
 }
 
 /**
+ * POST /api/devices/disk-health: a workstation reports the disks labkiosk-health
+ * found wearing out or failing. The device token alone decides the
+ * organization and the workstation.
+ *
+ * 200 recorded (or already recorded); 400 malformed (the agent drops it);
+ * 409 the workstation's row does not exist yet and 429 too many today (the
+ * agent tries again after the next check).
+ */
+async function handleDiskHealthReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let disks;
+  try {
+    disks = parseDiskHealthReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Disk health report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const outcome = await recordDiskHealthReport(db, device.tenant_id, device.client_id, disks, Math.floor(Date.now() / 1000));
+  if (outcome === "unknown-workstation") {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  if (outcome === "too-many") {
+    return jsonError("This workstation has reported enough disk problems today", 429, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok", recorded: outcome.recorded }), {
+    status: 200,
+    headers: jsonHeaders
+  });
+}
+
+/**
  * POST /api/devices/restart-report: an installed workstation reports a boot
  * that ended without shutting down, with the end of that boot's journal. The
  * device token alone decides the organization and the workstation.
@@ -961,6 +1000,9 @@ export default {
     }
     if (path === "/api/devices/restart-report" && method === "POST") {
       return handleRestartReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/disk-health" && method === "POST") {
+      return handleDiskHealthReport(request, db, jsonHeaders);
     }
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);

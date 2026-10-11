@@ -799,7 +799,8 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             boot_fallback: "Started a fallback image",
             boot_error: "Boot record error",
             unexpected_restart: "Restarted without shutting down",
-            watchdog_reset: "Stopped responding"
+            watchdog_reset: "Stopped responding",
+            disk_health: "Disk wearing out or failing"
           };
           // The end of the journal a workstation sent with a restart, fetched
           // when someone asks for it: a log can be 16 KiB, the list is 100 rows.
