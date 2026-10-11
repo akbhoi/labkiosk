@@ -121,18 +121,51 @@ def wait_for(path, seconds=DEVICE_WAIT_SECONDS):
     return True
 
 
+def luks_slots(device):
+    """(key slots, key slots the TPM tokens use) from the volume's LUKS2 header."""
+    dump = run(["cryptsetup", "luksDump", device]).stdout
+    keyslots_part, _, tokens_part = dump.partition("\nTokens:")
+    tokens_part = tokens_part.partition("\nDigests:")[0]
+    slots = set(re.findall(r"(?m)^  (\d+): luks2$", keyslots_part.partition("\nKeyslots:")[2]))
+    token_slots = set()
+    for token in re.split(r"(?m)^  (?=\d+: )", tokens_part)[1:]:
+        if token.split("\n", 1)[0].split(": ", 1)[1].strip() == "systemd-tpm2":
+            token_slots |= set(re.findall(r"(?m)^\s+Keyslot:\s+(\d+)$", token))
+    return slots, token_slots
+
+
 def seal_to_tpm(device, key_path):
-    """Add a key slot sealed to the TPM and PCR 7, then destroy the key-file slot."""
-    run(["systemd-cryptenroll", f"--unlock-key-file={key_path}", "--tpm2-device=auto",
-         f"--tpm2-pcrs={TPM_PCRS}", device])
-    # The key file's own slot is the one it opens; kill exactly that one.
-    proc = run(["cryptsetup", "open", "--test-passphrase", "--verbose", f"--key-file={key_path}",
-                device])
-    slot = proc.stdout + proc.stderr
-    match = re.search(r"Key slot (\d+) unlocked", slot)
-    if not match:
-        raise RuntimeError(f"Could not tell which key slot the one-time key opens: {slot.strip()!r}")
-    run(["cryptsetup", "luksKillSlot", "--batch-mode", device, match.group(1)])
+    """
+    Add a key slot sealed to the TPM and PCR 7, then destroy the key-file slot.
+
+    The slots are told apart by the header, before and after enrolling, never
+    by asking which slot a key opens: once the TPM token exists, cryptsetup
+    tries it first, so that answer names the TPM's own slot.
+    """
+    before, token_slots = luks_slots(device)
+    if token_slots:
+        # A boot cut short after enrolling and before removing the one-time
+        # slot: finish what it started.
+        added, one_time = token_slots, before - token_slots
+    else:
+        if len(before) != 1:
+            raise RuntimeError(f"Expected one key slot (the one-time key's) before sealing, found {sorted(before)}")
+        run(["systemd-cryptenroll", f"--unlock-key-file={key_path}", "--tpm2-device=auto",
+             f"--tpm2-pcrs={TPM_PCRS}", device])
+        after, token_slots = luks_slots(device)
+        added, one_time = after - before, before
+        if token_slots != added:
+            raise RuntimeError(f"Enrolling the TPM left key slots {sorted(after)} with TPM token slots "
+                               f"{sorted(token_slots)}; the one-time key is kept")
+    if len(added) != 1 or len(one_time) != 1:
+        raise RuntimeError(f"Expected one TPM slot and one one-time slot, found {sorted(added)} and "
+                           f"{sorted(one_time)}; the one-time key is kept")
+    (one_time_slot,) = one_time
+    run(["cryptsetup", "luksKillSlot", "--batch-mode", device, one_time_slot])
+    remaining, token_slots = luks_slots(device)
+    if remaining != added or token_slots != added:
+        raise RuntimeError(f"After removing the one-time key, key slots {sorted(remaining)} and TPM token "
+                           f"slots {sorted(token_slots)} do not match")
 
 
 def first_boot(device, key_path=FIRST_BOOT_KEY):

@@ -260,14 +260,46 @@ class GraphicsAcceleration(unittest.TestCase):
 
 
 class FakeRun:
-    """The commands labkiosk-data-unlock runs, answered from a table of results."""
+    """
+    The commands labkiosk-data-unlock runs, answered from a table of results,
+    with a LUKS2 header the cryptsetup commands change and luksDump prints in
+    cryptsetup's own layout.
+    """
 
     def __init__(self, answers=None):
         self.calls = []
         self.answers = answers or {}
+        self.slots = {0}
+        self.tokens = []           # the key slots each systemd-tpm2 token uses
+
+    def dump(self):
+        lines = ["LUKS header information", "Version:       \t2", "", "Data segments:", "  0: crypt",
+                 "\tcipher: aes-xts-plain64", "", "Keyslots:"]
+        for slot in sorted(self.slots):
+            lines += [f"  {slot}: luks2", "\tKey:        512 bits", "\tPBKDF:      pbkdf2"]
+        lines.append("Tokens:")
+        for index, slots in enumerate(self.tokens):
+            lines += [f"  {index}: systemd-tpm2", "\ttpm2-hash-pcrs:   7", "\ttpm2-pcr-bank:    sha256"]
+            lines += [f"\tKeyslot:    {slot}" for slot in sorted(slots)]
+        lines += ["Digests:", "  0: pbkdf2", f"\tKeyslot:    {min(self.slots) if self.slots else 0}"]
+        return "\n".join(lines) + "\n"
 
     def __call__(self, command, check=True, env=None):
         self.calls.append(command)
+        joined = " ".join(command)
+        if "luksDump" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=self.dump(), stderr="")
+        if command[0] == "systemd-cryptenroll" and not any(key in joined for key in self.answers):
+            new = min(set(range(32)) - self.slots)
+            self.slots.add(new)
+            self.tokens.append({new})
+        elif "luksKillSlot" in command:
+            slot = int(command[-1])
+            self.slots.discard(slot)
+            for token in self.tokens:
+                token.discard(slot)
+        elif "luksFormat" in command:
+            self.slots, self.tokens = {0}, []
         for key, (code, out, err) in self.answers.items():
             if key in " ".join(command):
                 if check and code != 0:
@@ -333,9 +365,7 @@ class DataUnlockFlows(unittest.TestCase):
         self.key = os.path.join(self.tmp, "labkiosk-data.key")
         self.mapper = os.path.join(self.tmp, "mapper")
         self.state = {"tpm": True, "unlocks": True}
-        self.run = FakeRun({
-            "--test-passphrase": (0, "Key slot 0 unlocked.\nCommand successful.\n", ""),
-        })
+        self.run = FakeRun()
         self.writable = []
         self.real_unlock_with_tpm = unlock.unlock_with_tpm
         patches = {
@@ -385,6 +415,8 @@ class DataUnlockFlows(unittest.TestCase):
                                    "--tpm2-pcrs=7", self.DEVICE]])
         self.assertEqual(self.run.ran("luksKillSlot"),
                          [["cryptsetup", "luksKillSlot", "--batch-mode", self.DEVICE, "0"]])
+        # What the volume is left with: the TPM's slot, and its token pointing at it.
+        self.assertEqual((self.run.slots, self.run.tokens), ({1}, [{1}]))
         self.assertFalse(os.path.exists(self.key))
         self.assertEqual(self.writable, ["rw", "ro"])
         self.assertFalse(self.run.ran("luksFormat"))
@@ -422,8 +454,10 @@ class DataUnlockFlows(unittest.TestCase):
         self.assertEqual(unlock.command_start(), 0)
         commands = [" ".join(call[:2]) for call in self.run.calls]
         self.assertEqual(commands, ["cryptsetup luksFormat", "cryptsetup open", "mkfs.ext4 -q",
-                                    "systemd-cryptenroll --unlock-key-file=" + self.run.calls[3][1].split("=", 1)[1],
-                                    "cryptsetup open", "cryptsetup luksKillSlot"])
+                                    "cryptsetup luksDump",
+                                    "systemd-cryptenroll --unlock-key-file=" + self.run.calls[4][1].split("=", 1)[1],
+                                    "cryptsetup luksDump", "cryptsetup luksKillSlot", "cryptsetup luksDump"])
+        self.assertEqual((self.run.slots, self.run.tokens), ({1}, [{1}]))
         luks_format = self.run.calls[0]
         self.assertIn(f"--uuid={CRYPT_ID}", luks_format)
         self.assertEqual(luks_format[-1], self.DEVICE)
@@ -438,8 +472,31 @@ class DataUnlockFlows(unittest.TestCase):
         self.assertEqual(unlock.command_start(), 0)
         self.assertEqual(self.run.calls, [])
 
-    def test_an_unknown_key_slot_is_an_error_not_a_guess(self):
-        self.run.answers = {"--test-passphrase": (0, "Command successful.\n", "")}
+    def test_the_tpm_slot_is_never_the_one_removed(self):
+        # The bug a VM found: asking which slot a key opens named the TPM's
+        # slot once its token existed, and that slot was destroyed.
+        self.run.slots = {3}
+        unlock.seal_to_tpm(self.DEVICE, self.key)
+        self.assertEqual(self.run.ran("luksKillSlot")[0][-1], "3")
+        self.assertEqual((self.run.slots, self.run.tokens), ({0}, [{0}]))
+
+    def test_an_interrupted_seal_is_finished_without_enrolling_again(self):
+        self.run.slots, self.run.tokens = {0, 1}, [{1}]
+        unlock.seal_to_tpm(self.DEVICE, self.key)
+        self.assertFalse(self.run.ran("systemd-cryptenroll"))
+        self.assertEqual((self.run.slots, self.run.tokens), ({1}, [{1}]))
+
+    def test_an_unexpected_header_keeps_the_one_time_key(self):
+        for slots, tokens in (({0, 2}, []), (set(), []), ({0, 1, 2}, [{1, 2}])):
+            with self.subTest(slots=slots, tokens=tokens):
+                self.run.slots, self.run.tokens = set(slots), [set(t) for t in tokens]
+                self.run.calls.clear()
+                with self.assertRaises(RuntimeError):
+                    unlock.seal_to_tpm(self.DEVICE, self.key)
+                self.assertFalse(self.run.ran("luksKillSlot"))
+
+    def test_an_enrolment_whose_token_names_another_slot_kills_nothing(self):
+        self.run.answers = {"systemd-cryptenroll": (0, "", "")}   # enrols nothing
         with self.assertRaises(RuntimeError):
             unlock.seal_to_tpm(self.DEVICE, self.key)
         self.assertFalse(self.run.ran("luksKillSlot"))

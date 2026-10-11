@@ -624,6 +624,24 @@ luks_header() {
     cryptsetup luksDump "${loop}p4"
     losetup -d "$loop"
 }
+# sealed_to_tpm: reads a header on stdin; true when it has exactly one key
+# slot and a systemd-tpm2 token that uses that slot (and nothing opens it but
+# the TPM).
+sealed_to_tpm() {
+    python3 -c '
+import re, sys
+dump = sys.stdin.read()
+keyslots = dump.partition("\nKeyslots:")[2].partition("\nTokens:")[0]
+tokens = dump.partition("\nTokens:")[2].partition("\nDigests:")[0]
+slots = set(re.findall(r"(?m)^  (\d+): luks2$", keyslots))
+token_slots = set()
+for token in re.split(r"(?m)^  (?=\d+: )", tokens)[1:]:
+    if token.split("\n", 1)[0].split(": ", 1)[1].strip() == "systemd-tpm2":
+        token_slots |= set(re.findall(r"(?m)^\s+Keyslot:\s+(\d+)$", token))
+print(f"key slots {sorted(slots)}, TPM token slots {sorted(token_slots)}", file=sys.stderr)
+sys.exit(0 if len(slots) == 1 and slots == token_slots else 1)
+'
+}
 first_boot_key_present() {
     debugfs -R "stat /boot/grub/labkiosk-data.key" "$TPM_DISK?offset=$TPM_ROOT_OFFSET" 2>/dev/null | grep -q '^Inode:'
 }
@@ -658,13 +676,10 @@ fi
 installed_header="$(luks_header)"
 tpm_boot "first boot"
 sealed_header="$(luks_header)"
-sealed_slots="$(printf '%s\n' "$sealed_header" | grep -cE '^  [0-9]+: luks2$' || true)"
 if first_boot_key_present; then
     fail "tpm: the one-time key is still in boot/grub after the first boot"
-elif ! printf '%s\n' "$sealed_header" | grep -q 'systemd-tpm2'; then
-    fail "tpm: no TPM token on the data partition after the first boot"
-elif [ "$sealed_slots" -ne 1 ]; then
-    fail "tpm: expected one key slot (the TPM's) after the first boot, found $sealed_slots"
+elif ! printf '%s\n' "$sealed_header" | sealed_to_tpm; then
+    fail "tpm: after the first boot the only key slot is not the TPM token's"
 elif [ "$sealed_header" = "$installed_header" ]; then
     fail "tpm: the header did not change on the first boot"
 else
@@ -682,11 +697,10 @@ rm -rf "$TPM_STATE"
 mkdir -m 0700 "$TPM_STATE"
 tpm_boot "TPM wiped"
 reset_header="$(luks_header)"
-reset_slots="$(printf '%s\n' "$reset_header" | grep -cE '^  [0-9]+: luks2$' || true)"
 if [ "$reset_header" = "$sealed_header" ]; then
     fail "tpm: with the TPM wiped the data partition was not recreated"
-elif ! printf '%s\n' "$reset_header" | grep -q 'systemd-tpm2' || [ "$reset_slots" -ne 1 ]; then
-    fail "tpm: the recreated partition is not sealed to the new TPM (one slot and a TPM token expected)"
+elif ! printf '%s\n' "$reset_header" | sealed_to_tpm; then
+    fail "tpm: the recreated partition's only key slot is not the new TPM token's"
 else
     pass "tpm: with the TPM wiped the data partition was recreated and sealed again"
 fi
