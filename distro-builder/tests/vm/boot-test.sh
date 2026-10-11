@@ -282,7 +282,7 @@ start_vm() {
         -drive if=pflash,format=raw,file="$WORK/vars.fd" \
         -drive file="$disk",format=raw,if=virtio,file.locking=off \
         -nic user,model=virtio-net-pci \
-        -vga std -display none -monitor none -serial none \
+        -vga std -display none -monitor none -serial "${VM_SERIAL:-none}" \
         -qmp unix:"$WORK/qmp.sock",server=on,wait=off \
         -no-reboot "${@:2}" &
     VM_PID=$!
@@ -607,6 +607,12 @@ stop_vm
 log "10. tpm: a disk with an encrypted data partition, booted with a software TPM"
 install_disk "$TPM_DISK" --encrypt-data
 TPM_ROOT_OFFSET="$(partition_offset "$TPM_DISK" ROOT)"
+# The console on the serial port, so labkiosk-data-unlock's own account of
+# each boot is readable here: its journal is on the volume under test.
+mount -o "loop,offset=$TPM_ROOT_OFFSET" "$TPM_DISK" "$STAGE"
+sed -i 's/ noeject panic=10$/ noeject panic=10 console=tty0 console=ttyS0,115200/' "$STAGE/boot/grub/grub.cfg"
+grep -q 'console=ttyS0' "$STAGE/boot/grub/grub.cfg" || die "could not add the serial console to the TPM disk's boot menu"
+umount_root
 TPM_STATE="$WORK/tpm-state"
 mkdir -m 0700 "$TPM_STATE"
 
@@ -631,7 +637,7 @@ tpm_boot() {
         [ -S "$WORK/swtpm.sock" ] && break
         sleep 0.2
     done
-    start_vm "$TPM_DISK" -chardev socket,id=chrtpm,path="$WORK/swtpm.sock" \
+    VM_SERIAL="file:$WORK/tpm-serial-${1// /-}.log" start_vm "$TPM_DISK" -chardev socket,id=chrtpm,path="$WORK/swtpm.sock" \
         -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0
     if wait_for_exit "$RECOVER_SECONDS"; then
         fail "tpm: $1: the VM rebooted within $RECOVER_SECONDS s"
@@ -642,6 +648,8 @@ tpm_boot() {
     fi
     wait "$SWTPM_PID" 2>/dev/null || true
     SWTPM_PID=""
+    log "tpm: $1: labkiosk-data-unlock said:"
+    grep -a '\[DATA\]' "$WORK/tpm-serial-${1// /-}.log" | cut -c1-6000 || log "(nothing on the serial console)"
 }
 
 if ! first_boot_key_present; then

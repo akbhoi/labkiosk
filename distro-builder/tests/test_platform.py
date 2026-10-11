@@ -266,7 +266,7 @@ class FakeRun:
         self.calls = []
         self.answers = answers or {}
 
-    def __call__(self, command, check=True):
+    def __call__(self, command, check=True, env=None):
         self.calls.append(command)
         for key, (code, out, err) in self.answers.items():
             if key in " ".join(command):
@@ -337,6 +337,7 @@ class DataUnlockFlows(unittest.TestCase):
             "--test-passphrase": (0, "Key slot 0 unlocked.\nCommand successful.\n", ""),
         })
         self.writable = []
+        self.real_unlock_with_tpm = unlock.unlock_with_tpm
         patches = {
             "run": self.run,
             "kernel_args": lambda: ["labkiosk.installed=1", f"labkiosk.data={DATA_ID}",
@@ -442,6 +443,30 @@ class DataUnlockFlows(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             unlock.seal_to_tpm(self.DEVICE, self.key)
         self.assertFalse(self.run.ran("luksKillSlot"))
+
+    def test_every_unlock_route_is_tried_before_the_volume_is_recreated(self):
+        self.addCleanup(setattr, unlock, "unlock_with_tpm", unlock.unlock_with_tpm)
+        unlock.unlock_with_tpm = self.real_unlock_with_tpm
+        self.run.answers = {"attach": (1, "", "TPM2 operation failed\nsecond line"),
+                            "--token-only": (1, "", "No usable token")}
+        self.assertFalse(unlock.unlock_with_tpm(self.DEVICE, attempts=2, pause=0))
+        routes = [" ".join(call[:2]) for call in self.run.calls]
+        self.assertEqual(routes, ["/lib/systemd/systemd-cryptsetup attach", "/lib/systemd/systemd-cryptsetup attach",
+                                  "cryptsetup open"] * 2)
+        for name, command, env in unlock.unlock_commands(self.DEVICE):
+            with self.subTest(name=name):
+                self.assertIn(self.DEVICE, command)
+                if command[0] == unlock.SYSTEMD_CRYPTSETUP:
+                    self.assertIn("tpm2-device=auto,headless=true", command)
+                else:
+                    self.assertIn("--token-only", command)
+
+    def test_the_first_route_that_opens_the_volume_wins(self):
+        self.addCleanup(setattr, unlock, "unlock_with_tpm", unlock.unlock_with_tpm)
+        unlock.unlock_with_tpm = self.real_unlock_with_tpm
+        open(self.mapper, "w").close()
+        self.assertTrue(unlock.unlock_with_tpm(self.DEVICE, attempts=3, pause=0))
+        self.assertEqual(len(self.run.calls), 1)
 
     def test_nothing_waits_for_a_passphrase(self):
         source = read(UNLOCK_PATH)

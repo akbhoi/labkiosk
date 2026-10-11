@@ -21,6 +21,10 @@ ExecStart=/usr/local/sbin/labkiosk-data-unlock start
 # After /etc/labkiosk is unmounted: units stop in the reverse of their order.
 ExecStop=/usr/local/sbin/labkiosk-data-unlock stop
 TimeoutStartSec=5min
+# On the console as well as in the journal: why an unlock failed is readable
+# without a shell, on the screen or a serial console, even if the volume that
+# holds the journal is then recreated.
+StandardError=journal+console
 
 [Install]
 WantedBy=local-fs.target
