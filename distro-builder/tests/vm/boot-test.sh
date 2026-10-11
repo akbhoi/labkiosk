@@ -481,6 +481,10 @@ if printf '%s\n' "$health_lines" | grep -q '^\[HEALTH\] AppArmor: agent labkiosk
     pass "apparmor: the agent and x11vnc ran under their profiles, in complain mode"
 else
     fail "apparmor: expected both profiles attached, labkiosk-health said: $(printf '%s\n' "$health_lines" | grep 'AppArmor' | sort -u | tr '\n' ' ')"
+    log "apparmor: what apparmor.service and the kernel said:"
+    journal --unit=apparmor.service | tail -n 40
+    journalctl --directory="$WORK/journal/journal" --output=cat _TRANSPORT=kernel 2>/dev/null \
+        | grep -i 'apparmor' | sort | uniq -c | head -n 40 || true
 fi
 if printf '%s\n' "$health_lines" | grep -q '^\[HEALTH\] Disk vda '; then
     pass "disk health: $(printf '%s\n' "$health_lines" | grep '^\[HEALTH\] Disk vda ' | tail -n 1)"
