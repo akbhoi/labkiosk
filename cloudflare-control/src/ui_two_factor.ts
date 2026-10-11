@@ -10,6 +10,7 @@
  */
 
 import { escapeAttr } from "./escape";
+import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 
 /** The tab's two cards; `renderTwoFactorScript()` fills them. */
 export function renderTwoFactorPaneHtml(): string {
@@ -18,12 +19,12 @@ export function renderTwoFactorPaneHtml(): string {
         <div class="card">
           <h2 class="card-title">Emailed code</h2>
           <p class="card-sub">After your password, sign-in emails a six-digit code to your address. There is nothing to set up.</p>
-          <div id="two-factor-email" aria-live="polite"></div>
+          <form id="two-factor-email" aria-live="polite" novalidate></form>
         </div>
         <div class="card">
           <h2 class="card-title">Authenticator app</h2>
           <p class="card-sub">Optional. Sign-in then asks for the code from an app on your phone, such as Google Authenticator, Microsoft Authenticator or 1Password, and works when email is slow.</p>
-          <div id="two-factor-body" aria-live="polite"></div>
+          <form id="two-factor-body" aria-live="polite" novalidate></form>
         </div>
       </div>`;
 }
@@ -36,6 +37,11 @@ export function renderTwoFactorScript(nonce: string): string {
       var emailBox = document.getElementById("two-factor-email");
       var body = document.getElementById("two-factor-body");
       if (!emailBox || !body) return;
+      // Forms so the browser and a password manager treat each password field as one;
+      // the buttons do the work, so Enter must not send the page anywhere.
+      [emailBox, body].forEach(function (form) {
+        form.addEventListener("submit", function (event) { event.preventDefault(); });
+      });
 
       function el(tag, className, text) {
         var node = document.createElement(tag);
@@ -53,6 +59,19 @@ export function renderTwoFactorScript(nonce: string): string {
         field.type = type;
         Object.keys(attrs || {}).forEach(function (name) { field.setAttribute(name, attrs[name]); });
         group.append(labelEl, field);
+        if (type === "password") {
+          // A password manager matches the password to this account.
+          var account = el("input");
+          account.type = "text";
+          account.name = "username";
+          account.hidden = true;
+          account.tabIndex = -1;
+          account.setAttribute("autocomplete", "username");
+          account.setAttribute("aria-hidden", "true");
+          var signedInAs = document.querySelector(".profile-menu-email");
+          account.value = signedInAs ? signedInAs.textContent.trim() : "";
+          group.prepend(account);
+        }
         return { group: group, field: field };
       }
 
@@ -268,7 +287,8 @@ export function renderTwoFactorScript(nonce: string): string {
         }
       }
 
-      render();
+${WHEN_PANE_SHOWN_JS}
+      whenPaneShown(body, render);
     })();
   </script>`;
 }

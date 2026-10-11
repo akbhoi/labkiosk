@@ -27,6 +27,7 @@ import {
   SOCIAL_IMAGE_PATH
 } from "./ui_landing";
 import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { GEO_DATA_PATH, GEO_JSON } from "./geo";
 import {
   FAVICON_PATH,
   ZARAZ_LOADER_PATH,
@@ -845,7 +846,7 @@ function isPublicTenantRoute(path: string, method: string): boolean {
  */
 function buildHtmlHeaders(
   nonce: string,
-  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean; turnstile?: boolean }
+  options: { hsts: boolean; indexable: boolean; analyticsOrigin: string | null; remoteViewer?: boolean; turnstile?: boolean; revalidate?: boolean }
 ): Record<string, string> {
   const scriptSources = [`'nonce-${nonce}'`];
   // Turnstile's widget script, and the frame it draws the check in (src/turnstile.ts).
@@ -876,7 +877,10 @@ function buildHtmlHeaders(
     "X-Frame-Options": options.remoteViewer ? "SAMEORIGIN" : "DENY",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
     "Cross-Origin-Opener-Policy": "same-origin",
-    "Cache-Control": "no-store"
+    // A public page shown to a signed-out visitor may be kept for the back and
+    // forward buttons, and is asked for again otherwise: its nonce is never reused
+    // for a new document. Everything else is never stored.
+    "Cache-Control": options.revalidate ? "no-cache" : "no-store"
   };
   if (options.hsts) headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
   if (!options.indexable) headers["X-Robots-Tag"] = "noindex, nofollow";
@@ -1052,6 +1056,17 @@ export default {
       });
     }
 
+    // The registration form's country table (src/geo.ts), served the same way.
+    if (path.startsWith("/assets/geo-") && path.endsWith(".json") && method === "GET") {
+      return new Response(GEO_JSON, {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": path === GEO_DATA_PATH ? "public, max-age=31536000, immutable" : "no-store"
+        }
+      });
+    }
+
     // The picture shared links show, from static assets.
     if (path === SOCIAL_IMAGE_PATH && (method === "GET" || method === "HEAD")) {
       if (!env.ASSETS) return jsonError("Not Found", 404, jsonHeaders);
@@ -1162,7 +1177,8 @@ export default {
       hsts: isHttps && !isDev,
       indexable: isIndexable(request, url, env),
       analyticsOrigin: allowsAnalytics(request, url, env) ? url.origin : null,
-      turnstile: Boolean(turnstileSiteKey(env))
+      turnstile: Boolean(turnstileSiteKey(env)),
+      revalidate: !session && isIndexable(request, url, env)
     });
     const canonicalUrl = canonicalUrlFor(request, url, env);
     const baseDomain = env.DEFAULT_DOMAIN || "labkiosk.org";
@@ -1436,7 +1452,9 @@ export default {
     }
 
     if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/")) {
-      if (!session || session.role !== "super_admin") {
+      // Signed out: the sign-in page, as /admin does.
+      if (!session) return Response.redirect(`${url.origin}/?login=1`, 302);
+      if (session.role !== "super_admin") {
         return new Response(
           renderLandingHtml({
             error: "Super administrator access required. Please sign in.",
@@ -1464,6 +1482,18 @@ export default {
       else if (path === "/super/mail") activeTab = "support";
       else if (path === "/super/catalogs") activeTab = "catalogs";
       else if (path === "/super/system") activeTab = "system";
+      else if (path.startsWith("/super/") && path !== "/super/organizations") {
+        // A mistyped console address is not the Organizations page.
+        return new Response(
+          renderStatusPageHtml({
+            title: "Page Not Found",
+            heading: "This page does not exist",
+            messageHtml: "The address may have been mistyped, or the page may have moved.",
+            homeHref: `${url.origin}/super`
+          }),
+          { status: 404, headers: htmlHeaders }
+        );
+      }
 
       const allTenants = await listAllTenants(db);
       const catalogs = await listUiCatalogs(db);
@@ -2910,6 +2940,10 @@ export default {
     // GET /console/remote?clientId=...: the Remote Control viewer the
     // Workstations page frames (src/ui_remote_viewer.ts).
     if (path === "/console/remote" && method === "GET") {
+      // Opened signed out in a browser tab: the sign-in page, not a line of JSON.
+      if (!session && (request.headers.get("Accept") || "").includes("text/html")) {
+        return Response.redirect(`${url.origin}/?login=1`, 302);
+      }
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
       const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);

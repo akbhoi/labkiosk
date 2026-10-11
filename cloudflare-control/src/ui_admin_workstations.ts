@@ -43,7 +43,7 @@ function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGrou
     </div>
 
     <div class="controls-bar">
-      <div class="filter-chips" id="workstation-filter-chips" role="tablist" aria-label="Workstation telemetry filters">
+      <div class="filter-chips" id="workstation-filter-chips" role="group" aria-label="Workstation telemetry filters">
         <button type="button" class="filter-chip active" data-filter="all">
           <span>All Workstations</span>
           <span class="chip-badge" id="chip-count-all">0</span>
@@ -188,7 +188,7 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
           Enter an approved website URL to immediately navigate user workstations.
         </p>
         <div class="form-group mb-sm">
-          <input type="url" id="target-url-input" class="form-input mono" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}">
+          <input type="url" id="target-url-input" class="form-input mono" aria-labelledby="url-modal-title" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}">
         </div>
         <div id="broadcast-error" class="form-error"></div>
         <div class="mt-sm">
@@ -697,6 +697,13 @@ function renderWorkstationsScripts(
       // the live channel is open, changes arrive over it and this runs only to
       // pick up new enrolments and group moves. The screens on view are named,
       // so a console that has fallen back to polling still gets their frames.
+      // A workstation removed here: its connection is still closing for a moment,
+      // and nothing that says about it puts it back on the grid.
+      var removedClients = {};
+      function recentlyRemoved(id) {
+        return Boolean(removedClients[id]) && Date.now() - removedClients[id] < 30000;
+      }
+
       async function pollClients() {
         try {
           const res = await fetch(labkioskApi("/api/clients"), {
@@ -707,6 +714,9 @@ function renderWorkstationsScripts(
           if (!res.ok) return;
           const data = await res.json();
           clientsData = data.clients || {};
+          for (const id of Object.keys(clientsData)) {
+            if (recentlyRemoved(id)) delete clientsData[id];
+          }
           renderClients();
         } catch (err) {
           console.warn("Workstation list:", err);
@@ -734,6 +744,9 @@ function renderWorkstationsScripts(
             document.getElementById("stat-total-count").textContent = "0";
             document.getElementById("stat-locked-count").textContent = "0";
             setPanelCounts(0, 0, 0, 0);
+            // The group chips too: the last workstation of a group has just gone.
+            document.querySelectorAll("#group-filter-chips .chip-badge").forEach(function (badge) { badge.textContent = "0"; });
+            selectedClientIds.clear();
             updateSelectionToolbar();
             return;
           }
@@ -882,6 +895,7 @@ function renderWorkstationsScripts(
           }
           scheduleRender();
         } else if (msg.type === "status" && msg.client) {
+          if (recentlyRemoved(msg.client.clientId)) return;
           // A machine this console has never listed: fetch the list to place it.
           if (!clientsData[msg.client.clientId]) {
             pollClients();
@@ -1003,6 +1017,9 @@ function renderWorkstationsScripts(
             if (card) card.remove();
             selectedClientIds.delete(clientId);
             delete clientsData[clientId];
+            removedClients[clientId] = Date.now();
+            // The counts and chips now, not when the next list arrives.
+            renderClients();
             pollClients();
           } else {
             lkToast(data.error || "Failed to remove workstation", "error");

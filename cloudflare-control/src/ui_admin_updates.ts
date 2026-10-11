@@ -15,6 +15,7 @@
  */
 
 import { escapeAttr } from "./escape";
+import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { SECURITY_WAIT_WARN_DAYS } from "./releases";
 
 export function renderUpdatesPaneHtml(): string {
@@ -138,7 +139,8 @@ export function renderUpdatesScript(nonce: string): string {
           }
         });
 
-        load();
+${WHEN_PANE_SHOWN_JS}
+        whenPaneShown(form, load);
       })();
     </script>
   `;

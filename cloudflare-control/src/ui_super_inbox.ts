@@ -555,6 +555,12 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
           await loadList();
         }
 
+        /** After the view changed: a conversation the new list does not hold is no longer shown. */
+        async function showView() {
+          await loadList();
+          if (selectedId && !listEl.querySelector('.inbox-item[data-id="' + CSS.escape(selectedId) + '"]')) clearSelection();
+        }
+
         function setParam(name, value) {
           var params = new URLSearchParams(window.location.search);
           if (value) params.set(name, value);
@@ -777,7 +783,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
               b.classList.toggle("active", b === target);
             });
             if (BOX === "tasks" && window.labkioskSwitchTab) window.labkioskSwitchTab("requests");
-            loadList();
+            showView();
           });
         }
 
@@ -791,7 +797,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             mailboxList.querySelectorAll("[data-inbox-mailbox]").forEach(function (b) {
               b.classList.toggle("active", b === target);
             });
-            loadList();
+            showView();
           });
         }
 
@@ -802,6 +808,8 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             markFilter();
             // The filter is the request list's: show that list if another view of Tasks is open.
             if (BOX === "tasks" && window.labkioskSwitchTab) window.labkioskSwitchTab("requests");
+            // Another folder is another list: what was open in the last one is closed.
+            if (selectedId) clearSelection();
             loadList();
           });
         });

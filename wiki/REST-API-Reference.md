@@ -481,6 +481,8 @@ Creates an organization and its first administrator for review. Ask for `emailCo
 
 → `{ "status": "ok", "pending": true, "reference": "LK-7Q2M4K" }`
 
+`country` is an ISO 3166-1 alpha-2 code (`IN`) or the English name as listed in `src/geo.ts`, and is stored as the name. Where that country's states are listed, `region` must be one of them; `postalCode` is checked against the country's format and may be empty where addresses carry none; `taxId`, when given, is checked against the country's format (GSTIN, EIN, VAT number and so on). `phone` is the calling code and the number without its leading 0. The registration form reads the same table from `/assets/geo-<hash>.json`.
+
 Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()` and stored as PBKDF2-HMAC-SHA256, 100 000 iterations, 32-byte random salt, 256 derived bits.
 
 ---

@@ -14,6 +14,7 @@
 import { Tenant, HomepageBlock } from "./types";
 import { escapeHtml, escapeAttr, safeHttpUrl } from "./escape";
 import { FONT_LINKS, rootTokensCss, LEGACY_PORTAL_ALIASES } from "./ui_tokens";
+import { FAVICON_LINK_HTML } from "./seo";
 
 export interface OrgHomeOptions {
   tenant: Tenant;
@@ -54,7 +55,7 @@ export function renderOrgHomeHtml(options: OrgHomeOptions): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(tenant.name)}</title>
-  <meta name="description" content="${escapeAttr(intro)}">
+${FAVICON_LINK_HTML}  <meta name="description" content="${escapeAttr(intro)}">
   <meta name="color-scheme" content="light dark">
 ${FONT_LINKS}
   <style>

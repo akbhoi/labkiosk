@@ -6,6 +6,7 @@
 
 import { escapeHtml, escapeAttr } from "./escape";
 import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, THEME_TOGGLE_SCRIPT, rootTokensCss, themeHeadHtml } from "./ui_tokens";
+import { FAVICON_LINK_HTML } from "./seo";
 
 export interface NavItem {
   id: string;
@@ -54,6 +55,261 @@ export interface LayoutOptions {
  * A rail badge, or nothing. A zero count is omitted: an empty allowlist is
  * already legible from the page, and a badge reading "0" only adds noise.
  */
+/**
+ * Both consoles: a form with changes that were not saved is not left by accident.
+ *
+ * Switching to another tab, or following a link to another page, with such a
+ * form on screen asks first: discard the changes, save them (the button carries
+ * the form's own submit label), or cancel and stay. Closing or reloading the
+ * page gets the browser's own question.
+ *
+ * A form is one inside the canvas with a submit button. Its values are noted
+ * the first time the person touches it, so whatever a script filled in on load
+ * is the starting point, and "changed" means different from that. A save counts
+ * as done when the request its submit started is answered 2xx.
+ */
+export const UNSAVED_CHANGES_SCRIPT = `
+    (function () {
+      "use strict";
+      var canvas = document.getElementById("app-canvas");
+      if (!canvas) return;
+
+      // A save that reloads the page would undo a move to another page made
+      // while it was under way; the address waits here and is followed on arrival.
+      var AFTER_SAVE = "lk-after-save";
+      try {
+        var waitingAddress = sessionStorage.getItem(AFTER_SAVE);
+        if (waitingAddress) {
+          sessionStorage.removeItem(AFTER_SAVE);
+          if (waitingAddress !== window.location.href) {
+            window.location.replace(waitingAddress);
+            return;
+          }
+        }
+      } catch (err) {
+        // No session storage (a locked-down browser): the move simply is not resumed.
+      }
+
+      var starting = new WeakMap();
+      var submitting = null;
+      var awaited = null;
+      var leaving = false;
+
+      function isTracked(form) {
+        return Boolean(form) && canvas.contains(form) && Boolean(form.querySelector('button[type="submit"], input[type="submit"]'));
+      }
+
+      function fieldsOf(form) {
+        return Array.prototype.filter.call(form.elements, function (field) {
+          var type = field.type;
+          return field.tagName !== "BUTTON" && field.tagName !== "FIELDSET" &&
+            type !== "submit" && type !== "button" && type !== "reset" && type !== "hidden" && type !== "file";
+        });
+      }
+
+      function valuesOf(form) {
+        return fieldsOf(form).map(function (field) {
+          return field.type === "checkbox" || field.type === "radio" ? (field.checked ? "1" : "0") : field.value;
+        });
+      }
+
+      function isChanged(form) {
+        var before = starting.get(form);
+        return Boolean(before) && JSON.stringify(before) !== JSON.stringify(valuesOf(form));
+      }
+
+      function changedForms() {
+        return Array.prototype.filter.call(canvas.querySelectorAll("form"), function (form) {
+          return isTracked(form) && isChanged(form);
+        });
+      }
+
+      function noteStart(event) {
+        var form = event.target && event.target.closest ? event.target.closest("form") : null;
+        if (isTracked(form) && !starting.has(form)) starting.set(form, valuesOf(form));
+      }
+      canvas.addEventListener("focusin", noteStart, true);
+      canvas.addEventListener("pointerdown", noteStart, true);
+
+      // Which form a request belongs to: the one whose submit came just before it.
+      document.addEventListener("submit", function (event) {
+        if (isTracked(event.target)) submitting = event.target;
+      }, true);
+      document.addEventListener("click", function (event) {
+        var target = event.target;
+        if (!submitting || !target || !target.closest) return;
+        // A confirmation the save itself asks for is still that save.
+        if (target.closest(".lk-dialog") || submitting.contains(target)) return;
+        submitting = null;
+      }, true);
+
+      function saveAnswered(form, saved) {
+        // Saved: the next touch notes a new starting point (the page may clear the form first).
+        if (saved) starting.delete(form);
+        if (awaited && awaited.form === form) awaited.finish(saved);
+      }
+
+      var plainFetch = window.fetch;
+      window.fetch = function (input, init) {
+        var form = submitting;
+        var method = String((init && init.method) || "GET").toUpperCase();
+        if (!form || method === "GET") return plainFetch.apply(this, arguments);
+        submitting = null;
+        return plainFetch.apply(this, arguments).then(function (response) {
+          saveAnswered(form, response.ok);
+          return response;
+        }, function (error) {
+          saveAnswered(form, false);
+          throw error;
+        });
+      };
+
+      /** Submit the form as its own button would; true once the server has accepted it. */
+      function save(form) {
+        return new Promise(function (resolve) {
+          if (!form.reportValidity()) { resolve(false); return; }
+          // A save that never sends anything (the page refused it first) is not waited on for ever.
+          var timer = setTimeout(function () { finish(false); }, 20000);
+          function finish(saved) {
+            clearTimeout(timer);
+            awaited = null;
+            resolve(saved);
+          }
+          awaited = { form: form, finish: finish };
+          form.requestSubmit();
+        });
+      }
+
+      /** Put the form back as it was when first touched; false when its fields have changed shape. */
+      function discard(form) {
+        var before = starting.get(form);
+        var fields = fieldsOf(form);
+        starting.delete(form);
+        if (!before || before.length !== fields.length) return false;
+        fields.forEach(function (field, index) {
+          if (field.type === "checkbox" || field.type === "radio") field.checked = before[index] === "1";
+          else field.value = before[index];
+        });
+        return true;
+      }
+
+      function saveLabelOf(form) {
+        var button = form.querySelector('button[type="submit"], input[type="submit"]');
+        var label = button ? (button.value || button.textContent || "").replace(/ +/g, " ").trim() : "";
+        return label || "Save changes";
+      }
+
+      function nameOf(form) {
+        var card = form.closest(".card");
+        var title = card ? card.querySelector(".card-title") : null;
+        return title ? title.textContent.replace(/ +/g, " ").trim() : "";
+      }
+
+      /** Resolves "save", "discard" or "cancel". */
+      function ask(form) {
+        return new Promise(function (resolve) {
+          var previous = document.activeElement;
+          var overlay = document.createElement("div");
+          overlay.className = "lk-dialog-overlay";
+          var box = document.createElement("div");
+          box.className = "lk-dialog";
+          box.setAttribute("role", "dialog");
+          box.setAttribute("aria-modal", "true");
+          box.setAttribute("aria-labelledby", "lk-unsaved-title");
+          var title = document.createElement("h3");
+          title.className = "lk-dialog-title";
+          title.id = "lk-unsaved-title";
+          title.textContent = "Unsaved changes";
+          var message = document.createElement("p");
+          message.className = "lk-dialog-message";
+          var name = nameOf(form);
+          message.textContent = (name ? "Your changes to " + name : "Your changes here") + " have not been saved.";
+          var actions = document.createElement("div");
+          actions.className = "lk-dialog-actions";
+
+          function choice(label, tone, value) {
+            var button = document.createElement("button");
+            button.type = "button";
+            button.className = "btn " + tone;
+            button.textContent = label;
+            button.addEventListener("click", function () { settle(value); });
+            actions.appendChild(button);
+            return button;
+          }
+          function settle(value) {
+            overlay.remove();
+            if (value === "cancel" && previous && previous.focus) previous.focus();
+            resolve(value);
+          }
+
+          choice("Cancel", "btn-secondary", "cancel");
+          choice("Discard changes", "btn-danger", "discard");
+          var saveButton = choice(saveLabelOf(form), "btn-primary", "save");
+          box.append(title, message, actions);
+          overlay.appendChild(box);
+          overlay.addEventListener("click", function (event) {
+            if (event.target === overlay) settle("cancel");
+          });
+          overlay.addEventListener("keydown", function (event) {
+            if (event.key === "Escape") { event.stopPropagation(); settle("cancel"); }
+          });
+          document.body.appendChild(overlay);
+          saveButton.focus();
+        });
+      }
+
+      // Tabs and links, before the page's own handlers see the click.
+      document.addEventListener("click", function (event) {
+        var target = event.target && event.target.closest ? event.target.closest(".segmented-tab, a[href]") : null;
+        if (!target || target.closest(".lk-dialog")) return;
+        var isLink = target.matches("a[href]");
+        if (isLink) {
+          var address = target.getAttribute("href") || "";
+          if (!address || address.charAt(0) === "#" || target.target === "_blank" || target.hasAttribute("download")) return;
+        } else if (target.classList.contains("active")) {
+          return;
+        }
+        var forms = changedForms();
+        // A tab hides only what is on screen now; a link leaves the page and everything on it.
+        if (!isLink) forms = forms.filter(function (form) { return form.offsetParent !== null; });
+        if (!forms.length) return;
+        var form = forms[0];
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        ask(form).then(function (decision) {
+          if (decision === "cancel") return;
+          if (decision === "discard") {
+            var restored = discard(form);
+            // The click again: it passes now, or asks about the next changed form.
+            target.click();
+            // Fields that were added or removed cannot be put back one by one.
+            if (!restored && !isLink) { leaving = true; window.location.reload(); }
+            return;
+          }
+          save(form).then(function (saved) {
+            if (!saved) return;
+            if (isLink) {
+              try { sessionStorage.setItem(AFTER_SAVE, target.href); } catch (err) { /* resumed by the timer below instead */ }
+              setTimeout(function () {
+                try { sessionStorage.removeItem(AFTER_SAVE); } catch (err) { /* nothing was stored */ }
+                target.click();
+              }, 700);
+            } else {
+              target.click();
+            }
+          });
+        });
+      }, true);
+
+      window.addEventListener("beforeunload", function (event) {
+        if (leaving || !changedForms().length) return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
+    })();
+`;
+
 function renderRailBadge(item: NavItem): string {
   if (item.badge === undefined) return "";
   const text = String(item.badge);
@@ -2064,7 +2320,7 @@ ${BUSY_CSS}    .btn.is-loading::before, .menu-item.is-loading::before, .profile-
       margin-bottom: 18px;
       overflow-wrap: anywhere;
     }
-    .lk-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .lk-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
     /* Modal Overlay (VNC remote control & quick confirmation) */
     .modal-overlay {
@@ -2345,12 +2601,15 @@ export function renderLayoutHtml(options: LayoutOptions): string {
   const railItemsHtml = navItems
     .map((item) => {
       const isActive = item.id === activeNavId;
+      // The name read out carries the count the badge shows, so it matches what is on screen.
+      const badgeHtml = renderRailBadge(item);
+      const spokenName = badgeHtml ? `${item.label} ${item.badge}` : item.label;
       return `
-        <a href="${escapeAttr(item.href)}" class="sidebar-item rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" aria-label="${escapeAttr(item.label)}"${isActive ? ' aria-current="page"' : ""}>
+        <a href="${escapeAttr(item.href)}" class="sidebar-item rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" aria-label="${escapeAttr(spokenName)}"${isActive ? ' aria-current="page"' : ""}>
           <span class="sidebar-icon rail-icon">${item.iconSvg}</span>
           <span class="sidebar-label">${escapeHtml(item.label)}</span>
           <span class="rail-tooltip" aria-hidden="true">${escapeHtml(item.label)}</span>
-          ${renderRailBadge(item)}
+          ${badgeHtml}
         </a>
       `;
     })
@@ -2377,7 +2636,8 @@ export function renderLayoutHtml(options: LayoutOptions): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(title)}</title>
-${themeHeadHtml(nonce)}
+  <meta name="description" content="${escapeAttr(title)}">
+${FAVICON_LINK_HTML}${themeHeadHtml(nonce)}
 ${FONT_LINKS}
   <link rel="stylesheet" href="${CONSOLE_STYLESHEET_PATH}">
 </head>
@@ -2803,6 +3063,7 @@ ${FONT_LINKS}
     })();
   </script>
   <script nonce="${escapeAttr(nonce)}">${THEME_TOGGLE_SCRIPT}</script>
+  <script nonce="${escapeAttr(nonce)}">${UNSAVED_CHANGES_SCRIPT}</script>
   <script nonce="${escapeAttr(nonce)}">${BUSY_SCRIPT}</script>
 </body>
 </html>`;

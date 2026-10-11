@@ -10,6 +10,7 @@ import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
+import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
 
@@ -330,7 +331,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   // carried no display rule and no matching CSS -- so the whole organizations
   // directory, every tenant row included, rendered above the approvals,
   // catalogs and system pages as well.
-  const bannerHtml = `    <div class="callout">
+  // The page's name as a heading for screen readers; the breadcrumb shows it on screen.
+  const bannerHtml = `    <h1 class="visually-hidden">${escapeHtml(tabLabels[activeTab] || tabLabels.organizations)}</h1>
+    <div class="callout">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       <div>
         <strong>Privacy invariant enforced.</strong> Platform Super Administrators cannot access individual organization consoles or view user workstation telemetry. Consoles are accessible solely to authorized organization operators. The platform's own demo organizations (<code>web-demo</code>, <code>local-demo</code> and <code>docker-demo</code>) are available for testing.
@@ -909,9 +912,10 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
         });
       });
 
+${WHEN_PANE_SHOWN_JS}
       const auditRows = document.getElementById("platform-audit-rows");
       if (auditRows) {
-        (async function loadPlatformAudit() {
+        whenPaneShown(auditRows, async function loadPlatformAudit() {
           function placeholder(text) {
             const row = document.createElement("tr");
             const cell = document.createElement("td");
@@ -970,7 +974,7 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
             auditRows.replaceChildren();
             auditRows.appendChild(placeholder("Could not load the action history."));
           }
-        })();
+        });
       }
 
       const catalogForm = document.getElementById("form-upload-catalog");
