@@ -198,6 +198,7 @@ approves it under Super Admin → Tasks, which emails the console address.
   ```
 
 - **Response `200 OK`:** `{ "status": "ok", "pending": true, "reference": "LK-7Q2M4K" }`
+- **Country rules:** `country` is an ISO 3166-1 alpha-2 code (`IN`) or the English name as listed in `src/geo.ts`, and is stored as the name. Where that country's states are listed, `region` must be one of them; `postalCode` is checked against the country's format and may be empty where addresses carry none; `taxId`, when given, is checked against the country's format (GSTIN, EIN, VAT number and so on). `phone` is the calling code and the number without its leading 0. The registration form reads the same table from `/assets/geo-<hash>.json`.
 
 #### `POST /api/auth/login`
 

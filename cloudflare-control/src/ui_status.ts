@@ -8,6 +8,7 @@
 
 import { escapeAttr, escapeHtml } from "./escape";
 import { FONT_LINKS, rootTokensCss } from "./ui_tokens";
+import { FAVICON_LINK_HTML } from "./seo";
 
 export interface StatusPageOptions {
   title: string;
@@ -27,7 +28,7 @@ export function renderStatusPageHtml(options: StatusPageOptions): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
   <title>${escapeHtml(title)}</title>
-${FONT_LINKS}
+${FAVICON_LINK_HTML}${FONT_LINKS}
   <style>
 ${rootTokensCss()}
     *, *::before, *::after { box-sizing: border-box; }

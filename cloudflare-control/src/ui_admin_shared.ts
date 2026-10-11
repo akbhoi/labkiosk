@@ -101,3 +101,21 @@ export function renderHeaderCountersScript(nonce: string, activePage: string): s
     </script>
   `;
 }
+
+/**
+ * Client code, written into a page script: run `run` once the tab pane holding
+ * `inside` is first shown, at once when it already is (or the page has no panes).
+ * A pane's data is asked for when its tab is opened, not on every page load.
+ */
+export const WHEN_PANE_SHOWN_JS = `
+      function whenPaneShown(inside, run) {
+        var pane = inside && inside.closest ? inside.closest(".tab-pane") : null;
+        if (!pane || pane.classList.contains("active")) { run(); return; }
+        var seen = new MutationObserver(function () {
+          if (!pane.classList.contains("active")) return;
+          seen.disconnect();
+          run();
+        });
+        seen.observe(pane, { attributes: true, attributeFilter: ["class"] });
+      }
+`;

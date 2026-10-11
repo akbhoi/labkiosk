@@ -30,6 +30,7 @@ cloudflare-control/
 │   ├── docs_content.generated.ts       # wiki/ as a module (tools/build-docs.mjs; `pnpm run docs`)
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
 │   ├── signup.ts                       # Registration and the contact form, each with an email code; Remote Control requests
+│   ├── geo.ts                          # Countries for registration: calling codes, states, postal and tax ID formats; one table for the server's checks and the form (/assets/geo-<hash>.json)
 │   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional TOTP app, recovery codes), sign-in alerts
 │   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the registration code, the contact code and sign-in
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())

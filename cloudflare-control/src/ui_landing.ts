@@ -19,6 +19,7 @@
 
 import { escapeHtml, escapeJson, safeHttpUrl, escapeAttr } from "./escape";
 import { fnv1a } from "./ui_layout";
+import { GEO_DATA_PATH } from "./geo";
 import { DOCS_NAV, DOCS_PAGES, DocsPage } from "./docs_content.generated";
 import { LinkResolver, renderMarkdown } from "./markdown";
 import { LATEST_CHECKSUM_URL, LATEST_ISO_URL, RELEASES_URL, RELEASE_CHECKSUM_NAME, RELEASE_ISO_NAME, ReleaseNote, releaseHighlights } from "./release_notes";
@@ -336,9 +337,23 @@ ${FONT_LINKS}
             <input type="text" class="form-input" id="reg-contact-name" required maxlength="120" placeholder="Jane Smith" autocomplete="name">
           </div>
           <div class="form-group">
-            <label class="form-label" for="reg-phone">Phone, with country code</label>
-            <input type="tel" class="form-input" id="reg-phone" required placeholder="+91 98765 43210" autocomplete="tel">
-            <div class="input-hint">We call or message this number to confirm it before approval.</div>
+            <label class="form-label" for="reg-phone">Phone number</label>
+            <div class="phone-row">
+              <div class="dial-picker">
+                <button type="button" class="form-input dial-button" id="reg-dial-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="reg-dial-panel" aria-label="Country calling code">
+                  <span class="flag" id="reg-dial-flag" aria-hidden="true"></span>
+                  <span id="reg-dial-code">Code</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="dial-panel" id="reg-dial-panel" hidden>
+                  <input type="search" class="form-input" id="reg-dial-search" placeholder="Search by country or code" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="reg-dial-list" aria-autocomplete="list" aria-label="Search countries">
+                  <ul class="dial-list" id="reg-dial-list" role="listbox" aria-label="Countries"></ul>
+                </div>
+              </div>
+              <input type="tel" class="form-input" id="reg-phone" required inputmode="numeric" maxlength="20" placeholder="98765 43210" autocomplete="tel-national" aria-describedby="reg-phone-hint reg-phone-error">
+            </div>
+            <div class="input-hint" id="reg-phone-hint">Without the country code or a leading 0. We call or message this number to confirm it before approval.</div>
+            <div class="field-error" id="reg-phone-error" role="alert"></div>
           </div>
         </div>
         <div class="form-group">
@@ -361,6 +376,13 @@ ${FONT_LINKS}
 
         <div class="form-legend">Address &amp; billing</div>
         <div class="form-group">
+          <label class="form-label" for="reg-country">Country</label>
+          <select class="form-input" id="reg-country" required autocomplete="country" disabled aria-describedby="reg-country-error">
+            <option value="">Loading countries…</option>
+          </select>
+          <div class="field-error" id="reg-country-error" role="alert"></div>
+        </div>
+        <div class="form-group">
           <label class="form-label" for="reg-address1">Street address</label>
           <input type="text" class="form-input" id="reg-address1" required maxlength="200" autocomplete="address-line1">
         </div>
@@ -374,29 +396,26 @@ ${FONT_LINKS}
             <input type="text" class="form-input" id="reg-city" required maxlength="100" autocomplete="address-level2">
           </div>
           <div class="form-group">
-            <label class="form-label" for="reg-region">State or region</label>
+            <label class="form-label" for="reg-region" id="reg-region-label">State or region</label>
+            <select class="form-input" id="reg-region-select" autocomplete="address-level1" hidden></select>
             <input type="text" class="form-input" id="reg-region" maxlength="100" autocomplete="address-level1">
           </div>
         </div>
         <div class="form-split">
           <div class="form-group">
-            <label class="form-label" for="reg-postal">Postal code</label>
-            <input type="text" class="form-input" id="reg-postal" required maxlength="20" autocomplete="postal-code">
+            <label class="form-label" for="reg-postal"><span id="reg-postal-label">Postal code</span> <span class="input-hint" id="reg-postal-optional" hidden>(optional)</span></label>
+            <input type="text" class="form-input" id="reg-postal" required maxlength="20" autocomplete="postal-code" aria-describedby="reg-postal-error">
+            <div class="field-error" id="reg-postal-error" role="alert"></div>
           </div>
           <div class="form-group">
-            <label class="form-label" for="reg-country">Country</label>
-            <input type="text" class="form-input" id="reg-country" required maxlength="80" autocomplete="country-name" placeholder="India">
+            <label class="form-label" for="reg-tax-id"><span id="reg-tax-label">Tax ID</span> <span class="input-hint">(optional)</span></label>
+            <input type="text" class="form-input" id="reg-tax-id" maxlength="40" aria-describedby="reg-tax-error">
+            <div class="field-error" id="reg-tax-error" role="alert"></div>
           </div>
         </div>
-        <div class="form-split">
-          <div class="form-group">
-            <label class="form-label" for="reg-tax-id">Tax ID, e.g. GSTIN <span class="input-hint">(optional)</span></label>
-            <input type="text" class="form-input" id="reg-tax-id" maxlength="40">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="reg-billing-email">Billing email <span class="input-hint">(optional)</span></label>
-            <input type="email" class="form-input" id="reg-billing-email" autocomplete="email">
-          </div>
+        <div class="form-group">
+          <label class="form-label" for="reg-billing-email">Billing email <span class="input-hint">(optional)</span></label>
+          <input type="email" class="form-input" id="reg-billing-email" autocomplete="email">
         </div>
         <div class="form-group">
           <label class="form-label" for="reg-notes">Anything we should know? <span class="input-hint">(optional)</span></label>
@@ -437,11 +456,11 @@ ${FONT_LINKS}
       <h2 class="modal-title" id="iso-modal-title">Download Lab Kiosk ISO</h2>
       <p class="modal-sub">Flash to a USB drive and boot any PC or Thin Client.</p>
       <div style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left;">
-        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 1: Write ISO to USB Drive</h4>
+        <h3 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 1: Write ISO to USB Drive</h3>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 14px;">
           Download <code>labkiosk-debian12-amd64.iso</code> and flash it to a 2 GB+ USB drive using <strong>Rufus</strong> (Windows, DD image mode) or <strong>balenaEtcher</strong> (Mac/Linux).
         </p>
-        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 2: Boot Client &amp; First-Boot Wizard</h4>
+        <h3 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 2: Boot Client &amp; First-Boot Wizard</h3>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5;">
           Boot your PC from USB. On first boot, the setup wizard prompts for your <strong>Organization Subdomain</strong>, <strong>PC Identifier (e.g. PC-01)</strong>, and <strong>Enrollment Key</strong>. Once verified, the workstation permanently links to your cloud dashboard!
         </p>
@@ -468,7 +487,7 @@ ${FONT_LINKS}
       </div>
 
       <div class="footer-col">
-        <h5>Stakeholders</h5>
+        <h2>Stakeholders</h2>
         <ul>
           <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-operators">For IT &amp; Operations</a></li>
           <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-users">For End Users</a></li>
@@ -479,7 +498,7 @@ ${FONT_LINKS}
       </div>
 
       <div class="footer-col">
-        <h5>Platform</h5>
+        <h2>Platform</h2>
         <ul>
           <li><a href="/features">Core Features</a></li>
           <li><a href="/specs">Hardware Specs</a></li>
@@ -492,7 +511,7 @@ ${FONT_LINKS}
       </div>
 
       <div class="footer-col">
-        <h5>Global Contact</h5>
+        <h2>Global Contact</h2>
         <ul>
           <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
           <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
@@ -1035,9 +1054,292 @@ ${FONT_LINKS}
       sendCodeButton.disabled = false;
     });
 
+    // ---- Registration: calling codes, states, postal codes and tax IDs by country.
+    // The table is src/geo.ts, the one the server checks the registration against;
+    // it is asked for when the dialog is first opened.
+    const regCountry = document.getElementById('reg-country');
+    const regRegionLabel = document.getElementById('reg-region-label');
+    const regRegionSelect = document.getElementById('reg-region-select');
+    const regRegionText = document.getElementById('reg-region');
+    const regPostal = document.getElementById('reg-postal');
+    const regTaxId = document.getElementById('reg-tax-id');
+    const regPhone = document.getElementById('reg-phone');
+    const dialButton = document.getElementById('reg-dial-button');
+    const dialPanel = document.getElementById('reg-dial-panel');
+    const dialSearch = document.getElementById('reg-dial-search');
+    const dialList = document.getElementById('reg-dial-list');
+    let geo = null;
+    let geoRequest = null;
+    let dialCountry = null;
+    let dialShown = [];
+    let dialActive = -1;
+
+    // A country's flag is its two letters as regional indicator symbols.
+    function flagOf(code) {
+      return String.fromCodePoint(127397 + code.charCodeAt(0), 127397 + code.charCodeAt(1));
+    }
+
+    // Lower case without accents, so "turkiye" finds Türkiye.
+    function plainText(text) {
+      return String(text).normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();
+    }
+
+    function fieldProblem(input, errorId, message) {
+      document.getElementById(errorId).textContent = message || '';
+      input.classList.toggle('is-invalid', Boolean(message));
+      // The browser then refuses to submit, and names the problem on the field.
+      input.setCustomValidity(message || '');
+    }
+
+    function countryRow(code) {
+      return geo ? geo.countries.find((row) => row[0] === code) || null : null;
+    }
+
+    function checkPostal() {
+      const code = regCountry.value;
+      const format = geo && geo.postal[code];
+      const value = regPostal.value.trim().replace(/ +/g, ' ').toUpperCase();
+      const wrong = Boolean(format && value && !new RegExp(format[0]).test(value));
+      fieldProblem(regPostal, 'reg-postal-error', wrong ? 'Not a postal code of ' + countryRow(code)[1] + '. Example: ' + format[1] : '');
+    }
+
+    function checkTaxId() {
+      const format = geo && geo.tax[regCountry.value];
+      const value = regTaxId.value.replace(/ /g, '').toUpperCase();
+      const wrong = Boolean(format && format.pattern && value && !new RegExp(format.pattern).test(value));
+      fieldProblem(regTaxId, 'reg-tax-error', wrong ? 'Not a valid ' + format.label + '. Example: ' + format.example : '');
+    }
+
+    function checkPhone(tidy) {
+      // Digits only. A leading 0 is dropped, because the calling code replaces it,
+      // except in the few countries whose numbers keep it (Italy's +39 06 ...).
+      const keepsZero = Boolean(geo && dialCountry) && geo.keepZero.includes(dialCountry[0]);
+      const typed = regPhone.value.replace(/[^0-9]/g, '');
+      const digits = keepsZero ? typed : typed.replace(/^0+/, '');
+      // The field is rewritten only once it is left or the form is sent. Rewriting it
+      // on every key moves the cursor to the end, which makes the middle of a number
+      // impossible to edit, so spaces and dashes are left alone while typing.
+      if (tidy === true && regPhone.value !== digits) regPhone.value = digits;
+      let problem = '';
+      if (digits && (digits.length < 4 || digits.length > 14)) problem = 'Enter the number without the country code.';
+      else if (digits && dialCountry && dialCountry[2].length + digits.length > 15) problem = 'That number is too long for +' + dialCountry[2] + '.';
+      fieldProblem(regPhone, 'reg-phone-error', problem);
+      return digits;
+    }
+
+    function applyCountry() {
+      const code = regCountry.value;
+      const states = geo && geo.states[code];
+      regRegionSelect.hidden = !states;
+      regRegionSelect.required = Boolean(states);
+      regRegionText.hidden = Boolean(states);
+      regRegionLabel.textContent = states ? states.label : 'State or region';
+      regRegionLabel.htmlFor = states ? 'reg-region-select' : 'reg-region';
+      regRegionSelect.replaceChildren();
+      if (states) {
+        regRegionSelect.append(new Option('Select', ''));
+        for (const name of states.names) regRegionSelect.append(new Option(name, name));
+      }
+
+      const noPostal = Boolean(geo) && geo.noPostal.includes(code);
+      regPostal.required = !noPostal;
+      document.getElementById('reg-postal-optional').hidden = !noPostal;
+      regPostal.placeholder = geo && geo.postal[code] ? geo.postal[code][1] : '';
+      checkPostal();
+
+      const tax = geo && geo.tax[code];
+      document.getElementById('reg-tax-label').textContent = tax ? tax.label : (geo ? geo.taxLabel : 'Tax ID');
+      regTaxId.placeholder = tax && tax.example ? tax.example : '';
+      checkTaxId();
+
+      // The phone number is usually in the same country.
+      if (!dialCountry && code) setDialCountry(countryRow(code));
+    }
+
+    function setDialCountry(row) {
+      if (!row) return;
+      dialCountry = row;
+      document.getElementById('reg-dial-flag').textContent = flagOf(row[0]);
+      document.getElementById('reg-dial-code').textContent = '+' + row[2];
+      dialButton.setAttribute('aria-label', 'Country calling code: ' + row[1] + ' +' + row[2]);
+      dialButton.classList.remove('is-invalid');
+      document.getElementById('reg-phone-hint').textContent =
+        (geo.keepZero.includes(row[0]) ? 'Without the country code; keep the leading 0. ' : 'Without the country code or a leading 0. ') +
+        'We call or message this number to confirm it before approval.';
+      checkPhone(true);
+      if (!regCountry.value) {
+        regCountry.value = row[0];
+        applyCountry();
+      }
+    }
+
+    function markDialActive(index) {
+      dialActive = index;
+      dialList.querySelectorAll('.dial-option').forEach((option, i) => {
+        option.setAttribute('aria-selected', i === index ? 'true' : 'false');
+        if (i === index) option.scrollIntoView({ block: 'nearest' });
+      });
+      if (index >= 0 && dialShown[index]) dialSearch.setAttribute('aria-activedescendant', 'reg-dial-option-' + dialShown[index][0]);
+      else dialSearch.removeAttribute('aria-activedescendant');
+    }
+
+    function renderDialList() {
+      const wanted = plainText(dialSearch.value.trim());
+      const digits = wanted.replace(/[^0-9]/g, '');
+      dialShown = (geo ? geo.countries : []).filter((row) => {
+        if (!wanted) return true;
+        if (digits && digits === wanted.replace(/[+ ]/g, '')) return row[2].startsWith(digits);
+        return plainText(row[1] + ' ' + row[0] + ' ' + (row[3] || '')).includes(wanted);
+      });
+      if (wanted && !digits) {
+        // "india" lists India before British Indian Ocean Territory: a name that
+        // starts with what was typed, then a word that does, then the rest.
+        const rank = (row) => {
+          const name = plainText(row[1]);
+          if (name.startsWith(wanted) || row[0].toLowerCase() === wanted) return 0;
+          return (' ' + name + ' ' + plainText(row[3] || '')).includes(' ' + wanted) ? 1 : 2;
+        };
+        dialShown = dialShown.map((row, index) => [rank(row), index, row])
+          .sort((a, b) => a[0] - b[0] || a[1] - b[1])
+          .map((entry) => entry[2]);
+      }
+      dialList.replaceChildren();
+      if (!dialShown.length) {
+        const empty = document.createElement('li');
+        empty.className = 'dial-empty';
+        empty.textContent = geo ? 'No country matches.' : 'Loading countries…';
+        dialList.append(empty);
+      }
+      for (const row of dialShown) {
+        const option = document.createElement('li');
+        option.className = 'dial-option';
+        option.id = 'reg-dial-option-' + row[0];
+        option.setAttribute('role', 'option');
+        option.setAttribute('aria-selected', 'false');
+        option.dataset.code = row[0];
+        const flag = document.createElement('span');
+        flag.className = 'flag';
+        flag.setAttribute('aria-hidden', 'true');
+        flag.textContent = flagOf(row[0]);
+        const dial = document.createElement('span');
+        dial.className = 'dial-option-code';
+        dial.textContent = '+' + row[2];
+        const name = document.createElement('span');
+        name.textContent = row[1];
+        const short = document.createElement('span');
+        short.className = 'dial-option-short';
+        short.textContent = row[0];
+        option.append(flag, dial, name, short);
+        dialList.append(option);
+      }
+      markDialActive(dialShown.length && wanted ? 0 : -1);
+    }
+
+    function closeDialPanel(returnFocus) {
+      dialPanel.hidden = true;
+      dialButton.setAttribute('aria-expanded', 'false');
+      if (returnFocus) dialButton.focus();
+    }
+
+    function chooseDialOption(code) {
+      setDialCountry(countryRow(code));
+      closeDialPanel(false);
+      regPhone.focus();
+    }
+
+    dialButton.addEventListener('click', () => {
+      if (!dialPanel.hidden) { closeDialPanel(true); return; }
+      loadGeo();
+      dialPanel.hidden = false;
+      dialButton.setAttribute('aria-expanded', 'true');
+      dialSearch.value = '';
+      renderDialList();
+      dialSearch.focus();
+    });
+    dialSearch.addEventListener('input', renderDialList);
+    dialSearch.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (!dialShown.length) return;
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        // With nothing marked yet, Down starts at the first country and Up at the last.
+        const next = dialActive === -1
+          ? (step === 1 ? 0 : dialShown.length - 1)
+          : (dialActive + step + dialShown.length) % dialShown.length;
+        markDialActive(next);
+      } else if (event.key === 'Enter') {
+        // Never the registration itself: Enter here picks a country.
+        event.preventDefault();
+        if (dialActive >= 0 && dialShown[dialActive]) chooseDialOption(dialShown[dialActive][0]);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeDialPanel(true);
+      }
+    });
+    dialList.addEventListener('click', (event) => {
+      const option = event.target.closest('.dial-option');
+      if (option) chooseDialOption(option.dataset.code);
+    });
+    document.addEventListener('click', (event) => {
+      if (!dialPanel.hidden && !event.target.closest('.dial-picker')) closeDialPanel(false);
+    });
+
+    regCountry.addEventListener('change', applyCountry);
+    regPostal.addEventListener('input', checkPostal);
+    regTaxId.addEventListener('input', checkTaxId);
+    regPhone.addEventListener('input', () => checkPhone(false));
+    regPhone.addEventListener('change', () => checkPhone(true));
+
+    function loadGeo() {
+      if (geo) return Promise.resolve(geo);
+      if (!geoRequest) {
+        document.getElementById('reg-country-error').textContent = '';
+        geoRequest = fetch('${GEO_DATA_PATH}')
+          .then((res) => {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then((table) => {
+            geo = table;
+            regCountry.replaceChildren(new Option('Select a country', ''));
+            for (const row of geo.countries) regCountry.append(new Option(row[1], row[0]));
+            regCountry.disabled = false;
+            // Windows has no flag glyphs of its own; this font carries them.
+            const flags = document.createElement('link');
+            flags.rel = 'stylesheet';
+            flags.href = 'https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap';
+            document.head.append(flags);
+            if (!dialPanel.hidden) renderDialList();
+            return geo;
+          })
+          .catch(() => {
+            // Shown where the list should be; the next opening of the dialog tries again.
+            geoRequest = null;
+            document.getElementById('reg-country-error').textContent =
+              'The country list could not be loaded. Close this dialog and open it again.';
+            return null;
+          });
+      }
+      return geoRequest;
+    }
+
+    const registerModal = document.getElementById('register-modal');
+    new MutationObserver(() => {
+      if (registerModal.classList.contains('active')) loadGeo();
+    }).observe(registerModal, { attributes: true, attributeFilter: ['class'] });
+    if (registerModal.classList.contains('active')) loadGeo();
+
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       registerAlert.style.display = 'none';
+      const phoneDigits = checkPhone(true);
+      if (!dialCountry) {
+        dialButton.classList.add('is-invalid');
+        registerError('Choose the country code of your phone number.');
+        dialButton.focus();
+        return;
+      }
       const value = (id) => document.getElementById(id).value.trim();
       const workstations = parseInt(value('reg-workstations'), 10);
       const payload = {
@@ -1047,14 +1349,14 @@ ${FONT_LINKS}
         workstationEstimate: Number.isFinite(workstations) ? workstations : null,
         subdomain: value('reg-subdomain').toLowerCase(),
         contactName: value('reg-contact-name'),
-        phone: value('reg-phone'),
+        phone: '+' + dialCountry[2] + phoneDigits,
         email: value('reg-email'),
         emailCode: value('reg-code'),
         password: document.getElementById('reg-password').value,
         addressLine1: value('reg-address1'),
         addressLine2: value('reg-address2'),
         city: value('reg-city'),
-        region: value('reg-region'),
+        region: regRegionSelect.hidden ? value('reg-region') : regRegionSelect.value,
         postalCode: value('reg-postal'),
         country: value('reg-country'),
         taxId: value('reg-tax-id'),
@@ -1615,19 +1917,19 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
       <div style="background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 36px;">
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px;">
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">1. Client OS Lockdown</h4>
+            <h3 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">1. Client OS Lockdown</h3>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               Virtual TTY consoles (TTY1-6) and X11 VT-switching keys are masked. Openbox runs without window border escape keybindings. The root filesystem is mounted strictly read-only.
             </p>
           </div>
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">2. Managed Enterprise Chromium</h4>
+            <h3 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">2. Managed Enterprise Chromium</h3>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               <code>URLBlocklist</code> denies every <code>http</code> and <code>https</code> address by default. The local agent applies the organization's approved list to <code>URLAllowlist</code> as soon as it changes.
             </p>
           </div>
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">3. Cloudflare Edge &amp; Web Crypto</h4>
+            <h3 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">3. Cloudflare Edge &amp; Web Crypto</h3>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               Control plane runs across 300+ edge colocations. Passwords are protected using native Web Crypto <code>PBKDF2-HMAC-SHA256</code> with 100,000 iterations. Workstations communicate via cryptographically hashed device tokens.
             </p>
@@ -1708,7 +2010,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="feature-icon" aria-hidden="true" style="margin-bottom: 12px;">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
           </div>
-          <h4>General &amp; Sales Inquiries</h4>
+          <h3>General &amp; Sales Inquiries</h3>
           <p>For organizations evaluating Lab Kiosk, commercial licensing, and general questions.</p>
           <a href="mailto:${escapeHtml(contactEmail)}" class="contact-link">${escapeHtml(contactEmail)}</a>
         </div>
@@ -1717,7 +2019,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="feature-icon" aria-hidden="true" style="margin-bottom: 12px;">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           </div>
-          <h4>Technical &amp; Deployment Support</h4>
+          <h3>Technical &amp; Deployment Support</h3>
           <p>Assistance with ISO flashing, thin client hardware compatibility, and network setup.</p>
           <a href="mailto:support@labkiosk.org" class="contact-link">support@labkiosk.org</a>
         </div>
@@ -1726,7 +2028,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="feature-icon" aria-hidden="true" style="margin-bottom: 12px;">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           </div>
-          <h4>Education, CSR &amp; Partners</h4>
+          <h3>Education, CSR &amp; Partners</h3>
           <p>Education deployments, hardware donation partnerships, and platform allowlisting.</p>
           <a href="mailto:partners@labkiosk.org" class="contact-link">partners@labkiosk.org</a>
         </div>
@@ -2959,7 +3261,7 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
       flex-direction: column;
       align-items: center;
     }
-    .contact-card h4 { font-size: 1.0625rem; font-weight: 600; margin: 14px 0 8px; color: var(--text-main); }
+    .contact-card h3 { font-size: 1.0625rem; font-weight: 600; margin: 14px 0 8px; color: var(--text-main); }
     .contact-card p { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 18px; line-height: 1.55; }
     .contact-link {
       color: var(--accent-text);
@@ -3040,6 +3342,47 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .form-input:focus-visible { outline: none; border-color: var(--border-focus); box-shadow: var(--focus-ring); }
     .form-input:user-invalid { border-color: var(--danger); }
     .input-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 6px; line-height: 1.45; }
+    .form-input[hidden], .input-hint[hidden] { display: none; }
+    .form-input.is-invalid { border-color: var(--danger); }
+    .field-error { font-size: 0.75rem; color: var(--danger-text); margin-top: 6px; line-height: 1.45; }
+    .field-error:empty { display: none; }
+    /* The registration form's phone number: a calling code picker beside the number. */
+    .phone-row { position: relative; display: flex; gap: 8px; align-items: stretch; }
+    .phone-row > .form-input { flex: 1; min-width: 0; }
+    .dial-picker { flex: none; }
+    .dial-button { display: inline-flex; align-items: center; gap: 6px; width: auto; min-width: 96px; height: 100%; cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .flag { font-family: "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif; font-size: 1.0625rem; line-height: 1; }
+    .dial-panel {
+      position: absolute;
+      z-index: 30;
+      top: calc(100% + 6px);
+      /* As wide as the phone field, so it never reaches past the dialog. */
+      left: 0;
+      right: 0;
+      padding: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
+    }
+    .dial-panel[hidden] { display: none; }
+    .dial-list { list-style: none; margin: 8px 0 0; padding: 0; max-height: 264px; overflow-y: auto; }
+    .dial-option {
+      display: grid;
+      grid-template-columns: 24px 52px 1fr auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 40px;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      color: var(--text-main);
+      cursor: pointer;
+    }
+    .dial-option:hover, .dial-option[aria-selected="true"] { background: var(--bg-subtle); }
+    .dial-option-code { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    .dial-option-short { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.75rem; }
+    .dial-empty { padding: 12px 10px; font-size: 0.8125rem; color: var(--text-muted); }
     .modal-switch { text-align: center; margin-top: 18px; font-size: 0.8125rem; color: var(--text-muted); }
     .modal-switch a { color: var(--accent-text); text-decoration: none; cursor: pointer; font-weight: 600; }
     .modal-switch a:hover { text-decoration: underline; }
@@ -3196,7 +3539,7 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     }
     @media (max-width: 800px) { .footer-content { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 500px) { .footer-content { grid-template-columns: 1fr; } }
-    .footer-col h5 { font-size: 0.8125rem; font-weight: 600; color: var(--text-main); margin-bottom: 14px; }
+    footer .footer-col h2 { font-size: 0.8125rem; font-weight: 600; line-height: 1.5; letter-spacing: 0; color: var(--text-main); margin: 0 0 14px; }
     .footer-col ul { list-style: none; display: flex; flex-direction: column; gap: 10px; }
     .footer-col ul a { color: var(--text-muted); font-size: 0.8125rem; }
     .footer-col ul a:hover { color: var(--text-main); }

@@ -23,6 +23,21 @@ import { DEMO_SLUGS } from "../src/demo";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
+import {
+  COUNTRIES,
+  GEO_DATA_PATH,
+  KEEPS_LEADING_ZERO,
+  NO_POSTAL_CODE,
+  POSTAL_FORMATS,
+  STATES,
+  TAX_IDS,
+  cleanPostalCode,
+  cleanTaxId,
+  needsPostalCode,
+  postalCodeProblem,
+  taxIdProblem
+} from "../src/geo";
+import { normalizePhone } from "../src/signup";
 import { isHostUnder } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
@@ -63,9 +78,9 @@ import {
   hashRelayToken,
   relayName
 } from "../src/remote_relay";
-import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
+import { CONSOLE_STYLESHEET_PATH, UNSAVED_CHANGES_SCRIPT } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
-import { PALETTE } from "../src/ui_tokens";
+import { BUSY_SCRIPT, PALETTE } from "../src/ui_tokens";
 import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
@@ -421,6 +436,66 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(unsent.data.error, /expired/);
   });
 
+  test("A registration's country decides its state, postal code and tax ID", async () => {
+    // Each attempt from its own address, so the per-address limit stays out of the way.
+    let attempt = 0;
+    const register = (overrides: Record<string, unknown>) =>
+      callJson("/api/auth/register", { ...json(signupBody(overrides)), headers: { "CF-Connecting-IP": `203.0.113.${++attempt}` } });
+    const refused = async (overrides: Record<string, unknown>, pattern: RegExp, why: string) => {
+      const { res, data } = await register(overrides);
+      assert.equal(res.status, 400, why);
+      assert.match(data.error, pattern, why);
+    };
+    await refused({ country: "Atlantis" }, /country/, "a country that is not on the list");
+    await refused({ country: "" }, /country/, "no country");
+    await refused({ postalCode: "7510" }, /postal code/, "a PIN code has six digits");
+    await refused({ postalCode: "" }, /postal code/, "India's addresses carry one");
+    await refused({ region: "Atlantis" }, /state or union territory/, "a state India does not have");
+    await refused({ region: "" }, /state or union territory/, "India's states are listed, so one is chosen");
+    await refused({ taxId: "12345" }, /GSTIN/, "a GSTIN has fifteen characters");
+    await refused({ country: "US", region: "California", postalCode: "751001", taxId: "" }, /postal code/, "the code is checked against the country sent");
+    // The ISO code and the name are the same country; what passes these checks fails only on the email code.
+    for (const country of ["IN", "in", "India"]) {
+      const { data } = await register({ country, email: "geo@example.com", subdomain: "geo-check" });
+      assert.match(data.error, /expired/, `${country} is accepted`);
+    }
+    const emirates = await register({
+      country: "AE", region: "Dubai", postalCode: "", taxId: "100123456700003", email: "geo@example.com", subdomain: "geo-check"
+    });
+    assert.match(emirates.data.error, /expired/, "a country without postal codes needs none");
+
+    // The table is consistent with itself: every example passes its own pattern.
+    const codes = new Set(COUNTRIES.map((row) => row[0]));
+    assert.equal(codes.size, COUNTRIES.length, "no country is listed twice");
+    for (const [code, , dial] of COUNTRIES) {
+      assert.match(code, /^[A-Z]{2}$/);
+      assert.match(dial, /^[1-9]\d{0,3}$/, `${code} has a calling code`);
+    }
+    for (const [code, [, example]] of Object.entries(POSTAL_FORMATS)) {
+      assert.ok(codes.has(code), `${code} is a listed country`);
+      assert.equal(postalCodeProblem(code, cleanPostalCode(example)), null, `${code}'s example postal code passes`);
+      assert.ok(needsPostalCode(code), `${code} cannot both have a format and no postal code`);
+    }
+    for (const [code, format] of Object.entries(TAX_IDS)) {
+      assert.ok(codes.has(code), `${code} is a listed country`);
+      if (format.pattern) assert.equal(taxIdProblem(code, cleanTaxId(format.example)), null, `${code}'s example tax ID passes`);
+    }
+    for (const code of [...Object.keys(STATES), ...NO_POSTAL_CODE, ...KEEPS_LEADING_ZERO]) assert.ok(codes.has(code), `${code} is a listed country`);
+    // Italy's numbers keep their 0 after +39: the form must not strip it, and the server takes it.
+    assert.ok(KEEPS_LEADING_ZERO.includes("IT"));
+    assert.equal(normalizePhone("+39 06 6982 1234"), "+390669821234");
+
+    // The form reads the same table, as an immutable file.
+    const table = await call(GEO_DATA_PATH);
+    assert.equal(table.status, 200);
+    assert.equal(table.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+    assert.equal(((await table.json()) as { countries: unknown[] }).countries.length, COUNTRIES.length);
+    assert.equal((await call("/assets/geo-00000000.json")).headers.get("Cache-Control"), "no-store");
+    const landing = await (await call("/register")).text();
+    assert.ok(landing.includes(GEO_DATA_PATH), "the registration form asks for the current table");
+    assert.match(landing, /<select class="form-input" id="reg-country"/);
+  });
+
   test("A wrong code is refused and stops working after five guesses", async () => {
     const email = "guesser@example.com";
     assert.equal((await call("/api/auth/register/email-code", json({ email }))).status, 200);
@@ -476,7 +551,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const pending = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
     assert.equal(pending.res.status, 403);
     for (const page of ["/super/tasks", "/super/mail"]) {
-      assert.equal((await call(page)).status, 401);
+      // Signed out: sent to the sign-in page, never shown the console.
+      const signedOut = await call(page);
+      assert.equal(signedOut.status, 302);
+      assert.match(signedOut.headers.get("Location") || "", /\/\?login=1$/);
     }
   });
 
@@ -2011,11 +2089,56 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Refuses the Super Admin Console without a super admin session", async () => {
+    // Signed out: the sign-in page, as /admin does.
     const anonymous = await call("/super");
-    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.status, 302);
+    assert.match(anonymous.headers.get("Location") || "", /\/\?login=1$/);
 
     const asOperator = await call("/super", { cookie: orgSessionCookie });
     assert.equal(asOperator.status, 401);
+
+    // A mistyped console address is not the Organizations page.
+    assert.equal((await call("/super/nope", { cookie: superSessionCookie })).status, 404);
+    assert.equal((await call("/super/organizations", { cookie: superSessionCookie })).status, 200);
+  });
+
+  test("Both consoles ask before a form with unsaved changes is left", async () => {
+    const pages: Array<[string, string]> = [
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/super/catalogs", superSessionCookie]
+    ];
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, { cookie })).text();
+      assert.ok(html.includes(UNSAVED_CHANGES_SCRIPT), `${page} carries the unsaved-changes guard`);
+      // It runs before the busy marker wraps fetch, so it sees a save's own request.
+      assert.ok(html.indexOf(UNSAVED_CHANGES_SCRIPT) < html.indexOf(BUSY_SCRIPT), `${page}: the guard is installed first`);
+    }
+    // The three choices, and the form's own label on the one that saves.
+    assert.match(UNSAVED_CHANGES_SCRIPT, /"Discard changes"/);
+    assert.match(UNSAVED_CHANGES_SCRIPT, /"Cancel"/);
+    assert.match(UNSAVED_CHANGES_SCRIPT, /choice\(saveLabelOf\(form\), "btn-primary", "save"\)/);
+    // A public page has no console forms to guard.
+    assert.ok(!(await (await call("/")).text()).includes("lk-unsaved-title"));
+  });
+
+  test("A public page may be kept for back and forward, a console never; every page names its icon", async () => {
+    assert.equal((await call("/")).headers.get("Cache-Control"), "no-cache");
+    assert.equal((await call("/", { cookie: orgSessionCookie })).headers.get("Cache-Control"), "no-store");
+    assert.equal((await call("/admin?tenant=greenwood", { cookie: orgSessionCookie })).headers.get("Cache-Control"), "no-store");
+    assert.equal((await call("/home?tenant=greenwood")).headers.get("Cache-Control"), "no-store");
+
+    // Without the link a browser asks for /favicon.ico, which answers 404 and logs an error.
+    for (const page of ["/?tenant=greenwood", "/home?tenant=greenwood", "/no-such-page"]) {
+      const html = await (await call(page, { headers: { Accept: "text/html" } })).text();
+      assert.match(html, /<link rel="icon" href="\/favicon\.svg"/, `${page} names the site icon`);
+    }
+
+    // The viewer opened signed out in a browser tab leads to sign-in.
+    const viewer = await call("/console/remote?clientId=PC-01", { headers: { Accept: "text/html" } });
+    assert.equal(viewer.status, 302);
+    assert.match(viewer.headers.get("Location") || "", /\/\?login=1$/);
   });
 
   test("Updates super admin password when SUPER_ADMIN_PASSWORD changes in environment", async () => {
@@ -2613,10 +2736,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.notEqual(res.status, 404, `${page} links to ${target}, which does not exist`);
     }
 
-    // The two preview links on the portal manager open the same thing, and it
+    // The portal manager has one preview link (one control, one place), and it
     // is the app grid rather than the organization's own homepage.
     const previews = [...portalHtml.matchAll(/href="([^"]+)"[^>]*>[\s\S]{0,400}?Preview User Portal/g)].map((m) => m[1]);
-    assert.equal(previews.length, 2, `expected both preview links, found ${previews.length}`);
+    assert.equal(previews.length, 1, `expected one preview link, found ${previews.length}`);
     for (const href of previews) {
       assert.ok(href.startsWith("/home"), `a "Preview User Portal" link points at ${href}, not the app grid`);
     }
@@ -4386,10 +4509,20 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const tenantId = await greenwoodId();
     const token = await enrolAs("WS-GONE");
     const device = await hubs().connectDevice({ tenantId, clientId: "WS-GONE", ip: "10.0.0.9", portal: portalContext() });
+    const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
 
     const removed = await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId: "WS-GONE" }), cookie: orgSessionCookie });
     assert.equal(removed.status, 200);
     assert.equal(device.closedWith?.code, 4001, "its socket is closed as removed");
+    // Gone, not offline: a console that heard "offline" put it back on its grid,
+    // and the count stayed at one until the page was loaded again.
+    await device.closeFromClient();
+    assert.ok(ofType(viewer, "removed").some((m) => m.clientId === "WS-GONE"), "consoles are told it was removed");
+    const afterwards = viewer.sent.slice(viewer.sent.findIndex((raw) => String(raw).includes('"removed"')) + 1).map((raw) => String(raw));
+    assert.ok(!afterwards.some((raw) => raw.includes('"status"') && raw.includes("WS-GONE")), "and nothing reports it as offline afterwards");
+    const listed = await callJson("/api/clients?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.equal(listed.data.clients["WS-GONE"], undefined, "it is not on the list while its connection closes");
+    await viewer.closeFromClient();
     assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 401);
     const socket = await call("/api/devices/ws", { headers: { Upgrade: "websocket" }, bearer: token });
     assert.equal(socket.status, 401, "and it cannot reconnect");

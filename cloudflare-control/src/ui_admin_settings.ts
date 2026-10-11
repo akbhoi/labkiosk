@@ -11,7 +11,7 @@
 import { LabConfig, Tenant, HomepageBlock } from "./types";
 import { parseHomepageBlocks } from "./db";
 import { escapeHtml, escapeAttr , escapeJson } from "./escape";
-import { AdminPageInput, AdminPageParts } from "./ui_admin_shared";
+import { AdminPageInput, AdminPageParts, WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderUpdatesPaneHtml, renderUpdatesScript } from "./ui_admin_updates";
 
@@ -285,13 +285,14 @@ ${renderRemoteControlCard(tenant)}
             <p class="card-sub">Change the password for this administrative account.</p>
 
             <form id="form-change-password">
+              <input type="text" id="pwd-username" class="visually-hidden" autocomplete="username" aria-hidden="true" tabindex="-1">
               <div class="form-group">
                 <label class="form-label" for="pwd-current">Current Password</label>
-                <input type="password" class="form-input" id="pwd-current" required>
+                <input type="password" class="form-input" id="pwd-current" autocomplete="current-password" required>
               </div>
               <div class="form-group">
                 <label class="form-label" for="pwd-new">New Password (min 12 characters)</label>
-                <input type="password" class="form-input" id="pwd-new" required minlength="12">
+                <input type="password" class="form-input" id="pwd-new" autocomplete="new-password" required minlength="12">
               </div>
               <button type="submit" class="btn btn-secondary">Change Password</button>
             </form>
@@ -781,9 +782,15 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         });
       }
 
+${WHEN_PANE_SHOWN_JS}
+      // A password manager files the new password under this account.
+      const passwordAccount = document.getElementById("pwd-username");
+      const signedInAs = document.querySelector(".profile-menu-email");
+      if (passwordAccount && signedInAs) passwordAccount.value = signedInAs.textContent.trim();
+
       const issueRows = document.getElementById("workstation-issue-rows");
       if (issueRows) {
-        (async function loadWorkstationIssues() {
+        whenPaneShown(issueRows, async function loadWorkstationIssues() {
           function placeholder(text) {
             const row = document.createElement("tr");
             const cell = document.createElement("td");
@@ -1037,7 +1044,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
             issueRows.replaceChildren();
             issueRows.appendChild(placeholder("Could not load errors and warnings."));
           }
-        })();
+        });
       }
 
       const labAuditRows = document.getElementById("lab-audit-rows");
@@ -1110,7 +1117,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
           }
         })();
       }
-      loadLabActivity();
+      whenPaneShown(labAuditRows, loadLabActivity);
 
       document.getElementById("form-change-password").addEventListener("submit", async (e) => {
         e.preventDefault();

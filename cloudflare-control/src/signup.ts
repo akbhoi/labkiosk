@@ -42,6 +42,7 @@ import {
 } from "./conversations";
 import { mailConfigProblem, MailTemplate, sendMail, supportAddress, supportMailbox } from "./mail";
 import { turnstileRefusal } from "./turnstile";
+import { STATES, cleanPostalCode, cleanTaxId, findCountry, findState, needsPostalCode, postalCodeProblem, taxIdProblem } from "./geo";
 
 /** What every handler in this module is given by the router. */
 export interface RouteContext {
@@ -291,8 +292,9 @@ function readSignup(body: SignupBody): { problem: string } | { problem: null; va
   const subdomain = cleanSubdomain(body.subdomain);
   const addressLine1 = text(body.addressLine1, 200);
   const city = text(body.city, 100);
-  const postalCode = text(body.postalCode, 20);
-  const country = text(body.country, 80);
+  const country = findCountry(body.country);
+  const postalCode = cleanPostalCode(body.postalCode);
+  const taxId = cleanTaxId(body.taxId);
   const emailCode = text(body.emailCode, 12);
 
   if (!name) return { problem: "Organization name is required" };
@@ -306,9 +308,18 @@ function readSignup(body: SignupBody): { problem: string } | { problem: null; va
     return { problem: "Subdomain must be 3-63 characters (letters, numbers, hyphens)" };
   }
   if (isReservedSlug(subdomain)) return { problem: "That subdomain is reserved by the platform. Please pick another." };
-  if (!addressLine1 || !city || !postalCode || !country) {
-    return { problem: "The street address, city, postal code and country are required" };
+  if (!country) return { problem: "Choose your country from the list" };
+  if (!addressLine1 || !city) return { problem: "The street address and city are required" };
+  if (!postalCode && needsPostalCode(country.code)) return { problem: "The postal code is required" };
+  const postalProblem = postalCodeProblem(country.code, postalCode);
+  if (postalProblem) return { problem: postalProblem };
+  // A country whose states are listed takes one of them; any other, what was written.
+  const region = STATES[country.code] ? findState(country.code, body.region) : text(body.region, 100) || null;
+  if (STATES[country.code] && !region) {
+    return { problem: `Choose the ${STATES[country.code].label.toLowerCase()} from the list` };
   }
+  const taxProblem = taxIdProblem(country.code, taxId);
+  if (taxProblem) return { problem: taxProblem };
   if (!/^\d{6}$/.test(emailCode)) return { problem: "Enter the six-digit code we emailed you" };
   if (body.acceptTerms !== true) return { problem: "Please accept the Terms of Service and Privacy Policy" };
 
@@ -335,10 +346,10 @@ function readSignup(body: SignupBody): { problem: string } | { problem: null; va
       address_line1: addressLine1,
       address_line2: text(body.addressLine2, 200) || null,
       city,
-      region: text(body.region, 100) || null,
+      region,
       postal_code: postalCode,
-      country,
-      tax_id: text(body.taxId, 40) || null,
+      country: country.name,
+      tax_id: taxId || null,
       billing_email: billingEmail || null,
       workstation_estimate: workstationEstimate,
       organization_type: organizationType,

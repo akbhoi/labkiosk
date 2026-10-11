@@ -5,6 +5,7 @@
 import { Tenant, PortalSite } from "./types";
 import { escapeHtml, safeHttpUrl, escapeAttr } from "./escape";
 import { FONT_LINKS, rootTokensCss, themeHeadHtml, LEGACY_PORTAL_ALIASES } from "./ui_tokens";
+import { FAVICON_LINK_HTML } from "./seo";
 
 export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string): string {
   const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
@@ -31,7 +32,7 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
       <div class="card-body">
         <div class="card-header">
           <span class="card-icon">${escapeHtml(site.icon || "🌐")}</span>
-          <h3 class="card-title">${escapeHtml(site.title)}</h3>
+          <h2 class="card-title">${escapeHtml(site.title)}</h2>
         </div>
         <p class="card-domain">${escapeHtml(site.domain)}</p>
         <span class="launch-btn">
@@ -48,10 +49,10 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
     <div class="portal-toolbar">
       <div class="portal-search-box">
         <svg class="portal-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="search" id="portal-search" class="portal-search-input" placeholder="Search applications..." autocomplete="off">
+        <input type="search" id="portal-search" class="portal-search-input" placeholder="Search applications..." aria-label="Search applications" autocomplete="off">
       </div>
       ${categories.length > 1 ? `
-      <div class="portal-category-pills" role="tablist" aria-label="Categories">
+      <div class="portal-category-pills" role="group" aria-label="Categories">
         <button type="button" class="category-pill active" data-category="all">All (${sites.length})</button>
         ${categories.map((c) => `<button type="button" class="category-pill" data-category="${escapeAttr(c.toLowerCase())}">${escapeHtml(c)}</button>`).join("")}
       </div>` : ""}
@@ -71,7 +72,8 @@ export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: str
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(tenant.name)} - ${escapeHtml(tenant.portal_title || "User Portal")}</title>
-${themeHeadHtml(nonce)}
+  <meta name="description" content="${escapeAttr(tenant.portal_subtitle || `Approved applications for ${tenant.name}`)}">
+${FAVICON_LINK_HTML}${themeHeadHtml(nonce)}
 ${FONT_LINKS}
   <style>
 ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
