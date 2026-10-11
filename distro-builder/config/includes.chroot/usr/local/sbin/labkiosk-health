@@ -201,7 +201,13 @@ def smart_health(name):
 def disk_health(sys_block=SYS_BLOCK):
     results = []
     for name in disks(sys_block):
-        results.append(emmc_health(name, sys_block) if name.startswith("mmcblk") else smart_health(name))
+        try:
+            results.append(emmc_health(name, sys_block) if name.startswith("mmcblk") else smart_health(name))
+        except OSError as err:
+            # One disk the kernel will not describe must not cost the others
+            # their check.
+            results.append({"device": name, "model": "", "serial": "", "state": "unknown",
+                            "summary": f"Its health could not be read: {err}"})
     return results
 
 
@@ -238,8 +244,9 @@ def process_facts(proc=PROC):
                 facts["agent"] = read_text(os.path.join(base, "attr", "current")) or "unconfined"
             if facts["x11vnc"] is None and os.path.basename(argv[0]) == "x11vnc":
                 facts["x11vnc"] = read_text(os.path.join(base, "attr", "current")) or "unconfined"
-        except (FileNotFoundError, ProcessLookupError, ValueError, IndexError):
-            # The process ended while it was being read.
+        except (OSError, ValueError, IndexError):
+            # The process ended while it was being read (FileNotFoundError,
+            # ProcessLookupError), or is one root may not inspect.
             continue
     return facts
 

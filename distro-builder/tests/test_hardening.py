@@ -357,6 +357,17 @@ class DiskHealth(unittest.TestCase):
             self.make_block(tmp, "sdc", usb=True)
             self.assertEqual(health.disks(os.path.join(tmp, "block")), ["mmcblk0", "nvme0n1", "sda"])
 
+    def test_a_disk_that_cannot_be_read_is_unknown_and_the_rest_are_still_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "block"))
+            self.make_block(tmp, "mmcblk0", device={"name": "EMMC32", "life_time": "0x02 0x02", "pre_eol_info": "0x01"})
+            self.make_block(tmp, "mmcblk1", device={"name": "BROKEN"})
+            os.mkdir(os.path.join(tmp, "block", "mmcblk1", "device", "life_time"))  # Reading it fails.
+            results = {disk["device"]: disk for disk in health.disk_health(os.path.join(tmp, "block"))}
+            self.assertEqual(results["mmcblk0"]["state"], "ok")
+            self.assertEqual(results["mmcblk1"]["state"], "unknown")
+            self.assertIn("could not be read", results["mmcblk1"]["summary"])
+
     def test_emmc_wear_comes_from_the_card(self):
         cases = [("0x02 0x03", "0x01", "ok"), ("0x09 0x01", "0x01", "warning"), ("0x01 0x01", "0x02", "warning"),
                  ("0x0B 0x01", "0x01", "failing"), ("0x01 0x01", "0x03", "failing")]
