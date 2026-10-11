@@ -476,7 +476,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const pending = await callJson("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
     assert.equal(pending.res.status, 403);
     for (const page of ["/super/tasks", "/super/mail"]) {
-      assert.equal((await call(page)).status, 401);
+      // Signed out: sent to the sign-in page, never shown the console.
+      const signedOut = await call(page);
+      assert.equal(signedOut.status, 302);
+      assert.match(signedOut.headers.get("Location") || "", /\/\?login=1$/);
     }
   });
 
@@ -2011,11 +2014,35 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Refuses the Super Admin Console without a super admin session", async () => {
+    // Signed out: the sign-in page, as /admin does.
     const anonymous = await call("/super");
-    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.status, 302);
+    assert.match(anonymous.headers.get("Location") || "", /\/\?login=1$/);
 
     const asOperator = await call("/super", { cookie: orgSessionCookie });
     assert.equal(asOperator.status, 401);
+
+    // A mistyped console address is not the Organizations page.
+    assert.equal((await call("/super/nope", { cookie: superSessionCookie })).status, 404);
+    assert.equal((await call("/super/organizations", { cookie: superSessionCookie })).status, 200);
+  });
+
+  test("A public page may be kept for back and forward, a console never; every page names its icon", async () => {
+    assert.equal((await call("/")).headers.get("Cache-Control"), "no-cache");
+    assert.equal((await call("/", { cookie: orgSessionCookie })).headers.get("Cache-Control"), "no-store");
+    assert.equal((await call("/admin?tenant=greenwood", { cookie: orgSessionCookie })).headers.get("Cache-Control"), "no-store");
+    assert.equal((await call("/home?tenant=greenwood")).headers.get("Cache-Control"), "no-store");
+
+    // Without the link a browser asks for /favicon.ico, which answers 404 and logs an error.
+    for (const page of ["/?tenant=greenwood", "/home?tenant=greenwood", "/no-such-page"]) {
+      const html = await (await call(page, { headers: { Accept: "text/html" } })).text();
+      assert.match(html, /<link rel="icon" href="\/favicon\.svg"/, `${page} names the site icon`);
+    }
+
+    // The viewer opened signed out in a browser tab leads to sign-in.
+    const viewer = await call("/console/remote?clientId=PC-01", { headers: { Accept: "text/html" } });
+    assert.equal(viewer.status, 302);
+    assert.match(viewer.headers.get("Location") || "", /\/\?login=1$/);
   });
 
   test("Updates super admin password when SUPER_ADMIN_PASSWORD changes in environment", async () => {
@@ -2613,10 +2640,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.notEqual(res.status, 404, `${page} links to ${target}, which does not exist`);
     }
 
-    // The two preview links on the portal manager open the same thing, and it
+    // The portal manager has one preview link (one control, one place), and it
     // is the app grid rather than the organization's own homepage.
     const previews = [...portalHtml.matchAll(/href="([^"]+)"[^>]*>[\s\S]{0,400}?Preview User Portal/g)].map((m) => m[1]);
-    assert.equal(previews.length, 2, `expected both preview links, found ${previews.length}`);
+    assert.equal(previews.length, 1, `expected one preview link, found ${previews.length}`);
     for (const href of previews) {
       assert.ok(href.startsWith("/home"), `a "Preview User Portal" link points at ${href}, not the app grid`);
     }

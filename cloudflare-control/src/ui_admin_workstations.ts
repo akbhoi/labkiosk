@@ -43,7 +43,7 @@ function renderWorkstationsPageHtml(tenantParam: string, groups: WorkstationGrou
     </div>
 
     <div class="controls-bar">
-      <div class="filter-chips" id="workstation-filter-chips" role="tablist" aria-label="Workstation telemetry filters">
+      <div class="filter-chips" id="workstation-filter-chips" role="group" aria-label="Workstation telemetry filters">
         <button type="button" class="filter-chip active" data-filter="all">
           <span>All Workstations</span>
           <span class="chip-badge" id="chip-count-all">0</span>
@@ -188,7 +188,7 @@ function renderWorkstationsModalsHtml(tenant?: Tenant, presets: BroadcastPreset[
           Enter an approved website URL to immediately navigate user workstations.
         </p>
         <div class="form-group mb-sm">
-          <input type="url" id="target-url-input" class="form-input mono" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}">
+          <input type="url" id="target-url-input" class="form-input mono" aria-labelledby="url-modal-title" placeholder="https://..." value="${escapeHtml(tenant?.default_url || "")}">
         </div>
         <div id="broadcast-error" class="form-error"></div>
         <div class="mt-sm">

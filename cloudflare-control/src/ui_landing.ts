@@ -437,11 +437,11 @@ ${FONT_LINKS}
       <h2 class="modal-title" id="iso-modal-title">Download Lab Kiosk ISO</h2>
       <p class="modal-sub">Flash to a USB drive and boot any PC or Thin Client.</p>
       <div style="background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: left;">
-        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 1: Write ISO to USB Drive</h4>
+        <h3 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 1: Write ISO to USB Drive</h3>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 14px;">
           Download <code>labkiosk-debian12-amd64.iso</code> and flash it to a 2 GB+ USB drive using <strong>Rufus</strong> (Windows, DD image mode) or <strong>balenaEtcher</strong> (Mac/Linux).
         </p>
-        <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 2: Boot Client &amp; First-Boot Wizard</h4>
+        <h3 style="font-size: 14px; margin-bottom: 8px; color: var(--accent-text);">Step 2: Boot Client &amp; First-Boot Wizard</h3>
         <p style="font-size: 13px; color: var(--muted); line-height: 1.5;">
           Boot your PC from USB. On first boot, the setup wizard prompts for your <strong>Organization Subdomain</strong>, <strong>PC Identifier (e.g. PC-01)</strong>, and <strong>Enrollment Key</strong>. Once verified, the workstation permanently links to your cloud dashboard!
         </p>
@@ -468,7 +468,7 @@ ${FONT_LINKS}
       </div>
 
       <div class="footer-col">
-        <h5>Stakeholders</h5>
+        <h2>Stakeholders</h2>
         <ul>
           <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-operators">For IT &amp; Operations</a></li>
           <li><a href="/#audiences" data-action="audience-tab" data-tab="tab-users">For End Users</a></li>
@@ -479,7 +479,7 @@ ${FONT_LINKS}
       </div>
 
       <div class="footer-col">
-        <h5>Platform</h5>
+        <h2>Platform</h2>
         <ul>
           <li><a href="/features">Core Features</a></li>
           <li><a href="/specs">Hardware Specs</a></li>
@@ -492,7 +492,7 @@ ${FONT_LINKS}
       </div>
 
       <div class="footer-col">
-        <h5>Global Contact</h5>
+        <h2>Global Contact</h2>
         <ul>
           <li><span style="color: var(--text-muted); font-size: 13px;">General:</span> <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a></li>
           <li><span style="color: var(--text-muted); font-size: 13px;">Support:</span> <a href="mailto:support@labkiosk.org">support@labkiosk.org</a></li>
@@ -1615,19 +1615,19 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
       <div style="background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 36px;">
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px;">
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">1. Client OS Lockdown</h4>
+            <h3 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">1. Client OS Lockdown</h3>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               Virtual TTY consoles (TTY1-6) and X11 VT-switching keys are masked. Openbox runs without window border escape keybindings. The root filesystem is mounted strictly read-only.
             </p>
           </div>
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">2. Managed Enterprise Chromium</h4>
+            <h3 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">2. Managed Enterprise Chromium</h3>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               <code>URLBlocklist</code> denies every <code>http</code> and <code>https</code> address by default. The local agent applies the organization's approved list to <code>URLAllowlist</code> as soon as it changes.
             </p>
           </div>
           <div>
-            <h4 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">3. Cloudflare Edge &amp; Web Crypto</h4>
+            <h3 style="font-size: 16px; font-weight: 700; color: var(--accent-text); margin-bottom: 8px;">3. Cloudflare Edge &amp; Web Crypto</h3>
             <p style="font-size: 14px; color: var(--muted); line-height: 1.6;">
               Control plane runs across 300+ edge colocations. Passwords are protected using native Web Crypto <code>PBKDF2-HMAC-SHA256</code> with 100,000 iterations. Workstations communicate via cryptographically hashed device tokens.
             </p>
@@ -1708,7 +1708,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="feature-icon" aria-hidden="true" style="margin-bottom: 12px;">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
           </div>
-          <h4>General &amp; Sales Inquiries</h4>
+          <h3>General &amp; Sales Inquiries</h3>
           <p>For organizations evaluating Lab Kiosk, commercial licensing, and general questions.</p>
           <a href="mailto:${escapeHtml(contactEmail)}" class="contact-link">${escapeHtml(contactEmail)}</a>
         </div>
@@ -1717,7 +1717,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="feature-icon" aria-hidden="true" style="margin-bottom: 12px;">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           </div>
-          <h4>Technical &amp; Deployment Support</h4>
+          <h3>Technical &amp; Deployment Support</h3>
           <p>Assistance with ISO flashing, thin client hardware compatibility, and network setup.</p>
           <a href="mailto:support@labkiosk.org" class="contact-link">support@labkiosk.org</a>
         </div>
@@ -1726,7 +1726,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
           <div class="feature-icon" aria-hidden="true" style="margin-bottom: 12px;">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           </div>
-          <h4>Education, CSR &amp; Partners</h4>
+          <h3>Education, CSR &amp; Partners</h3>
           <p>Education deployments, hardware donation partnerships, and platform allowlisting.</p>
           <a href="mailto:partners@labkiosk.org" class="contact-link">partners@labkiosk.org</a>
         </div>
@@ -2959,7 +2959,7 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
       flex-direction: column;
       align-items: center;
     }
-    .contact-card h4 { font-size: 1.0625rem; font-weight: 600; margin: 14px 0 8px; color: var(--text-main); }
+    .contact-card h3 { font-size: 1.0625rem; font-weight: 600; margin: 14px 0 8px; color: var(--text-main); }
     .contact-card p { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 18px; line-height: 1.55; }
     .contact-link {
       color: var(--accent-text);
@@ -3196,7 +3196,7 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     }
     @media (max-width: 800px) { .footer-content { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 500px) { .footer-content { grid-template-columns: 1fr; } }
-    .footer-col h5 { font-size: 0.8125rem; font-weight: 600; color: var(--text-main); margin-bottom: 14px; }
+    footer .footer-col h2 { font-size: 0.8125rem; font-weight: 600; line-height: 1.5; letter-spacing: 0; color: var(--text-main); margin: 0 0 14px; }
     .footer-col ul { list-style: none; display: flex; flex-direction: column; gap: 10px; }
     .footer-col ul a { color: var(--text-muted); font-size: 0.8125rem; }
     .footer-col ul a:hover { color: var(--text-main); }

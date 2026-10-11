@@ -6,6 +6,7 @@
 
 import { escapeHtml, escapeAttr } from "./escape";
 import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, THEME_TOGGLE_SCRIPT, rootTokensCss, themeHeadHtml } from "./ui_tokens";
+import { FAVICON_LINK_HTML } from "./seo";
 
 export interface NavItem {
   id: string;
@@ -2345,12 +2346,15 @@ export function renderLayoutHtml(options: LayoutOptions): string {
   const railItemsHtml = navItems
     .map((item) => {
       const isActive = item.id === activeNavId;
+      // The name read out carries the count the badge shows, so it matches what is on screen.
+      const badgeHtml = renderRailBadge(item);
+      const spokenName = badgeHtml ? `${item.label} ${item.badge}` : item.label;
       return `
-        <a href="${escapeAttr(item.href)}" class="sidebar-item rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" aria-label="${escapeAttr(item.label)}"${isActive ? ' aria-current="page"' : ""}>
+        <a href="${escapeAttr(item.href)}" class="sidebar-item rail-item ${isActive ? "active" : ""}" data-nav="${escapeAttr(item.id)}" aria-label="${escapeAttr(spokenName)}"${isActive ? ' aria-current="page"' : ""}>
           <span class="sidebar-icon rail-icon">${item.iconSvg}</span>
           <span class="sidebar-label">${escapeHtml(item.label)}</span>
           <span class="rail-tooltip" aria-hidden="true">${escapeHtml(item.label)}</span>
-          ${renderRailBadge(item)}
+          ${badgeHtml}
         </a>
       `;
     })
@@ -2377,7 +2381,8 @@ export function renderLayoutHtml(options: LayoutOptions): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(title)}</title>
-${themeHeadHtml(nonce)}
+  <meta name="description" content="${escapeAttr(title)}">
+${FAVICON_LINK_HTML}${themeHeadHtml(nonce)}
 ${FONT_LINKS}
   <link rel="stylesheet" href="${CONSOLE_STYLESHEET_PATH}">
 </head>

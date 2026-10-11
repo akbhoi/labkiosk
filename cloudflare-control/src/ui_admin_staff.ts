@@ -119,8 +119,8 @@ function renderStaffPageHtml(staff: TenantUser[], roleLabels: Map<string, string
               </select>
             </div>
 
-            <div class="form-group">
-              <label class="form-label">Delegated Permissions</label>
+            <div class="form-group" role="group" aria-labelledby="perms-label">
+              <div class="form-label" id="perms-label">Delegated Permissions</div>
               <div class="checkbox-list">
                 <label class="form-checkbox-label">
                   <input type="checkbox" class="form-checkbox" name="perms" value="workstations" checked>

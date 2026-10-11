@@ -194,9 +194,6 @@ function renderAppsWebContentHtml(
           <span class="text-muted">Current mode</span>
           <span class="badge ${tenant?.mode === "single_url" ? "badge-yellow" : "badge-green"}">${tenant?.mode === "single_url" ? "Single URL Lockdown" : "App Grid Launcher"}</span>
         </div>
-        <a href="/home${tenantParam}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Preview User Portal">
-          Preview User Portal &rarr;
-        </a>
       </div>
 
       <div class="grid-2col">
@@ -237,7 +234,7 @@ function renderAppsWebContentHtml(
         <div>
           <div class="card">
             <h2 class="card-title">Configured Portal Applications (${sites.length})</h2>
-            <p class="card-sub">Click Test Link to preview or Broadcast to push directly to screens.</p>
+            <p class="card-sub">Click Open to preview or Broadcast to push directly to screens.</p>
             <div class="app-tile-grid" id="portal-apps-grid">
               ${portalCardsHtml || `<p class="empty-note">No applications added yet. Use the form on the left to add one.</p>`}
             </div>
@@ -285,7 +282,7 @@ function renderAppsWebContentHtml(
             </div>
 
             <div class="callout mt-lg mb-0">
-              <div><strong>Enterprise managed policy.</strong> Permitted domains are merged into Chromium's managed policy (<code>URLAllowlist</code>) upon each 3-second workstation heartbeat.</div>
+              <div><strong>Enterprise managed policy.</strong> Permitted domains are merged into Chromium's managed policy (<code>URLAllowlist</code>) and sent to connected workstations as soon as you save.</div>
             </div>
           </div>
         </div>
