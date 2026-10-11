@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker, { Env } from "../src/index";
 import { handleSend, SendRequest, sendRequestProblem } from "../src/send";
-import { MailTemplate, renderMailHtml, TEMPLATE_NAMES } from "../src/templates";
+import { mailSubject, MailTemplate, renderMailHtml, TEMPLATE_NAMES } from "../src/templates";
 import { esc, isPlainAddress, paragraphs, safeUrl } from "../src/templates/layout";
 import { BRAND, SAMPLES } from "./samples";
 
@@ -42,6 +42,22 @@ test("Each template shows what it is for", () => {
   assert.ok(html("letter").includes("9 October 2026") && html("letter").includes("Ref. LTR-H6V9ZC") && html("letter").includes("Northfield Learning Trust"));
   assert.ok(html("alert").includes("203.0.113.24") && html("alert").includes("New sign-in to your account"));
   assert.ok(html("notice").includes("New registration") && html("notice").includes("Workstations expected: 40"));
+});
+
+test("A code is easy to find and copy, and stays out of the subject and the preview line", () => {
+  for (const file of ["code-signup", "code-sign-in"]) {
+    const sample = SAMPLES.find((s) => s.file === file)!;
+    const code = (sample.template as { code: string }).code;
+    const subject = mailSubject(sample.template, "123456 is your code", BRAND);
+    assert.ok(!/\d/.test(subject) && /^Your Lab Kiosk (verification|sign-in) OTP$/.test(subject), `${file}: ${subject}`);
+    assert.equal(subject, sample.subject, "the sample is what goes out");
+    const html = renderMailHtml({ template: sample.template, subject, text: sample.text, brand: BRAND });
+    const preheader = html.match(/<div style="display:none[^>]*>([^<]*)<\/div>/)![1];
+    assert.ok(!preheader.includes(code), `${file}: the preview line does not give the code away`);
+    // The caption names the code, and the digits are one text node anyone can select at once.
+    assert.match(html, new RegExp(`>(Verification|Sign-in) code</div>\\s*<div class="lk-code"[^>]*user-select:all[^>]*>${code}</div>`));
+  }
+  assert.equal(mailSubject({ name: "notice" }, "[REG-1] New registration", BRAND), "[REG-1] New registration", "other subjects are kept");
 });
 
 test("Nothing a person typed reaches a message unescaped", () => {
@@ -118,6 +134,13 @@ test("POST /send renders the message and sends it", async () => {
   assert.deepEqual(sent[0].headers, { "In-Reply-To": "<a@library.example>" });
   assert.ok(sent[0].html.includes("SUP-7Q2M9X") && sent[0].html.includes("Try the new key.") && sent[0].html.includes("lk-card"));
 
+  // A code goes out with the template's subject, and as automatic mail.
+  const code = { ...REQUEST, subject: "730164 is your Lab Kiosk sign-in code", text: "Your sign-in code is 730164.", headers: {}, template: { name: "code", code: "730164", purpose: "sign-in", minutes: 10 } };
+  assert.equal((await handleSend(post(code), { EMAIL })).status, 200);
+  assert.equal(sent[1].subject, "Your Lab Kiosk sign-in OTP");
+  assert.deepEqual(sent[1].headers, { "Auto-Submitted": "auto-generated" });
+  assert.ok(sent[1].html.includes("<title>Your Lab Kiosk sign-in OTP</title>") && sent[1].html.includes(">730164<"));
+
   // The Worker's own fetch handler has this one path.
   const env = { EMAIL } as unknown as Env;
   assert.equal((await worker.fetch(post(REQUEST), env)).status, 200);
@@ -139,6 +162,7 @@ test("POST /send refuses what it cannot send safely, and says why a send failed"
     ["an empty text", { text: "  " }],
     ["a template it does not have", { template: { name: "newsletter" } }],
     ["no brand", { brand: undefined }],
+    ["a brand name that starts a header", { brand: { ...BRAND, name: "Lab\r\nBcc: x@y.example" } }],
     ["a header it does not allow", { headers: { Bcc: "x@y.example" } }],
     ["a header with a line break", { headers: { References: "<a@b>\r\nBcc: x@y.example" } }]
   ];
