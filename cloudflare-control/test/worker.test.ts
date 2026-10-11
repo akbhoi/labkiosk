@@ -4504,10 +4504,20 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const tenantId = await greenwoodId();
     const token = await enrolAs("WS-GONE");
     const device = await hubs().connectDevice({ tenantId, clientId: "WS-GONE", ip: "10.0.0.9", portal: portalContext() });
+    const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
 
     const removed = await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId: "WS-GONE" }), cookie: orgSessionCookie });
     assert.equal(removed.status, 200);
     assert.equal(device.closedWith?.code, 4001, "its socket is closed as removed");
+    // Gone, not offline: a console that heard "offline" put it back on its grid,
+    // and the count stayed at one until the page was loaded again.
+    await device.closeFromClient();
+    assert.ok(ofType(viewer, "removed").some((m) => m.clientId === "WS-GONE"), "consoles are told it was removed");
+    const afterwards = viewer.sent.slice(viewer.sent.findIndex((raw) => String(raw).includes('"removed"')) + 1).map((raw) => String(raw));
+    assert.ok(!afterwards.some((raw) => raw.includes('"status"') && raw.includes("WS-GONE")), "and nothing reports it as offline afterwards");
+    const listed = await callJson("/api/clients?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.equal(listed.data.clients["WS-GONE"], undefined, "it is not on the list while its connection closes");
+    await viewer.closeFromClient();
     assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 401);
     const socket = await call("/api/devices/ws", { headers: { Upgrade: "websocket" }, bearer: token });
     assert.equal(socket.status, 401, "and it cannot reconnect");

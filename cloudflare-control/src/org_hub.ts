@@ -729,7 +729,9 @@ export class OrgHub {
     if (!this.isRevoked(attachment.clientId)) {
       await this.writeRegistry([this.registryRow(attachment, now)]);
     }
-    this.notifyConsoles({ type: "status", client: { ...this.statusOf(attachment, now), online: false } });
+    // A removed workstation is gone, not offline: saying "offline" put it back on every console.
+    if (this.isRevoked(attachment.clientId)) this.notifyConsoles({ type: "removed", clientId: attachment.clientId });
+    else this.notifyConsoles({ type: "status", client: { ...this.statusOf(attachment, now), online: false } });
     this.recordEvent("disconnect", attachment.clientId, now, ws);
     await this.ensureAlarm(FLUSH_DELAY_MS);
     // A seed that left no longer counts; someone else at its site takes its place.
@@ -753,6 +755,11 @@ export class OrgHub {
   deviceEnrolled(clientId: string): void {
     if (!CLIENT_ID_PATTERN.test(clientId)) return;
     this.ctx.storage.sql.exec("DELETE FROM revoked WHERE client_id = ?", clientId);
+  }
+
+  private revokedIds(): Set<string> {
+    const rows = this.ctx.storage.sql.exec("SELECT client_id FROM revoked").toArray() as unknown as Array<{ client_id: string }>;
+    return new Set(rows.map((row) => row.client_id));
   }
 
   private isRevoked(clientId: string): boolean {
@@ -1026,9 +1033,11 @@ export class OrgHub {
   liveClients(withFrames: boolean): Record<string, LiveStatus> {
     const now = Date.now();
     const clients: Record<string, LiveStatus> = {};
+    // A removed workstation's socket is still closing for a moment; it is not listed.
+    const revoked = this.revokedIds();
     for (const ws of this.ctx.getWebSockets("device")) {
       const a = this.deviceAttachment(ws);
-      if (!a) continue;
+      if (!a || revoked.has(a.clientId)) continue;
       const lastSeen = this.lastSeenOf(ws, a);
       clients[a.clientId] = this.statusOf(a, lastSeen, now - lastSeen < SOCKET_STALE_MS);
     }
