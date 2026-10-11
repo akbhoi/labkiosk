@@ -12,6 +12,16 @@
 #   4. unhealthy an image that boots but whose kiosk never comes up is
 #                rebooted away from after the 10-minute health deadline
 #
+# Scenario 1 ends by switching the VM off, as a power cut would, so the boot
+# after it (scenario 3; scenario 2 never reaches userspace) must find that and
+# leave one restart report on the data partition, with the end of scenario 1's
+# journal, which labkiosk-logs keeps there. Its journal must also show the
+# encrypted swap partition in use behind compressed RAM, the kernel must say
+# Secure Boot was enforced, and the hostname the installer stored must be set.
+# After scenario 4, the journal of every boot must show the firewall loaded, X
+# run by the kiosk user, the agent and x11vnc under their AppArmor profiles and
+# the disk checked; what the profiles would still have blocked is printed.
+#
 # Then the signed download of phase 2. The kiosk has no shell, so the ISO's
 # own labkiosk-update runs from the host on the disk's mounted image store,
 # against a release signed with a key made for this run, served on loopback:
@@ -22,6 +32,14 @@
 #   7. downgrade a validly signed release below the security floor is refused
 #   8. resume    the download continues where it stopped and is verified
 #   9. update    installed, the download gets its one try and becomes current
+#
+# Last, a second disk installed with an encrypted data partition, booted with a
+# software TPM:
+#
+#  10. tpm       the first boot seals the key to the TPM and destroys the
+#                one-time key; the second boot opens it without changing it;
+#                with the TPM's state wiped the third boot recreates it, still
+#                with nobody at the keyboard
 #
 # First of all, the image's phase 3 wiring, read from its root filesystem: the
 # two update units, the updater they run, and the polkit rule that lets the
@@ -38,6 +56,7 @@
 #
 # Needs root, /dev/kvm (GitHub's Linux runners have it) and:
 #   qemu-system-x86 ovmf xorriso squashfs-tools e2fsprogs fdisk python3 gpg gpgv
+#   swtpm cryptsetup-bin
 #
 # Usage: sudo distro-builder/tests/vm/boot-test.sh path/to/labkiosk-debian12-amd64.iso [workdir]
 set -euo pipefail
@@ -45,8 +64,11 @@ set -euo pipefail
 ISO="${1:?usage: boot-test.sh LABKIOSK.iso [workdir]}"
 WORK="${2:-$(dirname "$(readlink -f "$ISO")")/boot-test}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
-OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
+# Secure Boot on, with Microsoft's keys enrolled, as on a PC from the shop:
+# every boot below goes through the signed shim, GRUB and kernel, so a disk
+# that only boots with Secure Boot off fails every scenario.
+OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
+OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.ms.fd
 # The installer refuses less than 7 GiB: room for two images.
 DISK_SIZE=8G
 # Generous margins over the agent's own numbers (60 s hold, 600 s deadline).
@@ -57,6 +79,7 @@ UNHEALTHY_MIN=540
 UNHEALTHY_TIMEOUT=1200
 
 DISK="$WORK/disk.img"
+TPM_DISK="$WORK/disk-tpm.img"
 ROOTFS="$WORK/rootfs"
 LIVE="$WORK/live"
 STAGE="$WORK/stage"
@@ -65,6 +88,7 @@ VM_PID=""
 LOOP=""
 SERVER_PID=""
 DOWNLOAD_PID=""
+SWTPM_PID=""
 FAILED=0
 
 log() { printf '[boot-test] %s\n' "$*"; }
@@ -74,7 +98,7 @@ pass() { printf '[boot-test] PASS %s\n' "$*"; }
 
 cleanup() {
     stop_vm
-    for pid in "$DOWNLOAD_PID" "$SERVER_PID"; do
+    for pid in "$DOWNLOAD_PID" "$SERVER_PID" "$SWTPM_PID"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid"
         fi
@@ -97,7 +121,8 @@ trap cleanup EXIT
 [ "$(id -u)" = 0 ] || die "run as root: it partitions a loop device and chroots into the image"
 [ -f "$ISO" ] || die "no ISO at $ISO"
 [ -w /dev/kvm ] || die "/dev/kvm is not available: without KVM the kiosk cannot come up inside the 10-minute health window"
-for tool in qemu-system-x86_64 xorriso unsquashfs mksquashfs debugfs sfdisk losetup python3 gpg gpgv gpgconf; do
+for tool in qemu-system-x86_64 xorriso unsquashfs mksquashfs debugfs sfdisk losetup python3 gpg gpgv gpgconf \
+            swtpm cryptsetup; do
     command -v "$tool" >/dev/null || die "$tool is not installed"
 done
 [ -f "$OVMF_CODE" ] && [ -f "$OVMF_VARS" ] || die "OVMF firmware not found under /usr/share/OVMF"
@@ -149,32 +174,54 @@ fi
 # --------------------------------------------------------------------------
 # Install with the real installer, from inside the image
 # --------------------------------------------------------------------------
-log "Installing onto a $DISK_SIZE virtual disk"
-truncate -s "$DISK_SIZE" "$DISK"
-LOOP="$(losetup -f --show -P "$DISK")"
-mount --rbind /dev "$ROOTFS/dev"
-mount --make-rslave "$ROOTFS/dev"
-mount -t proc proc "$ROOTFS/proc"
-mount --rbind /sys "$ROOTFS/sys"
-mount --make-rslave "$ROOTFS/sys"
-mount -t tmpfs tmpfs "$ROOTFS/run"
-mount -t tmpfs tmpfs "$ROOTFS/tmp"
-mkdir -p "$ROOTFS/run/live/medium/live"
-mount --bind "$LIVE" "$ROOTFS/run/live/medium/live"
-install -m 0644 "$HERE/install_into_disk.py" "$ROOTFS/tmp/install_into_disk.py"
-chroot "$ROOTFS" /usr/bin/python3 /tmp/install_into_disk.py "$LOOP"
-umount -R "$ROOTFS/run" "$ROOTFS/tmp" "$ROOTFS/sys" "$ROOTFS/proc" "$ROOTFS/dev"
-losetup -d "$LOOP"
-LOOP=""
+# install_disk IMAGE [--encrypt-data]: a new virtual disk, installed.
+install_disk() {
+    truncate -s "$DISK_SIZE" "$1"
+    LOOP="$(losetup -f --show -P "$1")"
+    mount --rbind /dev "$ROOTFS/dev"
+    mount --make-rslave "$ROOTFS/dev"
+    mount -t proc proc "$ROOTFS/proc"
+    mount --rbind /sys "$ROOTFS/sys"
+    mount --make-rslave "$ROOTFS/sys"
+    mount -t tmpfs tmpfs "$ROOTFS/run"
+    mount -t tmpfs tmpfs "$ROOTFS/tmp"
+    mkdir -p "$ROOTFS/run/live/medium/live"
+    mount --bind "$LIVE" "$ROOTFS/run/live/medium/live"
+    install -m 0644 "$HERE/install_into_disk.py" "$ROOTFS/tmp/install_into_disk.py"
+    chroot "$ROOTFS" /usr/bin/python3 /tmp/install_into_disk.py "$LOOP" "${@:2}"
+    umount -R "$ROOTFS/run" "$ROOTFS/tmp" "$ROOTFS/sys" "$ROOTFS/proc" "$ROOTFS/dev"
+    losetup -d "$LOOP"
+    LOOP=""
+}
 
-ROOT_OFFSET="$(sfdisk -J "$DISK" | python3 -c '
+# partition_offset IMAGE NAME: the byte offset of the GPT partition NAME.
+partition_offset() {
+    sfdisk -J "$1" | python3 -c '
 import json, sys
 table = json.load(sys.stdin)["partitiontable"]
-root = [p for p in table["partitions"] if p.get("name") == "ROOT"]
-if len(root) != 1:
-    sys.exit("expected one partition named ROOT")
-print(root[0]["start"] * table.get("sectorsize", 512))
+found = [p for p in table["partitions"] if p.get("name") == sys.argv[1]]
+if len(found) != 1:
+    sys.exit(f"expected one partition named {sys.argv[1]}")
+print(found[0]["start"] * table.get("sectorsize", 512))
+' "$2"
+}
+
+log "Installing onto a $DISK_SIZE virtual disk"
+install_disk "$DISK"
+ROOT_OFFSET="$(partition_offset "$DISK" ROOT)"
+# DATA's offset, and the swap partition's GPT type (labkiosk-swap refuses any other).
+DATA_OFFSET="$(sfdisk -J "$DISK" | python3 -c '
+import json, sys
+table = json.load(sys.stdin)["partitiontable"]
+by_name = {p.get("name"): p for p in table["partitions"]}
+if "DATA" not in by_name:
+    sys.exit("expected a partition named DATA")
+swap = by_name.get("SWAP")
+if swap is None or swap["type"].upper() != "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F":
+    sys.exit(f"expected a Linux swap partition named SWAP, got {swap}")
+print(by_name["DATA"]["start"] * table.get("sectorsize", 512))
 ')"
+pass "install: SWAP is a Linux swap partition before DATA"
 
 # --------------------------------------------------------------------------
 # grubenv, read and written through labkiosk-boot-slots' own functions
@@ -225,19 +272,22 @@ slots.write_env(sys.argv[2], env)
 # --------------------------------------------------------------------------
 # The VM
 # --------------------------------------------------------------------------
+# start_vm [IMAGE [QEMU ARGS...]]: boot IMAGE ($DISK by default).
 start_vm() {
+    local disk="${1:-$DISK}"
     cp "$OVMF_VARS" "$WORK/vars.fd"
     rm -f "$WORK/qmp.sock"
     # -no-reboot: a reboot ends QEMU, which is how a rollback is observed.
     qemu-system-x86_64 \
-        -machine q35,accel=kvm -cpu host -smp 2 -m 3072 \
+        -machine q35,smm=on,accel=kvm -cpu host -smp 2 -m 3072 \
+        -global driver=cfi.pflash01,property=secure,value=on \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$WORK/vars.fd" \
-        -drive file="$DISK",format=raw,if=virtio,file.locking=off \
+        -drive file="$disk",format=raw,if=virtio,file.locking=off \
         -nic user,model=virtio-net-pci \
-        -vga std -display none -monitor none -serial none \
+        -vga std -display none -monitor none -serial "${VM_SERIAL:-none}" \
         -qmp unix:"$WORK/qmp.sock",server=on,wait=off \
-        -no-reboot &
+        -no-reboot "${@:2}" &
     VM_PID=$!
 }
 
@@ -343,6 +393,38 @@ else
 fi
 stop_vm
 
+log "3b. restart: scenario 1's power-off is reported from the journal on DATA"
+debugfs_data() { debugfs -R "$1" "$DISK?offset=$DATA_OFFSET" 2>/dev/null; }
+mapfile -t reports < <(debugfs_data "ls /logs/reports" | grep -oE '[0-9a-f]{32}\.json' | sort -u)
+if [ "${#reports[@]}" -ne 1 ]; then
+    fail "restart: expected one restart report, found ${#reports[@]}: ${reports[*]:-none}"
+elif debugfs_data "cat /logs/reports/${reports[0]}" | python3 "$HERE/check_restart_report.py" > "$WORK/report.txt" 2>&1; then
+    pass "restart: $(cat "$WORK/report.txt")"
+else
+    fail "restart: ${reports[0]}: $(cat "$WORK/report.txt")"
+fi
+rm -rf "$WORK/journal"
+mkdir "$WORK/journal"
+debugfs_data "rdump /logs/journal $WORK/journal" >/dev/null
+swap_lines="$(journalctl --directory="$WORK/journal/journal" --unit=labkiosk-swap.service --output=cat 2>/dev/null | grep 'In use:' || true)"
+if printf '%s\n' "$swap_lines" | grep -q '/dev/zram0' && printf '%s\n' "$swap_lines" | grep -q '/dev/dm-'; then
+    pass "swap: compressed RAM and the encrypted partition were in use"
+else
+    fail "swap: expected /dev/zram0 and an encrypted partition in labkiosk-swap's journal, got: ${swap_lines:-nothing}"
+fi
+
+if journalctl --directory="$WORK/journal/journal" --dmesg --output=cat 2>/dev/null | grep -q 'Secure boot enabled'; then
+    pass "secure boot: the kernel ran with Secure Boot enforced"
+else
+    fail "secure boot: the kernel journal does not say 'Secure boot enabled'"
+fi
+stored_name="$(debugfs -R "cat /boot/grub/labkiosk-hostname.cfg" "$DISK?offset=$ROOT_OFFSET" 2>/dev/null | sed -n 's/^set kiosk_hostname="\([a-z0-9-]*\)"$/\1/p')"
+if [ -n "$stored_name" ] && journalctl --directory="$WORK/journal/journal" --unit=labkiosk-hostname.service --output=cat 2>/dev/null | grep -qx "\[HOSTNAME\] Hostname: $stored_name"; then
+    pass "hostname: $stored_name, as the installer stored it"
+else
+    fail "hostname: installer stored '${stored_name:-nothing}', labkiosk-hostname said: $(journalctl --directory="$WORK/journal/journal" --unit=labkiosk-hostname.service --output=cat 2>/dev/null | tail -n 3 | tr '\n' ' ')"
+fi
+
 log "4. unhealthy: $V_UNHEALTHY boots without its agent and should be rebooted away from"
 mksquashfs "$ROOTFS" "$WORK/unhealthy.squashfs" -comp zstd -no-progress -quiet \
     -e opt/labkiosk/agent/agent.py >/dev/null
@@ -367,6 +449,49 @@ else
     screenshot unhealthy
     fail "unhealthy: still running after $UNHEALTHY_TIMEOUT s"
     stop_vm
+fi
+
+log "4b. hardening: firewall, session, AppArmor and disk health, from the journal on DATA"
+# Every boot so far is in it: scenario 4 ended in a clean reboot, which wrote
+# out the journal.
+rm -rf "$WORK/journal"
+mkdir "$WORK/journal"
+debugfs_data "rdump /logs/journal $WORK/journal" >/dev/null
+journal() { journalctl --directory="$WORK/journal/journal" --output=cat "$@" 2>/dev/null || true; }
+if journal --unit=nftables.service | grep -q '^Finished nftables'; then
+    pass "firewall: nftables.service loaded the ruleset"
+else
+    fail "firewall: nftables.service did not finish: $(journal --unit=nftables.service | tail -n 3 | tr '\n' ' ')"
+fi
+health_lines="$(journal --unit=labkiosk-health.service | grep '^\[HEALTH\]' || true)"
+if printf '%s\n' "$health_lines" | grep -qx '\[HEALTH\] Display server: Xorg runs as kiosk\.'; then
+    pass "session: Xorg ran as the kiosk user, not root"
+else
+    fail "session: expected Xorg to run as kiosk, labkiosk-health said: $(printf '%s\n' "$health_lines" | grep 'Display server' | sort -u | tr '\n' ' ')"
+fi
+if printf '%s\n' "$health_lines" | grep -q '^\[HEALTH\] AppArmor: agent labkiosk-agent (complain); x11vnc labkiosk-x11vnc (complain)\.$'; then
+    pass "apparmor: the agent and x11vnc ran under their profiles, in complain mode"
+else
+    fail "apparmor: expected both profiles attached, labkiosk-health said: $(printf '%s\n' "$health_lines" | grep 'AppArmor' | sort -u | tr '\n' ' ')"
+fi
+if printf '%s\n' "$health_lines" | grep -q '^\[HEALTH\] Disk vda '; then
+    pass "disk health: $(printf '%s\n' "$health_lines" | grep '^\[HEALTH\] Disk vda ' | tail -n 1)"
+else
+    fail "disk health: labkiosk-health checked no disk: $(printf '%s\n' "$health_lines" | tail -n 3 | tr '\n' ' ')"
+fi
+# Complain mode blocks nothing; what it would have blocked is what the profiles
+# still lack. Listed for whoever tightens them, never a failure.
+complaints="$(journalctl --directory="$WORK/journal/journal" --output=cat _TRANSPORT=kernel _TRANSPORT=audit 2>/dev/null \
+    | grep -E 'apparmor="(ALLOWED|DENIED)".*profile="labkiosk-' \
+    | while read -r line; do
+        printf '%s\n' "$line" | grep -oE '(operation|profile|name|requested_mask)="[^"]*"' | tr '\n' ' '
+        echo
+    done | sort | uniq -c | sort -rn || true)"
+if [ -n "$complaints" ]; then
+    log "apparmor: what the profiles do not cover yet (complain mode, nothing was blocked):"
+    printf '%s\n' "$complaints" | head -n 60
+else
+    log "apparmor: no complaints from either profile"
 fi
 
 # --------------------------------------------------------------------------
@@ -521,6 +646,110 @@ else
     fail "update: the VM rebooted instead (health check failed?); grubenv '$(env_now)'"
 fi
 stop_vm
+
+# --------------------------------------------------------------------------
+# An encrypted data partition, unlocked by a TPM
+# --------------------------------------------------------------------------
+log "10. tpm: a disk with an encrypted data partition, booted with a software TPM"
+install_disk "$TPM_DISK" --encrypt-data
+TPM_ROOT_OFFSET="$(partition_offset "$TPM_DISK" ROOT)"
+# The console on the serial port, so labkiosk-data-unlock's own account of
+# each boot is readable here: its journal is on the volume under test.
+mount -o "loop,offset=$TPM_ROOT_OFFSET" "$TPM_DISK" "$STAGE"
+sed -i 's/ noeject panic=10$/ noeject panic=10 console=tty0 console=ttyS0,115200/' "$STAGE/boot/grub/grub.cfg"
+grep -q 'console=ttyS0' "$STAGE/boot/grub/grub.cfg" || die "could not add the serial console to the TPM disk's boot menu"
+umount_root
+TPM_STATE="$WORK/tpm-state"
+mkdir -m 0700 "$TPM_STATE"
+
+# luks_header: the data partition's LUKS header (key slots, tokens, salts),
+# which changes if the partition is recreated.
+luks_header() {
+    local loop
+    loop="$(losetup -f --show -P -r "$TPM_DISK")"
+    cryptsetup luksDump "${loop}p4"
+    losetup -d "$loop"
+}
+# sealed_to_tpm: reads a header on stdin; true when it has exactly one key
+# slot and a systemd-tpm2 token that uses that slot (and nothing opens it but
+# the TPM).
+sealed_to_tpm() {
+    python3 -c '
+import re, sys
+dump = sys.stdin.read()
+keyslots = dump.partition("\nKeyslots:")[2].partition("\nTokens:")[0]
+tokens = dump.partition("\nTokens:")[2].partition("\nDigests:")[0]
+slots = set(re.findall(r"(?m)^  (\d+): luks2$", keyslots))
+token_slots = set()
+for token in re.split(r"(?m)^  (?=\d+: )", tokens)[1:]:
+    if token.split("\n", 1)[0].split(": ", 1)[1].strip() == "systemd-tpm2":
+        token_slots |= set(re.findall(r"(?m)^\s+Keyslot:\s+(\d+)$", token))
+print(f"key slots {sorted(slots)}, TPM token slots {sorted(token_slots)}", file=sys.stderr)
+sys.exit(0 if len(slots) == 1 and slots == token_slots else 1)
+'
+}
+first_boot_key_present() {
+    debugfs -R "stat /boot/grub/labkiosk-data.key" "$TPM_DISK?offset=$TPM_ROOT_OFFSET" 2>/dev/null | grep -q '^Inode:'
+}
+# tpm_boot NAME: boot the encrypted disk with the TPM in $TPM_STATE, and leave
+# it running long enough to unlock (or recreate) the partition and settle.
+tpm_boot() {
+    rm -f "$WORK/swtpm.sock"
+    swtpm socket --tpm2 --tpmstate dir="$TPM_STATE" --ctrl type=unixio,path="$WORK/swtpm.sock" &
+    SWTPM_PID=$!
+    for _ in $(seq 50); do
+        [ -S "$WORK/swtpm.sock" ] && break
+        sleep 0.2
+    done
+    VM_SERIAL="file:$WORK/tpm-serial-${1// /-}.log" start_vm "$TPM_DISK" -chardev socket,id=chrtpm,path="$WORK/swtpm.sock" \
+        -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0
+    if wait_for_exit "$RECOVER_SECONDS"; then
+        fail "tpm: $1: the VM rebooted within $RECOVER_SECONDS s"
+    fi
+    stop_vm
+    if kill -0 "$SWTPM_PID" 2>/dev/null; then
+        kill "$SWTPM_PID"
+    fi
+    wait "$SWTPM_PID" 2>/dev/null || true
+    SWTPM_PID=""
+    log "tpm: $1: labkiosk-data-unlock said:"
+    grep -a '\[DATA\]' "$WORK/tpm-serial-${1// /-}.log" | cut -c1-6000 || log "(nothing on the serial console)"
+}
+
+if ! first_boot_key_present; then
+    fail "tpm: the installer left no one-time key in boot/grub"
+fi
+installed_header="$(luks_header)"
+tpm_boot "first boot"
+sealed_header="$(luks_header)"
+if first_boot_key_present; then
+    fail "tpm: the one-time key is still in boot/grub after the first boot"
+elif ! printf '%s\n' "$sealed_header" | sealed_to_tpm; then
+    fail "tpm: after the first boot the only key slot is not the TPM token's"
+elif [ "$sealed_header" = "$installed_header" ]; then
+    fail "tpm: the header did not change on the first boot"
+else
+    pass "tpm: first boot sealed the key to the TPM and destroyed the one-time key"
+fi
+
+tpm_boot "second boot"
+if [ "$(luks_header)" = "$sealed_header" ]; then
+    pass "tpm: second boot opened the data partition with the TPM, unchanged"
+else
+    fail "tpm: the header changed on the second boot (recreated instead of unlocked?)"
+fi
+
+rm -rf "$TPM_STATE"
+mkdir -m 0700 "$TPM_STATE"
+tpm_boot "TPM wiped"
+reset_header="$(luks_header)"
+if [ "$reset_header" = "$sealed_header" ]; then
+    fail "tpm: with the TPM wiped the data partition was not recreated"
+elif ! printf '%s\n' "$reset_header" | sealed_to_tpm; then
+    fail "tpm: the recreated partition's only key slot is not the new TPM token's"
+else
+    pass "tpm: with the TPM wiped the data partition was recreated and sealed again"
+fi
 
 if [ "$FAILED" -ne 0 ]; then
     log "Some scenarios failed; screenshots (if any) are in $WORK"

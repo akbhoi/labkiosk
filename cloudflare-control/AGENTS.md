@@ -97,7 +97,7 @@ cloudflare-control/
 - **Delegation Never Escalates**: a staff member holding `staff` who is not a co-administrator may only grant permissions they hold, may not appoint an `org_admin`, and may not change or remove their own account or a co-administrator's (`staffDelegationProblem()` in `index.ts`). Adding staff refuses an email that already has an account (`409`) rather than linking another organization's user, and removing staff ends that account's sessions.
 - **Customizable Subdomain & Settings**: Organization admins can customize their subdomain (`POST /api/tenant/subdomain`) and default home route (`home_route`: e.g. `/` vs `/home`). Remote Control needs no per-organization setting: it goes through the console's `RemoteRelay` Durable Object, and a `tunnelDomain` sent to `POST /api/tenant/settings` is ignored.
 - **Never resolve a tenant by hand.** Call `resolveTenant()` in `guard.ts`. The `Host` header is authoritative; `?tenant=` / `X-Tenant` are honoured only on a local dev host, for a super admin (who may then open only the platform-owned demos), for a session that already owns that tenant, or on an explicitly public route.
-- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry`, `/api/devices/ws`, `/api/devices/remote` and `/api/devices/boot-report` call `requireDevice()`. A route with no guard is a security vulnerability.
+- **Never write a route without a guard.** Every endpoint that reads or changes an organization's data calls `requireTenantAdmin()` or `requireTenantPermission()`; platform endpoints call `requireSuperAdmin()`; `/api/telemetry`, `/api/devices/ws`, `/api/devices/remote`, `/api/devices/boot-report`, `/api/devices/restart-report` and `/api/devices/disk-health` call `requireDevice()`. A route with no guard is a security vulnerability.
 - A workstation's identity comes from its device token, never from the request body. `/api/telemetry` must ignore any `clientId` or tenant the payload claims, and a WebSocket carries only the identity the Worker verified (`hubUpgrade()` builds a fresh request).
 - Only the `Host` header says where a request arrived. Never read `X-Forwarded-Host` (or any other caller-supplied header) to build a URL that is handed back to a workstation.
 
@@ -217,6 +217,14 @@ cloudflare-control/
   rollback, fallback or error to `workstation_issues` only — never `writeAuditLog()`. Settings →
   Errors & Warnings reads them (`GET /api/workstation-issues`, `settings` permission). One report
   per workstation per 60 s; the hourly cron deletes issues after 90 days.
+- **A restart report** (`POST /api/devices/restart-report`) is one `workstation_issues` row per
+  boot that ended without a shutdown (`unexpected_restart`, `watchdog_reset`), at most 24 a day per
+  workstation. Its journal tail is `log_text` (`0031`), nulled by the cron after 30 days and read
+  only through `GET /api/workstation-issues/log` (`settings` permission, filtered by `tenant_id`).
+  It is never marked `pending` for automatic bug reports: a log is the organization's, not GitHub's.
+- **A disk health report** (`POST /api/devices/disk-health`) lists the disks `labkiosk-health` found
+  wearing out or failing: one `disk_health` row per disk and state (warning, or error when failing),
+  at most 8 a day per workstation, never `pending` for bug reports. Healthy disks are never sent.
 - **Automatic bug reports are opt-in per organization** (`POST /api/settings/bug-reports`,
   `settings` permission, `{ enabled, acceptTerms }`). Turning them on requires `acceptTerms` equal
   to `BUG_REPORT_TERMS_VERSION`; bumping that constant pauses every organization's reports until

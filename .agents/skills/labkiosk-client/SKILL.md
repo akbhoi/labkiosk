@@ -18,7 +18,8 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   10-minute token (`X-LabKiosk-Admin`; 5 failures → 60 s lock); network, reboot and `/api/log`
   require it. A password file that cannot be parsed fails closed.
 - Endpoints: `/setup`, `/blocked`, `/api/status` (`isLive`, `isInstalled`, `isOnline`,
-  `persistentStorage`, `reloadEpoch`, `enrolmentRejected`, `organization`…), `/api/setup` (on an
+  `persistentStorage`, `reloadEpoch`, `enrolmentRejected`, `organization`, `secureBoot`,
+  `clockSynchronized`, `hostname`…), `/api/setup` (on an
   enrolled workstation: admin token required), `/api/install/disks`, `/api/install`, `/api/install/status`,
   `/api/reboot`, `/api/network/{status,interfaces,wifi/scan,configure,test}` (`test_connectivity()`
   caches 5 s; interfaces from `nmcli dev status`), `/api/admin/verify`, `/api/log`,
@@ -53,6 +54,17 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   `(state, at)`. `200`/`400`/`404` settle it; `409`, `401`/`403` and network errors retry. Keep
   `BOOT_REPORT_STATES` equal to `src/boot_report.ts` (tested). It lands in Settings → Errors &
   Warnings, not the audit log. Contract: `labkiosk-core` §2b.
+- **Restart reports** (same loop): `report_restarts()` reads `/etc/labkiosk/logs/reports/*.json`
+  that `labkiosk-logs` (root) wrote — root-owned regular files only, the boot id in the name must
+  match the body — and posts each once to `POST /api/devices/restart-report`, remembering the
+  settled ones in `/etc/labkiosk/restart-reports-sent.json`. `log()` also writes to syslog as
+  `labkiosk-agent`, so the agent's lines are in the journal a report carries. Contract:
+  `labkiosk-core` §2c.
+- **Disk health** (same loop): `report_disk_health()` reads `/run/labkiosk-health/disks.json`
+  (root-owned, ≤ 16 KiB, written by `labkiosk-health`) once per check and posts the `warning` /
+  `failing` disks to `POST /api/devices/disk-health`. Contract: `labkiosk-core` §2d.
+- The session runs the agent as `/opt/labkiosk/agent/agent.py` itself (shebang, 0755), never
+  `python3 agent.py`: its AppArmor profile (`labkiosk-agent`, complain mode) attaches to that path.
 - Enrolment reply names the organization via `organization_name()` (`organizationName`, falling
   back to the deprecated `schoolName`). Persistence is reported, not assumed:
   `enrolment_is_persistent()` checks the **filesystem type** at `/etc/labkiosk`.

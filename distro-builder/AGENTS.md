@@ -23,19 +23,22 @@ distro-builder/
 │   ├── package-lists/
 │   │   └── kiosk.list.chroot           # Minimal package manifest (Xorg, Openbox, Chromium, rsync, parted, efibootmgr)
 │   ├── hooks/live/
-│   │   ├── 01-lockdown.hook.chroot     # Kiosk user, autologin, PAM, polkit (incl. the update units), Xorg setuid, sudoers
+│   │   ├── 01-lockdown.hook.chroot     # Kiosk user, kiosk session + PAM, polkit (incl. the update units and
+│   │   │                               #   the deny rule), Xorg.wrap, sudoers, firewall, AppArmor (Rule 1j)
 │   │   └── 02-security.hook.chroot     # sysctl hardening, limits, GRUB password enforcement
 │   └── includes.chroot/                # Root filesystem overlay directly injected into the OS image
 │       ├── etc/
+│       │   ├── apparmor.d/             # labkiosk-agent, labkiosk-x11vnc: complain mode (Rule 1j)
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
+│       │   ├── NetworkManager/dispatcher.d/50-labkiosk-ntp # DHCP option 42 time servers (Rule 1e)
+│       │   ├── nftables.conf           # The firewall, table inet labkiosk_firewall (Rule 1j)
 │       │   ├── openbox/                # Empty keybindings (rc.xml) & autostart script
 │       │   ├── overlayroot.conf        # RAM overlay (overlayroot="tmpfs", recurse=0)
-│       │   ├── systemd/system/         # labkiosk-boot-ok.service, labkiosk-update-download.service,
+│       │   ├── systemd/system/         # labkiosk-session.service (the kiosk session, Rule 1j),
+│       │   │                           #   labkiosk-boot-ok.service, labkiosk-update-download.service,
 │       │   │                           #   labkiosk-update-install.service, labkiosk-share.service
-│       │   │                           #   (Rule 8); nodm
-│       │   │                           #   is configured through /etc/default/nodm in
-│       │   │                           #   01-lockdown.hook.chroot, and the agent is started by
-│       │   │                           #   the Openbox autostart
+│       │   │                           #   (Rule 8), labkiosk-health.service/.timer; the agent is
+│       │   │                           #   started by the Openbox autostart
 │       │   └── systemd/system-generators/labkiosk-data-generator   # etc-labkiosk.mount by UUID
 │       ├── opt/labkiosk/
 │       │   ├── setup/wizard.html       # Setup & Enrollment Wizard GUI (HTML/JS)
@@ -49,6 +52,7 @@ distro-builder/
 │       │   ├── labkiosk-localization   # The one program the agent may sudo (Rule 1e)
 │       │   ├── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
 │       │   ├── labkiosk-update         # Root-only: signed release download and install (Rule 8)
+│       │   ├── labkiosk-health         # Root-only: SMART / eMMC disk health every 6 h (Rule 1j)
 │       │   └── labkiosk-share          # Unprivileged: serves verified images to the site's LAN (Rule 8)
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
 │                                       #   plus the grub.pin build pin, version (the image's release)
@@ -87,7 +91,7 @@ distro-builder/
   `config.json` there at enrolment. Three things keep it that way, and all three should stay:
   the installer chowns the mounted partition and then *proves* the kiosk user can write to it
   (the install fails loudly otherwise); `labkiosk-data-permissions.service` re-checks it at every
-  boot, before `nodm`; and `save_config()` reports the directory's owner, mode and the agent's own
+  boot, before `labkiosk-session.service`; and `save_config()` reports the directory's owner, mode and the agent's own
   uid when a write fails, because the workstation has no shell to investigate from.
   `system-connections` inside it stays root-only — those keyfiles hold Wi-Fi passphrases.
 - **A directory at `/etc/labkiosk` is not a substitute for the partition, and nothing may pretend
@@ -189,6 +193,15 @@ distro-builder/
   reachable once the network exists, so a workstation installed in an organization with no DHCP would
   otherwise spend its first session at the wrong date — and TLS, enrolment and every page site
   care about that. The step therefore also offers the clock by hand.
+- **The network's own time servers count too.** Many organizations block the public NTP pool.
+  `etc/NetworkManager/dispatcher.d/50-labkiosk-ntp` writes the IPv4 servers of DHCP option 42
+  (validated) to `/run/systemd/timesyncd.conf.d/network-dhcp-<iface>.conf` and try-restarts
+  `systemd-timesyncd`, and removes the file when the link goes down or the lease names none. The
+  wizard's own server (`labkiosk-localization`, `/etc/systemd/timesyncd.conf.d/labkiosk.conf`)
+  sorts first, so it is tried first; Debian's pool stays the fallback. The hook enables
+  `NetworkManager-dispatcher.service`. `GET /api/status` carries `clockSynchronized`
+  (`/run/systemd/timesync/synchronized` exists), shown on the wizard's diagnostics line as
+  `Clock: Set from a time server` / `Not set from a time server yet`.
 - **Nothing in that step is a list this project maintains.** Continents, countries and zones come
   from tzdata's own `zone1970.tab` and `iso3166.tab`, locales from `/usr/share/i18n/SUPPORTED`
   (the `locales` package, ~21 MB), keyboard layouts from the X11 rules list. A hardcoded country
@@ -300,6 +313,51 @@ distro-builder/
   installation. `test_client.py` now scans the three client scripts for it.
 - `distro-builder/tests/test_client.py` pins this behaviour.
 
+### Rule 1j: The Session Runs Without Root, Behind a Firewall
+
+- **No display manager.** `labkiosk-session.service` (`User=kiosk`, `PAMName=labkiosk-session`,
+  `TTYPath=/dev/tty7`, `Alias=display-manager.service`, wanted by `graphical.target`, the default)
+  runs `xinit /home/kiosk/.xsession -- /usr/bin/Xorg :0 vt7 -keeptty -novtswitch -nolisten tcp`
+  with `Restart=always`. `/etc/pam.d/labkiosk-session` is `pam_permit` (auth, account), `pam_deny`
+  (password) and `pam_systemd.so class=user type=x11` (session), which registers the logind
+  session that gives `kiosk` the seat's GPU and input devices. Every unit that ordered against
+  `nodm.service` orders against `labkiosk-session.service`. `libpam-systemd` and `xinit` are in the
+  package list; nodm is not.
+- **Xorg as `kiosk` where the graphics allow.** `Xwrapper.config` is `allowed_users=console`,
+  `needs_root_rights=auto`, and `Xorg.wrap` stays setuid: X runs as `kiosk` on any GPU with a kernel
+  modesetting driver (Intel, AMD, nouveau, QEMU, Hyper-V's DRM driver) and as root only without one
+  (plain VESA; Hyper-V while `hyperv_fb` is loaded). Never go back to `needs_root_rights=yes`.
+- **The empty password stays** (`passwd -d`), for the reason in the pitfall table: a locked account
+  deadlocked the display manager's PAM stack. **`kiosk` is not in the `tty` group** (`useradd`,
+  `usermod`, `LIVE_USER_DEFAULT_GROUPS`; the hook removes it with `gpasswd` if present).
+- **Polkit says no by default.** As the active logind session, `kiosk` would get desktop defaults
+  (time zone, hostname, mounting). `99-labkiosk-deny.rules` returns `NO` for every action the
+  `50-*` rules (power, NetworkManager, update units) do not grant, except
+  `org.freedesktop.login1.inhibit-*`, left `NOT_HANDLED`.
+- **The firewall.** `/etc/nftables.conf`, table `inet labkiosk_firewall`, loaded by
+  `nftables.service`; the hook enables it and refuses to build when the file is not ours. Input
+  and forward policy `drop`; accepted: loopback, established/related, DHCP replies (udp 67→68),
+  DHCPv6 replies from link-local (547→546), ping at 5/s (v4 and v6), IPv6 neighbour discovery,
+  router adverts, MLD queries and packet-too-big, and TCP 8890 from `10/8`, `172.16/12`,
+  `192.168/16` (Rule 8's LAN sharing; `labkiosk-share.nft` still adds its own table while sharing).
+  Outgoing traffic is not filtered. **Never `flush ruleset`**: a reload must keep the sharing table.
+- **AppArmor, complain mode.** `apparmor.service` loads `labkiosk-agent` (attached to
+  `/opt/labkiosk/agent/agent.py`) and `labkiosk-x11vnc` (`/usr/bin/x11vnc`). They block nothing;
+  the kernel logs what they would block to the journal (on `LABKIOSK_DATA` when installed) and the
+  VM boot test prints it. The autostart runs `/opt/labkiosk/agent/agent.py` itself, never
+  `python3 agent.py`, or the profile does not attach; the hook makes it `0755` and fails if it
+  cannot. `sudo` is `Ux` from the agent's profile (root's helpers re-validate). Chromium has no
+  profile: its own sandbox stays the protection.
+- **Disk health.** `labkiosk-health` (root; `labkiosk-health.timer`, 90 s after boot, then every
+  6 h) checks the machine's own non-removable, non-USB disks with `smartctl` JSON (SATA, NVMe) or
+  sysfs `life_time`/`pre_eol_info` (eMMC), writes `/run/labkiosk-health/disks.json` and logs
+  `[HEALTH] …` lines, including which user Xorg runs as and both AppArmor labels. smartmontools'
+  own daemon is disabled and masked. The agent sends `warning`/`failing` disks to
+  `POST /api/devices/disk-health` (`labkiosk-core`); a disk without data is `unknown`, never sent.
+- `distro-builder/tests/test_hardening.py` pins all of this; `tests/vm/boot-test.sh` step **4b**
+  checks from the journal on DATA that `nftables.service` finished, Xorg ran as `kiosk`, both
+  profiles attached in complain mode and the disk was checked.
+
 ### Rule 2: Universal Dual Bootloader Compatibility (BIOS + UEFI)
 
 - Workstations in organization environments range from legacy BIOS machines to modern UEFI-only hardware (e.g. Hyper-V Gen 2, modern laptops/NUCs).
@@ -310,9 +368,11 @@ distro-builder/
   - The installer partitions target drives with a **Hybrid GPT layout**:
     1. Partition 1: `bios_grub` (1 MiB – 2 MiB, flag `bios_grub on`) for legacy GRUB `i386-pc` MBR embedding on GPT.
     2. Partition 2: `ESP` (2 MiB – 514 MiB, FAT32, flag `esp on`) for UEFI bootloader files.
-    3. Partition 3: `ROOT` (514 MiB – end − 513 MiB, ext4, label `LABKIOSK_ROOT`), the root-only image store: `boot/grub/` and `images/<version>/` (Rule 8).
-    4. Partition 4: `DATA` (end − 512 MiB – 100%, ext4, label `LABKIOSK_DATA`) mounted at `/etc/labkiosk` with `nofail`, holding persistent credentials and `/etc/labkiosk/system-connections/`.
-  - The installer runs `grub-install --target=x86_64-efi --bootloader-id=LabKiosk --no-nvram`, the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`, each with `--boot-directory` on `ROOT`, so the drive boots on any machine regardless of firmware mode.
+    3. Partition 3: `ROOT` (514 MiB – end − 1537 MiB, ext4, label `LABKIOSK_ROOT`), the root-only image store: `boot/grub/` and `images/<version>/` (Rule 8).
+    4. Partition 4: `DATA` (end − 512 MiB – 100%, ext4, label `LABKIOSK_DATA`) mounted at `/etc/labkiosk` with `nofail`, holding persistent credentials, `/etc/labkiosk/system-connections/` and root's `logs/` (the journal for 7 days and restart reports, `labkiosk-logs`). On a machine with a TPM 2.0 chip it is a LUKS2 container with that ext4 inside: GRUB passes `labkiosk.datacrypt=<LUKS UUID>` from `boot/grub/labkiosk-datacrypt.cfg`, and `labkiosk-data-unlock.service` (before `etc-labkiosk.mount`) opens it with the TPM (PCR 7, `headless=true`). The first boot seals the key from the installer's one-time `boot/grub/labkiosk-data.key` and destroys it; a TPM that no longer releases the key gets a new empty volume with the same UUIDs (re-enrolment, Rule 6b); no TPM at all erases nothing.
+    5. Partition 5: `SWAP` (end − 1536 MiB – end − 512 MiB, GPT type Linux swap), created last so `DATA` stays number 4. `labkiosk-swap` opens it with `cryptsetup --type plain --key-file /dev/urandom` at every boot, only when its PARTUUID is GRUB's `labkiosk.swap=`, its type is Linux swap, it is on the data partition's disk and nothing uses it; priority 10, behind zram (100).
+  - The installer runs `grub-install --target=x86_64-efi --uefi-secure-boot --bootloader-id=LabKiosk --no-nvram`, the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`, each with `--boot-directory` on `ROOT`, so the drive boots on any machine regardless of firmware mode, and with Secure Boot on (shim → signed GRUB → signed kernel). Never add an out-of-tree kernel module (DKMS, the proprietary NVIDIA driver): it would need a MOK enrolled at the keyboard, which breaks Secure Boot or the unattended boot.
+  - Every workstation has its own hostname (`labkiosk-hostname.service`, before the network): `labkiosk.hostname=` from `boot/grub/labkiosk-hostname.cfg` (generated `labkiosk-<6 hex>` or typed in the wizard), else derived from the lowest permanent MAC. A workstation never sleeps: logind ignores the sleep keys and the lid, `sleep.conf.d` refuses sleep, the sleep targets are masked.
 
 ### Rule 3: The Installer Copies the Image, Not the Root
 
@@ -604,8 +664,8 @@ Located at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 3. **Machine ID**: `01-lockdown.hook.chroot` empties `/etc/machine-id` in the image, the marker
    systemd reads as "uninitialised", so every boot generates one in RAM. The installer writes
    nothing into the image; an id baked into the squashfs would be shared by every workstation.
-4. **Negative parted offsets need `--`**: the ROOT and DATA partitions are sized from the end of the
-   disk (`-513MiB`, `-512MiB`), and without a `--` separator parted parses those as bundled
+4. **Negative parted offsets need `--`**: the ROOT, SWAP and DATA partitions are sized from the end of the
+   disk (`-1537MiB`, `-1536MiB`, `-512MiB`), and without a `--` separator parted parses those as bundled
    single-letter options and aborts the install.
 5. **Target re-validation**: `--target` is checked against `TARGET_DISK_PATTERN` inside the
    installer, not only by the agent that normally calls it. `/etc/sudoers.d/50-labkiosk-install`

@@ -1,0 +1,30 @@
+[Unit]
+Description=Lab Kiosk: unlock the encrypted data partition with the TPM
+Documentation=file:///usr/local/sbin/labkiosk-data-unlock
+# Only an installed disk whose boot menu names an encrypted data partition
+# (labkiosk.datacrypt=); everywhere else this does nothing.
+ConditionKernelCommandLine=labkiosk.installed=1
+ConditionKernelCommandLine=labkiosk.datacrypt
+DefaultDependencies=no
+After=systemd-udev-trigger.service systemd-udevd.service
+Wants=systemd-udev-trigger.service
+# The file system inside appears only once this has opened the volume; the
+# mount, the permission check and everything after them wait for it.
+Before=etc-labkiosk.mount labkiosk-data-permissions.service local-fs.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/labkiosk-data-unlock start
+# After /etc/labkiosk is unmounted: units stop in the reverse of their order.
+ExecStop=/usr/local/sbin/labkiosk-data-unlock stop
+TimeoutStartSec=5min
+# On the console as well as in the journal: why an unlock failed is readable
+# without a shell, on the screen or a serial console, even if the volume that
+# holds the journal is then recreated.
+StandardError=journal+console
+
+[Install]
+WantedBy=local-fs.target

@@ -32,6 +32,13 @@ import sys
 import threading
 import time
 from datetime import datetime
+try:
+    import syslog
+except ImportError:
+    # Not a Linux host (the unit tests on Windows): the file log is the only log.
+    syslog = None
+else:
+    syslog.openlog("labkiosk-agent", syslog.LOG_PID, syslog.LOG_USER)
 import base64
 try:
     import grp
@@ -110,6 +117,24 @@ BOOT_REPORT_INTERVAL_SECONDS = 30
 # Answers after which a report is settled: recorded (200), or one the control
 # plane will never take (400 malformed, 404 a Worker without the route).
 BOOT_REPORT_SETTLED_STATUSES = (200, 400, 404)
+# Boots that ended without shutting down, as labkiosk-logs (root) found them at
+# the next start: one <boot id>.json each, deleted by it after seven days. The
+# agent cannot write there, so it keeps its own list of the ones it has sent.
+RESTART_REPORTS_DIR = "/etc/labkiosk/logs/reports"
+# Disk health, as labkiosk-health (root) found it at its last check: shortly
+# after boot and every six hours. The agent reports the disks wearing out or
+# failing; the Worker lists each disk once per state, so sending the same
+# finding after every check costs nothing.
+DISK_HEALTH_FILE = "/run/labkiosk-health/disks.json"
+DISK_PROBLEM_STATES = ("warning", "failing")
+DISK_FIELDS = ("device", "model", "serial", "state", "summary")
+MAX_DISK_HEALTH_BYTES = 16 * 1024
+MAX_DISKS_REPORTED = 8
+RESTART_REPORTS_SENT_FILE = "/etc/labkiosk/restart-reports-sent.json"
+RESTART_REPORT_NAME_PATTERN = re.compile(r"^([0-9a-f]{32})\.json\Z")
+# A report carries at most 16 KB of journal; anything far larger is not root's.
+MAX_RESTART_REPORT_BYTES = 64 * 1024
+MAX_RESTART_REPORTS = 100
 # Over-the-air updates, phase 3. labkiosk-update (root) writes what it is doing
 # beside the boot status; the agent reports it and never writes it.
 UPDATE_STATE_FILE = "/run/labkiosk-update/update.json"
@@ -272,6 +297,10 @@ TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcb
 # never crosses this API. Kept identical to GRUB_PBKDF2_PATTERN in
 # /usr/local/bin/labkiosk-install, which re-validates it.
 GRUB_PBKDF2_PATTERN = re.compile(r"^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+\Z")
+# A hostname typed in the setup wizard's install step: one lowercase DNS label.
+# Kept identical to HOSTNAME_PATTERN in /usr/local/bin/labkiosk-install, which
+# re-validates it.
+INSTALL_HOSTNAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 GRUB_PASSWORD_LINE = re.compile(
     r"^\s*password_pbkdf2\s+\S+\s+(grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+)\s*$",
     re.MULTILINE,
@@ -377,6 +406,11 @@ def log(message):
     """
     global _log_lines_written
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {time.strftime('%Z')} [Agent] {message}", flush=True)
+    # The same line in the system journal, which an installed disk keeps on its
+    # data partition (labkiosk-logs): after a crash, what the agent was doing is
+    # in the log sent with the restart report. The file above is in RAM.
+    if syslog is not None:
+        syslog.syslog(syslog.LOG_INFO, message)
 
     # Checked every few hundred lines rather than on each one: a stat() per line
     # is wasted work on a workstation that logs nothing for weeks.
@@ -643,6 +677,48 @@ def mounted_fstype(path, mounts_file="/proc/mounts"):
     except OSError:
         return ""
     return found
+
+
+EFI_DIR = "/sys/firmware/efi"
+# The UEFI global variable the firmware sets to 1 while it enforces Secure Boot.
+SECURE_BOOT_VAR = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+
+
+def secure_boot_state(efi_dir=EFI_DIR, var_path=SECURE_BOOT_VAR):
+    """
+    "on" when the firmware enforced Secure Boot for this boot, "off" when it
+    did not, "legacy-bios" when the machine did not start through UEFI, and
+    "unknown" when the variable cannot be read. efivarfs files are four bytes
+    of attributes, then the value.
+    """
+    if not os.path.isdir(efi_dir):
+        return "legacy-bios"
+    try:
+        with open(var_path, "rb") as handle:
+            raw = handle.read(16)
+    except FileNotFoundError:
+        # Firmware without Secure Boot support has no such variable.
+        return "off"
+    except OSError as err:
+        log(f"Could not read the Secure Boot state: {err}")
+        return "unknown"
+    if len(raw) != 5:
+        return "unknown"
+    return "on" if raw[4] == 1 else "off"
+
+
+# systemd-timesyncd touches this file each time it sets the clock from a time
+# server, and only then.
+CLOCK_SYNCHRONIZED_FILE = "/run/systemd/timesync/synchronized"
+
+
+def clock_synchronized(path=CLOCK_SYNCHRONIZED_FILE):
+    """
+    Has a time server set the clock since boot? A clock that never was can be
+    far enough off for every HTTPS connection to fail, which is worth seeing on
+    the diagnostics page before anything else.
+    """
+    return os.path.exists(path)
 
 
 def enrolment_is_persistent():
@@ -1303,7 +1379,7 @@ def get_install_status():
     return {"state": "idle", "step": "Ready", "progress": 0, "error": None}
 
 
-def start_disk_install(target_disk, grub_password_hash=None):
+def start_disk_install(target_disk, grub_password_hash=None, hostname=None):
     def _run():
         try:
             log(f"Starting local disk installation to {target_disk}...")
@@ -1317,6 +1393,9 @@ def start_disk_install(target_disk, grub_password_hash=None):
                 log("A boot-menu password was supplied for the installed system.")
             else:
                 log("No boot-menu password supplied; the installed GRUB menu will be editable.")
+            if hostname:
+                argv += ["--hostname", hostname]
+                log(f"The installed workstation will be named {hostname}.")
             subprocess.run(argv, check=True)
             log("Local disk installation finished successfully.")
         except Exception as e:
@@ -2150,6 +2229,11 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # partition is not mounted: it can be enrolled, but it
                         # forgets the enrolment at the next power-off.
                         "persistentStorage": enrolment_is_persistent(),
+                        # Shown in the wizard's diagnostics: how to check
+                        # Secure Boot on a machine with no shell.
+                        "secureBoot": secure_boot_state(),
+                        "clockSynchronized": clock_synchronized(),
+                        "hostname": socket.gethostname(),
                         # The kiosk bar asks for this to know which interface
                         # catalog to fetch, once per boot.
                         "uiLanguage": str(load_localization_config().get("uiLanguage", "") or "en-US"),
@@ -2256,7 +2340,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "The boot-menu password hash is not in GRUB PBKDF2 format"})
                 return
 
-            start_disk_install(target_disk, grub_hash or None)
+            hostname = str(data.get("hostname", "") or "").strip()
+            if hostname and not INSTALL_HOSTNAME_PATTERN.match(hostname):
+                self._send(400, {"error": "The hostname must be 1-63 lowercase letters, digits and hyphens, not starting or ending with a hyphen"})
+                return
+
+            start_disk_install(target_disk, grub_hash or None, hostname or None)
             self._send(200, {"status": "started", "targetDisk": target_disk})
             return
 
@@ -2765,10 +2854,10 @@ def post_telemetry():
         return json.loads(response.read().decode("utf-8"))
 
 
-def read_root_json(path, owner_uid=0):
+def read_root_json(path, owner_uid=0, max_bytes=MAX_BOOT_STATUS_BYTES):
     """
-    A small JSON object root wrote under /run/labkiosk-update, or None when
-    there is none. ValueError when the file is not what root wrote.
+    A small JSON object root wrote under /run, or None when there is none.
+    ValueError when the file is not what root wrote.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -2780,9 +2869,9 @@ def read_root_json(path, owner_uid=0):
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid:
             raise ValueError(f"{path} is not a file written by root")
-        raw = handle.read(MAX_BOOT_STATUS_BYTES + 1)
-    if len(raw) > MAX_BOOT_STATUS_BYTES:
-        raise ValueError(f"{path} is larger than {MAX_BOOT_STATUS_BYTES} bytes")
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"{path} is larger than {max_bytes} bytes")
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as err:
@@ -3093,10 +3182,273 @@ def report_boot_outcome(settled):
     return settled
 
 
+def read_restart_report(dir_fd, name, owner_uid=0):
+    """One report labkiosk-logs wrote. ValueError when it is not what root wrote."""
+    match = RESTART_REPORT_NAME_PATTERN.match(name)
+    if not match:
+        raise ValueError(f"{name} is not a restart report")
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError as err:
+        raise ValueError(f"{name} could not be opened: {err}") from err
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid:
+            raise ValueError(f"{name} is not a file written by root")
+        raw = handle.read(MAX_RESTART_REPORT_BYTES + 1)
+    if len(raw) > MAX_RESTART_REPORT_BYTES:
+        raise ValueError(f"{name} is larger than {MAX_RESTART_REPORT_BYTES} bytes")
+    try:
+        report = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise ValueError(f"{name} is not valid JSON: {err}") from err
+    if not isinstance(report, dict) or report.get("bootId") != match.group(1):
+        raise ValueError(f"{name} is not the report of boot {match.group(1)}")
+    return report
+
+
+def read_restart_reports(directory=RESTART_REPORTS_DIR, owner_uid=0):
+    """
+    The restart reports waiting in `directory`, oldest first, and the problems
+    met reading them. No reports on a live session or an older disk.
+    """
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return [], []
+    except OSError as err:
+        return [], [f"{directory} could not be opened: {err}"]
+    reports, problems = [], []
+    try:
+        if os.fstat(dir_fd).st_uid != owner_uid:
+            return [], [f"{directory} is not a folder of root's"]
+        names = sorted(name for name in os.listdir(dir_fd) if not name.startswith("."))
+        for name in names[:MAX_RESTART_REPORTS]:
+            try:
+                reports.append(read_restart_report(dir_fd, name, owner_uid))
+            except ValueError as err:
+                problems.append(str(err))
+    finally:
+        os.close(dir_fd)
+    reports.sort(key=lambda report: report.get("endedAt") if isinstance(report.get("endedAt"), int) else 0)
+    return reports, problems
+
+
+def load_sent_restart_reports(path=RESTART_REPORTS_SENT_FILE):
+    """The boot ids whose reports the control plane has answered for good."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.loads(handle.read(MAX_RESTART_REPORT_BYTES))
+    except FileNotFoundError:
+        return set()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+        log(f"{path} is unreadable ({err}); restart reports may be sent again, and the console keeps one of each.")
+        return set()
+    ids = data.get("sent") if isinstance(data, dict) else None
+    if not isinstance(ids, list):
+        log(f"{path} does not list the restart reports sent; they may be sent again.")
+        return set()
+    return {value for value in ids if isinstance(value, str) and RESTART_REPORT_NAME_PATTERN.match(f"{value}.json")}
+
+
+def save_sent_restart_reports(sent, path=RESTART_REPORTS_SENT_FILE):
+    temp_path = path + ".tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump({"sent": sorted(sent)}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+    except OSError as err:
+        log(f"Could not record which restart reports were sent ({err}); they may be sent again after a restart.")
+
+
+def post_restart_report(report):
+    """Send one restart report. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}/api/devices/restart-report",
+        data=json.dumps(report).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=15) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_restarts(progress):
+    """
+    Send the reports of boots that ended without shutting down, each once.
+
+    `progress` lives as long as the agent: "sent" is the list kept on the data
+    partition, "logged" the problems already written to the log, and "held"
+    turns true when the control plane says this workstation sent too many
+    today (429), so the rest wait for the next start. Offline, a token being
+    replaced or a workstation not written yet (409) is tried again next round;
+    the Worker keeps one issue per boot, so a report sent twice counts once.
+    """
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured or progress["held"]:
+        return
+    reports, problems = read_restart_reports()
+    for problem in problems:
+        if problem not in progress["logged"]:
+            progress["logged"].add(problem)
+            log(f"Restart report not sent: {problem}")
+    sent = progress["sent"]
+    changed = False
+    if not problems:
+        # labkiosk-logs deletes a report after seven days; forget it here too.
+        # Not while any report is unreadable: that one may already be sent.
+        waiting = {report["bootId"] for report in reports}
+        changed = bool(sent - waiting)
+        sent &= waiting
+    for report in reports:
+        boot_id = report["bootId"]
+        if boot_id in sent:
+            continue
+        try:
+            status = post_restart_report(report)
+        except (URLError, TimeoutError, socket.timeout, OSError) as err:
+            if "offline" not in progress["logged"]:
+                progress["logged"].add("offline")
+                log(f"Restart reports not sent yet: {err}")
+            break
+        progress["logged"].discard("offline")
+        if status == 200:
+            log(f"Reported to the organization that boot {boot_id} ended without shutting down ({report.get('kind')}).")
+        elif status in BOOT_REPORT_SETTLED_STATUSES:
+            log(f"The control plane did not take the restart report of boot {boot_id} (HTTP {status}); not sending it again.")
+        elif status == 429:
+            log("The control plane has taken enough restart reports from this workstation today; the rest wait for the next start.")
+            progress["held"] = True
+            break
+        else:
+            log(f"Restart report of boot {boot_id} not recorded yet (HTTP {status}); trying again.")
+            break
+        sent.add(boot_id)
+        changed = True
+    if changed:
+        save_sent_restart_reports(sent)
+
+
+def read_disk_problems(path=DISK_HEALTH_FILE, owner_uid=0):
+    """
+    The disks labkiosk-health found wearing out or failing, as the Worker takes
+    them. None when it has not checked yet. ValueError when the file is not
+    what root wrote.
+    """
+    data = read_root_json(path, owner_uid, MAX_DISK_HEALTH_BYTES)
+    if data is None:
+        return None
+    disks = data.get("disks")
+    if not isinstance(disks, list):
+        raise ValueError(f"{path} does not list disks")
+    problems = []
+    for disk in disks[:MAX_DISKS_REPORTED]:
+        if not isinstance(disk, dict) or disk.get("state") not in DISK_PROBLEM_STATES:
+            continue
+        if not all(isinstance(disk.get(field), str) for field in DISK_FIELDS):
+            raise ValueError(f"{path} has a disk without {', '.join(DISK_FIELDS)}")
+        problems.append({field: disk[field] for field in DISK_FIELDS})
+    return problems
+
+
+def post_disk_health(problems):
+    """Send the problem disks. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}/api/devices/disk-health",
+        data=json.dumps({"disks": problems}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=15) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_disk_health(progress, path=DISK_HEALTH_FILE):
+    """
+    Send the result of each disk check that found a problem, once.
+
+    `progress["checked"]` is the modification time of the check last dealt
+    with; "logged" the problems already written to the log. Offline, a token
+    being replaced or a workstation not written yet (409) is tried again next
+    round; anything else waits for the next check.
+    """
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    try:
+        checked = os.stat(path).st_mtime_ns
+    except FileNotFoundError:
+        return
+    except OSError as err:
+        message = f"Disk health not read: {err}"
+        if message not in progress["logged"]:
+            progress["logged"].add(message)
+            log(message)
+        return
+    if checked == progress["checked"]:
+        return
+    try:
+        problems = read_disk_problems(path)
+    except ValueError as err:
+        log(f"Disk health not reported: {err}")
+        progress["checked"] = checked
+        return
+    if not problems:
+        progress["checked"] = checked
+        return
+    for disk in problems:
+        log(f"Disk {disk['device']} is {'failing' if disk['state'] == 'failing' else 'wearing out'}: {disk['summary']}")
+    try:
+        status = post_disk_health(problems)
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        if "offline" not in progress["logged"]:
+            progress["logged"].add("offline")
+            log(f"Disk health not reported yet: {err}")
+        return
+    progress["logged"].discard("offline")
+    if status == 200:
+        log("Reported the disk problems to the organization.")
+    elif status in BOOT_REPORT_SETTLED_STATUSES:
+        log(f"The control plane did not take the disk health report (HTTP {status}); not sending it again.")
+    elif status == 429:
+        log("The control plane has taken enough disk reports from this workstation today; the next check sends again.")
+    else:
+        log(f"Disk health report not recorded yet (HTTP {status}); trying again.")
+        return
+    progress["checked"] = checked
+
+
 def boot_report_loop():
     settled = None
+    restarts = {"sent": load_sent_restart_reports(), "logged": set(), "held": False}
+    disks = {"checked": None, "logged": set()}
     while True:
         settled = report_boot_outcome(settled)
+        report_restarts(restarts)
+        report_disk_health(disks)
         time.sleep(BOOT_REPORT_INTERVAL_SECONDS)
 
 
@@ -3654,6 +4006,7 @@ def main():
         configured = state["isConfigured"]
 
     log(f"Starting Lab Kiosk Agent for {client_id} ({'enrolled' if configured else 'awaiting setup'})")
+    log(f"Hostname {socket.gethostname()}; Secure Boot {secure_boot_state()}.")
 
     if configured:
         # A reboot brings back the boot-time policy, which allows only loopback,

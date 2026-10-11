@@ -204,10 +204,10 @@ That is what keeps a visited web page from reaching the installer.
 | Endpoint | Method | Notes |
 | :--- | :--- | :--- |
 | `/setup` | GET | Serves the wizard. `403` once enrolled. |
-| `/api/status` | GET | Local state for the wizard and the extension |
+| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname and `clockSynchronized` (whether a time server has set the clock since boot) |
 | `/api/install/disks` | GET | `[]` when not a live session |
 | `/api/install/status` | GET | Progress percentage |
-| `/api/install` | POST | `400` when already installed on an internal drive |
+| `/api/install` | POST | `400` when already installed on an internal drive, or when `hostname` is not one lowercase DNS label |
 | `/api/reboot` | POST | |
 | `/api/setup` | POST | `409` once already enrolled |
 
@@ -250,6 +250,8 @@ It also reports **`persistentStorage`**. That is false when `/etc/labkiosk` is n
 
 An installed workstation boots a system image under a RAM overlay, so the timezone, keyboard, time server and generated locale are the image's defaults again at every boot, and an update replaces the image altogether. The image ships no `locales-all`: `apply_saved_localization()` re-applies the choice saved in `/etc/labkiosk/localization.json` on `LABKIOSK_DATA` at every start, through `labkiosk-localization`, which regenerates the locale when it is missing. A failure is logged and never stops the agent.
 
+The clock also takes the network's own time servers. The NetworkManager dispatcher script `50-labkiosk-ntp` writes the IPv4 servers a DHCP lease names (option 42, validated) to `/run/systemd/timesyncd.conf.d/network-dhcp-<iface>.conf` and try-restarts `systemd-timesyncd`; the file is removed when the link goes down or a lease names none. A time server set in the wizard (`/etc/systemd/timesyncd.conf.d/labkiosk.conf`) sorts first, so it is tried first, and Debian's pool stays the fallback. The wizard's diagnostics line shows `Clock: Set from a time server` or `Not set from a time server yet`, from `clockSynchronized` (`/run/systemd/timesync/synchronized` exists).
+
 ---
 
 ## Boot reports
@@ -257,6 +259,16 @@ An installed workstation boots a system image under a RAM overlay, so the timezo
 On an installed disk, `labkiosk-boot-slots check` (root, run by `labkiosk-boot-ok.service`) records what this boot did with its system image in `/run/labkiosk-update/status.json`. `boot_report_loop()` reads it — refusing a file not owned by root or over 4 KiB — and posts the outcomes worth an administrator's attention to `POST /api/devices/boot-report` with the device token: `installed`, `failed`, `rolled-back`, `fallback` and `error`. Routine boots are not sent.
 
 A report is retried every 30 s until the control plane answers it for good (`200`, or `400`/`404`, which are not resent); the Worker drops a report it already holds. The latest outcome is kept on the workstation's row, and a failure, rollback, fallback or error is listed under Settings → **Errors & Warnings** in the admin console.
+
+## Restart reports
+
+An installed disk keeps its system journal on `LABKIOSK_DATA` for seven days (`labkiosk-logs.service`, root). A boot that ends without a clean shutdown — a power cut, a forced power-off, a hang the hardware watchdog restarted after 30 s, or a kernel panic (the workstation restarts 10 s after one) — is found at the next start, and the last 300 lines of its journal are saved as `/etc/labkiosk/logs/reports/<bootId>.json`. The same loop as the boot reports sends each to `POST /api/devices/restart-report` once, reading only root-owned files whose name matches the boot id inside, and lists the ones the control plane answered for good in `/etc/labkiosk/restart-reports-sent.json`. A report it could not send is sent at a later round or the next boot, until `labkiosk-logs` deletes it after seven days. The agent's own log lines also go to the journal (syslog ident `labkiosk-agent`), so a report shows what the agent was doing.
+
+## Disk health
+
+`labkiosk-health` (root, run by `labkiosk-health.timer` 90 s after boot and every six hours) checks the machine's own disks — not removable or USB ones: SMART through `smartctl` for SATA and NVMe, the card's wear figures in sysfs for eMMC. A disk is **failing** when its self-assessment failed, NVMe raises a critical warning or its spare is below threshold, and **warning** at 90 % or more of its rated life used, reallocated, pending or uncorrectable sectors, NVMe media errors or a pre-fail attribute past its threshold. A disk with no data (a virtual one) is `unknown` and never reported. The result goes to `/run/labkiosk-health/disks.json`, and `[HEALTH] …` lines to the journal, with the user Xorg runs as and the AppArmor labels of the agent and x11vnc.
+
+The same loop as the boot reports reads that file (root-owned, at most 16 KiB) after each check and posts the warning and failing disks to `POST /api/devices/disk-health`. A `200`, `400` or `404` settles that check, as does `429` (too many disk reports today; the next check sends again); `409` (the workstation is not written yet), any other status and a network failure are retried next round. The Worker lists each disk once per state under Settings → **Errors & Warnings**.
 
 ---
 

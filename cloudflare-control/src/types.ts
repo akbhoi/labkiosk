@@ -198,6 +198,8 @@ export interface WorkstationIssue {
   /** When the workstation recorded it, by its own clock. */
   occurred_at: number;
   created_at: number;
+  /** 1 when a log is kept with it (a restart without a shutdown); read it with GET /api/workstation-issues/log. */
+  has_log?: number;
   /** none, pending (waiting for the hourly bug report run) or sent. */
   report_state?: "none" | "pending" | "sent";
   /** The GitHub issue it was filed under, once sent. */

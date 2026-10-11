@@ -1,0 +1,282 @@
+#!/usr/bin/python3
+"""
+labkiosk-health: how the workstation's own hardware and confinement are doing.
+
+Run as root by labkiosk-health.service, shortly after boot and every six hours
+(labkiosk-health.timer). It does two things:
+
+1. Disk health. Cheap SSDs and eMMC in thin clients wear out, and a workstation
+   whose disk is failing dies without warning. Reading SMART needs root, which
+   the agent deliberately does not have, so this reads it -- smartctl for SATA
+   and NVMe, the kernel's wear figures for eMMC -- and writes a summary to
+   /run/labkiosk-health/disks.json. The agent reports a disk that is wearing
+   out or failing under Settings -> Errors & Warnings.
+
+2. A line in the journal saying which user the X server runs as and which
+   AppArmor profile confines the agent and x11vnc, so the boot test (and anyone
+   reading the journal kept on LABKIOSK_DATA) can see the session's confinement
+   took effect.
+
+Nothing here changes the machine. A disk without health data (a virtual disk,
+a USB bridge that hides it) is listed as "unknown" and never reported.
+
+  labkiosk-health
+"""
+
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+
+OUTPUT_DIR = "/run/labkiosk-health"
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, "disks.json")
+SYS_BLOCK = "/sys/block"
+PROC = "/proc"
+SMARTCTL = "/usr/sbin/smartctl"
+# A whole disk the kernel names; partitions, loop, zram and optical drives never
+# match. Anchored with \Z (AGENTS.md Rule 8): `$` would also match before a
+# trailing newline.
+DISK_NAME_PATTERN = re.compile(r"(sd[a-z]{1,3}|vd[a-z]{1,3}|hd[a-z]{1,3}|nvme[0-9]{1,3}n[0-9]{1,3}|mmcblk[0-9]{1,3})\Z")
+MAX_DISKS = 8
+MAX_FIELD = 120
+# smartctl's exit status is a bit mask (smartctl(8), "RETURN VALUES").
+SMART_COULD_NOT_OPEN = 0x02
+SMART_DISK_FAILING = 0x08
+SMART_PREFAIL_BELOW_THRESHOLD = 0x10
+# Worn this far, a disk is reported before it reaches its rated end of life.
+WEAR_WARNING_PERCENT = 90
+# ATA attributes whose raw count is zero on a healthy disk.
+ATA_WARNING_ATTRIBUTES = {
+    5: "reallocated sectors",
+    197: "sectors waiting to be reallocated",
+    198: "sectors that could not be read",
+}
+# How each process is recognised: the agent by its script, run directly or by
+# python3; x11vnc by the program name the session starts it with.
+AGENT_SCRIPT = "/opt/labkiosk/agent/agent.py"
+
+
+def log(message):
+    print(f"[HEALTH] {message}", flush=True)
+
+
+def clean(value):
+    """A model or serial number, as plain printable text of a bounded length."""
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[^\x20-\x7e]+", " ", value).strip()[:MAX_FIELD]
+
+
+def read_text(path):
+    """A small sysfs or procfs file, or "" when it does not exist."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(4096).strip()
+    except FileNotFoundError:
+        return ""
+
+
+def disks(sys_block=SYS_BLOCK):
+    """The machine's own disks: not removable, not on USB."""
+    found = []
+    for name in sorted(os.listdir(sys_block)):
+        if not DISK_NAME_PATTERN.match(name):
+            continue
+        if read_text(os.path.join(sys_block, name, "removable")) == "1":
+            continue
+        device_path = os.path.realpath(os.path.join(sys_block, name))
+        if "/usb" in device_path:
+            continue
+        found.append(name)
+    return found[:MAX_DISKS]
+
+
+def emmc_health(name, sys_block=SYS_BLOCK):
+    """
+    eMMC has no SMART; the card reports its wear itself (JEDEC EXT_CSD):
+    life_time is two estimates of 0x01..0x0A (each 10% of rated life used) or
+    0x0B (beyond it), pre_eol_info how much of the reserve is used up.
+    """
+    device = os.path.join(sys_block, name, "device")
+    entry = {
+        "device": name,
+        "model": clean(read_text(os.path.join(device, "name"))),
+        "serial": clean(read_text(os.path.join(device, "serial"))),
+    }
+    life_raw = read_text(os.path.join(device, "life_time")).split()
+    eol_raw = read_text(os.path.join(device, "pre_eol_info"))
+    try:
+        life = [int(value, 16) for value in life_raw]
+        eol = int(eol_raw, 16) if eol_raw else 0
+    except ValueError:
+        life, eol = [], 0
+    if not life:
+        return dict(entry, state="unknown", summary="The card reports no wear figures.")
+    worst = max(life)
+    used = "more than its rated life" if worst >= 0x0B else f"up to {worst * 10}% of its rated life"
+    if worst >= 0x0B or eol >= 0x03:
+        return dict(entry, state="failing", summary=f"Used {used}; its reserve of spare blocks is nearly gone.")
+    if worst * 10 >= WEAR_WARNING_PERCENT or eol == 0x02:
+        return dict(entry, state="warning", summary=f"Used {used}; replace it soon.")
+    return dict(entry, state="ok", summary=f"Used {used}.")
+
+
+def ata_wear(report):
+    """The ATA endurance indicator (device statistics page 7), when there is one."""
+    for page in (report.get("ata_device_statistics") or {}).get("pages") or []:
+        for row in page.get("table") or []:
+            if row.get("name") == "Percentage Used Endurance Indicator" and isinstance(row.get("value"), int):
+                return row["value"]
+    return None
+
+
+def assess_smart(name, report, exit_status):
+    """Turn smartctl's JSON for one disk into ok, warning, failing or unknown."""
+    entry = {
+        "device": name,
+        "model": clean(report.get("model_name") or report.get("model_family") or ""),
+        "serial": clean(report.get("serial_number") or ""),
+    }
+    status = report.get("smart_status")
+    if exit_status & SMART_COULD_NOT_OPEN or not isinstance(status, dict):
+        return dict(entry, state="unknown", summary="The disk reports no health data.")
+
+    failing, warnings = [], []
+    if status.get("passed") is False or exit_status & SMART_DISK_FAILING:
+        failing.append("its own self-assessment says it is failing")
+    if exit_status & SMART_PREFAIL_BELOW_THRESHOLD:
+        warnings.append("an attribute that predicts failure is past its threshold")
+
+    nvme = report.get("nvme_smart_health_information_log")
+    wear = None
+    if isinstance(nvme, dict):
+        if nvme.get("critical_warning"):
+            failing.append(f"it raised a critical warning ({nvme['critical_warning']})")
+        spare, threshold = nvme.get("available_spare"), nvme.get("available_spare_threshold")
+        if isinstance(spare, int) and isinstance(threshold, int) and spare < threshold:
+            failing.append(f"its spare capacity is down to {spare}%")
+        if isinstance(nvme.get("media_errors"), int) and nvme["media_errors"] > 0:
+            warnings.append(f"{nvme['media_errors']} media errors")
+        if isinstance(nvme.get("percentage_used"), int):
+            wear = nvme["percentage_used"]
+    else:
+        wear = ata_wear(report)
+        for row in (report.get("ata_smart_attributes") or {}).get("table") or []:
+            label = ATA_WARNING_ATTRIBUTES.get(row.get("id"))
+            raw = (row.get("raw") or {}).get("value")
+            if label and isinstance(raw, int) and raw > 0:
+                warnings.append(f"{raw} {label}")
+
+    if wear is not None and wear >= WEAR_WARNING_PERCENT:
+        warnings.append(f"{wear}% of its rated life used")
+    wear_text = f" {wear}% of its rated life used." if wear is not None else ""
+    if failing:
+        return dict(entry, state="failing", summary="Failing: " + "; ".join(failing + warnings) + ".")
+    if warnings:
+        return dict(entry, state="warning", summary="Wearing out: " + "; ".join(warnings) + ".")
+    return dict(entry, state="ok", summary=("Healthy." + wear_text).strip())
+
+
+def smart_health(name):
+    try:
+        proc = subprocess.run(
+            [SMARTCTL, "--json=c", "-x", f"/dev/{name}"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as err:
+        return {"device": name, "model": "", "serial": "", "state": "unknown",
+                "summary": f"smartctl could not run: {err}"}
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"device": name, "model": "", "serial": "", "state": "unknown",
+                "summary": f"smartctl gave no readable answer (exit status {proc.returncode})."}
+    if not isinstance(report, dict):
+        report = {}
+    return assess_smart(name, report, proc.returncode)
+
+
+def disk_health(sys_block=SYS_BLOCK):
+    results = []
+    for name in disks(sys_block):
+        try:
+            results.append(emmc_health(name, sys_block) if name.startswith("mmcblk") else smart_health(name))
+        except OSError as err:
+            # One disk the kernel will not describe must not cost the others
+            # their check.
+            results.append({"device": name, "model": "", "serial": "", "state": "unknown",
+                            "summary": f"Its health could not be read: {err}"})
+    return results
+
+
+def write_report(results, path=OUTPUT_FILE):
+    os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+    temp = path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump({"disks": results}, handle)
+        handle.write("\n")
+    os.chmod(temp, 0o644)
+    os.replace(temp, path)
+
+
+def process_facts(proc=PROC):
+    """
+    The user the X server runs as, and the AppArmor label of the agent and
+    x11vnc: "what (mode)", or "unconfined".
+    """
+    facts = {"xorg": None, "agent": None, "x11vnc": None}
+    for entry in os.listdir(proc):
+        if not entry.isdigit():
+            continue
+        base = os.path.join(proc, entry)
+        try:
+            with open(os.path.join(base, "cmdline"), "rb") as handle:
+                argv = [part.decode("utf-8", "replace") for part in handle.read().split(b"\0") if part]
+            if not argv:
+                continue
+            if facts["xorg"] is None and os.path.basename(argv[0]) == "Xorg":
+                for line in read_text(os.path.join(base, "status")).splitlines():
+                    if line.startswith("Uid:"):
+                        facts["xorg"] = int(line.split()[2])  # The effective uid.
+            if facts["agent"] is None and AGENT_SCRIPT in argv[:2]:
+                facts["agent"] = read_text(os.path.join(base, "attr", "current")) or "unconfined"
+            if facts["x11vnc"] is None and os.path.basename(argv[0]) == "x11vnc":
+                facts["x11vnc"] = read_text(os.path.join(base, "attr", "current")) or "unconfined"
+        except (OSError, ValueError, IndexError):
+            # The process ended while it was being read (FileNotFoundError,
+            # ProcessLookupError), or is one root may not inspect.
+            continue
+    return facts
+
+
+def describe_uid(uid):
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return f"uid {uid}"
+
+
+def main():
+    results = disk_health()
+    write_report(results)
+    if not results:
+        log("Disks: none of the machine's own (removable and USB disks are not checked).")
+    for disk in results:
+        log(f"Disk {disk['device']} ({disk['model'] or 'unknown model'}): {disk['state']}. {disk['summary']}")
+    facts = process_facts()
+    if facts["xorg"] is None:
+        log("Display server: Xorg is not running.")
+    else:
+        log(f"Display server: Xorg runs as {describe_uid(facts['xorg'])}.")
+    log(f"AppArmor: agent {facts['agent'] or 'not running'}; x11vnc {facts['x11vnc'] or 'not running'}.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except OSError as err:
+        print(f"[HEALTH] ERROR: {err}", file=sys.stderr, flush=True)
+        sys.exit(1)

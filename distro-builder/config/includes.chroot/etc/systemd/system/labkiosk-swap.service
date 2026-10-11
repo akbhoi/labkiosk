@@ -1,0 +1,15 @@
+[Unit]
+Description=Lab Kiosk: encrypted swap partition, behind compressed RAM
+Documentation=file:///usr/local/sbin/labkiosk-swap
+ConditionKernelCommandLine=labkiosk.installed=1
+After=local-fs.target
+Before=labkiosk-session.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/labkiosk-swap start
+ExecStop=/usr/local/sbin/labkiosk-swap stop
+
+[Install]
+WantedBy=multi-user.target

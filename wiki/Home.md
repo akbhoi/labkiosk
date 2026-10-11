@@ -43,7 +43,7 @@ These are invariants, not preferences. Every one of them is enforced by the test
 
 | Commitment | What it means in practice |
 | :--- | :--- |
-| **Zero SSD wear** | `overlayroot="tmpfs"` on live media *and* on installed disks. The only persistent write target on an installed machine is the 512 MiB `LABKIOSK_DATA` partition holding the enrolment token, plus GRUB's `grubenv` on `LABKIOSK_ROOT` when a new system image is tried or confirmed. |
+| **Zero SSD wear** | `overlayroot="tmpfs"` on live media *and* on installed disks. The only persistent write target on an installed machine is the 512 MiB `LABKIOSK_DATA` partition holding the enrolment token and seven days of system journal, plus GRUB's `grubenv` on `LABKIOSK_ROOT` when a new system image is tried or confirmed, and the encrypted swap partition once compressed RAM is full. |
 | **Zero npm at runtime** | The worker uses only Web APIs and Cloudflare primitives. No routing library, no auth framework, no ORM. |
 | **Zero placeholders** | No `TODO` stubs, no empty `catch` blocks, no mock data in production paths. |
 | **Fail closed** | Missing configuration is an error, never a weaker default. Unapplied migrations, absent super-admin secrets, and unverified build pins all refuse to proceed. |

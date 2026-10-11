@@ -88,11 +88,15 @@ The check, implemented identically in the agent and the installer, deciding whet
 
 ### Kiosk user
 
-The unprivileged Linux account the whole session runs as. Has an **empty** password rather than a locked one — a locked account deadlocked nodm's PAM stack — and exactly one sudo grant, `NOPASSWD` on the installer.
+The unprivileged Linux account the whole session runs as, X server included wherever the graphics allow. Has an **empty** password rather than a locked one — a locked account deadlocked the display manager's PAM stack (nodm's, before `labkiosk-session`) — is not in the `tty` group, and holds two sudo grants, `NOPASSWD` on the installer and on `labkiosk-localization`. Polkit refuses it every action beyond its power, network and update rules.
+
+### `labkiosk-session`
+
+The systemd unit that starts the kiosk session in place of a display manager: `xinit` run as `kiosk` on `tty7`, in a logind session registered by its PAM stack (`/etc/pam.d/labkiosk-session`, `pam_systemd`), restarted whenever it ends. Xorg runs without root wherever the GPU has a kernel modesetting driver. → [Kiosk Hardening](Kiosk-Hardening#the-session-runs-without-root)
 
 ### `LABKIOSK_DATA`
 
-The 512 MiB ext4 partition at the end of an installed disk, mounted at `/etc/labkiosk`. The only persistent write target on an installed workstation, existing so a post-install enrolment survives a reboot.
+The 512 MiB ext4 partition at the end of an installed disk, mounted at `/etc/labkiosk`. The only persistent file system an installed workstation writes, existing so a post-install enrolment survives a reboot; it also keeps seven days of system journal in root's `logs/` folder.
 
 ### `LABKIOSK_ROOT`
 
@@ -117,10 +121,6 @@ Chromium's current extension platform. Lab Kiosk's extension uses a service work
 ### Mode
 
 `portal` (the app-launcher grid) or `single_url` (one destination, no launcher). Stored on the tenant row and delivered in every telemetry response.
-
-### nodm
-
-The minimal auto-login display manager that starts the X session as `kiosk`. Configured through `/etc/default/nodm` rather than a systemd unit in the overlay.
 
 ### Nonce
 

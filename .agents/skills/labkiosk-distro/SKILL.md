@@ -22,7 +22,24 @@ Paths are under `distro-builder/`. Authoritative detail: `distro-builder/AGENTS.
   firmware defaults are off). Keep `live-tools` + `eject`, `locales`, `tzdata`, `xkb-data`. The image
   has no noVNC, websockify or cloudflared (Remote Control goes through the console's relay); the
   simulator's noVNC comes from `docker-test/novnc.pin` + `docker-test/install-novnc.sh`, never
-  Debian's `novnc`. Never `x11-xserver-utils`.
+  Debian's `novnc`. Never `x11-xserver-utils`. No `nodm`: `xinit` + `libpam-systemd` run the
+  session; `nftables`, `apparmor`, `smartmontools` and `fonts-noto-cjk` are listed by name.
+- **The session runs without root** (codex Rule 1j): `labkiosk-session.service` (`User=kiosk`,
+  tty7, PAM `labkiosk-session` with `pam_systemd`, `Alias=display-manager.service`,
+  `graphical.target` the default) runs `xinit … Xorg :0 vt7`; `Xwrapper.config` is
+  `allowed_users=console` + `needs_root_rights=auto`, `Xorg.wrap` setuid, so X is root only on
+  non-KMS graphics (plain VESA). `kiosk` is not in `tty`. `99-labkiosk-deny.rules` gives `kiosk`
+  polkit `NO` beyond the `50-*` rules (except `login1.inhibit-*`). Units that need to come before
+  the session order `Before=labkiosk-session.service`.
+- **Firewall and AppArmor**: `etc/nftables.conf` (table `inet labkiosk_firewall`, `nftables.service`;
+  the hook refuses a build where the file is not ours) drops input and forward except replies,
+  DHCP, ping, IPv6 ND/RA/MLD/packet-too-big and TCP 8890 from private IPv4; never `flush ruleset`.
+  `etc/apparmor.d/labkiosk-{agent,x11vnc}` are in complain mode; the autostart must run
+  `/opt/labkiosk/agent/agent.py` directly (0755) for the profile to attach.
+- **Disk health**: `labkiosk-health` (root) from `labkiosk-health.timer` (90 s after boot, every
+  6 h) → `/run/labkiosk-health/disks.json`; smartmontools' own service is masked. Time servers
+  from DHCP: `etc/NetworkManager/dispatcher.d/50-labkiosk-ntp` (NetworkManager-dispatcher enabled).
+  Tests: `tests/test_hardening.py`; VM boot-test step 4b.
 - **Pins fail closed**: `grub.pin` (stays empty — the
   boot password is applied per installation). Never invent a checksum to make a build pass.
 - **Boot never prompts**: `02-security.hook.chroot` marks every entry `--unrestricted`
@@ -40,7 +57,13 @@ Paths are under `distro-builder/`. Authoritative detail: `distro-builder/AGENTS.
 ## Installer (`config/includes.chroot/usr/local/bin/labkiosk-install`)
 
 - `sys.stdout` carries **only JSON** (`--list-disks`, `--status`); all logging to `sys.stderr`.
-- GPT: `bios_grub` 1–2 MiB · ESP 2–514 MiB FAT32 · ROOT ext4 to end−513 MiB · DATA ext4 last 512 MiB.
+- GPT: `bios_grub` 1–2 MiB · ESP 2–514 MiB FAT32 · ROOT ext4 to end−1537 MiB · SWAP (partition 5,
+  made last) end−1536 to end−512 MiB · DATA ext4 last 512 MiB. GRUB passes `labkiosk.swap=<PARTUUID>`
+  from `boot/grub/labkiosk-swap.cfg`; `labkiosk-swap` encrypts it with a one-boot key. With a TPM 2.0
+  chip DATA is LUKS2 (`boot/grub/labkiosk-datacrypt.cfg` → `labkiosk.datacrypt=`), opened by
+  `labkiosk-data-unlock` with the TPM, recreated empty when the TPM refuses (re-enrolment).
+  `boot/grub/labkiosk-hostname.cfg` → `labkiosk.hostname=` (`labkiosk-hostname`). Both EFI
+  `grub-install` calls pass `--uefi-secure-boot`.
   Negative parted offsets need `--`. Minimum disk 7 GiB (a drive sold as 8 GB): two images.
 - **ROOT is an image store, not a root filesystem** (`docs/OTA_UPDATES.md` §5.1, codex Rules 3 and 8):
   `boot/grub/{grub.cfg,grubenv,labkiosk-password.cfg,labkiosk-data.cfg}` and `images/<version>/{vmlinuz,initrd.img,

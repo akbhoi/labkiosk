@@ -1,0 +1,26 @@
+[Unit]
+Description=Lab Kiosk: check the disks' health and the session's confinement
+Documentation=file:///usr/local/sbin/labkiosk-health
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/labkiosk-health
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Reading SMART needs root and raw access to the disks; nothing else does.
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=strict
+ReadWritePaths=/run
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native

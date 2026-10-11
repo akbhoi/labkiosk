@@ -27,19 +27,32 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **TTY & Console Masking:** Virtual consoles `tty1` through `tty6` are masked in systemd. VT switching is disabled at the X server level via `DontVTSwitch` and `DontZap` options in `/etc/X11/xorg.conf.d/10-kiosk-lockdown.conf`.
 - **Stripped Window Manager:** Openbox runs with an empty keybinding table in `/etc/openbox/rc.xml`. Shortcuts such as `Alt+Tab`, `Alt+F4`, `Ctrl+Alt+Del`, and custom key sequences are completely inert.
 - **Account Restrictions:** `root` is locked (`passwd -l`). The `kiosk` account has an *empty*
-  password rather than a locked one, because a locked account previously deadlocked nodm's PAM
-  stack into a black screen on boot; what makes that safe is that no login path exists to use it —
-  `getty@tty1..6`, `serial-getty` and `debug-shell` are all masked and no SSH server is installed.
+  password rather than a locked one, because a locked account previously deadlocked the display
+  manager's PAM stack (nodm's, before `labkiosk-session`) into a black screen on boot; what makes
+  that safe is that no login path exists to use it — `getty@tty1..6`, `serial-getty` and
+  `debug-shell` are all masked and no SSH server is installed. `kiosk` is not in the `tty` group.
   `kiosk` holds exactly two sudo grants, `NOPASSWD` on `/usr/local/bin/labkiosk-install`
   (`/etc/sudoers.d/50-labkiosk-install`), which is what lets the setup wizard run the guided disk
   installer, and on `/usr/local/sbin/labkiosk-localization` (`51-labkiosk-localization`) for the
   Language & Region step. Both re-validate every argument. There is no general sudo access:
   live-config's `sudo` and `policykit` components are pre-seeded away, and
   `labkiosk-boot-slots` has no sudo rule, so the agent never chooses which image boots.
-- **Polkit Power Policy:** `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants the `kiosk` user
-  reboot and power-off through logind, and nothing else. That grant is what makes the operator's
-  remote shutdown command work — the agent runs as `kiosk`, so without it the command would be
-  accepted and then silently do nothing.
+- **Session Without Root:** there is no display manager. `labkiosk-session.service` runs `xinit`
+  as `kiosk` on `tty7`, in a logind session its PAM stack (`pam_systemd`) registers.
+  `/etc/X11/Xwrapper.config` is `allowed_users=console`, `needs_root_rights=auto`, so Xorg runs as
+  `kiosk` wherever the GPU has a kernel modesetting driver, and as root only on graphics without
+  one, such as plain VESA.
+- **Polkit Policy:** `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants the `kiosk` user
+  reboot and power-off through logind. That grant is what makes the operator's remote shutdown
+  command work — the agent runs as `kiosk`, so without it the command would be accepted and then
+  silently do nothing. The other `50-*` rules grant NetworkManager and the update units, and
+  `99-labkiosk-deny.rules` refuses `kiosk` every other action (logind's inhibitor locks excepted),
+  which an active session would otherwise get by default.
+- **Firewall:** `/etc/nftables.conf` (table `inet labkiosk_firewall`, `nftables.service`) drops
+  everything that arrives except loopback, replies, DHCP, ping (5/s), IPv6 neighbour discovery and
+  TCP 8890 from private IPv4 ranges (LAN update sharing). Outgoing traffic is not filtered.
+- **AppArmor:** profiles for the agent and x11vnc, in complain mode: they block nothing yet, and
+  the kernel logs what they would block to the journal.
 
 ### 3. Chromium Enterprise Kiosk & Manifest V3 Extension
 
@@ -82,7 +95,7 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **Universal Hybrid GPT Partitioning:**
   1. `bios_grub` (1 MiB – 2 MiB): Enables legacy BIOS GRUB embedding on GPT partitioned disks.
   2. `ESP` (2 MiB – 514 MiB, FAT32): Holds the UEFI bootloader and configuration.
-  3. `ROOT` (514 MiB – 513 MiB from the end, ext4, label `LABKIOSK_ROOT`): the image store —
+  3. `ROOT` (514 MiB – 1537 MiB from the end, ext4, label `LABKIOSK_ROOT`): the image store —
      `boot/grub/` (`grub.cfg`, `grubenv`, `labkiosk-password.cfg`, `labkiosk-data.cfg`) and whole
      system images in `images/<version>/` (`vmlinuz`, `initrd.img`, `filesystem.squashfs`).
   4. `DATA` (last 512 MiB, ext4, label `LABKIOSK_DATA`): mounted at `/etc/labkiosk` with `nofail`,
@@ -90,7 +103,11 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
      and `labkiosk-data-generator` turns it into `etc-labkiosk.mount`; no `/etc/fstab` is written).
      This is the **only** part of an installed machine that survives a reboot, and it exists so
      that a workstation enrolled *after* installation stays enrolled — every other write goes to
-     the RAM overlay and is discarded at power-off.
+     the RAM overlay and is discarded at power-off. It also keeps the system journal for seven
+     days (`labkiosk-logs`), so a crash or power cut can be explained after the restart.
+  5. `SWAP` (1 GiB before `DATA`, GPT type Linux swap): used only once compressed RAM (zram) is
+     full, and opened at every boot with a random key that never leaves RAM (`labkiosk-swap`), by
+     the PARTUUID GRUB passes as `labkiosk.swap=` from `boot/grub/labkiosk-swap.cfg`.
 - **Minimum Disk Size:** 7 GiB, so that two system images fit side by side (a drive sold as 8 GB qualifies).
 - **Refuses to erase the medium it is running from:** candidate disks are matched against the
   device backing `/run/live/medium`, and that disk is excluded from the list *and* rejected again
@@ -119,14 +136,17 @@ distro-builder/
 │   ├── package-lists/
 │   │   └── kiosk.list.chroot           # Minimal Debian package manifest (Xorg, Openbox, Chromium, rsync, parted, efibootmgr)
 │   ├── hooks/live/
-│   │   ├── 01-lockdown.hook.chroot     # User locking, TTY masking, polkit policies, autologin
+│   │   ├── 01-lockdown.hook.chroot     # User locking, TTY masking, polkit policies, kiosk session, firewall
 │   │   └── 02-security.hook.chroot     # Kernel sysctl hardening, GRUB password enforcement
 │   └── includes.chroot/                # Filesystem overlay injected into live and installed image
 │       ├── etc/
+│       │   ├── apparmor.d/             # labkiosk-agent, labkiosk-x11vnc (complain mode)
 │       │   ├── chromium/policies/      # Managed enterprise policies (URLBlocklist, URLAllowlist)
+│       │   ├── NetworkManager/dispatcher.d/ # 50-labkiosk-ntp: time servers from DHCP
+│       │   ├── nftables.conf           # The firewall (table inet labkiosk_firewall)
 │       │   ├── openbox/                # Locked rc.xml and autostart script
 │       │   ├── overlayroot.conf        # tmpfs RAM overlay configuration
-│       │   ├── systemd/system/         # labkiosk-boot-ok.service
+│       │   ├── systemd/system/         # labkiosk-session.service, labkiosk-boot-ok.service, labkiosk-health.{service,timer}
 │       │   └── systemd/system-generators/ # labkiosk-data-generator (DATA mount by UUID)
 │       ├── opt/labkiosk/
 │       │   ├── setup/                  # First-boot onboarding & disk installation HTML wizard
@@ -137,6 +157,7 @@ distro-builder/
 │       │   └── labkiosk-lock-keys      # Strips blocked keys from the X keymap
 │       ├── usr/local/sbin/
 │       │   ├── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
+│       │   ├── labkiosk-health         # Root-only: SMART / eMMC disk health, every six hours
 │       │   └── labkiosk-localization   # Timezone, locale and keyboard (sudo; re-validates every argument)
 │       └── usr/share/labkiosk/
 │           ├── boot/grub.cfg           # Every installed disk's boot menu, copied verbatim

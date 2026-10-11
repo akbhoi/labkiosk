@@ -53,7 +53,7 @@ security update channel that also carries features.
 
 | Fact | Where |
 |---|---|
-| Installed disk: `bios_grub`, ESP (512 MiB), `ROOT` ext4 (the rest of the disk minus 513 MiB), `DATA` ext4 (512 MiB) | `labkiosk-install` `install_to_disk()` |
+| Installed disk: `bios_grub`, ESP (512 MiB), `ROOT` ext4 (the rest of the disk minus 1537 MiB), `SWAP` (1 GiB, partition 5, encrypted per boot), `DATA` ext4 (512 MiB) | `labkiosk-install` `install_to_disk()` |
 | ROOT is an **image store** (§5.1): the installer copies the live medium's `vmlinuz`, `initrd.img` and `filesystem.squashfs` to `images/<version>/` (the version from `/usr/share/labkiosk/version`), and the installed system boots that squashfs through live-boot with `labkiosk.installed=1 noeject panic=10`. Disks installed by earlier releases hold an rsync of the live rootfs instead | `labkiosk-install`, `usr/share/labkiosk/boot/grub.cfg` |
 | One-try boot: `boot/grub/grubenv` holds `current`, `previous`, `next`, `next_tries`; GRUB spends the try before it boots `next`. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every boot: it makes `next` current once the agent and browser stay up, or reboots into the old image, and writes the outcome to `/run/labkiosk-update/status.json`. The agent posts failures, rollbacks and successful installs to `POST /api/devices/boot-report` | `labkiosk-boot-slots`, `agent.py`, `src/boot_report.ts` |
 | Reinstalling is refused on an installed disk (`is_live_session()`, keyed on `labkiosk.installed=1` or the legacy `/etc/labkiosk-installed`), and `POST /api/install` returns 400 | `labkiosk-install`, `agent.py` |
@@ -435,9 +435,10 @@ loopback-only (invariant 8), so this needs its own guard rails:
   device tokens, Wi-Fi keys and config never leave the machine.
 - **Only exact reads:** it answers only `GET /<version>/<file>/<chunk>` for a version that is
   `.verified` on this machine. No listing, no other paths, no writes.
-- **LAN only:** it answers only private or link-local source addresses in its own subnet. Add
-  `nftables` to the image to enforce the same rule in the kernel. The image has no firewall
-  today, so this is a new package.
+- **LAN only:** it answers only private or link-local source addresses in its own subnet, and
+  the kernel enforces the same rule: the image's firewall (`/etc/nftables.conf`) drops everything
+  that arrives except replies, DHCP, neighbour discovery, ping and this port from private
+  addresses.
 - **Integrity doesn't depend on trusting peers.** Every chunk is checked against the hash in
   the signed manifest before it's written. A broken or malicious peer can only waste time; it
   gets dropped for that download, and the failure is reported.
@@ -625,8 +626,9 @@ and the offer's `lan` is not null, it starts `labkiosk-share.service`; a run wit
 
 **`labkiosk-share`.** A unit that is never enabled, as a dynamic user that cannot read
 `/etc/labkiosk`, for at most 48 hours a start (`RuntimeMaxSec`), at idle I/O priority. Before it
-starts, `labkiosk-share.nft` (the new `nftables` package) accepts TCP 8890 only from 10/8,
-172.16/12 and 192.168/16 and drops the rest; the table is deleted when it stops. The server
+starts, `labkiosk-share.nft` accepts TCP 8890 only from 10/8, 172.16/12 and 192.168/16 and drops
+the rest; the table is deleted when it stops. The firewall (`/etc/nftables.conf`, always loaded)
+lets the same sources reach the port and never flushes this table when it reloads. The server
 answers only its own subnet, `GET`/`HEAD /<version>/<file>` with one `Range`, for a version whose
 `.verified` matches its manifest and whose manifest is valid, for `manifest.json`, its signature
 and the files it lists at their listed size, never through a symbolic link. Four uploads at a time;

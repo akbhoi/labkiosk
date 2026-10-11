@@ -27,7 +27,7 @@ No. A workstation with no uplink keeps showing whatever it last loaded and backs
 2 GB RAM and a 7 GiB disk (a drive sold as 8 GB qualifies) will run it; the installer needs room for two system images. The reference target is 4 GB RAM with a 12 GB SATA SSD, on an Intel x86_64 CPU.
 
 **Will it wear out my SSDs?**
-No — that is the point. `overlayroot="tmpfs"` mounts the root filesystem read-only and diverts every write to RAM, on live media and installed disks alike. The only exceptions are the 512 MiB `LABKIOSK_DATA` partition, written at enrolment and when settings change, and the 1 KiB GRUB environment block that records which system image to boot.
+No — that is the point. `overlayroot="tmpfs"` mounts the root filesystem read-only and diverts every write to RAM, on live media and installed disks alike. The only exceptions are the 512 MiB `LABKIOSK_DATA` partition, written at enrolment, when settings change and by the system journal (kept seven days so a crash can be explained), the 1 KiB GRUB environment block that records which system image to boot, and the 1 GiB swap partition, which is written only once compressed RAM is full.
 
 **BIOS or UEFI?**
 Both. The ISO boots via ISOLINUX on BIOS and GRUB EFI on UEFI, and the installer writes a hybrid GPT layout with three GRUB variants so the installed drive boots regardless of firmware mode.

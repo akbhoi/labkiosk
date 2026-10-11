@@ -206,5 +206,18 @@
   "bar.update-finishing-text": "This workstation is checking its new software. It will be ready in a few minutes.",
   "bar.update-finishing-title": "Finishing a system update",
   "bar.update-installing-text": "This workstation restarts by itself in a moment. Please do not switch it off.",
-  "bar.update-installing-title": "Installing a system update"
+  "bar.update-installing-title": "Installing a system update",
+  "ui.set-the-hostname-myself": "Set the hostname myself",
+  "ui.placeholder-e-g-front-desk-1": "e.g. front-desk-1",
+  "ui.hostname-is-generated-unless-you": "Left unticked, the workstation gets a name of its own, such as labkiosk-3fa92c. A hostname is 1 to 63 lowercase letters, digits and hyphens, not starting or ending with a hyphen.",
+  "ui.js.the-hostname-must-be": "The hostname must be 1 to 63 lowercase letters, digits and hyphens, not starting or ending with a hyphen.",
+  "ui.js.secure-boot-on": "On",
+  "ui.js.secure-boot-off": "Off",
+  "ui.js.secure-boot-legacy-bios": "Off (started in legacy BIOS mode)",
+  "ui.js.secure-boot-unknown": "Unknown",
+  "ui.js.hostname": "Hostname: ",
+  "ui.js.secure-boot": "Secure Boot: ",
+  "ui.js.clock": "Clock: ",
+  "ui.js.clock-synchronized": "Set from a time server",
+  "ui.js.clock-not-synchronized": "Not set from a time server yet"
 }

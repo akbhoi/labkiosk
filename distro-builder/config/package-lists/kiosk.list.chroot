@@ -42,6 +42,25 @@ firmware-linux-free
 firmware-misc-nonfree
 firmware-realtek
 firmware-iwlwifi
+# Desktop and laptop hardware beyond the reference Intel thin client: about 95 MB
+# of the ISO. Server NICs (QLogic, Myricom, Cavium, Netronome) stay out; nothing
+# a kiosk runs on carries them. Intel Arc (DG2) and NVIDIA nouveau firmware
+# already come with firmware-misc-nonfree.
+# AMD GPUs and APUs (amdgpu, radeon): without it they fall back to VESA.
+firmware-amd-graphics
+# Audio DSPs: SOF on most Intel laptops and mini-PCs from 2019 on, SST before that.
+firmware-sof-signed
+firmware-intel-sound
+# Wi-Fi: Qualcomm Atheros, Broadcom, Marvell, TI, and USB dongles (ath9k_htc, ZyDAS).
+firmware-atheros
+firmware-ath9k-htc
+firmware-brcm80211
+firmware-libertas
+firmware-ti-connectivity
+firmware-zd1211
+# Ethernet: Broadcom NetXtreme II, found in business desktops.
+firmware-bnx2
+firmware-bnx2x
 
 # Minimal X11 Server, Drivers & Openbox
 xserver-xorg-core
@@ -53,8 +72,18 @@ xserver-xorg-video-vesa
 xserver-xorg-video-intel
 xserver-xorg-video-qxl
 xserver-xorg-input-all
+# Hardware video decoding (VA-API) for Chromium, which otherwise decodes every
+# video on the CPU. Mesa's OpenGL drivers (iris, radeonsi, nouveau) already come
+# with the X server. iHD: Intel Broadwell and newer, Arc included; i965: older
+# Intel; mesa-va-drivers: AMD and Radeon (radeonsi, r600) and nouveau.
+intel-media-va-driver-non-free
+i965-va-driver
+mesa-va-drivers
+# The kiosk session (labkiosk-session.service) is xinit run by the kiosk user,
+# not a display manager; pam_systemd registers it with logind, which is what
+# lets the X server run without root.
 xinit
-nodm
+libpam-systemd
 openbox
 xdotool
 scrot
@@ -68,6 +97,10 @@ fonts-dejavu
 fonts-liberation
 fonts-noto-core
 fonts-noto-color-emoji
+# Chinese, Japanese and Korean, which fonts-noto-core does not cover: without
+# them those pages show empty boxes. Fonts have to be in the image, because the
+# root file system is read-only and updates replace it whole.
+fonts-noto-cjk
 
 # Remote Management & Networking
 x11vnc
@@ -89,14 +122,28 @@ python3
 # labkiosk-update verifies the signature of every system image it downloads with
 # gpgv. apt depends on it today, but the update path must not rest on that.
 gpgv
-# Sharing a system update on the local network (labkiosk-share.service): the
-# kernel rule that keeps its port to private addresses. The image has no other
-# firewall, and nftables.service stays disabled.
+# The firewall (/etc/nftables.conf, loaded by nftables.service): nothing from
+# the network gets an answer but replies, DHCP, neighbour discovery and ping.
+# Sharing a system update on the local network (labkiosk-share.service) adds the
+# rule that keeps its port to private addresses.
 nftables
+# Compressed RAM as the first swap (/etc/systemd/zram-generator.conf), and the
+# installed disk's swap partition, encrypted with a key for one boot only
+# (labkiosk-swap).
+systemd-zram-generator
+cryptsetup-bin
+# The data partition's key, sealed to the TPM 2.0 chip (labkiosk-data-unlock):
+# systemd-cryptenroll and systemd-cryptsetup load these at run time.
+libtss2-esys-3.0.2-0
+libtss2-mu0
+libtss2-rc0
+libtss2-tcti-device0
+# Disk health (labkiosk-health): smartctl reads SATA and NVMe SMART data.
+smartmontools
+# AppArmor profiles for the agent and x11vnc (/etc/apparmor.d), loaded at boot
+# by apparmor.service; the Debian kernel has AppArmor switched on already.
+apparmor
 # The agent's control channel: one WebSocket to the organization's hub. Without it
 # the agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
-python3-websocket
-# The agent's control channel (a WebSocket to the organization's hub). Without it the
-# agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
 python3-websocket
 ca-certificates

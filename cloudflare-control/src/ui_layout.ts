@@ -1821,6 +1821,22 @@ ${BUSY_CSS}    .btn.is-loading::before, .menu-item.is-loading::before, .profile-
     .cell-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: nowrap; }
     .table-empty { text-align: center; color: var(--text-muted); padding: 32px 16px; }
     .cell-detail { overflow-wrap: anywhere; }
+    .issue-log-toggle { margin-top: 6px; }
+    .issue-log {
+      margin: 6px 0 0;
+      max-height: 320px;
+      overflow: auto;
+      padding: 8px 10px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--text-main);
+      background: var(--hover);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+    }
     .cell-org { min-width: 180px; max-width: 280px; }
     .cell-clamp {
       display: -webkit-box;

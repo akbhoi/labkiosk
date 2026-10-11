@@ -66,9 +66,11 @@ x11vnc -display :0 -forever -shared -rfbport 5900 -localhost \
 #    workstation looking fine to the user and invisible to the operator until
 #    someone physically power-cycled it. Restarting costs nothing: the agent is
 #    stateless apart from /etc/labkiosk/config.json, which it re-reads at start.
+#    The script is run itself, not through `python3 agent.py`: AppArmor attaches
+#    its profile (/etc/apparmor.d/labkiosk-agent) to the path that is executed.
 (
   while true; do
-    python3 /opt/labkiosk/agent/agent.py >>/tmp/lab-agent.log 2>&1
+    /opt/labkiosk/agent/agent.py >>/tmp/lab-agent.log 2>&1
     echo "[autostart] agent exited; restarting in 2s" >>/tmp/lab-agent.log
     sleep 2
   done
@@ -94,6 +96,12 @@ read_kiosk_url() {
   printf '%s' "http://127.0.0.1:8888/setup"
 }
 
+# Hardware video decoding and encoding through VA-API (the drivers are in the
+# package list). AcceleratedVideo* are the names since Chromium 131; the
+# Vaapi* ones are the same switches in older releases, and Chromium ignores a
+# name it does not know.
+CHROMIUM_GPU_FEATURES="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,AcceleratedVideoEncoder,VaapiVideoDecodeLinuxGL,VaapiVideoDecoder,VaapiVideoEncoder"
+
 # 8. Infinite watchdog for the Chromium kiosk window.
 while true; do
   # Clean ephemeral cache before launch to guarantee a fresh session
@@ -116,7 +124,9 @@ while true; do
     --disk-cache-dir=/tmp/chromium-cache \
     --user-data-dir=/tmp/chromium-profile \
     --enable-gpu-rasterization \
+    --enable-zero-copy \
     --ignore-gpu-blocklist \
+    --enable-features="$CHROMIUM_GPU_FEATURES" \
     --load-extension=/opt/labkiosk/extension \
     --disable-extensions-except=/opt/labkiosk/extension \
     --autoplay-policy=no-user-gesture-required \

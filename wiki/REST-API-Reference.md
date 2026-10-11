@@ -18,7 +18,7 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
 | **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Operator Lab Dashboard, Super Admin console |
-| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry` and `/api/devices/boot-report` |
+| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report` and `/api/devices/disk-health` |
 | **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
 Session tokens are random 32-byte hex strings; only their SHA-256 hash is stored in D1. Device tokens are handled the same way — the plaintext token exists only on the workstation that was issued it.
@@ -33,7 +33,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `requireTenantAdmin()` | `401` anonymous, `400` no organization, `403` wrong tenant (and a super admin outside its own demos) | `GET /api/broadcast-presets`, `GET /api/whitelist`, the `/admin` pages |
 | `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*` (but `/api/settings/updates`), `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/console/remote`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `updates`: `/api/settings/updates`, `/api/clients/check-update`, `/api/clients/install-update`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
 | `requireSuperAdmin()` | `401` / `403` | all `/api/super/*` |
-| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/remote` |
+| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/remote` |
 | `rejectCrossSiteMutation()` | `403` | every cookie-authenticated `POST`/`DELETE` under `/api/` |
 
 ### Rate limiting
@@ -104,6 +104,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/settings/custom-domain` | `POST` `DELETE` | Request or disconnect a custom domain |
 | `/api/audit-logs` | `GET` | Paginated organization audit log |
 | `/api/workstation-issues` | `GET` | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, with each one's bug report state; plus the organization's automatic bug report settings (requires `settings`) |
+| `/api/workstation-issues/log` | `GET` | `?id=`: the journal a restart report carried, kept 30 days (requires `settings`) |
 | `/api/settings/bug-reports` | `POST` | Opt in to or out of automatic, redacted GitHub bug reports; turning them on accepts the current terms version (requires `settings`) |
 
 ### Device
@@ -113,6 +114,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/devices/ws` | `GET` (WebSocket) | The control channel: status and frames up; configuration, commands and frame requests down |
 | `/api/telemetry` | `POST` | The HTTP fallback: a three-second heartbeat carrying the same |
 | `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
+| `/api/devices/restart-report` | `POST` | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
+| `/api/devices/disk-health` | `POST` | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
 | `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
 ### Release build
@@ -299,13 +302,41 @@ What an installed workstation's last boot did with its system image, as `labkios
 
 ---
 
+### `POST /api/devices/restart-report`
+
+A boot of an installed workstation that ended without shutting down: a power cut, a forced power-off, a hang the hardware watchdog restarted, or a kernel panic. At the next start `labkiosk-logs` (root) sees that the previous boot never recorded a clean shutdown and saves the last 300 lines of its journal on the data partition; the agent sends that here once. It is listed in `workstation_issues` as `unexpected_restart` (`warning`) or `watchdog_reset` (`error`), one row per boot, and its log is kept 30 days. Restart reports are never filed as automatic bug reports.
+
+**Access:** `Authorization: Bearer <deviceToken>`; the token decides the organization and the workstation.
+
+**Request:** `bootId` (32 hex digits), `kind` (`unexpected_restart` | `watchdog_reset`), `version` (or `null`), `startedAt`, `endedAt` (Unix seconds; `endedAt` within the last 7 days and not before `startedAt`), `log` (the last 16 KB are kept).
+
+**`200 OK`** → `{ "status": "ok", "recorded": true }`; `recorded: false` for a boot already reported. **`400`** malformed, not sent again. **`409`** the workstation has not checked in yet, sent again later. **`429`** more than 24 in a day from this workstation; the rest wait for its next start.
+
+---
+
+### `POST /api/devices/disk-health`
+
+The machine's own disks that `labkiosk-health` (root, 90 s after boot and every six hours) found wearing out or failing, from SMART (SATA, NVMe) or an eMMC card's wear figures. The agent sends them after each check that found a problem; a healthy disk, or one with no data (a virtual disk), is never sent. Each disk is listed in `workstation_issues` as `disk_health` once per state — severity `warning` for a disk wearing out, `error` for one failing — with details such as `Disk Example SSD 256GB (nvme0n1): Wearing out: 93% of its rated life used. Plan to replace it.` (a failing disk ends `Replace it before it stops working.`). Never filed as an automatic bug report.
+
+**Access:** `Authorization: Bearer <deviceToken>`; the token decides the organization and the workstation.
+
+**Request:** `disks`, 1 to 8 objects with `device` (a kernel disk name: `sda`, `nvme0n1`, `mmcblk0`, …), `model`, `serial`, `state` (`warning` | `failing`) and `summary`.
+
+```json
+{ "disks": [ { "device": "nvme0n1", "model": "Example SSD 256GB", "serial": "S1234", "state": "warning", "summary": "Wearing out: 93% of its rated life used." } ] }
+```
+
+**`200 OK`** → `{ "status": "ok", "recorded": 1 }`; `recorded` counts the disks newly listed (`0` when each is already listed in that state). **`400`** malformed, not sent again. **`401`** bad token. **`409`** the workstation has not checked in yet, sent again later. **`429`** more than 8 disk issues in a day from this workstation; the next check sends again.
+
+---
+
 ### `GET /api/workstation-issues`
 
 Errors and warnings the organization's workstations reported, newest first (`?limit=`, default 100, at most 200; rows older than 90 days are deleted by the hourly cron).
 
 **Access:** organization admin or staff with the `settings` permission.
 
-Each issue carries `id`, `client_id`, `severity`, `kind`, `image_version`, `details`, `occurred_at`, `created_at`, `report_state` (`none` | `pending` | `sent`), `report_match` (`new` | `existing`), and, once sent, `issue_url`, `issue_number`, `report_status` (`open` | `in_progress` | `pr_open` | `resolved` | `closed`) and `pr_url`. The response also carries the organization's opt-in state:
+Each issue carries `id`, `client_id`, `severity`, `kind`, `image_version`, `details`, `occurred_at`, `created_at`, `has_log` (1 when a restart report's log is kept; read it with `GET /api/workstation-issues/log?id=<id>`, which answers `{id, log}` or `404`), `report_state` (`none` | `pending` | `sent`), `report_match` (`new` | `existing`), and, once sent, `issue_url`, `issue_number`, `report_status` (`open` | `in_progress` | `pr_open` | `resolved` | `closed`) and `pr_url`. The response also carries the organization's opt-in state:
 
 ```json
 {
@@ -557,7 +588,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/setup` | `GET` | Serves `wizard.html`. Returns `403` once the workstation is enrolled unless accessed via `#network` with admin authentication. |
-| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
+| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`, `secureBoot` (`on`, `off`, `legacy-bios` or `unknown`), `clockSynchronized` (true once a time server has set the clock since boot), `hostname`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
 | `/api/localization/options` | `GET` | Continents, countries, timezones, locales, keyboard layouts and interface catalogs, all read from the workstation's own tzdata, locale and X11 tables. |
 | `/api/localization/languages` | `GET` | Interface languages the organization's control plane offers, with the installed ones marked. |
 | `/api/localization/language/download` | `POST` | Downloads one catalog from the control plane into `/etc/labkiosk/i18n`. Administrator token required once installed. |
@@ -576,7 +607,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | `/api/reboot` | `POST` | Reboots the workstation. |
 | `/api/setup` | `POST` | Performs enrolment against the control plane. `409` once already enrolled. |
 
-`POST /api/install` takes `targetDisk` (re-validated against `TARGET_DISK_PATTERN`) and an optional `grubPasswordHash` (re-validated against `GRUB_PBKDF2_PATTERN`). Only a *digest* is accepted: the wizard derives PBKDF2 in the browser with WebCrypto, so the plaintext boot-menu password never crosses the agent's API, never appears in a process argument, and is never written to disk.
+`POST /api/install` takes `targetDisk` (re-validated against `TARGET_DISK_PATTERN`) an optional `grubPasswordHash` (re-validated against `GRUB_PBKDF2_PATTERN`) and an optional `hostname` (one lowercase DNS label; generated when absent). Only a *digest* is accepted: the wizard derives PBKDF2 in the browser with WebCrypto, so the plaintext boot-menu password never crosses the agent's API, never appears in a process argument, and is never written to disk.
 
 `POST /api/network/configure` manages NetworkManager connections. On installed machines, connection keyfiles are persisted in `LABKIOSK_DATA` (`/etc/labkiosk/system-connections/`) and bind-mounted to `/etc/NetworkManager/system-connections` by a mount unit in the image (no `/etc/fstab` is written) so configurations persist across `overlayroot="tmpfs"` reboots.
 

@@ -581,6 +581,19 @@
                style="background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); color: #34d399; font-family: var(--font-mono); word-break: break-all; margin-top: 10px;"></div>
         </div>
 
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600;">
+            <input type="checkbox" id="toggle-custom-hostname" style="width: 16px; height: 16px; accent-color: var(--accent);">
+            <span data-i18n="ui.set-the-hostname-myself">Set the hostname myself</span>
+          </label>
+          <input type="text" id="custom-hostname" class="input-field" autocomplete="off" spellcheck="false"
+                 autocapitalize="none" maxlength="63" placeholder="e.g. front-desk-1"
+                 style="display: none; margin-top: 8px; font-family: var(--font-mono);" data-i18n-placeholder="ui.placeholder-e-g-front-desk-1">
+          <div class="hint-text" data-i18n="ui.hostname-is-generated-unless-you">
+            Left unticked, the workstation gets a name of its own, such as labkiosk-3fa92c. A hostname is 1 to 63 lowercase letters, digits and hyphens, not starting or ending with a hyphen.
+          </div>
+        </div>
+
         <div class="progress-bar-container" id="install-progress-bar-container">
           <div class="progress-bar-fill" id="install-progress-bar"></div>
         </div>
@@ -676,6 +689,7 @@
         <span id="diagnostics-chevron">&#9656;</span>
       </div>
       <div id="diagnostics-body" style="display: none;">
+        <p class="hint-text" style="margin-bottom: 10px; font-family: var(--font-mono);" id="diag-system"></p>
         <p class="hint-text" style="margin-bottom: 10px;" data-i18n="ui.the-workstation-s-own-log-for">
           The workstation's own log, for when something fails here. It lives in RAM and is cleared on
           every reboot, so read it before restarting.
@@ -820,6 +834,14 @@
     const progressStatusText = document.getElementById('install-status-text');
     const grubPasswordInput = document.getElementById('grub-password');
     const generateGrubBtn = document.getElementById('generate-grub-password');
+    const toggleCustomHostname = document.getElementById('toggle-custom-hostname');
+    const customHostnameInput = document.getElementById('custom-hostname');
+    // Kept identical to HOSTNAME_PATTERN in labkiosk-install and the agent.
+    const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+    toggleCustomHostname.addEventListener('change', () => {
+      customHostnameInput.style.display = toggleCustomHostname.checked ? 'block' : 'none';
+      if (toggleCustomHostname.checked) customHostnameInput.focus();
+    });
     const grubPasswordReveal = document.getElementById('grub-password-reveal');
 
     const form = document.getElementById('setup-form');
@@ -1771,9 +1793,35 @@
       }
     }
 
+    // The machine facts an administrator checks here, with no shell: the
+    // hostname, whether the firmware enforced Secure Boot for this boot, and
+    // whether a time server has set the clock (HTTPS fails on a wrong one).
+    async function loadSystemFacts() {
+      const line = document.getElementById('diag-system');
+      const secureBoot = {
+        'on': t('ui.js.secure-boot-on', 'On'),
+        'off': t('ui.js.secure-boot-off', 'Off'),
+        'legacy-bios': t('ui.js.secure-boot-legacy-bios', 'Off (started in legacy BIOS mode)'),
+        'unknown': t('ui.js.secure-boot-unknown', 'Unknown')
+      };
+      try {
+        const res = await fetch('http://127.0.0.1:8888/api/status', { cache: 'no-store' });
+        const data = await res.json();
+        line.textContent = t('ui.js.hostname', 'Hostname: ') + (data.hostname || '?') + ' · ' +
+          t('ui.js.secure-boot', 'Secure Boot: ') + (secureBoot[data.secureBoot] || secureBoot.unknown) + ' · ' +
+          t('ui.js.clock', 'Clock: ') + (data.clockSynchronized
+            ? t('ui.js.clock-synchronized', 'Set from a time server')
+            : t('ui.js.clock-not-synchronized', 'Not set from a time server yet'));
+      } catch (err) {
+        console.warn('Could not read the workstation status:', err);
+        line.textContent = t('ui.js.could-not-reach-the-local-agent.2', 'Could not reach the local agent service.');
+      }
+    }
+
     function showDiagnostics() {
       diagnosticsBody.style.display = 'block';
       document.getElementById('diagnostics-chevron').innerHTML = '&#9662;';
+      loadSystemFacts();
       loadAgentLog();
     }
 
@@ -1934,6 +1982,16 @@
         return;
       }
 
+      let hostname = '';
+      if (toggleCustomHostname.checked) {
+        hostname = customHostnameInput.value.trim().toLowerCase();
+        if (!HOSTNAME_PATTERN.test(hostname)) {
+          alert(t('ui.js.the-hostname-must-be', 'The hostname must be 1 to 63 lowercase letters, digits and hyphens, not starting or ending with a hyphen.'));
+          customHostnameInput.focus();
+          return;
+        }
+      }
+
       const grubPassword = grubPasswordInput.value;
       if (!grubPassword) {
         if (!confirm('No administrator/boot menu password was set.\n\nWithout one, physical and network settings access will remain unlocked.\n\nInstall anyway?')) {
@@ -1945,6 +2003,8 @@
       targetDiskSelect.disabled = true;
       grubPasswordInput.disabled = true;
       generateGrubBtn.disabled = true;
+      toggleCustomHostname.disabled = true;
+      customHostnameInput.disabled = true;
       progressBarContainer.style.display = 'block';
       progressStatusText.style.display = 'block';
       progressBar.style.width = '5%';
@@ -1960,7 +2020,7 @@
         const res = await fetch('http://127.0.0.1:8888/api/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ targetDisk: disk, grubPasswordHash })
+          body: JSON.stringify({ targetDisk: disk, grubPasswordHash, hostname })
         });
         if (!res.ok) {
           const err = await res.json();
@@ -1988,6 +2048,8 @@
                 targetDiskSelect.disabled = false;
                 grubPasswordInput.disabled = false;
                 generateGrubBtn.disabled = false;
+                toggleCustomHostname.disabled = false;
+                customHostnameInput.disabled = false;
               }
             }
           } catch {}
@@ -1998,6 +2060,8 @@
         targetDiskSelect.disabled = false;
         grubPasswordInput.disabled = false;
         generateGrubBtn.disabled = false;
+        toggleCustomHostname.disabled = false;
+        customHostnameInput.disabled = false;
       }
     });
 

@@ -159,7 +159,10 @@ IST on the live session, on installed workstations, in the simulator container a
 builder image. An installed disk keeps what the build wrote; a **live** session is re-configured on
 every boot by live-config's `0070-tzdata`, which falls back to `Etc/UTC` unless the kernel command
 line carries `timezone=Asia/Kolkata` — so both boot menus and both `--bootappend-*` lines set it.
-`systemd-timesyncd` keeps the clock itself in step.
+`systemd-timesyncd` keeps the clock itself in step: from the time server set in the setup wizard
+first, then those the network's DHCP server names (option 42, written per interface under
+`/run/systemd/timesyncd.conf.d/` by `/etc/NetworkManager/dispatcher.d/50-labkiosk-ntp`), and
+Debian's pool when neither names one.
 
 ### `/etc/labkiosk/localization.json`
 

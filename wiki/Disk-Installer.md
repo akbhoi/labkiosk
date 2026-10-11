@@ -14,6 +14,7 @@ It is normally driven from the setup wizard's **Install to Hard Disk** tab, but 
 | `--status` | Reads `/tmp/labkiosk-install-status.json`; returns state and progress percentage |
 | `--target /dev/sdX` | Runs the full partition → format → image copy → GRUB sequence as root |
 | `--grub-password-hash <grub.pbkdf2.sha512…>` | Optional, with `--target`. Gives this installation its own boot-menu password |
+| `--hostname <name>` | Optional, with `--target`. The workstation's hostname; generated when absent ([Hostname](#hostname)) |
 
 ---
 
@@ -25,8 +26,11 @@ The installer writes a **hybrid GPT** layout so one disk image boots on legacy B
 | :-- | :--- | :--- | :--- | :--- |
 | 1 | `bios_grub` | 1 MiB – 2 MiB | none, flag `bios_grub on` | Lets legacy GRUB embed `core.img` on a GPT disk |
 | 2 | `ESP` | 2 MiB – 514 MiB | FAT32, flag `esp on` | UEFI bootloader files |
-| 3 | `ROOT` | 514 MiB – (end − 513 MiB) | ext4, label `LABKIOSK_ROOT` | The image store: `boot/grub/` and the system images under `images/<version>/` |
-| 4 | `DATA` | last 512 MiB | ext4, label `LABKIOSK_DATA` | Mounted at `/etc/labkiosk` with `nofail`, by UUID |
+| 3 | `ROOT` | 514 MiB – (end − 1537 MiB) | ext4, label `LABKIOSK_ROOT` | The image store: `boot/grub/` and the system images under `images/<version>/` |
+| 5 | `SWAP` | (end − 1536 MiB) – (end − 512 MiB) | none; GPT type Linux swap | Swap behind compressed RAM, encrypted at every boot with a key that never leaves RAM, by PARTUUID |
+| 4 | `DATA` | last 512 MiB | ext4, label `LABKIOSK_DATA`; on a machine with a TPM 2.0 chip, a LUKS2 container with that ext4 inside | Mounted at `/etc/labkiosk` with `nofail`, by UUID ([Encrypted data partition](#encrypted-data-partition)) |
+
+`SWAP` is partition 5 although it sits before `DATA`: it is created last so that `DATA` keeps number 4 on every disk. Disks installed before it existed have no swap partition and use compressed RAM alone.
 
 ### Why partition 4 exists
 
@@ -37,12 +41,13 @@ The installer writes a **hybrid GPT** layout so one disk image boots on legacy B
 1. `/etc/labkiosk/config.json` — device bearer token, client ID, and worker URL.
 2. `/etc/labkiosk/proxy.json` — organization proxy settings.
 3. `/etc/labkiosk/system-connections/` — NetworkManager connection profiles, bind-mounted to `/etc/NetworkManager/system-connections` on boot.
+4. `/etc/labkiosk/logs/` — root's: the system journal of the last seven days (at most 128 MiB), and a report for each boot that ended without shutting down, which the agent sends to the console (`labkiosk-logs`).
 
 Everything else on an installed machine, `/etc/machine-id` and browser cache included, is regenerated or reset on every boot.
 
 ### Negative parted offsets need `--`
 
-ROOT and DATA are sized from the end of the disk (`-513MiB`, `-512MiB`). Without a `--` separator, parted parses those as bundled single-letter options and aborts the install.
+ROOT, SWAP and DATA are sized from the end of the disk (`-1537MiB`, `-1536MiB`, `-512MiB`). Without a `--` separator, parted parses those as bundled single-letter options and aborts the install.
 
 ---
 
@@ -65,12 +70,15 @@ Removable drives are **not** hidden, because internal eMMC on some thin clients 
     version (/usr/share/labkiosk/version), the grub.cfg template and labkiosk-boot-slots
     -- all before anything is erased
  4. wipefs, then parted: GPT + the four partitions above
- 5. mkfs.fat -F32 on ESP, mkfs.ext4 on ROOT and DATA
+ 5. mkfs.fat -F32 on ESP, mkfs.ext4 on ROOT and DATA (with a TPM 2.0 chip: LUKS2 on DATA, opened with a
+    random one-time key in /run, and ext4 inside it)
  6. mount ROOT, ESP and DATA at three separate directories
  7. copy the image to ROOT/images/<version>/, fsync each file
  8. carry network profiles, config.json, proxy.json and localization.json onto DATA; prove kiosk can write it
  9. grub-install x86_64-efi, x86_64-efi --removable, i386-pc, all with --boot-directory=ROOT/boot
-10. copy usr/share/labkiosk/boot/grub.cfg to ROOT/boot/grub/, write labkiosk-password.cfg if a hash was supplied, and labkiosk-data.cfg with the DATA partition's UUID
+10. copy usr/share/labkiosk/boot/grub.cfg to ROOT/boot/grub/, write labkiosk-password.cfg if a hash was supplied,
+    labkiosk-data.cfg with the DATA file system's UUID, labkiosk-swap.cfg, labkiosk-hostname.cfg and, when
+    DATA is encrypted, labkiosk-datacrypt.cfg with the container's UUID and the one-time key (labkiosk-data.key, 0600)
 11. labkiosk-boot-slots init <version>: grubenv with current=<version>
 ```
 
@@ -91,11 +99,37 @@ for a minute, or reboots into the old one. Details: `distro-builder/AGENTS.md` R
 
 | Command | Covers |
 | :--- | :--- |
-| `grub-install --target=x86_64-efi --efi-directory=<ESP> --boot-directory=<ROOT>/boot --bootloader-id=LabKiosk --no-nvram --recheck` | `EFI/LabKiosk/` on the ESP; `--no-nvram` leaves the firmware's boot variables untouched |
-| `grub-install --target=x86_64-efi --efi-directory=<ESP> --boot-directory=<ROOT>/boot --removable --recheck` | `EFI/BOOT/BOOTX64.EFI` fallback, for firmware that loses NVRAM boot variables |
+| `grub-install --target=x86_64-efi --efi-directory=<ESP> --boot-directory=<ROOT>/boot --uefi-secure-boot --bootloader-id=LabKiosk --no-nvram --recheck` | `EFI/LabKiosk/` on the ESP; `--no-nvram` leaves the firmware's boot variables untouched |
+| `grub-install --target=x86_64-efi --efi-directory=<ESP> --boot-directory=<ROOT>/boot --uefi-secure-boot --removable --recheck` | `EFI/BOOT/BOOTX64.EFI` fallback, for firmware that loses NVRAM boot variables |
 | `grub-install --target=i386-pc --boot-directory=<ROOT>/boot <disk> --recheck` | Legacy BIOS, embedding into the `bios_grub` partition |
 
+`--uefi-secure-boot` installs Microsoft's signed `shim` in front of Debian's signed GRUB, which boots only Debian-signed kernels, so the disk starts with Secure Boot on ([Kiosk Hardening](Kiosk-Hardening#secure-boot)). It is named rather than left to grub-install's default, which depends on how the live session itself was started.
+
 All three run on every install to a SATA or virtio disk, so the drive boots regardless of the machine's firmware mode. On an NVMe or eMMC target the `i386-pc` install is skipped and the drive boots through UEFI only. The install fails only when no boot loader at all could be installed.
+
+---
+
+## Hostname
+
+Every workstation gets a hostname of its own; the image's one `/etc/hostname` is replaced at each boot by `labkiosk-hostname.service`, before the network comes up, so DHCP and the network see that name.
+
+- **At installation.** The wizard's **Set the hostname myself** box is unticked by default and the installer generates `labkiosk-` and six random hex digits (`labkiosk-3fa92c`). Ticked, it takes the name typed there: one DNS label, 1–63 lowercase letters, digits and hyphens, not starting or ending with a hyphen. The agent and the installer both re-validate it. It is stored in `boot/grub/labkiosk-hostname.cfg`, outside every image, so updates keep it, and GRUB passes it as `labkiosk.hostname=`.
+- **Without a stored name** (the live ISO, or a disk installed before names were stored): `labkiosk-` and six hex digits derived from the lowest permanent MAC address of the machine's network cards, so the same machine always gets the same name. A machine with no network card gets a random one for that boot.
+
+To change the name of an installed workstation, reinstall it.
+
+---
+
+## Encrypted data partition
+
+On a machine with a TPM 2.0 chip, `DATA` (device token, Wi-Fi passwords, the journal) is encrypted and still unlocks with nobody at the keyboard: the key is sealed to the chip and to the Secure Boot state (PCR 7), so the disk opens on this machine and nowhere else. A machine without a TPM 2.0 chip keeps a plain partition.
+
+1. **Install.** The installer checks for the chip (`/dev/tpmrm0`, `tpm_version_major` 2) in the live session, which runs on the same machine. It formats `DATA` as LUKS2 with a random one-time key and leaves that key in `boot/grub/labkiosk-data.key` (root only).
+2. **First boot.** `labkiosk-data-unlock.service`, before `/etc/labkiosk` is mounted, opens the volume with that key, adds a key slot sealed to the TPM (`systemd-cryptenroll --tpm2-pcrs=7`), destroys the one-time slot and deletes the key file. Sealing happens here, not in the installer, because PCR 7 must be measured by the installed boot.
+3. **Every boot.** `systemd-cryptsetup` opens it with the TPM (`headless=true`: it never asks for anything).
+4. **When the TPM no longer releases the key** (Secure Boot turned off or its keys changed by a firmware update, the TPM cleared, the disk moved to another machine) the data cannot be read again. The volume is recreated, empty, with the same UUIDs and sealed to the chip as it is now, and the workstation shows the enrolment form: enrol it again from the console. If the chip does not answer at all (disabled in the firmware), nothing is erased: `/etc/labkiosk` stays in RAM until it is back.
+
+Turn Secure Boot on **before** installing: switching it on afterwards changes PCR 7, which counts as case 4. What this protects is a drive taken out of the machine. A whole stolen machine still boots and unlocks itself, so lock the firmware (setup password, boot order) as well.
 
 ---
 

@@ -132,7 +132,8 @@ jobs:
       - name: Boot-test the installed disk
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf xorriso squashfs-tools
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf xorriso squashfs-tools \
+            swtpm cryptsetup-bin
           sudo distro-builder/tests/vm/boot-test.sh \
             distro-builder/out/labkiosk-debian12-amd64.iso "$RUNNER_TEMP/boot-test"
 

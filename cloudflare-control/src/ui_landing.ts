@@ -1982,7 +1982,7 @@ function specsMainHtml(): string {
             <h3 style="font-size: 1.0625rem; font-weight: 650; margin-bottom: 8px; color: var(--accent-text);">Workstation Client Stack</h3>
             <ul style="list-style: disc; padding-left: 20px; font-size: 0.875rem; color: var(--text-muted); line-height: 1.6;">
               <li>Debian 12 (Bookworm) Live-Build distribution</li>
-              <li>nodm display manager starting the kiosk session without a login prompt</li>
+              <li>Kiosk session started by the kiosk user without a login prompt, X running without root where the graphics allow</li>
               <li>Openbox minimal window manager with disabled keybindings</li>
               <li>Loopback Agent Daemon (Python 3.11, bound strictly to 127.0.0.1:8888)</li>
               <li>MV3 Browser Extension with shadow-DOM navigation &amp; lock curtain</li>

@@ -160,7 +160,7 @@ How your own account signs in. Every staff account can open Settings for this ta
 
 ### 5. Errors & Warnings (`?tab=issues`)
 
-Problems workstations reported themselves, kept apart from Recent Activity (which records what people did) and deleted after 90 days. Today these are the outcomes of a system image update on an installed workstation, sent by the agent to `POST /api/devices/boot-report`:
+Problems workstations reported themselves, kept apart from Recent Activity (which records what people did) and deleted after 90 days. These are the outcomes of a system image update on an installed workstation, sent by the agent to `POST /api/devices/boot-report`, restarts that happened without a shutdown, sent to `POST /api/devices/restart-report`, and disks wearing out or failing, sent to `POST /api/devices/disk-health`:
 
 | Problem | Severity | Meaning |
 | :--- | :--- | :--- |
@@ -168,8 +168,11 @@ Problems workstations reported themselves, kept apart from Recent Activity (whic
 | **Update rolled back** | Error | The new image used its one try without being confirmed; the workstation is back on the previous image. |
 | **Started a fallback image** | Warning | The image it should have started is missing or damaged, so GRUB started another one. |
 | **Boot record error** | Error | The boot record could not be read or written; the details say why. |
+| **Restarted without shutting down** | Warning | The workstation lost power, was switched off at the button, hung or crashed, and started again. |
+| **Stopped responding** | Error | The workstation hung and its hardware watchdog restarted it. |
+| **Disk wearing out or failing** | Warning, or Error when failing | The workstation's own disk reports wear or faults (SMART, or an eMMC card's wear figures), e.g. *Disk Example SSD 256GB (nvme0n1): Wearing out: 93% of its rated life used. Plan to replace it.* A failing disk ends *Replace it before it stops working.* Each disk is listed once per state, and never sent as an automatic bug report. |
 
-Each row shows when the workstation recorded it (its own clock), the workstation and image version, and the details.
+Each row shows when the workstation recorded it (its own clock), the workstation and image version, and the details. A restart carries the end of the workstation's system log from before it: **Show log** opens it. Logs are cleared after 30 days and are never sent with automatic bug reports.
 
 **Automatic bug reports (opt-in).** When the platform has set them up, the card offers **Send automatic bug reports**. To turn it on, tick **I accept the Automatic Bug Report Terms** (`/terms/bug-reports`) and then the option itself. From then on, new errors and warnings are filed as GitHub issues in the repository the hint names, where anyone may be able to read them. A report carries the kind of problem, the image version and the problem text with network addresses, host names and identifiers removed; never the organization's or its workstations' names. Problems listed before you turned it on are not sent. If the terms change, nothing is sent until you tick the box again to accept the new version. Untick the option to stop. When the platform has not set them up, the hint says so and the option cannot be turned on.
 

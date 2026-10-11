@@ -424,7 +424,13 @@ class Packaging(unittest.TestCase):
         hook = self.read("config/hooks/live/01-lockdown.hook.chroot")
         self.assertIn("chmod +x /usr/local/sbin/labkiosk-share", hook)
         self.assertNotIn("systemctl enable labkiosk-share", hook)
-        self.assertNotIn("systemctl enable nftables", hook)
+        # nftables.service loads the firewall (/etc/nftables.conf), which must let
+        # the sharing port through from private addresses and never flush the
+        # sharing table when it reloads.
+        self.assertIn("systemctl enable nftables.service", hook)
+        firewall = self.read("config/includes.chroot/etc/nftables.conf")
+        self.assertIn("tcp dport 8890 ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept", firewall)
+        self.assertNotIn("flush", "\n".join(line.split("#")[0] for line in firewall.splitlines()))
 
     @unittest.skipUnless(shutil.which("nft"), "needs nft to check the rule")
     def test_the_rule_parses(self):

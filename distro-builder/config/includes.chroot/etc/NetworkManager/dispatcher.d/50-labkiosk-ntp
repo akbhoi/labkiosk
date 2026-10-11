@@ -1,0 +1,80 @@
+#!/bin/sh
+# Lab Kiosk: set the clock from the time servers the network names (DHCP
+# option 42), not only Debian's public pool.
+#
+# Many company, public-body and school networks block outbound NTP and run
+# their own time server. There systemd-timesyncd never reaches the pool, the
+# clock drifts, and once it is minutes off every HTTPS connection fails: the
+# workstation can reach neither its sites nor the control plane, so it cannot
+# even report the problem.
+#
+# NetworkManager runs this as root after it brings a connection up or renews
+# its lease, with the servers the DHCP server offered in DHCP4_NTP_SERVERS.
+# They go into a drop-in under /run, one per interface: per boot, nothing in
+# the read-only image changes, and timesyncd adds up the NTP= lines of every
+# drop-in, in the order of their file names. "network-" sorts after
+# labkiosk.conf, the time server set in the setup wizard (labkiosk-localization),
+# so a server chosen there is tried first and the network's next. When neither
+# names one, timesyncd keeps Debian's pool (FallbackNTP).
+set -eu
+
+IFACE="${1:-}"
+ACTION="${2:-}"
+DIR=/run/systemd/timesyncd.conf.d
+
+# An interface name is at most 15 characters of this set; anything else is not
+# one, and must not become part of a path.
+if ! printf '%s\n' "$IFACE" | grep -Eqx '[A-Za-z0-9_.-]{1,15}'; then
+    exit 0
+fi
+FILE="$DIR/network-dhcp-$IFACE.conf"
+
+restart_timesyncd() {
+    if ! systemctl try-restart systemd-timesyncd.service; then
+        echo "labkiosk-ntp: could not restart systemd-timesyncd; it keeps its previous servers until the next boot." >&2
+    fi
+}
+
+forget() {  # forget REASON
+    if [ -e "$FILE" ]; then
+        rm -f "$FILE"
+        echo "labkiosk-ntp: $1; the time servers it named are no longer used."
+        restart_timesyncd
+    fi
+}
+
+# Only dotted IPv4 addresses, as DHCP option 42 carries them.
+valid_ipv4() {
+    printf '%s\n' "$1" | grep -Eqx '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}'
+}
+
+case "$ACTION" in
+    up|dhcp4-change)
+        servers=""
+        for server in ${DHCP4_NTP_SERVERS:-}; do
+            if valid_ipv4 "$server"; then
+                servers="${servers:+$servers }$server"
+            else
+                echo "labkiosk-ntp: ignoring '$server' from $IFACE's DHCP lease: not an IPv4 address." >&2
+            fi
+        done
+        if [ -z "$servers" ]; then
+            forget "$IFACE's network names no time server now"
+            exit 0
+        fi
+        content="$(printf '# Written by %s from the DHCP lease on %s.\n[Time]\nNTP=%s\n' "$0" "$IFACE" "$servers")"
+        if [ -f "$FILE" ] && [ "$(cat "$FILE")" = "$content" ]; then
+            exit 0
+        fi
+        mkdir -p "$DIR"
+        printf '%s\n' "$content" > "$FILE.tmp"
+        chmod 0644 "$FILE.tmp"
+        mv -f "$FILE.tmp" "$FILE"
+        echo "labkiosk-ntp: using the time servers $IFACE's network names: $servers"
+        restart_timesyncd
+        ;;
+    down|pre-down)
+        forget "$IFACE went down"
+        ;;
+esac
+exit 0
