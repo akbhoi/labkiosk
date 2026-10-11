@@ -94,6 +94,12 @@ read_kiosk_url() {
   printf '%s' "http://127.0.0.1:8888/setup"
 }
 
+# Hardware video decoding and encoding through VA-API (the drivers are in the
+# package list). AcceleratedVideo* are the names since Chromium 131; the
+# Vaapi* ones are the same switches in older releases, and Chromium ignores a
+# name it does not know.
+CHROMIUM_GPU_FEATURES="AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,AcceleratedVideoEncoder,VaapiVideoDecodeLinuxGL,VaapiVideoDecoder,VaapiVideoEncoder"
+
 # 8. Infinite watchdog for the Chromium kiosk window.
 while true; do
   # Clean ephemeral cache before launch to guarantee a fresh session
@@ -116,7 +122,9 @@ while true; do
     --disk-cache-dir=/tmp/chromium-cache \
     --user-data-dir=/tmp/chromium-profile \
     --enable-gpu-rasterization \
+    --enable-zero-copy \
     --ignore-gpu-blocklist \
+    --enable-features="$CHROMIUM_GPU_FEATURES" \
     --load-extension=/opt/labkiosk/extension \
     --disable-extensions-except=/opt/labkiosk/extension \
     --autoplay-policy=no-user-gesture-required \

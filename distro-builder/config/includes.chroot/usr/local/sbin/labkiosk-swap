@@ -62,6 +62,16 @@ open_partition() {
         log "No valid labkiosk.data=; cannot tell which disk is this installation's."
         return 0
     fi
+    # An encrypted data partition (labkiosk-data-unlock) is checked by its
+    # container, which is the partition itself and exists even while locked.
+    crypt_id="$(cmdline_value labkiosk.datacrypt)"
+    if [ -n "$crypt_id" ]; then
+        if ! printf '%s\n' "$crypt_id" | grep -Eqx "$UUID_RE"; then
+            log "labkiosk.datacrypt=$crypt_id is not a UUID; not using a swap partition."
+            return 0
+        fi
+        data_id="$crypt_id"
+    fi
     if [ -e "$MAPPER_DEV" ]; then
         log "$MAPPER_DEV is already open."
         return 0

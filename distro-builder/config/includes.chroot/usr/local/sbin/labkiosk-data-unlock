@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""
+Unlock an installed workstation's encrypted data partition with its TPM, with
+nobody at the keyboard.
+
+LABKIOSK_DATA holds the device token, Wi-Fi passwords and the system journal.
+On a machine with a TPM 2.0 chip the installer makes it a LUKS2 volume; the key
+is sealed to the chip and to the Secure Boot state (PCR 7), so the disk unlocks
+itself on this machine and nowhere else. A machine without a TPM 2.0 chip keeps
+a plain partition and never runs this.
+
+    start   at every boot, before /etc/labkiosk is mounted:
+            first boot   open the volume with the one-time key the installer
+                         left in boot/grub, seal a new key slot to the TPM,
+                         then destroy the one-time slot and the key file.
+            every boot   open the volume with the TPM.
+            no unlock    the chip no longer releases the key (a firmware update
+                         that changed the Secure Boot keys, Secure Boot turned
+                         off, a TPM reset). The data cannot be read again, so
+                         the volume is recreated, empty, sealed to the chip as
+                         it is now; the screen then shows the enrolment form.
+                         Without a TPM at all nothing is erased: the
+                         partition stays locked and the workstation runs from
+                         RAM until the chip is back.
+    stop    close the volume after /etc/labkiosk is unmounted.
+
+The kernel command line names the volume: labkiosk.datacrypt=<LUKS UUID>
+(the container) and labkiosk.data=<ext4 UUID> (the file system inside it,
+which etc-labkiosk.mount mounts once the volume is open). Both come from
+boot/grub, written by the installer.
+
+Output: progress on stderr. Exit status 0 unless the volume cannot be handled.
+"""
+
+import argparse
+import os
+import re
+import secrets
+import subprocess
+import sys
+import time
+
+MAPPER_NAME = "labkiosk-data"
+MAPPER_DEV = f"/dev/mapper/{MAPPER_NAME}"
+BOOT_MEDIUM = "/run/live/medium"
+# The one-time key the installer left for the first boot (labkiosk-install).
+FIRST_BOOT_KEY = os.path.join(BOOT_MEDIUM, "boot", "grub", "labkiosk-data.key")
+TPM_CLASS_DIR = "/sys/class/tpm"
+TPM_DEVICE = "/dev/tpmrm0"
+# The TPM driver (tpm_crb, tpm_tis) loads as udev works through the hardware.
+TPM_WAIT_SECONDS = 20
+TPM_PCRS = "7"
+UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+DEVICE_WAIT_SECONDS = 30
+UNLOCK_ATTEMPTS = 3
+UNLOCK_RETRY_SECONDS = 3
+SYSTEMD_CRYPTSETUP = "/lib/systemd/systemd-cryptsetup"
+
+
+def log(message):
+    print(f"[DATA] {message}", file=sys.stderr, flush=True)
+
+
+def kernel_args(cmdline_path="/proc/cmdline"):
+    with open(cmdline_path, "r", encoding="utf-8") as handle:
+        return handle.read().split()
+
+
+def volume_ids(args):
+    """(LUKS UUID, ext4 UUID) from the command line, or None when not encrypted."""
+    if "labkiosk.installed=1" not in args:
+        return None
+    values = {}
+    for arg in args:
+        key, sep, value = arg.partition("=")
+        if sep and key in ("labkiosk.datacrypt", "labkiosk.data"):
+            values[key] = value
+    crypt_id, data_id = values.get("labkiosk.datacrypt", ""), values.get("labkiosk.data", "")
+    if not crypt_id:
+        return None
+    if not UUID_PATTERN.match(crypt_id) or not UUID_PATTERN.match(data_id):
+        raise RuntimeError("labkiosk.datacrypt= or labkiosk.data= is not a UUID")
+    return crypt_id, data_id
+
+
+def run(command, check=True):
+    # stdin is never a terminal: nothing here may stop to ask for a passphrase.
+    proc = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True)
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"{command[0]} {command[1] if len(command) > 1 else ''} failed "
+                           f"({proc.returncode}): {proc.stderr.strip()}")
+    return proc
+
+
+def tpm2_present(class_dir=TPM_CLASS_DIR):
+    """A TPM 2.0 chip the kernel can talk to."""
+    if not os.path.exists(TPM_DEVICE):
+        return False
+    try:
+        names = os.listdir(class_dir)
+    except FileNotFoundError:
+        return False
+    for name in names:
+        try:
+            with open(os.path.join(class_dir, name, "tpm_version_major"), encoding="ascii") as handle:
+                if handle.read().strip() == "2":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def wait_for(path, seconds=DEVICE_WAIT_SECONDS):
+    deadline = time.monotonic() + seconds
+    while not os.path.exists(path):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.5)
+    return True
+
+
+def seal_to_tpm(device, key_path):
+    """Add a key slot sealed to the TPM and PCR 7, then destroy the key-file slot."""
+    run(["systemd-cryptenroll", f"--unlock-key-file={key_path}", "--tpm2-device=auto",
+         f"--tpm2-pcrs={TPM_PCRS}", device])
+    # The key file's own slot is the one it opens; kill exactly that one.
+    proc = run(["cryptsetup", "open", "--test-passphrase", "--verbose", f"--key-file={key_path}",
+                device])
+    slot = proc.stdout + proc.stderr
+    match = re.search(r"Key slot (\d+) unlocked", slot)
+    if not match:
+        raise RuntimeError(f"Could not tell which key slot the one-time key opens: {slot.strip()!r}")
+    run(["cryptsetup", "luksKillSlot", "--batch-mode", device, match.group(1)])
+
+
+def first_boot(device, key_path=FIRST_BOOT_KEY):
+    """
+    Open with the installer's one-time key; seal to the TPM and destroy the key.
+    False when the key no longer opens the volume (a boot cut short after its
+    slot was destroyed but before the file was): the file is removed and the
+    TPM opens the volume instead.
+    """
+    proc = run(["cryptsetup", "open", f"--key-file={key_path}", device, MAPPER_NAME], check=False)
+    if proc.returncode != 0:
+        log(f"The one-time key no longer opens the data partition; removing it. {proc.stderr.strip()}")
+        with boot_medium_writable():
+            os.remove(key_path)
+        return False
+    if not tpm2_present():
+        log("WARNING no TPM 2.0 chip now; the volume stays on its one-time key until there is one.")
+        return True
+    seal_to_tpm(device, key_path)
+    with boot_medium_writable():
+        os.remove(key_path)
+    log("Sealed the data partition's key to this machine's TPM and destroyed the one-time key.")
+    return True
+
+
+def mount_options(mount_point, mounts_path="/proc/mounts"):
+    with open(mounts_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            fields = line.split()
+            if len(fields) >= 4 and fields[1] == mount_point:
+                return fields[3].split(",")
+    raise RuntimeError(f"{mount_point} is not mounted")
+
+
+class boot_medium_writable:
+    """The image store is mounted read-only; hold it read-write for one change."""
+
+    def __enter__(self):
+        self.was_read_only = "ro" in mount_options(BOOT_MEDIUM)
+        if self.was_read_only:
+            run(["mount", "-o", "remount,rw", BOOT_MEDIUM])
+        return self
+
+    def __exit__(self, *exc):
+        os.sync()
+        if self.was_read_only:
+            run(["mount", "-o", "remount,ro", BOOT_MEDIUM])
+        return False
+
+
+def unlock_with_tpm(device, attempts=UNLOCK_ATTEMPTS, pause=UNLOCK_RETRY_SECONDS):
+    for attempt in range(1, attempts + 1):
+        proc = run([SYSTEMD_CRYPTSETUP, "attach", MAPPER_NAME, device, "-",
+                    "tpm2-device=auto,headless=true"], check=False)
+        if proc.returncode == 0 and os.path.exists(MAPPER_DEV):
+            return True
+        log(f"TPM unlock attempt {attempt} of {attempts} failed: {proc.stderr.strip()}")
+        if attempt < attempts:
+            time.sleep(pause)
+    return False
+
+
+def recreate(device, crypt_id, data_id, key_dir="/run"):
+    """
+    A new, empty volume with the same UUIDs, sealed to the TPM as it is now.
+    The old contents were unreadable already; the UUIDs keep the boot menu and
+    etc-labkiosk.mount pointing at it.
+    """
+    key_path = os.path.join(key_dir, f".{MAPPER_NAME}.{secrets.token_hex(8)}.key")
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(secrets.token_hex(32))
+        run(["cryptsetup", "luksFormat", "--batch-mode", "--type", "luks2", f"--uuid={crypt_id}",
+             "--pbkdf", "pbkdf2", "--pbkdf-force-iterations", "1000", f"--key-file={key_path}", device])
+        run(["cryptsetup", "open", f"--key-file={key_path}", device, MAPPER_NAME])
+        run(["mkfs.ext4", "-q", "-F", "-L", "LABKIOSK_DATA", "-U", data_id, MAPPER_DEV])
+        seal_to_tpm(device, key_path)
+    finally:
+        os.remove(key_path)
+
+
+def command_start():
+    ids = volume_ids(kernel_args())
+    if ids is None:
+        return 0
+    crypt_id, data_id = ids
+    if os.path.exists(MAPPER_DEV):
+        log(f"{MAPPER_DEV} is already open.")
+        return 0
+    device = f"/dev/disk/by-uuid/{crypt_id}"
+    if not wait_for(device):
+        log(f"WARNING the data partition {crypt_id} did not appear; /etc/labkiosk stays in RAM.")
+        return 0
+    device = os.path.realpath(device)
+    if not wait_for(TPM_DEVICE, TPM_WAIT_SECONDS):
+        log(f"No {TPM_DEVICE} after {TPM_WAIT_SECONDS} s.")
+    if os.path.exists(FIRST_BOOT_KEY) and first_boot(device):
+        return 0
+    if unlock_with_tpm(device):
+        log("Unlocked the data partition with the TPM.")
+        return 0
+    if not tpm2_present():
+        log("WARNING no TPM 2.0 chip answers, so the data partition stays locked and nothing on it "
+            "is erased; /etc/labkiosk is in RAM until the chip is back (check the firmware settings).")
+        return 0
+    log("WARNING the TPM no longer releases the data partition's key (Secure Boot keys or state "
+        "changed, or the TPM was reset); recreating it empty. The workstation must be enrolled again.")
+    recreate(device, crypt_id, data_id)
+    log("Recreated the data partition and sealed its new key to the TPM.")
+    return 0
+
+
+def command_stop():
+    if os.path.exists(MAPPER_DEV):
+        run([SYSTEMD_CRYPTSETUP, "detach", MAPPER_NAME], check=False)
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Lab Kiosk: unlock the data partition with the TPM")
+    parser.add_argument("command", choices=("start", "stop"))
+    args = parser.parse_args(argv)
+    if os.geteuid() != 0:
+        log("Must run as root.")
+        return 1
+    try:
+        return command_start() if args.command == "start" else command_stop()
+    except (OSError, RuntimeError) as err:
+        log(f"ERROR {err}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

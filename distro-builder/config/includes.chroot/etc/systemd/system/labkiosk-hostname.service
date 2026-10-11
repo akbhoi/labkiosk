@@ -1,0 +1,16 @@
+[Unit]
+Description=Lab Kiosk: a hostname of this workstation's own
+Documentation=file:///usr/local/sbin/labkiosk-hostname
+# live-config writes the image's default name early in boot; this replaces it
+# before the network comes up, so DHCP is sent the workstation's own name.
+After=live-config.service systemd-udevd.service systemd-udev-trigger.service
+Before=network-pre.target NetworkManager.service nodm.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/labkiosk-hostname
+
+[Install]
+WantedBy=multi-user.target

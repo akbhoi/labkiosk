@@ -13,6 +13,7 @@ import time
 import shutil
 import re
 import stat
+import secrets
 
 STATUS_FILE = "/tmp/labkiosk-install-status.json"
 
@@ -47,6 +48,21 @@ DATA_ID_FILE_NAME = "labkiosk-data.cfg"
 SWAP_ID_FILE_NAME = "labkiosk-swap.cfg"
 # Behind compressed RAM, which is the first swap; see labkiosk-swap.
 SWAP_PARTITION_MIB = 1024
+# The workstation's hostname, for grub.cfg to pass as labkiosk.hostname=<name>
+# (labkiosk-hostname sets it at every boot). One DNS label, lowercase.
+HOSTNAME_FILE_NAME = "labkiosk-hostname.cfg"
+HOSTNAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+HOSTNAME_PREFIX = "labkiosk-"
+# The data partition's LUKS2 container, for grub.cfg to pass as
+# labkiosk.datacrypt=<uuid> (labkiosk-data-unlock opens it with the TPM).
+# Written only on a machine with a TPM 2.0 chip.
+DATA_CRYPT_FILE_NAME = "labkiosk-datacrypt.cfg"
+# The one-time key the first installed boot seals to the TPM, then destroys.
+# Kept identical to FIRST_BOOT_KEY in /usr/local/sbin/labkiosk-data-unlock.
+FIRST_BOOT_KEY_FILE_NAME = "labkiosk-data.key"
+DATA_MAPPER_NAME = "labkiosk-data-install"
+TPM_CLASS_DIR = "/sys/class/tpm"
+TPM_DEVICE = "/dev/tpmrm0"
 # What mkfs.ext4 writes; grub.cfg and labkiosk-data-generator accept only this.
 FS_UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 BOOT_SLOTS_HELPER = "/usr/local/sbin/labkiosk-boot-slots"
@@ -347,9 +363,15 @@ def copy_image_file(source, destination, report):
     os.chmod(destination, 0o644)
 
 
-def install_to_disk(target_disk, grub_password_hash=None):
+def install_to_disk(target_disk, grub_password_hash=None, hostname=None):
     if os.geteuid() != 0:
         raise PermissionError("Installer must run as root")
+
+    if hostname is not None and not HOSTNAME_PATTERN.match(hostname):
+        raise ValueError(
+            f"Refusing hostname {hostname!r}: use 1-63 lowercase letters, digits and hyphens, "
+            "not starting or ending with a hyphen."
+        )
 
     if not is_live_session():
         raise RuntimeError("Lab Kiosk OS is already installed on this computer. Re-installation is disabled.")
@@ -455,7 +477,11 @@ def install_to_disk(target_disk, grub_password_hash=None):
     write_status("running", "Formatting file systems (FAT32 & ext4)...", 25)
     run_cmd(["mkfs.vfat", "-F", "32", "-n", "ESP", part_esp])
     run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_ROOT", part_root])
-    run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_DATA", part_data])
+    # With a TPM 2.0 chip the data partition is encrypted (labkiosk-data-unlock);
+    # data_fs is the device that holds its ext4 either way.
+    encrypt_data = tpm2_available()
+    data_key = None
+    data_fs = part_data
 
     root_dir = TARGET_ROOT_MOUNT
     esp_dir = TARGET_ESP_MOUNT
@@ -468,10 +494,20 @@ def install_to_disk(target_disk, grub_password_hash=None):
         for mount_point in (data_dir, esp_dir, root_dir):
             run_cmd(["umount", "-R", mount_point], check=False)
             run_cmd(["umount", "-l", mount_point], check=False)
+        if encrypt_data and os.path.exists(f"/dev/mapper/{DATA_MAPPER_NAME}"):
+            run_cmd(["cryptsetup", "close", DATA_MAPPER_NAME], check=False)
+        if data_key:
+            os.remove(data_key)
         run_cmd(["sync"], check=False)
 
     try:
-        for device, mount_point in ((part_root, root_dir), (part_esp, esp_dir), (part_data, data_dir)):
+        if encrypt_data:
+            data_key = write_data_key()
+            data_fs = format_encrypted_data(part_data, data_key)
+        else:
+            print("[INSTALL] No TPM 2.0 chip: the data partition is not encrypted.", file=sys.stderr)
+            run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_DATA", part_data])
+        for device, mount_point in ((part_root, root_dir), (part_esp, esp_dir), (data_fs, data_dir)):
             os.makedirs(mount_point, exist_ok=True)
             run_cmd(["mount", device, mount_point])
 
@@ -508,12 +544,17 @@ def install_to_disk(target_disk, grub_password_hash=None):
         # same GRUB packages as every image; there is no root filesystem on the
         # disk to chroot into any more. --boot-directory puts grub.cfg and the
         # modules on the image store, outside every image.
+        # --uefi-secure-boot: Microsoft-signed shim, then Debian-signed GRUB,
+        # which boots only Debian-signed kernels -- so the disk starts with
+        # Secure Boot on. Named rather than left to grub-install's default,
+        # which depends on how this live session itself was started.
         try:
             run_cmd([
                 "grub-install",
                 "--target=x86_64-efi",
                 f"--efi-directory={esp_dir}",
                 f"--boot-directory={boot_dir}",
+                "--uefi-secure-boot",
                 "--bootloader-id=LabKiosk",
                 "--no-nvram",
                 "--recheck",
@@ -523,6 +564,7 @@ def install_to_disk(target_disk, grub_password_hash=None):
                 "--target=x86_64-efi",
                 f"--efi-directory={esp_dir}",
                 f"--boot-directory={boot_dir}",
+                "--uefi-secure-boot",
                 "--removable",
                 "--recheck",
             ], check=True)
@@ -571,8 +613,14 @@ def install_to_disk(target_disk, grub_password_hash=None):
         shutil.copyfile(GRUB_CFG_TEMPLATE, os.path.join(grub_dir, "grub.cfg"))
         os.chmod(os.path.join(grub_dir, "grub.cfg"), 0o644)
         write_grub_password(grub_dir, grub_password_hash)
-        write_data_partition_id(grub_dir, part_data)
+        write_data_partition_id(grub_dir, data_fs)
+        if encrypt_data:
+            write_data_crypt_id(grub_dir, part_data)
+            first_boot_key = os.path.join(grub_dir, FIRST_BOOT_KEY_FILE_NAME)
+            shutil.copyfile(data_key, first_boot_key)
+            os.chmod(first_boot_key, 0o600)
         write_swap_partition_id(grub_dir, part_swap)
+        write_hostname(grub_dir, hostname or generate_hostname())
 
         proc = subprocess.run(
             [BOOT_SLOTS_HELPER, "init", version, "--boot-dir", grub_dir],
@@ -759,6 +807,68 @@ def write_data_partition_id(grub_dir, part_data):
     print(f"[INSTALL] Data partition pinned by UUID {data_uuid}.", file=sys.stderr)
 
 
+def tpm2_available(class_dir=TPM_CLASS_DIR, device=TPM_DEVICE):
+    """
+    A TPM 2.0 chip the kernel can talk to. The installer runs on the machine it
+    installs, so this is the chip the installed system will unlock with.
+    Kept identical to tpm2_present() in /usr/local/sbin/labkiosk-data-unlock.
+    """
+    if not os.path.exists(device):
+        return False
+    try:
+        names = os.listdir(class_dir)
+    except FileNotFoundError:
+        return False
+    for name in names:
+        try:
+            with open(os.path.join(class_dir, name, "tpm_version_major"), encoding="ascii") as handle:
+                if handle.read().strip() == "2":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def write_data_key(key_dir="/run"):
+    """A random key for the data partition, in RAM, readable by root only."""
+    key_path = os.path.join(key_dir, f".labkiosk-data-install.{secrets.token_hex(8)}.key")
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as handle:
+        handle.write(secrets.token_hex(32))
+    return key_path
+
+
+def format_encrypted_data(part_data, key_path):
+    """
+    Make the data partition a LUKS2 container opened by key_path, with ext4
+    inside; returns the opened device. The key is random, so a fast PBKDF
+    costs nothing; the first installed boot seals a new key slot to the TPM
+    and destroys this one (labkiosk-data-unlock).
+    """
+    run_cmd(["cryptsetup", "luksFormat", "--batch-mode", "--type", "luks2", "--pbkdf", "pbkdf2",
+             "--pbkdf-force-iterations", "1000", f"--key-file={key_path}", part_data])
+    run_cmd(["cryptsetup", "open", f"--key-file={key_path}", part_data, DATA_MAPPER_NAME])
+    mapper = f"/dev/mapper/{DATA_MAPPER_NAME}"
+    run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_DATA", mapper])
+    print("[INSTALL] Data partition encrypted; the first boot seals its key to the TPM.", file=sys.stderr)
+    return mapper
+
+
+def write_data_crypt_id(grub_dir, part_data):
+    """
+    Name the data partition's LUKS container for grub.cfg, which passes
+    labkiosk.datacrypt=<uuid>; labkiosk-data-unlock opens exactly that one.
+    """
+    crypt_uuid = run_cmd(["blkid", "-s", "UUID", "-o", "value", part_data])
+    if not FS_UUID_PATTERN.match(crypt_uuid):
+        raise RuntimeError(f"blkid returned no usable UUID for the encrypted data partition ({part_data}): {crypt_uuid!r}")
+    id_file = os.path.join(grub_dir, DATA_CRYPT_FILE_NAME)
+    with open(id_file, "w") as handle:
+        handle.write(f'set data_luks_uuid="{crypt_uuid}"\n')
+    os.chmod(id_file, 0o644)
+    print(f"[INSTALL] Encrypted data partition pinned by UUID {crypt_uuid}.", file=sys.stderr)
+
+
 def write_swap_partition_id(grub_dir, part_swap):
     """
     Name THIS disk's swap partition for labkiosk-swap, which opens it with a
@@ -777,6 +887,26 @@ def write_swap_partition_id(grub_dir, part_swap):
     print(f"[INSTALL] Swap partition pinned by PARTUUID {swap_id}.", file=sys.stderr)
 
 
+def generate_hostname():
+    """A name for a workstation nobody named: labkiosk- and six random hex digits."""
+    return f"{HOSTNAME_PREFIX}{secrets.token_hex(3)}"
+
+
+def write_hostname(grub_dir, hostname):
+    """
+    Store the workstation's hostname for grub.cfg, which passes it as
+    labkiosk.hostname=<name>; labkiosk-hostname sets it at every boot. It lives
+    in boot/grub, outside every system image, so an update keeps it.
+    """
+    if not HOSTNAME_PATTERN.match(hostname):
+        raise RuntimeError(f"Not a valid hostname: {hostname!r}")
+    name_file = os.path.join(grub_dir, HOSTNAME_FILE_NAME)
+    with open(name_file, "w") as handle:
+        handle.write(f'set kiosk_hostname="{hostname}"\n')
+    os.chmod(name_file, 0o644)
+    print(f"[INSTALL] Hostname {hostname}.", file=sys.stderr)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -792,11 +922,17 @@ if __name__ == "__main__":
         "--grub-password-hash",
         help="GRUB PBKDF2 password hash (grub.pbkdf2.sha512...)",
     )
+    parser.add_argument(
+        "--hostname",
+        help="The workstation's hostname (one lowercase DNS label); generated when omitted",
+    )
 
     args = parser.parse_args()
 
     if args.grub_password_hash and not args.target:
         parser.error("--grub-password-hash requires --target")
+    if args.hostname is not None and not args.target:
+        parser.error("--hostname requires --target")
 
     if args.list_disks:
         print(json.dumps(list_disks()))
@@ -814,7 +950,7 @@ if __name__ == "__main__":
             )
             sys.exit(1)
         try:
-            install_to_disk(args.target, grub_hash)
+            install_to_disk(args.target, grub_hash, args.hostname)
             sys.exit(0)
         except Exception as err:
             print(f"[INSTALL] ERROR: {err}", file=sys.stderr)

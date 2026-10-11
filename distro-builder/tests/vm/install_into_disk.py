@@ -10,7 +10,10 @@ Two things differ, and only these:
 
 - the target is a loop device, which TARGET_DISK_PATTERN rightly refuses on a
   workstation;
-- `swapoff -a` is skipped: in a chroot it would act on the host's swap.
+- `swapoff -a` is skipped: in a chroot it would act on the host's swap;
+- whether the data partition is encrypted is decided by --encrypt-data, not
+  by whether the host running the test happens to have a TPM. The VM that
+  boots an encrypted disk gets a software TPM (boot-test.sh, scenario 10).
 """
 import importlib.machinery
 import importlib.util
@@ -30,11 +33,13 @@ def load_installer():
 
 
 def main(argv):
-    if len(argv) != 2 or not LOOP_DEVICE_PATTERN.match(argv[1]):
-        print("usage: install_into_disk.py /dev/loopN", file=sys.stderr)
+    encrypt = argv[2:] == ["--encrypt-data"]
+    if len(argv) not in (2, 3) or not LOOP_DEVICE_PATTERN.match(argv[1]) or (len(argv) == 3 and not encrypt):
+        print("usage: install_into_disk.py /dev/loopN [--encrypt-data]", file=sys.stderr)
         return 2
     installer = load_installer()
     installer.TARGET_DISK_PATTERN = LOOP_DEVICE_PATTERN
+    installer.tpm2_available = lambda: encrypt
     real_run_cmd = installer.run_cmd
 
     def run_cmd(cmd, check=True):

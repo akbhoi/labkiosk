@@ -72,6 +72,13 @@ xserver-xorg-video-vesa
 xserver-xorg-video-intel
 xserver-xorg-video-qxl
 xserver-xorg-input-all
+# Hardware video decoding (VA-API) for Chromium, which otherwise decodes every
+# video on the CPU. Mesa's OpenGL drivers (iris, radeonsi, nouveau) already come
+# with the X server. iHD: Intel Broadwell and newer, Arc included; i965: older
+# Intel; mesa-va-drivers: AMD and Radeon (radeonsi, r600) and nouveau.
+intel-media-va-driver-non-free
+i965-va-driver
+mesa-va-drivers
 xinit
 nodm
 openbox
@@ -117,6 +124,12 @@ nftables
 # (labkiosk-swap).
 systemd-zram-generator
 cryptsetup-bin
+# The data partition's key, sealed to the TPM 2.0 chip (labkiosk-data-unlock):
+# systemd-cryptenroll and systemd-cryptsetup load these at run time.
+libtss2-esys-3.0.2-0
+libtss2-mu0
+libtss2-rc0
+libtss2-tcti-device0
 # The agent's control channel: one WebSocket to the organization's hub. Without it
 # the agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
 python3-websocket

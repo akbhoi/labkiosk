@@ -288,6 +288,10 @@ TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcb
 # never crosses this API. Kept identical to GRUB_PBKDF2_PATTERN in
 # /usr/local/bin/labkiosk-install, which re-validates it.
 GRUB_PBKDF2_PATTERN = re.compile(r"^grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+\Z")
+# A hostname typed in the setup wizard's install step: one lowercase DNS label.
+# Kept identical to HOSTNAME_PATTERN in /usr/local/bin/labkiosk-install, which
+# re-validates it.
+INSTALL_HOSTNAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 GRUB_PASSWORD_LINE = re.compile(
     r"^\s*password_pbkdf2\s+\S+\s+(grub\.pbkdf2\.sha512\.[0-9]+\.[0-9A-Fa-f]+\.[0-9A-Fa-f]+)\s*$",
     re.MULTILINE,
@@ -664,6 +668,34 @@ def mounted_fstype(path, mounts_file="/proc/mounts"):
     except OSError:
         return ""
     return found
+
+
+EFI_DIR = "/sys/firmware/efi"
+# The UEFI global variable the firmware sets to 1 while it enforces Secure Boot.
+SECURE_BOOT_VAR = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+
+
+def secure_boot_state(efi_dir=EFI_DIR, var_path=SECURE_BOOT_VAR):
+    """
+    "on" when the firmware enforced Secure Boot for this boot, "off" when it
+    did not, "legacy-bios" when the machine did not start through UEFI, and
+    "unknown" when the variable cannot be read. efivarfs files are four bytes
+    of attributes, then the value.
+    """
+    if not os.path.isdir(efi_dir):
+        return "legacy-bios"
+    try:
+        with open(var_path, "rb") as handle:
+            raw = handle.read(16)
+    except FileNotFoundError:
+        # Firmware without Secure Boot support has no such variable.
+        return "off"
+    except OSError as err:
+        log(f"Could not read the Secure Boot state: {err}")
+        return "unknown"
+    if len(raw) != 5:
+        return "unknown"
+    return "on" if raw[4] == 1 else "off"
 
 
 def enrolment_is_persistent():
@@ -1324,7 +1356,7 @@ def get_install_status():
     return {"state": "idle", "step": "Ready", "progress": 0, "error": None}
 
 
-def start_disk_install(target_disk, grub_password_hash=None):
+def start_disk_install(target_disk, grub_password_hash=None, hostname=None):
     def _run():
         try:
             log(f"Starting local disk installation to {target_disk}...")
@@ -1338,6 +1370,9 @@ def start_disk_install(target_disk, grub_password_hash=None):
                 log("A boot-menu password was supplied for the installed system.")
             else:
                 log("No boot-menu password supplied; the installed GRUB menu will be editable.")
+            if hostname:
+                argv += ["--hostname", hostname]
+                log(f"The installed workstation will be named {hostname}.")
             subprocess.run(argv, check=True)
             log("Local disk installation finished successfully.")
         except Exception as e:
@@ -2171,6 +2206,10 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # partition is not mounted: it can be enrolled, but it
                         # forgets the enrolment at the next power-off.
                         "persistentStorage": enrolment_is_persistent(),
+                        # Shown in the wizard's diagnostics: how to check
+                        # Secure Boot on a machine with no shell.
+                        "secureBoot": secure_boot_state(),
+                        "hostname": socket.gethostname(),
                         # The kiosk bar asks for this to know which interface
                         # catalog to fetch, once per boot.
                         "uiLanguage": str(load_localization_config().get("uiLanguage", "") or "en-US"),
@@ -2277,7 +2316,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "The boot-menu password hash is not in GRUB PBKDF2 format"})
                 return
 
-            start_disk_install(target_disk, grub_hash or None)
+            hostname = str(data.get("hostname", "") or "").strip()
+            if hostname and not INSTALL_HOSTNAME_PATTERN.match(hostname):
+                self._send(400, {"error": "The hostname must be 1-63 lowercase letters, digits and hyphens, not starting or ending with a hyphen"})
+                return
+
+            start_disk_install(target_disk, grub_hash or None, hostname or None)
             self._send(200, {"status": "started", "targetDisk": target_disk})
             return
 
@@ -3837,6 +3881,7 @@ def main():
         configured = state["isConfigured"]
 
     log(f"Starting Lab Kiosk Agent for {client_id} ({'enrolled' if configured else 'awaiting setup'})")
+    log(f"Hostname {socket.gethostname()}; Secure Boot {secure_boot_state()}.")
 
     if configured:
         # A reboot brings back the boot-time policy, which allows only loopback,

@@ -279,7 +279,7 @@ jobs:
       - name: Boot-test the installed disk
         if: steps.check.outputs.rebuild == 'true'
         run: |
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf swtpm cryptsetup-bin
           sudo rebuild-src/distro-builder/tests/vm/boot-test.sh \
             "rebuild-src/distro-builder/out/$ISO" "$RUNNER_TEMP/boot-test"
 

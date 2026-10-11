@@ -1,0 +1,87 @@
+#!/bin/sh
+# Lab Kiosk: give this workstation a hostname of its own at every boot.
+#
+# The image has one /etc/hostname for every workstation, so without this they
+# all announce the same name to DHCP and on the network. In order:
+#
+#   1. labkiosk.hostname=<name> on the kernel command line: what the installer
+#      stored in boot/grub/labkiosk-hostname.cfg, generated at installation or
+#      typed by the administrator there.
+#   2. Otherwise (a live session, or a disk installed before names were
+#      stored): "labkiosk-" and six hex digits derived from the lowest
+#      permanent MAC address of the machine's network cards, so the same
+#      machine gets the same name at every boot.
+#   3. With no network card at all: six random hex digits.
+#
+# A name is one DNS label: lowercase letters, digits and hyphens, 1-63
+# characters, not starting or ending with a hyphen. Anything else on the
+# command line is ignored and the derived name is used.
+set -eu
+
+CMDLINE_FILE=/proc/cmdline
+NET_CLASS_DIR=/sys/class/net
+PREFIX=labkiosk-
+LABEL_RE='[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+
+log() {
+    echo "[HOSTNAME] $*" >&2
+}
+
+cmdline_hostname() {
+    set -f
+    # shellcheck disable=SC2013
+    for arg in $(cat "$CMDLINE_FILE"); do
+        case "$arg" in
+            labkiosk.hostname=*) printf '%s\n' "${arg#labkiosk.hostname=}" ;;
+        esac
+    done | tail -n 1
+    set +f
+}
+
+# The lowest permanent MAC of a physical network card (one with a device
+# behind it), or nothing.
+hardware_mac() {
+    for dev in "$NET_CLASS_DIR"/*; do
+        [ -e "$dev/device" ] || continue
+        # addr_assign_type 0: the card's own address, not a random or set one.
+        [ "$(cat "$dev/addr_assign_type" 2>/dev/null || echo 1)" = 0 ] || continue
+        cat "$dev/address" 2>/dev/null || continue
+    done | grep -Ex '([0-9a-f]{2}:){5}[0-9a-f]{2}' | grep -v '^00:00:00:00:00:00$' | sort | head -n 1
+}
+
+derived_hostname() {
+    # Network drivers load as udev processes the hardware; give a slow card a
+    # few seconds to appear before settling for a random name.
+    tries=0
+    mac="$(hardware_mac)"
+    while [ -z "$mac" ] && [ "$tries" -lt 20 ]; do
+        sleep 0.5
+        tries=$((tries + 1))
+        mac="$(hardware_mac)"
+    done
+    if [ -n "$mac" ]; then
+        printf '%s%s\n' "$PREFIX" "$(printf '%s' "$mac" | sha256sum | cut -c1-6)"
+    else
+        log "No network card with a permanent address; using a random name for this boot."
+        printf '%s%s\n' "$PREFIX" "$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+    fi
+}
+
+name="$(cmdline_hostname)"
+if [ -n "$name" ] && ! printf '%s\n' "$name" | grep -Eqx "$LABEL_RE"; then
+    log "labkiosk.hostname=$name is not a valid hostname; using the generated one."
+    name=""
+fi
+if [ -z "$name" ]; then
+    name="$(derived_hostname)"
+fi
+
+hostname "$name"
+printf '%s\n' "$name" > /etc/hostname
+# Resolve the name locally, as Debian does, without touching any other line.
+hosts_tmp="$(mktemp /etc/.hosts.XXXXXX)"
+grep -v '^127\.0\.1\.1[[:space:]]' /etc/hosts > "$hosts_tmp" || true
+printf '127.0.1.1\t%s\n' "$name" >> "$hosts_tmp"
+chmod 0644 "$hosts_tmp"
+mv "$hosts_tmp" /etc/hosts
+log "Hostname: $name"

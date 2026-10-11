@@ -135,7 +135,8 @@ chmod +x /usr/local/sbin/labkiosk-update || true
 chmod +x /usr/local/sbin/labkiosk-share || true
 # Not "|| true": without them the journal never reaches the data partition and
 # the swap partition is never used.
-chmod 0755 /usr/local/sbin/labkiosk-logs /usr/local/sbin/labkiosk-swap
+chmod 0755 /usr/local/sbin/labkiosk-logs /usr/local/sbin/labkiosk-swap /usr/local/sbin/labkiosk-hostname \
+    /usr/local/sbin/labkiosk-data-unlock
 # Not "|| true": without it nothing mounts the data partition on an installed disk.
 chmod 0755 /etc/systemd/system-generators/labkiosk-data-generator
 chmod +x /usr/local/bin/labkiosk-lock-keys || true
@@ -213,6 +214,11 @@ for tty in 1 2 3 4 5 6; do
 done
 systemctl mask serial-getty@.service || true
 systemctl mask debug-shell.service || true
+
+# No suspend or hibernation: a kiosk is on, or powered off or restarting
+# (logind.conf.d/labkiosk.conf and sleep.conf.d/labkiosk.conf say why).
+systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target \
+    suspend-then-hibernate.target
 
 # Mask NetworkManager-wait-online to prevent 120s boot stalls when network is offline/slow.
 systemctl mask NetworkManager-wait-online.service || true
@@ -331,6 +337,15 @@ systemctl enable labkiosk-swap.service
 #     flushes, so nothing from early boot is written to the RAM overlay and
 #     lost. tmpfiles only adjusts this folder (z), it never creates it.
 rm -rf /var/log/journal
+
+# 7c. A hostname of each workstation's own, before the network comes up
+# (labkiosk-hostname): stored at installation, or derived from the network card.
+systemctl enable labkiosk-hostname.service
+# 7d. On a machine with a TPM 2.0 chip the data partition is encrypted; this
+# opens it with the chip before /etc/labkiosk is mounted, with nobody at the
+# keyboard, and recreates it empty if the chip no longer releases the key
+# (labkiosk-data-unlock). Elsewhere it does nothing.
+systemctl enable labkiosk-data-unlock.service
 
 # Configure Hyper-V & generic VM display/storage drivers in initramfs
 mkdir -p /etc/initramfs-tools
