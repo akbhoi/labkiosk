@@ -53,7 +53,7 @@ security update channel that also carries features.
 
 | Fact | Where |
 |---|---|
-| Installed disk: `bios_grub`, ESP (512 MiB), `ROOT` ext4 (the rest of the disk minus 513 MiB), `DATA` ext4 (512 MiB) | `labkiosk-install` `install_to_disk()` |
+| Installed disk: `bios_grub`, ESP (512 MiB), `ROOT` ext4 (the rest of the disk minus 1537 MiB), `SWAP` (1 GiB, partition 5, encrypted per boot), `DATA` ext4 (512 MiB) | `labkiosk-install` `install_to_disk()` |
 | ROOT is an **image store** (§5.1): the installer copies the live medium's `vmlinuz`, `initrd.img` and `filesystem.squashfs` to `images/<version>/` (the version from `/usr/share/labkiosk/version`), and the installed system boots that squashfs through live-boot with `labkiosk.installed=1 noeject panic=10`. Disks installed by earlier releases hold an rsync of the live rootfs instead | `labkiosk-install`, `usr/share/labkiosk/boot/grub.cfg` |
 | One-try boot: `boot/grub/grubenv` holds `current`, `previous`, `next`, `next_tries`; GRUB spends the try before it boots `next`. `labkiosk-boot-ok.service` runs `labkiosk-boot-slots check` at every boot: it makes `next` current once the agent and browser stay up, or reboots into the old image, and writes the outcome to `/run/labkiosk-update/status.json`. The agent posts failures, rollbacks and successful installs to `POST /api/devices/boot-report` | `labkiosk-boot-slots`, `agent.py`, `src/boot_report.ts` |
 | Reinstalling is refused on an installed disk (`is_live_session()`, keyed on `labkiosk.installed=1` or the legacy `/etc/labkiosk-installed`), and `POST /api/install` returns 400 | `labkiosk-install`, `agent.py` |

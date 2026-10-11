@@ -83,6 +83,7 @@ sudo bash build-iso.sh
 | X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `xinit`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
 | Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji` |
 | Remote & network | `x11vnc`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
+| Memory & recovery | `systemd-zram-generator` (compressed RAM as the first swap), `cryptsetup-bin` (the installed disk's swap partition, encrypted with a key for one boot) |
 
 ### Keeping the image small
 
@@ -150,7 +151,8 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-update \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-logs
 
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
@@ -160,6 +162,7 @@ python3 distro-builder/tools/generate-chromium-policy.py --check
 shellcheck -S warning \
   distro-builder/config/includes.chroot/etc/openbox/autostart \
   distro-builder/docker-build.sh \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-swap \
   docker-test/entrypoint.sh
 ```
 

@@ -258,6 +258,10 @@ On an installed disk, `labkiosk-boot-slots check` (root, run by `labkiosk-boot-o
 
 A report is retried every 30 s until the control plane answers it for good (`200`, or `400`/`404`, which are not resent); the Worker drops a report it already holds. The latest outcome is kept on the workstation's row, and a failure, rollback, fallback or error is listed under Settings → **Errors & Warnings** in the admin console.
 
+## Restart reports
+
+An installed disk keeps its system journal on `LABKIOSK_DATA` for seven days (`labkiosk-logs.service`, root). A boot that ends without a clean shutdown — a power cut, a forced power-off, a hang the hardware watchdog restarted after 30 s, or a kernel panic (the workstation restarts 10 s after one) — is found at the next start, and the last 300 lines of its journal are saved as `/etc/labkiosk/logs/reports/<bootId>.json`. The same loop as the boot reports sends each to `POST /api/devices/restart-report` once, reading only root-owned files whose name matches the boot id inside, and lists the ones the control plane answered for good in `/etc/labkiosk/restart-reports-sent.json`. A report it could not send is sent at a later round or the next boot, until `labkiosk-logs` deletes it after seven days. The agent's own log lines also go to the journal (syslog ident `labkiosk-agent`), so a report shows what the agent was doing.
+
 ---
 
 ## Enrolment

@@ -25,8 +25,11 @@ The installer writes a **hybrid GPT** layout so one disk image boots on legacy B
 | :-- | :--- | :--- | :--- | :--- |
 | 1 | `bios_grub` | 1 MiB – 2 MiB | none, flag `bios_grub on` | Lets legacy GRUB embed `core.img` on a GPT disk |
 | 2 | `ESP` | 2 MiB – 514 MiB | FAT32, flag `esp on` | UEFI bootloader files |
-| 3 | `ROOT` | 514 MiB – (end − 513 MiB) | ext4, label `LABKIOSK_ROOT` | The image store: `boot/grub/` and the system images under `images/<version>/` |
+| 3 | `ROOT` | 514 MiB – (end − 1537 MiB) | ext4, label `LABKIOSK_ROOT` | The image store: `boot/grub/` and the system images under `images/<version>/` |
+| 5 | `SWAP` | (end − 1536 MiB) – (end − 512 MiB) | none; GPT type Linux swap | Swap behind compressed RAM, encrypted at every boot with a key that never leaves RAM, by PARTUUID |
 | 4 | `DATA` | last 512 MiB | ext4, label `LABKIOSK_DATA` | Mounted at `/etc/labkiosk` with `nofail`, by UUID |
+
+`SWAP` is partition 5 although it sits before `DATA`: it is created last so that `DATA` keeps number 4 on every disk. Disks installed before it existed have no swap partition and use compressed RAM alone.
 
 ### Why partition 4 exists
 
@@ -37,12 +40,13 @@ The installer writes a **hybrid GPT** layout so one disk image boots on legacy B
 1. `/etc/labkiosk/config.json` — device bearer token, client ID, and worker URL.
 2. `/etc/labkiosk/proxy.json` — organization proxy settings.
 3. `/etc/labkiosk/system-connections/` — NetworkManager connection profiles, bind-mounted to `/etc/NetworkManager/system-connections` on boot.
+4. `/etc/labkiosk/logs/` — root's: the system journal of the last seven days (at most 128 MiB), and a report for each boot that ended without shutting down, which the agent sends to the console (`labkiosk-logs`).
 
 Everything else on an installed machine, `/etc/machine-id` and browser cache included, is regenerated or reset on every boot.
 
 ### Negative parted offsets need `--`
 
-ROOT and DATA are sized from the end of the disk (`-513MiB`, `-512MiB`). Without a `--` separator, parted parses those as bundled single-letter options and aborts the install.
+ROOT, SWAP and DATA are sized from the end of the disk (`-1537MiB`, `-1536MiB`, `-512MiB`). Without a `--` separator, parted parses those as bundled single-letter options and aborts the install.
 
 ---
 

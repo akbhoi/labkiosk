@@ -96,6 +96,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/ws` | `GET` (WebSocket) | Device Token | Control channel to the organization's OrgHub: configuration and commands pushed, status and watched frames up |
 | `/api/telemetry` | `POST` | Device Token | HTTP fallback: 3-second heartbeat, thumbnail, command retrieval |
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
+| `/api/devices/restart-report` | `POST` | Device Token | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/update` | `GET` | Device Token | The system release this workstation's organization is offered and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
 | `/api/settings/updates` | `GET`, `POST` | Organization Admin (`updates`) | The organization's update channel and the release it is offered; `POST {"channel": "stable"\|"beta"}` changes the channel |
 | `/api/clients/check-update` | `POST` | Organization Admin (`updates`) | `{"clientIds"}`: ask these workstations to check for and download the offered release |
@@ -103,7 +104,8 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/clients/remote-session` | `POST` | Organization Admin (`workstations`) | Open a Remote Control session through the console's relay: asks the workstation to join and returns the viewer's socket path |
 | `/api/console/remote` | `GET` (WebSocket) | Organization Admin (`workstations`) | The viewer's side of a Remote Control session (VNC bytes) |
 | `/api/devices/remote` | `GET` (WebSocket) | Device Token | The workstation's side of a Remote Control session (VNC bytes) |
-| `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, each with `report_state`, `report_match` (`new`/`existing`), `issue_url`, `issue_number`, `report_status` (`open`, `in_progress`, `pr_open`, `resolved`, `closed`) and `pr_url`; plus `bugReports: {enabled, available, repository, termsVersion, acceptedTermsVersion, termsAcceptedAt}` |
+| `/api/workstation-issues/log` | `GET` | Organization Admin (`settings`) | `?id=<issue id>`: `{id, log}`, the journal a restart report carried; `404` when the issue is not the organization's or its log was cleared after 30 days |
+| `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, each with `has_log` (1 when a restart report's log is kept), `report_state`, `report_match` (`new`/`existing`), `issue_url`, `issue_number`, `report_status` (`open`, `in_progress`, `pr_open`, `resolved`, `closed`) and `pr_url`; plus `bugReports: {enabled, available, repository, termsVersion, acceptedTermsVersion, termsAcceptedAt}` |
 | `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
@@ -496,6 +498,32 @@ what people did.
   workstation already sent (or one less than 60 s after the last); `400` malformed, not sent again;
   `409` the workstation has not checked in yet, sent again later.
 
+#### `POST /api/devices/restart-report`
+
+A boot of an installed workstation that ended without shutting down: a power cut, a forced
+power-off, a hang the hardware watchdog restarted, or a kernel panic. At the next start
+`labkiosk-logs` (root) finds the previous boot never recorded a clean shutdown, writes the last 300
+lines of that boot's journal to the data partition, and the agent sends it here once. Each is
+listed in `workstation_issues` as `unexpected_restart` (severity `warning`) or `watchdog_reset`
+(`error`), one per boot; the log is kept for 30 days and shown under Settings → Errors & Warnings
+(**Show log**). Restart reports are never filed as automatic bug reports.
+
+- **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
+  organization and the workstation.
+- **Request Body:** `bootId` (the boot's 32 hex digit kernel id), `kind` (`unexpected_restart` |
+  `watchdog_reset`), `version` (the image that boot ran, or `null`), `startedAt` and `endedAt`
+  (Unix seconds; `endedAt` within the last 7 days and not before `startedAt`), `log` (text; the
+  last 16 KB are kept, control characters other than line breaks and tabs become spaces).
+
+  ```json
+  { "bootId": "6f1c…", "kind": "watchdog_reset", "version": "2.6.1",
+    "startedAt": 1791100000, "endedAt": 1791107200, "log": "2026-10-11T09:14:02+0530 …" }
+  ```
+
+- **Responses:** `200 {"status":"ok","recorded":true}`; `recorded: false` for a boot already
+  reported; `400` malformed, not sent again; `409` the workstation has not checked in yet, sent
+  again later; `429` more than 24 reports from this workstation in a day, sent at its next start.
+
 #### `GET /api/devices/update`
 
 The system release this workstation's organization is offered, asked by the workstation's root
@@ -868,7 +896,8 @@ Rotates the organization's workstation enrollment key. Existing workstations ret
 
 The **Errors & Warnings** sub-tab of Settings lists what workstations reported about themselves
 (failed or rolled-back updates and boot errors, from
-[`POST /api/devices/boot-report`](#post-apidevicesboot-report)), kept for 90 days and separate from
+[`POST /api/devices/boot-report`](#post-apidevicesboot-report), and restarts without a shutdown,
+from [`POST /api/devices/restart-report`](#post-apidevicesrestart-report)), kept for 90 days and separate from
 the audit log. `GET /api/workstation-issues` returns the list and the organization's automatic bug
 report setting (fields in the [summary matrix](#-api-summary-matrix)). `POST
 /api/settings/bug-reports` turns automatic, redacted GitHub bug reports on or off; turning them on

@@ -53,6 +53,12 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   `(state, at)`. `200`/`400`/`404` settle it; `409`, `401`/`403` and network errors retry. Keep
   `BOOT_REPORT_STATES` equal to `src/boot_report.ts` (tested). It lands in Settings → Errors &
   Warnings, not the audit log. Contract: `labkiosk-core` §2b.
+- **Restart reports** (same loop): `report_restarts()` reads `/etc/labkiosk/logs/reports/*.json`
+  that `labkiosk-logs` (root) wrote — root-owned regular files only, the boot id in the name must
+  match the body — and posts each once to `POST /api/devices/restart-report`, remembering the
+  settled ones in `/etc/labkiosk/restart-reports-sent.json`. `log()` also writes to syslog as
+  `labkiosk-agent`, so the agent's lines are in the journal a report carries. Contract:
+  `labkiosk-core` §2c.
 - Enrolment reply names the organization via `organization_name()` (`organizationName`, falling
   back to the deprecated `schoolName`). Persistence is reported, not assumed:
   `enrolment_is_persistent()` checks the **filesystem type** at `/etc/labkiosk`.

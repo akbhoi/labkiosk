@@ -18,7 +18,7 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
 | **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Operator Lab Dashboard, Super Admin console |
-| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry` and `/api/devices/boot-report` |
+| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report` and `/api/devices/restart-report` |
 | **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
 Session tokens are random 32-byte hex strings; only their SHA-256 hash is stored in D1. Device tokens are handled the same way — the plaintext token exists only on the workstation that was issued it.
@@ -33,7 +33,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `requireTenantAdmin()` | `401` anonymous, `400` no organization, `403` wrong tenant (and a super admin outside its own demos) | `GET /api/broadcast-presets`, `GET /api/whitelist`, the `/admin` pages |
 | `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*` (but `/api/settings/updates`), `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/console/remote`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `updates`: `/api/settings/updates`, `/api/clients/check-update`, `/api/clients/install-update`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
 | `requireSuperAdmin()` | `401` / `403` | all `/api/super/*` |
-| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/remote` |
+| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/remote` |
 | `rejectCrossSiteMutation()` | `403` | every cookie-authenticated `POST`/`DELETE` under `/api/` |
 
 ### Rate limiting
@@ -104,6 +104,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/settings/custom-domain` | `POST` `DELETE` | Request or disconnect a custom domain |
 | `/api/audit-logs` | `GET` | Paginated organization audit log |
 | `/api/workstation-issues` | `GET` | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, with each one's bug report state; plus the organization's automatic bug report settings (requires `settings`) |
+| `/api/workstation-issues/log` | `GET` | `?id=`: the journal a restart report carried, kept 30 days (requires `settings`) |
 | `/api/settings/bug-reports` | `POST` | Opt in to or out of automatic, redacted GitHub bug reports; turning them on accepts the current terms version (requires `settings`) |
 
 ### Device
@@ -113,6 +114,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/devices/ws` | `GET` (WebSocket) | The control channel: status and frames up; configuration, commands and frame requests down |
 | `/api/telemetry` | `POST` | The HTTP fallback: a three-second heartbeat carrying the same |
 | `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
+| `/api/devices/restart-report` | `POST` | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
 ### Release build
@@ -299,13 +301,25 @@ What an installed workstation's last boot did with its system image, as `labkios
 
 ---
 
+### `POST /api/devices/restart-report`
+
+A boot of an installed workstation that ended without shutting down: a power cut, a forced power-off, a hang the hardware watchdog restarted, or a kernel panic. At the next start `labkiosk-logs` (root) sees that the previous boot never recorded a clean shutdown and saves the last 300 lines of its journal on the data partition; the agent sends that here once. It is listed in `workstation_issues` as `unexpected_restart` (`warning`) or `watchdog_reset` (`error`), one row per boot, and its log is kept 30 days. Restart reports are never filed as automatic bug reports.
+
+**Access:** `Authorization: Bearer <deviceToken>`; the token decides the organization and the workstation.
+
+**Request:** `bootId` (32 hex digits), `kind` (`unexpected_restart` | `watchdog_reset`), `version` (or `null`), `startedAt`, `endedAt` (Unix seconds; `endedAt` within the last 7 days and not before `startedAt`), `log` (the last 16 KB are kept).
+
+**`200 OK`** → `{ "status": "ok", "recorded": true }`; `recorded: false` for a boot already reported. **`400`** malformed, not sent again. **`409`** the workstation has not checked in yet, sent again later. **`429`** more than 24 in a day from this workstation; the rest wait for its next start.
+
+---
+
 ### `GET /api/workstation-issues`
 
 Errors and warnings the organization's workstations reported, newest first (`?limit=`, default 100, at most 200; rows older than 90 days are deleted by the hourly cron).
 
 **Access:** organization admin or staff with the `settings` permission.
 
-Each issue carries `id`, `client_id`, `severity`, `kind`, `image_version`, `details`, `occurred_at`, `created_at`, `report_state` (`none` | `pending` | `sent`), `report_match` (`new` | `existing`), and, once sent, `issue_url`, `issue_number`, `report_status` (`open` | `in_progress` | `pr_open` | `resolved` | `closed`) and `pr_url`. The response also carries the organization's opt-in state:
+Each issue carries `id`, `client_id`, `severity`, `kind`, `image_version`, `details`, `occurred_at`, `created_at`, `has_log` (1 when a restart report's log is kept; read it with `GET /api/workstation-issues/log?id=<id>`, which answers `{id, log}` or `404`), `report_state` (`none` | `pending` | `sent`), `report_match` (`new` | `existing`), and, once sent, `issue_url`, `issue_number`, `report_status` (`open` | `in_progress` | `pr_open` | `resolved` | `closed`) and `pr_url`. The response also carries the organization's opt-in state:
 
 ```json
 {

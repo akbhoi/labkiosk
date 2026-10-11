@@ -131,6 +131,24 @@ reasoning model (`@cf/openai/gpt-oss-120b`) whether an open report matches, file
 GitHub, and reads each issue's status back (`src/bug_reports.ts`). `200` and `400`/`404` settle a
 report; `409` (row not written by the hub yet), `401`/`403` and network errors are retried.
 
+## 2c. Restart reports — agent → Worker `POST /api/devices/restart-report`
+
+On an installed disk `labkiosk-logs.service` (root, before nodm) bind-mounts
+`LABKIOSK_DATA/logs/journal` on `/var/log/journal` (the image ships without that folder, so journald
+keeps `/run` until then), keeps every boot's journal for 7 days (128 MiB in all), and records each
+boot in `logs/boot-state.json`; `stop` marks it `clean` only while systemd is `stopping`. A previous
+boot that is not clean becomes `logs/reports/<bootId>.json` (root:kiosk 0640): `{bootId, kind,
+version, startedAt, endedAt, log}`, `kind` `watchdog_reset` when `/sys/class/watchdog/*/bootstatus`
+has `WDIOF_CARDRESET`, else `unexpected_restart`; `log` is the last 300 journal lines, at most 16 KB.
+Reports are deleted after 7 days. The agent (`report_restarts()`, in `boot_report_loop()`) sends each
+once and lists the boot ids answered for good in `/etc/labkiosk/restart-reports-sent.json` (0600):
+`200`/`400`/`404` settle, `409`, `401`/`403`, `5xx` and network errors retry, `429` holds the rest
+until the agent's next start. The Worker keeps one `workstation_issues` row per boot (id from
+SHA-256 of tenant, workstation and boot id), at most 24 a day per workstation, with the log in
+`log_text` (0031) for 30 days, read by `GET /api/workstation-issues/log?id=` (`settings`). Restart
+issues are never `pending` for automatic bug reports. `RESTART_KINDS` in `src/boot_report.ts` and
+`labkiosk-logs` must agree (tested).
+
 ## 3. Enrolment — wizard → agent `POST /api/setup` → Worker `POST /api/devices/enroll`
 
 - Payload `{ subdomain, clientId, enrollmentKey, customDomain }`; reply carries the device token,

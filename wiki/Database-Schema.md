@@ -15,7 +15,7 @@ This is the single most important rule when touching the database, and the test 
 
 Both must be changed together. `test/worker.test.ts` compares them and fails on drift with `Columns of "x" differ between SCHEMA_SQL and migrations/`.
 
-**Never edit an applied migration.** Add a new numbered file — `0030_feature.sql` — and mirror the change in `SCHEMA_SQL`.
+**Never edit an applied migration.** Add a new numbered file — `0032_feature.sql` — and mirror the change in `SCHEMA_SQL`.
 
 ```bash
 # Local
@@ -63,6 +63,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0028_release_iso_sha256.sql` | `release_notes.iso_sha256`: the ISO's SHA-256 as GitHub computed it, shown as text on `/download` |
 | `0029_security_updates.sql` | Security releases at the next boot: `tenants.security_updates`; `client_devices.update_kind`, `update_since` |
 | `0030_lan_sharing.sql` | `tenants.lan_sharing`: the workstations at one site copy a release from each other instead of each downloading it |
+| `0031_restart_logs.sql` | `workstation_issues.log_text`: the end of the journal a restart report carried, cleared after 30 days |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -181,8 +182,8 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 ### `workstation_issues`
 
 Errors and warnings workstations report, kept apart from `audit_logs` (which records what people
-did). Fed by `POST /api/devices/boot-report`; read by Settings → Errors & Warnings; the hourly cron
-deletes rows older than 90 days.
+did). Fed by `POST /api/devices/boot-report` and `POST /api/devices/restart-report`; read by Settings →
+Errors & Warnings; the hourly cron deletes rows older than 90 days, and restart logs after 30.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |
@@ -190,7 +191,7 @@ deletes rows older than 90 days.
 | `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
 | `client_id` | TEXT | The workstation, from its device token |
 | `severity` | TEXT | `error` or `warning` (CHECK) |
-| `kind` | TEXT | `update_failed`, `update_rolled_back`, `boot_error`, `boot_fallback` |
+| `kind` | TEXT | `update_failed`, `update_rolled_back`, `boot_error`, `boot_fallback`, `unexpected_restart`, `watchdog_reset` |
 | `image_version` | TEXT | The image the workstation was running |
 | `details` | TEXT | One readable line; an `error`'s reason, cut to 300 characters |
 | `occurred_at` | INTEGER | When the workstation recorded it (its clock) |
@@ -198,6 +199,7 @@ deletes rows older than 90 days.
 | `report_state` | TEXT | `none`, `pending` (recorded while the organization had opted in) or `sent` (CHECK) |
 | `bug_signature` | TEXT | → `bug_reports.signature` once sent |
 | `report_match` | TEXT | `new` (opened its issue) or `existing` (linked to one already filed) (CHECK) |
+| `log_text` | TEXT | A restart report's journal tail (at most 16 KB); `NULL` otherwise and after 30 days |
 
 ### `bug_reports`
 
@@ -342,7 +344,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0031_<description>.sql` (the next number after `0030`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0032_<description>.sql` (the next number after `0031`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

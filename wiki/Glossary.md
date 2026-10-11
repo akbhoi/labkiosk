@@ -92,7 +92,7 @@ The unprivileged Linux account the whole session runs as. Has an **empty** passw
 
 ### `LABKIOSK_DATA`
 
-The 512 MiB ext4 partition at the end of an installed disk, mounted at `/etc/labkiosk`. The only persistent write target on an installed workstation, existing so a post-install enrolment survives a reboot.
+The 512 MiB ext4 partition at the end of an installed disk, mounted at `/etc/labkiosk`. The only persistent file system an installed workstation writes, existing so a post-install enrolment survives a reboot; it also keeps seven days of system journal in root's `logs/` folder.
 
 ### `LABKIOSK_ROOT`
 
