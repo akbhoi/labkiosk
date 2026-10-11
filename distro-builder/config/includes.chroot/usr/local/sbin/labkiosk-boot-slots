@@ -400,7 +400,9 @@ def cmd_check():
         return {"state": "installed", "version": running}
 
     write_status("failed", version=running, previous=env.get("current", ""))
-    log(f"{running} did not pass its health check; rebooting into {env.get('current', '')}")
+    log(f"{running} did not pass its health check (agent answers: {'yes' if agent_answers() else 'no'}; "
+        f"kiosk browser running: {'yes' if browser_running() else 'no'}); "
+        f"rebooting into {env.get('current', '')}")
     run(["systemctl", "reboot"])
     return {"state": "failed", "version": running}
 

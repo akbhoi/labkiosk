@@ -356,10 +356,18 @@ umount_root
 start_vm
 promoted="current=$V_GOOD previous=$VERSION"
 deadline=$((SECONDS + PROMOTE_TIMEOUT))
+# What the screen shows halfway through the health window: kept only if the
+# scenario fails, since a VM that rolls back reboots before it can be captured.
+midway=$((SECONDS + 300))
 while [ "$SECONDS" -lt "$deadline" ] && vm_running && [ "$(env_now)" != "$promoted" ]; do
+    if [ -n "$midway" ] && [ "$SECONDS" -ge "$midway" ]; then
+        screenshot promote-midway
+        midway=""
+    fi
     sleep 10
 done
 if [ "$(env_now)" = "$promoted" ]; then
+    rm -f "$WORK/promote-midway.ppm"
     pass "promote: grubenv $promoted after $((PROMOTE_TIMEOUT - deadline + SECONDS)) s"
 elif vm_running; then
     screenshot promote
@@ -492,6 +500,14 @@ if [ -n "$complaints" ]; then
     printf '%s\n' "$complaints" | head -n 60
 else
     log "apparmor: no complaints from either profile"
+fi
+# A failed health check says which half of it failed, and the session's own
+# output (X, Openbox, the browser) says why; both are on DATA.
+if [ "$FAILED" -ne 0 ]; then
+    log "boot-ok: what labkiosk-boot-slots said on every boot so far:"
+    journal --unit=labkiosk-boot-ok.service | tail -n 40
+    log "session: the end of labkiosk-session's output:"
+    journal --unit=labkiosk-session.service | tail -n 80
 fi
 
 # --------------------------------------------------------------------------
