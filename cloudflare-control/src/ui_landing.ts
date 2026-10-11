@@ -1110,13 +1110,16 @@ ${FONT_LINKS}
       fieldProblem(regTaxId, 'reg-tax-error', wrong ? 'Not a valid ' + format.label + '. Example: ' + format.example : '');
     }
 
-    function checkPhone() {
+    function checkPhone(tidy) {
       // Digits only. A leading 0 is dropped, because the calling code replaces it,
       // except in the few countries whose numbers keep it (Italy's +39 06 ...).
       const keepsZero = Boolean(geo && dialCountry) && geo.keepZero.includes(dialCountry[0]);
       const typed = regPhone.value.replace(/[^0-9]/g, '');
       const digits = keepsZero ? typed : typed.replace(/^0+/, '');
-      if (regPhone.value !== digits) regPhone.value = digits;
+      // The field is rewritten only once it is left or the form is sent. Rewriting it
+      // on every key moves the cursor to the end, which makes the middle of a number
+      // impossible to edit, so spaces and dashes are left alone while typing.
+      if (tidy === true && regPhone.value !== digits) regPhone.value = digits;
       let problem = '';
       if (digits && (digits.length < 4 || digits.length > 14)) problem = 'Enter the number without the country code.';
       else if (digits && dialCountry && dialCountry[2].length + digits.length > 15) problem = 'That number is too long for +' + dialCountry[2] + '.';
@@ -1163,7 +1166,7 @@ ${FONT_LINKS}
       document.getElementById('reg-phone-hint').textContent =
         (geo.keepZero.includes(row[0]) ? 'Without the country code; keep the leading 0. ' : 'Without the country code or a leading 0. ') +
         'We call or message this number to confirm it before approval.';
-      checkPhone();
+      checkPhone(true);
       if (!regCountry.value) {
         regCountry.value = row[0];
         applyCountry();
@@ -1259,7 +1262,11 @@ ${FONT_LINKS}
         event.preventDefault();
         if (!dialShown.length) return;
         const step = event.key === 'ArrowDown' ? 1 : -1;
-        markDialActive((dialActive + step + dialShown.length) % dialShown.length);
+        // With nothing marked yet, Down starts at the first country and Up at the last.
+        const next = dialActive === -1
+          ? (step === 1 ? 0 : dialShown.length - 1)
+          : (dialActive + step + dialShown.length) % dialShown.length;
+        markDialActive(next);
       } else if (event.key === 'Enter') {
         // Never the registration itself: Enter here picks a country.
         event.preventDefault();
@@ -1281,7 +1288,8 @@ ${FONT_LINKS}
     regCountry.addEventListener('change', applyCountry);
     regPostal.addEventListener('input', checkPostal);
     regTaxId.addEventListener('input', checkTaxId);
-    regPhone.addEventListener('input', checkPhone);
+    regPhone.addEventListener('input', () => checkPhone(false));
+    regPhone.addEventListener('change', () => checkPhone(true));
 
     function loadGeo() {
       if (geo) return Promise.resolve(geo);
@@ -1325,7 +1333,7 @@ ${FONT_LINKS}
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       registerAlert.style.display = 'none';
-      const phoneDigits = checkPhone();
+      const phoneDigits = checkPhone(true);
       if (!dialCountry) {
         dialButton.classList.add('is-invalid');
         registerError('Choose the country code of your phone number.');

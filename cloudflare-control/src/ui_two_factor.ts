@@ -61,10 +61,10 @@ export function renderTwoFactorScript(nonce: string): string {
         group.append(labelEl, field);
         if (type === "password") {
           // A password manager matches the password to this account.
-          var account = el("input");
+          // Off screen, not hidden: some password managers skip a field that is not rendered.
+          var account = el("input", "visually-hidden");
           account.type = "text";
           account.name = "username";
-          account.hidden = true;
           account.tabIndex = -1;
           account.setAttribute("autocomplete", "username");
           account.setAttribute("aria-hidden", "true");

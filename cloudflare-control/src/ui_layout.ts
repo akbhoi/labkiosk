@@ -153,9 +153,10 @@ export const UNSAVED_CHANGES_SCRIPT = `
       window.fetch = function (input, init) {
         var form = submitting;
         var method = String((init && init.method) || "GET").toUpperCase();
-        if (!form || method === "GET") return plainFetch.apply(this, arguments);
+        // Always on window, as the busy marker calls it: fetch refuses any other receiver.
+        if (!form || method === "GET") return plainFetch.apply(window, arguments);
         submitting = null;
-        return plainFetch.apply(this, arguments).then(function (response) {
+        return plainFetch.apply(window, arguments).then(function (response) {
           saveAnswered(form, response.ok);
           return response;
         }, function (error) {

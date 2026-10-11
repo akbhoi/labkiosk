@@ -285,7 +285,7 @@ ${renderRemoteControlCard(tenant)}
             <p class="card-sub">Change the password for this administrative account.</p>
 
             <form id="form-change-password">
-              <input type="text" id="pwd-username" autocomplete="username" aria-hidden="true" tabindex="-1" hidden>
+              <input type="text" id="pwd-username" class="visually-hidden" autocomplete="username" aria-hidden="true" tabindex="-1">
               <div class="form-group">
                 <label class="form-label" for="pwd-current">Current Password</label>
                 <input type="password" class="form-input" id="pwd-current" autocomplete="current-password" required>
