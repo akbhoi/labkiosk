@@ -42,6 +42,25 @@ firmware-linux-free
 firmware-misc-nonfree
 firmware-realtek
 firmware-iwlwifi
+# Desktop and laptop hardware beyond the reference Intel thin client: about 95 MB
+# of the ISO. Server NICs (QLogic, Myricom, Cavium, Netronome) stay out; nothing
+# a kiosk runs on carries them. Intel Arc (DG2) and NVIDIA nouveau firmware
+# already come with firmware-misc-nonfree.
+# AMD GPUs and APUs (amdgpu, radeon): without it they fall back to VESA.
+firmware-amd-graphics
+# Audio DSPs: SOF on most Intel laptops and mini-PCs from 2019 on, SST before that.
+firmware-sof-signed
+firmware-intel-sound
+# Wi-Fi: Qualcomm Atheros, Broadcom, Marvell, TI, and USB dongles (ath9k_htc, ZyDAS).
+firmware-atheros
+firmware-ath9k-htc
+firmware-brcm80211
+firmware-libertas
+firmware-ti-connectivity
+firmware-zd1211
+# Ethernet: Broadcom NetXtreme II, found in business desktops.
+firmware-bnx2
+firmware-bnx2x
 
 # Minimal X11 Server, Drivers & Openbox
 xserver-xorg-core
@@ -95,8 +114,5 @@ gpgv
 nftables
 # The agent's control channel: one WebSocket to the organization's hub. Without it
 # the agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
-python3-websocket
-# The agent's control channel (a WebSocket to the organization's hub). Without it the
-# agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
 python3-websocket
 ca-certificates

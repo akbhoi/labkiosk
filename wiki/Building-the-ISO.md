@@ -79,7 +79,7 @@ sudo bash build-iso.sh
 | Kernel & live boot | `linux-image-amd64`, `live-boot`, `live-config`, `live-config-systemd`, `live-tools`, `eject`, `overlayroot`, `systemd-sysv` |
 | Boot & partitioning | `grub-efi-amd64-bin`, `grub-pc-bin`, `grub-common`, `grub2-common`, `shim-signed`, `grub-efi-amd64-signed`, `efibootmgr`, `parted`, `dosfstools`, `e2fsprogs`, `rsync`, `sudo`, `xz-utils` |
 | Virtualisation | `hyperv-daemons` |
-| Firmware | `intel-microcode`, `amd64-microcode`, `firmware-linux-free`, `firmware-misc-nonfree`, `firmware-realtek`, `firmware-iwlwifi` |
+| Firmware | `intel-microcode`, `amd64-microcode`, `firmware-linux-free`, `firmware-misc-nonfree` (includes Intel Arc and NVIDIA nouveau), `firmware-realtek`, `firmware-iwlwifi`, `firmware-amd-graphics`, `firmware-sof-signed`, `firmware-intel-sound`, `firmware-atheros`, `firmware-ath9k-htc`, `firmware-brcm80211`, `firmware-libertas`, `firmware-ti-connectivity`, `firmware-zd1211`, `firmware-bnx2`, `firmware-bnx2x` |
 | X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `xinit`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
 | Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji` |
 | Remote & network | `x11vnc`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
@@ -90,7 +90,7 @@ sudo bash build-iso.sh
 
 - A package the kiosk needs that some other package only *recommends* must be listed by name (that is why `systemd-timesyncd`, the signed shim/GRUB and the extra Xorg drivers are there).
 - `live-tools` is in that list for a concrete reason: it prints *"Please remove the live-medium ... press ENTER"* when a live session reboots. Without it, a workstation that has just been installed reboots straight back into the installer.
-- New Wi-Fi or GPU hardware needs its `firmware-*` package added explicitly (e.g. `firmware-amd-graphics`, `firmware-atheros`, `firmware-brcm80211`).
+- New Wi-Fi or GPU hardware needs its `firmware-*` package added explicitly. The list covers desktop and laptop GPUs, audio DSPs, Wi-Fi and Ethernet (about 95 MB of the ISO); server and datacenter NIC firmware (`firmware-qlogic`, `firmware-myricom`, `firmware-netxen`, `firmware-cavium`, `firmware-netronome`) is left out on purpose.
 - The image has no noVNC, websockify or cloudflared: Remote Control goes from loopback `x11vnc` through the agent to the console's relay, and the console serves the viewer. The simulator's noVNC is **not** Debian's `novnc` package (which depends on Node.js): its Dockerfile installs the release pinned in `docker-test/novnc.pin` with `docker-test/install-novnc.sh`, verifying its SHA-256.
 - The initramfs is xz-compressed via `etc/initramfs-tools/conf.d/labkiosk-compress`; live-build 20230502's `--initramfs-compression` does not accept xz.
 - `scrot` stays: Openbox already needs `imlib2`, which is what pulls in its large image loaders, so replacing `scrot` would add packages rather than remove them.
