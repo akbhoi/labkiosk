@@ -133,6 +133,9 @@ chmod +x /usr/local/sbin/labkiosk-localization || true
 chmod +x /usr/local/sbin/labkiosk-boot-slots || true
 chmod +x /usr/local/sbin/labkiosk-update || true
 chmod +x /usr/local/sbin/labkiosk-share || true
+# Not "|| true": without them the journal never reaches the data partition and
+# the swap partition is never used.
+chmod 0755 /usr/local/sbin/labkiosk-logs /usr/local/sbin/labkiosk-swap
 # Not "|| true": without it nothing mounts the data partition on an installed disk.
 chmod 0755 /etc/systemd/system-generators/labkiosk-data-generator
 chmod +x /usr/local/bin/labkiosk-lock-keys || true
@@ -314,6 +317,20 @@ systemctl enable nodm.service || true
 # Confirms a new system image after its one try, or reboots into the old one
 # (labkiosk-boot-slots). A no-op off an installed disk.
 systemctl enable labkiosk-boot-ok.service || true
+
+# 7b. Logs and memory on an installed disk.
+#
+#     labkiosk-logs keeps the journal on LABKIOSK_DATA for seven days and
+#     reports a boot that never shut down; labkiosk-swap adds the encrypted
+#     swap partition behind compressed RAM (zram-generator needs no unit).
+#     Both are no-ops on the live ISO.
+systemctl enable labkiosk-logs.service
+systemctl enable labkiosk-swap.service
+#     No /var/log/journal in the image: journald then keeps the journal in
+#     /run until labkiosk-logs binds the data partition's folder there and
+#     flushes, so nothing from early boot is written to the RAM overlay and
+#     lost. tmpfiles only adjusts this folder (z), it never creates it.
+rm -rf /var/log/journal
 
 # Configure Hyper-V & generic VM display/storage drivers in initramfs
 mkdir -p /etc/initramfs-tools

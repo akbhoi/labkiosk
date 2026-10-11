@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""
+Keep an installed workstation's system journal on LABKIOSK_DATA for seven
+days, and find the boots that ended without shutting down.
+
+The root filesystem is a RAM overlay, so a journal kept in /var/log/journal
+is gone at power-off: after a crash, a hang or a power cut nothing said what
+happened. The image ships without /var/log/journal, so journald writes to
+/run until this program gives it a directory on the data partition:
+
+    LABKIOSK_DATA/logs/             root only; /etc/labkiosk itself is the
+                                    kiosk user's, the agent's enrolment
+    LABKIOSK_DATA/logs/journal/     bind-mounted on /var/log/journal
+    LABKIOSK_DATA/logs/reports/     one <boot id>.json per boot that never
+                                    shut down, for the agent to send
+    LABKIOSK_DATA/logs/boot-state.json   this boot, and whether it shut down
+
+    start   at every boot of an installed disk, before the kiosk session:
+            move the journal to the data partition, report the previous boot
+            if it never shut down, remember this one, and delete what is
+            older than seven days.
+    stop    at a clean power-off or reboot: remember that this boot shut
+            down, and give the journal back to /run so the data partition
+            can be unmounted.
+
+Every workstation boot gets a fresh machine id (/etc/machine-id is empty in
+the image), and journald keeps each id's files in a folder of its own and
+only ever cleans up its own: the folders of earlier boots are deleted here.
+
+The agent sends each report with POST /api/devices/restart-report and keeps
+its own list of the boots it has sent (it cannot write here); a report it
+could not send is tried again at the next boot, until it is seven days old.
+
+Output: progress on stderr. Exit status 0 unless something is wrong with the
+data partition this program cannot work around.
+"""
+
+import argparse
+import grp
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+
+DATA_DIR = "/etc/labkiosk"
+LOG_DIR_NAME = "logs"
+JOURNAL_DIR_NAME = "journal"
+REPORTS_DIR_NAME = "reports"
+STATE_FILE_NAME = "boot-state.json"
+SYSTEM_JOURNAL = "/var/log/journal"
+
+INSTALLED_ARG = "labkiosk.installed=1"
+VERSION_FILE = "/usr/share/labkiosk/version"
+BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id"
+MACHINE_ID_FILE = "/etc/machine-id"
+WATCHDOG_CLASS_DIR = "/sys/class/watchdog"
+
+# The reports are read by the agent, which runs as this user.
+AGENT_USER = "kiosk"
+RETENTION_SECONDS = 7 * 86400
+# journald's own SystemMaxUse covers the running boot; this is every boot.
+JOURNAL_MAX_BYTES = 128 * 1024 * 1024
+# The end of the journal sent with a report: what led up to the restart.
+REPORT_LOG_LINES = 300
+REPORT_LOG_MAX_CHARS = 16 * 1024
+MAX_STATE_BYTES = 4096
+
+ID_PATTERN = re.compile(r"^[0-9a-f]{32}\Z")
+VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
+REPORT_NAME_PATTERN = re.compile(r"^([0-9a-f]{32})\.json\Z")
+# WDIOF_CARDRESET in linux/watchdog.h: the last reset came from the watchdog.
+WDIOF_CARDRESET = 0x0020
+
+
+def log(message):
+    print(f"[LOGS] {message}", file=sys.stderr, flush=True)
+
+
+def is_installed(cmdline_path="/proc/cmdline"):
+    with open(cmdline_path, "r", encoding="utf-8") as handle:
+        return INSTALLED_ARG in handle.read().split()
+
+
+def read_id(path):
+    """A 128-bit id from the kernel or systemd, as 32 hex digits."""
+    with open(path, "r", encoding="ascii") as handle:
+        value = handle.read().strip().replace("-", "").lower()
+    if not ID_PATTERN.match(value):
+        raise RuntimeError(f"{path} does not hold a 128-bit id")
+    return value
+
+
+def image_version(path=VERSION_FILE):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            value = handle.read(64).strip()
+    except OSError:
+        return None
+    return value if VERSION_PATTERN.match(value) else None
+
+
+def boot_started_at(stat_path="/proc/stat"):
+    """When this boot began, from the kernel's btime."""
+    with open(stat_path, "r", encoding="ascii") as handle:
+        for line in handle:
+            if line.startswith("btime "):
+                return int(line.split()[1])
+    raise RuntimeError(f"{stat_path} has no btime")
+
+
+# --------------------------------------------------------------------------
+# The log folder: root's, inside the kiosk user's data partition
+# --------------------------------------------------------------------------
+
+def open_root_dir(parent_fd, name, mode, group_gid=None):
+    """
+    Open `name` under `parent_fd` as a directory only root can change,
+    creating it when missing.
+
+    /etc/labkiosk belongs to the kiosk user, so something running as that user
+    could have left a link or a file of its own here: it is moved aside, never
+    followed. Returns an O_DIRECTORY descriptor.
+    """
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        info = None
+    if info is not None and (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0):
+        aside = f"{name}.invalid-{int(time.time())}"
+        os.rename(name, aside, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        log(f"{name} was not a folder of root's; moved it aside as {aside}.")
+        info = None
+    if info is None:
+        os.mkdir(name, mode, dir_fd=parent_fd)
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0:
+        os.close(fd)
+        raise RuntimeError(f"{name} is not a folder of root's")
+    os.fchown(fd, 0, 0 if group_gid is None else group_gid)
+    os.fchmod(fd, mode)
+    return fd
+
+
+def agent_gid():
+    return grp.getgrnam(AGENT_USER).gr_gid
+
+
+def journal_gid():
+    """journald's readers' group, which owns /var/log/journal."""
+    try:
+        return grp.getgrnam("systemd-journal").gr_gid
+    except KeyError:
+        return 0
+
+
+def read_state(log_fd):
+    """The boot recorded last time, or None."""
+    try:
+        fd = os.open(STATE_FILE_NAME, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=log_fd)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        raw = handle.read(MAX_STATE_BYTES + 1)
+    try:
+        state = json.loads(raw.decode("utf-8")) if len(raw) <= MAX_STATE_BYTES else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        state = None
+    if not isinstance(state, dict) or not isinstance(state.get("bootId"), str) \
+            or not ID_PATTERN.match(state["bootId"]):
+        log(f"{STATE_FILE_NAME} is unreadable; the previous boot cannot be checked.")
+        return None
+    return state
+
+
+def write_file(dir_fd, name, data, mode, gid=0):
+    """Replace `name` atomically: a power cut leaves the old file or the new one."""
+    temp = f".{name}.tmp"
+    try:
+        os.unlink(temp, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
+    try:
+        os.fchown(fd, 0, gid)
+        os.fchmod(fd, mode)
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.fsync(dir_fd)
+
+
+def write_state(log_fd, state):
+    write_file(log_fd, STATE_FILE_NAME, (json.dumps(state, sort_keys=True) + "\n").encode("utf-8"), 0o644)
+
+
+# --------------------------------------------------------------------------
+# The previous boot
+# --------------------------------------------------------------------------
+
+def watchdog_reset(class_dir=WATCHDOG_CLASS_DIR):
+    """Whether any watchdog says it caused the last reset."""
+    try:
+        names = os.listdir(class_dir)
+    except FileNotFoundError:
+        return False
+    for name in names:
+        try:
+            with open(os.path.join(class_dir, name, "bootstatus"), "r", encoding="ascii") as handle:
+                value = int(handle.read().strip() or "0", 0)
+        except (OSError, ValueError):
+            continue
+        if value & WDIOF_CARDRESET:
+            return True
+    return False
+
+
+def journal_tail(journal_dir, boot_id, run=subprocess.run):
+    """The last lines that boot logged, and the time of the last one (or None)."""
+    base = ["journalctl", f"--directory={journal_dir}", f"--boot={boot_id}", "--no-pager", "--quiet"]
+    text = run(base + [f"--lines={REPORT_LOG_LINES}", "--output=short-iso"],
+               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", check=False)
+    last = run(base + ["--lines=1", "--output=json"],
+               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", check=False)
+    ended_at = None
+    for line in last.stdout.splitlines():
+        try:
+            ended_at = int(json.loads(line)["__REALTIME_TIMESTAMP"]) // 1_000_000
+        except (ValueError, KeyError, TypeError):
+            continue
+    tail = text.stdout if text.returncode == 0 else ""
+    if len(tail) > REPORT_LOG_MAX_CHARS:
+        tail = tail[len(tail) - REPORT_LOG_MAX_CHARS:]
+        tail = tail[tail.find("\n") + 1:] if "\n" in tail else tail
+    return tail, ended_at
+
+
+def restart_report(previous, journal_dir, watchdog, run=subprocess.run):
+    """What the agent sends about a boot that never shut down."""
+    tail, ended_at = journal_tail(journal_dir, previous["bootId"], run)
+    started_at = previous.get("startedAt") if isinstance(previous.get("startedAt"), int) else None
+    if ended_at is None:
+        ended_at = started_at if started_at is not None else int(time.time())
+        tail = tail or "No journal entries were kept for this boot.\n"
+    if started_at is None or started_at > ended_at:
+        started_at = ended_at
+    version = previous.get("version")
+    return {
+        "bootId": previous["bootId"],
+        "kind": "watchdog_reset" if watchdog else "unexpected_restart",
+        "version": version if isinstance(version, str) and VERSION_PATTERN.match(version) else None,
+        "startedAt": started_at,
+        "endedAt": ended_at,
+        "log": tail,
+    }
+
+
+# --------------------------------------------------------------------------
+# Seven days
+# --------------------------------------------------------------------------
+
+def prune_reports(reports_fd, now):
+    for name in os.listdir(reports_fd):
+        info = os.stat(name, dir_fd=reports_fd, follow_symlinks=False)
+        if REPORT_NAME_PATTERN.match(name) and stat.S_ISREG(info.st_mode) and info.st_mtime > now - RETENTION_SECONDS:
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            continue
+        os.unlink(name, dir_fd=reports_fd)
+        log(f"Deleted the restart report {name}.")
+
+
+def tree_size_and_newest(path):
+    size, newest = 0, 0.0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            info = os.lstat(os.path.join(root, name))
+            size += info.st_size
+            newest = max(newest, info.st_mtime)
+    return size, newest
+
+
+def prune_journal(journal_dir, current_machine_id, now, max_bytes=JOURNAL_MAX_BYTES):
+    """
+    Delete earlier boots' journal folders older than seven days, then the
+    oldest of the rest until every boot's journal together fits max_bytes.
+    The running boot's folder is journald's to manage.
+    """
+    folders = []
+    for name in os.listdir(journal_dir):
+        path = os.path.join(journal_dir, name)
+        if name == current_machine_id or not ID_PATTERN.match(name) or os.path.islink(path) or not os.path.isdir(path):
+            continue
+        size, newest = tree_size_and_newest(path)
+        folders.append((newest, size, path))
+    current = os.path.join(journal_dir, current_machine_id)
+    total = tree_size_and_newest(current)[0] if os.path.isdir(current) else 0
+    total += sum(size for _newest, size, _path in folders)
+    for newest, size, path in sorted(folders):
+        if newest > now - RETENTION_SECONDS and total <= max_bytes:
+            continue
+        shutil.rmtree(path)
+        total -= size
+        log(f"Deleted the journal of an earlier boot, {os.path.basename(path)}.")
+
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+
+def attach_journal(journal_fd):
+    """Bind the data partition's journal folder on /var/log/journal and move /run's entries there."""
+    if os.path.ismount(SYSTEM_JOURNAL):
+        return
+    os.makedirs(SYSTEM_JOURNAL, mode=0o755, exist_ok=True)
+    # The folder this program opened and checked, not a path through the kiosk
+    # user's /etc/labkiosk that could be swapped for a link in between.
+    subprocess.run(["mount", "--bind", f"/proc/{os.getpid()}/fd/{journal_fd}", SYSTEM_JOURNAL], check=True)
+    # systemd-tmpfiles' rule for /var/log/journal: the group may read it.
+    subprocess.run(["systemd-tmpfiles", "--create", "--prefix", SYSTEM_JOURNAL], check=False)
+    subprocess.run(["journalctl", "--flush"], check=True)
+
+
+def command_start():
+    if not is_installed():
+        log("Not an installed disk; the journal stays in RAM.")
+        return 0
+    if not os.path.ismount(DATA_DIR):
+        log(f"WARNING {DATA_DIR} is not the data partition; the journal stays in RAM and is lost at power-off.")
+        return 0
+    now = int(time.time())
+    data_fd = os.open(DATA_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        log_fd = open_root_dir(data_fd, LOG_DIR_NAME, 0o755)
+    finally:
+        os.close(data_fd)
+    try:
+        journal_fd = open_root_dir(log_fd, JOURNAL_DIR_NAME, 0o2755, group_gid=journal_gid())
+        try:
+            attach_journal(journal_fd)
+        finally:
+            os.close(journal_fd)
+        reports_fd = open_root_dir(log_fd, REPORTS_DIR_NAME, 0o750, group_gid=agent_gid())
+        try:
+            record_boot(log_fd, reports_fd, SYSTEM_JOURNAL, now)
+        finally:
+            os.close(reports_fd)
+    finally:
+        os.close(log_fd)
+    return 0
+
+
+def record_boot(log_fd, reports_fd, journal_path, now):
+    """Report the previous boot if it never shut down, remember this one, and prune."""
+    boot_id = read_id(BOOT_ID_FILE)
+    previous = read_state(log_fd)
+    if previous and previous["bootId"] != boot_id and previous.get("clean") is not True:
+        report = restart_report(previous, journal_path, watchdog_reset())
+        write_file(reports_fd, f"{report['bootId']}.json",
+                   json.dumps(report, sort_keys=True).encode("utf-8"), 0o640, gid=agent_gid())
+        log(f"The previous boot ({report['bootId']}) ended without shutting down: {report['kind']}.")
+    if not previous or previous["bootId"] != boot_id:
+        write_state(log_fd, {"bootId": boot_id, "version": image_version(),
+                             "startedAt": boot_started_at(), "clean": False})
+    prune_reports(reports_fd, now)
+    prune_journal(journal_path, read_id(MACHINE_ID_FILE), now)
+
+
+def system_is_stopping():
+    result = subprocess.run(["systemctl", "is-system-running"], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, check=False)
+    return result.stdout.strip() == "stopping"
+
+
+def command_stop():
+    if not is_installed() or not os.path.ismount(DATA_DIR):
+        return 0
+    try:
+        log_fd = os.open(os.path.join(DATA_DIR, LOG_DIR_NAME), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as err:
+        log(f"No log folder to record the shutdown in: {err}")
+        return 0
+    try:
+        if os.fstat(log_fd).st_uid != 0:
+            log("The log folder is not root's; the shutdown is not recorded.")
+            return 0
+        state = read_state(log_fd)
+        boot_id = read_id(BOOT_ID_FILE)
+        if state and state["bootId"] == boot_id and system_is_stopping():
+            state["clean"] = True
+            write_state(log_fd, state)
+            log("Recorded a clean shutdown.")
+    finally:
+        os.close(log_fd)
+    if os.path.ismount(SYSTEM_JOURNAL):
+        subprocess.run(["journalctl", "--relinquish-var"], check=False)
+        subprocess.run(["umount", SYSTEM_JOURNAL], check=False)
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Lab Kiosk: the system journal on the data partition")
+    parser.add_argument("command", choices=("start", "stop"))
+    args = parser.parse_args(argv)
+    if os.geteuid() != 0:
+        log("Must run as root.")
+        return 1
+    try:
+        return command_start() if args.command == "start" else command_stop()
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as err:
+        log(f"ERROR {err}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

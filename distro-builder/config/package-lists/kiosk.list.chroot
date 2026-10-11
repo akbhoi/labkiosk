@@ -112,6 +112,11 @@ gpgv
 # kernel rule that keeps its port to private addresses. The image has no other
 # firewall, and nftables.service stays disabled.
 nftables
+# Compressed RAM as the first swap (/etc/systemd/zram-generator.conf), and the
+# installed disk's swap partition, encrypted with a key for one boot only
+# (labkiosk-swap).
+systemd-zram-generator
+cryptsetup-bin
 # The agent's control channel: one WebSocket to the organization's hub. Without it
 # the agent falls back to the 3-second HTTP heartbeat, which works but costs far more.
 python3-websocket

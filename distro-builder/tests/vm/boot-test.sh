@@ -12,6 +12,12 @@
 #   4. unhealthy an image that boots but whose kiosk never comes up is
 #                rebooted away from after the 10-minute health deadline
 #
+# Scenario 1 ends by switching the VM off, as a power cut would, so the boot
+# after it (scenario 3; scenario 2 never reaches userspace) must find that and
+# leave one restart report on the data partition, with the end of scenario 1's
+# journal, which labkiosk-logs keeps there. Its journal must also show the
+# encrypted swap partition in use behind compressed RAM.
+#
 # Then the signed download of phase 2. The kiosk has no shell, so the ISO's
 # own labkiosk-update runs from the host on the disk's mounted image store,
 # against a release signed with a key made for this run, served on loopback:
@@ -175,6 +181,19 @@ if len(root) != 1:
     sys.exit("expected one partition named ROOT")
 print(root[0]["start"] * table.get("sectorsize", 512))
 ')"
+# DATA's offset, and the swap partition's GPT type (labkiosk-swap refuses any other).
+DATA_OFFSET="$(sfdisk -J "$DISK" | python3 -c '
+import json, sys
+table = json.load(sys.stdin)["partitiontable"]
+by_name = {p.get("name"): p for p in table["partitions"]}
+if "DATA" not in by_name:
+    sys.exit("expected a partition named DATA")
+swap = by_name.get("SWAP")
+if swap is None or swap["type"].upper() != "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F":
+    sys.exit(f"expected a Linux swap partition named SWAP, got {swap}")
+print(by_name["DATA"]["start"] * table.get("sectorsize", 512))
+')"
+pass "install: SWAP is a Linux swap partition before DATA"
 
 # --------------------------------------------------------------------------
 # grubenv, read and written through labkiosk-boot-slots' own functions
@@ -342,6 +361,26 @@ else
     expect_env "recover" "current=$V_GOOD previous=$VERSION next=$V_BROKEN next_tries=0"
 fi
 stop_vm
+
+log "3b. restart: scenario 1's power-off is reported from the journal on DATA"
+debugfs_data() { debugfs -R "$1" "$DISK?offset=$DATA_OFFSET" 2>/dev/null; }
+mapfile -t reports < <(debugfs_data "ls /logs/reports" | grep -oE '[0-9a-f]{32}\.json' | sort -u)
+if [ "${#reports[@]}" -ne 1 ]; then
+    fail "restart: expected one restart report, found ${#reports[@]}: ${reports[*]:-none}"
+elif debugfs_data "cat /logs/reports/${reports[0]}" | python3 "$HERE/check_restart_report.py" > "$WORK/report.txt" 2>&1; then
+    pass "restart: $(cat "$WORK/report.txt")"
+else
+    fail "restart: ${reports[0]}: $(cat "$WORK/report.txt")"
+fi
+rm -rf "$WORK/journal"
+mkdir "$WORK/journal"
+debugfs_data "rdump /logs/journal $WORK/journal" >/dev/null
+swap_lines="$(journalctl --directory="$WORK/journal/journal" --unit=labkiosk-swap.service --output=cat 2>/dev/null | grep 'In use:' || true)"
+if printf '%s\n' "$swap_lines" | grep -q '/dev/zram0' && printf '%s\n' "$swap_lines" | grep -q '/dev/dm-'; then
+    pass "swap: compressed RAM and the encrypted partition were in use"
+else
+    fail "swap: expected /dev/zram0 and an encrypted partition in labkiosk-swap's journal, got: ${swap_lines:-nothing}"
+fi
 
 log "4. unhealthy: $V_UNHEALTHY boots without its agent and should be rebooted away from"
 mksquashfs "$ROOTFS" "$WORK/unhealthy.squashfs" -comp zstd -no-progress -quiet \

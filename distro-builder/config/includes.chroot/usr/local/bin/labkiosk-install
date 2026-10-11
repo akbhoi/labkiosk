@@ -43,6 +43,10 @@ GRUB_CFG_TEMPLATE = "/usr/share/labkiosk/boot/grub.cfg"
 GRUB_PASSWORD_FILE_NAME = "labkiosk-password.cfg"
 # The data partition's UUID, for grub.cfg to pass as labkiosk.data=<uuid>.
 DATA_ID_FILE_NAME = "labkiosk-data.cfg"
+# The swap partition's GPT PARTUUID, for grub.cfg to pass as labkiosk.swap=<id>.
+SWAP_ID_FILE_NAME = "labkiosk-swap.cfg"
+# Behind compressed RAM, which is the first swap; see labkiosk-swap.
+SWAP_PARTITION_MIB = 1024
 # What mkfs.ext4 writes; grub.cfg and labkiosk-data-generator accept only this.
 FS_UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 BOOT_SLOTS_HELPER = "/usr/local/sbin/labkiosk-boot-slots"
@@ -403,14 +407,16 @@ def install_to_disk(target_disk, grub_password_hash=None):
     # Partition 2: EFI System Partition (2MiB - 514MiB)
     run_cmd(["parted", "-s", target_disk, "mkpart", "ESP", "fat32", "2MiB", "514MiB"])
     run_cmd(["parted", "-s", target_disk, "set", "2", "esp", "on"])
-    # Partition 3: the image store (514MiB - 513MiB from the end). It holds the
+    # Partition 3: the image store (514MiB up to the swap partition). It holds the
     # boot menu and whole system images as files, never a root filesystem:
     #   boot/grub/                grub.cfg, grubenv, the boot-menu password
     #   images/<version>/         filesystem.squashfs, vmlinuz, initrd.img
     # The "--" is required, not stylistic: the end offset is negative (measured
     # back from the end of the disk) and parted's option parser otherwise reads
-    # "-513MiB" as a bundle of single-letter flags and aborts.
-    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "ROOT", "ext4", "514MiB", "-513MiB"])
+    # "-1537MiB" as a bundle of single-letter flags and aborts.
+    swap_end = -512
+    swap_start = swap_end - SWAP_PARTITION_MIB
+    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "ROOT", "ext4", "514MiB", f"{swap_start - 1}MiB"])
     # Partition 4: the only writable-across-reboots area on the machine.
     #
     # The installed system runs from its squashfs under a RAM overlay, so every
@@ -421,7 +427,13 @@ def install_to_disk(target_disk, grub_password_hash=None):
     # etc-labkiosk.mount in the image), so the enrolment survives while the rest
     # of the OS stays immutable. 512 MiB is far more than the config needs and
     # keeps the partition comfortably alignable.
-    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "DATA", "ext4", "-512MiB", "100%"])
+    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "DATA", "ext4", f"{swap_end}MiB", "100%"])
+    # Partition 5, between the image store and the data partition: swap, used
+    # only when compressed RAM is full, and encrypted at every boot with a key
+    # that never leaves RAM (labkiosk-swap). Created last so the data partition
+    # keeps number 4. parted gives it the GPT Linux swap type, which
+    # labkiosk-swap checks before it touches it; nothing is formatted here.
+    run_cmd(["parted", "-s", target_disk, "--", "mkpart", "SWAP", "linux-swap", f"{swap_start}MiB", f"{swap_end}MiB"])
     time.sleep(2)
     run_cmd(["partprobe", target_disk], check=False)
     time.sleep(1)
@@ -432,9 +444,11 @@ def install_to_disk(target_disk, grub_password_hash=None):
     part_esp  = f"{target_disk}p2" if is_p_style else f"{target_disk}2"
     part_root = f"{target_disk}p3" if is_p_style else f"{target_disk}3"
     part_data = f"{target_disk}p4" if is_p_style else f"{target_disk}4"
+    part_swap = f"{target_disk}p5" if is_p_style else f"{target_disk}5"
 
     for _ in range(10):
-        if os.path.exists(part_root) and os.path.exists(part_esp) and os.path.exists(part_data):
+        if os.path.exists(part_root) and os.path.exists(part_esp) and os.path.exists(part_data) \
+                and os.path.exists(part_swap):
             break
         time.sleep(0.5)
 
@@ -558,6 +572,7 @@ def install_to_disk(target_disk, grub_password_hash=None):
         os.chmod(os.path.join(grub_dir, "grub.cfg"), 0o644)
         write_grub_password(grub_dir, grub_password_hash)
         write_data_partition_id(grub_dir, part_data)
+        write_swap_partition_id(grub_dir, part_swap)
 
         proc = subprocess.run(
             [BOOT_SLOTS_HELPER, "init", version, "--boot-dir", grub_dir],
@@ -742,6 +757,24 @@ def write_data_partition_id(grub_dir, part_data):
         handle.write(f'set data_uuid="{data_uuid}"\n')
     os.chmod(id_file, 0o644)
     print(f"[INSTALL] Data partition pinned by UUID {data_uuid}.", file=sys.stderr)
+
+
+def write_swap_partition_id(grub_dir, part_swap):
+    """
+    Name THIS disk's swap partition for labkiosk-swap, which opens it with a
+    random key at every boot and so destroys whatever it holds: only the
+    partition with exactly this GPT PARTUUID is ever used. grub.cfg sources the
+    file and passes labkiosk.swap=<id>; it lives in boot/grub, so an update
+    keeps it.
+    """
+    swap_id = run_cmd(["blkid", "-s", "PARTUUID", "-o", "value", part_swap])
+    if not FS_UUID_PATTERN.match(swap_id):
+        raise RuntimeError(f"blkid returned no usable PARTUUID for the swap partition ({part_swap}): {swap_id!r}")
+    id_file = os.path.join(grub_dir, SWAP_ID_FILE_NAME)
+    with open(id_file, "w") as handle:
+        handle.write(f'set swap_partuuid="{swap_id}"\n')
+    os.chmod(id_file, 0o644)
+    print(f"[INSTALL] Swap partition pinned by PARTUUID {swap_id}.", file=sys.stderr)
 
 
 if __name__ == "__main__":

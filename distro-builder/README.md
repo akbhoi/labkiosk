@@ -82,7 +82,7 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
 - **Universal Hybrid GPT Partitioning:**
   1. `bios_grub` (1 MiB – 2 MiB): Enables legacy BIOS GRUB embedding on GPT partitioned disks.
   2. `ESP` (2 MiB – 514 MiB, FAT32): Holds the UEFI bootloader and configuration.
-  3. `ROOT` (514 MiB – 513 MiB from the end, ext4, label `LABKIOSK_ROOT`): the image store —
+  3. `ROOT` (514 MiB – 1537 MiB from the end, ext4, label `LABKIOSK_ROOT`): the image store —
      `boot/grub/` (`grub.cfg`, `grubenv`, `labkiosk-password.cfg`, `labkiosk-data.cfg`) and whole
      system images in `images/<version>/` (`vmlinuz`, `initrd.img`, `filesystem.squashfs`).
   4. `DATA` (last 512 MiB, ext4, label `LABKIOSK_DATA`): mounted at `/etc/labkiosk` with `nofail`,
@@ -90,7 +90,11 @@ The Lab Kiosk operating system is built specifically for resource-constrained th
      and `labkiosk-data-generator` turns it into `etc-labkiosk.mount`; no `/etc/fstab` is written).
      This is the **only** part of an installed machine that survives a reboot, and it exists so
      that a workstation enrolled *after* installation stays enrolled — every other write goes to
-     the RAM overlay and is discarded at power-off.
+     the RAM overlay and is discarded at power-off. It also keeps the system journal for seven
+     days (`labkiosk-logs`), so a crash or power cut can be explained after the restart.
+  5. `SWAP` (1 GiB before `DATA`, GPT type Linux swap): used only once compressed RAM (zram) is
+     full, and opened at every boot with a random key that never leaves RAM (`labkiosk-swap`), by
+     the PARTUUID GRUB passes as `labkiosk.swap=` from `boot/grub/labkiosk-swap.cfg`.
 - **Minimum Disk Size:** 7 GiB, so that two system images fit side by side (a drive sold as 8 GB qualifies).
 - **Refuses to erase the medium it is running from:** candidate disks are matched against the
   device backing `/run/live/medium`, and that disk is excluded from the list *and* rejected again

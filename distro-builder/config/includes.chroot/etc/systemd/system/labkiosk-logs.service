@@ -1,0 +1,24 @@
+[Unit]
+Description=Lab Kiosk: keep the system journal on the data partition and report a boot that never shut down
+Documentation=file:///usr/local/sbin/labkiosk-logs
+# Only an installed disk has a data partition to keep it on; a live session's
+# journal stays in RAM.
+ConditionKernelCommandLine=labkiosk.installed=1
+# etc-labkiosk.mount is "nofail", so it is named here; labkiosk-data-permissions
+# mounts the partition itself when that mount has not happened yet.
+After=etc-labkiosk.mount labkiosk-data-permissions.service systemd-journald.service
+Wants=labkiosk-data-permissions.service
+# The kiosk user, and so the agent, must not be running while root prepares a
+# folder inside the partition that user owns.
+Before=nodm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/labkiosk-logs start
+# Records a clean shutdown and gives the journal back to /run before the data
+# partition is unmounted.
+ExecStop=/usr/local/sbin/labkiosk-logs stop
+
+[Install]
+WantedBy=multi-user.target

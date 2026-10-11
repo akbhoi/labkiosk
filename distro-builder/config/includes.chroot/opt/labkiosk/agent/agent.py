@@ -32,6 +32,13 @@ import sys
 import threading
 import time
 from datetime import datetime
+try:
+    import syslog
+except ImportError:
+    # Not a Linux host (the unit tests on Windows): the file log is the only log.
+    syslog = None
+else:
+    syslog.openlog("labkiosk-agent", syslog.LOG_PID, syslog.LOG_USER)
 import base64
 try:
     import grp
@@ -110,6 +117,15 @@ BOOT_REPORT_INTERVAL_SECONDS = 30
 # Answers after which a report is settled: recorded (200), or one the control
 # plane will never take (400 malformed, 404 a Worker without the route).
 BOOT_REPORT_SETTLED_STATUSES = (200, 400, 404)
+# Boots that ended without shutting down, as labkiosk-logs (root) found them at
+# the next start: one <boot id>.json each, deleted by it after seven days. The
+# agent cannot write there, so it keeps its own list of the ones it has sent.
+RESTART_REPORTS_DIR = "/etc/labkiosk/logs/reports"
+RESTART_REPORTS_SENT_FILE = "/etc/labkiosk/restart-reports-sent.json"
+RESTART_REPORT_NAME_PATTERN = re.compile(r"^([0-9a-f]{32})\.json\Z")
+# A report carries at most 16 KB of journal; anything far larger is not root's.
+MAX_RESTART_REPORT_BYTES = 64 * 1024
+MAX_RESTART_REPORTS = 100
 # Over-the-air updates, phase 3. labkiosk-update (root) writes what it is doing
 # beside the boot status; the agent reports it and never writes it.
 UPDATE_STATE_FILE = "/run/labkiosk-update/update.json"
@@ -377,6 +393,11 @@ def log(message):
     """
     global _log_lines_written
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {time.strftime('%Z')} [Agent] {message}", flush=True)
+    # The same line in the system journal, which an installed disk keeps on its
+    # data partition (labkiosk-logs): after a crash, what the agent was doing is
+    # in the log sent with the restart report. The file above is in RAM.
+    if syslog is not None:
+        syslog.syslog(syslog.LOG_INFO, message)
 
     # Checked every few hundred lines rather than on each one: a stat() per line
     # is wasted work on a workstation that logs nothing for weeks.
@@ -3093,10 +3114,172 @@ def report_boot_outcome(settled):
     return settled
 
 
+def read_restart_report(dir_fd, name, owner_uid=0):
+    """One report labkiosk-logs wrote. ValueError when it is not what root wrote."""
+    match = RESTART_REPORT_NAME_PATTERN.match(name)
+    if not match:
+        raise ValueError(f"{name} is not a restart report")
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError as err:
+        raise ValueError(f"{name} could not be opened: {err}") from err
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid:
+            raise ValueError(f"{name} is not a file written by root")
+        raw = handle.read(MAX_RESTART_REPORT_BYTES + 1)
+    if len(raw) > MAX_RESTART_REPORT_BYTES:
+        raise ValueError(f"{name} is larger than {MAX_RESTART_REPORT_BYTES} bytes")
+    try:
+        report = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise ValueError(f"{name} is not valid JSON: {err}") from err
+    if not isinstance(report, dict) or report.get("bootId") != match.group(1):
+        raise ValueError(f"{name} is not the report of boot {match.group(1)}")
+    return report
+
+
+def read_restart_reports(directory=RESTART_REPORTS_DIR, owner_uid=0):
+    """
+    The restart reports waiting in `directory`, oldest first, and the problems
+    met reading them. No reports on a live session or an older disk.
+    """
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return [], []
+    except OSError as err:
+        return [], [f"{directory} could not be opened: {err}"]
+    reports, problems = [], []
+    try:
+        if os.fstat(dir_fd).st_uid != owner_uid:
+            return [], [f"{directory} is not a folder of root's"]
+        names = sorted(name for name in os.listdir(dir_fd) if not name.startswith("."))
+        for name in names[:MAX_RESTART_REPORTS]:
+            try:
+                reports.append(read_restart_report(dir_fd, name, owner_uid))
+            except ValueError as err:
+                problems.append(str(err))
+    finally:
+        os.close(dir_fd)
+    reports.sort(key=lambda report: report.get("endedAt") if isinstance(report.get("endedAt"), int) else 0)
+    return reports, problems
+
+
+def load_sent_restart_reports(path=RESTART_REPORTS_SENT_FILE):
+    """The boot ids whose reports the control plane has answered for good."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.loads(handle.read(MAX_RESTART_REPORT_BYTES))
+    except FileNotFoundError:
+        return set()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+        log(f"{path} is unreadable ({err}); restart reports may be sent again, and the console keeps one of each.")
+        return set()
+    ids = data.get("sent") if isinstance(data, dict) else None
+    if not isinstance(ids, list):
+        log(f"{path} does not list the restart reports sent; they may be sent again.")
+        return set()
+    return {value for value in ids if isinstance(value, str) and RESTART_REPORT_NAME_PATTERN.match(f"{value}.json")}
+
+
+def save_sent_restart_reports(sent, path=RESTART_REPORTS_SENT_FILE):
+    temp_path = path + ".tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump({"sent": sorted(sent)}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+    except OSError as err:
+        log(f"Could not record which restart reports were sent ({err}); they may be sent again after a restart.")
+
+
+def post_restart_report(report):
+    """Send one restart report. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}/api/devices/restart-report",
+        data=json.dumps(report).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=15) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_restarts(progress):
+    """
+    Send the reports of boots that ended without shutting down, each once.
+
+    `progress` lives as long as the agent: "sent" is the list kept on the data
+    partition, "logged" the problems already written to the log, and "held"
+    turns true when the control plane says this workstation sent too many
+    today (429), so the rest wait for the next start. Offline, a token being
+    replaced or a workstation not written yet (409) is tried again next round;
+    the Worker keeps one issue per boot, so a report sent twice counts once.
+    """
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured or progress["held"]:
+        return
+    reports, problems = read_restart_reports()
+    for problem in problems:
+        if problem not in progress["logged"]:
+            progress["logged"].add(problem)
+            log(f"Restart report not sent: {problem}")
+    sent = progress["sent"]
+    changed = False
+    if not problems:
+        # labkiosk-logs deletes a report after seven days; forget it here too.
+        # Not while any report is unreadable: that one may already be sent.
+        waiting = {report["bootId"] for report in reports}
+        changed = bool(sent - waiting)
+        sent &= waiting
+    for report in reports:
+        boot_id = report["bootId"]
+        if boot_id in sent:
+            continue
+        try:
+            status = post_restart_report(report)
+        except (URLError, TimeoutError, socket.timeout, OSError) as err:
+            if "offline" not in progress["logged"]:
+                progress["logged"].add("offline")
+                log(f"Restart reports not sent yet: {err}")
+            break
+        progress["logged"].discard("offline")
+        if status == 200:
+            log(f"Reported to the organization that boot {boot_id} ended without shutting down ({report.get('kind')}).")
+        elif status in BOOT_REPORT_SETTLED_STATUSES:
+            log(f"The control plane did not take the restart report of boot {boot_id} (HTTP {status}); not sending it again.")
+        elif status == 429:
+            log("The control plane has taken enough restart reports from this workstation today; the rest wait for the next start.")
+            progress["held"] = True
+            break
+        else:
+            log(f"Restart report of boot {boot_id} not recorded yet (HTTP {status}); trying again.")
+            break
+        sent.add(boot_id)
+        changed = True
+    if changed:
+        save_sent_restart_reports(sent)
+
+
 def boot_report_loop():
     settled = None
+    restarts = {"sent": load_sent_restart_reports(), "logged": set(), "held": False}
     while True:
         settled = report_boot_outcome(settled)
+        report_restarts(restarts)
         time.sleep(BOOT_REPORT_INTERVAL_SECONDS)
 
 

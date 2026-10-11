@@ -1,0 +1,131 @@
+#!/bin/sh
+# Lab Kiosk: the installed disk's swap partition, encrypted with a key that
+# exists only in RAM for this one boot.
+#
+# Compressed RAM (zram, /etc/systemd/zram-generator.conf) is the first swap at
+# every boot; this partition is the last resort behind it, at a lower
+# priority. A swapped-out page can hold anything a user had open, so it is
+# never written in the clear: the key is read from /dev/urandom and forgotten
+# at power-off, and nothing on the partition can be read after that. A user's
+# session still leaves nothing behind.
+#
+#   start   open the partition GRUB names as labkiosk.swap=<PARTUUID> and use it
+#   stop    stop using it and forget the key
+#
+# Opening a partition with a random key destroys what it held, so it is used
+# only when all of these hold: the installer created it (its PARTUUID is the
+# one on the kernel command line), its GPT type is Linux swap, it sits on the
+# same disk as this installation's data partition, and nothing is using it.
+# A disk installed before this partition existed passes no labkiosk.swap= and
+# runs on compressed RAM alone.
+set -eu
+
+MAPPER_NAME=labkiosk-swap
+MAPPER_DEV="/dev/mapper/$MAPPER_NAME"
+# The GPT partition type parted gives a linux-swap partition.
+SWAP_PARTTYPE=0657fd6d-a4ab-43c4-84e5-0933c84b4f4f
+UUID_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+# Below zram (100): only used once compressed RAM is full.
+SWAP_PRIORITY=10
+
+log() {
+    echo "[SWAP] $*" >&2
+}
+
+cmdline_value() {
+    set -f
+    # shellcheck disable=SC2013
+    for arg in $(cat /proc/cmdline); do
+        case "$arg" in
+            "$1"=*) printf '%s\n' "${arg#"$1"=}" ;;
+        esac
+    done | tail -n 1
+    set +f
+}
+
+open_partition() {
+    if ! grep -qsE '(^| )labkiosk\.installed=1( |$)' /proc/cmdline; then
+        log "Not an installed disk; compressed RAM only."
+        return 0
+    fi
+    swap_id="$(cmdline_value labkiosk.swap)"
+    if [ -z "$swap_id" ]; then
+        log "This disk has no swap partition; compressed RAM only."
+        return 0
+    fi
+    if ! printf '%s\n' "$swap_id" | grep -Eqx "$UUID_RE"; then
+        log "labkiosk.swap=$swap_id is not a partition id; not using a swap partition."
+        return 0
+    fi
+    data_id="$(cmdline_value labkiosk.data)"
+    if ! printf '%s\n' "$data_id" | grep -Eqx "$UUID_RE"; then
+        log "No valid labkiosk.data=; cannot tell which disk is this installation's."
+        return 0
+    fi
+    if [ -e "$MAPPER_DEV" ]; then
+        log "$MAPPER_DEV is already open."
+        return 0
+    fi
+
+    part="/dev/disk/by-partuuid/$swap_id"
+    data="/dev/disk/by-uuid/$data_id"
+    waited=0
+    while [ ! -b "$part" ] || [ ! -b "$data" ]; do
+        if [ "$waited" -ge 30 ]; then
+            log "The swap partition $swap_id did not appear; compressed RAM only."
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    part_dev="$(readlink -f "$part")"
+    data_dev="$(readlink -f "$data")"
+
+    parttype="$(lsblk -dno PARTTYPE "$part_dev" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    if [ "$parttype" != "$SWAP_PARTTYPE" ]; then
+        log "$part_dev is not a Linux swap partition (type $parttype); leaving it alone."
+        return 0
+    fi
+    part_disk="$(lsblk -dno PKNAME "$part_dev" | tr -d '[:space:]')"
+    data_disk="$(lsblk -dno PKNAME "$data_dev" | tr -d '[:space:]')"
+    if [ -z "$part_disk" ] || [ "$part_disk" != "$data_disk" ]; then
+        log "$part_dev is not on this installation's disk; leaving it alone."
+        return 0
+    fi
+    if [ -n "$(lsblk -no MOUNTPOINTS "$part_dev" | tr -d '[:space:]')" ] \
+            || [ -n "$(lsblk -no NAME "$part_dev" | sed -n '2p')" ]; then
+        log "$part_dev is in use; leaving it alone."
+        return 0
+    fi
+
+    cryptsetup open --type plain --cipher aes-xts-plain64 --key-size 512 \
+        --key-file /dev/urandom --keyfile-size 64 "$part_dev" "$MAPPER_NAME"
+    mkswap --label "$MAPPER_NAME" "$MAPPER_DEV" >/dev/null
+    swapon --priority "$SWAP_PRIORITY" "$MAPPER_DEV"
+    log "Swap on $part_dev, encrypted with a key for this boot only."
+}
+
+start() {
+    open_partition
+    # What this boot swaps to, in the journal: zram and, below it, the partition.
+    swapon --show=NAME,TYPE,SIZE,PRIO --noheadings | while read -r line; do
+        log "In use: $line"
+    done
+}
+
+stop() {
+    if [ ! -e "$MAPPER_DEV" ]; then
+        return 0
+    fi
+    swapoff "$MAPPER_DEV" || log "Could not stop swapping to $MAPPER_DEV."
+    cryptsetup close "$MAPPER_NAME" || log "Could not close $MAPPER_DEV."
+}
+
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    *)
+        echo "usage: labkiosk-swap start|stop" >&2
+        exit 2
+        ;;
+esac

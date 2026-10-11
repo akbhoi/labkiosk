@@ -310,8 +310,9 @@ distro-builder/
   - The installer partitions target drives with a **Hybrid GPT layout**:
     1. Partition 1: `bios_grub` (1 MiB – 2 MiB, flag `bios_grub on`) for legacy GRUB `i386-pc` MBR embedding on GPT.
     2. Partition 2: `ESP` (2 MiB – 514 MiB, FAT32, flag `esp on`) for UEFI bootloader files.
-    3. Partition 3: `ROOT` (514 MiB – end − 513 MiB, ext4, label `LABKIOSK_ROOT`), the root-only image store: `boot/grub/` and `images/<version>/` (Rule 8).
-    4. Partition 4: `DATA` (end − 512 MiB – 100%, ext4, label `LABKIOSK_DATA`) mounted at `/etc/labkiosk` with `nofail`, holding persistent credentials and `/etc/labkiosk/system-connections/`.
+    3. Partition 3: `ROOT` (514 MiB – end − 1537 MiB, ext4, label `LABKIOSK_ROOT`), the root-only image store: `boot/grub/` and `images/<version>/` (Rule 8).
+    4. Partition 4: `DATA` (end − 512 MiB – 100%, ext4, label `LABKIOSK_DATA`) mounted at `/etc/labkiosk` with `nofail`, holding persistent credentials, `/etc/labkiosk/system-connections/` and root's `logs/` (the journal for 7 days and restart reports, `labkiosk-logs`).
+    5. Partition 5: `SWAP` (end − 1536 MiB – end − 512 MiB, GPT type Linux swap), created last so `DATA` stays number 4. `labkiosk-swap` opens it with `cryptsetup --type plain --key-file /dev/urandom` at every boot, only when its PARTUUID is GRUB's `labkiosk.swap=`, its type is Linux swap, it is on the data partition's disk and nothing uses it; priority 10, behind zram (100).
   - The installer runs `grub-install --target=x86_64-efi --bootloader-id=LabKiosk --no-nvram`, the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`, each with `--boot-directory` on `ROOT`, so the drive boots on any machine regardless of firmware mode.
 
 ### Rule 3: The Installer Copies the Image, Not the Root
@@ -604,8 +605,8 @@ Located at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
 3. **Machine ID**: `01-lockdown.hook.chroot` empties `/etc/machine-id` in the image, the marker
    systemd reads as "uninitialised", so every boot generates one in RAM. The installer writes
    nothing into the image; an id baked into the squashfs would be shared by every workstation.
-4. **Negative parted offsets need `--`**: the ROOT and DATA partitions are sized from the end of the
-   disk (`-513MiB`, `-512MiB`), and without a `--` separator parted parses those as bundled
+4. **Negative parted offsets need `--`**: the ROOT, SWAP and DATA partitions are sized from the end of the
+   disk (`-1537MiB`, `-1536MiB`, `-512MiB`), and without a `--` separator parted parses those as bundled
    single-letter options and aborts the install.
 5. **Target re-validation**: `--target` is checked against `TARGET_DISK_PATTERN` inside the
    installer, not only by the agent that normally calls it. `/etc/sudoers.d/50-labkiosk-install`
