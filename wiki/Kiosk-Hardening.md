@@ -77,6 +77,10 @@ What makes an empty password safe here is that **no login path exists to use it*
 
 `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants `kiosk` reboot and power-off through logind, and nothing else. That grant is what makes the operator's remote shutdown command work: the agent runs as `kiosk`, so without it the command would be accepted and then silently do nothing.
 
+### Never asleep
+
+A workstation is on, or it powers off or restarts. It boots in well under a minute, and a sleeping kiosk is one nobody can reach from the console. `logind.conf.d/labkiosk.conf` makes the power button power off cleanly and ignores the sleep and hibernate keys, the lid (a laptop used as a kiosk keeps running with its lid shut) and idleness; `sleep.conf.d/labkiosk.conf` refuses every kind of sleep; and `sleep.target`, `suspend.target`, `hibernate.target`, `hybrid-sleep.target` and `suspend-then-hibernate.target` are masked.
+
 ---
 
 ## Layer 3 — Kernel hardening
@@ -206,6 +210,21 @@ GRUB_DISABLE_RECOVERY="true"
 
 The installed disk's boot menu is the static `usr/share/labkiosk/boot/grub.cfg` rather than one generated from these settings, and it matches them: `timeout=3`, `consoleblank=0` on every kernel line, and no recovery entry. Recovery mode is a root shell by design and has no place on a kiosk. `consoleblank=0` — rather than `quiet loglevel=3` — is what resolved the black-screen boot deadlock; suppressing boot logs made a PAM autologin failure invisible.
 
+### Secure Boot
+
+The ISO and the installed disk boot through Microsoft's signed `shim`, Debian's signed GRUB and Debian's signed kernel, so they start with Secure Boot **on**, with the keys every PC ships with. With Secure Boot on, the firmware refuses a boot loader or kernel that is not signed, and the kernel runs in lockdown mode (no unsigned modules, no `/dev/mem`). Kernel modules outside Debian (the proprietary NVIDIA driver, for one) are deliberately not in the image: they would need a key enrolled by hand at the keyboard on every machine.
+
+To turn it on and check it on a workstation:
+
+1. In the firmware setup (usually F2, F10, F12 or Del at power-on): set the boot mode to **UEFI** (not Legacy/CSM), set **Secure Boot** to *Enabled*, and if it offers key modes choose **Standard** or **Factory/Microsoft keys** (on some machines, "Install default Secure Boot keys"). Set a firmware password while you are there.
+2. Do this **before** installing. On a machine with a TPM the data partition's key is sealed to the Secure Boot state; turning it on afterwards resets the data partition and the workstation must be enrolled again ([Disk Installer](Disk-Installer#encrypted-data-partition)).
+3. Boot the ISO or the installed disk. If Secure Boot is on and the machine starts the kiosk, the signed chain was accepted; a machine that refuses it shows a firmware "Security violation" message instead.
+4. Open the setup wizard and **Agent Log & Diagnostics**: the line under the heading says `Secure Boot: On`, with the workstation's hostname. `Off` means the firmware did not enforce it this boot; `Off (started in legacy BIOS mode)` means the machine did not start through UEFI.
+5. The agent log on the same screen has the line `Hostname …; Secure Boot on.` from the agent's start.
+6. On a machine with any Linux shell (the simulator, or a Debian live USB on the same machine): `mokutil --sb-state` prints `SecureBoot enabled`, and `journalctl -k | grep -i "secure boot"` shows `Secure boot enabled`.
+
+The VM boot test (`distro-builder/tests/vm/boot-test.sh`) boots every scenario under Secure Boot firmware with Microsoft's keys and fails unless the kernel reports `Secure boot enabled`.
+
 ### BIOS / UEFI firmware
 
 Software cannot defend against someone who can simply boot something else. After installing:
@@ -232,7 +251,7 @@ Never invent a value to make a build go green.
 
 Stated plainly, because a hardening page that claims completeness is worse than useless:
 
-- **Physical disassembly.** Anyone who can remove the drive can read it. Nothing on it is secret except an enrolment token, which can be revoked from the dashboard in one click.
+- **Physical disassembly.** On a machine with a TPM 2.0 chip the data partition is encrypted and opens only in that machine, so a drive taken out shows nothing but the system image, which is public. Without a TPM anyone who can remove the drive can read it. Either way, a whole stolen machine still boots and unlocks itself, and the enrolment token can be revoked from the dashboard in one click.
 - **A network-level attacker.** The client trusts its control plane. HTTPS and the device token protect the channel; a compromised control plane can point the kiosk anywhere the allowlist permits.
 - **A stolen operator session.** Remote Control is protected by the console's sign-in, the `workstations` permission and a one-time session token, not by the 8-character RFB secret. Whoever holds an operator session with that permission can open a live desktop. → [Remote Control](Remote-Control#why-eight-characters)
 

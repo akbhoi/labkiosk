@@ -571,7 +571,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/setup` | `GET` | Serves `wizard.html`. Returns `403` once the workstation is enrolled unless accessed via `#network` with admin authentication. |
-| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
+| `/api/status` | `GET` | Local state: `clientId`, `clientNum`, `isLocked`, `lockMessage`, `targetUrl`, `broadcastUrl`, `broadcastEpoch`, `isConfigured`, `baseDomain`, `isLive`, `isInstalled`, `isOnline`, `persistentStorage`, `installRequested`, `secureBoot` (`on`, `off`, `legacy-bios` or `unknown`), `hostname`. `persistentStorage` is false when `/etc/labkiosk` is not the `LABKIOSK_DATA` partition, i.e. an enrolment made now would not survive a reboot. |
 | `/api/localization/options` | `GET` | Continents, countries, timezones, locales, keyboard layouts and interface catalogs, all read from the workstation's own tzdata, locale and X11 tables. |
 | `/api/localization/languages` | `GET` | Interface languages the organization's control plane offers, with the installed ones marked. |
 | `/api/localization/language/download` | `POST` | Downloads one catalog from the control plane into `/etc/labkiosk/i18n`. Administrator token required once installed. |
@@ -590,7 +590,7 @@ One further origin is accepted: the kiosk extension's own origin (`chrome-extens
 | `/api/reboot` | `POST` | Reboots the workstation. |
 | `/api/setup` | `POST` | Performs enrolment against the control plane. `409` once already enrolled. |
 
-`POST /api/install` takes `targetDisk` (re-validated against `TARGET_DISK_PATTERN`) and an optional `grubPasswordHash` (re-validated against `GRUB_PBKDF2_PATTERN`). Only a *digest* is accepted: the wizard derives PBKDF2 in the browser with WebCrypto, so the plaintext boot-menu password never crosses the agent's API, never appears in a process argument, and is never written to disk.
+`POST /api/install` takes `targetDisk` (re-validated against `TARGET_DISK_PATTERN`) an optional `grubPasswordHash` (re-validated against `GRUB_PBKDF2_PATTERN`) and an optional `hostname` (one lowercase DNS label; generated when absent). Only a *digest* is accepted: the wizard derives PBKDF2 in the browser with WebCrypto, so the plaintext boot-menu password never crosses the agent's API, never appears in a process argument, and is never written to disk.
 
 `POST /api/network/configure` manages NetworkManager connections. On installed machines, connection keyfiles are persisted in `LABKIOSK_DATA` (`/etc/labkiosk/system-connections/`) and bind-mounted to `/etc/NetworkManager/system-connections` by a mount unit in the image (no `/etc/fstab` is written) so configurations persist across `overlayroot="tmpfs"` reboots.
 

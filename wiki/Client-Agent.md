@@ -204,10 +204,10 @@ That is what keeps a visited web page from reaching the installer.
 | Endpoint | Method | Notes |
 | :--- | :--- | :--- |
 | `/setup` | GET | Serves the wizard. `403` once enrolled. |
-| `/api/status` | GET | Local state for the wizard and the extension |
+| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state and the hostname |
 | `/api/install/disks` | GET | `[]` when not a live session |
 | `/api/install/status` | GET | Progress percentage |
-| `/api/install` | POST | `400` when already installed on an internal drive |
+| `/api/install` | POST | `400` when already installed on an internal drive, or when `hostname` is not one lowercase DNS label |
 | `/api/reboot` | POST | |
 | `/api/setup` | POST | `409` once already enrolled |
 

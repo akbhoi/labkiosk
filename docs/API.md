@@ -1066,9 +1066,15 @@ on live media, which keeps nothing by design.
     "isInstalled": true,
     "isOnline": true,
     "persistentStorage": true,
-    "installRequested": false
+    "installRequested": false,
+    "secureBoot": "on",
+    "hostname": "labkiosk-3fa92c"
   }
   ```
+
+`secureBoot` is `on` when the firmware enforced Secure Boot for this boot, `off` when it did not,
+`legacy-bios` when the machine did not start through UEFI, and `unknown` when the firmware variable
+cannot be read. The setup wizard's **Agent Log & Diagnostics** shows it with `hostname`.
 
 #### `GET /api/localization/options`
 
@@ -1296,9 +1302,14 @@ installed workstation (`labkiosk.installed=1` on the kernel command line).
   ```json
   {
     "targetDisk": "/dev/sda",
-    "grubPasswordHash": "grub.pbkdf2.sha512.200000.abcd...1234..."
+    "grubPasswordHash": "grub.pbkdf2.sha512.200000.abcd...1234...",
+    "hostname": "front-desk-1"
   }
   ```
+
+  `hostname` is optional: one DNS label, 1 to 63 lowercase letters, digits and hyphens, not
+  starting or ending with one (`400` otherwise). Without it the installer generates
+  `labkiosk-` and six random hex digits.
 
 - **Response `200 OK`:**
 

@@ -42,7 +42,11 @@ Paths are under `distro-builder/`. Authoritative detail: `distro-builder/AGENTS.
 - `sys.stdout` carries **only JSON** (`--list-disks`, `--status`); all logging to `sys.stderr`.
 - GPT: `bios_grub` 1–2 MiB · ESP 2–514 MiB FAT32 · ROOT ext4 to end−1537 MiB · SWAP (partition 5,
   made last) end−1536 to end−512 MiB · DATA ext4 last 512 MiB. GRUB passes `labkiosk.swap=<PARTUUID>`
-  from `boot/grub/labkiosk-swap.cfg`; `labkiosk-swap` encrypts it with a one-boot key.
+  from `boot/grub/labkiosk-swap.cfg`; `labkiosk-swap` encrypts it with a one-boot key. With a TPM 2.0
+  chip DATA is LUKS2 (`boot/grub/labkiosk-datacrypt.cfg` → `labkiosk.datacrypt=`), opened by
+  `labkiosk-data-unlock` with the TPM, recreated empty when the TPM refuses (re-enrolment).
+  `boot/grub/labkiosk-hostname.cfg` → `labkiosk.hostname=` (`labkiosk-hostname`). Both EFI
+  `grub-install` calls pass `--uefi-secure-boot`.
   Negative parted offsets need `--`. Minimum disk 7 GiB (a drive sold as 8 GB): two images.
 - **ROOT is an image store, not a root filesystem** (`docs/OTA_UPDATES.md` §5.1, codex Rules 3 and 8):
   `boot/grub/{grub.cfg,grubenv,labkiosk-password.cfg,labkiosk-data.cfg}` and `images/<version>/{vmlinuz,initrd.img,

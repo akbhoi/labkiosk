@@ -80,10 +80,10 @@ sudo bash build-iso.sh
 | Boot & partitioning | `grub-efi-amd64-bin`, `grub-pc-bin`, `grub-common`, `grub2-common`, `shim-signed`, `grub-efi-amd64-signed`, `efibootmgr`, `parted`, `dosfstools`, `e2fsprogs`, `rsync`, `sudo`, `xz-utils` |
 | Virtualisation | `hyperv-daemons` |
 | Firmware | `intel-microcode`, `amd64-microcode`, `firmware-linux-free`, `firmware-misc-nonfree` (includes Intel Arc and NVIDIA nouveau), `firmware-realtek`, `firmware-iwlwifi`, `firmware-amd-graphics`, `firmware-sof-signed`, `firmware-intel-sound`, `firmware-atheros`, `firmware-ath9k-htc`, `firmware-brcm80211`, `firmware-libertas`, `firmware-ti-connectivity`, `firmware-zd1211`, `firmware-bnx2`, `firmware-bnx2x` |
-| X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `xinit`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
+| X11 & desktop | `xserver-xorg-core`, `xserver-xorg-legacy`, `xserver-xorg-video-{all,fbdev,vesa,intel,qxl}`, `xserver-xorg-input-all`, `intel-media-va-driver-non-free`, `i965-va-driver`, `mesa-va-drivers` (hardware video decoding: Intel, Arc included, AMD/Radeon and nouveau), `xinit`, `nodm`, `openbox`, `xdotool`, `scrot`, `unclutter`, `alsa-utils` |
 | Browser & fonts | `chromium`, `chromium-sandbox`, `fonts-dejavu`, `fonts-liberation`, `fonts-noto-core`, `fonts-noto-color-emoji` |
 | Remote & network | `x11vnc`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
-| Memory & recovery | `systemd-zram-generator` (compressed RAM as the first swap), `cryptsetup-bin` (the installed disk's swap partition, encrypted with a key for one boot) |
+| Memory & recovery | `systemd-zram-generator` (compressed RAM as the first swap), `cryptsetup-bin` (the installed disk's swap partition, encrypted with a key for one boot, and the data partition, encrypted with the TPM), `libtss2-esys-3.0.2-0`, `libtss2-mu0`, `libtss2-rc0`, `libtss2-tcti-device0` (what systemd needs to reach the TPM) |
 
 ### Keeping the image small
 
