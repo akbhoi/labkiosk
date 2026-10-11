@@ -305,19 +305,18 @@ def agent_answers():
 
 
 def command_lines(proc_dir="/proc"):
-    """Every process's command line, as bytes."""
+    """Every process's command line, as bytes, read one at a time."""
     try:
         pids = [name for name in os.listdir(proc_dir) if name.isdigit()]
     except OSError:
-        return []
-    lines = []
+        return
     for pid in pids:
         try:
             with open(os.path.join(proc_dir, pid, "cmdline"), "rb") as handle:
-                lines.append(handle.read())
+                line = handle.read()
         except OSError:
             continue  # The process ended while the list was being read.
-    return lines
+        yield line
 
 
 def is_kiosk_browser(cmdline):
@@ -337,9 +336,13 @@ def browser_running(proc_dir="/proc"):
 
 def browser_like_processes(proc_dir="/proc", limit=3, width=300):
     """What Chromium processes there are, for the log when the browser was not recognised."""
-    found = [line.replace(b"\0", b" ").decode("utf-8", "replace").strip()[:width]
-             for line in command_lines(proc_dir) if b"chromium" in line]
-    return found[:limit]
+    found = []
+    for line in command_lines(proc_dir):
+        if b"chromium" in line:
+            found.append(line.replace(b"\0", b" ").decode("utf-8", "replace").strip()[:width])
+            if len(found) >= limit:
+                break
+    return found
 
 
 def wait_until_healthy(probe, clock=time.monotonic, sleep=time.sleep,
