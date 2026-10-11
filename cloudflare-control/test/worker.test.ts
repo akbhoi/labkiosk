@@ -76,9 +76,9 @@ import {
   hashRelayToken,
   relayName
 } from "../src/remote_relay";
-import { CONSOLE_STYLESHEET_PATH } from "../src/ui_layout";
+import { CONSOLE_STYLESHEET_PATH, UNSAVED_CHANGES_SCRIPT } from "../src/ui_layout";
 import { runCustomHostnameJob } from "../src/custom_hostnames";
-import { PALETTE } from "../src/ui_tokens";
+import { BUSY_SCRIPT, PALETTE } from "../src/ui_tokens";
 import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
@@ -2095,6 +2095,27 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // A mistyped console address is not the Organizations page.
     assert.equal((await call("/super/nope", { cookie: superSessionCookie })).status, 404);
     assert.equal((await call("/super/organizations", { cookie: superSessionCookie })).status, 200);
+  });
+
+  test("Both consoles ask before a form with unsaved changes is left", async () => {
+    const pages: Array<[string, string]> = [
+      ["/admin/settings?tenant=greenwood", orgSessionCookie],
+      ["/admin/staff?tenant=greenwood", orgSessionCookie],
+      ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
+      ["/super/catalogs", superSessionCookie]
+    ];
+    for (const [page, cookie] of pages) {
+      const html = await (await call(page, { cookie })).text();
+      assert.ok(html.includes(UNSAVED_CHANGES_SCRIPT), `${page} carries the unsaved-changes guard`);
+      // It runs before the busy marker wraps fetch, so it sees a save's own request.
+      assert.ok(html.indexOf(UNSAVED_CHANGES_SCRIPT) < html.indexOf(BUSY_SCRIPT), `${page}: the guard is installed first`);
+    }
+    // The three choices, and the form's own label on the one that saves.
+    assert.match(UNSAVED_CHANGES_SCRIPT, /"Discard changes"/);
+    assert.match(UNSAVED_CHANGES_SCRIPT, /"Cancel"/);
+    assert.match(UNSAVED_CHANGES_SCRIPT, /choice\(saveLabelOf\(form\), "btn-primary", "save"\)/);
+    // A public page has no console forms to guard.
+    assert.ok(!(await (await call("/")).text()).includes("lk-unsaved-title"));
   });
 
   test("A public page may be kept for back and forward, a console never; every page names its icon", async () => {
