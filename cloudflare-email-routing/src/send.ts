@@ -8,9 +8,14 @@
  * who it goes to; this side checks the shape of what it was handed, refuses
  * anything that could start a new header, and never builds a message from
  * unescaped input (`src/templates/`).
+ *
+ * The templates own two things about what goes out: a one-time code's subject,
+ * which never carries the code (`mailSubject()`), and `Auto-Submitted:
+ * auto-generated` on a code or a security notice, so an out-of-office reply
+ * never answers one (RFC 3834).
  */
 
-import { Brand, MailTemplate, renderMailHtml, TEMPLATE_NAMES } from "./templates";
+import { Brand, mailSubject, MailTemplate, renderMailHtml, TEMPLATE_NAMES } from "./templates";
 import { isPlainAddress } from "./templates/layout";
 
 export interface SendRequest {
@@ -61,7 +66,10 @@ export function sendRequestProblem(body: unknown): string | null {
   if (typeof mail.text !== "string" || !mail.text.trim() || mail.text.length > MAX_TEXT_CHARS) return "text is missing or too long";
   const name = (mail.template as { name?: unknown } | undefined)?.name;
   if (typeof name !== "string" || !(TEMPLATE_NAMES as readonly string[]).includes(name)) return "template is not one this Worker has";
-  if (!mail.brand || typeof mail.brand.name !== "string" || !mail.brand.name.trim()) return "brand is missing";
+  // The brand's name can be in the subject (a code's), so it is held to a header's rules too.
+  if (!mail.brand || typeof mail.brand.name !== "string" || !mail.brand.name.trim() || !oneLine(mail.brand.name) || mail.brand.name.length > 100) {
+    return "brand is missing, or its name is not one short line";
+  }
   for (const [header, value] of Object.entries(mail.headers || {})) {
     if (!ALLOWED_HEADERS.has(header.toLowerCase())) return `the ${header} header may not be set`;
     if (!oneLine(value) || value.length > 4000) return `the ${header} header is not one line`;
@@ -82,10 +90,14 @@ export async function handleSend(request: Request, env: MailerEnv): Promise<Resp
   const problem = sendRequestProblem(body);
   if (problem) return json({ error: problem }, 400);
   const mail = body as SendRequest;
+  const subject = mailSubject(mail.template, mail.subject, mail.brand);
+  const headers: Record<string, string> = { ...(mail.headers || {}) };
+  const automatic = mail.template.name === "code" || mail.template.name === "alert";
+  if (automatic && !Object.keys(headers).some((h) => h.toLowerCase() === "auto-submitted")) headers["Auto-Submitted"] = "auto-generated";
 
   let html: string;
   try {
-    html = renderMailHtml({ template: mail.template, subject: mail.subject, text: mail.text, brand: mail.brand });
+    html = renderMailHtml({ template: mail.template, subject, text: mail.text, brand: mail.brand });
   } catch (err) {
     console.error("[Email] Rendering a message failed:", err);
     return json({ error: "The message could not be rendered from its template" }, 400);
@@ -95,10 +107,10 @@ export async function handleSend(request: Request, env: MailerEnv): Promise<Resp
       from: { email: mail.from.email, name: mail.from.name },
       to: mail.to.name ? { email: mail.to.email, name: mail.to.name } : mail.to.email,
       replyTo: mail.replyTo,
-      subject: mail.subject,
+      subject,
       text: mail.text,
       html,
-      headers: mail.headers || {}
+      headers
     });
     return json({ messageId: result.messageId });
   } catch (err) {

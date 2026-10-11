@@ -20,7 +20,7 @@
  */
 
 import { AlertTemplate, renderAlert } from "./alert";
-import { CodeTemplate, renderCode } from "./code";
+import { codeSubject, CodeTemplate, renderCode } from "./code";
 import { DecisionTemplate, renderDecision } from "./decision";
 import { Brand } from "./layout";
 import { LetterTemplate, renderLetter } from "./letter";
@@ -48,6 +48,14 @@ export interface RenderInput {
   /** The message's plain-text part. */
   text: string;
   brand: Brand;
+}
+
+/**
+ * The subject a message goes out with. A code message has its own, without the
+ * code (`codeSubject()`); every other message keeps the one it was handed.
+ */
+export function mailSubject(template: MailTemplate, subject: string, brand: Brand): string {
+  return template.name === "code" ? codeSubject(template, brand) : subject;
 }
 
 /** The HTML part of a message. */

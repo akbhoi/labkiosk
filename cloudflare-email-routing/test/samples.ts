@@ -17,13 +17,13 @@ export interface Sample {
 export const SAMPLES: Sample[] = [
   {
     file: "code-signup",
-    subject: "482913 is your Lab Kiosk verification code",
+    subject: "Your Lab Kiosk verification OTP",
     text: "Your Lab Kiosk verification code is 482913.\n\nEnter it in the registration form to confirm this email address. It expires in 15 minutes.",
     template: { name: "code", code: "482913", purpose: "signup", minutes: 15 }
   },
   {
     file: "code-sign-in",
-    subject: "730164 is your Lab Kiosk sign-in code",
+    subject: "Your Lab Kiosk sign-in OTP",
     text: "Hello Asha Rao,\n\nYour sign-in code is 730164. It works for this sign-in only, for the next ten minutes.",
     template: { name: "code", code: "730164", purpose: "sign-in", minutes: 10, recipientName: "Asha Rao" }
   },
