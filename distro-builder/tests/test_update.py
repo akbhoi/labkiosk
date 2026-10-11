@@ -908,14 +908,15 @@ class Image(unittest.TestCase):
         # auto/config turns live-build's firmware defaults off, so a device's
         # firmware is in the image only if the package list names it.
         with open(os.path.join(ROOT, "config/package-lists/kiosk.list.chroot"), encoding="utf-8") as handle:
-            packages = [line.strip() for line in handle if line.strip() and not line.startswith("#")]
+            packages = [line.strip() for line in handle if line.strip() and not line.strip().startswith("#")]
         for firmware in ("firmware-misc-nonfree", "firmware-realtek", "firmware-iwlwifi",
                          "firmware-amd-graphics", "firmware-sof-signed", "firmware-intel-sound",
                          "firmware-atheros", "firmware-ath9k-htc", "firmware-brcm80211",
                          "firmware-libertas", "firmware-ti-connectivity", "firmware-zd1211",
                          "firmware-bnx2", "firmware-bnx2x"):
             self.assertIn(firmware, packages)
-        self.assertEqual(len(packages), len(set(packages)), "a package is listed twice")
+        duplicates = sorted(name for name in set(packages) if packages.count(name) > 1)
+        self.assertEqual(duplicates, [], "listed more than once in kiosk.list.chroot")
 
     def test_no_raw_string_double_escapes_an_anchor(self):
         for path in (os.path.join(CHROOT, "usr/local/sbin/labkiosk-update"),
