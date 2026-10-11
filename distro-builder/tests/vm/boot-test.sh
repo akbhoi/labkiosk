@@ -501,7 +501,9 @@ complaints="$(journalctl --directory="$WORK/journal/journal" --output=cat _TRANS
     done | sort | uniq -c | sort -rn || true)"
 if [ -n "$complaints" ]; then
     log "apparmor: what the profiles do not cover yet (complain mode, nothing was blocked):"
-    printf '%s\n' "$complaints" | head -n 60
+    # Not a pipe: head closing it early kills printf with SIGPIPE, which
+    # pipefail turns into a failed boot test.
+    head -n 60 <<< "$complaints"
 else
     log "apparmor: no complaints from either profile"
 fi
