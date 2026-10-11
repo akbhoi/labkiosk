@@ -416,8 +416,10 @@ systemctl mask smartmontools.service
 
 # 7f. AppArmor profiles for the agent and x11vnc (/etc/apparmor.d/labkiosk-*),
 # in complain mode: they block nothing yet, and log whatever the two do beyond
-# them. The Debian kernel enables AppArmor; apparmor.service loads the profiles.
-systemctl enable apparmor.service
+# them. The Debian kernel enables AppArmor; labkiosk-apparmor.service loads the
+# two, because Debian's apparmor.service skips live systems and this one always
+# runs from live-boot's overlay.
+systemctl enable labkiosk-apparmor.service
 
 # Configure Hyper-V & generic VM display/storage drivers in initramfs
 mkdir -p /etc/initramfs-tools

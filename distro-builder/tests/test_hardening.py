@@ -273,8 +273,16 @@ class AppArmor(unittest.TestCase):
         self.assertTrue(read(CHROOT, "opt/labkiosk/agent/agent.py").startswith("#!/usr/bin/env python3\n"))
         hook = read(HOOK)
         self.assertIn("\nchmod 0755 /opt/labkiosk/agent/agent.py\n", hook)
-        self.assertIn("systemctl enable apparmor.service", hook)
         self.assertIn("apparmor", package_list())
+
+    def test_the_profiles_are_loaded_on_a_live_system(self):
+        # Debian's apparmor.service skips a live system, and the kiosk always is one.
+        unit = read(CHROOT, "etc/systemd/system/labkiosk-apparmor.service")
+        self.assertIn("\nExecStart=/sbin/apparmor_parser --replace "
+                      "/etc/apparmor.d/labkiosk-agent /etc/apparmor.d/labkiosk-x11vnc\n", unit)
+        self.assertIn("\nBefore=sysinit.target labkiosk-session.service\n", unit)
+        self.assertNotIn("\nConditionPathExists", unit)
+        self.assertIn("\nsystemctl enable labkiosk-apparmor.service\n", read(HOOK))
 
     @unittest.skipUnless(shutil.which("apparmor_parser") and os.path.isdir("/etc/apparmor.d/abstractions"),
                          "needs apparmor_parser and the abstractions to parse the profiles")
