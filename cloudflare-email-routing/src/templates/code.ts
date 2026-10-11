@@ -6,11 +6,13 @@
  * The code is never in the subject or the preview line: those show on a locked
  * phone's notifications and in every inbox list. Gmail's apps and Apple Mail
  * find the code in the body and offer to copy or fill it, so the body names it
- * plainly ("Verification code", then the digits as one unbroken run) and the
- * subject says what the mail is: an OTP from this sender.
+ * plainly, the way the messages Gmail shows its "Copy code" chip on do: one
+ * sentence that says what the number is and gives it, "Your Lab Kiosk
+ * verification code is <strong>482913</strong>.", then the same digits large,
+ * as one unbroken run. The subject says what the mail is: an OTP from this sender.
  */
 
-import { Brand, COLOR, MONO, label, layout, panel, paragraphs } from "./layout";
+import { Brand, COLOR, esc, MONO, label, layout, panel, paragraphs } from "./layout";
 
 export interface CodeTemplate {
   name: "code";
@@ -28,7 +30,7 @@ const COPY = {
     caption: "Verification code",
     subject: "verification OTP",
     title: "Confirm your email address",
-    lead: "Enter this code in the registration form to confirm this email address.",
+    lead: "Enter it in the registration form to confirm this email address.",
     unexpected: "If you did not ask to register an organization, ignore this message. Nothing happens without the code.",
     reason: "You are receiving this because this address was entered in a Lab Kiosk registration form."
   },
@@ -37,7 +39,7 @@ const COPY = {
     caption: "Verification code",
     subject: "verification OTP",
     title: "Confirm your email address",
-    lead: "Enter this code in the contact form to confirm this email address. Your message is sent once you do.",
+    lead: "Enter it in the contact form to confirm this email address. Your message is sent once you do.",
     unexpected: "If you did not start a message to Lab Kiosk, ignore this one. Nothing is sent without the code.",
     reason: "You are receiving this because this address was entered in the Lab Kiosk contact form."
   },
@@ -46,7 +48,7 @@ const COPY = {
     caption: "Sign-in code",
     subject: "sign-in OTP",
     title: "Your sign-in code",
-    lead: "Enter this code to finish signing in. It works for this sign-in only.",
+    lead: "Enter it to finish signing in. It works for this sign-in only.",
     unexpected: "If you did not just enter your password, someone else knows it. Change it now, and keep this code to yourself.",
     reason: "You are receiving this because your password was just entered on the sign-in page."
   }
@@ -69,7 +71,9 @@ export function renderCode(t: CodeTemplate, subject: string, brand: Brand): stri
     preheader: `${copy.caption} for ${brand.name}. It works for ${minutes} minutes.`,
     title: copy.title,
     bodyHtml:
-      paragraphs(greeting + copy.lead) +
+      (greeting ? paragraphs(greeting) : "") +
+      // The sentence a mail client reads the code from: what it is, then the digits, in one line.
+      `<p style="margin:0 0 16px">Your ${esc(brand.name)} ${esc(copy.caption.toLowerCase())} is <strong>${digits}</strong>. ${esc(copy.lead)}</p>` +
       panel(
         // One text node of digits: a double-click or a long press selects all of it, and
         // `user-select: all` makes one click do it where the client keeps the style (Apple Mail).

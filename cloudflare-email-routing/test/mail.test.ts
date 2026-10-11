@@ -54,6 +54,8 @@ test("A code is easy to find and copy, and stays out of the subject and the prev
     const html = renderMailHtml({ template: sample.template, subject, text: sample.text, brand: BRAND });
     const preheader = html.match(/<div style="display:none[^>]*>([^<]*)<\/div>/)![1];
     assert.ok(!preheader.includes(code), `${file}: the preview line does not give the code away`);
+    // The sentence Gmail's "Copy code" chip is read from, as in the messages it shows on.
+    assert.match(html, new RegExp(`>Your Lab Kiosk (verification|sign-in) code is <strong>${code}</strong>\\. Enter it `));
     // The caption names the code, and the digits are one text node anyone can select at once.
     assert.match(html, new RegExp(`>(Verification|Sign-in) code</div>\\s*<div class="lk-code"[^>]*user-select:all[^>]*>${code}</div>`));
   }
