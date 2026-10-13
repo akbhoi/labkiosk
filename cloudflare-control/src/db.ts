@@ -225,6 +225,30 @@ CREATE TABLE IF NOT EXISTS major_upgrade_grants (
   PRIMARY KEY (tenant_id, major)
 );
 
+CREATE TABLE IF NOT EXISTS legal_acceptances (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  tenant_name TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  user_email TEXT NOT NULL,
+  document TEXT NOT NULL CHECK (document IN ('terms', 'privacy', 'aup', 'content')),
+  version TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('registration', 'console')),
+  accepted_at INTEGER NOT NULL,
+  ip TEXT,
+  user_agent TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_legal_acceptances_tenant ON legal_acceptances(tenant_id, document, version);
+
+CREATE TABLE IF NOT EXISTS legal_versions (
+  document TEXT NOT NULL CHECK (document IN ('terms', 'privacy', 'aup', 'content')),
+  version TEXT NOT NULL,
+  published_at INTEGER NOT NULL,
+  notified_at INTEGER,
+  PRIMARY KEY (document, version)
+);
+
 CREATE TABLE IF NOT EXISTS bug_reports (
   signature TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -632,6 +656,9 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT line, status, end_of_life_at FROM release_lines LIMIT 1").run();
     await db.prepare("SELECT major, open FROM release_majors LIMIT 1").run();
     await db.prepare("SELECT tenant_id, major, granted_at, confirmed_at FROM major_upgrade_grants LIMIT 1").run();
+    // 0035: legal acceptances and document versions.
+    await db.prepare("SELECT document, version, source FROM legal_acceptances LIMIT 1").run();
+    await db.prepare("SELECT document, version, published_at, notified_at FROM legal_versions LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

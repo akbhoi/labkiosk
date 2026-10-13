@@ -150,7 +150,8 @@ and raises it to the enrolled count for an organization that already had more. `
 to its CHECK, which would need the cascade-safe rebuild of `tenants`. `0034` adds the platform
 tables `release_lines` (no row = supported) and `release_majors` (no row = free, as before; a
 closed row is added by `syncReleases` for a new major), and `major_upgrade_grants`
-(`tenant_id` FK, cascade).
+(`tenant_id` FK, cascade). `0035` adds `legal_acceptances` (append-only and deliberately without
+foreign keys, so the record survives deleting the organization) and `legal_versions`.
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

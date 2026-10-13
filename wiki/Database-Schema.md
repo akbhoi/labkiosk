@@ -67,6 +67,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0032_workstation_limit.sql` | `tenants.workstation_limit`: how many workstations an organization may enrol (45 by default, or what it already had when more) |
 | `0033_remote_control_seats.sql` | `tenants.remote_control_seats` (concurrent sessions; 5 for organizations already approved, 1 for new approvals) and `remote_control_revoked_at` |
 | `0034_release_lines.sql` | The platform tables `release_lines` (each line's support status and end-of-life date) and `release_majors` (whether a major is open), and `major_upgrade_grants` (a closed major granted to one organization, and its administrator's confirmation) |
+| `0035_legal_acceptances.sql` | `legal_acceptances` (append-only, no foreign keys: who accepted which version of which legal document, when, from where) and `legal_versions` (when each version was first served) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -322,6 +323,25 @@ One organization's standing with a major that has a `release_majors` row (`0034`
 | `granted_by` / `granted_at` | TEXT / INTEGER | The super admin who granted a closed major; NULL when it is open to all |
 | `confirmed_by` / `confirmed_at` | TEXT / INTEGER | The organization's staff member (`updates` permission) who confirmed it |
 
+### `legal_acceptances`
+
+The evidence of what each organization agreed to (`0035`, `src/legal.ts`). **Append-only and without foreign keys**: nothing updates or deletes a row, and it outlives the organization and the user, so the organization's name and the user's email are copied in.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT PK | |
+| `tenant_id` / `tenant_name` | TEXT | The organization, and its name at the time |
+| `user_id` / `user_email` | TEXT | Who accepted, and their email at the time |
+| `document` | TEXT | `terms` \| `privacy` \| `aup` \| `content` |
+| `version` | TEXT | The version in `LEGAL_DOCUMENTS` |
+| `source` | TEXT | `registration` \| `console` |
+| `accepted_at` | INTEGER | |
+| `ip` / `user_agent` | TEXT | Where it came from |
+
+### `legal_versions`
+
+When the Worker first served each document version (`0035`). An organization that has not accepted a required document's current version sees a notice in its console, and 30 days after `published_at` the console asks before anything else. `notified_at` is when a super admin last emailed organizations about it.
+
 ### `tenant_users`
 
 Staff accounts delegated by an organization.
@@ -383,7 +403,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0035_<description>.sql` (the next number after `0034`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0036_<description>.sql` (the next number after `0035`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

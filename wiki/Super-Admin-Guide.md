@@ -14,6 +14,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | Suspend or reactivate an organization | The platform's kill switch |
 | Set how many workstations an organization may enrol (**Workstation Limit**) | The license: 45 without a paid one |
 | Set Remote Control seats, revoke or restore Remote Control | An add-on the platform grants, and can take back |
+| See and export which version of the Terms each organization accepted, and email those that have not | The evidence of the contract with each customer |
 | Classify releases; set each line's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
@@ -76,6 +77,10 @@ Under **Releases**, below the release list:
 
 - **Release lines** (a minor version such as 2.8). **Security only** keeps sending the line's security fixes to the workstations already on it and moves no other workstation onto it. **End of life** offers it nothing more, security fixes included. **Set end-of-life date** announces the date it ends by itself. Each change can email the owners of the organizations with workstations on the line; their Settings → Updates shows the same warning.
 - **Major releases.** The first release of a new major arrives **closed**. **Open to all** or **Grant to an organization** (by subdomain) makes it available; an administrator of each organization then confirms it under Settings → Updates (recorded with their name) before any of its workstations is moved. **Take back** removes a grant and its confirmation; workstations already on the major keep it.
+
+### Legal terms
+
+Registration records the version of every legal document in force (`src/legal.ts`). When a document's text changes, its version changes; the first time the platform serves it, every organization that has not accepted it sees a notice in its console, and 30 days later its console asks before anything else until the owner or an `org_admin` accepts. Workstations, homepages and User Portals keep working throughout. **System → Legal** shows each document's version and how many active organizations accepted it, emails the owners of those that have not (**Email organizations**), and downloads every acceptance as CSV; **Organizations → ⋯ → Legal Record (CSV)** downloads one organization's.
 
 ### Rejecting
 

@@ -1,3 +1,4 @@
+import { acceptancesCsv } from "../src/legal";
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -7322,6 +7323,109 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Legal terms: registration records them, a new version is asked for, and gates the console after the notice period", async () => {
+    const tenantId = await greenwoodId();
+    const db = getDatabase(mockEnv);
+    const admin = await superCookie();
+    const record = await callJson(`/api/super/legal/acceptances?tenantId=${tenantId}`, { cookie: admin });
+    assert.equal(record.res.status, 200);
+    assert.deepEqual(
+      record.data.acceptances.map((a: any) => [a.document, a.source]).sort(),
+      [["privacy", "registration"], ["terms", "registration"]],
+      "registration records every document in force"
+    );
+    assert.equal((await callJson("/api/legal/status?tenant=greenwood", { cookie: orgSessionCookie })).data.pending.length, 0);
+
+    // A version Greenwood has not accepted: asked for at once, required once the notice period has passed.
+    await db.prepare("DELETE FROM legal_acceptances WHERE tenant_id = ?").bind(tenantId).run();
+    let status = (await callJson("/api/legal/status?tenant=greenwood", { cookie: orgSessionCookie })).data;
+    assert.deepEqual(status.pending.map((d: any) => d.id), ["terms"]);
+    assert.equal(status.gated, false);
+    assert.equal(status.canAccept, true);
+    let page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(page, /id="legal-notice"/);
+    assert.match(page, /id="btn-check-updates"/, "the console still works during the notice period");
+    await db.prepare("UPDATE legal_versions SET published_at = published_at - ? WHERE document = 'terms'").bind(31 * 86400).run();
+    status = (await callJson("/api/legal/status?tenant=greenwood", { cookie: orgSessionCookie })).data;
+    assert.equal(status.gated, true);
+    page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(page, /Accept the updated terms/);
+    assert.doesNotMatch(page, /id="btn-check-updates"/, "the terms are the page now");
+    const operator = await staffWith("terms-operator@greenwood.example", ["workstations"]);
+    const operatorPage = await (await call("/admin/workstations?tenant=greenwood", { cookie: operator })).text();
+    assert.match(operatorPage, /owner or an administrator needs to accept/);
+    assert.doesNotMatch(operatorPage, /id="form-legal-accept"/);
+
+    // Only the organization's owner or an org_admin accepts, the current version, once.
+    const accept = (versions: unknown, cookie = orgSessionCookie) => call("/api/legal/accept?tenant=greenwood", { ...json({ versions }), cookie });
+    const current = status.pending[0].version;
+    assert.equal((await accept({ terms: current }, operator)).status, 403);
+    assert.equal((await accept({ terms: current }, rivalSessionCookie)).status, 403);
+    assert.ok([400, 403].includes((await accept({ terms: current }, admin)).status), "a platform administrator never accepts for an organization");
+    assert.ok([401, 403].includes((await call("/api/legal/accept?tenant=greenwood", json({ versions: { terms: current } }))).status));
+    assert.equal((await accept({ terms: "1999-01-01" })).status, 409, "an old page");
+    assert.equal((await accept("terms")).status, 400);
+    const crossSite = await call("/api/legal/accept?tenant=greenwood", {
+      ...json({ versions: { terms: current } }),
+      cookie: orgSessionCookie,
+      headers: { Origin: "https://evil.example", "User-Agent": "Evil" }
+    });
+    assert.equal(crossSite.status, 403);
+    const accepted = await call("/api/legal/accept?tenant=greenwood", {
+      ...json({ versions: { terms: current } }),
+      cookie: orgSessionCookie,
+      headers: { "User-Agent": "TermsTest/1.0", "CF-Connecting-IP": "198.51.100.90" }
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal((await accept({ terms: current })).status, 409, "once");
+    page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(page, /id="legal-notice"/);
+    assert.match(page, /id="btn-check-updates"/);
+    const after = await callJson(`/api/super/legal/acceptances?tenantId=${tenantId}`, { cookie: admin });
+    const row = after.data.acceptances.find((a: any) => a.source === "console");
+    assert.equal(row.document, "terms");
+    assert.equal(row.version, current);
+    assert.equal(row.user_agent, "TermsTest/1.0");
+    assert.equal(row.ip, "198.51.100.90");
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "legal.accept" && l.details === `terms=${current}`));
+
+    // The platform's view, its CSV and its reminder email; only for a super admin.
+    for (const cookie of ["", orgSessionCookie]) {
+      assert.ok([401, 403].includes((await call("/api/super/legal", { cookie })).status));
+      assert.ok([401, 403].includes((await call(`/api/super/legal/acceptances?tenantId=${tenantId}&format=csv`, { cookie })).status));
+      assert.ok([401, 403].includes((await call("/api/super/legal/notify", { ...json({ document: "terms" }), cookie })).status));
+    }
+    const overview = await callJson("/api/super/legal", { cookie: admin });
+    const terms = overview.data.documents.find((d: any) => d.id === "terms");
+    assert.ok(terms.acceptedBy >= 1);
+    assert.equal(terms.effectiveAt - terms.publishedAt, 30 * 86400);
+    const csv = await call(`/api/super/legal/acceptances?tenantId=${tenantId}&format=csv`, { cookie: admin });
+    assert.match(csv.headers.get("Content-Type") || "", /text\/csv/);
+    assert.match(await csv.text(), /"terms","[0-9-]+","console"/);
+    assert.equal((await call("/api/super/legal/acceptances?tenantId=nope", { cookie: admin })).status, 404);
+    assert.equal((await call("/api/super/legal/notify", { ...json({ document: "cookies" }), cookie: admin })).status, 400);
+    assert.equal((await call("/api/super/legal/notify", { ...json({ document: "privacy" }), cookie: admin })).status, 400);
+    await db.prepare("DELETE FROM legal_acceptances WHERE tenant_id = ? AND source = 'console'").bind(tenantId).run();
+    const owner = await db.prepare("SELECT u.email FROM users u JOIN tenants t ON t.user_id = u.id WHERE t.id = ?").bind(tenantId).first<{ email: string }>();
+    const notified = await callJson("/api/super/legal/notify", { ...json({ document: "terms" }), cookie: admin });
+    assert.equal(notified.res.status, 200);
+    assert.ok(notified.data.emailed >= 1);
+    assert.ok(localOutbox().some((m) => m.to === owner!.email.toLowerCase() && /Updated Lab Kiosk Terms of Service/.test(m.subject)));
+
+    await accept({ terms: current });
+    await db.prepare("UPDATE legal_versions SET published_at = published_at + ? WHERE document = 'terms'").bind(31 * 86400).run();
+  });
+
+  test("The acceptance CSV quotes every field and defuses spreadsheet formulas", () => {
+    const csv = acceptancesCsv([
+      { tenant_id: "t", tenant_name: '=HYPERLINK("x")', user_id: "u", user_email: "a@example.com", document: "terms", version: "2026-10-04", source: "console", accepted_at: 0, ip: null, user_agent: 'Agent "1"' }
+    ]);
+    const line = csv.split("\r\n")[1];
+    assert.match(line, /^"t","'=HYPERLINK\(""x""\)","u"/);
+    assert.match(line, /"Agent ""1"""$/);
+  });
+
   test("The consoles offer updates only to those who may use them", async () => {
     const admin = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.match(admin, /id="btn-check-updates"/);
@@ -7689,6 +7793,7 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0032"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0033"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0034"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0035"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

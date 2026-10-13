@@ -104,6 +104,33 @@ function registryUpdate(row: ClientDevice | undefined): UpdateReport | undefined
  * changed, so each hub reloads its offer and reminds its workstations. One
  * with none online loads the offer when its first workstation connects.
  */
+/** The organization's owner, or a staff member with the org_admin role, may accept legal terms for it. */
+async function mayAcceptLegal(db: D1Database, session: Session, tenant: Tenant): Promise<boolean> {
+  if (session.role === "super_admin") return false;
+  if (tenant.user_id === session.user_id) return true;
+  return (await getTenantUser(db, tenant.id, session.user_id))?.role === "org_admin";
+}
+
+/** The documents in force as the platform's Legal view shows them. */
+async function platformLegalOverview(db: D1Database) {
+  const [documents, counts, tenants] = await Promise.all([publishedLegalVersions(db), legalAcceptanceCounts(db), listAllTenants(db)]);
+  return {
+    noticeDays: LEGAL_NOTICE_DAYS,
+    activeOrganizations: tenants.filter((t) => t.status === "active").length,
+    documents: documents.map((d) => ({
+      id: d.id,
+      title: d.title,
+      path: d.path,
+      version: d.version,
+      required: d.required,
+      publishedAt: d.publishedAt,
+      effectiveAt: d.effectiveAt,
+      notifiedAt: d.notifiedAt,
+      acceptedBy: counts.get(`${d.id}@${d.version}`) ?? 0
+    }))
+  };
+}
+
 async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void> {
   const tenants = (await listAllTenants(db)).filter((t) => t.status === "active" && Number(t.online_clients) > 0);
   for (let i = 0; i < tenants.length; i += 20) {
@@ -113,6 +140,16 @@ async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void
     });
   }
 }
+import {
+  acceptancesCsv,
+  isLegalDocumentId,
+  LEGAL_NOTICE_DAYS,
+  legalAcceptanceCounts,
+  listLegalAcceptances,
+  organizationLegalStatus,
+  publishedLegalVersions,
+  recordLegalAcceptances
+} from "./legal";
 import {
   initSchema,
   ensureSuperAdmin,
@@ -1995,6 +2032,83 @@ export default {
       });
     }
 
+    // GET /api/super/legal: the documents in force, when each version was
+    // published, and how many active organizations accepted it.
+    // GET /api/super/legal/acceptances?tenantId=&format=csv: the acceptance
+    // record, of one organization or all, as JSON or CSV.
+    // POST /api/super/legal/notify { document }: email the owner of every active
+    // organization that has not accepted the current version.
+    if (path === "/api/super/legal" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      return new Response(JSON.stringify(await platformLegalOverview(db)), { headers: jsonHeaders });
+    }
+    if (path === "/api/super/legal/acceptances" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const tenantId = url.searchParams.get("tenantId");
+      if (tenantId !== null && !(await findTenantById(db, tenantId))) return jsonError("Organization not found", 404, jsonHeaders);
+      const rows = await listLegalAcceptances(db, tenantId);
+      if (url.searchParams.get("format") === "csv") {
+        return new Response(acceptancesCsv(rows), {
+          headers: {
+            ...jsonHeaders,
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="legal-acceptances${tenantId ? `-${tenantId}` : ""}.csv"`
+          }
+        });
+      }
+      return new Response(JSON.stringify({ acceptances: rows }), { headers: jsonHeaders });
+    }
+    if (path === "/api/super/legal/notify" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { document?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!isLegalDocumentId(body?.document)) return jsonError("Name a legal document", 400, jsonHeaders);
+      const problem = mailConfigProblem(env);
+      if (problem) return jsonError("This server cannot send email", 503, jsonHeaders);
+      const doc = (await publishedLegalVersions(db)).find((d) => d.id === body.document)!;
+      if (!doc.required) return jsonError(`The ${doc.title} is not accepted by organizations`, 400, jsonHeaders);
+      const date = new Date(doc.effectiveAt * 1000).toISOString().slice(0, 10);
+      let emailed = 0;
+      let failed = 0;
+      for (const tenant of (await listAllTenants(db)).filter((t) => t.status === "active")) {
+        if (!(await organizationLegalStatus(db, tenant.id)).pending.some((p) => p.id === doc.id)) continue;
+        try {
+          await sendMail(env, {
+            to: tenant.admin_email,
+            toName: tenant.admin_name,
+            subject: `Updated Lab Kiosk ${doc.title}`,
+            text:
+              `Hello ${tenant.admin_name || ""},\n\n` +
+              `We have updated the Lab Kiosk ${doc.title} (version ${doc.version}). You can read it at https://${baseDomain}${doc.path}.\n\n` +
+              `An administrator of ${tenant.name} needs to accept it in your console. From ${date} the console asks for it before anything else; ` +
+              `your workstations, homepage and User Portal keep working throughout.\n\nLab Kiosk`,
+            template: { name: "notice", title: `Updated ${doc.title}` }
+          });
+          emailed++;
+        } catch (err) {
+          failed++;
+          console.error(`[Worker] Could not email ${tenant.name} about the ${doc.title}:`, err);
+        }
+      }
+      await db.prepare("UPDATE legal_versions SET notified_at = ? WHERE document = ? AND version = ?")
+        .bind(Math.floor(Date.now() / 1000), doc.id, doc.version)
+        .run();
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: "legal.notify",
+        details: `${doc.id}=${doc.version} emailed=${emailed} failed=${failed}`
+      });
+      return new Response(JSON.stringify({ status: "ok", emailed, failed, ...(await platformLegalOverview(db)) }), { headers: jsonHeaders });
+    }
+
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
     // GET /api/super/audit-logs: what the platform has done -- catalog uploads
     // and deletions, and every super-admin action taken on an organization. Every one
@@ -3447,6 +3561,59 @@ export default {
       );
     }
 
+    // GET /api/legal/status: the legal documents this organization has not
+    // accepted at their current version, whether its console now asks before
+    // anything else, and whether this account may accept them.
+    // POST /api/legal/accept { versions: { terms: "<version>", ... } }: accept
+    // them, on behalf of the organization. Only its owner or an org_admin may.
+    if ((path === "/api/legal/status" && method === "GET") || (path === "/api/legal/accept" && method === "POST")) {
+      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      const canAccept = await mayAcceptLegal(db, session!, tenant);
+      const status = await organizationLegalStatus(db, tenant.id);
+      if (method === "GET") return new Response(JSON.stringify({ ...status, canAccept }), { headers: jsonHeaders });
+      if (session!.role === "super_admin") return jsonError("A platform administrator cannot accept terms for an organization", 403, jsonHeaders);
+      if (!canAccept) return jsonError("Only the organization's owner or an administrator can accept the terms", 403, jsonHeaders);
+      let body: { versions?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const versions = body?.versions;
+      if (!versions || typeof versions !== "object" || Array.isArray(versions)) {
+        return jsonError("versions names the version of each document accepted", 400, jsonHeaders);
+      }
+      if (!status.pending.length) return jsonError("The current terms are already accepted", 409, jsonHeaders);
+      const given = versions as Record<string, unknown>;
+      const stale = status.pending.filter((doc) => given[doc.id] !== doc.version);
+      if (stale.length) {
+        return jsonError(`Accept the current ${stale.map((d) => `${d.title} (version ${d.version})`).join(" and ")}; reload the page to read it`, 409, jsonHeaders);
+      }
+      const user = await findUserById(db, session!.user_id);
+      if (!user) return jsonError("Your account was not found", 403, jsonHeaders);
+      await recordLegalAcceptances(db, {
+        tenantId: tenant.id,
+        tenantName: tenant.name,
+        userId: user.id,
+        userEmail: user.email,
+        documents: status.pending.map((doc) => ({ id: doc.id, version: doc.version })),
+        source: "console",
+        ip: request.headers.get("CF-Connecting-IP"),
+        userAgent: request.headers.get("User-Agent")
+      });
+      await writeAuditLog(db, {
+        tenantId: tenant.id,
+        userId: user.id,
+        action: "legal.accept",
+        details: status.pending.map((d) => `${d.id}=${d.version}`).join(" ")
+      });
+      return new Response(JSON.stringify({ status: "ok", accepted: status.pending.map((d) => ({ id: d.id, version: d.version })) }), {
+        headers: jsonHeaders
+      });
+    }
+
     // POST /api/settings/updates/confirm-major { major }: an administrator's
     // confirmation that this organization's workstations may be moved to a major
     // release the platform opened or granted it. Recorded with who and when.
@@ -4163,6 +4330,8 @@ export default {
       const userRole = session.role === "super_admin"
         ? "super_admin"
         : (tenant.user_id === session.user_id ? "org_admin" : (tenantUser?.role || "operator"));
+      // The platform's own demos have no customer to accept anything.
+      const legalStatus = isDemoTenant(tenant, session.user_id) ? null : await organizationLegalStatus(db, tenant.id);
 
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
@@ -4189,6 +4358,7 @@ export default {
           groups: workstationGroups,
           enrolledWorkstations,
           activePage,
+          legal: legalStatus && legalStatus.pending.length ? { ...legalStatus, canAccept: userRole === "org_admin" } : undefined,
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
           userPermissions: userPerms,
           isDevHost: isDev,

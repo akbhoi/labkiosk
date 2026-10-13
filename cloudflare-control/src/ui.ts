@@ -6,6 +6,7 @@
  * owns its markup and its client script in one file, and what is left here is the routing between them.
  */
 
+import { ConsoleLegal, renderLegalNoticeHtml, renderLegalNoticeScript } from "./ui_admin_legal";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEFAULT_WORKSTATION_LIMIT } from "./db";
@@ -54,6 +55,8 @@ export interface DashboardOptions {
    * itself does not carry the tenant subdomain).
    */
   needsTenantParam?: boolean;
+  /** Legal documents the organization has not accepted at their current version. */
+  legal?: ConsoleLegal;
   nonce: string;
 }
 
@@ -178,10 +181,14 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   const page = build(pageInput);
 
   // The tenant scope has to be in place before any page script runs.
+  // Once their notice period has passed, terms not accepted replace the page.
+  const legal = options.legal;
+  const legalHtml = legal ? renderLegalNoticeHtml(legal, labName) : "";
+  const gated = Boolean(legal?.gated);
   const scriptsHtml =
     renderApiScopeScript(nonce, tenantParam) +
-    page.scriptsHtml +
-    renderHeaderCountersScript(nonce, activePage);
+    (gated ? "" : page.scriptsHtml + renderHeaderCountersScript(nonce, activePage)) +
+    (legal ? renderLegalNoticeScript(nonce) : "");
 
   return renderLayoutHtml({
     title: `${labName} • ${page.title}`,
@@ -192,8 +199,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     activeNavId: activePage,
     stats,
     userMeta: currentUser ? { name: currentUser.name, email: currentUser.email, role: roleLabel(currentUser.role) } : undefined,
-    contentHtml: page.contentHtml,
-    modalsHtml: page.modalsHtml || "",
+    contentHtml: gated ? legalHtml : legalHtml + page.contentHtml,
+    modalsHtml: gated ? "" : page.modalsHtml || "",
     scriptsHtml,
     nonce
   });

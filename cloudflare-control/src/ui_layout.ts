@@ -1453,6 +1453,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
       font-size: 0.8125rem;
       font-weight: 500;
       color: var(--text-main);
+      text-decoration: none;
       cursor: pointer;
     }
     .menu-item > svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-muted); }

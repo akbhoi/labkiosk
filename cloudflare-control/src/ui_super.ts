@@ -13,6 +13,7 @@ import { DEMO_TENANTS, isDemoTenant } from "./demo";
 import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
 import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
+import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
@@ -237,6 +238,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
                 ? `<button type="button" class="menu-item menu-item-danger btn-remote-revoke" role="menuitem" data-tenant="${escapeAttr(t.id)}">Revoke Remote Control</button>`
                 : ""
             }
+            <a class="menu-item" role="menuitem" href="${escapeAttr(`/api/super/legal/acceptances?tenantId=${encodeURIComponent(t.id)}&format=csv`)}" download>Legal Record (CSV)</a>
             <button type="button" class="menu-item btn-workstation-limit" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-limit="${escapeAttr(String(Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT))}" data-enrolled="${escapeAttr(String(Number(t.enrolled_clients) || 0))}">Workstation Limit</button>
             ${t.custom_domain ? `<button type="button" class="menu-item menu-item-danger btn-remove-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Disconnect Custom Domain</button>` : ""}
             ${
@@ -331,7 +333,8 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     system: [
       { id: "system-arch", label: "Architecture & health", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>` },
       { id: "system-audit", label: "Audit log", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>` },
-      { id: "system-two-factor", label: "Two-factor sign-in", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>` }
+      { id: "system-two-factor", label: "Two-factor sign-in", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>` },
+      { id: "system-legal", label: "Legal", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 15 11 17 15 13"/></svg>` }
     ]
   };
   const views = viewsByTab[activeTab] || [];
@@ -591,6 +594,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <div class="tab-pane" id="pane-system-two-factor">
         ${renderTwoFactorPaneHtml()}
       </div>
+      <div class="tab-pane" id="pane-system-legal">
+        ${renderLegalPaneHtml()}
+      </div>
     `
   };
 
@@ -662,7 +668,7 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const scriptsHtml = `${inboxScriptHtml}
 ${tabSwitchScriptHtml}
-${activeTab === "system" ? renderTwoFactorScript(nonce) : ""}
+${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.

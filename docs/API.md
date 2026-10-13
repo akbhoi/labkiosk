@@ -100,6 +100,8 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/disk-health` | `POST` | Device Token | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
 | `/api/devices/update` | `GET` | Device Token | The system release this workstation may take (its organization's channel, its line's status, the majors open to it) and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
 | `/api/settings/updates` | `GET`, `POST` | Organization Admin (`updates`) | The organization's update channel and the release it is offered; `POST {"channel": "stable"\|"beta"}` changes the channel |
+| `/api/legal/status` | `GET` | Organization staff | The legal documents the organization has not accepted at their current version, whether the console now requires them (`gated`), and whether this account may accept them |
+| `/api/legal/accept` | `POST` | Organization owner or `org_admin` | `{"versions": {"terms": "<version>"}}`: accept every pending document at its current version; `409` for an old version or nothing pending |
 | `/api/settings/updates/confirm-major` | `POST` | Organization Admin (`updates`) | `{"major"}`: confirm that the organization's workstations may be moved to a major release the platform opened or granted it; `403` while it is closed to the organization, `409` when it needs no confirmation or is already confirmed |
 | `/api/clients/check-update` | `POST` | Organization Admin (`updates`) | `{"clientIds"}`: ask these workstations to check for and download the offered release |
 | `/api/clients/install-update` | `POST` | Organization Admin (`updates`) | `{"clientIds"}`: install the offered release on those that hold it downloaded and verified; `409` when nothing is offered |
@@ -136,6 +138,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/super/releases` | `GET` | Super Admin | Record new releases found in the `RELEASES` bucket and list them all; `503` without the binding |
 | `/api/super/releases/classify` | `POST` | Super Admin | `{"version", "channel": "beta"\|"stable"\|null}`: offer a release on a channel, or withdraw it (`null`) |
 | `/api/super/releases/revoke` | `POST` | Super Admin | `{"version"}`: withdraw a release for good; `409` when already revoked |
+| `/api/super/legal` | `GET` | Super Admin | The legal documents in force: version, when it was published, from when consoles require it, how many active organizations accepted it |
+| `/api/super/legal/acceptances` | `GET` | Super Admin | `?tenantId=&format=csv`: the acceptance record of one organization or all, as JSON or CSV |
+| `/api/super/legal/notify` | `POST` | Super Admin | `{"document"}`: email the owner of every active organization that has not accepted its current version |
 | `/api/super/release-lines` | `POST` | Super Admin | `{"line", "status", "endOfLifeAt"?, "note"?, "notify"?}`: a line's support status and end-of-life date; `notify` emails the owners of the organizations on it |
 | `/api/super/release-majors` | `POST` | Super Admin | `{"major", "action": "open"\|"close"\|"grant"\|"ungrant", "tenantId"\|"subdomain"}`: whether workstations may be moved to a major release |
 
