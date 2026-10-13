@@ -429,11 +429,14 @@ function remoteControlRefusal(tenant: Tenant | null, headers: Record<string, str
 async function closeAllRemoteSessions(env: Env, tenantId: string): Promise<number> {
   const { clientIds } = await hubJson<{ clientIds: string[] }>(env, tenantId, "/remote-revoke", {});
   if (!env.REMOTE_RELAY) return 0;
-  let closed = 0;
-  for (const clientId of clientIds) {
-    if (await closeRelaySession(env, tenantId, clientId)) closed++;
-  }
-  return closed;
+  const closed = await Promise.all(clientIds.map((clientId) => closeRelaySession(env, tenantId, clientId)));
+  return closed.filter(Boolean).length;
+}
+
+/** Every organization's name by id, for the platform's views. */
+async function tenantNames(db: D1Database): Promise<Map<string, string>> {
+  const rows = (await db.prepare("SELECT id, name FROM tenants").all<{ id: string; name: string }>()).results || [];
+  return new Map(rows.map((t) => [t.id, t.name]));
 }
 
 /** DNS label limit; a longer organization slug can never resolve. */
@@ -1637,7 +1640,7 @@ export default {
       if (denied) return denied;
       let body: { tenantId?: unknown; limit?: unknown };
       try {
-        body = await request.json<{ tenantId?: unknown; limit?: unknown }>();
+        body = (await request.json<{ tenantId?: unknown; limit?: unknown }>()) ?? {};
       } catch (err) {
         console.warn("[Worker] Unreadable workstation limit request:", err);
         return jsonError("The request body is not valid JSON", 400, jsonHeaders);
@@ -1667,7 +1670,7 @@ export default {
       if (denied) return denied;
       let body: { tenantId?: unknown; plan?: unknown; expiresOn?: unknown };
       try {
-        body = await request.json<{ tenantId?: unknown; plan?: unknown; expiresOn?: unknown }>();
+        body = (await request.json<{ tenantId?: unknown; plan?: unknown; expiresOn?: unknown }>()) ?? {};
       } catch (err) {
         console.warn("[Worker] Unreadable license request:", err);
         return jsonError("The request body is not valid JSON", 400, jsonHeaders);
@@ -1702,7 +1705,7 @@ export default {
       if (denied) return denied;
       let body: { tenantId?: unknown; action?: unknown; seats?: unknown; reason?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch (err) {
         console.warn("[Worker] Unreadable Remote Control request:", err);
         return jsonError("The request body is not valid JSON", 400, jsonHeaders);
@@ -1889,7 +1892,7 @@ export default {
       if (!env.RELEASES) return jsonError("This server has no releases bucket (RELEASES binding)", 503, jsonHeaders);
       const sync = await syncReleases(env.RELEASES, db);
       const releases = await listReleases(db);
-      const names = new Map((await listAllTenants(db)).map((t) => [t.id, t.name]));
+      const names = await tenantNames(db);
       return new Response(
         JSON.stringify({
           releases,
@@ -1912,7 +1915,7 @@ export default {
       if (denied) return denied;
       let body: { version?: unknown; channel?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -1954,7 +1957,7 @@ export default {
       if (denied) return denied;
       let body: { line?: unknown; status?: unknown; endOfLifeAt?: unknown; note?: unknown; notify?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -1994,17 +1997,17 @@ export default {
             : date
             ? `reaches end of life on ${date}. After that date workstations on it receive no further updates, security fixes included`
             : `now receives security fixes only`;
+        const owners = new Map((await listAllTenants(db)).map((t) => [t.id, t]));
         for (const usage of affected) {
-          const tenant = await findTenantById(db, usage.tenantId);
-          const owner = tenant ? await findUserById(db, tenant.user_id) : null;
-          if (!tenant || !owner?.email) continue;
+          const tenant = owners.get(usage.tenantId);
+          if (!tenant?.admin_email) continue;
           try {
             await sendMail(env, {
-              to: owner.email,
-              toName: owner.name,
+              to: tenant.admin_email,
+              toName: tenant.admin_name,
               subject: `Lab Kiosk ${line} ${status === "security_only" && !date ? "now receives security fixes only" : "end of life"}`,
               text:
-                `Hello ${owner.name || ""},\n\n` +
+                `Hello ${tenant.admin_name || ""},\n\n` +
                 `Lab Kiosk ${line}, which ${usage.workstations} of ${tenant.name}'s workstations run, ${what}.` +
                 (note ? `\n\n${note}` : "") +
                 `\n\nInstall the newest release from Workstations \u2192 Updates in your console to keep receiving updates.\n\nLab Kiosk`,
@@ -2018,7 +2021,7 @@ export default {
         }
       }
       const releases = await listReleases(db);
-      const names = new Map((await listAllTenants(db)).map((t) => [t.id, t.name]));
+      const names = await tenantNames(db);
       return new Response(
         JSON.stringify({ status: "ok", emailed, emailFailed, emailProblem, ...(await platformReleasePolicy(db, releases, names)) }),
         { headers: jsonHeaders }
@@ -2035,7 +2038,7 @@ export default {
       if (denied) return denied;
       let body: { major?: unknown; action?: unknown; tenantId?: unknown; subdomain?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -2069,7 +2072,7 @@ export default {
         await notifyConfigChanged(env, target.id);
       }
       const releases = await listReleases(db);
-      const names = new Map((await listAllTenants(db)).map((t) => [t.id, t.name]));
+      const names = await tenantNames(db);
       return new Response(JSON.stringify({ status: "ok", ...(await platformReleasePolicy(db, releases, names)) }), {
         headers: jsonHeaders
       });
@@ -2108,7 +2111,7 @@ export default {
       if (denied) return denied;
       let body: { document?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -2120,8 +2123,16 @@ export default {
       const date = new Date(doc.effectiveAt * 1000).toISOString().slice(0, 10);
       let emailed = 0;
       let failed = 0;
-      for (const tenant of (await listAllTenants(db)).filter((t) => t.status === "active" && !isDemoTenant(t, session!.user_id))) {
-        if (!(await organizationLegalStatus(db, tenant.id)).pending.some((p) => p.id === doc.id)) continue;
+      const accepted = new Set(
+        ((await db
+          .prepare("SELECT DISTINCT tenant_id FROM legal_acceptances WHERE document = ? AND version = ?")
+          .bind(doc.id, doc.version)
+          .all<{ tenant_id: string }>()).results || []).map((r) => r.tenant_id)
+      );
+      const pending = (await listAllTenants(db)).filter(
+        (t) => t.status === "active" && !isDemoTenant(t, session!.user_id) && !accepted.has(t.id)
+      );
+      for (const tenant of pending) {
         try {
           await sendMail(env, {
             to: tenant.admin_email,
@@ -2164,7 +2175,7 @@ export default {
       if (method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
       let body: { domain?: unknown; reason?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -2194,7 +2205,7 @@ export default {
       if (denied) return denied;
       let body: { tenantId?: unknown; target?: unknown; action?: unknown; url?: unknown; reason?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -3564,7 +3575,7 @@ export default {
       if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
       let body: { clientId?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -3737,7 +3748,7 @@ export default {
       if (!canAccept) return jsonError("Only the organization's owner or an administrator can accept the terms", 403, jsonHeaders);
       let body: { versions?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -3782,7 +3793,7 @@ export default {
       if (denied) return denied;
       let body: { major?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -3811,7 +3822,7 @@ export default {
       if (denied) return denied;
       let body: { clientIds?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }

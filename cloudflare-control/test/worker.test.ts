@@ -5080,6 +5080,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.equal((await license(body, admin)).status, 400, JSON.stringify(body));
     }
     assert.equal((await license({ tenantId: "nope", plan: "commercial", expiresOn: null }, admin)).status, 404);
+    assert.equal((await call("/api/super/tenants/license", { ...json(null), cookie: admin })).status, 404, "a null body is an empty request");
     assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "nothing changed");
 
     const first = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
