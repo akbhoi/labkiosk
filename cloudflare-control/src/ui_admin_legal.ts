@@ -104,7 +104,7 @@ export function renderTakedownNoticeHtml(takedowns: ConsoleTakedowns): string {
   return `
       <div class="card" id="takedown-notice" role="region" aria-label="Content taken down">
         <h2 class="card-title">Content taken down by Lab Kiosk</h2>
-        <p class="card-sub">Lab Kiosk took this down under the Terms of Service. To contest it, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
+        <p class="card-sub">Lab Kiosk took this down under the Terms of Service and the <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>. To contest it, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
         <ul class="mb-0">${items.join("")}</ul>
       </div>`;
 }

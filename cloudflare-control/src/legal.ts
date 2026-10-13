@@ -14,7 +14,7 @@
  */
 
 /** A document an organization accepts. */
-export type LegalDocumentId = "terms" | "privacy";
+export type LegalDocumentId = "terms" | "content" | "privacy";
 
 export interface LegalDocument {
   id: LegalDocumentId;
@@ -31,7 +31,8 @@ export interface LegalDocument {
  * "Last updated"; keep them in step with src/ui_legal.ts.
  */
 export const LEGAL_DOCUMENTS: readonly LegalDocument[] = [
-  { id: "terms", title: "Terms of Service", path: "/terms", version: "2026-10-04", required: true },
+  { id: "terms", title: "Terms of Service", path: "/terms", version: "2026-10-13", required: true },
+  { id: "content", title: "Content Policy", path: "/content-policy", version: "2026-10-13", required: true },
   { id: "privacy", title: "Privacy Policy", path: "/privacy", version: "2026-10-13", required: false }
 ];
 

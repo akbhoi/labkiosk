@@ -1,5 +1,5 @@
 import { hostedLinkProblem } from "../src/link_rules";
-import { acceptancesCsv } from "../src/legal";
+import { acceptancesCsv, LEGAL_DOCUMENTS } from "../src/legal";
 import { activeOrganizationOwners } from "../src/notifications";
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
@@ -2505,6 +2505,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/?tenant=no-such-organization", undefined, false],
       ["/privacy", undefined, false],
       ["/terms", undefined, false],
+      ["/content-policy", undefined, false],
       ["/terms/bug-reports", undefined, false]
     ];
     for (const [page, cookie, hasToggle] of pages) {
@@ -2618,6 +2619,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/home?tenant=greenwood", undefined],
       ["/privacy", undefined],
       ["/terms", undefined],
+      ["/content-policy", undefined],
       ["/terms/bug-reports", undefined],
       ["/admin/workstations?tenant=greenwood", orgSessionCookie],
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
@@ -6119,12 +6121,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(termsRes.status, 200);
     const termsHtml = await termsRes.text();
     assert.match(termsHtml, /Terms of Service/);
-    assert.match(termsHtml, /Educational Use/);
-    assert.match(termsHtml, /45-Computer/);
-    assert.match(termsHtml, /Subscriber Licensing/);
-    assert.match(termsHtml, /Organization Responsibilities/);
+    assert.match(termsHtml, /accredited educational institutions and non-commercial evaluation on up to 45 computers/, "it describes LICENSE");
+    assert.match(termsHtml, /45-computer threshold/);
+    assert.match(termsHtml, /Subscriber License/);
+    assert.match(termsHtml, /Using the Platform Responsibly/);
     assert.match(termsHtml, /Third-Party Services/);
     assert.match(termsHtml, /href="\/terms\/bug-reports"/);
+    assert.match(termsHtml, /href="\/content-policy"/);
+    assert.match(termsHtml, new RegExp(`Version ${LEGAL_DOCUMENTS.find((d) => d.id === "terms")!.version}`), "the page shows the version consoles ask for");
+
+    // /content-policy: part of the Terms, with the link rules link_rules.ts enforces.
+    const contentRes = await call("/content-policy");
+    assert.equal(contentRes.status, 200);
+    const contentHtml = await contentRes.text();
+    assert.match(contentHtml, /<h1>Content Policy<\/h1>/);
+    assert.match(contentHtml, new RegExp(`Version ${LEGAL_DOCUMENTS.find((d) => d.id === "content")!.version}`));
+    for (const rule of ["bare IP address", "link shortener", "user name or password", "blocklist", "Report this page", "legal@labkiosk.org"]) {
+      assert.ok(contentHtml.includes(rule), `the Content Policy says ${rule}`);
+    }
+    assert.match(contentRes.headers.get("Content-Security-Policy") || "", /script-src 'nonce-[^']+'/);
+    // Every public page links it.
+    for (const path of ["/", "/privacy", "/terms", "/terms/bug-reports", "/home?tenant=greenwood", "/?tenant=greenwood"]) {
+      assert.match(await (await call(path)).text(), /href="\/content-policy"/, `${path} links the Content Policy`);
+    }
+    assert.match(await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text(), /href="\/content-policy"/);
     const termsCsp = termsRes.headers.get("Content-Security-Policy") || "";
     assert.match(termsCsp, /script-src 'nonce-[^']+'/);
   });
@@ -6775,6 +6795,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/contact",
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
+      "https://www.labkiosk.org/content-policy",
       "https://www.labkiosk.org/terms/bug-reports"
     ]);
     // Every listed page really is served, indexable, on the canonical host.
@@ -6798,6 +6819,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["www.labkiosk.org", "/docs"],
       ["www.labkiosk.org", "/privacy"],
       ["www.labkiosk.org", "/terms"],
+      ["www.labkiosk.org", "/content-policy"],
       ["www.labkiosk.org", "/terms/bug-reports"]
     ];
     for (const [host, path] of indexable) {
@@ -7664,7 +7686,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(record.res.status, 200);
     assert.deepEqual(
       record.data.acceptances.map((a: any) => [a.document, a.source]).sort(),
-      [["privacy", "registration"], ["terms", "registration"]],
+      [["content", "registration"], ["privacy", "registration"], ["terms", "registration"]],
       "registration records every document in force"
     );
     assert.equal((await callJson("/api/legal/status?tenant=greenwood", { cookie: orgSessionCookie })).data.pending.length, 0);
@@ -7672,7 +7694,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // A version Greenwood has not accepted: asked for at once, required once the notice period has passed.
     await db.prepare("DELETE FROM legal_acceptances WHERE tenant_id = ?").bind(tenantId).run();
     let status = (await callJson("/api/legal/status?tenant=greenwood", { cookie: orgSessionCookie })).data;
-    assert.deepEqual(status.pending.map((d: any) => d.id), ["terms"]);
+    assert.deepEqual(status.pending.map((d: any) => d.id), ["terms", "content"], "the Content Policy is accepted with the Terms");
     assert.equal(status.gated, false);
     assert.equal(status.canAccept, true);
     let page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
@@ -7692,12 +7714,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     // Only the organization's owner or an org_admin accepts, the current version, once.
     const accept = (versions: unknown, cookie = orgSessionCookie) => call("/api/legal/accept?tenant=greenwood", { ...json({ versions }), cookie });
     const current = status.pending[0].version;
+    const contentVersion = status.pending[1].version;
+    const both = { terms: current, content: contentVersion };
     assert.equal((await accept({ terms: current }, operator)).status, 403);
     assert.equal((await accept({ terms: current }, rivalSessionCookie)).status, 403);
     assert.ok([400, 403].includes((await accept({ terms: current }, admin)).status), "a platform administrator never accepts for an organization");
     assert.ok([401, 403].includes((await call("/api/legal/accept?tenant=greenwood", json({ versions: { terms: current } }))).status));
     assert.equal((await accept({ terms: "1999-01-01" })).status, 409, "an old page");
     assert.equal((await accept("terms")).status, 400);
+    assert.equal((await accept({ terms: current })).status, 409, "the Content Policy too");
     const crossSite = await call("/api/legal/accept?tenant=greenwood", {
       ...json({ versions: { terms: current } }),
       cookie: orgSessionCookie,
@@ -7705,7 +7730,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(crossSite.status, 403);
     const accepted = await call("/api/legal/accept?tenant=greenwood", {
-      ...json({ versions: { terms: current } }),
+      ...json({ versions: both }),
       cookie: orgSessionCookie,
       headers: { "User-Agent": "TermsTest/1.0", "CF-Connecting-IP": "198.51.100.90" }
     });
@@ -7715,13 +7740,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.doesNotMatch(page, /id="legal-notice"/);
     assert.match(page, /id="btn-check-updates"/);
     const after = await callJson(`/api/super/legal/acceptances?tenantId=${tenantId}`, { cookie: admin });
-    const row = after.data.acceptances.find((a: any) => a.source === "console");
+    const row = after.data.acceptances.find((a: any) => a.source === "console" && a.document === "terms");
+    assert.ok(after.data.acceptances.some((a: any) => a.source === "console" && a.document === "content" && a.version === contentVersion));
     assert.equal(row.document, "terms");
     assert.equal(row.version, current);
     assert.equal(row.user_agent, "TermsTest/1.0");
     assert.equal(row.ip, "198.51.100.90");
     const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
-    assert.ok(logs.some((l: any) => l.action === "legal.accept" && l.details === `terms=${current}`));
+    assert.ok(logs.some((l: any) => l.action === "legal.accept" && l.details === `terms=${current} content=${contentVersion}`));
 
     // The platform's view, its CSV and its reminder email; only for a super admin.
     for (const cookie of ["", orgSessionCookie]) {

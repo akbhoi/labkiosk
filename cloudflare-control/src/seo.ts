@@ -32,6 +32,7 @@ export const INDEXABLE_PATHS: readonly string[] = [
   "/contact",
   "/privacy",
   "/terms",
+  "/content-policy",
   "/terms/bug-reports"
 ];
 

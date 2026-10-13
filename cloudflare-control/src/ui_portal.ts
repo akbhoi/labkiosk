@@ -482,7 +482,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
   </main>
 
   <footer>
-    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Managed Workstation")} • <a href="/privacy">Privacy</a> • <a href="/terms">Terms</a> • <a href="${escapeAttr(reportHref)}" rel="nofollow">Report this page</a>
+    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Managed Workstation")} • <a href="/privacy">Privacy</a> • <a href="/terms">Terms</a> • <a href="/content-policy">Content Policy</a> • <a href="${escapeAttr(reportHref)}" rel="nofollow">Report this page</a>
   </footer>
 
   <script nonce="${escapeAttr(nonce)}">

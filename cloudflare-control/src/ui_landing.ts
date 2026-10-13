@@ -422,7 +422,7 @@ ${FONT_LINKS}
           <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
         </div>
         <div class="form-group">
-          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
         </div>
         <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
       </form>
@@ -522,12 +522,13 @@ ${FONT_LINKS}
     </div>
 
     <div class="footer-bottom">
-      <div>&copy; 2026 Lab Kiosk OS • Free for accredited schools up to 45 PCs • Commercial license for businesses &amp; resale</div>
+      <div>&copy; 2026 Lab Kiosk OS • Free only for accredited educational institutions and non-commercial evaluation up to 45 computers • Commercial or subscriber license for everyone else</div>
       <div style="display: flex; gap: 16px; flex-wrap: wrap;">
         <a href="/login" data-action="open-modal" data-modal="login">Sign In</a>
         <a href="/register" data-action="open-modal" data-modal="register">Register Organization</a>
         <a href="/privacy">Privacy Policy</a>
         <a href="/terms">Terms of Service</a>
+        <a href="/content-policy">Content Policy</a>
         <button type="button" class="footer-link-button" id="cookie-settings-link" data-action="cookie-settings" hidden>Cookie Settings</button>
         <a href="/#security">Security</a>
       </div>

@@ -160,6 +160,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/super` | Super Admin Master Console |
 | `/login`, `/register`, `/contact` | Landing-page sections |
 | `/privacy`, `/terms` | Privacy Policy and Terms of Service |
+| `/content-policy` | The Content Policy, part of the Terms of Service (public) |
 | `/terms/bug-reports` | The Automatic Bug Report Terms (public) |
 | `/download`, `/iso` | Redirect to `ISO_DOWNLOAD_URL` |
 

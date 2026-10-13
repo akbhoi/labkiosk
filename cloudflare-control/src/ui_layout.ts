@@ -2768,6 +2768,7 @@ ${FONT_LINKS}
         <div class="canvas-footer-links">
           <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+          <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>
         </div>
       </footer>
     </div>

@@ -200,7 +200,7 @@ function renderAppsWebContentHtml(
         <div>
           <div class="card">
             <h2 class="card-title">Add Approved Application</h2>
-            <p class="card-sub">Applications are automatically permitted through the kiosk domain filter.</p>
+            <p class="card-sub">Applications are automatically permitted through the kiosk domain filter. Each one follows the <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>.</p>
 
             <form id="add-app-form">
               <div class="form-group">

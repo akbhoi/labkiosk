@@ -26,7 +26,7 @@ import {
   SITE_STYLESHEET_PATH,
   SOCIAL_IMAGE_PATH
 } from "./ui_landing";
-import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { renderBugReportTermsHtml, renderContentPolicyHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import { GEO_DATA_PATH, GEO_JSON } from "./geo";
 import {
   FAVICON_PATH,
@@ -48,7 +48,7 @@ import {
 /** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
 const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
-const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/terms/bug-reports", "/admin", "/super"]);
+const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
@@ -985,7 +985,7 @@ const output: Record<string, unknown> = Object.create(null);
 
 function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
-  if (path === "/terms/bug-reports") return true;
+  if (path === "/terms/bug-reports" || path === "/content-policy") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
@@ -2408,7 +2408,7 @@ export default {
             subject: `Lab Kiosk took down your ${body.target === "homepage" ? "organization homepage" : "User Portal card"}`,
             text:
               `Hello ${owner.name || ""},\n\n` +
-              `Lab Kiosk has taken down ${target.name}'s ${what} under the Terms of Service.\n\n${reason}\n\n` +
+              `Lab Kiosk has taken down ${target.name}'s ${what} under the Terms of Service and the Content Policy.\n\n${reason}\n\n` +
               `Your workstations keep working. To contest this, reply to this email or write to legal@labkiosk.org.\n\nLab Kiosk`,
             template: { name: "notice", title: "Content taken down" }
           });
@@ -4439,6 +4439,9 @@ export default {
     }
     if (path === "/terms") {
       return new Response(renderTermsOfServiceHtml({ canonicalUrl }), { headers: htmlHeaders });
+    }
+    if (path === "/content-policy") {
+      return new Response(renderContentPolicyHtml({ canonicalUrl }), { headers: htmlHeaders });
     }
     if (path === "/terms/bug-reports") {
       return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });

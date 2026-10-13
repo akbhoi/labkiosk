@@ -234,7 +234,7 @@ ${renderRemoteControlCard(tenant)}
         <div class="grid-2col">
           <div class="card" id="section-homepage">
             <h2 class="card-title">Homepage Identity &amp; Welcome</h2>
-            <p class="card-sub">The welcome page at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}/</code>.</p>
+            <p class="card-sub">The welcome page at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}/</code>. What you publish here follows the <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>.</p>
 
             <div class="form-group">
               <label class="form-label" for="homepage-headline">Headline</label>

@@ -32,7 +32,7 @@ cloudflare-control/
 │   ├── ui_org_home.ts   Organization homepage at subdomain root (/)
 │   ├── ui_portal.ts        User Portal at /home
 │   ├── ui_super.ts         Super Admin console (/super)
-│   ├── ui_legal.ts         Legal compliance pages (/privacy, /terms, /terms/bug-reports)
+│   ├── ui_legal.ts         Legal compliance pages (/privacy, /terms, /content-policy, /terms/bug-reports)
 │   └── types.ts            Strict TypeScript interfaces
 ├── test/worker.test.ts     Multi-tenant integration and security suite
 ├── .dev.vars.example       Local secrets template
