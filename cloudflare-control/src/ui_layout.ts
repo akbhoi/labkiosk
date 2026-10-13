@@ -379,6 +379,9 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     .stack { display: flex; flex-direction: column; gap: 12px; }
     .stack-sm { display: flex; flex-direction: column; gap: 6px; }
+    .notice-list { list-style: none; margin: 0; padding: 0; }
+    .notice-list > li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border-subtle); }
+    .notice-list > li:first-child { border-top: none; padding-top: 4px; }
     .mt-0 { margin-top: 0; }
     .mt-sm { margin-top: 8px; }
     .mt-md { margin-top: 16px; }

@@ -47,7 +47,7 @@ export function renderReleasesPaneHtml(): string {
         </div>
         <div class="card">
           <h2 class="card-title">Release lines</h2>
-          <p class="card-sub">A line is every release of one minor version, such as 2.8.x. <strong>Security only</strong> keeps sending the line's security fixes to the workstations already on it and moves no other workstation onto it. <strong>End of life</strong> offers the line nothing more, security fixes included; an end-of-life date does the same by itself once it has passed. The owners of the organizations on a line can be emailed when you change it.</p>
+          <p class="card-sub">A line is every release of one minor version, such as 2.8.x. <strong>Security only</strong> keeps sending the line's security fixes to the workstations already on it and moves no other workstation onto it. <strong>End of life</strong> offers the line nothing more, security fixes included; an end-of-life date does the same by itself once it has passed. Changing a line's status or date notifies every organization in its console, and can email every owner; as the date nears, reminders go out by themselves 60, 30 and 7 days before it and once it has passed.</p>
           <div class="table-container">
             <table>
               <thead>
@@ -275,7 +275,7 @@ export function renderReleasesScript(nonce: string): string {
           } else if (action === "note") {
             const value = await lkPrompt({
               title: "Note for " + current.line,
-              label: "Shown to the organizations on this line, and added to the email",
+              label: "Added to the notification and the email when the status or date next changes",
               value: current.note || "",
               confirmLabel: "Save note"
             });
@@ -285,10 +285,11 @@ export function renderReleasesScript(nonce: string): string {
             return;
           }
           const restrictive = next.status !== "supported" || (next.endOfLifeAt && next.endOfLifeAt !== current.endOfLifeAt);
-          if (restrictive && Number(current.organizations) > 0 && action !== "note") {
+          if (restrictive && action !== "note") {
             next.notify = await lkConfirm({
-              title: "Email the organizations on " + current.line + "?",
-              message: "The owners of the " + current.organizations + " organizations with workstations on this line are emailed what changed.",
+              title: "Email every organization about " + current.line + "?",
+              message: "Every organization sees what changed in its console. The owner of every active organization can be emailed it too" +
+                (Number(current.organizations) > 0 ? "; " + current.organizations + " of them have workstations on this line." : "."),
               confirmLabel: "Email owners",
               cancelLabel: "Don't email"
             });

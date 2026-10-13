@@ -74,6 +74,11 @@ import {
   setReleaseLine,
   setReleaseMajorOpen,
   workstationsPerLine,
+  releaseLineNotice,
+  listReleaseLines,
+  endOfLifeReminderStage,
+  setEndOfLifeReminderStage,
+  sendEndOfLifeReminders,
   releaseFolderUrl,
   isSecurityUpdateMode,
   securityReleasesPending,
@@ -153,6 +158,17 @@ import {
   publishedLegalVersions,
   recordLegalAcceptances
 } from "./legal";
+import {
+  activeOrganizationOwners,
+  createNotification,
+  emailOrganizations,
+  isNotificationKind,
+  listNotificationsFor,
+  listSentNotifications,
+  markNotificationsRead,
+  NOTIFICATION_LIMITS,
+  type EmailOutcome
+} from "./notifications";
 import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, licenseState, parseLicenseDate } from "./license";
 import {
   initSchema,
@@ -1017,6 +1033,12 @@ export default {
       // /download keeps showing the releases it already has.
       console.error("[Worker] Reading the releases from GitHub failed:", err);
     }
+    try {
+      const reminded = await sendEndOfLifeReminders(env, db);
+      if (reminded.length) console.log(`[Worker] End-of-life reminders sent for ${reminded.join(", ")}.`);
+    } catch (err) {
+      console.error("[Worker] End-of-life reminders failed:", err);
+    }
     const bugs = await processBugReports(db, env);
     if (bugs.filed || bugs.matched || bugs.linked || bugs.refreshed) {
       console.log(
@@ -1670,6 +1692,7 @@ export default {
         action: "tenant.workstation_limit",
         details: `limit=${limit} was=${Number(target.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled=${enrolled}`
       });
+      await createNotification(db, { tenantId: target.id, kind: "account", title: "Workstation limit changed", body: `${target.name} may now enrol up to ${limit} workstation${limit === 1 ? "" : "s"}; ${enrolled} ${enrolled === 1 ? "is" : "are"} enrolled. Workstations already enrolled are never cut off.`, createdBy: session!.user_id });
       return new Response(JSON.stringify({ status: "ok", limit, enrolled }), { headers: jsonHeaders });
     }
 
@@ -1704,6 +1727,7 @@ export default {
         action: "tenant.license",
         details: `plan=${body.plan} expires=${expiresAt === null ? "none" : licenseDate(expiresAt)} was=${licensePlanLabel(target.license_plan)}/${was}`
       });
+      await createNotification(db, { tenantId: target.id, kind: "license", title: "License updated", body: `Lab Kiosk recorded the license of ${target.name}: ${licensePlanLabel(body.plan)}${expiresAt === null ? ", with no end date" : `, until ${licenseDate(expiresAt)}`}.`, createdBy: session!.user_id });
       return new Response(JSON.stringify({ status: "ok", plan: body.plan, expiresAt }), { headers: jsonHeaders });
     }
 
@@ -1744,6 +1768,7 @@ export default {
           action: "remote_control.revoke",
           details: `sessions_closed=${closed}${reason ? ` reason=${reason.slice(0, 200)}` : ""}`
         });
+        await createNotification(db, { tenantId: target.id, kind: "remote_control", title: "Remote Control has been turned off", body: `Lab Kiosk has turned Remote Control off for ${target.name}. Any session that was open has ended.${reason ? `\n\n${reason}` : ""}`, createdBy: session!.user_id });
         const owner = await findUserById(db, target.user_id);
         let emailSent = false;
         if (owner?.email && !mailConfigProblem(env)) {
@@ -1773,6 +1798,7 @@ export default {
         if (validSeats) update.remote_control_seats = seats as number;
         await updateTenant(db, target.id, update);
         await writeAuditLog(db, { tenantId: target.id, userId: session!.user_id, action: "remote_control.restore" });
+        await createNotification(db, { tenantId: target.id, kind: "remote_control", title: "Remote Control is on again", body: `Lab Kiosk has turned Remote Control back on for ${target.name}. Administrators can open it from a workstation's card.`, createdBy: session!.user_id });
         return new Response(JSON.stringify({ status: "ok", remoteControlStatus: "approved" }), { headers: jsonHeaders });
       }
       await updateTenant(db, target.id, { remote_control_seats: seats as number });
@@ -1782,6 +1808,7 @@ export default {
         action: "remote_control.seats",
         details: `seats=${seats} was=${Number(target.remote_control_seats) || 1}`
       });
+      await createNotification(db, { tenantId: target.id, kind: "remote_control", title: "Remote Control seats changed", body: `${target.name} may now have ${seats} Remote Control session${seats === 1 ? "" : "s"} open at once.`, createdBy: session!.user_id });
       return new Response(JSON.stringify({ status: "ok", seats }), { headers: jsonHeaders });
     }
 
@@ -1962,7 +1989,7 @@ export default {
     // a line's support status. "security_only" moves no workstation onto it and
     // offers it only its security releases; "end_of_life" offers it nothing.
     // endOfLifeAt (Unix seconds, or null) announces the date it ends by itself.
-    // notify emails the owner of every organization with workstations on it.
+    // Every organization gets a console notification; notify emails every owner too.
     if (path === "/api/super/release-lines" && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
@@ -1986,6 +2013,10 @@ export default {
       const note = typeof body.note === "string" && body.note.trim() ? body.note.replace(/\r\n/g, "\n").trim().slice(0, 500) : null;
       const line = body.line;
       const status = body.status;
+      const previous = (await listReleaseLines(db)).get(line);
+      // A note alone tells nobody anything new.
+      const changed =
+        !previous || previous.status !== status || (previous.end_of_life_at === null ? null : Number(previous.end_of_life_at)) !== endOfLifeAt;
       await setReleaseLine(db, line, status, endOfLifeAt as number | null, note, session!.user_id);
       await writeAuditLog(db, {
         tenantId: null,
@@ -1994,43 +2025,22 @@ export default {
         details: `${line} ${status}${endOfLifeAt ? ` end_of_life_at=${endOfLifeAt}` : ""}`
       });
       await notifyOrganizationsOnline(env, db);
-      let emailed = 0;
-      let emailFailed = 0;
-      let emailProblem: string | null = null;
-      if (body.notify === true && (status !== "supported" || endOfLifeAt !== null) && mailConfigProblem(env)) {
-        emailProblem = "This server cannot send email, so no organization was told";
-      } else if (body.notify === true && (status !== "supported" || endOfLifeAt !== null)) {
-        const affected = (await workstationsPerLine(db)).filter((u) => u.line === line);
-        const date = endOfLifeAt ? new Date((endOfLifeAt as number) * 1000).toISOString().slice(0, 10) : null;
-        const what =
-          status === "end_of_life" || (endOfLifeAt !== null && (endOfLifeAt as number) <= Math.floor(Date.now() / 1000))
-            ? `has reached end of life. Workstations on it receive no further updates, security fixes included`
-            : date
-            ? `reaches end of life on ${date}. After that date workstations on it receive no further updates, security fixes included`
-            : `now receives security fixes only`;
-        const owners = new Map((await listAllTenants(db)).map((t) => [t.id, t]));
-        for (const usage of affected) {
-          const tenant = owners.get(usage.tenantId);
-          if (!tenant?.admin_email) continue;
-          try {
-            await sendMail(env, {
-              to: tenant.admin_email,
-              toName: tenant.admin_name,
-              subject: `Lab Kiosk ${line} ${status === "security_only" && !date ? "now receives security fixes only" : "end of life"}`,
-              text:
-                `Hello ${tenant.admin_name || ""},\n\n` +
-                `Lab Kiosk ${line}, which ${usage.workstations} of ${tenant.name}'s workstations run, ${what}.` +
-                (note ? `\n\n${note}` : "") +
-                `\n\nInstall the newest release from Workstations \u2192 Updates in your console to keep receiving updates.\n\nLab Kiosk`,
-              template: { name: "notice", title: `Lab Kiosk ${line} support` }
-            });
-            emailed++;
-          } catch (err) {
-            emailFailed++;
-            console.error(`[Worker] Could not email ${tenant.name} about the ${line} line:`, err);
-          }
+      // Every organization is told in its console; with notify, every owner is emailed too.
+      let outcome: EmailOutcome = { emailed: 0, emailFailed: 0, emailProblem: null };
+      if (changed && (status !== "supported" || endOfLifeAt !== null)) {
+        const notice = releaseLineNotice(line, status, endOfLifeAt as number | null, note);
+        await createNotification(db, { tenantId: null, kind: "release", title: notice.title, body: notice.body, createdBy: session!.user_id });
+        // This announcement stands in for the reminders already due.
+        if (endOfLifeAt !== null) await setEndOfLifeReminderStage(db, line, endOfLifeReminderStage(endOfLifeAt as number));
+        if (body.notify === true) {
+          const usage = new Map((await workstationsPerLine(db)).filter((u) => u.line === line).map((u) => [u.tenantId, u.workstations]));
+          outcome = await emailOrganizations(env, await activeOrganizationOwners(db, null), notice.title, (owner) => {
+            const running = usage.get(owner.tenantId);
+            return notice.body + (running ? `\n\n${running} of ${owner.name}'s workstations run Lab Kiosk ${line}.` : "");
+          });
         }
       }
+      const { emailed, emailFailed, emailProblem } = outcome;
       const releases = await listReleases(db);
       const names = await tenantNames(db);
       return new Response(
@@ -2087,6 +2097,55 @@ export default {
       return new Response(JSON.stringify({ status: "ok", ...(await platformReleasePolicy(db, releases, names)) }), {
         headers: jsonHeaders
       });
+    }
+
+    // GET /api/super/notifications: what the platform has told organizations, newest first.
+    // POST /api/super/notifications { tenantId | null, title, body, email }: tell one
+    // organization (tenantId) or every organization (null) in its console, and
+    // with email, email its owner too.
+    if (path === "/api/super/notifications") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      if (method === "POST") {
+        let body: { tenantId?: unknown; title?: unknown; body?: unknown; email?: unknown };
+        try {
+          body = (await request.json<typeof body>()) ?? {};
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        const title = typeof body.title === "string" ? body.title.trim() : "";
+        const text = typeof body.body === "string" ? body.body.replace(/\r\n/g, "\n").trim() : "";
+        if (!title || title.length > NOTIFICATION_LIMITS.title) {
+          return jsonError(`A title of up to ${NOTIFICATION_LIMITS.title} characters is required`, 400, jsonHeaders);
+        }
+        if (!text || text.length > NOTIFICATION_LIMITS.body) {
+          return jsonError(`A message of up to ${NOTIFICATION_LIMITS.body} characters is required`, 400, jsonHeaders);
+        }
+        if (body.email !== undefined && typeof body.email !== "boolean") return jsonError("email is true or false", 400, jsonHeaders);
+        let tenantId: string | null = null;
+        if (body.tenantId !== null && body.tenantId !== undefined) {
+          const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+          if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+          if (target.status !== "active") return jsonError("Only an active organization can be notified", 409, jsonHeaders);
+          tenantId = target.id;
+        }
+        const id = await createNotification(db, { tenantId, kind: "general", title, body: text, createdBy: session!.user_id });
+        const outcome: EmailOutcome =
+          body.email === true
+            ? await emailOrganizations(env, await activeOrganizationOwners(db, tenantId), title, () => text)
+            : { emailed: 0, emailFailed: 0, emailProblem: null };
+        await writeAuditLog(db, {
+          tenantId,
+          userId: session!.user_id,
+          action: "notification.send",
+          details: `id=${id} to=${tenantId ?? "all"} emailed=${outcome.emailed} failed=${outcome.emailFailed}`
+        });
+        return new Response(JSON.stringify({ status: "ok", id, ...outcome, notifications: await listSentNotifications(db) }), {
+          headers: jsonHeaders
+        });
+      }
+      if (method !== "GET") return jsonError("Method not allowed", 405, jsonHeaders);
+      return new Response(JSON.stringify({ status: "ok", notifications: await listSentNotifications(db) }), { headers: jsonHeaders });
     }
 
     // GET /api/super/legal: the documents in force, when each version was
@@ -2249,6 +2308,7 @@ export default {
         action: takedown ? "content.takedown" : "content.restore",
         details: `${body.target}${body.target === "card" ? ` ${safeHttpUrl(body.url)}` : ""}${reason ? ` reason=${reason.slice(0, 200)}` : ""}`
       });
+      await createNotification(db, { tenantId: target.id, kind: "content", title: takedown ? `Lab Kiosk took down your ${what}` : `Lab Kiosk restored your ${what}`, body: takedown ? `Lab Kiosk took down your ${what} under the Terms of Service and the Content Policy: ${reason}\n\nTo contest it, write to legal@labkiosk.org.` : `Lab Kiosk restored your ${what}. It is shown again.`, createdBy: session!.user_id });
       let emailSent = false;
       const owner = await findUserById(db, target.user_id);
       if (takedown && owner?.email && !mailConfigProblem(env)) {
@@ -3743,6 +3803,33 @@ export default {
       );
     }
 
+    // GET /api/notifications: the platform's notifications for this organization,
+    // newest first, with whether this user has dismissed each.
+    // POST /api/notifications/read { ids? }: dismiss them (every one when ids is left out).
+    if ((path === "/api/notifications" && method === "GET") || (path === "/api/notifications/read" && method === "POST")) {
+      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      if (method === "POST") {
+        let body: { ids?: unknown };
+        try {
+          body = (await request.json<typeof body>()) ?? {};
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        const ids = body.ids === undefined ? null : body.ids;
+        if (ids !== null && !(Array.isArray(ids) && ids.length <= 200 && ids.every((id) => typeof id === "string"))) {
+          return jsonError("ids is a list of notification ids", 400, jsonHeaders);
+        }
+        await markNotificationsRead(db, tenant.id, session!.user_id, ids as string[] | null);
+      }
+      const notifications = await listNotificationsFor(db, tenant.id, session!.user_id, { limit: 50 });
+      return new Response(
+        JSON.stringify({ status: "ok", notifications, unread: notifications.filter((n) => !n.read).length }),
+        { headers: jsonHeaders }
+      );
+    }
+
     // GET /api/legal/status: the legal documents this organization has not
     // accepted at their current version, whether its console now asks before
     // anything else, and whether this account may accept them.
@@ -4543,6 +4630,7 @@ export default {
           activePage,
           legal: legalStatus && legalStatus.pending.length ? { ...legalStatus, canAccept: userRole === "org_admin" } : undefined,
           license: isDemoTenant(tenant, session.user_id) ? undefined : licenseState(tenant),
+          notifications: await listNotificationsFor(db, tenant.id, session.user_id, { unreadOnly: true, limit: 50 }),
           takedowns: {
             homepage: tenant.homepage_takedown_at ? { at: tenant.homepage_takedown_at, reason: tenant.homepage_takedown_reason ?? null } : null,
             cards: takenDownCards.map((c) => ({ title: c.title, url: c.url, at: Number(c.takedown_at), reason: c.takedown_reason ?? null }))

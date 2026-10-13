@@ -15,6 +15,8 @@ import {
   renderTakedownNoticeHtml
 } from "./ui_admin_legal";
 import type { LicenseState } from "./license";
+import type { NotificationRow } from "./notifications";
+import { renderNotificationsHtml, renderNotificationsScript } from "./ui_admin_notifications";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEFAULT_WORKSTATION_LIMIT } from "./db";
@@ -69,6 +71,8 @@ export interface DashboardOptions {
   takedowns?: ConsoleTakedowns;
   /** The organization's license; a notice shows while it is ending soon or has ended. */
   license?: LicenseState;
+  /** The platform's notifications this user has not dismissed, newest first. */
+  notifications?: NotificationRow[];
   nonce: string;
 }
 
@@ -200,12 +204,14 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   const legalHtml =
     (legal ? renderLegalNoticeHtml(legal, labName) : "") +
     (takedowns && (takedowns.homepage || takedowns.cards.length) ? renderTakedownNoticeHtml(takedowns) : "") +
-    (options.license ? renderLicenseNoticeHtml(options.license, labName) : "");
+    (options.license ? renderLicenseNoticeHtml(options.license, labName) : "") +
+    renderNotificationsHtml(options.notifications ?? []);
   const gated = Boolean(legal?.gated);
   const scriptsHtml =
     renderApiScopeScript(nonce, tenantParam) +
     (gated ? "" : page.scriptsHtml + renderHeaderCountersScript(nonce, activePage)) +
-    (legal ? renderLegalNoticeScript(nonce) : "");
+    (legal ? renderLegalNoticeScript(nonce) : "") +
+    (options.notifications?.length ? renderNotificationsScript(nonce) : "");
 
   return renderLayoutHtml({
     title: `${labName} • ${page.title}`,

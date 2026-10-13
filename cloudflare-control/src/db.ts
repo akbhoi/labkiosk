@@ -212,7 +212,27 @@ CREATE TABLE IF NOT EXISTS release_lines (
   end_of_life_at INTEGER,
   note TEXT,
   updated_at INTEGER NOT NULL,
-  updated_by TEXT
+  updated_by TEXT,
+  eol_reminder_days INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('general', 'account', 'release', 'legal', 'license', 'content', 'remote_control')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  created_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_tenant ON notifications(tenant_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notification_reads (
+  notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  read_at INTEGER NOT NULL,
+  PRIMARY KEY (notification_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS release_majors (
@@ -679,6 +699,10 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT takedown_at, takedown_reason FROM portal_sites LIMIT 1").run();
     // 0037: license plan and expiry.
     await db.prepare("SELECT license_plan, license_expires_at FROM tenants LIMIT 1").run();
+    // 0038: console notifications and end-of-life reminders.
+    await db.prepare("SELECT id, tenant_id, kind, title, body FROM notifications LIMIT 1").run();
+    await db.prepare("SELECT notification_id, user_id, read_at FROM notification_reads LIMIT 1").run();
+    await db.prepare("SELECT eol_reminder_days FROM release_lines LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

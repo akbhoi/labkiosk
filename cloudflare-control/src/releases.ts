@@ -29,6 +29,7 @@
 
 import { Env, SecurityUpdateMode, UpdateChannel } from "./types";
 import { safeHttpUrl } from "./escape";
+import { activeOrganizationOwners, createNotification, emailOrganizations } from "./notifications";
 
 /** A release version, as labkiosk-boot-slots' VERSION_PATTERN accepts it. */
 export const RELEASE_VERSION_PATTERN = /^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?$/;
@@ -130,6 +131,8 @@ export interface ReleaseLineRow {
   note: string | null;
   updated_at: number;
   updated_by: string | null;
+  /** The last end-of-life reminder sent for end_of_life_at: 60, 30, 7, or 0 once passed (0038). */
+  eol_reminder_days?: number | null;
 }
 
 /** A line's status now: an announced end-of-life date that has passed ends it. */
@@ -238,7 +241,10 @@ export async function setReleaseLine(
     .prepare(
       `INSERT INTO release_lines (line, status, end_of_life_at, note, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(line) DO UPDATE SET status = excluded.status, end_of_life_at = excluded.end_of_life_at,
-         note = excluded.note, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+         note = excluded.note, updated_at = excluded.updated_at, updated_by = excluded.updated_by,
+         -- A new end-of-life date starts its reminders over.
+         eol_reminder_days = CASE WHEN release_lines.end_of_life_at IS excluded.end_of_life_at
+           THEN release_lines.eol_reminder_days ELSE NULL END`
     )
     .bind(line, status, endOfLifeAt, note, now, userId)
     .run();
@@ -861,4 +867,84 @@ export async function platformReleasePolicy(
       };
     });
   return { lines, majors: majorList };
+}
+
+/** Days before a line's end-of-life date that every organization is reminded. */
+export const END_OF_LIFE_REMINDER_DAYS = [60, 30, 7] as const;
+
+/**
+ * Which reminder a line's end-of-life date calls for now: 60, 30 or 7 (days
+ * before), 0 once the date has passed, or null when it is further off.
+ */
+export function endOfLifeReminderStage(endOfLifeAt: number, now = Math.floor(Date.now() / 1000)): number | null {
+  if (endOfLifeAt <= now) return 0;
+  const daysLeft = Math.ceil((endOfLifeAt - now) / 86_400);
+  const due = END_OF_LIFE_REMINDER_DAYS.filter((days) => daysLeft <= days);
+  return due.length ? Math.min(...due) : null;
+}
+
+/** What organizations are told about a line's status: a title and a message. */
+export function releaseLineNotice(
+  line: string,
+  status: LineStatus,
+  endOfLifeAt: number | null,
+  note: string | null,
+  options: { reminder?: boolean; now?: number } = {}
+): { title: string; body: string } {
+  const now = options.now ?? Math.floor(Date.now() / 1000);
+  const date = endOfLifeAt !== null ? new Date(endOfLifeAt * 1000).toISOString().slice(0, 10) : null;
+  let title: string;
+  let body: string;
+  if (status === "end_of_life" || (endOfLifeAt !== null && endOfLifeAt <= now)) {
+    title = `Lab Kiosk ${line} has reached end of life`;
+    body =
+      `Lab Kiosk ${line} has reached end of life. Workstations on it receive no further updates, security fixes included. ` +
+      `Install the newest release from Workstations → Updates to keep receiving them.`;
+  } else if (date) {
+    title = `${options.reminder ? "Reminder: " : ""}Lab Kiosk ${line} reaches end of life on ${date}`;
+    body =
+      `Lab Kiosk ${line} reaches end of life on ${date}. After that date workstations on it receive no further updates, security fixes included.` +
+      (status === "security_only" ? ` Until then it receives security fixes only.` : "") +
+      ` Move your workstations to a newer release before then from Workstations → Updates.`;
+  } else {
+    title = `Lab Kiosk ${line} now receives security fixes only`;
+    body =
+      `Lab Kiosk ${line} now receives security fixes only: no workstation is moved onto it, and workstations on it get only its security releases. ` +
+      `Move your workstations to a newer release from Workstations → Updates.`;
+  }
+  return { title, body: note ? `${body}\n\n${note}` : body };
+}
+
+/** Record which end-of-life reminder a line has had for its current date. */
+export async function setEndOfLifeReminderStage(db: D1Database, line: string, stage: number | null): Promise<void> {
+  await db.prepare("UPDATE release_lines SET eol_reminder_days = ? WHERE line = ?").bind(stage, line).run();
+}
+
+/**
+ * The end-of-life reminders now due (hourly, from the cron): for each line with
+ * an end-of-life date, the first time it comes within 60, 30 and 7 days and the
+ * first time it has passed, every organization gets a console notification and
+ * its owner an email. Returns the lines reminded about.
+ */
+export async function sendEndOfLifeReminders(
+  env: Env,
+  db: D1Database,
+  now = Math.floor(Date.now() / 1000)
+): Promise<string[]> {
+  const reminded: string[] = [];
+  for (const row of (await listReleaseLines(db)).values()) {
+    if (row.end_of_life_at === null || row.end_of_life_at === undefined || row.status === "end_of_life") continue;
+    const endOfLifeAt = Number(row.end_of_life_at);
+    const stage = endOfLifeReminderStage(endOfLifeAt, now);
+    const last = row.eol_reminder_days === null || row.eol_reminder_days === undefined ? null : Number(row.eol_reminder_days);
+    if (stage === null || (last !== null && stage >= last)) continue;
+    const notice = releaseLineNotice(row.line, row.status, endOfLifeAt, row.note ?? null, { reminder: stage > 0, now });
+    // Recorded first: a failure part-way never repeats the reminder every hour.
+    await setEndOfLifeReminderStage(db, row.line, stage);
+    await createNotification(db, { tenantId: null, kind: "release", title: notice.title, body: notice.body, createdBy: null, now });
+    const outcome = await emailOrganizations(env, await activeOrganizationOwners(db, null), notice.title, () => notice.body);
+    if (outcome.emailProblem) console.warn(`[Worker] End-of-life reminder for ${row.line}: ${outcome.emailProblem}`);
+    reminded.push(row.line);
+  }
+  return reminded;
 }

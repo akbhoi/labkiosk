@@ -42,7 +42,7 @@ labkiosk/
 │                            sbin/labkiosk-swap, sbin/labkiosk-hostname, sbin/labkiosk-data-unlock,
 │                            sbin/labkiosk-health
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0037 (never edit an applied one)
+│   ├── migrations/          0001..0038 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
 │   │                        remote_relay.ts (one Durable Object per workstation's Remote Control session),
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,
@@ -54,6 +54,7 @@ labkiosk/
 │   │                        legal.ts (versioned legal documents, the acceptance record and the console gate),
 │   │                        link_rules.ts (what a link on a hosted page may point to: no IPs, shorteners, blocklist),
 │   │                        license.ts (an organization's license plan and end date),
+│   │                        notifications.ts (the platform's notifications in organization consoles, emailed or not),
 │   │                        signup.ts, inbox.ts, conversations.ts, mail.ts, mail_store.ts, mime.ts (registration,
 │   │                        Super Admin Tasks and Mail, email in and out),
 │   │                        ui_*.ts (one module per page), ui_tokens.ts, ui_layout.ts

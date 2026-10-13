@@ -56,6 +56,7 @@ import { mailConfigProblem, mailDomain, parseAddress, sendingDomain } from "./ma
 import { clearPendingMail, deleteRawMail, isMailId, listPendingMail, loadRawMail, rawMailKey, storeRawMail } from "./mail_store";
 import { extractAttachment, parseEmail } from "./mime";
 import { consoleUrlFor, RouteContext, sendOnConversation } from "./signup";
+import { createNotification } from "./notifications";
 
 const SUPPORT_KINDS: readonly ConversationKind[] = ["support"];
 const INBOX_PATH =
@@ -431,6 +432,13 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
     await setConversationStatus(db, id, "approved", userId);
     await addConversationMessage(db, { conversationId: id, direction: "event", body: "Registration approved.", authorUserId: userId });
     await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.approve", details: `subdomain=${tenant.subdomain} workstation_limit=${limit}` });
+    await createNotification(db, {
+      tenantId: tenant.id,
+      kind: "account",
+      title: "Welcome to Lab Kiosk",
+      body: `${tenant.name} is active and may enrol up to ${limit} workstation${limit === 1 ? "" : "s"}. Your enrollment key and the setup steps for your workstations are under Settings.`,
+      createdBy: userId
+    });
     await notifyConfigChanged(env, tenant.id);
     const sent = await sendOnConversation(
       env,
@@ -509,6 +517,15 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
       authorUserId: userId
     });
     await writeAuditLog(db, { tenantId: tenant.id, userId, action: approve ? "remote_control.approve" : "remote_control.reject", details: approve ? `seats=${seats}` : undefined });
+    await createNotification(db, {
+      tenantId: tenant.id,
+      kind: "remote_control",
+      title: approve ? "Remote Control is on" : "Remote Control request not approved",
+      body: approve
+        ? `Remote Control is now available to ${tenant.name}, with ${seats} session${seats === 1 ? "" : "s"} open at once. Administrators can open it from a connected workstation's card.`
+        : `Lab Kiosk is not able to turn on Remote Control for ${tenant.name} at this time. Reply to the email about your request to discuss it.`,
+      createdBy: userId
+    });
     const sent = await sendOnConversation(
       env,
       db,

@@ -1,5 +1,6 @@
 import { hostedLinkProblem } from "../src/link_rules";
 import { acceptancesCsv } from "../src/legal";
+import { activeOrganizationOwners } from "../src/notifications";
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -69,6 +70,9 @@ import {
   isReleaseVersion,
   normalizeUpdateReport,
   securityReleasesPending,
+  sendEndOfLifeReminders,
+  setEndOfLifeReminderStage,
+  setReleaseLine,
   updateTargetFor,
   type ReleaseOffer
 } from "../src/releases";
@@ -5061,6 +5065,95 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await device.closeFromClient();
   });
 
+  test("Notifications: the platform tells one organization or all of them, and each user dismisses their own", async () => {
+    const admin = await superCookie();
+    const send = (body: unknown, cookie?: string) => callJson("/api/super/notifications", { ...json(body), cookie });
+    const tenantId = await greenwoodId();
+    assert.ok([401, 403].includes((await send({ tenantId: null, title: "t", body: "b" })).res.status), "anonymous");
+    assert.equal((await send({ tenantId: null, title: "t", body: "b" }, orgSessionCookie)).res.status, 403, "an organization");
+    assert.ok([401, 403].includes((await call("/api/notifications?tenant=greenwood")).status), "anonymous reader");
+    assert.equal((await call("/api/notifications?tenant=greenwood", { cookie: rivalSessionCookie })).status, 403, "another organization");
+    for (const body of [
+      { tenantId: null, title: "", body: "b" },
+      { tenantId: null, title: "t".repeat(121), body: "b" },
+      { tenantId: null, title: "t", body: "" },
+      { tenantId: null, title: "t", body: "b", email: "yes" }
+    ]) {
+      assert.equal((await send(body, admin)).res.status, 400, JSON.stringify(body));
+    }
+    assert.equal((await send({ tenantId: "nope", title: "t", body: "b" }, admin)).res.status, 404);
+    // Start from a clean slate: earlier tests' platform changes notified Greenwood too.
+    await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+
+    const own = await send({ tenantId, title: "Maintenance tonight", body: "The console is read-only from 22:00 UTC." }, admin);
+    assert.equal(own.res.status, 200);
+    const everyone = await send({ tenantId: null, title: "New Content Policy", body: "Read it at /content-policy.", email: true }, admin);
+    assert.equal(everyone.res.status, 200);
+    assert.equal(everyone.data.emailed, (await activeOrganizationOwners(getDatabase(mockEnv), null)).length, "every customer's owner");
+    assert.ok(everyone.data.notifications.some((n: any) => n.title === "New Content Policy" && n.tenant_id === null));
+
+    const unread = async (cookie: string, tenant: string) =>
+      ((await callJson(`/api/notifications?tenant=${tenant}`, { cookie })).data.notifications as any[]).filter((n) => !n.read).map((n) => n.title);
+    assert.ok((await unread(orgSessionCookie, "greenwood")).includes("Maintenance tonight"));
+    assert.ok((await unread(orgSessionCookie, "greenwood")).includes("New Content Policy"));
+    assert.ok(!(await unread(rivalSessionCookie, "riverside")).includes("Maintenance tonight"), "one organization's stays its own");
+    assert.ok((await unread(rivalSessionCookie, "riverside")).includes("New Content Policy"));
+
+    const page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(page, /id="notifications-card"[\s\S]*Maintenance tonight/);
+
+    // Another organization's id is not this one's to dismiss.
+    const rivalOnly = await send({ tenantId: (await findTenantBySubdomain(getDatabase(mockEnv), "riverside"))!.id, title: "Rival only", body: "b" }, admin);
+    const crossed = await callJson("/api/notifications/read?tenant=greenwood", { ...json({ ids: [rivalOnly.data.id] }), cookie: orgSessionCookie });
+    assert.equal(crossed.res.status, 200);
+    assert.ok((await unread(rivalSessionCookie, "riverside")).includes("Rival only"));
+    assert.equal((await call("/api/notifications/read?tenant=greenwood", { ...json({ ids: "all" }), cookie: orgSessionCookie })).status, 400);
+
+    const dismissed = await callJson("/api/notifications/read?tenant=greenwood", { ...json({ ids: [own.data.id] }), cookie: orgSessionCookie });
+    assert.ok(!dismissed.data.notifications.find((n: any) => n.id === own.data.id && !n.read), "dismissed");
+    await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.deepEqual(await unread(orgSessionCookie, "greenwood"), [], "all dismissed");
+    const quiet = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(quiet, /id="notifications-card"/);
+
+    // The platform's own changes notify the organization.
+    await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 50 }), cookie: admin });
+    assert.ok((await unread(orgSessionCookie, "greenwood")).includes("Workstation limit changed"));
+    await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 45 }), cookie: admin });
+    await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+
+    const { data: logs } = await callJson("/api/super/audit-logs", { cookie: admin });
+    assert.ok(((logs.logs ?? logs) as any[]).some((l) => l.action === "notification.send"));
+  });
+
+  test("End-of-life reminders go to every organization 60, 30 and 7 days before, and once it has passed", async () => {
+    const db = getDatabase(mockEnv);
+    const day = 86_400;
+    const start = Math.floor(Date.now() / 1000);
+    const endOfLifeAt = start + 90 * day;
+    await setReleaseLine(db, "2.31", "supported", endOfLifeAt, null, "test");
+    await setEndOfLifeReminderStage(db, "2.31", null);
+    const remindedAt = async (daysBefore: number) => (await sendEndOfLifeReminders(mockEnv, db, endOfLifeAt - daysBefore * day)).filter((l) => l === "2.31");
+    assert.deepEqual(await remindedAt(70), [], "too early");
+    assert.deepEqual(await remindedAt(59), ["2.31"], "60 days before");
+    assert.deepEqual(await remindedAt(58), [], "once");
+    assert.deepEqual(await remindedAt(10), ["2.31"], "30 days before (late is still sent once)");
+    assert.deepEqual(await remindedAt(6), ["2.31"], "7 days before");
+    assert.deepEqual(await remindedAt(-1), ["2.31"], "the date has passed");
+    assert.deepEqual(await remindedAt(-2), [], "and nothing after");
+    const titles = ((await callJson("/api/notifications?tenant=greenwood", { cookie: orgSessionCookie })).data.notifications as any[])
+      .map((n) => n.title)
+      .filter((t: string) => /2\.31/.test(t));
+    assert.ok(titles.includes("Lab Kiosk 2.31 has reached end of life"));
+    assert.ok(titles.some((t: string) => /^Reminder: Lab Kiosk 2\.31 reaches end of life on/.test(t)));
+    // A new date starts the reminders over.
+    await setReleaseLine(db, "2.31", "supported", endOfLifeAt + 200 * day, null, "test");
+    const row = await db.prepare("SELECT eol_reminder_days FROM release_lines WHERE line = '2.31'").first<{ eol_reminder_days: number | null }>();
+    assert.equal(row!.eol_reminder_days, null);
+    await db.prepare("DELETE FROM release_lines WHERE line = '2.31'").run();
+    await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+  });
+
   test("An ended license stops new enrolments and Remote Control, and the consoles say so", async () => {
     const db = getDatabase(mockEnv);
     const tenantId = await greenwoodId();
@@ -7376,16 +7469,27 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await ask("2.20.0")).security, null, "the date has passed");
     assert.equal((await lines({ line: "2.20", status: "supported" })).status, 200);
 
-    // Announcing an end of life emails the owner of every organization on the line.
+    // Announcing an end of life tells every organization in its console, and with
+    // notify emails every customer's owner; the ones on the line hear how many run it.
     const owner = await getDatabase(mockEnv)
       .prepare("SELECT u.email FROM users u JOIN tenants t ON t.user_id = u.id WHERE t.id = ?")
       .bind(tenantId)
       .first<{ email: string }>();
-    const announced = await lines({ line: "2.8", status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) + 30 * 86400, notify: true });
+    const customers = (await activeOrganizationOwners(getDatabase(mockEnv), null)).length;
+    assert.ok(customers > 1, "more than one customer, demos aside");
+    const eolDate = Math.floor(Date.now() / 1000) + 30 * 86400;
+    const announced = await lines({ line: "2.8", status: "supported", endOfLifeAt: eolDate, notify: true });
     assert.equal(announced.status, 200);
-    assert.equal((await announced.json<any>()).emailed, 1);
+    assert.equal((await announced.json<any>()).emailed, customers, "every customer is emailed");
     const mail = [...localOutbox()].reverse().find((m) => m.to === owner!.email.toLowerCase() && /2\.8/.test(m.subject));
     assert.ok(mail, "the owner is told");
+    assert.match(mail!.text, /3 of .*'s workstations run Lab Kiosk 2\.8/);
+    const consoleNotices = await callJson("/api/notifications?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.ok(consoleNotices.data.notifications.some((n: any) => /Lab Kiosk 2\.8 reaches end of life on/.test(n.title) && !n.read));
+    const rivalNotices = await callJson("/api/notifications?tenant=riverside", { cookie: rivalSessionCookie });
+    assert.ok(rivalNotices.data.notifications.some((n: any) => /Lab Kiosk 2\.8 reaches end of life on/.test(n.title)), "every organization");
+    const resent = await lines({ line: "2.8", status: "supported", endOfLifeAt: eolDate, note: "x", notify: true });
+    assert.equal((await resent.json<any>()).emailed, 0, "the same date again tells nobody anything new");
     const settings = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
     assert.deepEqual(
       settings.data.lines.map((l: any) => [l.line, l.status, l.workstations]),

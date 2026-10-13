@@ -70,6 +70,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0035_legal_acceptances.sql` | `legal_acceptances` (append-only, no foreign keys: who accepted which version of which legal document, when, from where) and `legal_versions` (when each version was first served) |
 | `0036_hosted_content.sql` | `link_blocklist` (domains no hosted page may link to); `tenants.homepage_takedown_at`, `homepage_takedown_reason`; `portal_sites.takedown_at`, `takedown_reason` |
 | `0037_license_plan.sql` | `tenants.license_plan` (`education`, `evaluation`, `subscriber`, `commercial`, or NULL) and `license_expires_at` |
+| `0038_notifications.sql` | `notifications` and `notification_reads` (the platform's notifications in organization consoles); `release_lines.eol_reminder_days` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -307,6 +308,7 @@ A line's support status (`0034`). **No `tenant_id`**; a line with no row is supp
 | `end_of_life_at` | INTEGER | Announced date; once passed the line is end of life whatever `status` says |
 | `note` | TEXT | Shown to organizations on the line and added to the email |
 | `updated_at` / `updated_by` | INTEGER / TEXT | Last change, and the super admin who made it |
+| `eol_reminder_days` | INTEGER | The last end-of-life reminder sent for `end_of_life_at`: `60`, `30`, `7`, or `0` once passed; NULL when none yet. A new date resets it (`0038`) |
 
 ### `release_majors`
 
@@ -343,6 +345,14 @@ The evidence of what each organization agreed to (`0035`, `src/legal.ts`). **App
 | `source` | TEXT | `registration` \| `console` |
 | `accepted_at` | INTEGER | |
 | `ip` / `user_agent` | TEXT | Where it came from |
+
+### `notifications`
+
+Notifications the platform shows in organization consoles (`0038`, `src/notifications.ts`). Columns: `id` (PK), `tenant_id` (FK, cascade; **NULL = every organization**, shown only to organizations that existed when it was written), `kind` (`general`, `account`, `release`, `legal`, `license`, `content`, `remote_control`), `title`, `body`, `created_at`, `created_by` (NULL when the platform wrote it by itself).
+
+### `notification_reads`
+
+Who dismissed which notification (`0038`): `notification_id` (FK, cascade), `user_id` (FK, cascade), `read_at`; PK (`notification_id`, `user_id`). Each member of staff dismisses for themselves.
 
 ### `link_blocklist`
 
@@ -413,7 +423,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0038_<description>.sql` (the next number after `0037`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0039_<description>.sql` (the next number after `0038`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.
