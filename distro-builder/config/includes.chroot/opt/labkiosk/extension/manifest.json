@@ -1,6 +1,6 @@
 {
   "name": "Lab Kiosk Navigation & Lockdown",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Auto-hiding kiosk navigation bar and operator lock curtain for Lab Kiosk OS.",
   "manifest_version": 3,
 
