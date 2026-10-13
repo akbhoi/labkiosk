@@ -83,6 +83,7 @@ import {
   workstationsPerLine,
   releaseLineNotice,
   listReleaseLines,
+  effectiveLineStatus,
   endOfLifeReminderStage,
   setEndOfLifeReminderStage,
   sendEndOfLifeReminders,
@@ -672,6 +673,51 @@ async function handleWorkstationRequest(
 const RELEASE_NOTES_TOKEN_MIN_LENGTH = 32;
 
 /**
+ * Why a call from the repository's Actions is refused, or null: it must carry
+ * Bearer RELEASE_NOTES_TOKEN. 401 a wrong token; 503 the token is not
+ * configured, or too short to be one.
+ */
+async function releaseTokenRefusal(
+  request: Request,
+  env: Env,
+  what: string,
+  headers: Record<string, string>
+): Promise<Response | null> {
+  const expected = env.RELEASE_NOTES_TOKEN || "";
+  if (expected.length < RELEASE_NOTES_TOKEN_MIN_LENGTH) {
+    return jsonError(`${what} is not configured`, 503, headers);
+  }
+  const supplied = /^Bearer (\S+)$/.exec(request.headers.get("Authorization") || "")?.[1] || "";
+  // Both sides hashed first: equal lengths, so the comparison says nothing about the token's.
+  if (!supplied || !timingSafeEqual(await sha256Hex(supplied), await sha256Hex(expected))) {
+    return jsonError("Unauthorized", 401, headers);
+  }
+  return null;
+}
+
+/**
+ * GET /api/release-lines: the status each release line has now, for the daily
+ * security rebuild (security-rebuild.yml), which rebuilds only the lines that
+ * are not at end of life. Bearer RELEASE_NOTES_TOKEN, as the sync below.
+ * 200 {lines: [{line, status, endOfLifeAt}]}, one entry per line the platform
+ * has set; a line not listed is supported.
+ */
+async function handleReleaseLinesForCi(
+  request: Request,
+  env: Env,
+  db: D1Database,
+  headers: Record<string, string>
+): Promise<Response> {
+  const refused = await releaseTokenRefusal(request, env, "Release line status", headers);
+  if (refused) return refused;
+  const now = Math.floor(Date.now() / 1000);
+  const lines = [...(await listReleaseLines(db)).values()]
+    .filter((row) => RELEASE_LINE_PATTERN.test(row.line))
+    .map((row) => ({ line: row.line, status: effectiveLineStatus(row, now), endOfLifeAt: row.end_of_life_at ?? null }));
+  return new Response(JSON.stringify({ lines }), { status: 200, headers });
+}
+
+/**
  * POST /api/release-notes/sync: the ISO build calls this the moment it has
  * published a release (build-iso.yml), so /download offers the new ISO at once
  * instead of after the next hourly run. It only re-reads GitHub's public
@@ -687,15 +733,8 @@ async function handleReleaseNotesSync(
   db: D1Database,
   headers: Record<string, string>
 ): Promise<Response> {
-  const expected = env.RELEASE_NOTES_TOKEN || "";
-  if (expected.length < RELEASE_NOTES_TOKEN_MIN_LENGTH) {
-    return jsonError("Release notes sync is not configured", 503, headers);
-  }
-  const supplied = /^Bearer (\S+)$/.exec(request.headers.get("Authorization") || "")?.[1] || "";
-  // Both sides hashed first: equal lengths, so the comparison says nothing about the token's.
-  if (!supplied || !timingSafeEqual(await sha256Hex(supplied), await sha256Hex(expected))) {
-    return jsonError("Unauthorized", 401, headers);
-  }
+  const refused = await releaseTokenRefusal(request, env, "Release notes sync", headers);
+  if (refused) return refused;
   try {
     const result = await storeReleaseNotes(db, env);
     return new Response(JSON.stringify(result), { status: 200, headers });
@@ -1139,6 +1178,9 @@ export default {
     }
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);
+    }
+    if (path === "/api/release-lines" && method === "GET") {
+      return handleReleaseLinesForCi(request, env, db, jsonHeaders);
     }
     if (path === "/api/devices/update" && method === "GET") {
       return handleDeviceUpdate(request, env, db, jsonHeaders);

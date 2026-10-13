@@ -115,6 +115,44 @@ class Lines(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     rebuild.plan_lines(tags, line)
 
+    def test_with_the_platform_policy_every_line_but_the_ended_ones(self):
+        tags = ["v2.9.0", "v2.10.0", "v2.11.0", "v2.12.0"]
+        policy = json.dumps({"lines": [
+            {"line": "2.12", "status": "supported", "endOfLifeAt": None},
+            {"line": "2.10", "status": "end_of_life", "endOfLifeAt": 1798675200},
+            {"line": "2.9", "status": "security_only", "endOfLifeAt": None},
+        ]})
+        ended = rebuild.end_of_life_lines(policy)
+        self.assertEqual(ended, {(2, 10)})
+        self.assertEqual([entry["line"] for entry in rebuild.plan_lines(tags, end_of_life=ended)], ["2.12", "2.11", "2.9"],
+                         "older lines still supported get their fixes; an ended one gets none")
+        self.assertEqual([entry["line"] for entry in rebuild.plan_lines(tags, "2.9", end_of_life=ended)], ["2.9"])
+        with self.assertRaisesRegex(ValueError, "end of life"):
+            rebuild.plan_lines(tags, "2.10", end_of_life=ended)
+        self.assertEqual(rebuild.plan_lines(["v2.9.0"], end_of_life={(2, 9)}), [])
+
+    def test_a_policy_that_cannot_be_read_is_an_error_not_an_empty_one(self):
+        for text in ("", "[]", "{}", '{"lines": {}}', '{"lines": [{"line": "2.9"}]}',
+                     '{"lines": [{"line": "2.9.0", "status": "supported"}]}',
+                     '{"lines": [{"line": "2.9", "status": "retired"}]}', '{"lines": ["2.9"]}'):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    rebuild.end_of_life_lines(text)
+
+    def test_the_command_reads_the_policy_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "policy.json")
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps({"lines": [{"line": "2.10", "status": "end_of_life"}]}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(rebuild.main(["lines", "--policy", path, "v2.9.0", "v2.10.0"]), 0)
+            self.assertEqual([entry["line"] for entry in json.loads(out.getvalue())], ["2.9"])
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("not json")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(rebuild.main(["lines", "--policy", path, "v2.9.0"]), 1)
+
 
 class DebianVersions(unittest.TestCase):
     ORDERED = [

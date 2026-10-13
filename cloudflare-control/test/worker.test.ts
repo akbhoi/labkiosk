@@ -7633,6 +7633,29 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("The security rebuild reads each line's status with the shared token, and an ended line is listed as end of life", async () => {
+    const token = "a".repeat(64);
+    const linesCall = (env: Env, auth?: string, method = "GET") =>
+      worker.fetch(new Request("https://labkiosk.org/api/release-lines", { method, headers: auth ? { Authorization: auth } : {} }), env);
+    assert.equal((await linesCall(mockEnv, `Bearer ${token}`)).status, 503, "not configured: refused");
+    const configured = { ...mockEnv, RELEASE_NOTES_TOKEN: token } as Env;
+    for (const auth of [undefined, `Bearer ${"b".repeat(64)}`, token, `Bearer ${token}x`]) {
+      assert.equal((await linesCall(configured, auth)).status, 401, String(auth));
+    }
+        const db = getDatabase(mockEnv);
+    const now = Math.floor(Date.now() / 1000);
+    await setReleaseLine(db, "7.1", "security_only", null, null, "test");
+    await setReleaseLine(db, "7.2", "end_of_life", null, null, "test");
+    await setReleaseLine(db, "7.3", "supported", now - 60, null, "test");
+    const res = await linesCall(configured, `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    const status = new Map(((await res.json<any>()).lines as any[]).map((l) => [l.line, l.status]));
+    assert.equal(status.get("7.1"), "security_only");
+    assert.equal(status.get("7.2"), "end_of_life");
+    assert.equal(status.get("7.3"), "end_of_life", "a passed end-of-life date ends the line by itself");
+    await db.prepare("DELETE FROM release_lines WHERE line IN ('7.1', '7.2', '7.3')").run();
+  });
+
   test("Legal terms: registration records them, a new version is asked for, and gates the console after the notice period", async () => {
     const tenantId = await greenwoodId();
     const db = getDatabase(mockEnv);

@@ -331,8 +331,10 @@ reports "updated to <v>"
   next boot. After that, the feature release downloads into the spare folder, replacing the old
   rollback image, and waits for approval as usual. A security fix never waits behind an
   unapproved feature release.
-- **Which lines get security rebuilds:** CI rebuilds the **latest two** release lines (for
-  example 2.7.x and 2.8.x). An organization that hasn't approved 2.8 yet still gets fixes on 2.7.
+- **Which lines get security rebuilds:** CI rebuilds every release line the platform has **not
+  put at end of life** (§5.13; a line with no status is supported). An organization that hasn't
+  approved 2.8 yet still gets fixes on 2.7 until a super admin ends 2.7. To stop rebuilding a line,
+  set it end of life on the Releases page, or announce its end-of-life date.
 
 ### 5.6 Boot selection and rollback
 
@@ -531,9 +533,11 @@ Phase 4 is §5.11 and phase 5 is §5.12.
 **The security rebuild** (`.github/workflows/security-rebuild.yml`, §7). Every day at 06:00 IST,
 and by hand (one line, `force`, `dry_run`):
 
-1. From the repository's tags, the latest two stable lines from 2.9 on and the newest tag of each
-   (`distro-builder/tools/security-rebuild.py lines`). An older line has no updater, so nothing
-   rebuilt for it could reach a workstation.
+1. From the controller (`GET /api/release-lines`, Bearer `RELEASE_NOTES_TOKEN`), which lines are
+   at end of life, an announced date that has passed included; the run stops if it cannot read
+   them. Then from the repository's tags, every stable line from 2.9 on that is not at end of life,
+   and the newest tag of each (`distro-builder/tools/security-rebuild.py lines --policy`). An older
+   line has no updater, so nothing rebuilt for it could reach a workstation.
 2. The installed packages of that tag's image (`var/lib/dpkg/status`): the `dpkg-status` its GitHub
    release carries when it is a security release, otherwise read from the squashfs of its ISO
    (checked against its `.sha256`); cached by tag.
@@ -766,7 +770,7 @@ included, lacks the update units and the polkit rule (§5.10), so it too is rein
 | 1 | **Done.** Image-store installer; §5.1 knock-on fixes; §5.2 state moves; GRUB one-try boot; `labkiosk-boot-ok`; boot reports to the console | `distro-builder/tests/vm/boot-test.sh` in `build-iso.yml` after every ISO build (QEMU + OVMF + KVM): install, promote a new image, a broken squashfs, recovery, an image whose kiosk never comes up. BIOS boot is covered only by the GRUB menu unit tests; a full install has not been timed |
 | 2 | **Built.** Signed manifest in CI; R2 upload; `labkiosk-update` download and install run by hand | `distro-builder/tests/test_update.py` (resume, a damaged partial, tampered and foreign signatures, the floor, install re-verification); `boot-test.sh` scenarios 5–9: a download killed mid-squashfs is never booted and resumes, a tampered manifest and a signed downgrade are refused with nothing written, the finished download installs and is promoted. The download runs from the host against the mounted disk (the kiosk has no shell), so the "power cut" is a killed process, not a VM power cut |
 | 3 | **Built** (§5.10). Migration 0027; `GET /api/devices/update`, the console's check and install routes and the super admin Releases page, with negative tests; console update states and **Install update**; the update curtain; hub messages; `labkiosk-update run` / `install-pending` and their two units | `pnpm test`; `distro-builder/tests/test_update.py` and `test_client.py`; drive the console in a browser; a two-VM approval against `pnpm dev` |
-| 4 | **Built** (§5.11). `security-rebuild.yml` (latest two lines) and `tools/security-rebuild.py`; `make-release-manifest.py --kind security`; migration 0029 and `tenants.security_updates`; the `security` offer; `labkiosk-update run` staging for the next boot; the "installs at next restart", "not restarted in N days" and pending-fix console states | `distro-builder/tests/test_security_rebuild.py` (Debian version order against dpkg) and `test_update.py` (staging, approval, a mislabelled release, rollback, replacement); `pnpm test`; drive the console in a browser; the workflow by hand with `dry_run`, then a week of scheduled runs on a test organization |
+| 4 | **Built** (§5.11). `security-rebuild.yml` (every line not at end of life) and `tools/security-rebuild.py`; `make-release-manifest.py --kind security`; migration 0029 and `tenants.security_updates`; the `security` offer; `labkiosk-update run` staging for the next boot; the "installs at next restart", "not restarted in N days" and pending-fix console states | `distro-builder/tests/test_security_rebuild.py` (Debian version order against dpkg) and `test_update.py` (staging, approval, a mislabelled release, rollback, replacement); `pnpm test`; drive the console in a browser; the workflow by hand with `dry_run`, then a week of scheduled runs on a test organization |
 | 5 | **Built** (§5.12), not yet timed. Migration 0030 and `tenants.lan_sharing`; LAN address reporting, site grouping and seed choice in the Worker; `labkiosk-share` with `nftables`; cloud fallback | `distro-builder/tests/test_lan_sharing.py` (the server's paths, ranges and subnet, a corrupted or foreign peer, an unreachable one, the 48-hour stop) and `pnpm test` (sites, seeds, the hold, peers); drive Settings → Updates in a browser. Still to do: 5–10 VMs on one virtual LAN with a throttled uplink; time the whole site; a peer that serves corrupted chunks; client isolation (peers unreachable) |
 
 The Docker simulator can't exercise GRUB, live-boot or image switching. It can exercise the

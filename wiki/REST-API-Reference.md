@@ -126,6 +126,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/release-notes/sync` | `POST` | The ISO build, right after publishing a release: re-reads GitHub's releases so `/download` offers the new one at once. `Authorization: Bearer <RELEASE_NOTES_TOKEN>`. `200 {stored, latest}`; `401` wrong token; `502` GitHub unreadable; `503` token not configured |
+| `/api/release-lines` | `GET` | The daily security rebuild: the status of every release line the platform has set (`supported`, `security_only`, `end_of_life`; a passed end-of-life date counts as `end_of_life`), so it rebuilds only lines not at end of life. `Authorization: Bearer <RELEASE_NOTES_TOKEN>`. `200 {lines: [{line, status, endOfLifeAt}]}`; `401` wrong token; `503` token not configured |
 
 ### Super admin
 
