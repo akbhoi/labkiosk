@@ -5131,6 +5131,43 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null });
   });
 
+  test("Only the organization's administrators use Remote Control, never other staff", async () => {
+    const staff = async (role: string, email: string) => {
+      const { data } = await callJson("/api/tenant/staff?tenant=greenwood", {
+        ...json({ name: role, email, password: "StaffPassword123!", role, permissions: ["workstations"] }),
+        cookie: orgSessionCookie
+      });
+      assert.equal(data.status, "ok", JSON.stringify(data));
+      const login = await call("/api/auth/login", json({ email, password: "StaffPassword123!" }));
+      return { id: data.operator.id as string, cookie: login.headers.get("Set-Cookie")!.split(";")[0] };
+    };
+    const operator = await staff("operator", "rc-operator@greenwood.example");
+    const admin = await staff("org_admin", "rc-admin@greenwood.example");
+
+    const viewer = await callJson("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: operator.cookie });
+    assert.equal(viewer.res.status, 403, "an operator with the workstations permission is refused");
+    assert.match(viewer.data.error, /Only an administrator/);
+    const opened = await call("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "WS-R" }), cookie: operator.cookie });
+    assert.equal(opened.status, 403);
+    const socket = await call(`/api/console/remote?tenant=greenwood&clientId=WS-R&session=${"e".repeat(64)}`, {
+      headers: { Upgrade: "websocket", Origin: BASE },
+      cookie: operator.cookie
+    });
+    assert.equal(socket.status, 403);
+    const operatorPage = await (await call("/admin/workstations?tenant=greenwood", { cookie: operator.cookie })).text();
+    assert.match(operatorPage, /const CAN_REMOTE_CONTROL = false;/, "the console offers it no Remote Control");
+
+    assert.equal((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: admin.cookie })).status, 200, "an org_admin may");
+    const adminPage = await (await call("/admin/workstations?tenant=greenwood", { cookie: admin.cookie })).text();
+    assert.match(adminPage, /const CAN_REMOTE_CONTROL = true;/);
+    const ownerPage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(ownerPage, /const CAN_REMOTE_CONTROL = true;/, "and so may the owner");
+
+    for (const member of [operator, admin]) {
+      await callJson(`/api/tenant/staff/${member.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    }
+  });
+
   test("The Remote Control viewer is framed only by the console and loads noVNC from this site", async () => {
     assert.ok([401, 403].includes((await call("/console/remote?tenant=greenwood&clientId=WS-R")).status));
     assert.ok([401, 403].includes((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: rivalSessionCookie })).status));

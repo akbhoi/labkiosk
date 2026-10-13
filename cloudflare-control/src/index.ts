@@ -105,7 +105,8 @@ function registryUpdate(row: ClientDevice | undefined): UpdateReport | undefined
  * with none online loads the offer when its first workstation connects.
  */
 /** The organization's owner, or a staff member with the org_admin role, may accept legal terms for it. */
-async function mayAcceptLegal(db: D1Database, session: Session, tenant: Tenant): Promise<boolean> {
+/** The session is an administrator of the organization: its owner or an `org_admin`. */
+async function isOrganizationAdministrator(db: D1Database, session: Session, tenant: Tenant): Promise<boolean> {
   if (session.role === "super_admin") return false;
   if (tenant.user_id === session.user_id) return true;
   return (await getTenantUser(db, tenant.id, session.user_id))?.role === "org_admin";
@@ -407,10 +408,20 @@ const DEMO_LOCKED_MESSAGE = "The platform's demo organizations keep their names 
 /**
  * Remote Control is an add-on the platform approves per organization (Tasks).
  * Every way into a session -- the viewer page, opening a session, the
- * viewer's socket -- is refused until it has been approved.
+ * viewer's socket -- is refused until it has been approved, and to anyone but the
+ * organization's administrators (its owner and `org_admin` staff).
  */
-function remoteControlRefusal(tenant: Tenant | null, headers: Record<string, string>): Response | null {
-  if (tenant?.remote_control_status !== "approved") {
+async function remoteControlRefusal(
+  db: D1Database,
+  session: Session,
+  tenant: Tenant,
+  headers: Record<string, string>
+): Promise<Response | null> {
+  // Only the organization's administrators, never other staff; a super admin only in a demo (the guard).
+  if (session.role !== "super_admin" && !(await isOrganizationAdministrator(db, session, tenant))) {
+    return jsonError("Only an administrator of the organization can use Remote Control", 403, headers);
+  }
+  if (tenant.remote_control_status !== "approved") {
     return jsonError(
       "Remote Control is not enabled for this organization. An administrator can request it under Settings.",
       403,
@@ -3523,7 +3534,7 @@ export default {
       }
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
-      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      const notEnabled = await remoteControlRefusal(db, session!, currentTenant!, jsonHeaders);
       if (notEnabled) return notEnabled;
       const clientId = url.searchParams.get("clientId") || "";
       if (!REMOTE_CLIENT_ID.test(clientId)) return jsonError("A workstation id is required", 400, jsonHeaders);
@@ -3570,7 +3581,7 @@ export default {
     if (path === "/api/clients/remote-session" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
-      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      const notEnabled = await remoteControlRefusal(db, session!, currentTenant!, jsonHeaders);
       if (notEnabled) return notEnabled;
       if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
       let body: { clientId?: unknown };
@@ -3633,7 +3644,7 @@ export default {
       if (denied) return denied;
       const crossSite = rejectCrossSiteSocket(request, { baseDomain: env.DEFAULT_DOMAIN }, jsonHeaders);
       if (crossSite) return crossSite;
-      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      const notEnabled = await remoteControlRefusal(db, session!, currentTenant!, jsonHeaders);
       if (notEnabled) return notEnabled;
       if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
       const clientId = url.searchParams.get("clientId") || "";
@@ -3741,7 +3752,7 @@ export default {
       const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
       if (denied) return denied;
       const tenant = currentTenant!;
-      const canAccept = await mayAcceptLegal(db, session!, tenant);
+      const canAccept = await isOrganizationAdministrator(db, session!, tenant);
       const status = await organizationLegalStatus(db, tenant.id);
       if (method === "GET") return new Response(JSON.stringify({ ...status, canAccept }), { headers: jsonHeaders });
       if (session!.role === "super_admin") return jsonError("A platform administrator cannot accept terms for an organization", 403, jsonHeaders);

@@ -24,6 +24,8 @@ export interface AdminPageInput {
   accountOnly?: boolean;
   /** The account holds the `updates` permission: check for and install system updates. */
   canUpdate?: boolean;
+  /** The account is an administrator of the organization (its owner or an `org_admin`): Remote Control. */
+  canRemoteControl?: boolean;
   nonce: string;
 }
 

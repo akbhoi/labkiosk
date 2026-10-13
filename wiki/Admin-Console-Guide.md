@@ -31,7 +31,7 @@ Every enrolled workstation appears as a live telemetry card refreshed from `/api
 - **Online Indicator**: Derived from `last_seen`; stale after 20 seconds.
 - **Active URL**: Where the machine is currently pointing.
 - **Lock State**: Whether the fullscreen lock curtain is currently up.
-- **Remote Control**: Opens the workstation's desktop through the console's relay; the workstation must be connected on its control channel (`workstations` permission).
+- **Remote Control**: Opens the workstation's desktop through the console's relay; the workstation must be connected on its control channel. Only the organization's administrators (its owner and `org_admin` staff) see it; other staff do not.
 
 Workstations in the main canvas are partitioned into collapsible **Group Sections** with headers, chevron collapse toggles, and group-wide selection checkboxes. Collapse states persist in `localStorage`.
 

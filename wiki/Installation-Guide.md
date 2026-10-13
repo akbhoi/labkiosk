@@ -176,7 +176,7 @@ Then, from the admin console:
 
 ## Remote control
 
-Interactive remote desktop needs no setup: an operator with the `workstations` permission clicks **Remote Control** on a workstation's card, and the session goes through a relay on the console's own address, over the same outbound connection the workstation already holds. Nothing is provisioned per workstation and no inbound port is opened.
+Interactive remote desktop needs no setup: an administrator of the organization (its owner or `org_admin` staff) clicks **Remote Control** on a workstation's card, and the session goes through a relay on the console's own address, over the same outbound connection the workstation already holds. Nothing is provisioned per workstation and no inbound port is opened.
 
 → [Remote Control](Remote-Control)
 

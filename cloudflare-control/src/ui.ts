@@ -186,6 +186,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     tenantParam,
     accountOnly: activePage === "settings" && !hasAll && !userPermissions.includes("settings"),
     canUpdate: hasAll || userPermissions.includes("updates"),
+    canRemoteControl: options.currentUser?.role === "org_admin" || options.currentUser?.role === "super_admin",
     nonce
   };
 

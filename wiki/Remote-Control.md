@@ -24,7 +24,7 @@ One-click interactive remote desktop from the admin console, with **no inbound p
 
 The workstation makes only **outbound** connections to the console, the same address its control channel uses. Nothing listens on the organization LAN, no firewall rule is needed, and there is no tunnel, DNS record or route per workstation.
 
-A session is opened only by an operator signed in to the console with the `workstations` permission, and joined only with the one-time session token the Worker issued for it (the relay keeps only its SHA-256). Both sides must join within 60 seconds; a session lasts at most four hours, either side closing ends it, and a new session for the same workstation replaces the old one. Every session is written to the audit log (`device.remote_control`).
+A session is opened only by an administrator of the organization (its owner or `org_admin` staff) signed in to the console; other staff cannot, and joined only with the one-time session token the Worker issued for it (the relay keeps only its SHA-256). Both sides must join within 60 seconds; a session lasts at most four hours, either side closing ends it, and a new session for the same workstation replaces the old one. Every session is written to the audit log (`device.remote_control`).
 
 An organization has as many **seats** as the platform approved: that many sessions may be open at once, counted by its OrgHub (one per workstation; a session's relay gives the seat back when it ends, and its four-hour limit frees it if that notice is lost). One more answers `429` naming the workstations in use. A super admin can revoke Remote Control (every open session ends at once, close code `4009`, and the owner is emailed), and an organization can turn it off itself under Settings.
 
@@ -54,7 +54,7 @@ The session runs with `-noclipboard -noremote -nocmds`. Without the first, the V
 
 **Eight characters is the ceiling, not a choice.** The RFB protocol truncates passwords to 8 characters, so this secret is about 32 bits however it is generated — lengthening it changes nothing, because the extra characters are discarded before they reach the wire.
 
-It is a guard against an *accidental* connection, **not** against someone who wants in. The authentication that matters is the relay's: the console sign-in, the `workstations` permission and the one-time session token.
+It is a guard against an *accidental* connection, **not** against someone who wants in. The authentication that matters is the relay's: an administrator's console sign-in and the one-time session token.
 
 ---
 

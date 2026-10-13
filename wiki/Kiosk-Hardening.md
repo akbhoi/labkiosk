@@ -278,6 +278,6 @@ Stated plainly, because a hardening page that claims completeness is worse than 
 
 - **Physical disassembly.** On a machine with a TPM 2.0 chip the data partition is encrypted and opens only in that machine, so a drive taken out shows nothing but the system image, which is public. Without a TPM anyone who can remove the drive can read it. Either way, a whole stolen machine still boots and unlocks itself, and the enrolment token can be revoked from the dashboard in one click.
 - **A network-level attacker.** The client trusts its control plane. HTTPS and the device token protect the channel; a compromised control plane can point the kiosk anywhere the allowlist permits.
-- **A stolen operator session.** Remote Control is protected by the console's sign-in, the `workstations` permission and a one-time session token, not by the 8-character RFB secret. Whoever holds an operator session with that permission can open a live desktop. → [Remote Control](Remote-Control#why-eight-characters)
+- **A stolen administrator session.** Remote Control is protected by the console's sign-in as an administrator of the organization and a one-time session token, not by the 8-character RFB secret. Whoever holds an administrator's session can open a live desktop; other staff cannot. → [Remote Control](Remote-Control#why-eight-characters)
 
 → [Security Model](Security-Model) · [Disk Installer](Disk-Installer) · [Building the ISO](Building-the-ISO)
