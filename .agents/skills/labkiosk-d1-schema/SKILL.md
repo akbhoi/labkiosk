@@ -156,7 +156,10 @@ foreign keys, so the record survives deleting the organization) and `legal_versi
 down is also `is_active = 0`). `0037` adds `tenants.license_plan` (CHECK `education`, `evaluation`,
 `subscriber`, `commercial`, or NULL) and `license_expires_at` (`src/license.ts`). `0038` adds
 `notifications` (`tenant_id` FK cascade, NULL for every organization), `notification_reads`
-(per-user dismissal) and `release_lines.eol_reminder_days` (`src/notifications.ts`).
+(per-user dismissal) and `release_lines.eol_reminder_days` (`src/notifications.ts`). `0039` adds
+the major upgrade pipeline's columns to `major_upgrade_grants`: `requested_by`/`requested_at` and
+`pilot_group`/`pilot_by`/`pilot_at` (a group name, cleared by `endOrphanedMajorPilots` when the
+group is deleted).
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

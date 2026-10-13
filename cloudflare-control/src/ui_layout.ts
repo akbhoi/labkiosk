@@ -2941,7 +2941,7 @@ ${FONT_LINKS}
         });
       };
 
-      /** Ask for a value. Resolves null when dismissed or left empty. */
+      /** Ask for a value, typed or (with choices) picked. Resolves null when dismissed or left empty. */
       window.lkPrompt = function (options) {
         var opts = options || {};
         return new Promise(function (resolve) {
@@ -2954,11 +2954,24 @@ ${FONT_LINKS}
               label.textContent = opts.label;
               group.appendChild(label);
             }
-            var input = document.createElement("input");
-            input.type = "text";
-            input.className = "form-input";
-            input.value = opts.value || "";
-            input.placeholder = opts.placeholder || "";
+            var input;
+            if (Array.isArray(opts.choices)) {
+              input = document.createElement("select");
+              input.className = "form-select";
+              opts.choices.forEach(function (choice) {
+                var option = document.createElement("option");
+                option.value = String(choice);
+                option.textContent = String(choice);
+                input.appendChild(option);
+              });
+              if (opts.value) input.value = opts.value;
+            } else {
+              input = document.createElement("input");
+              input.type = "text";
+              input.className = "form-input";
+              input.value = opts.value || "";
+              input.placeholder = opts.placeholder || "";
+            }
             group.appendChild(input);
             if (opts.hint) {
               var hint = document.createElement("p");
@@ -2977,7 +2990,7 @@ ${FONT_LINKS}
               return value || null;
             }
           });
-          if (parts.field) { parts.field.focus(); parts.field.select(); }
+          if (parts.field) { parts.field.focus(); if (parts.field.select) parts.field.select(); }
         });
       };
     })();

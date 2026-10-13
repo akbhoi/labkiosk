@@ -74,6 +74,7 @@ import {
   setEndOfLifeReminderStage,
   setReleaseLine,
   updateTargetFor,
+  workstationOffer,
   type ReleaseOffer
 } from "../src/releases";
 import {
@@ -7022,6 +7023,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(!isReleaseVersion("../2.9.0"));
   });
 
+  test("A workstation moves one major at a time, and a pilot group alone takes a major being tried", () => {
+    const release = (version: string, extra: Partial<ReleaseOffer> = {}): ReleaseOffer => ({
+      version,
+      kind: "feature",
+      sizeBytes: 1,
+      classifiedAt: 1,
+      ...extra
+    });
+    const releases = [release("4.0.0"), release("3.1.0", { gated: true, pilotGroup: "Lab A" }), release("2.5.0"), release("2.4.0")];
+    const next = (running: string, group: string | null = null) => workstationOffer(releases, running, group).release?.version ?? null;
+    assert.equal(next("2.4.0"), "2.5.0", "the newest of its own major first");
+    assert.equal(next("2.5.0"), "2.5.0", "3 is gated outside the pilot, and 4 is two majors away");
+    assert.equal(next("2.5.0", "Lab A"), "3.1.0", "the pilot group takes 3");
+    assert.equal(next("2.5.0", "Lab B"), "2.5.0");
+    assert.equal(next("3.1.0"), "4.0.0", "a workstation on 3 moves on to 4");
+    assert.equal(workstationOffer(releases, null).release?.version, "4.0.0", "an updater that does not say what it runs gets the newest");
+    assert.equal(updateTargetFor(releases, "2.5.0", "Lab A")?.version, "3.1.0");
+    assert.equal(updateTargetFor(releases, "2.5.0"), null);
+    const status = { imageVersion: "2.5.0", update: { phase: "idle" } } as Parameters<typeof installTargetFor>[1];
+    assert.equal(installTargetFor(releases, status, "Lab A")?.version, "3.1.0");
+    assert.equal(releaseNudgeTarget(releases, { phase: "idle" }, "2.5.0", "next_boot", "Lab A")?.version, "3.1.0");
+    assert.equal(releaseNudgeTarget(releases, { phase: "idle" }, "2.5.0", "next_boot"), null);
+  });
+
   test("A workstation is reminded of a release only when it runs an older image and holds nothing newer", () => {
     const offer = { version: "2.9.0", kind: "feature" as const, sizeBytes: 1, classifiedAt: 1 };
     const wanted = (releases: ReleaseOffer[], update: Parameters<typeof releaseNudgeTarget>[1], image: string | undefined) =>
@@ -7499,35 +7524,108 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.deepEqual(settings.data.majors.map((m: any) => [m.major, m.access]), [[5, "closed"]]);
     assert.equal((await lines({ line: "2.8", status: "supported" })).status, 200);
 
-    // A closed major: granted to one organization, then confirmed by its administrator.
-    const confirm = (cookie: string) => call("/api/settings/updates/confirm-major?tenant=greenwood", { ...json({ major: 5 }), cookie });
+    // A closed major, through the pipeline: asked for, declined, asked for again,
+    // granted, tried on one workstation group, then confirmed for every workstation.
+    const step = (kind: string, payload: unknown, cookie = orgSessionCookie) =>
+      call(`/api/settings/updates/${kind}-major?tenant=greenwood`, { ...json(payload), cookie });
+    const confirm = (cookie: string) => step("confirm", { major: 5 }, cookie);
+    const majorState = async () =>
+      (await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie })).data.majors.map((m: any) => [m.major, m.access]);
+    const greenwoodNotices = async () =>
+      (await callJson("/api/notifications?tenant=greenwood", { cookie: orgSessionCookie })).data.notifications as any[];
     assert.equal((await confirm(orgSessionCookie)).status, 403, "not granted yet");
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" })).status, 403, "nor tried");
+    assert.equal((await majors({ major: 5, action: "decline", tenantId, reason: "No." })).status, 409, "nothing to decline yet");
+    const noUpdates = await staffWith("no-updates@greenwood.example", ["settings"]);
+    for (const cookie of [rivalSessionCookie, noUpdates]) {
+      assert.equal((await step("request", { major: 5 }, cookie)).status, 403);
+    }
+    assert.equal((await step("request", { major: 2 })).status, 409, "a free major needs no request");
+    assert.equal((await step("request", { major: 5 })).status, 200);
+    assert.equal((await step("request", { major: 5 })).status, 409, "once");
+    assert.deepEqual(await majorState(), [[5, "requested"]]);
+    const greenwoodGrant = async () =>
+      (await (await callWith(policyEnv, "/api/super/releases", { cookie: superSessionCookie })).json<any>()).majors
+        .find((m: any) => m.major === 5)
+        .grants.find((g: any) => g.tenantId === tenantId);
+    assert.equal(typeof (await greenwoodGrant()).requestedAt, "number", "the super admin sees the request");
+    assert.equal((await greenwoodGrant()).grantedAt, null);
+    assert.equal((await majors({ major: 5, action: "decline", tenantId, reason: "x".repeat(501) })).status, 400);
+    assert.equal((await majors({ major: 5, action: "decline", tenantId, reason: "Not on this hardware yet." })).status, 200);
+    assert.deepEqual(await majorState(), [[5, "closed"]], "declined: it may ask again");
+    const declined = (await greenwoodNotices()).find((n) => /request for Lab Kiosk 5 was declined/.test(n.title));
+    assert.ok(declined, "the organization is told");
+    assert.match(declined.body, /Not on this hardware yet\./);
+    assert.equal((await step("request", { major: 5 })).status, 200);
     assert.equal((await majors({ major: 5, action: "grant", tenantId })).status, 200);
-    assert.equal((await ask("2.20.0")).release.version, "2.21.0", "granted but not confirmed");
+    assert.ok((await greenwoodNotices()).some((n) => /Lab Kiosk 5 is available to/.test(n.title)), "a grant is told too");
+    assert.deepEqual(await majorState(), [[5, "available"]]);
+    assert.equal((await ask("2.21.0")).release.version, "2.21.0", "granted but not confirmed");
     const available = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
     assert.deepEqual(available.data.majors.map((m: any) => [m.major, m.access, m.newest]), [[5, "available", "5.0.0"]]);
     assert.equal((await confirm(rivalSessionCookie)).status, 403, "another organization cannot confirm it");
-    assert.equal((await confirm(await staffWith("no-updates@greenwood.example", ["settings"]))).status, 403);
+    assert.equal((await confirm(noUpdates)).status, 403);
+    assert.equal((await step("confirm", { major: "5" })).status, 400);
+
+    // A pilot: only the workstations of one group are offered it.
+    const group = await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Pilot 5" }), cookie: orgSessionCookie });
+    assert.equal(group.res.status, 200);
+    const pilotToken = await enrolOta("WS-PILOT");
+    // A workstation is in the registry, and so in a group, once it has connected.
+    await hubs().connectDevice({ tenantId, clientId: "WS-PILOT", ip: "203.0.113.10", portal: portalContext() });
+    const askAs = async (bearer: string, running: string) =>
+      (await callWith(policyEnv, `/api/devices/update?running=${running}`, { bearer })).json<any>();
     assert.equal(
-      (await call("/api/settings/updates/confirm-major?tenant=greenwood", { ...json({ major: "5" }), cookie: orgSessionCookie })).status,
-      400
+      (await call("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["WS-PILOT"], groupName: "Pilot 5" }), cookie: orgSessionCookie })).status,
+      200
     );
+    assert.equal((await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients["WS-PILOT"]?.groupName, "Pilot 5");
+    assert.equal((await step("pilot", { major: 5, group: "Nowhere" })).status, 404);
+    assert.equal((await step("pilot", { major: 5, group: " " })).status, 400);
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" }, rivalSessionCookie)).status, 403);
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" }, noUpdates)).status, 403);
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" })).status, 200);
+    const piloting = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.deepEqual(piloting.data.majors.map((m: any) => [m.major, m.access, m.pilotGroup]), [[5, "pilot", "Pilot 5"]]);
+    assert.ok(piloting.data.groups.includes("Pilot 5"), "the console lists the groups to pick from");
+    assert.equal((await askAs(pilotToken, "2.21.0")).release.version, "5.0.0", "the pilot group is offered it");
+    assert.equal((await ask("2.21.0")).release.version, "2.21.0", "a workstation outside it is not");
+    assert.equal((await askAs(pilotToken, "2.20.0")).release.version, "2.21.0", "one step at a time: the newest of its own major first");
+    assert.equal((await greenwoodGrant()).pilotGroup, "Pilot 5");
+    // Deleting the group ends the trial.
+    const gone = await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Pilot gone" }), cookie: orgSessionCookie });
+    assert.equal((await step("pilot", { major: 5, group: "Pilot gone" })).status, 200);
+    assert.equal((await call(`/api/groups/${gone.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
+    assert.deepEqual(await majorState(), [[5, "available"]], "no trial on a group that is gone");
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" })).status, 200);
+    assert.equal((await step("pilot", { major: 5, group: null })).status, 200, "ending the trial");
+    assert.deepEqual(await majorState(), [[5, "available"]]);
+    assert.equal((await askAs(pilotToken, "2.21.0")).release.version, "2.21.0", "the trial is over");
+
+    // Confirmed: every workstation, one major at a time.
     assert.equal((await confirm(orgSessionCookie)).status, 200);
     assert.equal((await confirm(orgSessionCookie)).status, 409, "once");
-    assert.equal((await ask("2.20.0")).release.version, "5.0.0");
+    assert.equal((await ask("2.21.0")).release.version, "5.0.0");
+    assert.equal((await ask("2.20.0")).release.version, "2.21.0", "2.20 goes to 2.21 before 5");
     // Taking the grant back takes the confirmation with it; opening it to everyone asks again.
     assert.equal((await majors({ major: 5, action: "ungrant", tenantId })).status, 200);
-    assert.equal((await ask("2.20.0")).release.version, "2.21.0");
+    assert.ok((await greenwoodNotices()).some((n) => /Lab Kiosk 5 is no longer available/.test(n.title)));
+    assert.equal((await ask("2.21.0")).release.version, "2.21.0");
     assert.equal((await majors({ major: 5, action: "open" })).status, 200);
-    assert.equal((await ask("2.20.0")).release.version, "2.21.0", "open, but not confirmed");
+    assert.ok((await greenwoodNotices()).some((n) => n.title === "Lab Kiosk 5 is available"), "opening it tells every organization");
+    assert.equal((await ask("2.21.0")).release.version, "2.21.0", "open, but not confirmed");
     assert.equal((await confirm(orgSessionCookie)).status, 200);
     assert.equal((await ask("")).release.version, "5.0.0");
+    assert.equal((await call(`/api/groups/${group.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
 
     const platform = await (await call("/api/super/audit-logs?limit=100", { cookie: superSessionCookie })).json<any>();
     assert.ok(platform.logs.some((l: any) => l.action === "release.line" && /^2\.20 end_of_life/.test(l.details)));
     assert.ok(platform.logs.some((l: any) => l.action === "release.major" && l.details === "5 open"));
     const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
     assert.ok(logs.some((l: any) => l.action === "update.major_confirm" && l.details === "5"));
+    assert.ok(logs.some((l: any) => l.action === "update.major_request" && l.details === "5"));
+    assert.ok(logs.some((l: any) => l.action === "update.major_pilot" && l.details === "5 group=Pilot 5"));
+    assert.ok(platform.logs.some((l: any) => l.action === "release.major" && l.details === `5 decline tenant=${tenantId}`));
 
     await majors({ major: 5, action: "close" });
     for (const version of ["2.20.0", "2.20.1", "2.21.0", "5.0.0"]) {

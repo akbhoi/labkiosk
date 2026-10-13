@@ -249,6 +249,11 @@ CREATE TABLE IF NOT EXISTS major_upgrade_grants (
   granted_at INTEGER,
   confirmed_by TEXT,
   confirmed_at INTEGER,
+  requested_by TEXT,
+  requested_at INTEGER,
+  pilot_group TEXT,
+  pilot_by TEXT,
+  pilot_at INTEGER,
   PRIMARY KEY (tenant_id, major)
 );
 
@@ -703,6 +708,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT id, tenant_id, kind, title, body FROM notifications LIMIT 1").run();
     await db.prepare("SELECT notification_id, user_id, read_at FROM notification_reads LIMIT 1").run();
     await db.prepare("SELECT eol_reminder_days FROM release_lines LIMIT 1").run();
+    // 0039: major upgrade requests and pilot groups.
+    await db.prepare("SELECT requested_at, pilot_group, pilot_at FROM major_upgrade_grants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

@@ -660,6 +660,26 @@ and one of its staff with the `updates` permission confirmed it; a gated release
 workstation already on that major or above. An updater that does not send `running` is offered only
 what any workstation may take, so a 2.9.0 updater is never moved to a gated major.
 
+**The major upgrade pipeline** (migration 0039). An organization moves to a closed major in steps,
+each audited and each one the organization is notified of in its console:
+
+1. **Request.** An administrator asks for it under Settings → Updates
+   (`POST /api/settings/updates/request-major`, `update.major_request`). The request shows on the
+   super admin's Releases → Major releases card.
+2. **Grant or decline.** The super admin grants it, or declines with a reason; a declined
+   organization may ask again. Opening the major to all reaches every organization at once.
+3. **Pilot.** An administrator tries it on one workstation group
+   (`POST /api/settings/updates/pilot-major`, `update.major_pilot`): the release carries
+   `pilotGroup`, and only workstations of that group (`client_devices.group_name`) take it. Deleting
+   the group, or `group: null`, ends the trial.
+4. **Confirm.** An administrator confirms it for every workstation
+   (`POST /api/settings/updates/confirm-major`).
+
+Whatever the gates allow, `eligibleReleases()` moves a workstation **one major at a time**, and only
+from the newest release of its own major it may take: 2.20.0 goes to 2.21.0 before 5.0.0. The next
+major is the lowest one above it with a release on a line it could take, so a gated 3.x also holds
+back 4.x.
+
 The Worker still only chooses what to offer: the workstation checks the signature and security floor
 of whatever it is offered, as before.
 

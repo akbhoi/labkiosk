@@ -61,6 +61,13 @@ import {
   offeredRelease,
   offeredReleases,
   confirmMajor,
+  declineMajorRequest,
+  endOrphanedMajorPilots,
+  hasMajorPilot,
+  releaseOfMajorOffered,
+  requestMajor,
+  setMajorPilot,
+  workstationGroupsIn,
   isLineStatus,
   listMajorGrants,
   listReleaseMajors,
@@ -847,7 +854,11 @@ async function handleDeviceUpdate(
   if (running !== null && !isReleaseVersion(running)) {
     return jsonError("running must be a release version", 400, jsonHeaders);
   }
-  const offer = workstationOffer(await offeredReleases(db, tenant.update_channel, tenant.id), running);
+  const releases = await offeredReleases(db, tenant.update_channel, tenant.id);
+  // Only a workstation in a group its organization is trying a major on needs its group.
+  const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
+  const group = (await workstationGroupsIn(db, tenant.id, pilots)).get(auth.device.client_id) ?? null;
+  const offer = workstationOffer(releases, running, group);
   const securityUpdates = isSecurityUpdateMode(tenant.security_updates) ? tenant.security_updates : "next_boot";
   const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string } | null> = {};
   for (const [name, release] of [["release", offer.release], ["security", offer.security]] as const) {
@@ -2049,15 +2060,16 @@ export default {
       );
     }
 
-    // POST /api/super/release-majors { major, action, tenantId? | subdomain? }: whether
-    // workstations may be moved to a major release. "open" opens it to every
+    // POST /api/super/release-majors { major, action, tenantId? | subdomain?, reason? }:
+    // whether workstations may be moved to a major release. "open" opens it to every
     // organization, "close" closes it; "grant" and "ungrant" open or close it for
-    // one organization. Either way, an administrator of the organization still
-    // confirms it before any of its workstations is moved.
+    // one organization, and "decline" turns down an organization's request for it.
+    // Either way, an administrator of the organization still tries it on a group or
+    // confirms it before any of its workstations is moved. The organization is notified.
     if (path === "/api/super/release-majors" && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
-      let body: { major?: unknown; action?: unknown; tenantId?: unknown; subdomain?: unknown };
+      let body: { major?: unknown; action?: unknown; tenantId?: unknown; subdomain?: unknown; reason?: unknown };
       try {
         body = (await request.json<typeof body>()) ?? {};
       } catch {
@@ -2068,13 +2080,25 @@ export default {
         return jsonError("A major release number is required", 400, jsonHeaders);
       }
       const action = body.action;
-      if (action !== "open" && action !== "close" && action !== "grant" && action !== "ungrant") {
-        return jsonError("The action is open, close, grant or ungrant", 400, jsonHeaders);
+      if (action !== "open" && action !== "close" && action !== "grant" && action !== "ungrant" && action !== "decline") {
+        return jsonError("The action is open, close, grant, ungrant or decline", 400, jsonHeaders);
       }
+      const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+      if (reason.length > 500) return jsonError("The reason is at most 500 characters", 400, jsonHeaders);
       let details = `${major} ${action}`;
       if (action === "open" || action === "close") {
+        const wasOpen = (await listReleaseMajors(db)).get(major) === true;
         await setReleaseMajorOpen(db, major, action === "open", session!.user_id);
         await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "release.major", details });
+        if (action === "open" && !wasOpen) {
+          await createNotification(db, {
+            tenantId: null,
+            kind: "release",
+            title: `Lab Kiosk ${major} is available`,
+            body: `Lab Kiosk ${major} is a new major release. None of your workstations moves to it until an administrator tries it on a workstation group or confirms it under Settings → Updates.`,
+            createdBy: session!.user_id
+          });
+        }
         await notifyOrganizationsOnline(env, db);
       } else {
         const target =
@@ -2087,7 +2111,30 @@ export default {
         if (action === "grant" && (await listReleaseMajors(db)).get(major) === undefined) {
           return jsonError(`Release ${major} is not closed; every organization is offered it already`, 409, jsonHeaders);
         }
-        await setMajorGrant(db, target.id, major, action === "grant", session!.user_id);
+        let notice: { title: string; body: string };
+        if (action === "decline") {
+          if (!(await declineMajorRequest(db, target.id, major))) {
+            return jsonError(`${target.name} has no open request for Lab Kiosk ${major}`, 409, jsonHeaders);
+          }
+          notice = {
+            title: `Your request for Lab Kiosk ${major} was declined`,
+            body: `Lab Kiosk has declined the request of ${target.name} for Lab Kiosk ${major} for now. Your workstations stay on the release they run, and you may ask again later.`
+          };
+        } else {
+          await setMajorGrant(db, target.id, major, action === "grant", session!.user_id);
+          notice =
+            action === "grant"
+              ? {
+                  title: `Lab Kiosk ${major} is available to ${target.name}`,
+                  body: `Lab Kiosk ${major} is now available to your organization. No workstation moves to it yet: under Settings → Updates, try it on one workstation group first, then confirm it for every workstation.`
+                }
+              : {
+                  title: `Lab Kiosk ${major} is no longer available`,
+                  body: `Lab Kiosk has taken back Lab Kiosk ${major} from ${target.name}. Workstations that already run it keep it; no other workstation moves to it.`
+                };
+        }
+        if (reason) notice.body += `\n\n${reason}`;
+        await createNotification(db, { tenantId: target.id, kind: "release", ...notice, createdBy: session!.user_id });
         details = `${major} ${action} tenant=${target.id}`;
         await writeAuditLog(db, { tenantId: target.id, userId: session!.user_id, action: "release.major", details });
         await notifyConfigChanged(env, target.id);
@@ -3797,7 +3844,8 @@ export default {
           lanSharing,
           pending,
           lines: notices.lines,
-          majors: notices.majors
+          majors: notices.majors,
+          groups: (await listWorkstationGroups(db, tenantId)).map((g) => g.name)
         }),
         { headers: jsonHeaders }
       );
@@ -3883,13 +3931,22 @@ export default {
       });
     }
 
+    // The major upgrade pipeline, each step recorded with who and when:
+    // POST /api/settings/updates/request-major { major }: ask Lab Kiosk for a major
+    // release closed to this organization.
+    // POST /api/settings/updates/pilot-major { major, group }: try a major the platform
+    // opened or granted it on one workstation group first (group null ends the trial).
     // POST /api/settings/updates/confirm-major { major }: an administrator's
-    // confirmation that this organization's workstations may be moved to a major
-    // release the platform opened or granted it. Recorded with who and when.
-    if (path === "/api/settings/updates/confirm-major" && method === "POST") {
+    // confirmation that every workstation of this organization may be moved to it.
+    if (
+      (path === "/api/settings/updates/confirm-major" ||
+        path === "/api/settings/updates/request-major" ||
+        path === "/api/settings/updates/pilot-major") &&
+      method === "POST"
+    ) {
       const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
       if (denied) return denied;
-      let body: { major?: unknown };
+      let body: { major?: unknown; group?: unknown };
       try {
         body = (await request.json<typeof body>()) ?? {};
       } catch {
@@ -3902,12 +3959,44 @@ export default {
       const tenantId = currentTenant!.id;
       const access = majorAccess((await listReleaseMajors(db)).get(major), (await listMajorGrants(db, tenantId)).get(major));
       if (access === "free") return jsonError(`Release ${major} needs no confirmation`, 409, jsonHeaders);
-      if (access === "closed") return jsonError(`Release ${major} is not available to this organization yet; ask Lab Kiosk for it`, 403, jsonHeaders);
       if (access === "confirmed") return jsonError(`Release ${major} is already confirmed`, 409, jsonHeaders);
+      if (path.endsWith("/request-major")) {
+        if (access === "requested") return jsonError(`Release ${major} has been requested already`, 409, jsonHeaders);
+        if (access !== "closed") return jsonError(`Release ${major} is available to this organization already`, 409, jsonHeaders);
+        if (!(await releaseOfMajorOffered(db, currentTenant!.update_channel, major))) {
+          return jsonError(`No release of Lab Kiosk ${major} is offered on this organization's channel`, 404, jsonHeaders);
+        }
+        await requestMajor(db, tenantId, major, session!.user_id);
+        await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "update.major_request", details: String(major) });
+        return new Response(JSON.stringify({ status: "ok", major, access: "requested" }), { headers: jsonHeaders });
+      }
+      if (access === "closed" || access === "requested") {
+        return jsonError(`Release ${major} is not available to this organization yet; ask Lab Kiosk for it`, 403, jsonHeaders);
+      }
+      if (path.endsWith("/pilot-major")) {
+        let group: string | null = null;
+        if (body.group !== null) {
+          group = typeof body.group === "string" ? body.group.trim() : "";
+          if (!group) return jsonError("A workstation group is required", 400, jsonHeaders);
+          const chosen = group;
+          if (!(await listWorkstationGroups(db, tenantId)).some((g) => g.name === chosen)) {
+            return jsonError("Workstation group not found", 404, jsonHeaders);
+          }
+        }
+        await setMajorPilot(db, tenantId, major, group, session!.user_id);
+        await writeAuditLog(db, {
+          tenantId,
+          userId: session!.user_id,
+          action: "update.major_pilot",
+          details: `${major} group=${group ?? "none"}`
+        });
+        await notifyConfigChanged(env, tenantId);
+        return new Response(JSON.stringify({ status: "ok", major, access: group ? "pilot" : "available" }), { headers: jsonHeaders });
+      }
       await confirmMajor(db, tenantId, major, session!.user_id);
       await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "update.major_confirm", details: String(major) });
       await notifyConfigChanged(env, tenantId);
-      return new Response(JSON.stringify({ status: "ok", major }), { headers: jsonHeaders });
+      return new Response(JSON.stringify({ status: "ok", major, access: "confirmed" }), { headers: jsonHeaders });
     }
 
     // POST /api/clients/check-update { clientIds }: ask these workstations to
@@ -4031,6 +4120,8 @@ export default {
         for (let i = 0; i < clientIds.length; i += D1_IN_LIST_CHUNK) {
           await assignClientsToGroup(db, currentTenant!.id, clientIds.slice(i, i + D1_IN_LIST_CHUNK), groupName);
         }
+        // A workstation moved into or out of a group a major is being tried on is offered differently.
+        if (await hasMajorPilot(db, currentTenant!.id)) await notifyConfigChanged(env, currentTenant!.id);
 
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,
@@ -4104,6 +4195,8 @@ export default {
       if (!(await deleteWorkstationGroup(db, currentTenant!.id, groupId))) {
         return jsonError("Workstation group not found", 404, jsonHeaders);
       }
+      // A major being tried on the group is no longer tried anywhere.
+      if (await endOrphanedMajorPilots(db, currentTenant!.id)) await notifyConfigChanged(env, currentTenant!.id);
       await writeAuditLog(db, {
         tenantId: currentTenant!.id,
         userId: session!.user_id,

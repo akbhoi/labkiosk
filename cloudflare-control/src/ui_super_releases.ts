@@ -68,7 +68,7 @@ export function renderReleasesPaneHtml(): string {
         </div>
         <div class="card">
           <h2 class="card-title">Major releases</h2>
-          <p class="card-sub">The first release of a new major version arrives <strong>closed</strong>: no workstation is moved to it. Open it to every organization, or grant it to one; either way an administrator of each organization confirms it under Settings → Updates before any of its workstations is moved. A workstation already on a major keeps receiving it.</p>
+          <p class="card-sub">The first release of a new major version arrives <strong>closed</strong>: no workstation is moved to it. Open it to every organization, or grant it to one (an organization can ask for it from Settings → Updates; its request shows here). Either way an administrator of each organization tries it on one workstation group or confirms it for every workstation before any is moved. A workstation moves one major at a time, from the newest release of its own major; one already on a major keeps receiving it.</p>
           <div class="table-container">
             <table>
               <thead>
@@ -187,10 +187,16 @@ export function renderReleasesScript(nonce: string): string {
               line.className = "cell-actions";
               const text = document.createElement("span");
               text.className = "text-xs";
-              text.textContent = g.name + ": " +
-                (g.grantedAt ? "granted " + day(g.grantedAt) : "open to all") + ", " +
-                (g.confirmedAt ? "confirmed " + day(g.confirmedAt) : "not confirmed yet");
+              const waiting = m.state === "closed" && !g.grantedAt;
+              text.textContent = g.name + ": " + (waiting
+                ? "requested " + (g.requestedAt ? day(g.requestedAt) : "")
+                : (g.grantedAt ? "granted " + day(g.grantedAt) : "open to all") + ", " +
+                  (g.confirmedAt ? "confirmed " + day(g.confirmedAt) : g.pilotGroup ? "trying it on the group " + g.pilotGroup : "not confirmed yet"));
               line.appendChild(text);
+              if (waiting && g.requestedAt) {
+                line.appendChild(policyButton("Grant", "btn-primary", { majorAction: "grant", major: String(m.major), tenantId: g.tenantId, tenantName: g.name }));
+                line.appendChild(policyButton("Decline", "btn-ghost", { majorAction: "decline", major: String(m.major), tenantId: g.tenantId, tenantName: g.name }));
+              }
               if (g.grantedAt) line.appendChild(policyButton("Take back", "btn-ghost", { majorAction: "ungrant", major: String(m.major), tenantId: g.tenantId }));
               grants.appendChild(line);
             }
@@ -306,7 +312,21 @@ export function renderReleasesScript(nonce: string): string {
           const major = Number(b.dataset.major);
           const action = b.dataset.majorAction;
           const payload = { major, action };
-          if (action === "grant") {
+          if (action === "grant" && b.dataset.tenantId) {
+            payload.tenantId = b.dataset.tenantId;
+            const ok = await lkConfirm({ title: "Grant " + major + ".x to " + b.dataset.tenantName + "?", message: "The organization is notified. Its administrator then tries it on a workstation group or confirms it under Settings \u2192 Updates.", confirmLabel: "Grant" });
+            if (!ok) return;
+          } else if (action === "decline") {
+            payload.tenantId = b.dataset.tenantId;
+            const reason = await lkPrompt({
+              title: "Decline the request of " + b.dataset.tenantName + " for " + major + ".x?",
+              label: "Reason, shown to the organization",
+              hint: "The organization is notified and may ask again later.",
+              confirmLabel: "Decline"
+            });
+            if (reason === null) return;
+            payload.reason = reason;
+          } else if (action === "grant") {
             const subdomain = await lkPrompt({
               title: "Grant " + major + ".x to an organization",
               label: "The organization's subdomain",
