@@ -10,6 +10,7 @@ import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
+import { DEFAULT_WORKSTATION_LIMIT, MAX_WORKSTATION_LIMIT } from "./db";
 import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
@@ -20,6 +21,8 @@ export interface SuperConsoleTenant extends Tenant {
   admin_name: string;
   online_clients: number;
   total_clients: number;
+  /** Workstations holding a valid device token: what the workstation limit counts. */
+  enrolled_clients: number;
 }
 
 export interface SuperConsoleCatalog {
@@ -194,6 +197,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <span class="stat-dot ${t.online_clients > 0 ? "dot-green" : "dot-neutral"}"></span>
           <span class="stat-val">${Number(t.online_clients) || 0} / ${Number(t.total_clients) || 0}</span>
         </span>
+        <div class="cell-sub nowrap ${Number(t.enrolled_clients) >= Number(t.workstation_limit) ? "text-danger" : ""}">${Number(t.enrolled_clients) || 0} of ${Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled</div>
       </td>
       <td>
         <div class="cell-actions">
@@ -211,6 +215,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <div class="menu-popover" id="${escapeAttr(menuId)}" popover role="menu" aria-label="Organization actions">
             ${isDemo ? "" : `<button type="button" class="menu-item btn-edit-sub" role="menuitem" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>`}
             <button type="button" class="menu-item btn-assign-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Custom Domain</button>
+            <button type="button" class="menu-item btn-workstation-limit" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-limit="${escapeAttr(String(Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT))}" data-enrolled="${escapeAttr(String(Number(t.enrolled_clients) || 0))}">Workstation Limit</button>
             ${t.custom_domain ? `<button type="button" class="menu-item menu-item-danger btn-remove-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Disconnect Custom Domain</button>` : ""}
             ${
               isDemo
@@ -792,6 +797,40 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
               window.location.reload();
             } else {
               lkToast(data.error || "Failed to assign subdomain", "error");
+            }
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      });
+
+      document.querySelectorAll(".btn-workstation-limit").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const value = await lkPrompt({
+            title: "Workstation limit for " + btn.closest("tr").querySelector(".cell-title").textContent,
+            message: btn.dataset.enrolled + " workstations are enrolled now. A lower limit stops new enrolments only; nothing enrolled is cut off.",
+            label: "Workstations",
+            value: btn.dataset.limit,
+            hint: "A whole number from 1 to ${MAX_WORKSTATION_LIMIT}.",
+            confirmLabel: "Save"
+          });
+          if (!value) return;
+          const limit = Number(value);
+          if (!Number.isInteger(limit) || limit < 1 || limit > ${MAX_WORKSTATION_LIMIT}) {
+            lkToast("Enter a whole number from 1 to ${MAX_WORKSTATION_LIMIT}.", "error");
+            return;
+          }
+          try {
+            const res = await fetch("/api/super/tenants/workstation-limit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tenantId: btn.dataset.tenant, limit })
+            });
+            const data = await res.json();
+            if (data.status === "ok") {
+              window.location.reload();
+            } else {
+              lkToast(data.error || "Failed to change the workstation limit", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");

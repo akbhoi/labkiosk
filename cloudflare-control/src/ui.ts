@@ -8,6 +8,7 @@
 
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
+import { DEFAULT_WORKSTATION_LIMIT } from "./db";
 import {
   AdminPageInput,
   AdminPageParts,
@@ -33,6 +34,8 @@ export interface DashboardOptions {
   presets?: BroadcastPreset[];
   staff?: TenantUser[];
   groups?: WorkstationGroup[];
+  /** Workstations holding a valid device token, counted against tenant.workstation_limit. */
+  enrolledWorkstations?: number;
   activePage?: AdminPageId;
   currentUser?: { name: string; email?: string; role: string; permissions?: string[] };
   userPermissions?: string[];
@@ -146,6 +149,16 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     { label: "Total", value: 0, color: "blue", id: "stat-total-count" },
     { label: "Locked", value: 0, color: "yellow", id: "stat-locked-count" }
   ];
+  if (tenant) {
+    const enrolled = options.enrolledWorkstations ?? 0;
+    const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
+    stats.push({
+      label: "Enrolled",
+      value: `${enrolled} of ${limit}`,
+      color: enrolled >= limit ? "red" : enrolled >= Math.ceil(limit * 0.9) ? "yellow" : "blue",
+      id: "stat-enrolled-count"
+    });
+  }
 
   const pageInput: AdminPageInput = {
     config,

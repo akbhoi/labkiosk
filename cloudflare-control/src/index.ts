@@ -127,6 +127,9 @@ import {
   assignClientsToGroup,
   setClientsBroadcast,
   createDeviceToken,
+  countEnrolledWorkstations,
+  DEFAULT_WORKSTATION_LIMIT,
+  MAX_WORKSTATION_LIMIT,
   revokeDeviceTokensForClient,
   addWhitelistDomain,
   removeWhitelistDomain,
@@ -1548,6 +1551,35 @@ export default {
       }
     }
 
+    // POST /api/super/tenants/workstation-limit: how many workstations an organization
+    // may enrol. Lowering it below what is enrolled only stops new enrolments.
+    if (path === "/api/super/tenants/workstation-limit" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown; limit?: unknown };
+      try {
+        body = await request.json<{ tenantId?: unknown; limit?: unknown }>();
+      } catch (err) {
+        console.warn("[Worker] Unreadable workstation limit request:", err);
+        return jsonError("The request body is not valid JSON", 400, jsonHeaders);
+      }
+      const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      const limit = typeof body.limit === "number" ? body.limit : Number.NaN;
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_WORKSTATION_LIMIT) {
+        return jsonError(`The workstation limit must be a whole number from 1 to ${MAX_WORKSTATION_LIMIT}`, 400, jsonHeaders);
+      }
+      const enrolled = await countEnrolledWorkstations(db, target.id);
+      await updateTenant(db, target.id, { workstation_limit: limit });
+      await writeAuditLog(db, {
+        tenantId: target.id,
+        userId: session!.user_id,
+        action: "tenant.workstation_limit",
+        details: `limit=${limit} was=${Number(target.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled=${enrolled}`
+      });
+      return new Response(JSON.stringify({ status: "ok", limit, enrolled }), { headers: jsonHeaders });
+    }
+
     // GET /api/i18n: which interface languages this platform can supply.
     // Public and read-only: a workstation asks before it is enrolled.
     if (path === "/api/i18n" && method === "GET") {
@@ -2832,7 +2864,22 @@ export default {
           return jsonError("This organization is not active yet. Ask your administrator to approve it.", 403, jsonHeaders);
         }
 
-        const { token } = await createDeviceToken(db, { tenantId: tenant.id, clientId });
+        const issued = await createDeviceToken(db, { tenantId: tenant.id, clientId });
+        if (!issued) {
+          const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
+          await writeAuditLog(db, {
+            tenantId: tenant.id,
+            action: "device.enroll_limit",
+            details: `client=${clientId} limit=${limit}`
+          });
+          return jsonError(
+            `${tenant.name} has enrolled all ${limit} workstations its plan allows. ` +
+              "Remove a workstation in the console, or ask Lab Kiosk to raise the limit.",
+            403,
+            jsonHeaders
+          );
+        }
+        const { token } = issued;
         // A workstation removed earlier and enrolled again is welcome again.
         forgetDeviceToken(tenant.id, clientId);
         await hubJson(env, tenant.id, "/device-enrolled", { clientId });
@@ -3779,14 +3826,15 @@ export default {
         );
       }
 
-      const [portalSites, broadcastPresets, whitelist, staff, user, tenantUser, workstationGroups] = await Promise.all([
+      const [portalSites, broadcastPresets, whitelist, staff, user, tenantUser, workstationGroups, enrolledWorkstations] = await Promise.all([
         listPortalSites(db, tenant.id),
         listBroadcastPresets(db, tenant.id),
         buildEffectiveWhitelist(db, tenant.id),
         listTenantUsers(db, tenant.id),
         findUserById(db, session.user_id),
         getTenantUser(db, tenant.id, session.user_id),
-        listWorkstationGroups(db, tenant.id)
+        listWorkstationGroups(db, tenant.id),
+        countEnrolledWorkstations(db, tenant.id)
       ]);
       const userRole = session.role === "super_admin"
         ? "super_admin"
@@ -3815,6 +3863,7 @@ export default {
           presets: broadcastPresets,
           staff,
           groups: workstationGroups,
+          enrolledWorkstations,
           activePage,
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
           userPermissions: userPerms,

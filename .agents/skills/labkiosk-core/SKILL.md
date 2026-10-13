@@ -176,6 +176,10 @@ reports.
 - The agent writes `/etc/labkiosk/config.json` (0600) with `workerUrl` and `targetUrl`. On an
   installed disk `/etc/labkiosk` is the `LABKIOSK_DATA` partition; on live media it is RAM, which is
   correct. `persistentStorage` / `persistent` report which.
+- The organization's `workstation_limit` caps how many workstations hold a valid token: past it the
+  Worker answers `403` with a sentence the wizard shows as is. A workstation that still holds a valid
+  token always enrols again (counted once), so a lowered limit strands nobody; the check and the
+  insert are one statement (`createDeviceToken()` returns null when full).
 - Worker URL: `https` only, except a local test server (loopback, container gateways, private IPv4
   `10/8`, `172.16/12`, `192.168/16`) — the same set as the Worker's `isDevHost()`.
 

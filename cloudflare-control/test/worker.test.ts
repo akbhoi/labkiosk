@@ -13,6 +13,7 @@ import {
   createUser,
   createTenant,
   findTenantBySubdomain,
+  countEnrolledWorkstations,
   useAuditQueue,
   writeAuditLog,
   insertAuditEntries,
@@ -267,7 +268,7 @@ async function registerApprovedOrganization(overrides: Record<string, unknown>):
   const admin = await superCookie();
   const task = await taskByReference(admin, data.reference);
   assert.equal((await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin })).status, 200);
-  const approved = await call(`/api/super/inbox/${task.id}/approve`, { ...json({ message: "" }), cookie: admin });
+  const approved = await call(`/api/super/inbox/${task.id}/approve`, { ...json({ message: "", workstationLimit: 45 }), cookie: admin });
   assert.equal(approved.status, 200);
   const body = signupBody(overrides);
   const login = await call("/api/auth/login", json({ email: body.email, password: body.password }));
@@ -578,8 +579,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(tooEarly.data.error, /phone/);
 
     assert.equal((await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin })).status, 200);
+    for (const workstationLimit of [undefined, 0, 2.5, "45", 100001]) {
+      const noLimit = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ workstationLimit }), cookie: admin });
+      assert.equal(noLimit.res.status, 400, `a workstation limit of ${workstationLimit} is refused`);
+      assert.match(noLimit.data.error, /workstation limit/);
+    }
     const approved = await callJson(`/api/super/inbox/${task.id}/approve`, {
-      ...json({ message: "Your first 45 workstations are covered by the evaluation license." }),
+      ...json({ message: "Your first 45 workstations are covered by the evaluation license.", workstationLimit: 45 }),
       cookie: admin
     });
     assert.equal(approved.res.status, 200);
@@ -2913,6 +2919,76 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(data.organizationName, "Greenwood Holdings");
     assert.match(data.deviceToken, /^[0-9a-f]{64}$/);
     deviceToken = data.deviceToken;
+  });
+
+  test("Only a super admin sets an organization's workstation limit, within 1 to 100000", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = (await findTenantBySubdomain(db, "greenwood"))!.id;
+    const anonymous = await call("/api/super/tenants/workstation-limit", json({ tenantId, limit: 500 }));
+    assert.ok(anonymous.status === 401 || anonymous.status === 403, "an anonymous caller is refused");
+    const asOrgAdmin = await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 500 }), cookie: orgSessionCookie });
+    assert.equal(asOrgAdmin.status, 403, "an organization cannot raise its own limit");
+    const admin = await superCookie();
+    for (const limit of [0, -1, 1.5, "10", 100001, null]) {
+      const bad = await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit }), cookie: admin });
+      assert.equal(bad.status, 400, `a limit of ${limit} is refused`);
+    }
+    const missing = await call("/api/super/tenants/workstation-limit", { ...json({ tenantId: "nope", limit: 5 }), cookie: admin });
+    assert.equal(missing.status, 404);
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.workstation_limit, 45, "nothing changed");
+  });
+
+  test("Enrolment stops at the workstation limit, but an enrolled workstation always gets back in", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = (await findTenantBySubdomain(db, "greenwood"))!.id;
+    const admin = await superCookie();
+    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    assert.ok(enrolled >= 1, "PC-01 is enrolled");
+
+    const lowered = await callJson("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: enrolled }), cookie: admin });
+    assert.equal(lowered.res.status, 200);
+    assert.equal(lowered.data.enrolled, enrolled);
+
+    const refused = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-OVER" }));
+    assert.equal(refused.res.status, 403, "one more workstation is refused");
+    assert.match(refused.data.error, new RegExp(`all ${enrolled} workstations`));
+    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "no token was issued");
+
+    const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-01" }));
+    assert.equal(again.res.status, 200, "a workstation that is already enrolled can enrol again");
+    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "and it still counts once");
+    const stale = await call("/api/telemetry?tenant=greenwood", { ...json({ clientId: "PC-01" }), bearer: deviceToken });
+    assert.equal(stale.status, 401, "its previous token is revoked");
+    deviceToken = again.data.deviceToken;
+
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    const entries = (logs.logs ?? logs) as any[];
+    assert.ok(entries.some((l) => l.action === "device.enroll_limit" && /client=PC-OVER/.test(l.details)));
+
+    const page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(page, new RegExp(`${enrolled} of ${enrolled}`), "the console shows the organization is full");
+
+    const restored = await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 45 }), cookie: admin });
+    assert.equal(restored.status, 200);
+    const superPage = await (await call("/super/organizations", { cookie: admin })).text();
+    assert.match(superPage, new RegExp(`${enrolled} of 45 enrolled`));
+  });
+
+  test("Two workstations enrolling at once cannot both take the last place", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = (await findTenantBySubdomain(db, "greenwood"))!.id;
+    const admin = await superCookie();
+    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: enrolled + 1 }), cookie: admin });
+    const results = await Promise.all(
+      ["PC-RACE-A", "PC-RACE-B", "PC-RACE-C"].map((clientId) => call("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId })))
+    );
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 403, 403]);
+    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled + 1);
+    for (const clientId of ["PC-RACE-A", "PC-RACE-B", "PC-RACE-C"]) {
+      await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
+    }
+    await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 45 }), cookie: admin });
   });
 
   // ------------------------------------------------------------- telemetry
@@ -7360,7 +7436,29 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0017"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0018"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0019"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0032"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
+  });
+
+  test("0032 gives every organization a workstation limit of 45, or what it already has when that is more", () => {
+    const db = migratedDb("0032");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('small', 'u1', 'Small', 'small', 'active', 1, 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('big', 'u1', 'Big', 'big', 'active', 1, 1);
+    `);
+    const token = db.prepare("INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at, revoked) VALUES (?, ?, ?, ?, 1, 1, ?)");
+    for (let i = 0; i < 60; i++) token.run(`b${i}`, `hb${i}`, "big", `PC-${i}`, 0);
+    token.run("b-again", "hb-again", "big", "PC-0", 0);
+    for (let i = 0; i < 10; i++) token.run(`r${i}`, `hr${i}`, "big", `GONE-${i}`, 1);
+    for (let i = 0; i < 3; i++) token.run(`s${i}`, `hs${i}`, "small", `PC-${i}`, 0);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0032_workstation_limit.sql"), "utf8"));
+    db.exec("COMMIT;");
+    const limit = (id: string) => (db.prepare("SELECT workstation_limit AS n FROM tenants WHERE id = ?").get(id) as { n: number }).n;
+    assert.equal(limit("small"), 45);
+    assert.equal(limit("big"), 60, "counted by workstation, valid tokens only");
+    assert.throws(() => db.exec("UPDATE tenants SET workstation_limit = 0 WHERE id = 'small'"), /CHECK/);
   });
 
   test("0019 drops the tunnel columns and keeps every organization, workstation and session", () => {

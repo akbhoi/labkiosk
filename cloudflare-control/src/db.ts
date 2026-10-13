@@ -82,7 +82,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   security_updates TEXT NOT NULL DEFAULT 'next_boot'
   CHECK (security_updates IN ('next_boot', 'approval')),
   lan_sharing INTEGER NOT NULL DEFAULT 0
-  CHECK (lan_sharing IN (0, 1))
+  CHECK (lan_sharing IN (0, 1)),
+  workstation_limit INTEGER NOT NULL DEFAULT 45
+  CHECK (workstation_limit BETWEEN 1 AND 100000)
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -593,6 +595,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT lan_sharing FROM tenants LIMIT 1").run();
     // 0031: the log of a boot that ended without shutting down.
     await db.prepare("SELECT log_text FROM workstation_issues LIMIT 1").run();
+    // 0032: how many workstations an organization may enrol.
+    await db.prepare("SELECT workstation_limit FROM tenants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -916,7 +920,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "homepage_headline",
   "homepage_intro",
   "homepage_blocks",
-  "remote_control_status"
+  "remote_control_status",
+  "workstation_limit"
 ]);
 
 /** How many blocks an organization may publish, and how long each part may be. */
@@ -1265,17 +1270,18 @@ export async function getTenantUserPermissions(
 
 export async function listAllTenants(
   db: D1Database
-): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>> {
+): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number; enrolled_clients: number }>> {
   const res = await db
     .prepare(
       `SELECT t.*, u.email as admin_email, u.name as admin_name,
               t.online_workstations as online_clients,
-              (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id) as total_clients
+              (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id) as total_clients,
+              (SELECT COUNT(DISTINCT dt.client_id) FROM device_tokens dt WHERE dt.tenant_id = t.id AND dt.revoked = 0) as enrolled_clients
        FROM tenants t
        JOIN users u ON t.user_id = u.id
        ORDER BY t.created_at DESC`
     )
-    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>();
+    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number; enrolled_clients: number }>();
 
   return res.results || [];
 }
@@ -1631,23 +1637,51 @@ export async function assignClientsToGroup(
  * against the telemetry API. Re-enrolling a client id revokes the tokens
  * previously issued to that same workstation.
  */
+/** Workstations a new organization may enrol: the most the LabKiosk Software License allows without a paid licence. */
+export const DEFAULT_WORKSTATION_LIMIT = 45;
+/** The highest limit a super admin can set; tenants.workstation_limit CHECKs the same. */
+export const MAX_WORKSTATION_LIMIT = 100000;
+
+/** Workstations of an organization holding a valid device token. */
+export async function countEnrolledWorkstations(db: D1Database, tenantId: string): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(DISTINCT client_id) AS n FROM device_tokens WHERE tenant_id = ? AND revoked = 0")
+    .bind(tenantId)
+    .first<{ n: number }>();
+  return Number(row?.n) || 0;
+}
+
+/**
+ * Issue a device token, or null when the organization has reached its
+ * workstation limit. A workstation that still holds a valid token is always
+ * let back in, so lowering the limit never strands one already enrolled.
+ * The limit check and the insert are one statement: two workstations enrolling
+ * at once cannot both take the last place.
+ */
 export async function createDeviceToken(
   db: D1Database,
   data: { tenantId: string; clientId: string }
-): Promise<{ token: string; device: DeviceToken }> {
+): Promise<{ token: string; device: DeviceToken } | null> {
   const token = generateDeviceToken();
   const tokenHash = await sha256Hex(token);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
 
-  await revokeDeviceTokensForClient(db, data.tenantId, data.clientId);
-
-  await db
+  const inserted = await db
     .prepare(
       `INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at, revoked)
-       VALUES (?, ?, ?, ?, ?, ?, 0)`
+       SELECT ?, ?, ?, ?, ?, ?, 0
+       WHERE EXISTS (SELECT 1 FROM device_tokens WHERE tenant_id = ? AND client_id = ? AND revoked = 0)
+          OR (SELECT COUNT(DISTINCT client_id) FROM device_tokens WHERE tenant_id = ? AND revoked = 0)
+             < (SELECT workstation_limit FROM tenants WHERE id = ?)`
     )
-    .bind(id, tokenHash, data.tenantId, data.clientId, now, now)
+    .bind(id, tokenHash, data.tenantId, data.clientId, now, now, data.tenantId, data.clientId, data.tenantId, data.tenantId)
+    .run();
+  if (Number(inserted.meta?.changes ?? 0) === 0) return null;
+
+  await db
+    .prepare("UPDATE device_tokens SET revoked = 1 WHERE tenant_id = ? AND client_id = ? AND id != ?")
+    .bind(data.tenantId, data.clientId, id)
     .run();
 
   return {

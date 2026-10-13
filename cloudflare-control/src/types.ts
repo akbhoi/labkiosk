@@ -81,6 +81,8 @@ export interface Tenant {
   security_updates?: SecurityUpdateMode;
   /** 1 when its workstations at one site share a new system image over the LAN (phase 5). */
   lan_sharing?: number;
+  /** Workstations the organization may enrol (0032). */
+  workstation_limit?: number;
 }
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */

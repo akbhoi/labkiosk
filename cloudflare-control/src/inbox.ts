@@ -20,7 +20,7 @@
 
 import { Env } from "./types";
 import { jsonError, requireSuperAdmin } from "./guard";
-import { findTenantById, findUserById, updateTenant, writeAuditLog } from "./db";
+import { DEFAULT_WORKSTATION_LIMIT, findTenantById, findUserById, MAX_WORKSTATION_LIMIT, updateTenant, writeAuditLog } from "./db";
 import { notifyConfigChanged } from "./hub";
 import {
   addConversationMessage,
@@ -71,13 +71,16 @@ function json(data: unknown, headers: Record<string, string>, status = 200): Res
   return new Response(JSON.stringify(data), { status, headers });
 }
 
-async function readMessage(request: Request): Promise<{ message: string; close: boolean; status: string } | null> {
+async function readMessage(
+  request: Request
+): Promise<{ message: string; close: boolean; status: string; workstationLimit: unknown } | null> {
   try {
-    const body = await request.json<{ message?: unknown; close?: unknown; status?: unknown }>();
+    const body = await request.json<{ message?: unknown; close?: unknown; status?: unknown; workstationLimit?: unknown }>();
     return {
       message: String(body?.message ?? "").replace(/\r\n/g, "\n").trim().slice(0, MAX_MESSAGE_CHARS),
       close: body?.close === true,
-      status: String(body?.status ?? "")
+      status: String(body?.status ?? ""),
+      workstationLimit: body?.workstationLimit
     };
   } catch {
     return null;
@@ -413,10 +416,14 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
     if (tenant.status !== "pending") return jsonError("This organization is not waiting for approval", 409, jsonHeaders);
     if (!profile?.email_verified_at) return jsonError("The email address has not been verified", 409, jsonHeaders);
     if (!profile.phone_verified_at) return jsonError("Verify the phone number before approving", 409, jsonHeaders);
-    await updateTenant(db, tenant.id, { status: "active" });
+    const limit = input.workstationLimit;
+    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > MAX_WORKSTATION_LIMIT) {
+      return jsonError(`Set the workstation limit: a whole number from 1 to ${MAX_WORKSTATION_LIMIT}`, 400, jsonHeaders);
+    }
+    await updateTenant(db, tenant.id, { status: "active", workstation_limit: limit });
     await setConversationStatus(db, id, "approved", userId);
     await addConversationMessage(db, { conversationId: id, direction: "event", body: "Registration approved.", authorUserId: userId });
-    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.approve", details: `subdomain=${tenant.subdomain}` });
+    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.approve", details: `subdomain=${tenant.subdomain} workstation_limit=${limit}` });
     await notifyConfigChanged(env, tenant.id);
     const sent = await sendOnConversation(
       env,
