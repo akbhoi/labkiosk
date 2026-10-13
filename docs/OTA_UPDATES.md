@@ -644,6 +644,25 @@ been run; the unit tests cover a corrupted or foreign peer, an unreachable one a
 
 ---
 
+### 5.13 Release lines and major releases
+
+**Lines** (`release_lines`, migration 0034). A super admin sets each line (2.8 for 2.8.x)
+`supported`, `security_only` or `end_of_life`, and may announce an end-of-life date that takes
+effect by itself. `offeredReleases()` marks each release with its line's status now;
+`eligibleReleases()` then drops, for one workstation, every release of an end-of-life line, and on
+a security-only line every release but the security releases of the line the workstation already
+runs. A workstation on an end-of-life line is offered the newest supported release.
+
+**Majors** (`release_majors`, `major_upgrade_grants`). A major with no row is offered as before.
+`syncReleases()` adds a closed row for the first release of a major above every recorded one. A
+release of a closed major is `gated` for an organization until the major is open or granted to it
+and one of its staff with the `updates` permission confirmed it; a gated release reaches only a
+workstation already on that major or above. An updater that does not send `running` is offered only
+what any workstation may take, so a 2.9.0 updater is never moved to a gated major.
+
+The Worker still only chooses what to offer: the workstation checks the signature and security floor
+of whatever it is offered, as before.
+
 ## 6. Relationship to Android A/B updates
 
 | Android | Lab Kiosk equivalent |

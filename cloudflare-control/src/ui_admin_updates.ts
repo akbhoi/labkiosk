@@ -10,6 +10,11 @@
  * same release rebuilt with patched Debian packages) installs at the
  * workstation's next start unless the organization approves those too.
  *
+ * Lines the workstations run that the platform has put on security fixes only
+ * or given an end-of-life date are warned about here, and a new major release
+ * the platform opened or granted the organization waits for an administrator
+ * to confirm it before any workstation is moved to it.
+ *
  * Sharing on the local network (phase 5, off by default) lets the workstations
  * at one site copy a release from each other instead of each downloading it.
  */
@@ -24,6 +29,8 @@ export function renderUpdatesPaneHtml(): string {
         <h2 class="card-title">System updates</h2>
         <p class="card-sub">Workstations installed on a disk download the release offered here in the background, check its signature, and wait. Install it from Workstations → Updates. A workstation started from a USB stick is updated by re-flashing it.</p>
         <div class="callout hidden" id="update-pending" role="status"></div>
+        <div class="callout callout-warning hidden" id="update-lines" role="status"></div>
+        <div class="hidden" id="update-majors"></div>
         <form id="form-update-channel">
           <div class="form-group">
             <label class="form-label" for="update-channel">Update channel</label>
@@ -64,7 +71,97 @@ export function renderUpdatesScript(nonce: string): string {
         const offer = document.getElementById("update-offer");
         const pending = document.getElementById("update-pending");
         const lanSharing = document.getElementById("lan-sharing");
-        if (!form || !select || !security || !offer || !pending || !lanSharing) return;
+        const linesBox = document.getElementById("update-lines");
+        const majorsBox = document.getElementById("update-majors");
+        if (!form || !select || !security || !offer || !pending || !lanSharing || !linesBox || !majorsBox) return;
+
+        function day(seconds) {
+          return new Date(seconds * 1000).toISOString().slice(0, 10);
+        }
+
+        // Lines its workstations run that are security-only, end of life, or have an end-of-life date.
+        function showLines(list) {
+          const body = document.createElement("div");
+          linesBox.replaceChildren(body);
+          const items = Array.isArray(list) ? list : [];
+          for (const item of items) {
+            const count = Number(item.workstations) || 0;
+            const who = count + (count === 1 ? " workstation runs " : " workstations run ") + "Lab Kiosk " + item.line;
+            const line = document.createElement("div");
+            line.textContent =
+              item.status === "end_of_life"
+                ? who + ", which has reached end of life: it receives no more updates, security fixes included. Install the newest release."
+                : item.status === "security_only"
+                ? who + ", which now receives security fixes only" + (item.endOfLifeAt ? " until " + day(item.endOfLifeAt) : "") + "."
+                : who + ", which reaches end of life on " + day(item.endOfLifeAt) + ". Install the newest release before then.";
+            body.append(line);
+            if (item.note) {
+              const note = document.createElement("div");
+              note.textContent = item.note;
+              body.append(note);
+            }
+          }
+          linesBox.classList.toggle("hidden", !items.length);
+        }
+
+        // New major releases: closed, waiting for this organization's confirmation, or confirmed.
+        function showMajors(list) {
+          majorsBox.replaceChildren();
+          const items = Array.isArray(list) ? list : [];
+          for (const item of items) {
+            const box = document.createElement("div");
+            box.className = "callout mt-sm";
+            const body = document.createElement("div");
+            const title = document.createElement("strong");
+            title.textContent = "Lab Kiosk " + item.major + " (" + item.newest + ")";
+            const text = document.createElement("div");
+            body.append(title, text);
+            if (item.access === "closed") {
+              text.textContent = "A new major release. It is not available to your organization yet; ask Lab Kiosk support if you would like it.";
+            } else if (item.access === "confirmed") {
+              text.textContent = "Confirmed " + (item.confirmedAt ? day(item.confirmedAt) : "") + ": your workstations are offered it, and you install it from Workstations → Updates.";
+            } else {
+              text.textContent = "A new major release is available to your organization. It can change how workstations look and behave, so none is moved to it until you confirm. After you confirm, you still choose when each workstation installs it.";
+              const confirm = document.createElement("button");
+              confirm.type = "button";
+              confirm.className = "btn btn-primary btn-sm mt-sm";
+              confirm.textContent = "Confirm upgrade to " + item.major + ".x";
+              confirm.dataset.confirmMajor = String(item.major);
+              body.append(confirm);
+            }
+            box.append(body);
+            majorsBox.append(box);
+          }
+          majorsBox.classList.toggle("hidden", !items.length);
+        }
+
+        majorsBox.addEventListener("click", async (event) => {
+          const b = event.target && event.target.closest ? event.target.closest("[data-confirm-major]") : null;
+          if (!b) return;
+          const major = Number(b.dataset.confirmMajor);
+          const ok = await lkConfirm({
+            title: "Confirm Lab Kiosk " + major + "?",
+            message: "Your workstations will be offered Lab Kiosk " + major + ". Each one downloads it in the background and installs it only when you choose, from Workstations → Updates. This is recorded with your name.",
+            confirmLabel: "Confirm"
+          });
+          if (!ok) return;
+          try {
+            const res = await fetch(labkioskApi("/api/settings/updates/confirm-major"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ major })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              lkToast(data.error || "The upgrade could not be confirmed", "error");
+              return;
+            }
+            lkToast("Lab Kiosk " + major + " confirmed.", "success");
+            load();
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
 
         // Security fixes some workstations do not run yet; a warning once one has waited too long.
         function showPending(list, mode) {
@@ -103,6 +200,8 @@ export function renderUpdatesScript(nonce: string): string {
             ? "Offered now: " + o.version + (o.kind === "security" ? " (security update)" : "") + ", " + Math.round((Number(o.sizeBytes) || 0) / 1048576) + " MB."
             : "No release is offered on this channel yet.";
           showPending(data.pending, security.value);
+          showLines(data.lines);
+          showMajors(data.majors);
         }
 
         async function load() {

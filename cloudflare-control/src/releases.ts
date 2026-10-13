@@ -13,6 +13,13 @@
  * organization's `security_updates` setting says whether it installs that at
  * its next boot by itself or waits for an administrator.
  *
+ * The platform also keeps a support status per line (release_lines) and
+ * decides which major releases a workstation may be moved to
+ * (release_majors, major_upgrade_grants): an end-of-life line is offered
+ * nothing, a security-only line only its security releases and only to the
+ * workstations already on it, and a closed major only to an organization it
+ * was opened or granted to and whose administrator confirmed it.
+ *
  * Nothing here decides whether an image is safe to boot: a workstation checks
  * the manifest's signature with the keys baked into its own image, refuses a
  * release below its security floor, and checks every chunk it downloads. The
@@ -100,6 +107,36 @@ export interface ReleaseOffer {
   sizeBytes: number;
   /** Unix seconds: when a super admin put it in its channel. */
   classifiedAt: number;
+  /** The support status of its line now; absent means supported. */
+  lineStatus?: LineStatus;
+  /** Its major is closed to this organization: only a workstation already on that major or above takes it. */
+  gated?: boolean;
+}
+
+export const LINE_STATUSES = ["supported", "security_only", "end_of_life"] as const;
+export type LineStatus = (typeof LINE_STATUSES)[number];
+/** A line as release_lines names it: "2.8". */
+export const RELEASE_LINE_PATTERN = /^[0-9]{1,4}\.[0-9]{1,4}$/;
+export const MAX_RELEASE_MAJOR = 9999;
+
+export function isLineStatus(value: unknown): value is LineStatus {
+  return typeof value === "string" && (LINE_STATUSES as readonly string[]).includes(value);
+}
+
+export interface ReleaseLineRow {
+  line: string;
+  status: LineStatus;
+  end_of_life_at: number | null;
+  note: string | null;
+  updated_at: number;
+  updated_by: string | null;
+}
+
+/** A line's status now: an announced end-of-life date that has passed ends it. */
+export function effectiveLineStatus(row: Pick<ReleaseLineRow, "status" | "end_of_life_at"> | undefined, now: number): LineStatus {
+  if (!row) return "supported";
+  if (row.end_of_life_at && row.end_of_life_at <= now) return "end_of_life";
+  return isLineStatus(row.status) ? row.status : "supported";
 }
 
 /** What one workstation should fetch: a security release for its line, and the newest release. */
@@ -173,6 +210,137 @@ export function isSecurityUpdateMode(value: unknown): value is SecurityUpdateMod
 export function releaseLine(version: string): string {
   const core = versionKey(version).core;
   return `${core[0]}.${core[1]}`;
+}
+
+/** The major release a version belongs to: 2 for 2.8.1. */
+export function releaseMajor(version: string): number {
+  return versionKey(version).core[0];
+}
+
+/** Every line's recorded status, by line. */
+export async function listReleaseLines(db: D1Database): Promise<Map<string, ReleaseLineRow>> {
+  const res = await db.prepare("SELECT * FROM release_lines").all<ReleaseLineRow>();
+  return new Map((res.results || []).map((row) => [row.line, row]));
+}
+
+/** Record a line's status, end-of-life date and note. */
+export async function setReleaseLine(
+  db: D1Database,
+  line: string,
+  status: LineStatus,
+  endOfLifeAt: number | null,
+  note: string | null,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  if (!RELEASE_LINE_PATTERN.test(line)) throw new Error(`${JSON.stringify(line)} is not a release line`);
+  await db
+    .prepare(
+      `INSERT INTO release_lines (line, status, end_of_life_at, note, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(line) DO UPDATE SET status = excluded.status, end_of_life_at = excluded.end_of_life_at,
+         note = excluded.note, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+    )
+    .bind(line, status, endOfLifeAt, note, now, userId)
+    .run();
+}
+
+/**
+ * Whether each major is open: true open to every organization, false closed;
+ * a major with no row is not listed and is free -- offered with no grant and
+ * no confirmation, as every major was before release_majors existed.
+ */
+export async function listReleaseMajors(db: D1Database): Promise<Map<number, boolean>> {
+  const res = await db.prepare("SELECT major, open FROM release_majors").all<{ major: number; open: number }>();
+  return new Map((res.results || []).map((row) => [Number(row.major), Number(row.open) === 1]));
+}
+
+export async function setReleaseMajorOpen(
+  db: D1Database,
+  major: number,
+  open: boolean,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO release_majors (major, open, updated_at, updated_by) VALUES (?, ?, ?, ?)
+       ON CONFLICT(major) DO UPDATE SET open = excluded.open, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+    )
+    .bind(major, open ? 1 : 0, now, userId)
+    .run();
+}
+
+export interface MajorGrantRow {
+  tenant_id: string;
+  major: number;
+  granted_by: string | null;
+  granted_at: number | null;
+  confirmed_by: string | null;
+  confirmed_at: number | null;
+}
+
+/** One organization's major upgrade grants and confirmations, by major. */
+export async function listMajorGrants(db: D1Database, tenantId: string): Promise<Map<number, MajorGrantRow>> {
+  const res = await db.prepare("SELECT * FROM major_upgrade_grants WHERE tenant_id = ?").bind(tenantId).all<MajorGrantRow>();
+  return new Map((res.results || []).map((row) => [Number(row.major), row]));
+}
+
+/** Every organization's grants and confirmations, for the platform's Releases page. */
+export async function listAllMajorGrants(db: D1Database): Promise<MajorGrantRow[]> {
+  return (await db.prepare("SELECT * FROM major_upgrade_grants ORDER BY major, tenant_id").all<MajorGrantRow>()).results || [];
+}
+
+/** Grant one organization a closed major, or take the grant back (and with it, its confirmation). */
+export async function setMajorGrant(
+  db: D1Database,
+  tenantId: string,
+  major: number,
+  granted: boolean,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  if (granted) {
+    await db
+      .prepare(
+        `INSERT INTO major_upgrade_grants (tenant_id, major, granted_by, granted_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(tenant_id, major) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at`
+      )
+      .bind(tenantId, major, userId, now)
+      .run();
+  } else {
+    await db.prepare("DELETE FROM major_upgrade_grants WHERE tenant_id = ? AND major = ?").bind(tenantId, major).run();
+  }
+}
+
+/** An organization administrator's confirmation that its workstations may move to a major. */
+export async function confirmMajor(
+  db: D1Database,
+  tenantId: string,
+  major: number,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO major_upgrade_grants (tenant_id, major, confirmed_by, confirmed_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(tenant_id, major) DO UPDATE SET confirmed_by = excluded.confirmed_by, confirmed_at = excluded.confirmed_at`
+    )
+    .bind(tenantId, major, userId, now)
+    .run();
+}
+
+/** Where one organization stands with one major. */
+export type MajorAccess = "free" | "closed" | "available" | "confirmed";
+
+/**
+ * free: no row, offered as before. closed: neither open nor granted to it.
+ * available: open or granted, waiting for its administrator to confirm.
+ * confirmed: its workstations may be moved to it.
+ */
+export function majorAccess(open: boolean | undefined, grant: MajorGrantRow | undefined): MajorAccess {
+  if (open === undefined) return "free";
+  if (!open && !grant?.granted_at) return "closed";
+  return grant?.confirmed_at ? "confirmed" : "available";
 }
 
 /**
@@ -279,6 +447,8 @@ export async function syncReleases(bucket: R2Bucket, db: D1Database, now = Math.
   } while (cursor);
 
   const result: SyncResult = { added: [], problems: [] };
+  const majors = new Set([...known].filter(isReleaseVersion).map(releaseMajor));
+  folders.sort(compareVersions);
   for (const version of folders.slice(0, MAX_NEW_PER_SYNC)) {
     try {
       const object = await bucket.get(`${RELEASE_PREFIX}${version}/manifest.json`);
@@ -295,6 +465,16 @@ export async function syncReleases(bucket: R2Bucket, db: D1Database, now = Math.
         )
         .bind(version, parsed.kind, parsed.baseVersion, parsed.securityFloor, parsed.sizeBytes, parsed.builtAt, text, now)
         .run();
+      // The first release of a major above every one recorded starts closed:
+      // no workstation is moved to it until a super admin opens or grants it.
+      const major = releaseMajor(version);
+      if (majors.size && major > Math.max(...majors)) {
+        await db
+          .prepare("INSERT OR IGNORE INTO release_majors (major, open, updated_at, updated_by) VALUES (?, 0, ?, NULL)")
+          .bind(major, now)
+          .run();
+      }
+      majors.add(major);
       result.added.push(version);
     } catch (err) {
       result.problems.push({ version, problem: err instanceof Error ? err.message : String(err) });
@@ -327,9 +507,24 @@ export async function revokeRelease(db: D1Database, version: string, now = Math.
   return Number(res.meta?.changes ?? 0) > 0;
 }
 
-/** Every unrevoked release an organization on this channel is offered, newest first. */
-export async function offeredReleases(db: D1Database, channel: UpdateChannel | null | undefined): Promise<ReleaseOffer[]> {
+/**
+ * Every unrevoked release of this channel, newest first, each marked with its
+ * line's status now and whether its major is closed to the organization
+ * (`tenantId`; null for none). Which of them one workstation may take is
+ * eligibleReleases().
+ */
+export async function offeredReleases(
+  db: D1Database,
+  channel: UpdateChannel | null | undefined,
+  tenantId: string | null,
+  now = Math.floor(Date.now() / 1000)
+): Promise<ReleaseOffer[]> {
   const channels = channel === "beta" ? ["stable", "beta"] : ["stable"];
+  const [lines, majors, grants] = await Promise.all([
+    listReleaseLines(db),
+    listReleaseMajors(db),
+    tenantId ? listMajorGrants(db, tenantId) : Promise.resolve(new Map<number, MajorGrantRow>())
+  ]);
   const res = await db
     .prepare(
       `SELECT version, kind, size_bytes, classified_at FROM releases
@@ -339,18 +534,53 @@ export async function offeredReleases(db: D1Database, channel: UpdateChannel | n
     .all<{ version: string; kind: ReleaseKind; size_bytes: number; classified_at: number | null }>();
   return (res.results || [])
     .filter((row) => isReleaseVersion(row.version))
-    .map((row) => ({
-      version: row.version,
-      kind: row.kind,
-      sizeBytes: Number(row.size_bytes) || 0,
-      classifiedAt: Number(row.classified_at) || 0
-    }))
+    .map((row): ReleaseOffer => {
+      const major = releaseMajor(row.version);
+      const access = majorAccess(majors.get(major), grants.get(major));
+      const lineStatus = effectiveLineStatus(lines.get(releaseLine(row.version)), now);
+      return {
+        version: row.version,
+        kind: row.kind,
+        sizeBytes: Number(row.size_bytes) || 0,
+        classifiedAt: Number(row.classified_at) || 0,
+        ...(lineStatus !== "supported" ? { lineStatus } : {}),
+        ...(access === "closed" || access === "available" ? { gated: true } : {})
+      };
+    })
     .sort((a, b) => compareVersions(b.version, a.version));
 }
 
-/** The newest unrevoked release an organization on this channel is offered, or null. */
-export async function offeredRelease(db: D1Database, channel: UpdateChannel | null | undefined): Promise<ReleaseOffer | null> {
-  return (await offeredReleases(db, channel))[0] ?? null;
+/**
+ * The releases a workstation running `running` may be moved to, newest first:
+ * nothing on an end-of-life line; on a security-only line, only its security
+ * releases and only for a workstation already on that line; and nothing of a
+ * major closed to its organization above the major it runs. An unknown image
+ * (an updater from before phase 4 does not say) is treated as on no line.
+ */
+export function eligibleReleases(releases: readonly ReleaseOffer[], running: string | null | undefined): ReleaseOffer[] {
+  const known = isReleaseVersion(running);
+  const line = known ? releaseLine(running) : null;
+  const major = known ? releaseMajor(running) : -1;
+  return releases.filter((r) => {
+    if (r.lineStatus === "end_of_life") return false;
+    if (r.lineStatus === "security_only" && (r.kind !== "security" || releaseLine(r.version) !== line)) return false;
+    if (r.gated && releaseMajor(r.version) > major) return false;
+    return true;
+  });
+}
+
+/** The newest release an organization offers a workstation that does not say what it runs, or null. */
+export function newestOffered(releases: readonly ReleaseOffer[]): ReleaseOffer | null {
+  return eligibleReleases(releases, null)[0] ?? null;
+}
+
+/** The newest unrevoked release an organization on this channel offers any workstation, or null. */
+export async function offeredRelease(
+  db: D1Database,
+  channel: UpdateChannel | null | undefined,
+  tenantId: string
+): Promise<ReleaseOffer | null> {
+  return newestOffered(await offeredReleases(db, channel, tenantId));
 }
 
 /**
@@ -361,7 +591,7 @@ export function securityReleaseFor(releases: readonly ReleaseOffer[], running: s
   if (!isReleaseVersion(running)) return null;
   const line = releaseLine(running);
   return (
-    releases.find(
+    eligibleReleases(releases, running).find(
       (r) => r.kind === "security" && releaseLine(r.version) === line && compareVersions(r.version, running) > 0
     ) ?? null
   );
@@ -369,7 +599,7 @@ export function securityReleaseFor(releases: readonly ReleaseOffer[], running: s
 
 /** What a workstation running `running` is offered. */
 export function workstationOffer(releases: readonly ReleaseOffer[], running: string | null | undefined): WorkstationOffer {
-  return { release: releases[0] ?? null, security: securityReleaseFor(releases, running) };
+  return { release: eligibleReleases(releases, running)[0] ?? null, security: securityReleaseFor(releases, running) };
 }
 
 /**
@@ -478,4 +708,157 @@ export function sameUpdateReport(a: UpdateReport | undefined, b: UpdateReport | 
     a.kind === b.kind &&
     a.since === b.since
   );
+}
+
+/** A line some of an organization's workstations run that is not plainly supported. */
+export interface LineNotice {
+  line: string;
+  status: LineStatus;
+  /** Unix seconds: the announced end-of-life date, if any. */
+  endOfLifeAt: number | null;
+  note: string | null;
+  workstations: number;
+}
+
+/** A major above what an organization's workstations run, and where the organization stands with it. */
+export interface MajorNotice {
+  major: number;
+  access: Exclude<MajorAccess, "free">;
+  /** The newest release of that major its channel offers. */
+  newest: string;
+  confirmedAt: number | null;
+}
+
+/**
+ * What an organization's Updates settings warn about: the lines its
+ * workstations run that are security-only, end of life or have an end-of-life
+ * date, and the closed majors above the lowest one they run (every closed major
+ * when none reports its image).
+ */
+export async function organizationReleaseNotices(
+  db: D1Database,
+  tenantId: string,
+  releases: readonly ReleaseOffer[],
+  devices: ReadonlyArray<{ image_version?: string | null }>,
+  now = Math.floor(Date.now() / 1000)
+): Promise<{ lines: LineNotice[]; majors: MajorNotice[] }> {
+  const [rows, majors, grants] = await Promise.all([listReleaseLines(db), listReleaseMajors(db), listMajorGrants(db, tenantId)]);
+  const perLine = new Map<string, number>();
+  let lowestMajor = Infinity;
+  for (const device of devices) {
+    if (!isReleaseVersion(device.image_version)) continue;
+    const line = releaseLine(device.image_version);
+    perLine.set(line, (perLine.get(line) ?? 0) + 1);
+    lowestMajor = Math.min(lowestMajor, releaseMajor(device.image_version));
+  }
+  const lines: LineNotice[] = [];
+  for (const [line, workstations] of perLine) {
+    const row = rows.get(line);
+    const status = effectiveLineStatus(row, now);
+    if (status === "supported" && !row?.end_of_life_at) continue;
+    lines.push({ line, status, endOfLifeAt: row?.end_of_life_at ?? null, note: row?.note ?? null, workstations });
+  }
+  lines.sort((a, b) => compareVersions(`${a.line}.0`, `${b.line}.0`));
+  const notices: MajorNotice[] = [];
+  for (const release of releases) {
+    const major = releaseMajor(release.version);
+    if (Number.isFinite(lowestMajor) && major <= lowestMajor) continue;
+    if (notices.some((n) => n.major === major)) continue;
+    const access = majorAccess(majors.get(major), grants.get(major));
+    if (access === "free") continue;
+    if (release.lineStatus === "end_of_life" || release.lineStatus === "security_only") continue;
+    notices.push({ major, access, newest: release.version, confirmedAt: grants.get(major)?.confirmed_at ?? null });
+  }
+  return { lines, majors: notices };
+}
+
+/** How many workstations each organization and line has, across the platform, from the registry. */
+export async function workstationsPerLine(db: D1Database): Promise<Array<{ tenantId: string; line: string; workstations: number }>> {
+  const res = await db
+    .prepare("SELECT tenant_id, image_version, COUNT(*) AS n FROM client_devices WHERE image_version IS NOT NULL GROUP BY tenant_id, image_version")
+    .all<{ tenant_id: string; image_version: string; n: number }>();
+  const counts = new Map<string, { tenantId: string; line: string; workstations: number }>();
+  for (const row of res.results || []) {
+    if (!isReleaseVersion(row.image_version)) continue;
+    const line = releaseLine(row.image_version);
+    const key = `${row.tenant_id}\n${line}`;
+    const entry = counts.get(key) ?? { tenantId: row.tenant_id, line, workstations: 0 };
+    entry.workstations += Number(row.n) || 0;
+    counts.set(key, entry);
+  }
+  return [...counts.values()];
+}
+
+/** One line as the platform's Releases page shows it. */
+export interface PlatformLine {
+  line: string;
+  /** What a super admin set. */
+  status: LineStatus;
+  /** What applies now, once an announced end-of-life date has passed. */
+  effectiveStatus: LineStatus;
+  endOfLifeAt: number | null;
+  note: string | null;
+  workstations: number;
+  organizations: number;
+}
+
+/** One major as the platform's Releases page shows it. */
+export interface PlatformMajor {
+  major: number;
+  state: "free" | "open" | "closed";
+  grants: Array<{ tenantId: string; name: string; grantedAt: number | null; confirmedAt: number | null }>;
+}
+
+/** Every line and major the platform has releases or settings for, newest first. */
+export async function platformReleasePolicy(
+  db: D1Database,
+  releases: readonly ReleaseSummary[],
+  tenantNames: ReadonlyMap<string, string>,
+  now = Math.floor(Date.now() / 1000)
+): Promise<{ lines: PlatformLine[]; majors: PlatformMajor[] }> {
+  const [rows, majors, grants, usage] = await Promise.all([
+    listReleaseLines(db),
+    listReleaseMajors(db),
+    listAllMajorGrants(db),
+    workstationsPerLine(db)
+  ]);
+  const lineNames = new Set<string>([...rows.keys()].filter((l) => RELEASE_LINE_PATTERN.test(l)));
+  const majorNumbers = new Set<number>(majors.keys());
+  for (const r of releases) {
+    lineNames.add(releaseLine(r.version));
+    majorNumbers.add(releaseMajor(r.version));
+  }
+  const lines = [...lineNames]
+    .map((line): PlatformLine => {
+      const row = rows.get(line);
+      const using = usage.filter((u) => u.line === line);
+      return {
+        line,
+        status: row && isLineStatus(row.status) ? row.status : "supported",
+        effectiveStatus: effectiveLineStatus(row, now),
+        endOfLifeAt: row?.end_of_life_at ?? null,
+        note: row?.note ?? null,
+        workstations: using.reduce((sum, u) => sum + u.workstations, 0),
+        organizations: using.length
+      };
+    })
+    .sort((a, b) => compareVersions(`${b.line}.0`, `${a.line}.0`));
+  const majorList = [...majorNumbers]
+    .sort((a, b) => b - a)
+    .map((major): PlatformMajor => {
+      const open = majors.get(major);
+      return {
+        major,
+        state: open === undefined ? "free" : open ? "open" : "closed",
+        grants: grants
+          .filter((g) => Number(g.major) === major)
+          .map((g) => ({
+            tenantId: g.tenant_id,
+            name: tenantNames.get(g.tenant_id) ?? g.tenant_id,
+            grantedAt: g.granted_at ?? null,
+            confirmedAt: g.confirmed_at ?? null
+          }))
+      };
+    });
+  return { lines, majors: majorList };
 }

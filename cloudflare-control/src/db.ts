@@ -199,6 +199,32 @@ CREATE TABLE IF NOT EXISTS releases (
 
 CREATE INDEX IF NOT EXISTS idx_releases_channel ON releases(channel);
 
+CREATE TABLE IF NOT EXISTS release_lines (
+  line TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'supported' CHECK (status IN ('supported', 'security_only', 'end_of_life')),
+  end_of_life_at INTEGER,
+  note TEXT,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS release_majors (
+  major INTEGER PRIMARY KEY CHECK (major BETWEEN 0 AND 9999),
+  open INTEGER NOT NULL DEFAULT 0 CHECK (open IN (0, 1)),
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS major_upgrade_grants (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  major INTEGER NOT NULL CHECK (major BETWEEN 0 AND 9999),
+  granted_by TEXT,
+  granted_at INTEGER,
+  confirmed_by TEXT,
+  confirmed_at INTEGER,
+  PRIMARY KEY (tenant_id, major)
+);
+
 CREATE TABLE IF NOT EXISTS bug_reports (
   signature TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -602,6 +628,10 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT workstation_limit FROM tenants LIMIT 1").run();
     // 0033: Remote Control seats and revocation.
     await db.prepare("SELECT remote_control_seats, remote_control_revoked_at FROM tenants LIMIT 1").run();
+    // 0034: release lines, major releases and major upgrade grants.
+    await db.prepare("SELECT line, status, end_of_life_at FROM release_lines LIMIT 1").run();
+    await db.prepare("SELECT major, open FROM release_majors LIMIT 1").run();
+    await db.prepare("SELECT tenant_id, major, granted_at, confirmed_at FROM major_upgrade_grants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

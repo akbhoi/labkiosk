@@ -60,6 +60,20 @@ import {
   listReleases,
   offeredRelease,
   offeredReleases,
+  confirmMajor,
+  isLineStatus,
+  listMajorGrants,
+  listReleaseMajors,
+  majorAccess,
+  MAX_RELEASE_MAJOR,
+  newestOffered,
+  organizationReleaseNotices,
+  platformReleasePolicy,
+  RELEASE_LINE_PATTERN,
+  setMajorGrant,
+  setReleaseLine,
+  setReleaseMajorOpen,
+  workstationsPerLine,
   releaseFolderUrl,
   isSecurityUpdateMode,
   securityReleasesPending,
@@ -757,7 +771,7 @@ async function handleDeviceUpdate(
   if (running !== null && !isReleaseVersion(running)) {
     return jsonError("running must be a release version", 400, jsonHeaders);
   }
-  const offer = workstationOffer(await offeredReleases(db, tenant.update_channel), running);
+  const offer = workstationOffer(await offeredReleases(db, tenant.update_channel, tenant.id), running);
   const securityUpdates = isSecurityUpdateMode(tenant.security_updates) ? tenant.security_updates : "next_boot";
   const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string } | null> = {};
   for (const [name, release] of [["release", offer.release], ["security", offer.security]] as const) {
@@ -1794,9 +1808,12 @@ export default {
       if (denied) return denied;
       if (!env.RELEASES) return jsonError("This server has no releases bucket (RELEASES binding)", 503, jsonHeaders);
       const sync = await syncReleases(env.RELEASES, db);
+      const releases = await listReleases(db);
+      const names = new Map((await listAllTenants(db)).map((t) => [t.id, t.name]));
       return new Response(
         JSON.stringify({
-          releases: await listReleases(db),
+          releases,
+          ...(await platformReleasePolicy(db, releases, names)),
           added: sync.added,
           problems: sync.problems,
           downloadsConfigured: releaseFolderUrl(env, "0.0.0") !== null
@@ -1845,6 +1862,137 @@ export default {
       });
       await notifyOrganizationsOnline(env, db);
       return new Response(JSON.stringify({ status: "ok", releases: await listReleases(db) }), { headers: jsonHeaders });
+    }
+
+    // POST /api/super/release-lines { line, status, endOfLifeAt?, note?, notify? }:
+    // a line's support status. "security_only" moves no workstation onto it and
+    // offers it only its security releases; "end_of_life" offers it nothing.
+    // endOfLifeAt (Unix seconds, or null) announces the date it ends by itself.
+    // notify emails the owner of every organization with workstations on it.
+    if (path === "/api/super/release-lines" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { line?: unknown; status?: unknown; endOfLifeAt?: unknown; note?: unknown; notify?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (typeof body?.line !== "string" || !RELEASE_LINE_PATTERN.test(body.line)) {
+        return jsonError("A release line such as 2.8 is required", 400, jsonHeaders);
+      }
+      if (!isLineStatus(body.status)) return jsonError("The status is supported, security_only or end_of_life", 400, jsonHeaders);
+      const endOfLifeAt = body.endOfLifeAt ?? null;
+      if (endOfLifeAt !== null && !(typeof endOfLifeAt === "number" && Number.isSafeInteger(endOfLifeAt) && endOfLifeAt > 0)) {
+        return jsonError("endOfLifeAt is a date in Unix seconds, or null", 400, jsonHeaders);
+      }
+      if (body.note !== undefined && body.note !== null && typeof body.note !== "string") {
+        return jsonError("The note is text", 400, jsonHeaders);
+      }
+      const note = typeof body.note === "string" && body.note.trim() ? body.note.replace(/\r\n/g, "\n").trim().slice(0, 500) : null;
+      const line = body.line;
+      const status = body.status;
+      await setReleaseLine(db, line, status, endOfLifeAt as number | null, note, session!.user_id);
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: "release.line",
+        details: `${line} ${status}${endOfLifeAt ? ` end_of_life_at=${endOfLifeAt}` : ""}`
+      });
+      await notifyOrganizationsOnline(env, db);
+      let emailed = 0;
+      let emailFailed = 0;
+      let emailProblem: string | null = null;
+      if (body.notify === true && (status !== "supported" || endOfLifeAt !== null) && mailConfigProblem(env)) {
+        emailProblem = "This server cannot send email, so no organization was told";
+      } else if (body.notify === true && (status !== "supported" || endOfLifeAt !== null)) {
+        const affected = (await workstationsPerLine(db)).filter((u) => u.line === line);
+        const date = endOfLifeAt ? new Date((endOfLifeAt as number) * 1000).toISOString().slice(0, 10) : null;
+        const what =
+          status === "end_of_life" || (endOfLifeAt !== null && (endOfLifeAt as number) <= Math.floor(Date.now() / 1000))
+            ? `has reached end of life. Workstations on it receive no further updates, security fixes included`
+            : date
+            ? `reaches end of life on ${date}. After that date workstations on it receive no further updates, security fixes included`
+            : `now receives security fixes only`;
+        for (const usage of affected) {
+          const tenant = await findTenantById(db, usage.tenantId);
+          const owner = tenant ? await findUserById(db, tenant.user_id) : null;
+          if (!tenant || !owner?.email) continue;
+          try {
+            await sendMail(env, {
+              to: owner.email,
+              toName: owner.name,
+              subject: `Lab Kiosk ${line} ${status === "security_only" && !date ? "now receives security fixes only" : "end of life"}`,
+              text:
+                `Hello ${owner.name || ""},\n\n` +
+                `Lab Kiosk ${line}, which ${usage.workstations} of ${tenant.name}'s workstations run, ${what}.` +
+                (note ? `\n\n${note}` : "") +
+                `\n\nInstall the newest release from Workstations \u2192 Updates in your console to keep receiving updates.\n\nLab Kiosk`,
+              template: { name: "notice", title: `Lab Kiosk ${line} support` }
+            });
+            emailed++;
+          } catch (err) {
+            emailFailed++;
+            console.error(`[Worker] Could not email ${tenant.name} about the ${line} line:`, err);
+          }
+        }
+      }
+      const releases = await listReleases(db);
+      const names = new Map((await listAllTenants(db)).map((t) => [t.id, t.name]));
+      return new Response(
+        JSON.stringify({ status: "ok", emailed, emailFailed, emailProblem, ...(await platformReleasePolicy(db, releases, names)) }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // POST /api/super/release-majors { major, action, tenantId? | subdomain? }: whether
+    // workstations may be moved to a major release. "open" opens it to every
+    // organization, "close" closes it; "grant" and "ungrant" open or close it for
+    // one organization. Either way, an administrator of the organization still
+    // confirms it before any of its workstations is moved.
+    if (path === "/api/super/release-majors" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { major?: unknown; action?: unknown; tenantId?: unknown; subdomain?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const major = body?.major;
+      if (typeof major !== "number" || !Number.isInteger(major) || major < 0 || major > MAX_RELEASE_MAJOR) {
+        return jsonError("A major release number is required", 400, jsonHeaders);
+      }
+      const action = body.action;
+      if (action !== "open" && action !== "close" && action !== "grant" && action !== "ungrant") {
+        return jsonError("The action is open, close, grant or ungrant", 400, jsonHeaders);
+      }
+      let details = `${major} ${action}`;
+      if (action === "open" || action === "close") {
+        await setReleaseMajorOpen(db, major, action === "open", session!.user_id);
+        await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "release.major", details });
+        await notifyOrganizationsOnline(env, db);
+      } else {
+        const target =
+          typeof body.tenantId === "string"
+            ? await findTenantById(db, body.tenantId)
+            : typeof body.subdomain === "string" && body.subdomain.trim()
+            ? await findTenantBySubdomain(db, body.subdomain.trim().toLowerCase())
+            : null;
+        if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+        if (action === "grant" && (await listReleaseMajors(db)).get(major) === undefined) {
+          return jsonError(`Release ${major} is not closed; every organization is offered it already`, 409, jsonHeaders);
+        }
+        await setMajorGrant(db, target.id, major, action === "grant", session!.user_id);
+        details = `${major} ${action} tenant=${target.id}`;
+        await writeAuditLog(db, { tenantId: target.id, userId: session!.user_id, action: "release.major", details });
+        await notifyConfigChanged(env, target.id);
+      }
+      const releases = await listReleases(db);
+      const names = new Map((await listAllTenants(db)).map((t) => [t.id, t.name]));
+      return new Response(JSON.stringify({ status: "ok", ...(await platformReleasePolicy(db, releases, names)) }), {
+        headers: jsonHeaders
+      });
     }
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
@@ -3281,11 +3429,49 @@ export default {
           await notifyConfigChanged(env, tenantId);
         }
       }
-      const releases = await offeredReleases(db, channel);
-      const pending = securityReleasesPending(releases, await listClientDevices(db, tenantId));
-      return new Response(JSON.stringify({ channel, offer: releases[0] ?? null, securityUpdates, lanSharing, pending }), {
-        headers: jsonHeaders
-      });
+      const releases = await offeredReleases(db, channel, tenantId);
+      const devices = await listClientDevices(db, tenantId);
+      const pending = securityReleasesPending(releases, devices);
+      const notices = await organizationReleaseNotices(db, tenantId, releases, devices);
+      return new Response(
+        JSON.stringify({
+          channel,
+          offer: newestOffered(releases),
+          securityUpdates,
+          lanSharing,
+          pending,
+          lines: notices.lines,
+          majors: notices.majors
+        }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // POST /api/settings/updates/confirm-major { major }: an administrator's
+    // confirmation that this organization's workstations may be moved to a major
+    // release the platform opened or granted it. Recorded with who and when.
+    if (path === "/api/settings/updates/confirm-major" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
+      if (denied) return denied;
+      let body: { major?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const major = body?.major;
+      if (typeof major !== "number" || !Number.isInteger(major) || major < 0 || major > MAX_RELEASE_MAJOR) {
+        return jsonError("A major release number is required", 400, jsonHeaders);
+      }
+      const tenantId = currentTenant!.id;
+      const access = majorAccess((await listReleaseMajors(db)).get(major), (await listMajorGrants(db, tenantId)).get(major));
+      if (access === "free") return jsonError(`Release ${major} needs no confirmation`, 409, jsonHeaders);
+      if (access === "closed") return jsonError(`Release ${major} is not available to this organization yet; ask Lab Kiosk for it`, 403, jsonHeaders);
+      if (access === "confirmed") return jsonError(`Release ${major} is already confirmed`, 409, jsonHeaders);
+      await confirmMajor(db, tenantId, major, session!.user_id);
+      await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "update.major_confirm", details: String(major) });
+      await notifyConfigChanged(env, tenantId);
+      return new Response(JSON.stringify({ status: "ok", major }), { headers: jsonHeaders });
     }
 
     // POST /api/clients/check-update { clientIds }: ask these workstations to
@@ -3313,7 +3499,7 @@ export default {
       const known = new Set((await listClientDevices(db, tenant.id)).map((row) => row.client_id));
       const clientIds = requested.filter((id) => known.has(id));
       const unknown = requested.filter((id) => !known.has(id)).map((clientId) => ({ clientId, reason: "Not found" }));
-      const offer = await offeredRelease(db, tenant.update_channel);
+      const offer = await offeredRelease(db, tenant.update_channel, tenant.id);
       const install = path.endsWith("/install-update");
       if (install && !offer) return jsonError("No release is offered to this organization", 409, jsonHeaders);
       let sent: string[] = [];

@@ -147,7 +147,10 @@ issue itself stays for 90. `0032` adds `tenants.workstation_limit` (45 default, 
 and raises it to the enrolled count for an organization that already had more. `0033` adds
 `tenants.remote_control_seats` (1 default, 5 for organizations already approved) and
 `remote_control_revoked_at`; revoking sets the status back to `rejected` rather than adding a value
-to its CHECK, which would need the cascade-safe rebuild of `tenants`.
+to its CHECK, which would need the cascade-safe rebuild of `tenants`. `0034` adds the platform
+tables `release_lines` (no row = supported) and `release_majors` (no row = free, as before; a
+closed row is added by `syncReleases` for a new major), and `major_upgrade_grants`
+(`tenant_id` FK, cascade).
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

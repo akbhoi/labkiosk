@@ -66,6 +66,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0031_restart_logs.sql` | `workstation_issues.log_text`: the end of the journal a restart report carried, cleared after 30 days |
 | `0032_workstation_limit.sql` | `tenants.workstation_limit`: how many workstations an organization may enrol (45 by default, or what it already had when more) |
 | `0033_remote_control_seats.sql` | `tenants.remote_control_seats` (concurrent sessions; 5 for organizations already approved, 1 for new approvals) and `remote_control_revoked_at` |
+| `0034_release_lines.sql` | The platform tables `release_lines` (each line's support status and end-of-life date) and `release_majors` (whether a major is open), and `major_upgrade_grants` (a closed major granted to one organization, and its administrator's confirmation) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -288,6 +289,39 @@ The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when 
 | `classified_at` / `classified_by` | INTEGER / TEXT | Last classification, and the super admin who made it |
 | `revoked_at` | INTEGER | Set once, for good |
 
+### `release_lines`
+
+A line's support status (`0034`). **No `tenant_id`**; a line with no row is supported.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `line` | TEXT PK | e.g. `2.8` |
+| `status` | TEXT | `supported` \| `security_only` (only its security releases, only to workstations already on it) \| `end_of_life` (nothing offered) |
+| `end_of_life_at` | INTEGER | Announced date; once passed the line is end of life whatever `status` says |
+| `note` | TEXT | Shown to organizations on the line and added to the email |
+| `updated_at` / `updated_by` | INTEGER / TEXT | Last change, and the super admin who made it |
+
+### `release_majors`
+
+Whether a major release is open (`0034`). **No `tenant_id`.** A major with no row is offered to everyone with no confirmation, as before; the Worker adds a closed row (`open = 0`) when it records the first release of a major above every one it has.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `major` | INTEGER PK | e.g. `3` |
+| `open` | INTEGER | 1: open to every organization that confirms it; 0: closed, only to organizations granted it |
+| `updated_at` / `updated_by` | INTEGER / TEXT | |
+
+### `major_upgrade_grants`
+
+One organization's standing with a major that has a `release_majors` row (`0034`). Its workstations are moved to that major only when it is open or granted **and** `confirmed_at` is set.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `tenant_id` | TEXT FK | → `tenants.id`, `ON DELETE CASCADE`; PK with `major` |
+| `major` | INTEGER | |
+| `granted_by` / `granted_at` | TEXT / INTEGER | The super admin who granted a closed major; NULL when it is open to all |
+| `confirmed_by` / `confirmed_at` | TEXT / INTEGER | The organization's staff member (`updates` permission) who confirmed it |
+
 ### `tenant_users`
 
 Staff accounts delegated by an organization.
@@ -349,7 +383,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0034_<description>.sql` (the next number after `0033`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0035_<description>.sql` (the next number after `0034`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

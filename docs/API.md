@@ -98,8 +98,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
 | `/api/devices/restart-report` | `POST` | Device Token | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/disk-health` | `POST` | Device Token | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
-| `/api/devices/update` | `GET` | Device Token | The system release this workstation's organization is offered and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
+| `/api/devices/update` | `GET` | Device Token | The system release this workstation may take (its organization's channel, its line's status, the majors open to it) and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
 | `/api/settings/updates` | `GET`, `POST` | Organization Admin (`updates`) | The organization's update channel and the release it is offered; `POST {"channel": "stable"\|"beta"}` changes the channel |
+| `/api/settings/updates/confirm-major` | `POST` | Organization Admin (`updates`) | `{"major"}`: confirm that the organization's workstations may be moved to a major release the platform opened or granted it; `403` while it is closed to the organization, `409` when it needs no confirmation or is already confirmed |
 | `/api/clients/check-update` | `POST` | Organization Admin (`updates`) | `{"clientIds"}`: ask these workstations to check for and download the offered release |
 | `/api/clients/install-update` | `POST` | Organization Admin (`updates`) | `{"clientIds"}`: install the offered release on those that hold it downloaded and verified; `409` when nothing is offered |
 | `/api/clients/remote-session` | `POST` | Organization Admin (`workstations`) | Open a Remote Control session through the console's relay: asks the workstation to join and returns the viewer's socket path |
@@ -135,6 +136,8 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/super/releases` | `GET` | Super Admin | Record new releases found in the `RELEASES` bucket and list them all; `503` without the binding |
 | `/api/super/releases/classify` | `POST` | Super Admin | `{"version", "channel": "beta"\|"stable"\|null}`: offer a release on a channel, or withdraw it (`null`) |
 | `/api/super/releases/revoke` | `POST` | Super Admin | `{"version"}`: withdraw a release for good; `409` when already revoked |
+| `/api/super/release-lines` | `POST` | Super Admin | `{"line", "status", "endOfLifeAt"?, "note"?, "notify"?}`: a line's support status and end-of-life date; `notify` emails the owners of the organizations on it |
+| `/api/super/release-majors` | `POST` | Super Admin | `{"major", "action": "open"\|"close"\|"grant"\|"ungrant", "tenantId"\|"subdomain"}`: whether workstations may be moved to a major release |
 
 ---
 
@@ -961,12 +964,18 @@ workstations at once.
     "offer": { "version": "2.10.0", "kind": "feature", "sizeBytes": 735000000, "classifiedAt": 1791638060 },
     "securityUpdates": "next_boot",
     "lanSharing": false,
-    "pending": [{ "version": "2.9.1", "offeredAt": 1791638060, "workstations": 3 }]
+    "pending": [{ "version": "2.9.1", "offeredAt": 1791638060, "workstations": 3 }],
+    "lines": [{ "line": "2.8", "status": "supported", "endOfLifeAt": 1798675200, "note": null, "workstations": 2 }],
+    "majors": [{ "major": 3, "access": "available", "newest": "3.0.0", "confirmedAt": null }]
   }
   ```
 
   `offer` is `null` when nothing is offered on that channel. `pending` lists, per line, the newest
   security release that some of the organization's workstations on that line do not run yet.
+  `lines` lists the lines its workstations run that are `security_only`, `end_of_life` or have an
+  end-of-life date. `majors` lists the majors above the lowest one its workstations run that are
+  `closed` to it, `available` (open or granted, waiting for confirmation) or `confirmed`
+  (`POST /api/settings/updates/confirm-major`, audited as `update.major_confirm`).
 - **Errors:** `400` for any other channel or setting, a `lanSharing` that is not a boolean, or a body with none of them.
 
 ---
@@ -1042,10 +1051,33 @@ organization with workstations online reloads its offer.
   }
   ```
 
-  `downloadsConfigured` is false while `RELEASES_BASE_URL` is unset or not https. `classify` and
-  `revoke` answer `{ "status": "ok", "releases": [...] }`.
+  `downloadsConfigured` is false while `RELEASES_BASE_URL` is unset or not https. `GET` also
+  returns `lines` (`{line, status, effectiveStatus, endOfLifeAt, note, workstations,
+  organizations}`) and `majors` (`{major, state: "free"|"open"|"closed", grants: [{tenantId, name,
+  grantedAt, confirmedAt}]}`). `classify` and `revoke` answer `{ "status": "ok", "releases": [...] }`.
 - **Errors:** `503` (`GET`) without the `RELEASES` binding; `400` invalid version or channel;
   `404` unknown release; `409` the release is already revoked.
+
+#### Release lines and majors: `POST /api/super/release-lines`, `POST /api/super/release-majors`
+
+What each workstation is offered also depends on its line and its major. A line `security_only`
+offers its security releases to the workstations already on it and moves no other workstation onto
+it; `end_of_life` offers it nothing, security fixes included. `endOfLifeAt` (Unix seconds, or
+`null`) ends the line by itself once it passes. A major with no `release_majors` row is offered to
+everyone; the first release of a major above every recorded one arrives **closed**. A workstation
+is moved above the major it runs only when that major is open to all or granted to its
+organization, **and** an administrator of the organization confirmed it; a workstation already on
+a major keeps it. An updater that does not say what it runs is offered only what any workstation
+may take.
+
+- **Access:** Super Admin
+- **Request Body:** `{ "line": "2.8", "status": "supported", "endOfLifeAt": 1798675200, "note": "Move to 2.10.", "notify": true }`
+  or `{ "major": 3, "action": "grant", "subdomain": "riverside" }`.
+- **Response `200 OK`:** `{ "status": "ok", "lines": [...], "majors": [...] }`; a line change
+  also carries `emailed`, `emailFailed` and `emailProblem` (set when the server cannot send email).
+- **Audit:** `release.line`, `release.major`.
+- **Errors:** `400` invalid line, status, date, note, major or action; `404` unknown organization;
+  `409` granting a major that is not closed.
 
 ---
 

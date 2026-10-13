@@ -7191,6 +7191,137 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Release lines and majors: end of life, security only, and a closed major granted and confirmed", async () => {
+    const tenantId = await greenwoodId();
+    const policyEnv = {
+      ...releasesEnv,
+      RELEASES: fakeReleasesBucket({
+        "releases/2.20.0/manifest.json": releaseManifest("2.20.0"),
+        "releases/2.20.0/manifest.json.sig": "sig",
+        "releases/2.20.1/manifest.json": releaseManifest("2.20.1", "security", "2.20.0"),
+        "releases/2.20.1/manifest.json.sig": "sig",
+        "releases/2.21.0/manifest.json": releaseManifest("2.21.0"),
+        "releases/2.21.0/manifest.json.sig": "sig",
+        "releases/5.0.0/manifest.json": releaseManifest("5.0.0"),
+        "releases/5.0.0/manifest.json.sig": "sig"
+      })
+    } as Env;
+    const listed = await callWith(policyEnv, "/api/super/releases", { cookie: superSessionCookie });
+    assert.equal(listed.status, 200);
+    const policy = await listed.json<any>();
+    assert.equal(policy.majors.find((m: any) => m.major === 5)?.state, "closed", "a new major above the known ones starts closed");
+    assert.equal(policy.majors.find((m: any) => m.major === 2)?.state, "free", "the majors already in use stay offered");
+    assert.equal(policy.lines.find((l: any) => l.line === "2.8")?.workstations, 3, "Greenwood's workstations on 2.8.0");
+    for (const version of ["2.20.0", "2.20.1", "2.21.0", "5.0.0"]) {
+      const res = await callWith(policyEnv, "/api/super/releases/classify", { ...json({ version, channel: "stable" }), cookie: superSessionCookie });
+      assert.equal(res.status, 200, `classifying ${version}`);
+    }
+    const token = await enrolOta("WS-LINES");
+    const ask = async (running: string) =>
+      (await callWith(policyEnv, `/api/devices/update${running ? `?running=${running}` : ""}`, { bearer: token })).json<any>();
+    let offer = await ask("2.20.0");
+    assert.equal(offer.release.version, "2.21.0", "a closed major is not offered");
+    assert.equal(offer.security.version, "2.20.1");
+    assert.equal((await ask("")).release.version, "2.21.0", "nor to an updater that does not say what it runs");
+    assert.equal((await ask("5.0.0")).release.version, "5.0.0", "a workstation already on it keeps its major");
+
+    // Only a super admin sets a line or a major, with valid input.
+    const lines = (payload: unknown, cookie = superSessionCookie) => callWith(policyEnv, "/api/super/release-lines", { ...json(payload), cookie });
+    const majors = (payload: unknown, cookie = superSessionCookie) => callWith(policyEnv, "/api/super/release-majors", { ...json(payload), cookie });
+    for (const cookie of ["", orgSessionCookie, rivalSessionCookie]) {
+      assert.ok([401, 403].includes((await lines({ line: "2.20", status: "end_of_life" }, cookie)).status));
+      assert.ok([401, 403].includes((await majors({ major: 5, action: "open" }, cookie)).status));
+    }
+    for (const payload of [
+      { line: "2.20.0", status: "end_of_life" },
+      { line: "2.20", status: "retired" },
+      { line: "2.20", status: "supported", endOfLifeAt: "tomorrow" },
+      { line: "2.20", status: "supported", note: 5 }
+    ]) {
+      assert.equal((await lines(payload)).status, 400, JSON.stringify(payload));
+    }
+    for (const payload of [{ major: "5", action: "open" }, { major: 5, action: "delete" }, { major: 10000, action: "open" }]) {
+      assert.equal((await majors(payload)).status, 400, JSON.stringify(payload));
+    }
+    assert.equal((await majors({ major: 5, action: "grant", tenantId: "nope" })).status, 404);
+    assert.equal((await majors({ major: 2, action: "grant", tenantId })).status, 409, "a free major needs no grant");
+
+    // Security only: workstations on the line keep its fixes, and none is moved onto it.
+    assert.equal((await lines({ line: "2.21", status: "security_only" })).status, 200);
+    offer = await ask("2.20.0");
+    assert.equal(offer.release.version, "2.20.1", "2.21.0 is a feature release of a security-only line");
+    assert.equal(offer.security.version, "2.20.1");
+    // End of life: nothing on the line is offered, security fixes included.
+    const eol = await lines({ line: "2.20", status: "end_of_life", note: "Move to 2.21." });
+    assert.equal(eol.status, 200);
+    assert.equal((await eol.json<any>()).lines.find((l: any) => l.line === "2.20").effectiveStatus, "end_of_life");
+    offer = await ask("2.20.0");
+    assert.equal(offer.security, null);
+    assert.equal(offer.release, null, "2.21 is security only and 5 is closed");
+    assert.equal((await lines({ line: "2.21", status: "supported" })).status, 200);
+    assert.equal((await ask("2.20.0")).release.version, "2.21.0");
+    // An announced date ends the line by itself once it has passed.
+    assert.equal((await lines({ line: "2.20", status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) + 86400 })).status, 200);
+    assert.equal((await ask("2.20.0")).security.version, "2.20.1", "not yet");
+    assert.equal((await lines({ line: "2.20", status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) - 1 })).status, 200);
+    assert.equal((await ask("2.20.0")).security, null, "the date has passed");
+    assert.equal((await lines({ line: "2.20", status: "supported" })).status, 200);
+
+    // Announcing an end of life emails the owner of every organization on the line.
+    const owner = await getDatabase(mockEnv)
+      .prepare("SELECT u.email FROM users u JOIN tenants t ON t.user_id = u.id WHERE t.id = ?")
+      .bind(tenantId)
+      .first<{ email: string }>();
+    const announced = await lines({ line: "2.8", status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) + 30 * 86400, notify: true });
+    assert.equal(announced.status, 200);
+    assert.equal((await announced.json<any>()).emailed, 1);
+    const mail = [...localOutbox()].reverse().find((m) => m.to === owner!.email.toLowerCase() && /2\.8/.test(m.subject));
+    assert.ok(mail, "the owner is told");
+    const settings = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.deepEqual(
+      settings.data.lines.map((l: any) => [l.line, l.status, l.workstations]),
+      [["2.8", "supported", 3]],
+      "the organization's Updates settings warn about the date"
+    );
+    assert.deepEqual(settings.data.majors.map((m: any) => [m.major, m.access]), [[5, "closed"]]);
+    assert.equal((await lines({ line: "2.8", status: "supported" })).status, 200);
+
+    // A closed major: granted to one organization, then confirmed by its administrator.
+    const confirm = (cookie: string) => call("/api/settings/updates/confirm-major?tenant=greenwood", { ...json({ major: 5 }), cookie });
+    assert.equal((await confirm(orgSessionCookie)).status, 403, "not granted yet");
+    assert.equal((await majors({ major: 5, action: "grant", tenantId })).status, 200);
+    assert.equal((await ask("2.20.0")).release.version, "2.21.0", "granted but not confirmed");
+    const available = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.deepEqual(available.data.majors.map((m: any) => [m.major, m.access, m.newest]), [[5, "available", "5.0.0"]]);
+    assert.equal((await confirm(rivalSessionCookie)).status, 403, "another organization cannot confirm it");
+    assert.equal((await confirm(await staffWith("no-updates@greenwood.example", ["settings"]))).status, 403);
+    assert.equal(
+      (await call("/api/settings/updates/confirm-major?tenant=greenwood", { ...json({ major: "5" }), cookie: orgSessionCookie })).status,
+      400
+    );
+    assert.equal((await confirm(orgSessionCookie)).status, 200);
+    assert.equal((await confirm(orgSessionCookie)).status, 409, "once");
+    assert.equal((await ask("2.20.0")).release.version, "5.0.0");
+    // Taking the grant back takes the confirmation with it; opening it to everyone asks again.
+    assert.equal((await majors({ major: 5, action: "ungrant", tenantId })).status, 200);
+    assert.equal((await ask("2.20.0")).release.version, "2.21.0");
+    assert.equal((await majors({ major: 5, action: "open" })).status, 200);
+    assert.equal((await ask("2.20.0")).release.version, "2.21.0", "open, but not confirmed");
+    assert.equal((await confirm(orgSessionCookie)).status, 200);
+    assert.equal((await ask("")).release.version, "5.0.0");
+
+    const platform = await (await call("/api/super/audit-logs?limit=100", { cookie: superSessionCookie })).json<any>();
+    assert.ok(platform.logs.some((l: any) => l.action === "release.line" && /^2\.20 end_of_life/.test(l.details)));
+    assert.ok(platform.logs.some((l: any) => l.action === "release.major" && l.details === "5 open"));
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "update.major_confirm" && l.details === "5"));
+
+    await majors({ major: 5, action: "close" });
+    for (const version of ["2.20.0", "2.20.1", "2.21.0", "5.0.0"]) {
+      await callWith(policyEnv, "/api/super/releases/revoke", { ...json({ version }), cookie: superSessionCookie });
+    }
+  });
+
   test("The consoles offer updates only to those who may use them", async () => {
     const admin = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.match(admin, /id="btn-check-updates"/);
@@ -7557,6 +7688,7 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0019"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0032"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0033"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0034"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

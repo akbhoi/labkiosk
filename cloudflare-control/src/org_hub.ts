@@ -50,7 +50,8 @@ import {
   offeredReleases,
   releaseLine,
   sameUpdateReport,
-  updateTargetFor
+  updateTargetFor,
+  newestOffered
 } from "./releases";
 import type { SecurityUpdateMode } from "./types";
 import {
@@ -478,7 +479,7 @@ export class OrgHub {
     const [whitelist, broadcasts, releases] = await Promise.all([
       buildEffectiveWhitelist(db, tenant.id),
       listDeviceBroadcasts(db, tenant.id),
-      offeredReleases(db, tenant.update_channel)
+      offeredReleases(db, tenant.update_channel, tenant.id)
     ]);
     this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, loadedAt: Date.now() };
     return this.config;
@@ -1475,7 +1476,7 @@ export function releaseNudgeTarget(
       releaseLine(target.version) === releaseLine(imageVersion);
     return stageable ? target : null;
   }
-  if (holding && !update.kind && update.version === releases[0]?.version) return null;
+  if (holding && !update.kind && update.version === newestOffered(releases)?.version) return null;
   return target;
 }
 
@@ -1485,7 +1486,7 @@ export function releaseNudgeTarget(
  * updater from before phase 4 that holds that one; null when nothing is offered.
  */
 export function installTargetFor(releases: readonly ReleaseOffer[], status: LiveStatus | undefined): ReleaseOffer | null {
-  const newest = releases[0] ?? null;
+  const newest = newestOffered(releases);
   const update = status?.update;
   if (update && !update.kind && update.phase === "ready" && newest && update.version === newest.version) return newest;
   return updateTargetFor(releases, status?.imageVersion) ?? newest;

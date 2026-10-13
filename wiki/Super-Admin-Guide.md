@@ -14,6 +14,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | Suspend or reactivate an organization | The platform's kill switch |
 | Set how many workstations an organization may enrol (**Workstation Limit**) | The license: 45 without a paid one |
 | Set Remote Control seats, revoke or restore Remote Control | An add-on the platform grants, and can take back |
+| Classify releases; set each line's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 | Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Registrations, Remote Control requests and every message sent to an address on the mail domain |
@@ -68,6 +69,13 @@ A Remote Control request is approved from **Tasks** with a number of **seats**: 
 - **Remote Control Seats** changes that number; open sessions are not ended.
 - **Revoke Remote Control** turns it off with a reason: every open session ends at once, the organization's owner is emailed the reason, and its Settings show *Turned off* with the date. The organization can ask again.
 - **Restore Remote Control** turns a revoked organization back on with the seats it had. An organization that turned Remote Control off itself (Settings → Remote Control) asks again through Tasks instead.
+
+### Release lines and major releases
+
+Under **Releases**, below the release list:
+
+- **Release lines** (a minor version such as 2.8). **Security only** keeps sending the line's security fixes to the workstations already on it and moves no other workstation onto it. **End of life** offers it nothing more, security fixes included. **Set end-of-life date** announces the date it ends by itself. Each change can email the owners of the organizations with workstations on the line; their Settings → Updates shows the same warning.
+- **Major releases.** The first release of a new major arrives **closed**. **Open to all** or **Grant to an organization** (by subdomain) makes it available; an administrator of each organization then confirms it under Settings → Updates (recorded with their name) before any of its workstations is moved. **Take back** removes a grant and its confirmation; workstations already on the major keep it.
 
 ### Rejecting
 
