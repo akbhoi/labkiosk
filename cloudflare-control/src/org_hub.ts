@@ -321,6 +321,14 @@ export class OrgHub {
     )`);
     sql.exec("CREATE TABLE IF NOT EXISTS revoked (client_id TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    // Remote Control sessions open now, one per workstation: what the organization's
+    // seats are counted against. A relay says when its session ends (/remote-ended);
+    // ends_at is the session's own time limit, so a lost notice frees the seat then.
+    sql.exec(`CREATE TABLE IF NOT EXISTS remote_seats (
+      client_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      ends_at INTEGER NOT NULL
+    )`);
     this.tenantId = this.readMeta("tenantId");
     this.flushedOnline = Number(this.readMeta("flushedOnline") ?? "-1");
     ctx.setWebSocketAutoResponse(autoResponsePair());
@@ -356,10 +364,25 @@ export class OrgHub {
           await this.removeDevice(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
           return json({ status: "ok" });
         case "/remote-open": {
-          const body = (await request.json()) as { clientId?: unknown; session?: unknown };
-          const delivered = this.remoteOpen(String(body.clientId || ""), String(body.session || ""));
-          return delivered ? json({ status: "ok" }) : json({ error: "This workstation is not connected" }, 409);
+          const body = (await request.json()) as { clientId?: unknown; session?: unknown; userId?: unknown; seats?: unknown; endsAt?: unknown };
+          const clientId = String(body.clientId || "");
+          const seats = Number(body.seats);
+          if (Number.isInteger(seats) && seats > 0) {
+            const holders = this.remoteSeatHolders(clientId);
+            if (holders.length >= seats) {
+              return json({ error: "Every Remote Control seat is in use", seats, holders }, 429);
+            }
+          }
+          const delivered = this.remoteOpen(clientId, String(body.session || ""));
+          if (!delivered) return json({ error: "This workstation is not connected" }, 409);
+          this.holdRemoteSeat(clientId, String(body.userId || ""), Number(body.endsAt) || 0);
+          return json({ status: "ok" });
         }
+        case "/remote-ended":
+          this.releaseRemoteSeat(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
+          return json({ status: "ok" });
+        case "/remote-revoke":
+          return json({ clientIds: this.releaseAllRemoteSeats() });
         case "/install-update": {
           const body = (await request.json()) as { clientIds?: unknown };
           return json(await this.installUpdate(body.clientIds));
@@ -900,6 +923,37 @@ export class OrgHub {
       console.warn(`[OrgHub] Could not ask ${clientId} to join Remote Control:`, err);
       return false;
     }
+  }
+
+  /** Workstations other than `except` holding a Remote Control seat now, oldest first. */
+  remoteSeatHolders(except = ""): string[] {
+    const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM remote_seats WHERE ends_at <= ?", Math.floor(Date.now() / 1000));
+    const rows = sql.exec("SELECT client_id FROM remote_seats WHERE client_id != ? ORDER BY rowid", except).toArray() as unknown as Array<{ client_id: string }>;
+    return rows.map((r) => r.client_id);
+  }
+
+  private holdRemoteSeat(clientId: string, userId: string, endsAt: number): void {
+    if (!CLIENT_ID_PATTERN.test(clientId) || !userId || !Number.isFinite(endsAt) || endsAt <= 0) return;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO remote_seats (client_id, user_id, ends_at) VALUES (?, ?, ?)
+       ON CONFLICT(client_id) DO UPDATE SET user_id = excluded.user_id, ends_at = excluded.ends_at`,
+      clientId,
+      userId,
+      endsAt
+    );
+  }
+
+  releaseRemoteSeat(clientId: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM remote_seats WHERE client_id = ?", clientId);
+  }
+
+  /** Free every seat, for Remote Control being turned off: the workstations whose sessions to close. */
+  releaseAllRemoteSeats(): string[] {
+    const sql = this.ctx.storage.sql;
+    const rows = sql.exec("SELECT client_id FROM remote_seats").toArray() as unknown as Array<{ client_id: string }>;
+    sql.exec("DELETE FROM remote_seats");
+    return rows.map((r) => r.client_id);
   }
 
   // ------------------------------------------------------------------ consoles

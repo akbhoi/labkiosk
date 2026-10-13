@@ -202,6 +202,13 @@ removes). The 8-character RFB password is not the access control: the console si
 `workstations` permission and the one-time session token are. Only agents on the WebSocket control
 channel can join; the HTTP heartbeat cannot carry the `remote` message. Migration `0019` dropped `tenants.tunnel_domain` and `client_devices.remote_host`.
 
+**Seats and revocation.** `/remote-open` carries the organization's `remote_control_seats`; the
+OrgHub keeps one row per workstation with an open session (`remote_seats`) and answers `429` with
+the holders when another workstation would exceed them. A relay tells the hub when its session ends
+(`/remote-ended`; the four-hour limit frees a seat whose notice was lost). Revoking (super admin) or
+turning it off (the organization) takes every holder from `/remote-revoke` and closes each relay
+(`/close`, close code `4009`).
+
 ## 5. Global rules both sides obey
 
 Zero runtime npm deps in the Worker (Web Crypto only) · everything tenant-scoped and consensus

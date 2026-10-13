@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 3, 3b, 3c; reference:
 
 - `migrations/NNNN_name.sql` is what a deployed D1 has; `SCHEMA_SQL` in `src/db.ts` builds the
   in-memory database for tests and `pnpm dev`. **Change both.**
-- Add a **new** numbered file (next: `0033_…`). **Never edit or rename an applied migration** —
+- Add a **new** numbered file (next: `0034_…`). **Never edit or rename an applied migration** —
   wrangler tracks them by file name, so a rename re-runs it (that is why `0008_school_homepage.sql`
   keeps its name).
 - Every query that touches tenant data filters by `tenant_id`; index what you query on.
@@ -144,7 +144,10 @@ reported about the update it is fetching or holding (written back by OrgHub), se
 share releases on the LAN, phase 5); sites and peers are live hub state, not columns. `0031` adds
 `workstation_issues.log_text`: a restart report's journal tail, nulled after 30 days while the
 issue itself stays for 90. `0032` adds `tenants.workstation_limit` (45 default, CHECK 1–100000)
-and raises it to the enrolled count for an organization that already had more.
+and raises it to the enrolled count for an organization that already had more. `0033` adds
+`tenants.remote_control_seats` (1 default, 5 for organizations already approved) and
+`remote_control_revoked_at`; revoking sets the status back to `rejected` rather than adding a value
+to its CHECK, which would need the cascade-safe rebuild of `tenants`.
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

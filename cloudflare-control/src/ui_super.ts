@@ -10,7 +10,7 @@ import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
-import { DEFAULT_WORKSTATION_LIMIT, MAX_WORKSTATION_LIMIT } from "./db";
+import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
 import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
@@ -198,6 +198,13 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <span class="stat-val">${Number(t.online_clients) || 0} / ${Number(t.total_clients) || 0}</span>
         </span>
         <div class="cell-sub nowrap ${Number(t.enrolled_clients) >= Number(t.workstation_limit) ? "text-danger" : ""}">${Number(t.enrolled_clients) || 0} of ${Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled</div>
+        ${
+          t.remote_control_status === "approved"
+            ? `<div class="cell-sub nowrap">Remote Control: ${Number(t.remote_control_seats) || 1} ${Number(t.remote_control_seats) === 1 ? "seat" : "seats"}</div>`
+            : t.remote_control_revoked_at
+              ? `<div class="cell-sub nowrap text-danger">Remote Control revoked</div>`
+              : ""
+        }
       </td>
       <td>
         <div class="cell-actions">
@@ -215,6 +222,21 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <div class="menu-popover" id="${escapeAttr(menuId)}" popover role="menu" aria-label="Organization actions">
             ${isDemo ? "" : `<button type="button" class="menu-item btn-edit-sub" role="menuitem" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>`}
             <button type="button" class="menu-item btn-assign-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Custom Domain</button>
+            ${
+              t.remote_control_status === "approved"
+                ? `<button type="button" class="menu-item btn-remote-seats" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-seats="${escapeAttr(String(Number(t.remote_control_seats) || 1))}">Remote Control Seats</button>`
+                : ""
+            }
+            ${
+              t.remote_control_status !== "approved" && t.remote_control_revoked_at
+                ? `<button type="button" class="menu-item btn-remote-restore" role="menuitem" data-tenant="${escapeAttr(t.id)}">Restore Remote Control</button>`
+                : ""
+            }
+            ${
+              t.remote_control_status === "approved" && !isDemo
+                ? `<button type="button" class="menu-item menu-item-danger btn-remote-revoke" role="menuitem" data-tenant="${escapeAttr(t.id)}">Revoke Remote Control</button>`
+                : ""
+            }
             <button type="button" class="menu-item btn-workstation-limit" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-limit="${escapeAttr(String(Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT))}" data-enrolled="${escapeAttr(String(Number(t.enrolled_clients) || 0))}">Workstation Limit</button>
             ${t.custom_domain ? `<button type="button" class="menu-item menu-item-danger btn-remove-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Disconnect Custom Domain</button>` : ""}
             ${
@@ -801,6 +823,73 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
           }
+        });
+      });
+
+      async function remoteControlAction(payload, failure) {
+        try {
+          const res = await fetch("/api/super/tenants/remote-control", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          if (data.status === "ok") {
+            window.location.reload();
+          } else {
+            lkToast(data.error || failure, "error");
+          }
+        } catch (err) {
+          lkToast("Network error: " + err.message, "error");
+        }
+      }
+
+      document.querySelectorAll(".btn-remote-seats").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const value = await lkPrompt({
+            title: "Remote Control seats for " + btn.closest("tr").querySelector(".cell-title").textContent,
+            message: "How many Remote Control sessions this organization may have open at once. Sessions open now are not ended.",
+            label: "Seats",
+            value: btn.dataset.seats,
+            hint: "A whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}.",
+            confirmLabel: "Save"
+          });
+          if (!value) return;
+          const seats = Number(value);
+          if (!Number.isInteger(seats) || seats < 1 || seats > ${MAX_REMOTE_CONTROL_SEATS}) {
+            lkToast("Enter a whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}.", "error");
+            return;
+          }
+          await remoteControlAction({ tenantId: btn.dataset.tenant, action: "seats", seats }, "Failed to change the seats");
+        });
+      });
+
+      document.querySelectorAll(".btn-remote-revoke").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.closest("tr").querySelector(".cell-title").textContent;
+          const reason = await lkPrompt({
+            title: "Revoke Remote Control for " + name + "?",
+            message: "Every open session ends now and the organization's administrator is emailed. Their workstations keep working.",
+            label: "Reason, included in the email",
+            placeholder: "For example: the subscription that included it has ended.",
+            hint: "Required: the organization is told why.",
+            confirmLabel: "Revoke",
+            tone: "danger"
+          });
+          if (!reason) return;
+          await remoteControlAction({ tenantId: btn.dataset.tenant, action: "revoke", reason }, "Failed to revoke Remote Control");
+        });
+      });
+
+      document.querySelectorAll(".btn-remote-restore").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const ok = await lkConfirm({
+            title: "Restore Remote Control?",
+            message: "Operators in " + btn.closest("tr").querySelector(".cell-title").textContent + " can open Remote Control again, with the seats it had.",
+            confirmLabel: "Restore"
+          });
+          if (!ok) return;
+          await remoteControlAction({ tenantId: btn.dataset.tenant, action: "restore" }, "Failed to restore Remote Control");
         });
       });
 

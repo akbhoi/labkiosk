@@ -12,6 +12,8 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | :--- | :--- |
 | Approve or reject organization registrations | Anyone can register; nothing works until a human approves |
 | Suspend or reactivate an organization | The platform's kill switch |
+| Set how many workstations an organization may enrol (**Workstation Limit**) | The license: 45 without a paid one |
+| Set Remote Control seats, revoke or restore Remote Control | An add-on the platform grants, and can take back |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 | Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Registrations, Remote Control requests and every message sent to an address on the mail domain |
@@ -56,6 +58,16 @@ POST /api/super/tenants/approve
 Before approving, check that the subdomain is plausible for the organization, that it is not a [reserved slug](Configuration-Reference#reserved-subdomains), and that the admin email belongs to that organization's domain.
 
 On approval the organization can sign in, configure its portal, generate an enrollment key, and enrol workstations.
+
+A registration is activated from **Tasks**, with a **workstation limit** (prefilled from the number the organization expects; 45 is the most the license allows without a paid one). Enrolment past it answers `403`; a workstation that still holds a valid token always enrols again, so lowering the limit later under **Organizations → ⋯ → Workstation Limit** stops new enrolments only. Each organization's row shows `N of M enrolled`, and its console header shows the same.
+
+### Remote Control
+
+A Remote Control request is approved from **Tasks** with a number of **seats**: how many sessions the organization may have open at once (its OrgHub counts them; one more answers `429` naming the workstations in use). Under **Organizations → ⋯**:
+
+- **Remote Control Seats** changes that number; open sessions are not ended.
+- **Revoke Remote Control** turns it off with a reason: every open session ends at once, the organization's owner is emailed the reason, and its Settings show *Turned off* with the date. The organization can ask again.
+- **Restore Remote Control** turns a revoked organization back on with the seats it had. An organization that turned Remote Control off itself (Settings → Remote Control) asks again through Tasks instead.
 
 ### Rejecting
 

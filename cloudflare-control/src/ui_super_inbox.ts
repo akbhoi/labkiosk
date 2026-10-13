@@ -14,7 +14,7 @@
 
 import { escapeAttr, escapeJson } from "./escape";
 import { CATEGORIES } from "./conversations";
-import { DEFAULT_WORKSTATION_LIMIT, MAX_WORKSTATION_LIMIT } from "./db";
+import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
 
 export type InboxBox = "tasks" | "support";
 
@@ -129,6 +129,7 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
         var BASE_DOMAIN = ${escapeJson(baseDomain)};
         var DEFAULT_WORKSTATION_LIMIT = ${escapeJson(DEFAULT_WORKSTATION_LIMIT)};
         var MAX_WORKSTATION_LIMIT = ${escapeJson(MAX_WORKSTATION_LIMIT)};
+        var MAX_REMOTE_CONTROL_SEATS = ${escapeJson(MAX_REMOTE_CONTROL_SEATS)};
         var OTHER_TASKS = ${escapeJson(Math.max(0, Math.floor(Number(otherTasks) || 0)))};
         var listEl = document.getElementById("inbox-list");
         var detailEl = document.getElementById("inbox-detail");
@@ -434,6 +435,27 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
             card.append(limitGroup);
           }
 
+          // Remote Control is approved with how many sessions may be open at once.
+          var seatsInput = null;
+          if (c.kind === "remote_control" && c.status === "open") {
+            var seatsGroup = el("div", "form-group mt-md");
+            var seatsLabel = el("label", "form-label", "Remote Control seats");
+            seatsLabel.htmlFor = "inbox-remote-seats";
+            seatsInput = el("input", "form-input");
+            seatsInput.id = "inbox-remote-seats";
+            seatsInput.type = "number";
+            seatsInput.min = "1";
+            seatsInput.max = String(MAX_REMOTE_CONTROL_SEATS);
+            seatsInput.inputMode = "numeric";
+            seatsInput.value = "1";
+            seatsGroup.append(
+              seatsLabel,
+              seatsInput,
+              el("p", "form-hint", "How many Remote Control sessions this organization may have open at once.")
+            );
+            card.append(seatsGroup);
+          }
+
           var actions = el("div", "form-actions");
           function button(text, tone, handler) {
             var b = el("button", "btn btn-sm " + tone, text);
@@ -499,6 +521,15 @@ export function renderInboxScript(nonce: string, box: InboxBox, baseDomain: stri
                   return;
                 }
                 extra.workstationLimit = limit;
+              }
+              if (seatsInput) {
+                var seats = Number(seatsInput.value);
+                if (!Number.isInteger(seats) || seats < 1 || seats > MAX_REMOTE_CONTROL_SEATS) {
+                  lkToast("Set the Remote Control seats: a whole number from 1 to " + MAX_REMOTE_CONTROL_SEATS + ".", "error");
+                  seatsInput.focus();
+                  return;
+                }
+                extra.remoteControlSeats = seats;
               }
               await act(c.id, "approve", extra, "Approved and emailed.");
             });

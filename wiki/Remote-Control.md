@@ -26,6 +26,8 @@ The workstation makes only **outbound** connections to the console, the same add
 
 A session is opened only by an operator signed in to the console with the `workstations` permission, and joined only with the one-time session token the Worker issued for it (the relay keeps only its SHA-256). Both sides must join within 60 seconds; a session lasts at most four hours, either side closing ends it, and a new session for the same workstation replaces the old one. Every session is written to the audit log (`device.remote_control`).
 
+An organization has as many **seats** as the platform approved: that many sessions may be open at once, counted by its OrgHub (one per workstation; a session's relay gives the seat back when it ends, and its four-hour limit frees it if that notice is lost). One more answers `429` naming the workstations in use. A super admin can revoke Remote Control (every open session ends at once, close code `4009`, and the owner is emailed), and an organization can turn it off itself under Settings.
+
 Remote Control needs an agent on the WebSocket control channel (`/api/devices/ws`), because the request to join travels over it. An agent still on the three-second HTTP heartbeat cannot join.
 
 ---

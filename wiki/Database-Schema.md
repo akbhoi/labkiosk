@@ -15,7 +15,7 @@ This is the single most important rule when touching the database, and the test 
 
 Both must be changed together. `test/worker.test.ts` compares them and fails on drift with `Columns of "x" differ between SCHEMA_SQL and migrations/`.
 
-**Never edit an applied migration.** Add a new numbered file — `0033_feature.sql` — and mirror the change in `SCHEMA_SQL`.
+**Never edit an applied migration.** Add a new numbered file — `0034_feature.sql` — and mirror the change in `SCHEMA_SQL`.
 
 ```bash
 # Local
@@ -65,6 +65,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0030_lan_sharing.sql` | `tenants.lan_sharing`: the workstations at one site copy a release from each other instead of each downloading it |
 | `0031_restart_logs.sql` | `workstation_issues.log_text`: the end of the journal a restart report carried, cleared after 30 days |
 | `0032_workstation_limit.sql` | `tenants.workstation_limit`: how many workstations an organization may enrol (45 by default, or what it already had when more) |
+| `0033_remote_control_seats.sql` | `tenants.remote_control_seats` (concurrent sessions; 5 for organizations already approved, 1 for new approvals) and `remote_control_revoked_at` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -118,6 +119,8 @@ One row per organization. This table has accumulated the most columns because it
 | `security_updates` | TEXT | `next_boot` (default) \| `approval`: whether a security release for a workstation's line installs at its next start by itself, or waits for an administrator |
 | `lan_sharing` | INTEGER | `1` when the organization's workstations share a release on their local network; default `0` |
 | `workstation_limit` | INTEGER | How many workstations may hold a valid device token (1–100000, default 45); set by a super admin at approval and under Organizations. Enrolment past it answers 403; a workstation that still holds a valid token always enrols again |
+| `remote_control_seats` | INTEGER | Remote Control sessions that may be open at once (1–1000); set when Remote Control is approved |
+| `remote_control_revoked_at` | INTEGER | When a super admin revoked Remote Control (status back to `rejected`); NULL otherwise |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
@@ -346,7 +349,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0033_<description>.sql` (the next number after `0032`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0034_<description>.sql` (the next number after `0033`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

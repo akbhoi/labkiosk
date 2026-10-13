@@ -14,6 +14,7 @@ import {
   createTenant,
   findTenantBySubdomain,
   countEnrolledWorkstations,
+  updateTenant,
   useAuditQueue,
   writeAuditLog,
   insertAuditEntries,
@@ -916,7 +917,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(task.kind, "remote_control");
     const verify = await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin });
     assert.equal(verify.status, 400, "a Remote Control request has no phone to verify");
-    const approved = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
+    for (const remoteControlSeats of [undefined, 0, 1.5, "2", 1001]) {
+      const noSeats = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ remoteControlSeats }), cookie: admin });
+      assert.equal(noSeats.res.status, 400, `${remoteControlSeats} seats are refused`);
+    }
+    const approved = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ remoteControlSeats: 1 }), cookie: admin });
     assert.equal(approved.res.status, 200);
     assert.match(lastMailTo("operator@greenwood.example").subject, /Remote Control is on/);
     const after = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
@@ -4937,6 +4942,120 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       403,
       "another workstation holding the session token still reaches only its own relay"
     );
+    // Nobody joined: the relay's alarm ends the session, which gives its seat back.
+    const realNow = Date.now;
+    Date.now = () => realNow() + (RELAY_JOIN_SECONDS + 5) * 1000;
+    try {
+      await relays.entry(relayName(tenantId, "WS-R")).relay.alarm();
+    } finally {
+      Date.now = realNow;
+    }
+    await device.closeFromClient();
+  });
+
+  test("Remote Control seats: one session per seat, freed when a session ends", async () => {
+    const tenantId = await greenwoodId();
+    const relays = fakeRelayNamespace();
+    const relayEnv = { ...mockEnv, REMOTE_RELAY: relays.namespace } as Env;
+    const open = (clientId: string) =>
+      worker.fetch(request("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie }), relayEnv);
+    const db = getDatabase(mockEnv);
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.remote_control_seats, 1, "approved with one seat");
+
+    await enrolAs("WS-S1");
+    await enrolAs("WS-S2");
+    const one = await hubs().connectDevice({ tenantId, clientId: "WS-S1", ip: "10.0.0.21", portal: portalContext() });
+    const two = await hubs().connectDevice({ tenantId, clientId: "WS-S2", ip: "10.0.0.22", portal: portalContext() });
+    assert.equal((await open("WS-S1")).status, 200);
+    assert.equal((await open("WS-S1")).status, 200, "a new session on the same workstation replaces its own, in the same seat");
+    const full = await open("WS-S2");
+    assert.equal(full.status, 429, "the only seat is taken");
+    assert.match(((await full.json()) as any).error, /All 1 Remote Control seat is in use \(WS-S1\)/);
+    assert.equal(ofType(two, "remote").length, 0, "the second workstation was never asked to join");
+    const unused = relays.entry(relayName(tenantId, "WS-S2")).state.storage.sql.exec("SELECT token_hash FROM session").toArray();
+    assert.equal(unused.length, 0, "the relay session opened for it was closed again");
+
+    // The session on WS-S1 ends (here: the workstation never joined, and its relay's alarm fires).
+    const relay = relays.entry(relayName(tenantId, "WS-S1")).relay;
+    const realNow = Date.now;
+    Date.now = () => realNow() + (RELAY_JOIN_SECONDS + 5) * 1000;
+    try {
+      await relay.alarm();
+    } finally {
+      Date.now = realNow;
+    }
+    assert.equal((await open("WS-S2")).status, 200, "the seat came back when the session ended");
+
+    const admin = await superCookie();
+    for (const seats of [0, 1.5, "3", 1001]) {
+      const bad = await call("/api/super/tenants/remote-control", { ...json({ tenantId, action: "seats", seats }), cookie: admin });
+      assert.equal(bad.status, 400, `${seats} seats are refused`);
+    }
+    assert.equal(
+      (await call("/api/super/tenants/remote-control", { ...json({ tenantId, action: "seats", seats: 2 }), cookie: orgSessionCookie })).status,
+      403,
+      "an organization cannot give itself seats"
+    );
+    assert.equal((await call("/api/super/tenants/remote-control", { ...json({ tenantId, action: "seats", seats: 2 }), cookie: admin })).status, 200);
+    assert.equal((await open("WS-S1")).status, 200, "a second seat");
+    await one.closeFromClient();
+    await two.closeFromClient();
+  });
+
+  test("Revoking Remote Control ends every open session, emails the organization and can be undone", async () => {
+    const tenantId = await greenwoodId();
+    const relays = fakeRelayNamespace();
+    const relayEnv = { ...mockEnv, REMOTE_RELAY: relays.namespace } as Env;
+    const open = (clientId: string) =>
+      worker.fetch(request("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie }), relayEnv);
+    const control = (body: Record<string, unknown>, cookie: string) =>
+      worker.fetch(request("/api/super/tenants/remote-control", { ...json(body), cookie }), relayEnv);
+    const admin = await superCookie();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-S1", ip: "10.0.0.21", portal: portalContext() });
+    assert.equal((await open("WS-S1")).status, 200);
+    const relayState = relays.entry(relayName(tenantId, "WS-S1")).state;
+    assert.equal(relayState.storage.sql.exec("SELECT token_hash FROM session").toArray().length, 1);
+
+    assert.equal((await control({ tenantId, action: "revoke", reason: "x" }, orgSessionCookie)).status, 403, "only the platform revokes");
+    assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 409, "nothing to restore while it is on");
+    assert.equal((await control({ tenantId, action: "wipe" }, admin)).status, 400);
+    const revoked = await control({ tenantId, action: "revoke", reason: "The subscription that included it has ended." }, admin);
+    assert.equal(revoked.status, 200);
+    const result = (await revoked.json()) as any;
+    assert.equal(result.sessionsClosed, 2, "both sessions the earlier test left open were closed");
+    assert.equal(result.emailSent, true);
+    assert.equal(relayState.storage.sql.exec("SELECT token_hash FROM session").toArray().length, 0, "the relay forgot the session");
+    const mail = lastMailTo("operator@greenwood.example");
+    assert.equal(mail.subject, "Remote Control has been turned off");
+    assert.match(mail.text, /subscription that included it has ended/);
+
+    assert.equal((await open("WS-S1")).status, 403, "no new session");
+    const tenant = (await findTenantBySubdomain(getDatabase(mockEnv), "greenwood"))!;
+    assert.equal(tenant.remote_control_status, "rejected");
+    assert.ok(Number(tenant.remote_control_revoked_at) > 0);
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /badge-red">Turned off/);
+    assert.match(settings, /id="form-remote-control-request"/, "the organization can ask again");
+    assert.equal((await control({ tenantId, action: "revoke", reason: "x" }, admin)).status, 409, "already off");
+
+    assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 200);
+    assert.equal((await open("WS-S1")).status, 200, "back on, with the seats it had");
+
+    // The organization can turn it off itself; asking again is a new request.
+    const asRival = await call("/api/tenant/remote-control/disable?tenant=greenwood", { ...json({}), cookie: rivalSessionCookie });
+    assert.equal(asRival.status, 403);
+    const disabled = await worker.fetch(request("/api/tenant/remote-control/disable?tenant=greenwood", { ...json({}), cookie: orgSessionCookie }), relayEnv);
+    assert.equal(disabled.status, 200);
+    assert.equal(((await disabled.json()) as any).sessionsClosed, 1);
+    assert.equal((await findTenantBySubdomain(getDatabase(mockEnv), "greenwood"))!.remote_control_status, "none");
+    assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 409, "a self-disabled organization asks again through Tasks");
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    const actions = (logs.logs as any[]).map((l) => l.action);
+    for (const action of ["remote_control.revoke", "remote_control.restore", "remote_control.disable", "remote_control.seats"]) {
+      assert.ok(actions.includes(action), `${action} is audited`);
+    }
+    // The tests after this one use Remote Control again.
+    await updateTenant(getDatabase(mockEnv), tenantId, { remote_control_status: "approved" });
     await device.closeFromClient();
   });
 
@@ -7437,7 +7556,24 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0018"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0019"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0032"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0033"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
+  });
+
+  test("0033 gives organizations already using Remote Control five seats, and new approvals one", () => {
+    const db = migratedDb("0033");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, remote_control_status, created_at, updated_at) VALUES ('on', 'u1', 'On', 'on', 'active', 'approved', 1, 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, remote_control_status, created_at, updated_at) VALUES ('off', 'u1', 'Off', 'off', 'active', 'none', 1, 1);
+    `);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0033_remote_control_seats.sql"), "utf8"));
+    db.exec("COMMIT;");
+    const seats = (id: string) => (db.prepare("SELECT remote_control_seats AS n, remote_control_revoked_at AS r FROM tenants WHERE id = ?").get(id) as { n: number; r: number | null });
+    assert.deepEqual({ ...seats("on") }, { n: 5, r: null });
+    assert.deepEqual({ ...seats("off") }, { n: 1, r: null });
+    assert.throws(() => db.exec("UPDATE tenants SET remote_control_seats = 1001 WHERE id = 'on'"), /CHECK/);
   });
 
   test("0032 gives every organization a workstation limit of 45, or what it already has when that is more", () => {

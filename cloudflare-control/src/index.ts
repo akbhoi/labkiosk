@@ -130,6 +130,7 @@ import {
   countEnrolledWorkstations,
   DEFAULT_WORKSTATION_LIMIT,
   MAX_WORKSTATION_LIMIT,
+  MAX_REMOTE_CONTROL_SEATS,
   revokeDeviceTokensForClient,
   addWhitelistDomain,
   removeWhitelistDomain,
@@ -227,13 +228,16 @@ import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsP
 import { LiveStatus } from "./org_hub";
 import {
   RELAY_JOIN_SECONDS,
+  RELAY_MAX_SECONDS,
   RELAY_TOKEN_PATTERN,
+  closeRelaySession,
   hashRelayToken,
   newRelayToken,
   openRelaySession,
   relayUpgrade
 } from "./remote_relay";
 import { startCustomHostnameJob } from "./custom_hostnames";
+import { mailConfigProblem, sendMail } from "./mail";
 import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
 import { PALETTE } from "./ui_tokens";
 
@@ -355,6 +359,21 @@ function remoteControlRefusal(tenant: Tenant | null, headers: Record<string, str
     403,
     headers
   );
+}
+
+/**
+ * End every Remote Control session an organization has open, for Remote Control
+ * being turned off: its OrgHub gives back the workstations holding a seat, and
+ * each one's relay closes both sides. Returns how many were closed.
+ */
+async function closeAllRemoteSessions(env: Env, tenantId: string): Promise<number> {
+  const { clientIds } = await hubJson<{ clientIds: string[] }>(env, tenantId, "/remote-revoke", {});
+  if (!env.REMOTE_RELAY) return 0;
+  let closed = 0;
+  for (const clientId of clientIds) {
+    if (await closeRelaySession(env, tenantId, clientId)) closed++;
+  }
+  return closed;
 }
 
 /** DNS label limit; a longer organization slug can never resolve. */
@@ -1578,6 +1597,84 @@ export default {
         details: `limit=${limit} was=${Number(target.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled=${enrolled}`
       });
       return new Response(JSON.stringify({ status: "ok", limit, enrolled }), { headers: jsonHeaders });
+    }
+
+    // POST /api/super/tenants/remote-control { tenantId, action, seats? }: the platform's
+    // controls over an organization's Remote Control. "revoke" turns it off and ends
+    // every open session at once; "restore" turns it back on; "seats" sets how many
+    // sessions may be open at once.
+    if (path === "/api/super/tenants/remote-control" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown; action?: unknown; seats?: unknown; reason?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch (err) {
+        console.warn("[Worker] Unreadable Remote Control request:", err);
+        return jsonError("The request body is not valid JSON", 400, jsonHeaders);
+      }
+      const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      const action = body.action;
+      if (action !== "revoke" && action !== "restore" && action !== "seats") {
+        return jsonError("The action is revoke, restore or seats", 400, jsonHeaders);
+      }
+      const seats = body.seats;
+      const validSeats = typeof seats === "number" && Number.isInteger(seats) && seats >= 1 && seats <= MAX_REMOTE_CONTROL_SEATS;
+      if (action === "seats" && !validSeats) {
+        return jsonError(`Remote Control seats must be a whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}`, 400, jsonHeaders);
+      }
+      if (action === "revoke") {
+        if (isDemoTenant(target, session!.user_id)) return jsonError("The platform's demo organizations keep Remote Control", 400, jsonHeaders);
+        if (target.remote_control_status !== "approved") return jsonError("Remote Control is not on for this organization", 409, jsonHeaders);
+        const reason = typeof body.reason === "string" ? body.reason.replace(/\r\n/g, "\n").trim().slice(0, 2000) : "";
+        await updateTenant(db, target.id, { remote_control_status: "rejected", remote_control_revoked_at: Math.floor(Date.now() / 1000) });
+        const closed = await closeAllRemoteSessions(env, target.id);
+        await writeAuditLog(db, {
+          tenantId: target.id,
+          userId: session!.user_id,
+          action: "remote_control.revoke",
+          details: `sessions_closed=${closed}${reason ? ` reason=${reason.slice(0, 200)}` : ""}`
+        });
+        const owner = await findUserById(db, target.user_id);
+        let emailSent = false;
+        if (owner?.email && !mailConfigProblem(env)) {
+          try {
+            await sendMail(env, {
+              to: owner.email,
+              toName: owner.name,
+              subject: "Remote Control has been turned off",
+              text:
+                `Hello ${owner.name || ""},\n\n` +
+                `Lab Kiosk has turned Remote Control off for ${target.name}. Any session that was open has ended.` +
+                (reason ? `\n\n${reason}` : "") +
+                `\n\nYour workstations keep working as before. To ask for Remote Control again, open Settings in your console, or reply to this email.\n\nLab Kiosk`,
+              template: { name: "notice", title: "Remote Control has been turned off" }
+            });
+            emailSent = true;
+          } catch (err) {
+            console.error(`[Worker] Could not email ${target.name} that Remote Control was turned off:`, err);
+          }
+        }
+        return new Response(JSON.stringify({ status: "ok", remoteControlStatus: "rejected", sessionsClosed: closed, emailSent }), { headers: jsonHeaders });
+      }
+      if (action === "restore") {
+        if (target.remote_control_status === "approved") return jsonError("Remote Control is already on for this organization", 409, jsonHeaders);
+        if (!target.remote_control_revoked_at) return jsonError("Only Remote Control the platform turned off can be restored; a new request goes through Tasks", 409, jsonHeaders);
+        const update: Partial<Tenant> = { remote_control_status: "approved", remote_control_revoked_at: null };
+        if (validSeats) update.remote_control_seats = seats as number;
+        await updateTenant(db, target.id, update);
+        await writeAuditLog(db, { tenantId: target.id, userId: session!.user_id, action: "remote_control.restore" });
+        return new Response(JSON.stringify({ status: "ok", remoteControlStatus: "approved" }), { headers: jsonHeaders });
+      }
+      await updateTenant(db, target.id, { remote_control_seats: seats as number });
+      await writeAuditLog(db, {
+        tenantId: target.id,
+        userId: session!.user_id,
+        action: "remote_control.seats",
+        details: `seats=${seats} was=${Number(target.remote_control_seats) || 1}`
+      });
+      return new Response(JSON.stringify({ status: "ok", seats }), { headers: jsonHeaders });
     }
 
     // GET /api/i18n: which interface languages this platform can supply.
@@ -3012,6 +3109,28 @@ export default {
       return handleRemoteControlRequest(routeContext, currentTenant!);
     }
 
+    // POST /api/tenant/remote-control/disable: the organization turns Remote Control
+    // off for itself. Open sessions end at once; turning it on again is a new request.
+    if (path === "/api/tenant/remote-control/disable" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      if (session!.role === "super_admin") {
+        return jsonError("The demo organizations keep Remote Control", 400, jsonHeaders);
+      }
+      if (currentTenant!.remote_control_status !== "approved") {
+        return jsonError("Remote Control is not on for this organization", 409, jsonHeaders);
+      }
+      await updateTenant(db, currentTenant!.id, { remote_control_status: "none" });
+      const closed = await closeAllRemoteSessions(env, currentTenant!.id);
+      await writeAuditLog(db, {
+        tenantId: currentTenant!.id,
+        userId: session!.user_id,
+        action: "remote_control.disable",
+        details: `sessions_closed=${closed}`
+      });
+      return new Response(JSON.stringify({ status: "ok", sessionsClosed: closed }), { headers: jsonHeaders });
+    }
+
     // POST /api/clients/remote-session: Remote Control through the console's
     // own address (src/remote_relay.ts). { clientId } -> { socketPath, joinSeconds }.
     // The workstation is asked, over the connection it already holds, to join.
@@ -3034,7 +3153,26 @@ export default {
       if (!(await openRelaySession(env, tenantId, clientId, await hashRelayToken(token), session!.user_id))) {
         return jsonError("The Remote Control relay could not open a session", 502, jsonHeaders);
       }
-      const asked = await hubRequest(env, tenantId, "/remote-open", { clientId, session: token });
+      const seats = Number(currentTenant!.remote_control_seats) || 1;
+      const asked = await hubRequest(env, tenantId, "/remote-open", {
+        clientId,
+        session: token,
+        userId: session!.user_id,
+        seats,
+        endsAt: Math.floor(Date.now() / 1000) + RELAY_MAX_SECONDS
+      });
+      if (asked.status === 429) {
+        // The relay session just opened is not used: close it rather than wait for it to expire.
+        await closeRelaySession(env, tenantId, clientId);
+        const { holders } = (await asked.json()) as { holders?: unknown };
+        const busy = Array.isArray(holders) ? holders.map(String).join(", ") : "";
+        return jsonError(
+          `All ${seats} Remote Control ${seats === 1 ? "seat is" : "seats are"} in use${busy ? ` (${busy})` : ""}. ` +
+            "End one of those sessions first, or ask Lab Kiosk for more seats.",
+          429,
+          jsonHeaders
+        );
+      }
       if (asked.status === 409) {
         return jsonError("This workstation is not connected to the console right now", 409, jsonHeaders);
       }

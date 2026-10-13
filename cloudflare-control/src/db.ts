@@ -84,7 +84,10 @@ CREATE TABLE IF NOT EXISTS tenants (
   lan_sharing INTEGER NOT NULL DEFAULT 0
   CHECK (lan_sharing IN (0, 1)),
   workstation_limit INTEGER NOT NULL DEFAULT 45
-  CHECK (workstation_limit BETWEEN 1 AND 100000)
+  CHECK (workstation_limit BETWEEN 1 AND 100000),
+  remote_control_seats INTEGER NOT NULL DEFAULT 1
+  CHECK (remote_control_seats BETWEEN 1 AND 1000),
+  remote_control_revoked_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -597,6 +600,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT log_text FROM workstation_issues LIMIT 1").run();
     // 0032: how many workstations an organization may enrol.
     await db.prepare("SELECT workstation_limit FROM tenants LIMIT 1").run();
+    // 0033: Remote Control seats and revocation.
+    await db.prepare("SELECT remote_control_seats, remote_control_revoked_at FROM tenants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -636,7 +641,8 @@ export async function ensureDemoTenants(db: D1Database, superAdminId: string): P
       // Remote Control is approved per organization; the platform's own demos have it.
       const seeded: Partial<Tenant> = {
         homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}`,
-        remote_control_status: "approved"
+        remote_control_status: "approved",
+        remote_control_seats: 5
       };
       await updateTenant(db, tenant.id, seeded);
       demos.push({ ...tenant, ...seeded });
@@ -921,7 +927,9 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "homepage_intro",
   "homepage_blocks",
   "remote_control_status",
-  "workstation_limit"
+  "workstation_limit",
+  "remote_control_seats",
+  "remote_control_revoked_at"
 ]);
 
 /** How many blocks an organization may publish, and how long each part may be. */
@@ -1641,6 +1649,8 @@ export async function assignClientsToGroup(
 export const DEFAULT_WORKSTATION_LIMIT = 45;
 /** The highest limit a super admin can set; tenants.workstation_limit CHECKs the same. */
 export const MAX_WORKSTATION_LIMIT = 100000;
+/** The highest number of concurrent Remote Control sessions; tenants.remote_control_seats CHECKs the same. */
+export const MAX_REMOTE_CONTROL_SEATS = 1000;
 
 /** Workstations of an organization holding a valid device token. */
 export async function countEnrolledWorkstations(db: D1Database, tenantId: string): Promise<number> {

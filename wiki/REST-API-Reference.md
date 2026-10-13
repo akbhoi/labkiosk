@@ -82,7 +82,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/clients` | `GET` | Fleet state with live thumbnails and remote-control details |
-| `/api/clients/remote-session` | `POST` | Open a Remote Control session through the console's relay; asks the workstation to join (`409` when it is not connected) |
+| `/api/clients/remote-session` | `POST` | Open a Remote Control session through the console's relay; asks the workstation to join (`409` when it is not connected, `429` when every seat is in use) |
+| `/api/tenant/remote-control/disable` | `POST` | The organization turns Remote Control off for itself; open sessions end (`settings`) |
 | `/api/console/remote` | `GET` (WebSocket) | The viewer's side of a Remote Control session (VNC bytes) |
 | `/api/clients/remove` | `POST` | Decommission a workstation and revoke its token |
 | `/api/clients/group` | `POST` | Assign workstations to a group |
@@ -137,6 +138,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/super/tenants/reject` | `POST` | Decline a requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Suspend an active organization |
 | `/api/super/tenants/reactivate` | `POST` | Reactivate a suspended organization |
+| `/api/super/tenants/workstation-limit` | `POST` | `{ tenantId, limit }`: how many workstations may enrol (1–100000) |
+| `/api/super/tenants/remote-control` | `POST` | `{ tenantId, action: "revoke" \| "restore" \| "seats", seats?, reason? }`: revoking ends every open session and emails the owner |
 | `/api/super/tenants/custom-domain/approve` | `POST` | Approve and bind a custom domain |
 | `/api/super/tenants/custom-domain/reject` | `POST` | Reject a requested custom domain |
 | `/api/super/tenants/custom-domain/remove` | `POST` | Unbind an assigned custom domain |

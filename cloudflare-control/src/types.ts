@@ -83,6 +83,10 @@ export interface Tenant {
   lan_sharing?: number;
   /** Workstations the organization may enrol (0032). */
   workstation_limit?: number;
+  /** Remote Control sessions the organization may have open at once (0033). */
+  remote_control_seats?: number;
+  /** When a super admin turned Remote Control off; NULL otherwise (0033). */
+  remote_control_revoked_at?: number | null;
 }
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */

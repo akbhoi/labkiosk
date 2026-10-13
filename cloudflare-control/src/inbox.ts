@@ -20,7 +20,7 @@
 
 import { Env } from "./types";
 import { jsonError, requireSuperAdmin } from "./guard";
-import { DEFAULT_WORKSTATION_LIMIT, findTenantById, findUserById, MAX_WORKSTATION_LIMIT, updateTenant, writeAuditLog } from "./db";
+import { findTenantById, findUserById, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT, updateTenant, writeAuditLog } from "./db";
 import { notifyConfigChanged } from "./hub";
 import {
   addConversationMessage,
@@ -73,14 +73,21 @@ function json(data: unknown, headers: Record<string, string>, status = 200): Res
 
 async function readMessage(
   request: Request
-): Promise<{ message: string; close: boolean; status: string; workstationLimit: unknown } | null> {
+): Promise<{ message: string; close: boolean; status: string; workstationLimit: unknown; remoteControlSeats: unknown } | null> {
   try {
-    const body = await request.json<{ message?: unknown; close?: unknown; status?: unknown; workstationLimit?: unknown }>();
+    const body = await request.json<{
+      message?: unknown;
+      close?: unknown;
+      status?: unknown;
+      workstationLimit?: unknown;
+      remoteControlSeats?: unknown;
+    }>();
     return {
       message: String(body?.message ?? "").replace(/\r\n/g, "\n").trim().slice(0, MAX_MESSAGE_CHARS),
       close: body?.close === true,
       status: String(body?.status ?? ""),
-      workstationLimit: body?.workstationLimit
+      workstationLimit: body?.workstationLimit,
+      remoteControlSeats: body?.remoteControlSeats
     };
   } catch {
     return null;
@@ -483,7 +490,17 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
   if ((action === "approve" || action === "reject") && conversation.kind === "remote_control") {
     if (tenant.status !== "active") return jsonError("The organization is not active", 409, jsonHeaders);
     const approve = action === "approve";
-    await updateTenant(db, tenant.id, { remote_control_status: approve ? "approved" : "rejected" });
+    const seats = input.remoteControlSeats;
+    if (approve && (typeof seats !== "number" || !Number.isInteger(seats) || seats < 1 || seats > MAX_REMOTE_CONTROL_SEATS)) {
+      return jsonError(`Set the Remote Control seats: a whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}`, 400, jsonHeaders);
+    }
+    await updateTenant(
+      db,
+      tenant.id,
+      approve
+        ? { remote_control_status: "approved", remote_control_seats: seats as number, remote_control_revoked_at: null }
+        : { remote_control_status: "rejected" }
+    );
     await setConversationStatus(db, id, approve ? "approved" : "rejected", userId);
     await addConversationMessage(db, {
       conversationId: id,
@@ -491,7 +508,7 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
       body: approve ? "Remote Control approved." : "Remote Control request rejected.",
       authorUserId: userId
     });
-    await writeAuditLog(db, { tenantId: tenant.id, userId, action: approve ? "remote_control.approve" : "remote_control.reject" });
+    await writeAuditLog(db, { tenantId: tenant.id, userId, action: approve ? "remote_control.approve" : "remote_control.reject", details: approve ? `seats=${seats}` : undefined });
     const sent = await sendOnConversation(
       env,
       db,
