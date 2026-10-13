@@ -152,6 +152,7 @@ import {
   publishedLegalVersions,
   recordLegalAcceptances
 } from "./legal";
+import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, licenseState, parseLicenseDate } from "./license";
 import {
   initSchema,
   ensureSuperAdmin,
@@ -409,12 +410,15 @@ const DEMO_LOCKED_MESSAGE = "The platform's demo organizations keep their names 
  * viewer's socket -- is refused until it has been approved.
  */
 function remoteControlRefusal(tenant: Tenant | null, headers: Record<string, string>): Response | null {
-  if (tenant?.remote_control_status === "approved") return null;
-  return jsonError(
-    "Remote Control is not enabled for this organization. An administrator can request it under Settings.",
-    403,
-    headers
-  );
+  if (tenant?.remote_control_status !== "approved") {
+    return jsonError(
+      "Remote Control is not enabled for this organization. An administrator can request it under Settings.",
+      403,
+      headers
+    );
+  }
+  const licenseEnded = licenseExpiredMessage(tenant);
+  return licenseEnded ? jsonError(licenseEnded, 403, headers) : null;
 }
 
 /**
@@ -1653,6 +1657,40 @@ export default {
         details: `limit=${limit} was=${Number(target.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled=${enrolled}`
       });
       return new Response(JSON.stringify({ status: "ok", limit, enrolled }), { headers: jsonHeaders });
+    }
+
+    // POST /api/super/tenants/license { tenantId, plan, expiresOn }: the license an
+    // organization runs under. expiresOn is "YYYY-MM-DD" (00:00 UTC that day) or null
+    // for no end date. Once it has passed, new enrolments and Remote Control stop.
+    if (path === "/api/super/tenants/license" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown; plan?: unknown; expiresOn?: unknown };
+      try {
+        body = await request.json<{ tenantId?: unknown; plan?: unknown; expiresOn?: unknown }>();
+      } catch (err) {
+        console.warn("[Worker] Unreadable license request:", err);
+        return jsonError("The request body is not valid JSON", 400, jsonHeaders);
+      }
+      const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      if (!isLicensePlan(body.plan)) {
+        return jsonError("The plan must be education, evaluation, subscriber or commercial", 400, jsonHeaders);
+      }
+      let expiresAt: number | null = null;
+      if (body.expiresOn !== null && body.expiresOn !== undefined) {
+        expiresAt = typeof body.expiresOn === "string" ? parseLicenseDate(body.expiresOn) : null;
+        if (expiresAt === null) return jsonError("The end date must be a date as YYYY-MM-DD, or null for none", 400, jsonHeaders);
+      }
+      await updateTenant(db, target.id, { license_plan: body.plan, license_expires_at: expiresAt });
+      const was = target.license_expires_at ? licenseDate(Number(target.license_expires_at)) : "none";
+      await writeAuditLog(db, {
+        tenantId: target.id,
+        userId: session!.user_id,
+        action: "tenant.license",
+        details: `plan=${body.plan} expires=${expiresAt === null ? "none" : licenseDate(expiresAt)} was=${licensePlanLabel(target.license_plan)}/${was}`
+      });
+      return new Response(JSON.stringify({ status: "ok", plan: body.plan, expiresAt }), { headers: jsonHeaders });
     }
 
     // POST /api/super/tenants/remote-control { tenantId, action, seats? }: the platform's
@@ -3336,7 +3374,16 @@ export default {
           return jsonError("This organization is not active yet. Ask your administrator to approve it.", 403, jsonHeaders);
         }
 
-        const issued = await createDeviceToken(db, { tenantId: tenant.id, clientId });
+        const licenseEnded = licenseExpiredMessage(tenant);
+        const issued = await createDeviceToken(db, { tenantId: tenant.id, clientId, existingOnly: licenseEnded !== null });
+        if (!issued && licenseEnded) {
+          await writeAuditLog(db, {
+            tenantId: tenant.id,
+            action: "device.enroll_license",
+            details: `client=${clientId}`
+          });
+          return jsonError(licenseEnded, 403, jsonHeaders);
+        }
         if (!issued) {
           const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
           await writeAuditLog(db, {
@@ -4473,6 +4520,7 @@ export default {
           enrolledWorkstations,
           activePage,
           legal: legalStatus && legalStatus.pending.length ? { ...legalStatus, canAccept: userRole === "org_admin" } : undefined,
+          license: isDemoTenant(tenant, session.user_id) ? undefined : licenseState(tenant),
           takedowns: {
             homepage: tenant.homepage_takedown_at ? { at: tenant.homepage_takedown_at, reason: tenant.homepage_takedown_reason ?? null } : null,
             cards: takenDownCards.map((c) => ({ title: c.title, url: c.url, at: Number(c.takedown_at), reason: c.takedown_reason ?? null }))

@@ -83,6 +83,10 @@ Under **Releases**, below the release list:
 
 Registration records the version of every legal document in force (`src/legal.ts`). When a document's text changes, its version changes; the first time the platform serves it, every organization that has not accepted it sees a notice in its console, and 30 days later its console asks before anything else until the owner or an `org_admin` accepts. Workstations, homepages and User Portals keep working throughout. **System → Legal** shows each document's version and how many active organizations accepted it, emails the owners of those that have not (**Email organizations**), and downloads every acceptance as CSV; **Organizations → ⋯ → Legal Record (CSV)** downloads one organization's.
 
+### License plan and end date
+
+**Organizations → ⋯ → License** records which grant of the license an organization runs under (*education*, *evaluation*, *subscriber* or *commercial*) and, optionally, the date it ends (00:00 UTC; *never* for none). The row shows the plan and the date. From 30 days before the end date the organization's console shows a reminder. Once it has passed the organization enrols no new workstation (a workstation that still holds a valid token enrols again) and opens no Remote Control session; its workstations, homepage and User Portal keep working, and its console says why. Renewing is setting a later date. Each change is audited (`tenant.license`), and each refused enrolment too (`device.enroll_license`).
+
 ### Hosted pages: link rules, reports and takedown
 
 A homepage block's link and a User Portal card's address and thumbnail are refused when they use an IP address, a link shortener, a user name or password, or a domain on **System → Legal → Link blocklist** (subdomains included). Every organization homepage and User Portal has **Report this page** in its footer, which opens the contact form set to *Privacy, security or legal* with the page's address filled in; it arrives in **Mail** as a Legal (LGL) conversation.

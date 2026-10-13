@@ -182,6 +182,10 @@ reports.
   Worker answers `403` with a sentence the wizard shows as is. A workstation that still holds a valid
   token always enrols again (counted once), so a lowered limit strands nobody; the check and the
   insert are one statement (`createDeviceToken()` returns null when full).
+- Once the organization's `license_expires_at` has passed, enrolment answers `403` with a sentence
+  the wizard shows, except for a workstation that still holds a valid token
+  (`createDeviceToken({ existingOnly: true })`), and Remote Control is refused. Heartbeats, the hub,
+  updates and the pages keep working: an expired license never strands a workstation.
 - Worker URL: `https` only, except a local test server (loopback, container gateways, private IPv4
   `10/8`, `172.16/12`, `192.168/16`) — the same set as the Worker's `isDevHost()`.
 

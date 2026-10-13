@@ -5061,6 +5061,75 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await device.closeFromClient();
   });
 
+  test("An ended license stops new enrolments and Remote Control, and the consoles say so", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = await greenwoodId();
+    const admin = await superCookie();
+    const license = (body: Record<string, unknown>, cookie?: string) => call("/api/super/tenants/license", { ...json(body), cookie });
+    const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+
+    assert.ok([401, 403].includes((await license({ tenantId, plan: "commercial", expiresOn: null })).status), "an anonymous caller is refused");
+    assert.equal((await license({ tenantId, plan: "commercial", expiresOn: null }, orgSessionCookie)).status, 403, "an organization cannot set its own license");
+    for (const body of [
+      { tenantId, plan: "free", expiresOn: null },
+      { tenantId, plan: null, expiresOn: null },
+      { tenantId, plan: "commercial", expiresOn: "2027-02-30" },
+      { tenantId, plan: "commercial", expiresOn: "2027/01/01" },
+      { tenantId, plan: "commercial", expiresOn: 1798761600 }
+    ]) {
+      assert.equal((await license(body, admin)).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await license({ tenantId: "nope", plan: "commercial", expiresOn: null }, admin)).status, 404);
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "nothing changed");
+
+    const first = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
+    assert.equal(first.res.status, 200);
+    const ended = day(-1);
+    assert.equal((await license({ tenantId, plan: "subscriber", expiresOn: ended }, admin)).status, 200);
+    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    const refused = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LAPSED" }));
+    assert.equal(refused.res.status, 403, "no new workstation");
+    assert.match(refused.data.error, new RegExp(`ended on ${ended}\\. Enrolled workstations keep working`));
+    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "no token was issued");
+    const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
+    assert.equal(again.res.status, 200, "a workstation that is already enrolled can enrol again");
+    const telemetry = await call("/api/telemetry?tenant=greenwood", { ...json({ clientId: "PC-LICENSED" }), bearer: again.data.deviceToken });
+    assert.equal(telemetry.status, 200, "and keeps working");
+
+    const viewer = await callJson("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie });
+    assert.equal(viewer.res.status, 403, "no Remote Control session");
+    assert.match(viewer.data.error, /license of .* ended on/);
+    const opened = await call("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "WS-R" }), cookie: orgSessionCookie });
+    assert.equal(opened.status, 403);
+
+    const consolePage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(consolePage, /id="license-notice"[\s\S]*License ended/);
+    const superPage = await (await call("/super/organizations", { cookie: admin })).text();
+    assert.match(superPage, new RegExp(`Subscriber, ended ${ended}`));
+    assert.match(superPage, /class="menu-item btn-license"/);
+
+    const soon = day(10);
+    assert.equal((await license({ tenantId, plan: "commercial", expiresOn: soon }, admin)).status, 200);
+    const reminded = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(reminded, new RegExp(`License ending soon[\\s\\S]*ends on ${soon}`));
+    const allowed = await call("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LAPSED" }));
+    assert.equal(allowed.status, 200, "a license in force enrols as before");
+    for (const clientId of ["PC-LAPSED", "PC-LICENSED"]) {
+      await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
+    }
+
+    assert.equal((await license({ tenantId, plan: "education", expiresOn: null }, admin)).status, 200);
+    const quiet = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(quiet, /id="license-notice"/, "no end date, no notice");
+    assert.equal((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie })).status, 200);
+
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    const entries = logs.logs as any[];
+    assert.ok(entries.some((l) => l.action === "device.enroll_license" && /client=PC-LAPSED/.test(l.details)));
+    assert.ok(entries.some((l) => l.action === "tenant.license" && /plan=subscriber expires=/.test(l.details)));
+    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null });
+  });
+
   test("The Remote Control viewer is framed only by the console and loads noVNC from this site", async () => {
     assert.ok([401, 403].includes((await call("/console/remote?tenant=greenwood&clientId=WS-R")).status));
     assert.ok([401, 403].includes((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: rivalSessionCookie })).status));

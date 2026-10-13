@@ -6,7 +6,15 @@
  * owns its markup and its client script in one file, and what is left here is the routing between them.
  */
 
-import { ConsoleLegal, ConsoleTakedowns, renderLegalNoticeHtml, renderLegalNoticeScript, renderTakedownNoticeHtml } from "./ui_admin_legal";
+import {
+  ConsoleLegal,
+  ConsoleTakedowns,
+  renderLegalNoticeHtml,
+  renderLegalNoticeScript,
+  renderLicenseNoticeHtml,
+  renderTakedownNoticeHtml
+} from "./ui_admin_legal";
+import type { LicenseState } from "./license";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEFAULT_WORKSTATION_LIMIT } from "./db";
@@ -59,6 +67,8 @@ export interface DashboardOptions {
   legal?: ConsoleLegal;
   /** The organization's content the platform took down. */
   takedowns?: ConsoleTakedowns;
+  /** The organization's license; a notice shows while it is ending soon or has ended. */
+  license?: LicenseState;
   nonce: string;
 }
 
@@ -188,7 +198,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   const takedowns = options.takedowns;
   const legalHtml =
     (legal ? renderLegalNoticeHtml(legal, labName) : "") +
-    (takedowns && (takedowns.homepage || takedowns.cards.length) ? renderTakedownNoticeHtml(takedowns) : "");
+    (takedowns && (takedowns.homepage || takedowns.cards.length) ? renderTakedownNoticeHtml(takedowns) : "") +
+    (options.license ? renderLicenseNoticeHtml(options.license, labName) : "");
   const gated = Boolean(legal?.gated);
   const scriptsHtml =
     renderApiScopeScript(nonce, tenantParam) +

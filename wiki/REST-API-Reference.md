@@ -139,6 +139,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/super/tenants/suspend` | `POST` | Suspend an active organization |
 | `/api/super/tenants/reactivate` | `POST` | Reactivate a suspended organization |
 | `/api/super/tenants/workstation-limit` | `POST` | `{ tenantId, limit }`: how many workstations may enrol (1–100000) |
+| `/api/super/tenants/license` | `POST` | `{ tenantId, plan, expiresOn }`: the license plan (`education`, `evaluation`, `subscriber`, `commercial`) and end date (`YYYY-MM-DD` or `null`) |
 | `/api/super/tenants/remote-control` | `POST` | `{ tenantId, action: "revoke" \| "restore" \| "seats", seats?, reason? }`: revoking ends every open session and emails the owner |
 | `/api/super/tenants/custom-domain/approve` | `POST` | Approve and bind a custom domain |
 | `/api/super/tenants/custom-domain/reject` | `POST` | Reject a requested custom domain |

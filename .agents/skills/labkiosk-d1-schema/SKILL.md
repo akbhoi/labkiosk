@@ -153,7 +153,8 @@ closed row is added by `syncReleases` for a new major), and `major_upgrade_grant
 (`tenant_id` FK, cascade). `0035` adds `legal_acceptances` (append-only and deliberately without
 foreign keys, so the record survives deleting the organization) and `legal_versions`. `0036` adds
 `link_blocklist` and the takedown columns on `tenants` (homepage) and `portal_sites` (a card taken
-down is also `is_active = 0`).
+down is also `is_active = 0`). `0037` adds `tenants.license_plan` (CHECK `education`, `evaluation`,
+`subscriber`, `commercial`, or NULL) and `license_expires_at` (`src/license.ts`).
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

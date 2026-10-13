@@ -7,6 +7,7 @@
 
 import { escapeAttr, escapeHtml } from "./escape";
 import type { LegalStatus } from "./legal";
+import { licenseDate, type LicenseState } from "./license";
 
 export interface ConsoleLegal extends LegalStatus {
   /** This account is the owner or an org_admin. */
@@ -105,5 +106,19 @@ export function renderTakedownNoticeHtml(takedowns: ConsoleTakedowns): string {
         <h2 class="card-title">Content taken down by Lab Kiosk</h2>
         <p class="card-sub">Lab Kiosk took this down under the Terms of Service. To contest it, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
         <ul class="mb-0">${items.join("")}</ul>
+      </div>`;
+}
+
+/** The organization's license is ending within LICENSE_REMINDER_DAYS, or has ended. */
+export function renderLicenseNoticeHtml(license: LicenseState, organization: string): string {
+  if (license.expiresAt === null || (!license.expired && !license.endingSoon)) return "";
+  const date = escapeHtml(licenseDate(license.expiresAt));
+  const lead = license.expired
+    ? `The Lab Kiosk license of ${escapeHtml(organization)} ended on ${date}. Enrolled workstations, the homepage and the User Portal keep working, but no new workstation can be enrolled and Remote Control is off until it is renewed.`
+    : `The Lab Kiosk license of ${escapeHtml(organization)} ends on ${date}. After that no new workstation can be enrolled and Remote Control is off until it is renewed; enrolled workstations keep working.`;
+  return `
+      <div class="card" id="license-notice" role="region" aria-label="License">
+        <h2 class="card-title">${license.expired ? "License ended" : "License ending soon"}</h2>
+        <p class="card-sub mb-0">${lead} To renew, write to <a href="mailto:sales@labkiosk.org">sales@labkiosk.org</a>.</p>
       </div>`;
 }

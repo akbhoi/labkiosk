@@ -89,7 +89,10 @@ CREATE TABLE IF NOT EXISTS tenants (
   CHECK (remote_control_seats BETWEEN 1 AND 1000),
   remote_control_revoked_at INTEGER,
   homepage_takedown_at INTEGER,
-  homepage_takedown_reason TEXT
+  homepage_takedown_reason TEXT,
+  license_plan TEXT
+  CHECK (license_plan IS NULL OR license_plan IN ('education', 'evaluation', 'subscriber', 'commercial')),
+  license_expires_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -674,6 +677,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT domain FROM link_blocklist LIMIT 1").run();
     await db.prepare("SELECT homepage_takedown_at, homepage_takedown_reason FROM tenants LIMIT 1").run();
     await db.prepare("SELECT takedown_at, takedown_reason FROM portal_sites LIMIT 1").run();
+    // 0037: license plan and expiry.
+    await db.prepare("SELECT license_plan, license_expires_at FROM tenants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -1003,6 +1008,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "remote_control_seats",
   "homepage_takedown_at",
   "homepage_takedown_reason",
+  "license_plan",
+  "license_expires_at",
   "remote_control_revoked_at"
 ]);
 
@@ -1780,11 +1787,12 @@ export async function countEnrolledWorkstations(db: D1Database, tenantId: string
  * workstation limit. A workstation that still holds a valid token is always
  * let back in, so lowering the limit never strands one already enrolled.
  * The limit check and the insert are one statement: two workstations enrolling
- * at once cannot both take the last place.
+ * at once cannot both take the last place. `existingOnly` (an expired license)
+ * lets only such a workstation back in.
  */
 export async function createDeviceToken(
   db: D1Database,
-  data: { tenantId: string; clientId: string }
+  data: { tenantId: string; clientId: string; existingOnly?: boolean }
 ): Promise<{ token: string; device: DeviceToken } | null> {
   const token = generateDeviceToken();
   const tokenHash = await sha256Hex(token);
@@ -1796,10 +1804,22 @@ export async function createDeviceToken(
       `INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at, revoked)
        SELECT ?, ?, ?, ?, ?, ?, 0
        WHERE EXISTS (SELECT 1 FROM device_tokens WHERE tenant_id = ? AND client_id = ? AND revoked = 0)
-          OR (SELECT COUNT(DISTINCT client_id) FROM device_tokens WHERE tenant_id = ? AND revoked = 0)
-             < (SELECT workstation_limit FROM tenants WHERE id = ?)`
+          OR (? = 0 AND (SELECT COUNT(DISTINCT client_id) FROM device_tokens WHERE tenant_id = ? AND revoked = 0)
+             < (SELECT workstation_limit FROM tenants WHERE id = ?))`
     )
-    .bind(id, tokenHash, data.tenantId, data.clientId, now, now, data.tenantId, data.clientId, data.tenantId, data.tenantId)
+    .bind(
+      id,
+      tokenHash,
+      data.tenantId,
+      data.clientId,
+      now,
+      now,
+      data.tenantId,
+      data.clientId,
+      data.existingOnly ? 1 : 0,
+      data.tenantId,
+      data.tenantId
+    )
     .run();
   if (Number(inserted.meta?.changes ?? 0) === 0) return null;
 

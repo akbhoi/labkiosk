@@ -11,6 +11,7 @@ import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
 import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
+import { LICENSE_PLANS, licenseDate, licensePlanLabel, licenseState } from "./license";
 import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
@@ -79,6 +80,19 @@ function renderViewTabsHtml(label: string, views: SuperView[]): string {
       .join("")}
     </nav>
   `;
+}
+
+/** The organization's license under its status: plan, and the end date when there is one. */
+function renderLicenseCell(t: Tenant): string {
+  const state = licenseState(t);
+  const ends =
+    state.expiresAt === null
+      ? ""
+      : state.expired
+        ? `, ended ${licenseDate(state.expiresAt)}`
+        : `, until ${licenseDate(state.expiresAt)}`;
+  const tone = state.expired ? "text-danger" : state.endingSoon ? "text-warning" : "";
+  return `<div class="cell-sub nowrap ${tone}">${escapeHtml(licensePlanLabel(state.plan) + ends)}</div>`;
 }
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
@@ -192,6 +206,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </td>
       <td>
         <span class="badge ${t.status === "active" ? "badge-green" : t.status === "suspended" ? "badge-red" : "badge-yellow"}">${escapeHtml(String(t.status).charAt(0).toUpperCase() + String(t.status).slice(1))}</span>
+        ${isDemo ? "" : renderLicenseCell(t)}
       </td>
       <td>
         <span class="row nowrap">
@@ -248,6 +263,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
             }
             ${isDemo ? "" : `<button type="button" class="menu-item menu-item-danger btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="card" data-action-kind="takedown">Take Down a Portal Card</button>
             <button type="button" class="menu-item btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="card" data-action-kind="restore">Restore a Portal Card</button>`}
+            ${isDemo ? "" : `<button type="button" class="menu-item btn-license" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-plan="${escapeAttr(t.license_plan || "")}" data-expires="${escapeAttr(t.license_expires_at ? licenseDate(Number(t.license_expires_at)) : "")}">License</button>`}
             <button type="button" class="menu-item btn-workstation-limit" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-limit="${escapeAttr(String(Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT))}" data-enrolled="${escapeAttr(String(Number(t.enrolled_clients) || 0))}">Workstation Limit</button>
             ${t.custom_domain ? `<button type="button" class="menu-item menu-item-danger btn-remove-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Disconnect Custom Domain</button>` : ""}
             ${
@@ -955,6 +971,55 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
             }
             if (!card) window.location.reload();
             else lkToast(takedown ? "Taken down" + (data.emailSent ? "; the organization was emailed" : "") : "Restored", "success");
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      });
+
+      document.querySelectorAll(".btn-license").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const organization = btn.closest("tr").querySelector(".cell-title").textContent;
+          const plan = await lkPrompt({
+            title: "License of " + organization,
+            message: "Which grant of the license this organization runs under.",
+            label: "Plan",
+            value: btn.dataset.plan,
+            hint: "education, evaluation, subscriber or commercial.",
+            confirmLabel: "Next"
+          });
+          if (!plan) return;
+          const planId = plan.toLowerCase();
+          if (!${JSON.stringify(LICENSE_PLANS.map((p) => p.id))}.includes(planId)) {
+            lkToast("The plan must be education, evaluation, subscriber or commercial.", "error");
+            return;
+          }
+          const ends = await lkPrompt({
+            title: "License of " + organization,
+            message: "Once this date has passed the organization enrols no new workstation and opens no Remote Control session. Enrolled workstations keep working.",
+            label: "End date",
+            value: btn.dataset.expires || "never",
+            hint: "A date as YYYY-MM-DD (00:00 UTC), or never.",
+            confirmLabel: "Save"
+          });
+          if (!ends) return;
+          const expiresOn = ends.toLowerCase() === "never" ? null : ends;
+          if (expiresOn !== null && !/^\\d{4}-\\d{2}-\\d{2}$/.test(expiresOn)) {
+            lkToast("Enter a date as YYYY-MM-DD, or never.", "error");
+            return;
+          }
+          try {
+            const res = await fetch("/api/super/tenants/license", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tenantId: btn.dataset.tenant, plan: planId, expiresOn })
+            });
+            const data = await res.json();
+            if (data.status === "ok") {
+              window.location.reload();
+            } else {
+              lkToast(data.error || "Failed to save the license", "error");
+            }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
           }

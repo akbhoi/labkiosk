@@ -69,6 +69,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0034_release_lines.sql` | The platform tables `release_lines` (each line's support status and end-of-life date) and `release_majors` (whether a major is open), and `major_upgrade_grants` (a closed major granted to one organization, and its administrator's confirmation) |
 | `0035_legal_acceptances.sql` | `legal_acceptances` (append-only, no foreign keys: who accepted which version of which legal document, when, from where) and `legal_versions` (when each version was first served) |
 | `0036_hosted_content.sql` | `link_blocklist` (domains no hosted page may link to); `tenants.homepage_takedown_at`, `homepage_takedown_reason`; `portal_sites.takedown_at`, `takedown_reason` |
+| `0037_license_plan.sql` | `tenants.license_plan` (`education`, `evaluation`, `subscriber`, `commercial`, or NULL) and `license_expires_at` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -131,6 +132,8 @@ One row per organization. This table has accumulated the most columns because it
 | `home_route` | TEXT | `/` (organization homepage) or `/home` (User Portal); where workstations land |
 | `homepage_headline` / `homepage_intro` / `homepage_blocks` | TEXT | Organization homepage copy; blocks are JSON, sanitised on the way in and escaped on the way out |
 | `homepage_takedown_at` / `homepage_takedown_reason` | INTEGER / TEXT | Set while a super admin has the homepage taken down (`0036`); it shows a neutral notice |
+| `license_plan` | TEXT | Which grant of `LICENSE` applies: `education`, `evaluation`, `subscriber`, `commercial`; NULL until a super admin records it (`0037`) |
+| `license_expires_at` | INTEGER | When the license ends (00:00 UTC of the date set); NULL for no end date. Once passed, new enrolments and Remote Control are refused; enrolled workstations keep working (`0037`, `src/license.ts`) |
 | `created_at` / `updated_at` | INTEGER | |
 
 `broadcast_url` and `broadcast_epoch` live here rather than in worker memory because isolates are per-colocation and short-lived. When they were module-level state, workstations in different colos disagreed about the current page and a recycled isolate forgot the broadcast entirely. A broadcast sent to **selected** workstations is recorded on each of their `client_devices` rows instead; the heartbeat hands a workstation whichever of the two is newer.
@@ -410,7 +413,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0037_<description>.sql` (the next number after `0036`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0038_<description>.sql` (the next number after `0037`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.
