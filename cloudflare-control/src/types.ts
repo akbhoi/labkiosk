@@ -87,6 +87,9 @@ export interface Tenant {
   remote_control_seats?: number;
   /** When a super admin turned Remote Control off; NULL otherwise (0033). */
   remote_control_revoked_at?: number | null;
+  /** A super admin took the organization homepage down; it shows a neutral notice. */
+  homepage_takedown_at?: number | null;
+  homepage_takedown_reason?: string | null;
 }
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */
@@ -121,6 +124,9 @@ export interface PortalSite {
   order_index: number;
   is_active: number; // 0 or 1
   created_at: number;
+  /** A super admin took this card down (it is inactive too). */
+  takedown_at?: number | null;
+  takedown_reason?: string | null;
 }
 
 export interface ClientDevice {

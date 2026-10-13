@@ -2,7 +2,9 @@
  * Super Admin -> System -> Legal: the legal documents organizations accept, the
  * version of each in force, when it was published and from when consoles ask
  * for it before anything else, how many active organizations accepted it, and
- * the acceptance record as CSV (src/legal.ts).
+ * the acceptance record as CSV (src/legal.ts); and the link blocklist, the
+ * domains no organization homepage or User Portal card may link to
+ * (src/link_rules.ts).
  */
 
 import { escapeAttr } from "./escape";
@@ -30,6 +32,33 @@ export function renderLegalPaneHtml(): string {
             </table>
           </div>
           <a class="btn btn-secondary btn-sm mt-md" href="/api/super/legal/acceptances?format=csv" download>Download every acceptance (CSV)</a>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Link blocklist</h2>
+          <p class="card-sub">No organization homepage block or User Portal card may link to these domains or their subdomains. Links by IP address, through a link shortener, or with a user name or password in them are always refused. Adding a domain does not remove links already published; take those down from the organization's menu.</p>
+          <form id="form-blocklist" class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="blocklist-domain">Domain</label>
+              <input type="text" class="form-input" id="blocklist-domain" required maxlength="253" placeholder="phishing.example">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="blocklist-reason">Reason (optional)</label>
+              <input type="text" class="form-input" id="blocklist-reason" maxlength="300" placeholder="Reported as phishing">
+            </div>
+            <div class="form-group">
+              <button type="submit" class="btn btn-primary">Block domain</button>
+            </div>
+          </form>
+          <div class="table-container mt-md">
+            <table>
+              <thead>
+                <tr><th>Domain</th><th>Reason</th><th>Added</th><th>Actions</th></tr>
+              </thead>
+              <tbody id="blocklist-rows">
+                <tr><td colspan="4" class="table-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
   `;
 }
@@ -128,6 +157,67 @@ export function renderLegalScript(nonce: string): string {
           }
         });
         load();
+
+        const blockRows = document.getElementById("blocklist-rows");
+        const blockForm = document.getElementById("form-blocklist");
+        function renderBlocklist(domains) {
+          blockRows.replaceChildren();
+          if (!domains.length) {
+            const row = document.createElement("tr");
+            const td = cell("No domains are blocked.", "table-empty");
+            td.colSpan = 4;
+            row.appendChild(td);
+            blockRows.appendChild(row);
+            return;
+          }
+          for (const d of domains) {
+            const row = document.createElement("tr");
+            row.appendChild(cell(d.domain, "mono"));
+            row.appendChild(cell(d.reason || "", "text-xs"));
+            row.appendChild(cell(day(d.added_at), "mono text-xs nowrap"));
+            const actions = document.createElement("td");
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "btn btn-sm btn-ghost";
+            b.textContent = "Remove";
+            b.dataset.unblock = d.domain;
+            actions.appendChild(b);
+            row.appendChild(actions);
+            blockRows.appendChild(row);
+          }
+        }
+        async function blocklistCall(url, payload) {
+          try {
+            const res = await fetch(url, payload ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) } : undefined);
+            const data = await res.json();
+            if (!res.ok) {
+              lkToast(data.error || "The blocklist could not be changed", "error");
+              return false;
+            }
+            renderBlocklist(data.domains || []);
+            return true;
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+            return false;
+          }
+        }
+        if (blockRows && blockForm) {
+          blockForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const domain = document.getElementById("blocklist-domain");
+            const reason = document.getElementById("blocklist-reason");
+            if (await blocklistCall("/api/super/link-blocklist", { domain: domain.value, reason: reason.value })) {
+              lkToast(domain.value.trim().toLowerCase() + " blocked", "success");
+              blockForm.reset();
+            }
+          });
+          blockRows.addEventListener("click", async (event) => {
+            const b = event.target && event.target.closest ? event.target.closest("[data-unblock]") : null;
+            if (!b) return;
+            if (await blocklistCall("/api/super/link-blocklist/remove", { domain: b.dataset.unblock })) lkToast(b.dataset.unblock + " removed", "success");
+          });
+          blocklistCall("/api/super/link-blocklist");
+        }
       })();
     </script>
   `;

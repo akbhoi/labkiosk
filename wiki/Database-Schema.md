@@ -68,6 +68,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0033_remote_control_seats.sql` | `tenants.remote_control_seats` (concurrent sessions; 5 for organizations already approved, 1 for new approvals) and `remote_control_revoked_at` |
 | `0034_release_lines.sql` | The platform tables `release_lines` (each line's support status and end-of-life date) and `release_majors` (whether a major is open), and `major_upgrade_grants` (a closed major granted to one organization, and its administrator's confirmation) |
 | `0035_legal_acceptances.sql` | `legal_acceptances` (append-only, no foreign keys: who accepted which version of which legal document, when, from where) and `legal_versions` (when each version was first served) |
+| `0036_hosted_content.sql` | `link_blocklist` (domains no hosted page may link to); `tenants.homepage_takedown_at`, `homepage_takedown_reason`; `portal_sites.takedown_at`, `takedown_reason` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -129,6 +130,7 @@ One row per organization. This table has accumulated the most columns because it
 | `broadcast_epoch` | INTEGER | Monotonic marker; `0` when no broadcast is active |
 | `home_route` | TEXT | `/` (organization homepage) or `/home` (User Portal); where workstations land |
 | `homepage_headline` / `homepage_intro` / `homepage_blocks` | TEXT | Organization homepage copy; blocks are JSON, sanitised on the way in and escaped on the way out |
+| `homepage_takedown_at` / `homepage_takedown_reason` | INTEGER / TEXT | Set while a super admin has the homepage taken down (`0036`); it shows a neutral notice |
 | `created_at` / `updated_at` | INTEGER | |
 
 `broadcast_url` and `broadcast_epoch` live here rather than in worker memory because isolates are per-colocation and short-lived. When they were module-level state, workstations in different colos disagreed about the current page and a recycled isolate forgot the broadcast entirely. A broadcast sent to **selected** workstations is recorded on each of their `client_devices` rows instead; the heartbeat hands a workstation whichever of the two is newer.
@@ -157,6 +159,7 @@ User Portal cards.
 | `order_index` | INTEGER | Display order |
 | `is_active` | INTEGER | `0` or `1` |
 | `created_at` | INTEGER | |
+| `takedown_at` / `takedown_reason` | INTEGER / TEXT | Set when a super admin takes the card down (`0036`); it is made inactive too |
 
 ### `client_devices`
 
@@ -338,6 +341,10 @@ The evidence of what each organization agreed to (`0035`, `src/legal.ts`). **App
 | `accepted_at` | INTEGER | |
 | `ip` / `user_agent` | TEXT | Where it came from |
 
+### `link_blocklist`
+
+Domains no organization homepage link or User Portal card may point to, including their subdomains (`0036`, `src/link_rules.ts`). **No `tenant_id`.** Columns: `domain` (PK), `reason`, `added_at`, `added_by`.
+
 ### `legal_versions`
 
 When the Worker first served each document version (`0035`). An organization that has not accepted a required document's current version sees a notice in its console, and 30 days after `published_at` the console asks before anything else. `notified_at` is when a super admin last emailed organizations about it.
@@ -403,7 +410,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0036_<description>.sql` (the next number after `0035`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0037_<description>.sql` (the next number after `0036`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

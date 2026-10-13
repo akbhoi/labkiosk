@@ -81,3 +81,29 @@ export function renderLegalNoticeScript(nonce: string): string {
     </script>
   `;
 }
+
+/** Content of this organization the platform took down, as its console tells it. */
+export interface ConsoleTakedowns {
+  homepage: { at: number; reason: string | null } | null;
+  cards: Array<{ title: string; url: string; at: number; reason: string | null }>;
+}
+
+export function renderTakedownNoticeHtml(takedowns: ConsoleTakedowns): string {
+  const items: string[] = [];
+  if (takedowns.homepage) {
+    items.push(
+      `<li>Your organization homepage, on ${escapeHtml(day(takedowns.homepage.at))}${takedowns.homepage.reason ? `: ${escapeHtml(takedowns.homepage.reason)}` : "."} It shows "This content is unavailable" until Lab Kiosk restores it.</li>`
+    );
+  }
+  for (const card of takedowns.cards) {
+    items.push(
+      `<li>The User Portal card <strong>${escapeHtml(card.title)}</strong> (<code>${escapeHtml(card.url)}</code>), on ${escapeHtml(day(card.at))}${card.reason ? `: ${escapeHtml(card.reason)}` : "."}</li>`
+    );
+  }
+  return `
+      <div class="card" id="takedown-notice" role="region" aria-label="Content taken down">
+        <h2 class="card-title">Content taken down by Lab Kiosk</h2>
+        <p class="card-sub">Lab Kiosk took this down under the Terms of Service. To contest it, write to <a href="mailto:legal@labkiosk.org">legal@labkiosk.org</a>.</p>
+        <ul class="mb-0">${items.join("")}</ul>
+      </div>`;
+}

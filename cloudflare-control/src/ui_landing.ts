@@ -780,6 +780,12 @@ ${FONT_LINKS}
       const wantedReason = new URLSearchParams(window.location.search).get('reason');
       const reasonSelect = document.getElementById('contact-reason');
       if (wantedReason && Array.from(reasonSelect.options).some((o) => o.value === wantedReason)) reasonSelect.value = wantedReason;
+      // "Report this page" on an organization's hosted page arrives with that page's address.
+      const reported = new URLSearchParams(window.location.search).get('report');
+      if (reported && /^https?:\\/\\/\\S{1,500}$/.test(reported) && !contactMessage.value) {
+        contactMessage.value = 'I am reporting this page: ' + reported + '\\n\\nWhat is wrong with it: ';
+        contactCountShow();
+      }
 
       contactSend.addEventListener('click', async () => {
         const emailInput = document.getElementById('contact-email');

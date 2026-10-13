@@ -15,6 +15,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | Set how many workstations an organization may enrol (**Workstation Limit**) | The license: 45 without a paid one |
 | Set Remote Control seats, revoke or restore Remote Control | An add-on the platform grants, and can take back |
 | See and export which version of the Terms each organization accepted, and email those that have not | The evidence of the contract with each customer |
+| Block domains on hosted pages; take an organization's homepage or a User Portal card down after a report | The platform hosts these pages under its own domain |
 | Classify releases; set each line's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
@@ -81,6 +82,12 @@ Under **Releases**, below the release list:
 ### Legal terms
 
 Registration records the version of every legal document in force (`src/legal.ts`). When a document's text changes, its version changes; the first time the platform serves it, every organization that has not accepted it sees a notice in its console, and 30 days later its console asks before anything else until the owner or an `org_admin` accepts. Workstations, homepages and User Portals keep working throughout. **System → Legal** shows each document's version and how many active organizations accepted it, emails the owners of those that have not (**Email organizations**), and downloads every acceptance as CSV; **Organizations → ⋯ → Legal Record (CSV)** downloads one organization's.
+
+### Hosted pages: link rules, reports and takedown
+
+A homepage block's link and a User Portal card's address and thumbnail are refused when they use an IP address, a link shortener, a user name or password, or a domain on **System → Legal → Link blocklist** (subdomains included). Every organization homepage and User Portal has **Report this page** in its footer, which opens the contact form set to *Privacy, security or legal* with the page's address filled in; it arrives in **Mail** as a Legal (LGL) conversation.
+
+To act on a report, use **Organizations → ⋯**: **Take Down Homepage** replaces the homepage with *This content is unavailable*; **Take Down a Portal Card** asks for the card's link and hides every card of that organization linking there. Both need a reason, which the owner is emailed and the console shows; the same link cannot be added again until it is restored. **Restore Homepage** and **Restore a Portal Card** put them back. Each step is audited (`content.takedown`, `content.restore`, `content.block`, `content.unblock`).
 
 ### Rejecting
 

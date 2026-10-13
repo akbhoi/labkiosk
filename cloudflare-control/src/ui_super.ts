@@ -239,6 +239,15 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
                 : ""
             }
             <a class="menu-item" role="menuitem" href="${escapeAttr(`/api/super/legal/acceptances?tenantId=${encodeURIComponent(t.id)}&format=csv`)}" download>Legal Record (CSV)</a>
+            ${
+              isDemo
+                ? ""
+                : t.homepage_takedown_at
+                ? `<button type="button" class="menu-item btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="homepage" data-action-kind="restore">Restore Homepage</button>`
+                : `<button type="button" class="menu-item menu-item-danger btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="homepage" data-action-kind="takedown">Take Down Homepage</button>`
+            }
+            ${isDemo ? "" : `<button type="button" class="menu-item menu-item-danger btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="card" data-action-kind="takedown">Take Down a Portal Card</button>
+            <button type="button" class="menu-item btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="card" data-action-kind="restore">Restore a Portal Card</button>`}
             <button type="button" class="menu-item btn-workstation-limit" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-limit="${escapeAttr(String(Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT))}" data-enrolled="${escapeAttr(String(Number(t.enrolled_clients) || 0))}">Workstation Limit</button>
             ${t.custom_domain ? `<button type="button" class="menu-item menu-item-danger btn-remove-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Disconnect Custom Domain</button>` : ""}
             ${
@@ -896,6 +905,59 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
           });
           if (!ok) return;
           await remoteControlAction({ tenantId: btn.dataset.tenant, action: "restore" }, "Failed to restore Remote Control");
+        });
+      });
+
+      // Taking an organization's hosted content down after a report, or putting it back.
+      document.querySelectorAll(".btn-content").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.closest("tr").querySelector(".cell-title").textContent;
+          const card = btn.dataset.target === "card";
+          const takedown = btn.dataset.actionKind === "takedown";
+          const payload = { tenantId: btn.dataset.tenant, target: btn.dataset.target, action: btn.dataset.actionKind };
+          if (card) {
+            const link = await lkPrompt({
+              title: (takedown ? "Take down a User Portal card of " : "Restore a User Portal card of ") + name,
+              label: "The card's link, as the report gives it",
+              placeholder: "https://example.com/page",
+              hint: "Every card of this organization linking to exactly this address is " + (takedown ? "hidden from its User Portal." : "shown again."),
+              confirmLabel: "Next"
+            });
+            if (!link) return;
+            payload.url = link;
+          }
+          if (takedown) {
+            const reason = await lkPrompt({
+              title: "Take down " + (card ? "this card" : name + "'s homepage") + "?",
+              message: card ? "The card disappears from the User Portal." : "The homepage shows \u201cThis content is unavailable\u201d instead.",
+              label: "Reason, emailed to the organization",
+              placeholder: "For example: reported as linking to a phishing page.",
+              hint: "Required: the organization is told why, and can contest it.",
+              confirmLabel: "Take down",
+              tone: "danger"
+            });
+            if (!reason) return;
+            payload.reason = reason;
+          } else if (!card) {
+            const ok = await lkConfirm({ title: "Restore " + name + "'s homepage?", message: "It shows what the organization published again.", confirmLabel: "Restore" });
+            if (!ok) return;
+          }
+          try {
+            const res = await fetch("/api/super/tenants/content", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              lkToast(data.error || "The change could not be made", "error");
+              return;
+            }
+            if (!card) window.location.reload();
+            else lkToast(takedown ? "Taken down" + (data.emailSent ? "; the organization was emailed" : "") : "Restored", "success");
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
         });
       });
 

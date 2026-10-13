@@ -112,11 +112,12 @@ async function mayAcceptLegal(db: D1Database, session: Session, tenant: Tenant):
 }
 
 /** The documents in force as the platform's Legal view shows them. */
-async function platformLegalOverview(db: D1Database) {
+async function platformLegalOverview(db: D1Database, superAdminId: string) {
   const [documents, counts, tenants] = await Promise.all([publishedLegalVersions(db), legalAcceptanceCounts(db), listAllTenants(db)]);
   return {
     noticeDays: LEGAL_NOTICE_DAYS,
-    activeOrganizations: tenants.filter((t) => t.status === "active").length,
+    // The platform's own demos accept nothing.
+    activeOrganizations: tenants.filter((t) => t.status === "active" && !isDemoTenant(t, superAdminId)).length,
     documents: documents.map((d) => ({
       id: d.id,
       title: d.title,
@@ -140,6 +141,7 @@ async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void
     });
   }
 }
+import { addBlockedDomain, BLOCKLIST_DOMAIN_PATTERN, hostedLinkProblem, listLinkBlocklist, removeBlockedDomain } from "./link_rules";
 import {
   acceptancesCsv,
   isLegalDocumentId,
@@ -168,6 +170,9 @@ import {
   deleteSession,
   deleteExpiredSessions,
   listPortalSites,
+  findTakenDownPortalSite,
+  listTakenDownPortalSites,
+  setPortalSiteTakedown,
   createPortalSite,
   deletePortalSite,
   listClientDevices,
@@ -2041,7 +2046,7 @@ export default {
     if (path === "/api/super/legal" && method === "GET") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
-      return new Response(JSON.stringify(await platformLegalOverview(db)), { headers: jsonHeaders });
+      return new Response(JSON.stringify(await platformLegalOverview(db, session!.user_id)), { headers: jsonHeaders });
     }
     if (path === "/api/super/legal/acceptances" && method === "GET") {
       const denied = requireSuperAdmin(session, jsonHeaders);
@@ -2077,7 +2082,7 @@ export default {
       const date = new Date(doc.effectiveAt * 1000).toISOString().slice(0, 10);
       let emailed = 0;
       let failed = 0;
-      for (const tenant of (await listAllTenants(db)).filter((t) => t.status === "active")) {
+      for (const tenant of (await listAllTenants(db)).filter((t) => t.status === "active" && !isDemoTenant(t, session!.user_id))) {
         if (!(await organizationLegalStatus(db, tenant.id)).pending.some((p) => p.id === doc.id)) continue;
         try {
           await sendMail(env, {
@@ -2106,7 +2111,104 @@ export default {
         action: "legal.notify",
         details: `${doc.id}=${doc.version} emailed=${emailed} failed=${failed}`
       });
-      return new Response(JSON.stringify({ status: "ok", emailed, failed, ...(await platformLegalOverview(db)) }), { headers: jsonHeaders });
+      return new Response(JSON.stringify({ status: "ok", emailed, failed, ...(await platformLegalOverview(db, session!.user_id)) }), { headers: jsonHeaders });
+    }
+
+    // GET /api/super/link-blocklist: the domains no hosted page may link to.
+    // POST /api/super/link-blocklist { domain, reason? }: add one.
+    // POST /api/super/link-blocklist/remove { domain }: remove one.
+    if (path === "/api/super/link-blocklist" || path === "/api/super/link-blocklist/remove") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      if (method === "GET" && path === "/api/super/link-blocklist") {
+        return new Response(JSON.stringify({ domains: await listLinkBlocklist(db) }), { headers: jsonHeaders });
+      }
+      if (method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
+      let body: { domain?: unknown; reason?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const domain = typeof body?.domain === "string" ? body.domain.trim().toLowerCase().replace(/\.$/, "") : "";
+      if (!BLOCKLIST_DOMAIN_PATTERN.test(domain)) return jsonError("A domain name such as example.com is required", 400, jsonHeaders);
+      const remove = path.endsWith("/remove");
+      if (remove) {
+        if (!(await removeBlockedDomain(db, domain))) return jsonError("That domain is not on the blocklist", 404, jsonHeaders);
+      } else {
+        const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 300) : null;
+        await addBlockedDomain(db, domain, reason, session!.user_id);
+      }
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: remove ? "content.unblock" : "content.block",
+        details: domain
+      });
+      return new Response(JSON.stringify({ status: "ok", domains: await listLinkBlocklist(db) }), { headers: jsonHeaders });
+    }
+
+    // POST /api/super/tenants/content { tenantId, target: "homepage" | "card", action: "takedown" | "restore", url?, reason? }:
+    // take an organization's homepage, or the User Portal cards linking to `url`,
+    // down after a report, or put them back. Taking down emails the owner the reason.
+    if (path === "/api/super/tenants/content" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown; target?: unknown; action?: unknown; url?: unknown; reason?: unknown };
+      try {
+        body = await request.json<typeof body>();
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const target = typeof body?.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      if (body.target !== "homepage" && body.target !== "card") return jsonError("The target is homepage or card", 400, jsonHeaders);
+      if (body.action !== "takedown" && body.action !== "restore") return jsonError("The action is takedown or restore", 400, jsonHeaders);
+      const takedown = body.action === "takedown";
+      const reason = typeof body.reason === "string" ? body.reason.replace(/\r\n/g, "\n").trim().slice(0, 2000) : "";
+      if (takedown && !reason) return jsonError("Give the reason; the organization is told it", 400, jsonHeaders);
+      const now = Math.floor(Date.now() / 1000);
+      let what: string;
+      if (body.target === "homepage") {
+        if (takedown === Boolean(target.homepage_takedown_at)) {
+          return jsonError(takedown ? "The homepage is already taken down" : "The homepage is not taken down", 409, jsonHeaders);
+        }
+        await updateTenant(db, target.id, { homepage_takedown_at: takedown ? now : null, homepage_takedown_reason: takedown ? reason : null });
+        what = "organization homepage";
+      } else {
+        const cardUrl = safeHttpUrl(body.url);
+        if (!cardUrl) return jsonError("The card's link (an http or https address) is required", 400, jsonHeaders);
+        const changed = await setPortalSiteTakedown(db, target.id, cardUrl, takedown ? { at: now, reason } : null);
+        if (!changed) return jsonError(takedown ? "No active card of this organization links there" : "No card linking there is taken down", 404, jsonHeaders);
+        what = `User Portal card${changed === 1 ? "" : "s"} linking to ${cardUrl}`;
+        await notifyConfigChanged(env, target.id);
+      }
+      await writeAuditLog(db, {
+        tenantId: target.id,
+        userId: session!.user_id,
+        action: takedown ? "content.takedown" : "content.restore",
+        details: `${body.target}${body.target === "card" ? ` ${safeHttpUrl(body.url)}` : ""}${reason ? ` reason=${reason.slice(0, 200)}` : ""}`
+      });
+      let emailSent = false;
+      const owner = await findUserById(db, target.user_id);
+      if (takedown && owner?.email && !mailConfigProblem(env)) {
+        try {
+          await sendMail(env, {
+            to: owner.email,
+            toName: owner.name,
+            subject: `Lab Kiosk took down your ${body.target === "homepage" ? "organization homepage" : "User Portal card"}`,
+            text:
+              `Hello ${owner.name || ""},\n\n` +
+              `Lab Kiosk has taken down ${target.name}'s ${what} under the Terms of Service.\n\n${reason}\n\n` +
+              `Your workstations keep working. To contest this, reply to this email or write to legal@labkiosk.org.\n\nLab Kiosk`,
+            template: { name: "notice", title: "Content taken down" }
+          });
+          emailSent = true;
+        } catch (err) {
+          console.error(`[Worker] Could not email ${target.name} about a takedown:`, err);
+        }
+      }
+      return new Response(JSON.stringify({ status: "ok", emailSent }), { headers: jsonHeaders });
     }
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
@@ -2349,6 +2451,12 @@ export default {
         const thumbnailUrl = body.thumbnailUrl ? safeHttpUrl(body.thumbnailUrl) : null;
         if (body.thumbnailUrl && !thumbnailUrl) {
           return jsonError("Thumbnail URL must be a valid http(s) address", 400, jsonHeaders);
+        }
+        const blocked = (await listLinkBlocklist(db)).map((b) => b.domain);
+        const linkProblem = hostedLinkProblem(targetUrl, blocked) ?? (thumbnailUrl ? hostedLinkProblem(thumbnailUrl, blocked) : null);
+        if (linkProblem) return jsonError(linkProblem, 400, jsonHeaders);
+        if (await findTakenDownPortalSite(db, currentTenant!.id, targetUrl)) {
+          return jsonError("Lab Kiosk took a card with this link down. Write to legal@labkiosk.org to contest it.", 403, jsonHeaders);
         }
 
         const site = await createPortalSite(db, {
@@ -3067,6 +3175,11 @@ export default {
         const headline = String(body.headline ?? "").trim().slice(0, HOMEPAGE_LIMITS.headline);
         const intro = String(body.intro ?? "").trim().slice(0, HOMEPAGE_LIMITS.intro);
         const blocks = sanitizeHomepageBlocks(body.blocks);
+        const blocked = (await listLinkBlocklist(db)).map((b) => b.domain);
+        for (const [index, block] of blocks.entries()) {
+          const problem = block.url ? hostedLinkProblem(block.url, blocked) : null;
+          if (problem) return jsonError(`Block ${index + 1} (${block.title || "untitled"}): ${problem}`, 400, jsonHeaders);
+        }
 
         await updateTenant(db, currentTenant!.id, {
           // Empty means "use the default", which is the organization name and the
@@ -3080,7 +3193,7 @@ export default {
           tenantId: currentTenant!.id,
           userId: session!.user_id,
           action: "homepage.update",
-          details: `${blocks.length} block(s)`
+          details: `${blocks.length} block(s)${blocks.some((b) => b.url) ? `; links: ${blocks.flatMap((b) => (b.url ? [b.url] : [])).join(" ")}`.slice(0, 1500) : ""}`
         });
 
         return new Response(JSON.stringify({ status: "ok", blocks }), { headers: jsonHeaders });
@@ -4332,6 +4445,7 @@ export default {
         : (tenant.user_id === session.user_id ? "org_admin" : (tenantUser?.role || "operator"));
       // The platform's own demos have no customer to accept anything.
       const legalStatus = isDemoTenant(tenant, session.user_id) ? null : await organizationLegalStatus(db, tenant.id);
+      const takenDownCards = await listTakenDownPortalSites(db, tenant.id);
 
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
@@ -4359,6 +4473,10 @@ export default {
           enrolledWorkstations,
           activePage,
           legal: legalStatus && legalStatus.pending.length ? { ...legalStatus, canAccept: userRole === "org_admin" } : undefined,
+          takedowns: {
+            homepage: tenant.homepage_takedown_at ? { at: tenant.homepage_takedown_at, reason: tenant.homepage_takedown_reason ?? null } : null,
+            cards: takenDownCards.map((c) => ({ title: c.title, url: c.url, at: Number(c.takedown_at), reason: c.takedown_reason ?? null }))
+          },
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
           userPermissions: userPerms,
           isDevHost: isDev,
@@ -4422,6 +4540,9 @@ export default {
         console.warn(`[Worker] Tenant ${currentTenant.subdomain} has an invalid default_url; showing the portal instead.`);
       }
 
+      // Anyone can report a hosted page: the platform's contact form, preset to legal.
+      const reportHref = `${isDev ? url.origin : `https://${baseDomain}`}/contact?reason=legal&report=${encodeURIComponent(`${url.origin}${url.pathname}${namedTenant ? `?tenant=${currentTenant.subdomain}` : ""}`)}`;
+
       // The root is the organization's own page; the grid lives at /home.
       if (wantsOrganizationHome) {
         const portalPath = namedTenant
@@ -4431,14 +4552,15 @@ export default {
           renderOrgHomeHtml({
             tenant: currentTenant,
             blocks: parseHomepageBlocks(currentTenant.homepage_blocks),
-            portalPath
+            portalPath,
+            reportHref
           }),
           { headers: htmlHeaders }
         );
       }
 
       const portalSites = await listPortalSites(db, currentTenant.id);
-      return new Response(renderPortalHtml(currentTenant, portalSites, nonce), { headers: htmlHeaders });
+      return new Response(renderPortalHtml(currentTenant, portalSites, nonce, reportHref), { headers: htmlHeaders });
     }
 
     // 3. Public SaaS Landing Page (Root domain)

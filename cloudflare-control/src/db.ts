@@ -87,7 +87,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   CHECK (workstation_limit BETWEEN 1 AND 100000),
   remote_control_seats INTEGER NOT NULL DEFAULT 1
   CHECK (remote_control_seats BETWEEN 1 AND 1000),
-  remote_control_revoked_at INTEGER
+  remote_control_revoked_at INTEGER,
+  homepage_takedown_at INTEGER,
+  homepage_takedown_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -109,7 +111,9 @@ CREATE TABLE IF NOT EXISTS portal_sites (
   thumbnail_url TEXT,
   order_index INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  takedown_at INTEGER,
+  takedown_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS client_devices (
@@ -240,6 +244,13 @@ CREATE TABLE IF NOT EXISTS legal_acceptances (
 );
 
 CREATE INDEX IF NOT EXISTS idx_legal_acceptances_tenant ON legal_acceptances(tenant_id, document, version);
+
+CREATE TABLE IF NOT EXISTS link_blocklist (
+  domain TEXT PRIMARY KEY,
+  reason TEXT,
+  added_at INTEGER NOT NULL,
+  added_by TEXT
+);
 
 CREATE TABLE IF NOT EXISTS legal_versions (
   document TEXT NOT NULL CHECK (document IN ('terms', 'privacy', 'aup', 'content')),
@@ -659,6 +670,10 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     // 0035: legal acceptances and document versions.
     await db.prepare("SELECT document, version, source FROM legal_acceptances LIMIT 1").run();
     await db.prepare("SELECT document, version, published_at, notified_at FROM legal_versions LIMIT 1").run();
+    // 0036: hosted content controls.
+    await db.prepare("SELECT domain FROM link_blocklist LIMIT 1").run();
+    await db.prepare("SELECT homepage_takedown_at, homepage_takedown_reason FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT takedown_at, takedown_reason FROM portal_sites LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -986,6 +1001,8 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "remote_control_status",
   "workstation_limit",
   "remote_control_seats",
+  "homepage_takedown_at",
+  "homepage_takedown_reason",
   "remote_control_revoked_at"
 ]);
 
@@ -1404,6 +1421,46 @@ export async function listPortalSites(db: D1Database, tenantId: string): Promise
     .all<PortalSite>();
 
   return res.results || [];
+}
+
+/** A card of this organization linking to `url` that a super admin took down, if any. */
+export async function findTakenDownPortalSite(db: D1Database, tenantId: string, url: string): Promise<PortalSite | null> {
+  return db
+    .prepare("SELECT * FROM portal_sites WHERE tenant_id = ? AND url = ? AND takedown_at IS NOT NULL LIMIT 1")
+    .bind(tenantId, url)
+    .first<PortalSite>();
+}
+
+/** This organization's cards a super admin took down, newest first. */
+export async function listTakenDownPortalSites(db: D1Database, tenantId: string): Promise<PortalSite[]> {
+  return (
+    await db
+      .prepare("SELECT * FROM portal_sites WHERE tenant_id = ? AND takedown_at IS NOT NULL ORDER BY takedown_at DESC")
+      .bind(tenantId)
+      .all<PortalSite>()
+  ).results || [];
+}
+
+/**
+ * Take down every active card of this organization linking to `url` (making it
+ * inactive), or restore the ones taken down (null). Returns how many changed.
+ */
+export async function setPortalSiteTakedown(
+  db: D1Database,
+  tenantId: string,
+  url: string,
+  takedown: { at: number; reason: string } | null
+): Promise<number> {
+  const res = takedown
+    ? await db
+        .prepare("UPDATE portal_sites SET is_active = 0, takedown_at = ?, takedown_reason = ? WHERE tenant_id = ? AND url = ? AND is_active = 1")
+        .bind(takedown.at, takedown.reason, tenantId, url)
+        .run()
+    : await db
+        .prepare("UPDATE portal_sites SET is_active = 1, takedown_at = NULL, takedown_reason = NULL WHERE tenant_id = ? AND url = ? AND takedown_at IS NOT NULL")
+        .bind(tenantId, url)
+        .run();
+  return Number(res.meta?.changes ?? 0);
 }
 
 export async function createPortalSite(

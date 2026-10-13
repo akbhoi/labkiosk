@@ -1,3 +1,4 @@
+import { hostedLinkProblem } from "../src/link_rules";
 import { acceptancesCsv } from "../src/legal";
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
@@ -1756,11 +1757,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const tenant = { id: "t1", name: "Greenwood", subdomain: "greenwood" } as Tenant;
     for (const category of [null, undefined, "", "  "]) {
       const other = { ...site, id: "s2", title: "Ledger", category: "Finance" } as PortalSite;
-      const html = renderPortalHtml(tenant, [{ ...site, category } as unknown as PortalSite, other], "nonce");
+      const html = renderPortalHtml(tenant, [{ ...site, category } as unknown as PortalSite, other], "nonce", "https://labkiosk.org/contact");
       assert.ok(html.includes('data-category="general"') && html.includes('<span class="card-category">General</span>'));
       assert.ok(html.includes('class="category-pill" data-category="general">General</button>'), "and it can be filtered to");
     }
-    const named = renderPortalHtml(tenant, [{ ...site, category: "Maps & Travel" } as PortalSite], "nonce");
+    const named = renderPortalHtml(tenant, [{ ...site, category: "Maps & Travel" } as PortalSite], "nonce", "https://labkiosk.org/contact");
     assert.ok(named.includes('data-category="maps &amp; travel"') && named.includes("Maps &amp; Travel</span>"));
   });
 
@@ -7426,6 +7427,98 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(line, /"Agent ""1"""$/);
   });
 
+  test("Hosted links: no IP addresses, shorteners, credentials or blocklisted domains", () => {
+    const blocked = ["evil.example"];
+    assert.equal(hostedLinkProblem("https://www.wikipedia.org/", blocked), null);
+    assert.match(String(hostedLinkProblem("http://192.168.1.10/admin", blocked)), /IP address/);
+    assert.match(String(hostedLinkProblem("http://2130706433/", blocked)), /IP address/, "a decimal address is still an address");
+    assert.match(String(hostedLinkProblem("http://[::1]/", blocked)), /IP address/);
+    assert.match(String(hostedLinkProblem("https://bit.ly/abc", blocked)), /shortener/);
+    assert.match(String(hostedLinkProblem("https://www.tinyurl.com/abc", blocked)), /shortener/);
+    assert.match(String(hostedLinkProblem("https://user:pw@example.com/", blocked)), /password/);
+    assert.match(String(hostedLinkProblem("https://login.evil.example/", blocked)), /evil\.example/);
+    assert.equal(hostedLinkProblem("https://notevil.example/", blocked), null, "only the domain and its subdomains");
+  });
+
+  test("Hosted content: the link blocklist, homepage and card takedown, and Report this page", async () => {
+    const tenantId = await greenwoodId();
+    const admin = await superCookie();
+    const block = (payload: unknown, cookie = admin, path = "/api/super/link-blocklist") => call(path, { ...json(payload), cookie });
+    for (const cookie of ["", orgSessionCookie]) {
+      assert.ok([401, 403].includes((await call("/api/super/link-blocklist", { cookie })).status));
+      assert.ok([401, 403].includes((await block({ domain: "evil.example" }, cookie)).status));
+      assert.ok([401, 403].includes((await call("/api/super/tenants/content", { ...json({ tenantId, target: "homepage", action: "takedown", reason: "x" }), cookie })).status));
+    }
+    for (const domain of ["", "https://evil.example/", "evil", "192.168.1.1"]) {
+      assert.equal((await block({ domain })).status, 400, domain);
+    }
+    assert.equal((await block({ domain: "Evil.Example.", reason: "Phishing" })).status, 200);
+    const listed = await callJson("/api/super/link-blocklist", { cookie: admin });
+    assert.deepEqual(listed.data.domains.map((d: any) => [d.domain, d.reason]), [["evil.example", "Phishing"]]);
+
+    // Organizations cannot publish such links.
+    const card = (url: string) => call("/api/portal-sites?tenant=greenwood", { ...json({ title: "Card", url }), cookie: orgSessionCookie });
+    assert.equal((await card("https://login.evil.example/")).status, 400);
+    assert.equal((await card("https://bit.ly/x")).status, 400);
+    assert.equal((await card("http://10.0.0.5/")).status, 400);
+    const homepage = (blocks: unknown[]) => call("/api/tenant/homepage?tenant=greenwood", { ...json({ headline: "", intro: "", blocks }), cookie: orgSessionCookie });
+    const refused = await homepage([{ title: "Short", body: "x", url: "https://tinyurl.com/x" }]);
+    assert.equal(refused.status, 400);
+    assert.match((await refused.json<any>()).error, /Block 1 \(Short\)/);
+    assert.equal((await homepage([{ title: "Maps", body: "x", url: "https://maps.example.org/" }])).status, 200);
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "homepage.update" && /links: https:\/\/maps\.example\.org\//.test(l.details)), "link changes are audited");
+    assert.equal((await block({ domain: "evil.example" }, admin, "/api/super/link-blocklist/remove")).status, 200);
+    assert.equal((await block({ domain: "evil.example" }, admin, "/api/super/link-blocklist/remove")).status, 404);
+
+    // Every hosted page carries Report this page, to the contact form preset to legal.
+    for (const page of ["/?tenant=greenwood", "/home?tenant=greenwood"]) {
+      const html = await (await call(page)).text();
+      assert.match(html, /href="[^"]*\/contact\?reason=legal&amp;report=[^"]+"[^>]*>Report this page</, page);
+    }
+
+    // Taking the homepage down replaces it with a neutral notice and tells the owner.
+    const content = (payload: Record<string, unknown>) => callJson("/api/super/tenants/content", { ...json({ tenantId, ...payload }), cookie: admin });
+    assert.equal((await content({ target: "homepage", action: "takedown" })).res.status, 400, "a reason is required");
+    assert.equal((await content({ target: "page", action: "takedown", reason: "x" })).res.status, 400);
+    assert.equal((await content({ tenantId: "nope", target: "homepage", action: "takedown", reason: "x" })).res.status, 404);
+    const down = await content({ target: "homepage", action: "takedown", reason: "Reported as misleading." });
+    assert.equal(down.res.status, 200);
+    assert.equal(down.data.emailSent, true);
+    assert.equal((await content({ target: "homepage", action: "takedown", reason: "again" })).res.status, 409);
+    let html = await (await call("/?tenant=greenwood")).text();
+    assert.match(html, /This content is unavailable/);
+    assert.doesNotMatch(html, /maps\.example\.org/);
+    let consolePage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(consolePage, /id="takedown-notice"/);
+    assert.match(consolePage, /Reported as misleading\./);
+    assert.equal((await content({ target: "homepage", action: "restore" })).res.status, 200);
+    html = await (await call("/?tenant=greenwood")).text();
+    assert.match(html, /maps\.example\.org/);
+
+    // A card: hidden from the User Portal, cannot be added again, and comes back on restore.
+    assert.equal((await card("https://cards.example.org/quiz")).status, 200);
+    assert.equal((await content({ target: "card", action: "takedown", url: "https://cards.example.org/other", reason: "x" })).res.status, 404);
+    assert.equal((await content({ target: "card", action: "takedown", url: "javascript:alert(1)", reason: "x" })).res.status, 400);
+    assert.equal((await content({ target: "card", action: "takedown", url: "https://cards.example.org/quiz", reason: "Copyright complaint." })).res.status, 200);
+    assert.doesNotMatch(await (await call("/home?tenant=greenwood")).text(), /cards\.example\.org\/quiz/);
+    assert.equal((await card("https://cards.example.org/quiz")).status, 403, "the same link cannot simply be added again");
+    consolePage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(consolePage, /Copyright complaint\./);
+    assert.equal((await content({ target: "card", action: "restore", url: "https://cards.example.org/quiz" })).res.status, 200);
+    assert.match(await (await call("/home?tenant=greenwood")).text(), /cards\.example\.org\/quiz/);
+    const platform = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(platform.logs.some((l: any) => l.action === "content.takedown" && /^card https:\/\/cards\.example\.org\/quiz/.test(l.details)));
+    assert.ok(platform.logs.some((l: any) => l.action === "content.restore" && l.details.startsWith("homepage")));
+
+    // Clean up for later tests.
+    const sites = (await callJson("/api/portal-sites?tenant=greenwood")).data.sites as Array<{ id: string; url: string }>;
+    for (const site of sites.filter((s) => s.url === "https://cards.example.org/quiz")) {
+      await call(`/api/portal-sites/${site.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    }
+    await homepage([]);
+  });
+
   test("The consoles offer updates only to those who may use them", async () => {
     const admin = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.match(admin, /id="btn-check-updates"/);
@@ -7794,6 +7887,7 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0033"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0034"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0035"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0036"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 
