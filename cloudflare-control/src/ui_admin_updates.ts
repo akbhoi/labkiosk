@@ -79,14 +79,14 @@ export function renderUpdatesScript(nonce: string): string {
           return new Date(seconds * 1000).toISOString().slice(0, 10);
         }
 
-        // Lines its workstations run that are security-only, end of life, or have an end-of-life date.
+        // Majors its workstations run that are security-only, end of life, or have an end-of-life date.
         function showLines(list) {
           const body = document.createElement("div");
           linesBox.replaceChildren(body);
           const items = Array.isArray(list) ? list : [];
           for (const item of items) {
             const count = Number(item.workstations) || 0;
-            const who = count + (count === 1 ? " workstation runs " : " workstations run ") + "Lab Kiosk " + item.line;
+            const who = count + (count === 1 ? " workstation runs " : " workstations run ") + "Lab Kiosk " + item.major;
             const line = document.createElement("div");
             line.textContent =
               item.status === "end_of_life"
@@ -263,7 +263,7 @@ export function renderUpdatesScript(nonce: string): string {
             ? "Offered now: " + o.version + (o.kind === "security" ? " (security update)" : "") + ", " + Math.round((Number(o.sizeBytes) || 0) / 1048576) + " MB."
             : "No release is offered on this channel yet.";
           showPending(data.pending, security.value);
-          showLines(data.lines);
+          showLines(data.support);
           groups = Array.isArray(data.groups) ? data.groups : [];
           showMajors(data.majors);
         }

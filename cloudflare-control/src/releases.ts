@@ -13,12 +13,12 @@
  * organization's `security_updates` setting says whether it installs that at
  * its next boot by itself or waits for an administrator.
  *
- * The platform also keeps a support status per line (release_lines) and
- * decides which major releases a workstation may be moved to
- * (release_majors, major_upgrade_grants): an end-of-life line is offered
- * nothing, a security-only line only its security releases and only to the
- * workstations already on it, and a closed major only to an organization it
- * was opened or granted to and whose administrator confirmed it.
+ * The platform also keeps a support status per major release
+ * (release_support) and decides which major releases a workstation may be
+ * moved to (release_majors, major_upgrade_grants): an end-of-life major is
+ * offered nothing, a security-only major only its security releases and only
+ * to the workstations already on it, and a closed major only to an
+ * organization it was opened or granted to and whose administrator confirmed it.
  *
  * The major upgrade pipeline: an administrator asks for a closed major
  * (requested), a super admin grants it (available) or declines, the
@@ -114,40 +114,43 @@ export interface ReleaseOffer {
   sizeBytes: number;
   /** Unix seconds: when a super admin put it in its channel. */
   classifiedAt: number;
-  /** The support status of its line now; absent means supported. */
-  lineStatus?: LineStatus;
+  /** The support status of its major now; absent means supported. */
+  support?: SupportStatus;
   /** Its major is closed to this organization: only a workstation already on that major or above takes it. */
   gated?: boolean;
   /** Its major is gated, but this organization is trying it on the workstations of this group. */
   pilotGroup?: string;
 }
 
-export const LINE_STATUSES = ["supported", "security_only", "end_of_life"] as const;
-export type LineStatus = (typeof LINE_STATUSES)[number];
-/** A line as release_lines names it: "2.8". */
-export const RELEASE_LINE_PATTERN = /^[0-9]{1,4}\.[0-9]{1,4}$/;
+export const SUPPORT_STATUSES = ["supported", "security_only", "end_of_life"] as const;
+export type SupportStatus = (typeof SUPPORT_STATUSES)[number];
 export const MAX_RELEASE_MAJOR = 9999;
 
-export function isLineStatus(value: unknown): value is LineStatus {
-  return typeof value === "string" && (LINE_STATUSES as readonly string[]).includes(value);
+export function isSupportStatus(value: unknown): value is SupportStatus {
+  return typeof value === "string" && (SUPPORT_STATUSES as readonly string[]).includes(value);
 }
 
-export interface ReleaseLineRow {
-  line: string;
-  status: LineStatus;
+export function isReleaseMajor(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_RELEASE_MAJOR;
+}
+
+/** One major release's support status, as release_support holds it (0040). */
+export interface MajorSupportRow {
+  major: number;
+  status: SupportStatus;
   end_of_life_at: number | null;
   note: string | null;
   updated_at: number;
   updated_by: string | null;
-  /** The last end-of-life reminder sent for end_of_life_at: 60, 30, 7, or 0 once passed (0038). */
+  /** The last end-of-life reminder sent for end_of_life_at: 60, 30, 7, or 0 once passed. */
   eol_reminder_days?: number | null;
 }
 
-/** A line's status now: an announced end-of-life date that has passed ends it. */
-export function effectiveLineStatus(row: Pick<ReleaseLineRow, "status" | "end_of_life_at"> | undefined, now: number): LineStatus {
+/** A major's status now: an announced end-of-life date that has passed ends it. */
+export function effectiveSupportStatus(row: Pick<MajorSupportRow, "status" | "end_of_life_at"> | undefined, now: number): SupportStatus {
   if (!row) return "supported";
   if (row.end_of_life_at && row.end_of_life_at <= now) return "end_of_life";
-  return isLineStatus(row.status) ? row.status : "supported";
+  return isSupportStatus(row.status) ? row.status : "supported";
 }
 
 /** What one workstation should fetch: a security release for its line, and the newest release. */
@@ -228,41 +231,36 @@ export function releaseMajor(version: string): number {
   return versionKey(version).core[0];
 }
 
-/** Every line's recorded status, by line. */
-export async function listReleaseLines(db: D1Database): Promise<Map<string, ReleaseLineRow>> {
-  const res = await db.prepare("SELECT * FROM release_lines").all<ReleaseLineRow>();
-  return new Map((res.results || []).map((row) => [row.line, row]));
+/** Every major's recorded support status, by major. */
+export async function listMajorSupport(db: D1Database): Promise<Map<number, MajorSupportRow>> {
+  const res = await db.prepare("SELECT * FROM release_support").all<MajorSupportRow>();
+  return new Map((res.results || []).map((row) => [Number(row.major), { ...row, major: Number(row.major) }]));
 }
 
-/** Record a line's status, end-of-life date and note. */
-export async function setReleaseLine(
+/** Record a major's support status, end-of-life date and note. */
+export async function setMajorSupport(
   db: D1Database,
-  line: string,
-  status: LineStatus,
+  major: number,
+  status: SupportStatus,
   endOfLifeAt: number | null,
   note: string | null,
   userId: string,
   now = Math.floor(Date.now() / 1000)
 ): Promise<void> {
-  if (!RELEASE_LINE_PATTERN.test(line)) throw new Error(`${JSON.stringify(line)} is not a release line`);
+  if (!isReleaseMajor(major)) throw new Error(`${JSON.stringify(major)} is not a major release`);
   await db
     .prepare(
-      `INSERT INTO release_lines (line, status, end_of_life_at, note, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(line) DO UPDATE SET status = excluded.status, end_of_life_at = excluded.end_of_life_at,
+      `INSERT INTO release_support (major, status, end_of_life_at, note, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(major) DO UPDATE SET status = excluded.status, end_of_life_at = excluded.end_of_life_at,
          note = excluded.note, updated_at = excluded.updated_at, updated_by = excluded.updated_by,
          -- A new end-of-life date starts its reminders over.
-         eol_reminder_days = CASE WHEN release_lines.end_of_life_at IS excluded.end_of_life_at
-           THEN release_lines.eol_reminder_days ELSE NULL END`
+         eol_reminder_days = CASE WHEN release_support.end_of_life_at IS excluded.end_of_life_at
+           THEN release_support.eol_reminder_days ELSE NULL END`
     )
-    .bind(line, status, endOfLifeAt, note, now, userId)
+    .bind(major, status, endOfLifeAt, note, now, userId)
     .run();
 }
 
-/**
- * Whether each major is open: true open to every organization, false closed;
- * a major with no row is not listed and is free -- offered with no grant and
- * no confirmation, as every major was before release_majors existed.
- */
 export async function listReleaseMajors(db: D1Database): Promise<Map<number, boolean>> {
   const res = await db.prepare("SELECT major, open FROM release_majors").all<{ major: number; open: number }>();
   return new Map((res.results || []).map((row) => [Number(row.major), Number(row.open) === 1]));
@@ -614,7 +612,7 @@ export async function revokeRelease(db: D1Database, version: string, now = Math.
 
 /**
  * Every unrevoked release of this channel, newest first, each marked with its
- * line's status now and whether its major is closed to the organization
+ * major's support status now and whether its major is closed to the organization
  * (`tenantId`; null for none). Which of them one workstation may take is
  * eligibleReleases().
  */
@@ -625,8 +623,8 @@ export async function offeredReleases(
   now = Math.floor(Date.now() / 1000)
 ): Promise<ReleaseOffer[]> {
   const channels = channel === "beta" ? ["stable", "beta"] : ["stable"];
-  const [lines, majors, grants] = await Promise.all([
-    listReleaseLines(db),
+  const [support, majors, grants] = await Promise.all([
+    listMajorSupport(db),
     listReleaseMajors(db),
     tenantId ? listMajorGrants(db, tenantId) : Promise.resolve(new Map<number, MajorGrantRow>())
   ]);
@@ -642,13 +640,13 @@ export async function offeredReleases(
     .map((row): ReleaseOffer => {
       const major = releaseMajor(row.version);
       const access = majorAccess(majors.get(major), grants.get(major));
-      const lineStatus = effectiveLineStatus(lines.get(releaseLine(row.version)), now);
+      const status = effectiveSupportStatus(support.get(major), now);
       return {
         version: row.version,
         kind: row.kind,
         sizeBytes: Number(row.size_bytes) || 0,
         classifiedAt: Number(row.classified_at) || 0,
-        ...(lineStatus !== "supported" ? { lineStatus } : {}),
+        ...(status !== "supported" ? { support: status } : {}),
         ...(majorGated(access) ? { gated: true } : {}),
         ...(access === "pilot" ? { pilotGroup: grants.get(major)!.pilot_group! } : {})
       };
@@ -658,14 +656,14 @@ export async function offeredReleases(
 
 /**
  * The releases a workstation running `running`, in workstation group `group`,
- * may be moved to, newest first: nothing on an end-of-life line; on a
- * security-only line, only its security releases and only for a workstation
- * already on that line; nothing of a major closed to its organization above
+ * may be moved to, newest first: nothing of an end-of-life major; of a
+ * security-only major, only its security releases and only for a workstation
+ * already on that major; nothing of a major closed to its organization above
  * the major it runs, unless the organization is trying that major on the
  * workstation's group. A workstation moves one major at a time, and only once
  * it runs the newest release of its own major it may take: 1.4 goes to 1.5
  * before 2.x, and 2.x before 3.x. An unknown image (an updater from before
- * phase 4 does not say) is treated as on no line.
+ * phase 4 does not say) is treated as on no major.
  */
 export function eligibleReleases(
   releases: readonly ReleaseOffer[],
@@ -673,20 +671,19 @@ export function eligibleReleases(
   group: string | null = null
 ): ReleaseOffer[] {
   const known = isReleaseVersion(running);
-  const line = known ? releaseLine(running) : null;
   const major = known ? releaseMajor(running) : -1;
-  const onLine = releases.filter((r) => {
-    if (r.lineStatus === "end_of_life") return false;
-    return !(r.lineStatus === "security_only" && (r.kind !== "security" || releaseLine(r.version) !== line));
+  const supported = releases.filter((r) => {
+    if (r.support === "end_of_life") return false;
+    return !(r.support === "security_only" && (r.kind !== "security" || releaseMajor(r.version) !== major));
   });
-  const allowed = onLine.filter(
+  const allowed = supported.filter(
     (r) => !(r.gated && releaseMajor(r.version) > major && !(r.pilotGroup && group !== null && r.pilotGroup === group))
   );
   if (!known) return allowed;
   // The next major is the lowest one above it that has a release it could take
   // once allowed: a gated major holds back every major above it as well.
   const newerInMajor = allowed.some((r) => releaseMajor(r.version) === major && compareVersions(r.version, running) > 0);
-  const higher = onLine.map((r) => releaseMajor(r.version)).filter((m) => m > major);
+  const higher = supported.map((r) => releaseMajor(r.version)).filter((m) => m > major);
   const nextMajor = newerInMajor || !higher.length ? major : Math.min(...higher);
   return allowed.filter((r) => releaseMajor(r.version) <= nextMajor);
 }
@@ -849,10 +846,10 @@ export function sameUpdateReport(a: UpdateReport | undefined, b: UpdateReport | 
   );
 }
 
-/** A line some of an organization's workstations run that is not plainly supported. */
-export interface LineNotice {
-  line: string;
-  status: LineStatus;
+/** A major some of an organization's workstations run that is not plainly supported. */
+export interface SupportNotice {
+  major: number;
+  status: SupportStatus;
   /** Unix seconds: the announced end-of-life date, if any. */
   endOfLifeAt: number | null;
   note: string | null;
@@ -872,7 +869,7 @@ export interface MajorNotice {
 }
 
 /**
- * What an organization's Updates settings warn about: the lines its
+ * What an organization's Updates settings warn about: the majors its
  * workstations run that are security-only, end of life or have an end-of-life
  * date, and the closed majors above the lowest one they run (every closed major
  * when none reports its image).
@@ -883,24 +880,23 @@ export async function organizationReleaseNotices(
   releases: readonly ReleaseOffer[],
   devices: ReadonlyArray<{ image_version?: string | null }>,
   now = Math.floor(Date.now() / 1000)
-): Promise<{ lines: LineNotice[]; majors: MajorNotice[] }> {
-  const [rows, majors, grants] = await Promise.all([listReleaseLines(db), listReleaseMajors(db), listMajorGrants(db, tenantId)]);
-  const perLine = new Map<string, number>();
-  let lowestMajor = Infinity;
+): Promise<{ support: SupportNotice[]; majors: MajorNotice[] }> {
+  const [rows, majors, grants] = await Promise.all([listMajorSupport(db), listReleaseMajors(db), listMajorGrants(db, tenantId)]);
+  const perMajor = new Map<number, number>();
   for (const device of devices) {
     if (!isReleaseVersion(device.image_version)) continue;
-    const line = releaseLine(device.image_version);
-    perLine.set(line, (perLine.get(line) ?? 0) + 1);
-    lowestMajor = Math.min(lowestMajor, releaseMajor(device.image_version));
+    const major = releaseMajor(device.image_version);
+    perMajor.set(major, (perMajor.get(major) ?? 0) + 1);
   }
-  const lines: LineNotice[] = [];
-  for (const [line, workstations] of perLine) {
-    const row = rows.get(line);
-    const status = effectiveLineStatus(row, now);
+  const lowestMajor = perMajor.size ? Math.min(...perMajor.keys()) : Infinity;
+  const support: SupportNotice[] = [];
+  for (const [major, workstations] of perMajor) {
+    const row = rows.get(major);
+    const status = effectiveSupportStatus(row, now);
     if (status === "supported" && !row?.end_of_life_at) continue;
-    lines.push({ line, status, endOfLifeAt: row?.end_of_life_at ?? null, note: row?.note ?? null, workstations });
+    support.push({ major, status, endOfLifeAt: row?.end_of_life_at ?? null, note: row?.note ?? null, workstations });
   }
-  lines.sort((a, b) => compareVersions(`${a.line}.0`, `${b.line}.0`));
+  support.sort((a, b) => a.major - b.major);
   const notices: MajorNotice[] = [];
   for (const release of releases) {
     const major = releaseMajor(release.version);
@@ -908,7 +904,7 @@ export async function organizationReleaseNotices(
     if (notices.some((n) => n.major === major)) continue;
     const access = majorAccess(majors.get(major), grants.get(major));
     if (access === "free") continue;
-    if (release.lineStatus === "end_of_life" || release.lineStatus === "security_only") continue;
+    if (release.support === "end_of_life" || release.support === "security_only") continue;
     const grant = grants.get(major);
     notices.push({
       major,
@@ -919,43 +915,38 @@ export async function organizationReleaseNotices(
       pilotGroup: access === "pilot" ? grant?.pilot_group ?? null : null
     });
   }
-  return { lines, majors: notices };
+  return { support, majors: notices };
 }
 
-/** How many workstations each organization and line has, across the platform, from the registry. */
-export async function workstationsPerLine(db: D1Database): Promise<Array<{ tenantId: string; line: string; workstations: number }>> {
+/** How many workstations each organization and major has, across the platform, from the registry. */
+export async function workstationsPerMajor(db: D1Database): Promise<Array<{ tenantId: string; major: number; workstations: number }>> {
   const res = await db
     .prepare("SELECT tenant_id, image_version, COUNT(*) AS n FROM client_devices WHERE image_version IS NOT NULL GROUP BY tenant_id, image_version")
     .all<{ tenant_id: string; image_version: string; n: number }>();
-  const counts = new Map<string, { tenantId: string; line: string; workstations: number }>();
+  const counts = new Map<string, { tenantId: string; major: number; workstations: number }>();
   for (const row of res.results || []) {
     if (!isReleaseVersion(row.image_version)) continue;
-    const line = releaseLine(row.image_version);
-    const key = `${row.tenant_id}\n${line}`;
-    const entry = counts.get(key) ?? { tenantId: row.tenant_id, line, workstations: 0 };
+    const major = releaseMajor(row.image_version);
+    const key = `${row.tenant_id}\n${major}`;
+    const entry = counts.get(key) ?? { tenantId: row.tenant_id, major, workstations: 0 };
     entry.workstations += Number(row.n) || 0;
     counts.set(key, entry);
   }
   return [...counts.values()];
 }
 
-/** One line as the platform's Releases page shows it. */
-export interface PlatformLine {
-  line: string;
-  /** What a super admin set. */
-  status: LineStatus;
-  /** What applies now, once an announced end-of-life date has passed. */
-  effectiveStatus: LineStatus;
-  endOfLifeAt: number | null;
-  note: string | null;
-  workstations: number;
-  organizations: number;
-}
-
 /** One major as the platform's Releases page shows it. */
 export interface PlatformMajor {
   major: number;
   state: "free" | "open" | "closed";
+  /** The support status a super admin set. */
+  status: SupportStatus;
+  /** What applies now, once an announced end-of-life date has passed. */
+  effectiveStatus: SupportStatus;
+  endOfLifeAt: number | null;
+  note: string | null;
+  workstations: number;
+  organizations: number;
   grants: Array<{
     tenantId: string;
     name: string;
@@ -966,47 +957,36 @@ export interface PlatformMajor {
   }>;
 }
 
-/** Every line and major the platform has releases or settings for, newest first. */
+/** Every major the platform has releases or settings for, newest first. */
 export async function platformReleasePolicy(
   db: D1Database,
   releases: readonly ReleaseSummary[],
   tenantNames: ReadonlyMap<string, string>,
   now = Math.floor(Date.now() / 1000)
-): Promise<{ lines: PlatformLine[]; majors: PlatformMajor[] }> {
+): Promise<{ majors: PlatformMajor[] }> {
   const [rows, majors, grants, usage] = await Promise.all([
-    listReleaseLines(db),
+    listMajorSupport(db),
     listReleaseMajors(db),
     listAllMajorGrants(db),
-    workstationsPerLine(db)
+    workstationsPerMajor(db)
   ]);
-  const lineNames = new Set<string>([...rows.keys()].filter((l) => RELEASE_LINE_PATTERN.test(l)));
-  const majorNumbers = new Set<number>(majors.keys());
-  for (const r of releases) {
-    lineNames.add(releaseLine(r.version));
-    majorNumbers.add(releaseMajor(r.version));
-  }
-  const lines = [...lineNames]
-    .map((line): PlatformLine => {
-      const row = rows.get(line);
-      const using = usage.filter((u) => u.line === line);
-      return {
-        line,
-        status: row && isLineStatus(row.status) ? row.status : "supported",
-        effectiveStatus: effectiveLineStatus(row, now),
-        endOfLifeAt: row?.end_of_life_at ?? null,
-        note: row?.note ?? null,
-        workstations: using.reduce((sum, u) => sum + u.workstations, 0),
-        organizations: using.length
-      };
-    })
-    .sort((a, b) => compareVersions(`${b.line}.0`, `${a.line}.0`));
+  const majorNumbers = new Set<number>([...majors.keys(), ...rows.keys()]);
+  for (const r of releases) majorNumbers.add(releaseMajor(r.version));
   const majorList = [...majorNumbers]
     .sort((a, b) => b - a)
     .map((major): PlatformMajor => {
       const open = majors.get(major);
+      const row = rows.get(major);
+      const using = usage.filter((u) => u.major === major);
       return {
         major,
         state: open === undefined ? "free" : open ? "open" : "closed",
+        status: row && isSupportStatus(row.status) ? row.status : "supported",
+        effectiveStatus: effectiveSupportStatus(row, now),
+        endOfLifeAt: row?.end_of_life_at ?? null,
+        note: row?.note ?? null,
+        workstations: using.reduce((sum, u) => sum + u.workstations, 0),
+        organizations: using.length,
         grants: grants
           .filter((g) => Number(g.major) === major)
           .map((g) => ({
@@ -1019,14 +999,14 @@ export async function platformReleasePolicy(
           }))
       };
     });
-  return { lines, majors: majorList };
+  return { majors: majorList };
 }
 
-/** Days before a line's end-of-life date that every organization is reminded. */
+/** Days before a major's end-of-life date that every organization is reminded. */
 export const END_OF_LIFE_REMINDER_DAYS = [60, 30, 7] as const;
 
 /**
- * Which reminder a line's end-of-life date calls for now: 60, 30 or 7 (days
+ * Which reminder a major's end-of-life date calls for now: 60, 30 or 7 (days
  * before), 0 once the date has passed, or null when it is further off.
  */
 export function endOfLifeReminderStage(endOfLifeAt: number, now = Math.floor(Date.now() / 1000)): number | null {
@@ -1036,68 +1016,69 @@ export function endOfLifeReminderStage(endOfLifeAt: number, now = Math.floor(Dat
   return due.length ? Math.min(...due) : null;
 }
 
-/** What organizations are told about a line's status: a title and a message. */
-export function releaseLineNotice(
-  line: string,
-  status: LineStatus,
+/** What organizations are told about a major's support status: a title and a message. */
+export function majorSupportNotice(
+  major: number,
+  status: SupportStatus,
   endOfLifeAt: number | null,
   note: string | null,
   options: { reminder?: boolean; now?: number } = {}
 ): { title: string; body: string } {
   const now = options.now ?? Math.floor(Date.now() / 1000);
+  const name = `Lab Kiosk ${major}`;
   const date = endOfLifeAt !== null ? new Date(endOfLifeAt * 1000).toISOString().slice(0, 10) : null;
   let title: string;
   let body: string;
   if (status === "end_of_life" || (endOfLifeAt !== null && endOfLifeAt <= now)) {
-    title = `Lab Kiosk ${line} has reached end of life`;
+    title = `${name} has reached end of life`;
     body =
-      `Lab Kiosk ${line} has reached end of life. Workstations on it receive no further updates, security fixes included. ` +
-      `Install the newest release from Workstations → Updates to keep receiving them.`;
+      `${name} has reached end of life. Workstations on it receive no further updates, security fixes included. ` +
+      `Install the newest supported release from Workstations → Updates to keep receiving them.`;
   } else if (date) {
-    title = `${options.reminder ? "Reminder: " : ""}Lab Kiosk ${line} reaches end of life on ${date}`;
+    title = `${options.reminder ? "Reminder: " : ""}${name} reaches end of life on ${date}`;
     body =
-      `Lab Kiosk ${line} reaches end of life on ${date}. After that date workstations on it receive no further updates, security fixes included.` +
+      `${name} reaches end of life on ${date}. After that date workstations on it receive no further updates, security fixes included.` +
       (status === "security_only" ? ` Until then it receives security fixes only.` : "") +
       ` Move your workstations to a newer release before then from Workstations → Updates.`;
   } else {
-    title = `Lab Kiosk ${line} now receives security fixes only`;
+    title = `${name} now receives security fixes only`;
     body =
-      `Lab Kiosk ${line} now receives security fixes only: no workstation is moved onto it, and workstations on it get only its security releases. ` +
+      `${name} now receives security fixes only: no workstation is moved onto it, and workstations on it get only its security releases. ` +
       `Move your workstations to a newer release from Workstations → Updates.`;
   }
   return { title, body: note ? `${body}\n\n${note}` : body };
 }
 
-/** Record which end-of-life reminder a line has had for its current date. */
-export async function setEndOfLifeReminderStage(db: D1Database, line: string, stage: number | null): Promise<void> {
-  await db.prepare("UPDATE release_lines SET eol_reminder_days = ? WHERE line = ?").bind(stage, line).run();
+/** Record which end-of-life reminder a major has had for its current date. */
+export async function setEndOfLifeReminderStage(db: D1Database, major: number, stage: number | null): Promise<void> {
+  await db.prepare("UPDATE release_support SET eol_reminder_days = ? WHERE major = ?").bind(stage, major).run();
 }
 
 /**
- * The end-of-life reminders now due (hourly, from the cron): for each line with
+ * The end-of-life reminders now due (hourly, from the cron): for each major with
  * an end-of-life date, the first time it comes within 60, 30 and 7 days and the
  * first time it has passed, every organization gets a console notification and
- * its owner an email. Returns the lines reminded about.
+ * its owner an email. Returns the majors reminded about.
  */
 export async function sendEndOfLifeReminders(
   env: Env,
   db: D1Database,
   now = Math.floor(Date.now() / 1000)
-): Promise<string[]> {
-  const reminded: string[] = [];
-  for (const row of (await listReleaseLines(db)).values()) {
+): Promise<number[]> {
+  const reminded: number[] = [];
+  for (const row of (await listMajorSupport(db)).values()) {
     if (row.end_of_life_at === null || row.end_of_life_at === undefined || row.status === "end_of_life") continue;
     const endOfLifeAt = Number(row.end_of_life_at);
     const stage = endOfLifeReminderStage(endOfLifeAt, now);
     const last = row.eol_reminder_days === null || row.eol_reminder_days === undefined ? null : Number(row.eol_reminder_days);
     if (stage === null || (last !== null && stage >= last)) continue;
-    const notice = releaseLineNotice(row.line, row.status, endOfLifeAt, row.note ?? null, { reminder: stage > 0, now });
+    const notice = majorSupportNotice(row.major, row.status, endOfLifeAt, row.note ?? null, { reminder: stage > 0, now });
     // Recorded first: a failure part-way never repeats the reminder every hour.
-    await setEndOfLifeReminderStage(db, row.line, stage);
+    await setEndOfLifeReminderStage(db, row.major, stage);
     await createNotification(db, { tenantId: null, kind: "release", title: notice.title, body: notice.body, createdBy: null, now });
     const outcome = await emailOrganizations(env, await activeOrganizationOwners(db, null), notice.title, () => notice.body);
-    if (outcome.emailProblem) console.warn(`[Worker] End-of-life reminder for ${row.line}: ${outcome.emailProblem}`);
-    reminded.push(row.line);
+    if (outcome.emailProblem) console.warn(`[Worker] End-of-life reminder for ${row.major}: ${outcome.emailProblem}`);
+    reminded.push(row.major);
   }
   return reminded;
 }

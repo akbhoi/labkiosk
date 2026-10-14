@@ -13,7 +13,7 @@ export function renderNotificationsPaneHtml(organizations: ReadonlyArray<{ id: s
   return `
         <div class="card">
           <h2 class="card-title">Notify organizations</h2>
-          <p class="card-sub">A notification shows at the top of the organization's console until each member of its staff dismisses it. Approvals, Remote Control, workstation limits, licenses, content taken down and release lines reaching end of life notify organizations by themselves.</p>
+          <p class="card-sub">A notification shows at the top of the organization's console until each member of its staff dismisses it. Approvals, Remote Control, workstation limits, licenses, content taken down and major releases reaching end of life notify organizations by themselves.</p>
           <form id="form-notification">
             <div class="form-group">
               <label class="form-label" for="notification-to">To</label>

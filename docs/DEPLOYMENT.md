@@ -270,8 +270,11 @@ outbox the tests read (`localOutbox()` in `src/mail.ts`) and each subject is log
 The ISO build publishes each release on GitHub with the change list GitHub writes
 from the merged pull requests. The Worker's hourly run reads the newest releases (anonymously, or with
 `GITHUB_ISSUES_TOKEN` when that is set, which avoids GitHub's limit on anonymous reads) into the
-`release_notes` table, and `/download` shows each one: its version, date, ISO and its SHA-256 (the
-digest GitHub computed when the ISO was uploaded) exactly as GitHub published them. With the `AI` binding, Workers AI rewrites each change list as a few sentences
+`release_notes` table, and `/download` shows the newest release of each major version (3.1.0 for
+3.x, not 3.0.0 beside it): its version, date, ISO and its SHA-256 (the digest GitHub computed when
+the ISO was uploaded) exactly as GitHub published them. A newer security release of that major,
+which has no ISO, is named in its card; a major a super admin put at end of life is named above the
+list instead of listed, and a scheduled end-of-life date shows in its card. With the `AI` binding, Workers AI rewrites each change list as a few sentences
 for the people who run workstations, and the page marks them as written by AI beside a link to the
 full notes; without it, the change list itself is shown. Edit a release's notes on GitHub and its
 summary is rewritten on the next run. Until the first run after a deploy, the page links GitHub's

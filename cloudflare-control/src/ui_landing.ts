@@ -22,7 +22,8 @@ import { fnv1a } from "./ui_layout";
 import { GEO_DATA_PATH } from "./geo";
 import { DOCS_NAV, DOCS_PAGES, DocsPage } from "./docs_content.generated";
 import { LinkResolver, renderMarkdown } from "./markdown";
-import { LATEST_CHECKSUM_URL, LATEST_ISO_URL, RELEASES_URL, RELEASE_CHECKSUM_NAME, RELEASE_ISO_NAME, ReleaseNote, releaseHighlights } from "./release_notes";
+import { LATEST_CHECKSUM_URL, LATEST_ISO_URL, MajorDownload, RELEASES_URL, RELEASE_CHECKSUM_NAME, RELEASE_ISO_NAME, ReleaseNote, releaseHighlights } from "./release_notes";
+import { SupportStatus } from "./releases";
 import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASES, PALETTE, THEME_TOGGLE_SCRIPT, themeHeadHtml } from "./ui_tokens";
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
@@ -92,10 +93,10 @@ export interface LandingOptions {
   openModal?: "login" | "register" | "iso";
   /** Public download URL for the built ISO, if configured. */
   isoDownloadUrl?: string;
-  /** The newest releases, for /download (src/release_notes.ts); empty until the hourly run has read them. */
-  releases?: ReleaseNote[];
-  /** The newest release with an ISO, offered as the download on /download; null until one is known. */
-  download?: ReleaseNote | null;
+  /** The newest release of each major, newest first, for /download (src/release_notes.ts); empty until the hourly run has read them. */
+  releases?: MajorDownload[];
+  /** Each major's support status now, for /download (src/releases.ts); a major not listed is supported. */
+  releaseSupport?: ReadonlyArray<{ major: number; status: SupportStatus; endOfLifeAt: number | null }>;
   /** Apex / base domain for organization subdomains (defaults to labkiosk.org). */
   baseDomain?: string;
   /** Primary contact email (defaults to contact@labkiosk.org). */
@@ -2434,11 +2435,24 @@ function isoSizeLabel(bytes: number | null | undefined): string {
 /** A security rebuild's GitHub release, named by security-rebuild.yml. */
 const SECURITY_RELEASE_NAME = /\(security\)$/;
 
+/** "7 October 2026", from Unix seconds. */
+function releaseDay(seconds: number): string {
+  return RELEASE_DATE.format(new Date(seconds * 1000));
+}
+
 /**
- * One release in the version history: what changed, and where its files are.
- * `newest` marks the release offered as the download.
+ * One major release in the version history: its newest release, what changed,
+ * where its files are, and its support status. `newest` marks the release
+ * offered as the download.
  */
-function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
+function releaseCardHtml(
+  entry: MajorDownload,
+  newest: boolean,
+  support: { status: SupportStatus; endOfLifeAt: number | null } | undefined
+): string {
+  const { note, overTheAir } = entry;
+  const name = `Lab Kiosk ${entry.major}.x`;
+  const overTheAirUrl = overTheAir ? safeHttpUrl(overTheAir.url) : null;
   const { items, writtenByAi } = releaseHighlights(note);
   const releaseUrl = safeHttpUrl(note.url);
   const isoUrl = note.iso_url ? safeHttpUrl(note.iso_url) : null;
@@ -2448,7 +2462,7 @@ function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
           <div class="changelog-card">
             <div class="changelog-head">
               <span class="changelog-version">${escapeHtml(note.tag)}</span>
-              <span class="changelog-date">${newest ? `<span class="badge badge-green">Latest</span> ` : ""}${SECURITY_RELEASE_NAME.test(note.name) ? `<span class="badge badge-yellow">Security update</span> ` : ""}${escapeHtml(RELEASE_DATE.format(new Date(note.published_at * 1000)))}</span>
+              <span class="changelog-date">${newest ? `<span class="badge badge-green">Latest</span> ` : ""}${support?.status === "security_only" ? `<span class="badge badge-yellow">Security fixes only</span> ` : ""}${SECURITY_RELEASE_NAME.test(note.name) ? `<span class="badge badge-yellow">Security update</span> ` : ""}${escapeHtml(releaseDay(note.published_at))}</span>
             </div>
             ${
               items.length
@@ -2457,6 +2471,18 @@ function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
             }
             ${writtenByAi ? `<p class="changelog-note">Summary written by AI from this release\u2019s change list. The full list is in the release notes.</p>` : ""}
             ${isoUrl ? "" : `<p class="changelog-note">This release has no ISO of its own: installed workstations running its line receive it over the air. A new install starts from the ISO above.</p>`}
+            ${
+              overTheAir
+                ? `<p class="changelog-note">Security update ${overTheAirUrl ? `<a href="${escapeHtml(overTheAirUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(overTheAir.tag)}</a>` : escapeHtml(overTheAir.tag)} (${escapeHtml(releaseDay(overTheAir.published_at))}) reaches installed workstations over the air; a new install from this ISO receives it the same way.</p>`
+                : ""
+            }
+            ${
+              support?.endOfLifeAt
+                ? `<p class="changelog-note">${escapeHtml(name)} reaches end of life on ${escapeHtml(releaseDay(support.endOfLifeAt))}: from then on it receives no updates, security fixes included.</p>`
+                : support?.status === "security_only"
+                ? `<p class="changelog-note">${escapeHtml(name)} receives security fixes only. Start a new install from the newest version.</p>`
+                : ""
+            }
             ${note.iso_sha256 ? `<p class="changelog-checksum">SHA256 <code>${escapeHtml(note.iso_sha256)}</code></p>` : ""}
             <div style="margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
               ${releaseUrl ? `<a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Release notes</a>` : ""}
@@ -2466,12 +2492,19 @@ function releaseCardHtml(note: ReleaseNote, newest: boolean): string {
           </div>`;
 }
 
-function downloadMainHtml(mirrorUrl: string | null, releases: ReleaseNote[], download: ReleaseNote | null): string {
+function downloadMainHtml(
+  mirrorUrl: string | null,
+  majors: readonly MajorDownload[],
+  support: ReadonlyArray<{ major: number; status: SupportStatus; endOfLifeAt: number | null }>
+): string {
   // Everything about a release on this page is what GitHub published for it:
-  // nothing here names a version, a size or a checksum of its own. The
-  // download is the newest release with an ISO; a newer security release,
-  // which has none, is listed below it.
-  const latest = download;
+  // nothing here names a version, a size or a checksum of its own. Each major
+  // is listed by its newest release only, and a major at end of life is named
+  // instead of listed. The download is the newest listed release with an ISO;
+  // a newer security release, which has none, is named in its card.
+  const supportOf = new Map(support.map((s) => [s.major, s]));
+  const listed = majors.filter((m) => supportOf.get(m.major)?.status !== "end_of_life");
+  const latest = listed.find((m) => m.note.iso_url)?.note ?? null;
   const isoUrl = mirrorUrl || (latest?.iso_url ? safeHttpUrl(latest.iso_url) : null) || LATEST_ISO_URL;
   const checksumUrl = (latest?.checksum_url ? safeHttpUrl(latest.checksum_url) : null) || LATEST_CHECKSUM_URL;
   const size = isoSizeLabel(latest?.iso_bytes) || "~720 MB";
@@ -2479,8 +2512,17 @@ function downloadMainHtml(mirrorUrl: string | null, releases: ReleaseNote[], dow
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download ${latest ? escapeHtml(latest.tag) : "the latest release"} (.ISO)
       </a>`;
-  const historyHtml = releases.length
-    ? releases.map((note) => releaseCardHtml(note, note.tag === latest?.tag)).join("")
+  const ended = support.filter((s) => s.status === "end_of_life").sort((a, b) => b.major - a.major);
+  const endedHtml = ended.length
+    ? `
+        <div class="docs-callout" style="border-left-color: var(--danger);">
+          <strong>End of life:</strong> ${ended
+            .map((s) => `Lab Kiosk ${escapeHtml(String(s.major))}.x${s.endOfLifeAt ? ` (since ${escapeHtml(releaseDay(s.endOfLifeAt))})` : ""}`)
+            .join(", ")}. ${ended.length === 1 ? "It receives" : "They receive"} no further updates, security fixes included, and ${ended.length === 1 ? "is" : "are"} no longer offered here. Move workstations on ${ended.length === 1 ? "it" : "them"} to the newest version.
+        </div>`
+    : "";
+  const historyHtml = listed.length
+    ? listed.map((m) => releaseCardHtml(m, m.note.tag === latest?.tag, supportOf.get(m.major))).join("")
     : `
           <div class="changelog-card">
             <div class="changelog-head">
@@ -2589,6 +2631,7 @@ function downloadMainHtml(mirrorUrl: string | null, releases: ReleaseNote[], dow
 
       <div style="max-width: 840px; margin: 0 auto;">
         <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">Version History &amp; Changelog</h2>
+        <p style="font-size: 0.9375rem; color: var(--text-muted); margin: 0 0 12px;">The newest release of each version. Earlier releases stay in the GitHub Releases Archive below.</p>${endedHtml}
         <div class="changelog-list">${historyHtml}
         </div>
 
@@ -2823,7 +2866,7 @@ export function renderDownloadHtml(data: LandingOptions): string {
     title: "Lab Kiosk OS - Download Bootable ISO & Flashing Guide",
     description: "Download the latest Lab Kiosk Debian 12 live-build ISO image, SHA256 checksums, 3-step flashing instructions, and Docker build commands.",
     activeNav: "download",
-    mainHtml: downloadMainHtml(mirrorUrl, data.releases || [], data.download ?? null)
+    mainHtml: downloadMainHtml(mirrorUrl, data.releases || [], data.releaseSupport || [])
   });
 }
 
@@ -2893,6 +2936,7 @@ const SITE_CSS = `${rootTokensCss(LEGACY_LANDING_ALIASES)}
     }
     .badge-blue { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
     .badge-green { background: var(--success-soft); color: var(--success-text); border-color: transparent; }
+    .badge-yellow { background: var(--warning-soft); color: var(--warning-text); border-color: transparent; }
 
     /* Header & Navigation */
     header {

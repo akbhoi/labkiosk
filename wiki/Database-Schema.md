@@ -72,6 +72,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0037_license_plan.sql` | `tenants.license_plan` (`education`, `evaluation`, `subscriber`, `commercial`, or NULL) and `license_expires_at` |
 | `0038_notifications.sql` | `notifications` and `notification_reads` (the platform's notifications in organization consoles); `release_lines.eol_reminder_days` |
 | `0039_major_upgrade_pipeline.sql` | `major_upgrade_grants` gains `requested_by`/`requested_at` (an organization asked for a closed major) and `pilot_group`/`pilot_by`/`pilot_at` (the workstation group it tries a major on before confirming it) |
+| `0040_release_support_per_major.sql` | `release_support`: support status and end of life per major release, replacing `release_lines` (dropped; it never reached a release, so its rows are not carried over) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -298,18 +299,18 @@ The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when 
 | `classified_at` / `classified_by` | INTEGER / TEXT | Last classification, and the super admin who made it |
 | `revoked_at` | INTEGER | Set once, for good |
 
-### `release_lines`
+### `release_support`
 
-A line's support status (`0034`). **No `tenant_id`**; a line with no row is supported.
+A major release's support status (`0040`), covering every release of that major. **No `tenant_id`**; a major with no row is supported.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |
-| `line` | TEXT PK | e.g. `2.8` |
-| `status` | TEXT | `supported` \| `security_only` (only its security releases, only to workstations already on it) \| `end_of_life` (nothing offered) |
-| `end_of_life_at` | INTEGER | Announced date; once passed the line is end of life whatever `status` says |
-| `note` | TEXT | Shown to organizations on the line and added to the email |
+| `major` | INTEGER PK | e.g. `2` for every 2.x; 0 to 9999 |
+| `status` | TEXT | `supported` \| `security_only` (only its security releases, only to workstations already on it) \| `end_of_life` (nothing offered, no security rebuilds, not listed on `/download`) |
+| `end_of_life_at` | INTEGER | Announced date; once passed the major is end of life whatever `status` says |
+| `note` | TEXT | Shown to organizations on the major and added to the email |
+| `eol_reminder_days` | INTEGER | The last end-of-life reminder sent for `end_of_life_at`: `60`, `30`, `7`, or `0` once passed; NULL when none yet. A new date resets it |
 | `updated_at` / `updated_by` | INTEGER / TEXT | Last change, and the super admin who made it |
-| `eol_reminder_days` | INTEGER | The last end-of-life reminder sent for `end_of_life_at`: `60`, `30`, `7`, or `0` once passed; NULL when none yet. A new date resets it (`0038`) |
 
 ### `release_majors`
 
@@ -426,7 +427,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0040_<description>.sql` (the next number after `0039`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0041_<description>.sql` (the next number after `0040`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

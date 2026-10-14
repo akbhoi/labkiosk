@@ -72,7 +72,7 @@ import {
   securityReleasesPending,
   sendEndOfLifeReminders,
   setEndOfLifeReminderStage,
-  setReleaseLine,
+  setMajorSupport,
   updateTargetFor,
   workstationOffer,
   type ReleaseOffer
@@ -1637,7 +1637,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.deepEqual((await listReleaseNotes(db)).map((r) => r.tag).slice(0, 3), ["v2.9.0", "v2.7.1", "v2.7.0"]);
       page = await (await call("/download")).text();
       assert.ok(page.includes("Latest Release v2.9.0"));
-      // A security release has no ISO: it is listed, and the download stays the newest release that has one.
+      // A security release has no ISO: it is named in its major's card, and the download stays the newest release that has one.
       const security = release("v2.9.1", "2026-10-12T06:00:00Z", {
         name: "Lab Kiosk v2.9.1 (security)",
         body: "## Security rebuild of v2.9.0",
@@ -1650,9 +1650,29 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.ok(page.includes("Latest Release v2.9.0") && page.includes("Download v2.9.0 (.ISO)"));
       assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.9.0/labkiosk-debian12-amd64.iso"'));
       assert.ok(!page.includes("Download v2.9.1") && !page.includes("releases/download/v2.9.1/labkiosk"), "no ISO is offered for it");
-      const card = page.slice(page.indexOf('<span class="changelog-version">v2.9.1</span>'), page.indexOf('<span class="changelog-version">v2.9.0</span>'));
-      assert.ok(card.includes("Security update") && card.includes("no ISO of its own") && !card.includes(">Latest<"), card);
-      assert.ok(page.slice(page.indexOf('<span class="changelog-version">v2.9.0</span>')).includes(">Latest<"));
+      const card = page.slice(page.indexOf('<span class="changelog-version">v2.9.0</span>'));
+      assert.ok(card.includes(">Latest<") && card.includes('Security update <a href="https://github.com/akbhoi/labkiosk/releases/tag/v2.9.1"'), card);
+      // Each major is listed by its newest release only: 2.9.1, 2.7.1, 2.7.0 and older stand behind 2.9.0.
+      for (const tag of ["v2.9.1", "v2.7.1", "v2.7.0", "v2.6.0"]) {
+        assert.ok(!page.includes(`<span class="changelog-version">${tag}</span>`), `${tag} is not listed`);
+      }
+      // A new major is listed above it; a major at end of life is named instead of listed.
+      githubAnswer = new Response(JSON.stringify([release("v3.0.0", "2026-10-13T06:00:00Z"), security, release("v2.9.0", "2026-10-10T10:18:00Z"), ...list]), { status: 200 });
+      assert.deepEqual(await (await syncCall(configured, `Bearer ${token}`)).json(), { stored: 7, latest: "v3.0.0" });
+      page = await (await call("/download")).text();
+      assert.ok(page.includes("Latest Release v3.0.0") && page.includes('<span class="changelog-version">v2.9.0</span>'));
+      assert.ok(!page.includes("End of life:</strong>"), "nothing is at end of life yet");
+      const endOfLifeAt = Date.parse("2027-03-31T00:00:00Z") / 1000;
+      await setMajorSupport(db, 2, "security_only", endOfLifeAt, null, "test");
+      page = await (await call("/download")).text();
+      const twoCard = page.slice(page.indexOf('<span class="changelog-version">v2.9.0</span>'));
+      assert.ok(twoCard.includes("Security fixes only") && twoCard.includes("Lab Kiosk 2.x reaches end of life on 31 March 2027"), twoCard);
+      await setMajorSupport(db, 2, "end_of_life", endOfLifeAt, null, "test");
+      page = await (await call("/download")).text();
+      assert.ok(!page.includes('<span class="changelog-version">v2.9.0</span>') && !page.includes("Download v2.9.0"), "an ended major is not offered");
+      assert.match(page, /End of life:<\/strong> Lab Kiosk 2\.x \(since 31 March 2027\)\. It receives no further updates/);
+      assert.ok(page.includes("Latest Release v3.0.0"));
+      await db.prepare("DELETE FROM release_support WHERE major = 2").run();
       githubAnswer = new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
       assert.equal((await syncCall(configured, `Bearer ${token}`)).status, 502);
       assert.ok((await listReleaseNotes(db)).some((r) => r.tag === "v2.9.0"), "a failed read keeps what is stored");
@@ -5134,26 +5154,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const day = 86_400;
     const start = Math.floor(Date.now() / 1000);
     const endOfLifeAt = start + 90 * day;
-    await setReleaseLine(db, "2.31", "supported", endOfLifeAt, null, "test");
-    await setEndOfLifeReminderStage(db, "2.31", null);
-    const remindedAt = async (daysBefore: number) => (await sendEndOfLifeReminders(mockEnv, db, endOfLifeAt - daysBefore * day)).filter((l) => l === "2.31");
+    await setMajorSupport(db, 31, "supported", endOfLifeAt, null, "test");
+    await setEndOfLifeReminderStage(db, 31, null);
+    const remindedAt = async (daysBefore: number) => (await sendEndOfLifeReminders(mockEnv, db, endOfLifeAt - daysBefore * day)).filter((m) => m === 31);
     assert.deepEqual(await remindedAt(70), [], "too early");
-    assert.deepEqual(await remindedAt(59), ["2.31"], "60 days before");
+    assert.deepEqual(await remindedAt(59), [31], "60 days before");
     assert.deepEqual(await remindedAt(58), [], "once");
-    assert.deepEqual(await remindedAt(10), ["2.31"], "30 days before (late is still sent once)");
-    assert.deepEqual(await remindedAt(6), ["2.31"], "7 days before");
-    assert.deepEqual(await remindedAt(-1), ["2.31"], "the date has passed");
+    assert.deepEqual(await remindedAt(10), [31], "30 days before (late is still sent once)");
+    assert.deepEqual(await remindedAt(6), [31], "7 days before");
+    assert.deepEqual(await remindedAt(-1), [31], "the date has passed");
     assert.deepEqual(await remindedAt(-2), [], "and nothing after");
     const titles = ((await callJson("/api/notifications?tenant=greenwood", { cookie: orgSessionCookie })).data.notifications as any[])
       .map((n) => n.title)
-      .filter((t: string) => /2\.31/.test(t));
-    assert.ok(titles.includes("Lab Kiosk 2.31 has reached end of life"));
-    assert.ok(titles.some((t: string) => /^Reminder: Lab Kiosk 2\.31 reaches end of life on/.test(t)));
+      .filter((t: string) => /Lab Kiosk 31 /.test(t));
+    assert.ok(titles.includes("Lab Kiosk 31 has reached end of life"));
+    assert.ok(titles.some((t: string) => /^Reminder: Lab Kiosk 31 reaches end of life on/.test(t)));
     // A new date starts the reminders over.
-    await setReleaseLine(db, "2.31", "supported", endOfLifeAt + 200 * day, null, "test");
-    const row = await db.prepare("SELECT eol_reminder_days FROM release_lines WHERE line = '2.31'").first<{ eol_reminder_days: number | null }>();
+    await setMajorSupport(db, 31, "supported", endOfLifeAt + 200 * day, null, "test");
+    const row = await db.prepare("SELECT eol_reminder_days FROM release_support WHERE major = 31").first<{ eol_reminder_days: number | null }>();
     assert.equal(row!.eol_reminder_days, null);
-    await db.prepare("DELETE FROM release_lines WHERE line = '2.31'").run();
+    await db.prepare("DELETE FROM release_support WHERE major = 31").run();
     await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
   });
 
@@ -7440,7 +7460,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
-  test("Release lines and majors: end of life, security only, and a closed major granted and confirmed", async () => {
+  test("Major releases: end of life, security only, and a closed major granted and confirmed", async () => {
     const tenantId = await greenwoodId();
     const policyEnv = {
       ...releasesEnv,
@@ -7460,7 +7480,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const policy = await listed.json<any>();
     assert.equal(policy.majors.find((m: any) => m.major === 5)?.state, "closed", "a new major above the known ones starts closed");
     assert.equal(policy.majors.find((m: any) => m.major === 2)?.state, "free", "the majors already in use stay offered");
-    assert.equal(policy.lines.find((l: any) => l.line === "2.8")?.workstations, 3, "Greenwood's workstations on 2.8.0");
+    assert.equal(policy.majors.find((m: any) => m.major === 2)?.status, "supported", "a major nobody set is supported");
+    assert.ok(policy.majors.find((m: any) => m.major === 2)?.workstations >= 3, "Greenwood's workstations on 2.8.0 count towards 2.x");
     for (const version of ["2.20.0", "2.20.1", "2.21.0", "5.0.0"]) {
       const res = await callWith(policyEnv, "/api/super/releases/classify", { ...json({ version, channel: "stable" }), cookie: superSessionCookie });
       assert.equal(res.status, 200, `classifying ${version}`);
@@ -7474,20 +7495,23 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await ask("")).release.version, "2.21.0", "nor to an updater that does not say what it runs");
     assert.equal((await ask("5.0.0")).release.version, "5.0.0", "a workstation already on it keeps its major");
 
-    // Only a super admin sets a line or a major, with valid input.
-    const lines = (payload: unknown, cookie = superSessionCookie) => callWith(policyEnv, "/api/super/release-lines", { ...json(payload), cookie });
+    // Only a super admin sets a major's support or its gate, with valid input.
+    const support = (payload: unknown, cookie = superSessionCookie) => callWith(policyEnv, "/api/super/release-support", { ...json(payload), cookie });
     const majors = (payload: unknown, cookie = superSessionCookie) => callWith(policyEnv, "/api/super/release-majors", { ...json(payload), cookie });
     for (const cookie of ["", orgSessionCookie, rivalSessionCookie]) {
-      assert.ok([401, 403].includes((await lines({ line: "2.20", status: "end_of_life" }, cookie)).status));
+      assert.ok([401, 403].includes((await support({ major: 2, status: "end_of_life" }, cookie)).status));
       assert.ok([401, 403].includes((await majors({ major: 5, action: "open" }, cookie)).status));
     }
     for (const payload of [
-      { line: "2.20.0", status: "end_of_life" },
-      { line: "2.20", status: "retired" },
-      { line: "2.20", status: "supported", endOfLifeAt: "tomorrow" },
-      { line: "2.20", status: "supported", note: 5 }
+      { line: "2.20", status: "end_of_life" },
+      { major: "2", status: "end_of_life" },
+      { major: 2.2, status: "end_of_life" },
+      { major: 10000, status: "end_of_life" },
+      { major: 2, status: "retired" },
+      { major: 2, status: "supported", endOfLifeAt: "tomorrow" },
+      { major: 2, status: "supported", note: 5 }
     ]) {
-      assert.equal((await lines(payload)).status, 400, JSON.stringify(payload));
+      assert.equal((await support(payload)).status, 400, JSON.stringify(payload));
     }
     for (const payload of [{ major: "5", action: "open" }, { major: 5, action: "delete" }, { major: 10000, action: "open" }]) {
       assert.equal((await majors(payload)).status, 400, JSON.stringify(payload));
@@ -7495,29 +7519,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await majors({ major: 5, action: "grant", tenantId: "nope" })).status, 404);
     assert.equal((await majors({ major: 2, action: "grant", tenantId })).status, 409, "a free major needs no grant");
 
-    // Security only: workstations on the line keep its fixes, and none is moved onto it.
-    assert.equal((await lines({ line: "2.21", status: "security_only" })).status, 200);
+    // Security only: workstations on the major keep its fixes, and none is moved onto it.
+    assert.equal((await support({ major: 2, status: "security_only" })).status, 200);
     offer = await ask("2.20.0");
-    assert.equal(offer.release.version, "2.20.1", "2.21.0 is a feature release of a security-only line");
+    assert.equal(offer.release.version, "2.20.1", "2.21.0 is a feature release of a security-only major");
     assert.equal(offer.security.version, "2.20.1");
-    // End of life: nothing on the line is offered, security fixes included.
-    const eol = await lines({ line: "2.20", status: "end_of_life", note: "Move to 2.21." });
+    assert.equal((await ask("5.0.0")).release.version, "5.0.0", "a workstation on another major is not moved onto it");
+    // End of life: nothing of the major is offered, security fixes included.
+    const eol = await support({ major: 2, status: "end_of_life", note: "Move to 5." });
     assert.equal(eol.status, 200);
-    assert.equal((await eol.json<any>()).lines.find((l: any) => l.line === "2.20").effectiveStatus, "end_of_life");
+    assert.equal((await eol.json<any>()).majors.find((m: any) => m.major === 2).effectiveStatus, "end_of_life");
     offer = await ask("2.20.0");
     assert.equal(offer.security, null);
-    assert.equal(offer.release, null, "2.21 is security only and 5 is closed");
-    assert.equal((await lines({ line: "2.21", status: "supported" })).status, 200);
+    assert.equal(offer.release, null, "2.x is at end of life and 5 is closed");
+    assert.equal((await support({ major: 2, status: "supported" })).status, 200);
     assert.equal((await ask("2.20.0")).release.version, "2.21.0");
-    // An announced date ends the line by itself once it has passed.
-    assert.equal((await lines({ line: "2.20", status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) + 86400 })).status, 200);
+    // An announced date ends the major by itself once it has passed.
+    assert.equal((await support({ major: 2, status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) + 86400 })).status, 200);
     assert.equal((await ask("2.20.0")).security.version, "2.20.1", "not yet");
-    assert.equal((await lines({ line: "2.20", status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) - 1 })).status, 200);
+    assert.equal((await support({ major: 2, status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) - 1 })).status, 200);
     assert.equal((await ask("2.20.0")).security, null, "the date has passed");
-    assert.equal((await lines({ line: "2.20", status: "supported" })).status, 200);
+    assert.equal((await support({ major: 2, status: "supported" })).status, 200);
 
     // Announcing an end of life tells every organization in its console, and with
-    // notify emails every customer's owner; the ones on the line hear how many run it.
+    // notify emails every customer's owner; the ones on the major hear how many run it.
     const owner = await getDatabase(mockEnv)
       .prepare("SELECT u.email FROM users u JOIN tenants t ON t.user_id = u.id WHERE t.id = ?")
       .bind(tenantId)
@@ -7525,26 +7550,26 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const customers = (await activeOrganizationOwners(getDatabase(mockEnv), null)).length;
     assert.ok(customers > 1, "more than one customer, demos aside");
     const eolDate = Math.floor(Date.now() / 1000) + 30 * 86400;
-    const announced = await lines({ line: "2.8", status: "supported", endOfLifeAt: eolDate, notify: true });
+    const announced = await support({ major: 2, status: "supported", endOfLifeAt: eolDate, notify: true });
     assert.equal(announced.status, 200);
     assert.equal((await announced.json<any>()).emailed, customers, "every customer is emailed");
-    const mail = [...localOutbox()].reverse().find((m) => m.to === owner!.email.toLowerCase() && /2\.8/.test(m.subject));
+    const mail = [...localOutbox()].reverse().find((m) => m.to === owner!.email.toLowerCase() && /Lab Kiosk 2 reaches/.test(m.subject));
     assert.ok(mail, "the owner is told");
-    assert.match(mail!.text, /3 of .*'s workstations run Lab Kiosk 2\.8/);
+    assert.match(mail!.text, /4 of .*'s workstations run Lab Kiosk 2\./, "every Greenwood workstation on a 2.x image");
     const consoleNotices = await callJson("/api/notifications?tenant=greenwood", { cookie: orgSessionCookie });
-    assert.ok(consoleNotices.data.notifications.some((n: any) => /Lab Kiosk 2\.8 reaches end of life on/.test(n.title) && !n.read));
+    assert.ok(consoleNotices.data.notifications.some((n: any) => /Lab Kiosk 2 reaches end of life on/.test(n.title) && !n.read));
     const rivalNotices = await callJson("/api/notifications?tenant=riverside", { cookie: rivalSessionCookie });
-    assert.ok(rivalNotices.data.notifications.some((n: any) => /Lab Kiosk 2\.8 reaches end of life on/.test(n.title)), "every organization");
-    const resent = await lines({ line: "2.8", status: "supported", endOfLifeAt: eolDate, note: "x", notify: true });
+    assert.ok(rivalNotices.data.notifications.some((n: any) => /Lab Kiosk 2 reaches end of life on/.test(n.title)), "every organization");
+    const resent = await support({ major: 2, status: "supported", endOfLifeAt: eolDate, note: "x", notify: true });
     assert.equal((await resent.json<any>()).emailed, 0, "the same date again tells nobody anything new");
     const settings = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
     assert.deepEqual(
-      settings.data.lines.map((l: any) => [l.line, l.status, l.workstations]),
-      [["2.8", "supported", 3]],
+      settings.data.support.map((l: any) => [l.major, l.status, l.workstations]),
+      [[2, "supported", 4]],
       "the organization's Updates settings warn about the date"
     );
     assert.deepEqual(settings.data.majors.map((m: any) => [m.major, m.access]), [[5, "closed"]]);
-    assert.equal((await lines({ line: "2.8", status: "supported" })).status, 200);
+    assert.equal((await support({ major: 2, status: "supported" })).status, 200);
 
     // A closed major, through the pipeline: asked for, declined, asked for again,
     // granted, tried on one workstation group, then confirmed for every workstation.
@@ -7641,7 +7666,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call(`/api/groups/${group.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
 
     const platform = await (await call("/api/super/audit-logs?limit=100", { cookie: superSessionCookie })).json<any>();
-    assert.ok(platform.logs.some((l: any) => l.action === "release.line" && /^2\.20 end_of_life/.test(l.details)));
+    assert.ok(platform.logs.some((l: any) => l.action === "release.support" && /^2 end_of_life/.test(l.details)));
     assert.ok(platform.logs.some((l: any) => l.action === "release.major" && l.details === "5 open"));
     const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
     assert.ok(logs.some((l: any) => l.action === "update.major_confirm" && l.details === "5"));
@@ -7655,27 +7680,27 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
-  test("The security rebuild reads each line's status with the shared token, and an ended line is listed as end of life", async () => {
+  test("The security rebuild reads each major's support status with the shared token, and an ended major is listed as end of life", async () => {
     const token = "a".repeat(64);
-    const linesCall = (env: Env, auth?: string, method = "GET") =>
-      worker.fetch(new Request("https://labkiosk.org/api/release-lines", { method, headers: auth ? { Authorization: auth } : {} }), env);
-    assert.equal((await linesCall(mockEnv, `Bearer ${token}`)).status, 503, "not configured: refused");
+    const supportCall = (env: Env, auth?: string, method = "GET") =>
+      worker.fetch(new Request("https://labkiosk.org/api/release-support", { method, headers: auth ? { Authorization: auth } : {} }), env);
+    assert.equal((await supportCall(mockEnv, `Bearer ${token}`)).status, 503, "not configured: refused");
     const configured = { ...mockEnv, RELEASE_NOTES_TOKEN: token } as Env;
     for (const auth of [undefined, `Bearer ${"b".repeat(64)}`, token, `Bearer ${token}x`]) {
-      assert.equal((await linesCall(configured, auth)).status, 401, String(auth));
+      assert.equal((await supportCall(configured, auth)).status, 401, String(auth));
     }
-        const db = getDatabase(mockEnv);
+    const db = getDatabase(mockEnv);
     const now = Math.floor(Date.now() / 1000);
-    await setReleaseLine(db, "7.1", "security_only", null, null, "test");
-    await setReleaseLine(db, "7.2", "end_of_life", null, null, "test");
-    await setReleaseLine(db, "7.3", "supported", now - 60, null, "test");
-    const res = await linesCall(configured, `Bearer ${token}`);
+    await setMajorSupport(db, 71, "security_only", null, null, "test");
+    await setMajorSupport(db, 72, "end_of_life", null, null, "test");
+    await setMajorSupport(db, 73, "supported", now - 60, null, "test");
+    const res = await supportCall(configured, `Bearer ${token}`);
     assert.equal(res.status, 200);
-    const status = new Map(((await res.json<any>()).lines as any[]).map((l) => [l.line, l.status]));
-    assert.equal(status.get("7.1"), "security_only");
-    assert.equal(status.get("7.2"), "end_of_life");
-    assert.equal(status.get("7.3"), "end_of_life", "a passed end-of-life date ends the line by itself");
-    await db.prepare("DELETE FROM release_lines WHERE line IN ('7.1', '7.2', '7.3')").run();
+    const status = new Map(((await res.json<any>()).majors as any[]).map((m) => [m.major, m.status]));
+    assert.equal(status.get(71), "security_only");
+    assert.equal(status.get(72), "end_of_life");
+    assert.equal(status.get(73), "end_of_life", "a passed end-of-life date ends the major by itself");
+    await db.prepare("DELETE FROM release_support WHERE major IN (71, 72, 73)").run();
   });
 
   test("Legal terms: registration records them, a new version is asked for, and gates the console after the notice period", async () => {

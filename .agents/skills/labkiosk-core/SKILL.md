@@ -106,8 +106,8 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
     `lan` is null when the organization does not share, else `{peers}`, up to 8 site members'
     LAN addresses holding that release `ready`/`staged` within 48 h, from the hub's `/lan-peers`;
     `securityUpdates` is `next_boot` or `approval`; without `running`, as a 2.9.0 updater asks,
-    `security` is null; both are filtered by `eligibleReleases()`: nothing from an end-of-life line,
-    only the own line's security releases from a security-only one, nothing of a major closed to the
+    `security` is null; both are filtered by `eligibleReleases()`: nothing from an end-of-life major,
+    only the own major's security releases from a security-only one, nothing of a major closed to the
     organization above the one it runs) and downloads from `url` (`RELEASES_BASE_URL` + `releases/<version>`;
     `503` when unset), after trying up to 3 peers at `http://<peer>:8890/<version>/`. A `security` release by its signed manifest, for the running line, under
     `next_boot`, is staged for the next boot (`staged`), with no reboot.

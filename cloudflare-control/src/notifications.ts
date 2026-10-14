@@ -4,7 +4,7 @@
  * A notification is for one organization, or for every organization (tenant_id
  * NULL). The platform writes one when it changes something about an
  * organization (approval, Remote Control, the workstation limit, the license,
- * content taken down, a major release granted), when a release line is retired,
+ * content taken down, a major release granted), when a major release is retired,
  * and when a super admin writes one under System -> Notifications. Each member
  * of staff dismisses them for themselves; a console shows the ones its user
  * has not dismissed. Email is separate: whoever writes a notification decides

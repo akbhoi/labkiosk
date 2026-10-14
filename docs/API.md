@@ -150,7 +150,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/super/tenants/license` | `POST` | Super Admin | `{"tenantId", "plan": "education"\|"evaluation"\|"subscriber"\|"commercial", "expiresOn": "YYYY-MM-DD"\|null}`: the license an organization runs under. Once the end date (00:00 UTC) has passed, enrolment answers `403` for any workstation not already holding a valid token, and Remote Control is refused; audited as `tenant.license` |
 | `/api/super/tenants/content` | `POST` | Super Admin | `{"tenantId", "target": "homepage"\|"card", "action": "takedown"\|"restore", "url"? (card), "reason"? (required to take down)}`: take an organization's homepage or the cards linking to `url` down, emailing the owner, or restore them |
 | `/api/super/notifications` | `GET` / `POST` | Super Admin | `GET`: every notification sent, newest first. `POST {"tenantId": id\|null, "title", "body", "email"?}`: notify one organization or every organization (`null`) in its console, and with `email` email each owner; answers `emailed`, `emailFailed`, `emailProblem`. Audited as `notification.send` |
-| `/api/super/release-lines` | `POST` | Super Admin | `{"line", "status", "endOfLifeAt"?, "note"?, "notify"?}`: a line's support status and end-of-life date; every organization is notified in its console when the status or date changes, and `notify` emails every customer's owner too |
+| `/api/super/release-support` | `POST` | Super Admin | `{"major", "status", "endOfLifeAt"?, "note"?, "notify"?}`: a major release's support status and end-of-life date, covering every release of it; every organization is notified in its console when the status or date changes, and `notify` emails every customer's owner too |
 | `/api/super/release-majors` | `POST` | Super Admin | `{"major", "action": "open"\|"close"\|"grant"\|"ungrant"\|"decline", "tenantId"\|"subdomain", "reason"?}`: whether workstations may be moved to a major release; `decline` turns down an organization's request |
 
 ---
@@ -979,7 +979,7 @@ workstations at once.
     "securityUpdates": "next_boot",
     "lanSharing": false,
     "pending": [{ "version": "2.9.1", "offeredAt": 1791638060, "workstations": 3 }],
-    "lines": [{ "line": "2.8", "status": "supported", "endOfLifeAt": 1798675200, "note": null, "workstations": 2 }],
+    "support": [{ "major": 2, "status": "supported", "endOfLifeAt": 1798675200, "note": null, "workstations": 2 }],
     "majors": [{ "major": 3, "access": "pilot", "newest": "3.0.0", "confirmedAt": null, "requestedAt": 1796083200, "pilotGroup": "Library" }],
     "groups": ["Library", "Reading room"]
   }
@@ -987,8 +987,8 @@ workstations at once.
 
   `offer` is `null` when nothing is offered on that channel. `pending` lists, per line, the newest
   security release that some of the organization's workstations on that line do not run yet.
-  `lines` lists the lines its workstations run that are `security_only`, `end_of_life` or have an
-  end-of-life date. `majors` lists the majors above the lowest one its workstations run that are
+  `support` lists the major releases its workstations run that are `security_only`, `end_of_life`
+  or have an end-of-life date. `majors` lists the majors above the lowest one its workstations run that are
   `closed` to it, `requested` (`POST /api/settings/updates/request-major`, audited as
   `update.major_request`), `available` (open or granted), `pilot` (tried on the workstation group
   `pilotGroup`, `POST /api/settings/updates/pilot-major`, `update.major_pilot`) or `confirmed`
@@ -1070,18 +1070,19 @@ organization with workstations online reloads its offer.
   ```
 
   `downloadsConfigured` is false while `RELEASES_BASE_URL` is unset or not https. `GET` also
-  returns `lines` (`{line, status, effectiveStatus, endOfLifeAt, note, workstations,
-  organizations}`) and `majors` (`{major, state: "free"|"open"|"closed", grants: [{tenantId, name,
-  grantedAt, confirmedAt}]}`). `classify` and `revoke` answer `{ "status": "ok", "releases": [...] }`.
+  returns `majors` (`{major, state: "free"|"open"|"closed", status, effectiveStatus, endOfLifeAt,
+  note, workstations, organizations, grants: [{tenantId, name, requestedAt, grantedAt, pilotGroup,
+  confirmedAt}]}`). `classify` and `revoke` answer `{ "status": "ok", "releases": [...] }`.
 - **Errors:** `503` (`GET`) without the `RELEASES` binding; `400` invalid version or channel;
   `404` unknown release; `409` the release is already revoked.
 
-#### Release lines and majors: `POST /api/super/release-lines`, `POST /api/super/release-majors`
+#### Major releases: `POST /api/super/release-support`, `POST /api/super/release-majors`
 
-What each workstation is offered also depends on its line and its major. A line `security_only`
-offers its security releases to the workstations already on it and moves no other workstation onto
-it; `end_of_life` offers it nothing, security fixes included. `endOfLifeAt` (Unix seconds, or
-`null`) ends the line by itself once it passes. A major with no `release_majors` row is offered to
+What each workstation is offered also depends on its major release. Support is set per major only
+(2 covers every 2.x). A major `security_only` offers its security releases to the workstations
+already on it and moves no other workstation onto it; `end_of_life` offers it nothing, security
+fixes included, and the daily security rebuild stops building it. `endOfLifeAt` (Unix seconds, or
+`null`) ends the major by itself once it passes. A major with no `release_majors` row is offered to
 everyone; the first release of a major above every recorded one arrives **closed**. A workstation
 is moved above the major it runs only when that major is open to all or granted to its
 organization, **and** an administrator of the organization confirmed it (or is trying it on the
@@ -1092,12 +1093,12 @@ any workstation may take. `decline` turns down an organization's request for a c
 notify the organizations concerned in their consoles.
 
 - **Access:** Super Admin
-- **Request Body:** `{ "line": "2.8", "status": "supported", "endOfLifeAt": 1798675200, "note": "Move to 2.10.", "notify": true }`
+- **Request Body:** `{ "major": 2, "status": "supported", "endOfLifeAt": 1798675200, "note": "Move to 3.x.", "notify": true }`
   or `{ "major": 3, "action": "grant", "subdomain": "riverside" }`.
-- **Response `200 OK`:** `{ "status": "ok", "lines": [...], "majors": [...] }`; a line change
-  also carries `emailed`, `emailFailed` and `emailProblem` (set when the server cannot send email).
-- **Audit:** `release.line`, `release.major`.
-- **Errors:** `400` invalid line, status, date, note, major or action; `404` unknown organization;
+- **Response `200 OK`:** `{ "status": "ok", "majors": [...] }`; a support change also carries
+  `emailed`, `emailFailed` and `emailProblem` (set when the server cannot send email).
+- **Audit:** `release.support`, `release.major`.
+- **Errors:** `400` invalid status, date, note, major or action; `404` unknown organization;
   `409` granting a major that is not closed, or declining when the organization has no open request.
 
 ---

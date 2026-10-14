@@ -11,8 +11,8 @@
  * The list is read from GET /api/super/releases, which first records any new
  * release it finds in the bucket.
  *
- * Below it, each line's support status (supported, security fixes only, end of
- * life, with an announced end-of-life date) and each major release's gate: a
+ * Below it, each major release's support status (supported, security fixes
+ * only, end of life, with an announced end-of-life date) and its gate: a
  * closed major reaches only the organizations it is opened or granted to, once
  * an administrator of each has confirmed it in Settings -> Updates.
  */
@@ -46,13 +46,13 @@ export function renderReleasesPaneHtml(): string {
           </div>
         </div>
         <div class="card">
-          <h2 class="card-title">Release lines</h2>
-          <p class="card-sub">A line is every release of one minor version, such as 2.8.x. <strong>Security only</strong> keeps sending the line's security fixes to the workstations already on it and moves no other workstation onto it. <strong>End of life</strong> offers the line nothing more, security fixes included; an end-of-life date does the same by itself once it has passed. Changing a line's status or date notifies every organization in its console, and can email every owner; as the date nears, reminders go out by themselves 60, 30 and 7 days before it and once it has passed.</p>
+          <h2 class="card-title">Support and end of life</h2>
+          <p class="card-sub">Support is set per major release and covers every release of it, such as 2.x. <strong>Security only</strong> keeps sending its security fixes to the workstations already on it and moves no other workstation onto it. <strong>End of life</strong> offers it nothing more, security fixes included, and the daily security rebuild stops building it; an end-of-life date does the same by itself once it has passed. Changing a major's status or date notifies every organization in its console, and can email every owner; as the date nears, reminders go out by themselves 60, 30 and 7 days before it and once it has passed. The download page lists the newest release of each major that is not at end of life, and names the ones that are.</p>
           <div class="table-container">
             <table>
               <thead>
                 <tr>
-                  <th>Line</th>
+                  <th>Major</th>
                   <th>Status</th>
                   <th>End of life</th>
                   <th>Workstations</th>
@@ -98,7 +98,6 @@ export function renderReleasesScript(nonce: string): string {
         const lineRows = document.getElementById("line-rows");
         const majorRows = document.getElementById("major-rows");
         if (!rows || !notice || !lineRows || !majorRows) return;
-        let lines = [];
         let majors = [];
 
         function cell(text, className) {
@@ -129,13 +128,13 @@ export function renderReleasesScript(nonce: string): string {
 
         function renderLines() {
           lineRows.replaceChildren();
-          if (!lines.length) {
-            lineRows.appendChild(placeholder("No release lines yet.", 6));
+          if (!majors.length) {
+            lineRows.appendChild(placeholder("No major releases yet.", 6));
             return;
           }
-          for (const l of lines) {
+          for (const l of majors) {
             const row = document.createElement("tr");
-            row.appendChild(cell(l.line, "mono"));
+            row.appendChild(cell(l.major + ".x", "mono"));
             const status = document.createElement("td");
             const shown = LINE_LABELS[l.effectiveStatus] || LINE_LABELS.supported;
             status.appendChild(badge(shown[0], shown[1]));
@@ -154,12 +153,12 @@ export function renderReleasesScript(nonce: string): string {
             const actions = document.createElement("td");
             const wrap = document.createElement("div");
             wrap.className = "cell-actions";
-            if (l.status !== "supported") wrap.appendChild(policyButton("Supported", "btn-secondary", { lineAction: "status", line: l.line, status: "supported" }));
-            if (l.status !== "security_only") wrap.appendChild(policyButton("Security only", "btn-secondary", { lineAction: "status", line: l.line, status: "security_only" }));
-            if (l.status !== "end_of_life") wrap.appendChild(policyButton("End of life", "btn-danger", { lineAction: "status", line: l.line, status: "end_of_life" }));
-            wrap.appendChild(policyButton(l.endOfLifeAt ? "Change date" : "Set end-of-life date", "btn-ghost", { lineAction: "date", line: l.line }));
-            if (l.endOfLifeAt) wrap.appendChild(policyButton("Clear date", "btn-ghost", { lineAction: "clear-date", line: l.line }));
-            wrap.appendChild(policyButton("Note", "btn-ghost", { lineAction: "note", line: l.line }));
+            if (l.status !== "supported") wrap.appendChild(policyButton("Supported", "btn-secondary", { lineAction: "status", major: String(l.major), status: "supported" }));
+            if (l.status !== "security_only") wrap.appendChild(policyButton("Security only", "btn-secondary", { lineAction: "status", major: String(l.major), status: "security_only" }));
+            if (l.status !== "end_of_life") wrap.appendChild(policyButton("End of life", "btn-danger", { lineAction: "status", major: String(l.major), status: "end_of_life" }));
+            wrap.appendChild(policyButton(l.endOfLifeAt ? "Change date" : "Set end-of-life date", "btn-ghost", { lineAction: "date", major: String(l.major) }));
+            if (l.endOfLifeAt) wrap.appendChild(policyButton("Clear date", "btn-ghost", { lineAction: "clear-date", major: String(l.major) }));
+            wrap.appendChild(policyButton("Note", "btn-ghost", { lineAction: "note", major: String(l.major) }));
             actions.appendChild(wrap);
             row.appendChild(actions);
             lineRows.appendChild(row);
@@ -214,7 +213,6 @@ export function renderReleasesScript(nonce: string): string {
         }
 
         function showPolicy(data) {
-          if (Array.isArray(data.lines)) lines = data.lines;
           if (Array.isArray(data.majors)) majors = data.majors;
           renderLines();
           renderMajors();
@@ -243,19 +241,20 @@ export function renderReleasesScript(nonce: string): string {
         lineRows.addEventListener("click", async (event) => {
           const b = event.target && event.target.closest ? event.target.closest("[data-line-action]") : null;
           if (!b) return;
-          const current = lines.find((l) => l.line === b.dataset.line);
+          const current = majors.find((l) => String(l.major) === b.dataset.major);
           if (!current) return;
-          const next = { line: current.line, status: current.status, endOfLifeAt: current.endOfLifeAt, note: current.note };
+          const label = current.major + ".x";
+          const next = { major: current.major, status: current.status, endOfLifeAt: current.endOfLifeAt, note: current.note };
           const action = b.dataset.lineAction;
           if (action === "status") {
             next.status = b.dataset.status;
             const messages = {
-              supported: "Workstations are offered this line's releases again.",
-              security_only: "Workstations already on " + current.line + " keep receiving its security fixes. No other workstation is moved onto it.",
-              end_of_life: "No release of " + current.line + " is offered any more, security fixes included. Workstations on it are offered the newest supported release."
+              supported: "Workstations are offered every release of " + label + " again.",
+              security_only: "Workstations already on " + label + " keep receiving its security fixes. No other workstation is moved onto it.",
+              end_of_life: "No release of " + label + " is offered any more, security fixes included, and the daily security rebuild stops building it. Workstations on it are offered the newest supported release."
             };
             const ok = await lkConfirm({
-              title: (LINE_LABELS[next.status] || LINE_LABELS.supported)[0] + ": " + current.line + "?",
+              title: (LINE_LABELS[next.status] || LINE_LABELS.supported)[0] + ": " + label + "?",
               message: messages[next.status],
               confirmLabel: "Save",
               tone: next.status === "end_of_life" ? "danger" : undefined
@@ -263,10 +262,10 @@ export function renderReleasesScript(nonce: string): string {
             if (!ok) return;
           } else if (action === "date") {
             const value = await lkPrompt({
-              title: "End-of-life date for " + current.line,
+              title: "End-of-life date for " + label,
               label: "Date (YYYY-MM-DD, UTC)",
               value: day(current.endOfLifeAt),
-              hint: "From this date the line is offered nothing more, security fixes included.",
+              hint: "From this date the major is offered nothing more, security fixes included.",
               confirmLabel: "Save date"
             });
             if (value === null) return;
@@ -280,7 +279,7 @@ export function renderReleasesScript(nonce: string): string {
             next.endOfLifeAt = null;
           } else if (action === "note") {
             const value = await lkPrompt({
-              title: "Note for " + current.line,
+              title: "Note for " + label,
               label: "Added to the notification and the email when the status or date next changes",
               value: current.note || "",
               confirmLabel: "Save note"
@@ -293,17 +292,17 @@ export function renderReleasesScript(nonce: string): string {
           const restrictive = next.status !== "supported" || (next.endOfLifeAt && next.endOfLifeAt !== current.endOfLifeAt);
           if (restrictive && action !== "note") {
             next.notify = await lkConfirm({
-              title: "Email every organization about " + current.line + "?",
+              title: "Email every organization about " + label + "?",
               message: "Every organization sees what changed in its console. The owner of every active organization can be emailed it too" +
-                (Number(current.organizations) > 0 ? "; " + current.organizations + " of them have workstations on this line." : "."),
+                (Number(current.organizations) > 0 ? "; " + current.organizations + " of them have workstations on it." : "."),
               confirmLabel: "Email owners",
               cancelLabel: "Don't email"
             });
           }
-          const data = await postPolicy("/api/super/release-lines", next);
+          const data = await postPolicy("/api/super/release-support", next);
           if (!data) return;
           if (data.emailProblem) lkToast(data.emailProblem, "error");
-          else lkToast(current.line + " saved" + (data.emailed ? ", " + data.emailed + (data.emailed === 1 ? " owner" : " owners") + " emailed" : "") + (data.emailFailed ? ", " + data.emailFailed + " emails failed" : ""), data.emailFailed ? "error" : "success");
+          else lkToast(label + " saved" + (data.emailed ? ", " + data.emailed + (data.emailed === 1 ? " owner" : " owners") + " emailed" : "") + (data.emailFailed ? ", " + data.emailFailed + " emails failed" : ""), data.emailFailed ? "error" : "success");
         });
 
         majorRows.addEventListener("click", async (event) => {
@@ -428,7 +427,7 @@ export function renderReleasesScript(nonce: string): string {
             const data = await res.json();
             if (!res.ok) {
               rows.replaceChildren(placeholder(data.error || "Releases could not be read"));
-              lineRows.replaceChildren(placeholder(data.error || "Release lines could not be read", 6));
+              lineRows.replaceChildren(placeholder(data.error || "Support status could not be read", 6));
               majorRows.replaceChildren(placeholder(data.error || "Major releases could not be read", 4));
               return;
             }

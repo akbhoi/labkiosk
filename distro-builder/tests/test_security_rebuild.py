@@ -115,39 +115,41 @@ class Lines(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     rebuild.plan_lines(tags, line)
 
-    def test_with_the_platform_policy_every_line_but_the_ended_ones(self):
-        tags = ["v2.9.0", "v2.10.0", "v2.11.0", "v2.12.0"]
-        policy = json.dumps({"lines": [
-            {"line": "2.12", "status": "supported", "endOfLifeAt": None},
-            {"line": "2.10", "status": "end_of_life", "endOfLifeAt": 1798675200},
-            {"line": "2.9", "status": "security_only", "endOfLifeAt": None},
+    def test_with_the_platform_policy_every_line_of_a_major_not_ended(self):
+        tags = ["v2.9.0", "v2.10.0", "v3.0.0", "v3.1.0", "v4.0.0"]
+        policy = json.dumps({"majors": [
+            {"major": 2, "status": "end_of_life", "endOfLifeAt": 1798675200},
+            {"major": 3, "status": "security_only", "endOfLifeAt": None},
         ]})
-        ended = rebuild.end_of_life_lines(policy)
-        self.assertEqual(ended, {(2, 10)})
-        self.assertEqual([entry["line"] for entry in rebuild.plan_lines(tags, end_of_life=ended)], ["2.12", "2.11", "2.9"],
-                         "older lines still supported get their fixes; an ended one gets none")
-        self.assertEqual([entry["line"] for entry in rebuild.plan_lines(tags, "2.9", end_of_life=ended)], ["2.9"])
+        ended = rebuild.end_of_life_majors(policy)
+        self.assertEqual(ended, {2})
+        self.assertEqual([entry["line"] for entry in rebuild.plan_lines(tags, end_of_life=ended)], ["4.0", "3.1", "3.0"],
+                         "every line of a major still supported gets its fixes; an ended major gets none")
+        self.assertEqual([entry["line"] for entry in rebuild.plan_lines(tags, "3.0", end_of_life=ended)], ["3.0"])
         with self.assertRaisesRegex(ValueError, "end of life"):
             rebuild.plan_lines(tags, "2.10", end_of_life=ended)
-        self.assertEqual(rebuild.plan_lines(["v2.9.0"], end_of_life={(2, 9)}), [])
+        self.assertEqual(rebuild.plan_lines(["v2.9.0", "v2.10.0"], end_of_life={2}), [])
 
     def test_a_policy_that_cannot_be_read_is_an_error_not_an_empty_one(self):
-        for text in ("", "[]", "{}", '{"lines": {}}', '{"lines": [{"line": "2.9"}]}',
-                     '{"lines": [{"line": "2.9.0", "status": "supported"}]}',
-                     '{"lines": [{"line": "2.9", "status": "retired"}]}', '{"lines": ["2.9"]}'):
+        for text in ("", "[]", "{}", '{"majors": {}}', '{"majors": [{"major": 2}]}',
+                     '{"majors": [{"major": "2", "status": "supported"}]}',
+                     '{"majors": [{"major": true, "status": "supported"}]}',
+                     '{"majors": [{"major": -1, "status": "supported"}]}',
+                     '{"majors": [{"major": 2, "status": "retired"}]}', '{"majors": [2]}',
+                     '{"lines": [{"line": "2.9", "status": "supported"}]}'):
             with self.subTest(text=text):
                 with self.assertRaises(ValueError):
-                    rebuild.end_of_life_lines(text)
+                    rebuild.end_of_life_majors(text)
 
     def test_the_command_reads_the_policy_file(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "policy.json")
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps({"lines": [{"line": "2.10", "status": "end_of_life"}]}))
+                handle.write(json.dumps({"majors": [{"major": 2, "status": "end_of_life"}]}))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                self.assertEqual(rebuild.main(["lines", "--policy", path, "v2.9.0", "v2.10.0"]), 0)
-            self.assertEqual([entry["line"] for entry in json.loads(out.getvalue())], ["2.9"])
+                self.assertEqual(rebuild.main(["lines", "--policy", path, "v2.10.0", "v3.0.0"]), 0)
+            self.assertEqual([entry["line"] for entry in json.loads(out.getvalue())], ["3.0"])
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write("not json")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

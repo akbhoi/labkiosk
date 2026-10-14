@@ -42,7 +42,7 @@ labkiosk/
 │                            sbin/labkiosk-swap, sbin/labkiosk-hostname, sbin/labkiosk-data-unlock,
 │                            sbin/labkiosk-health
 ├── cloudflare-control/      Cloudflare Worker + D1
-│   ├── migrations/          0001..0039 (never edit an applied one)
+│   ├── migrations/          0001..0040 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
 │   │                        remote_relay.ts (one Durable Object per workstation's Remote Control session),
 │   │                        guard.ts, demo.ts, escape.ts, db.ts (SCHEMA_SQL), auth.ts, custom_hostnames.ts,

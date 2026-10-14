@@ -159,7 +159,9 @@ down is also `is_active = 0`). `0037` adds `tenants.license_plan` (CHECK `educat
 (per-user dismissal) and `release_lines.eol_reminder_days` (`src/notifications.ts`). `0039` adds
 the major upgrade pipeline's columns to `major_upgrade_grants`: `requested_by`/`requested_at` and
 `pilot_group`/`pilot_by`/`pilot_at` (a group name, cleared by `endOrphanedMajorPilots` when the
-group is deleted).
+group is deleted). `0040` adds `release_support` (support status and end of life per major
+release, `major` INTEGER PK; no row = supported) and drops `0034`'s per-line `release_lines`, which
+never reached a release: end of life is set per major only.
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

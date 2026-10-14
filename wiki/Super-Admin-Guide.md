@@ -16,7 +16,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | Set Remote Control seats, revoke or restore Remote Control | An add-on the platform grants, and can take back |
 | See and export which version of the Terms each organization accepted, and email those that have not | The evidence of the contract with each customer |
 | Block domains on hosted pages; take an organization's homepage or a User Portal card down after a report | The platform hosts these pages under its own domain |
-| Classify releases; set each line's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
+| Classify releases; set each major release's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 | Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Registrations, Remote Control requests and every message sent to an address on the mail domain |
@@ -72,16 +72,16 @@ A Remote Control request is approved from **Tasks** with a number of **seats**: 
 - **Revoke Remote Control** turns it off with a reason: every open session ends at once, the organization's owner is emailed the reason, and its Settings show *Turned off* with the date. The organization can ask again.
 - **Restore Remote Control** turns a revoked organization back on with the seats it had. An organization that turned Remote Control off itself (Settings → Remote Control) asks again through Tasks instead.
 
-### Release lines and major releases
+### Support, end of life and major releases
 
 Under **Releases**, below the release list:
 
-- **Release lines** (a minor version such as 2.8). **Security only** keeps sending the line's security fixes to the workstations already on it and moves no other workstation onto it. **End of life** offers it nothing more, security fixes included. **Set end-of-life date** announces the date it ends by itself. Each change of status or date shows every organization a notification in its console and can email every customer's owner (the ones with workstations on the line are told how many). As the date nears, every organization is reminded by itself, in its console and by email, 60, 30 and 7 days before it and once it has passed. Settings → Updates shows the organizations on the line the same warning.
+- **Support and end of life**, set per major release only (2.x covers every 2.x release). **Security only** keeps sending its security fixes to the workstations already on it and moves no other workstation onto it. **End of life** offers it nothing more, security fixes included, stops the daily security rebuild building it, and takes it off the download page, which names it as ended instead (the page lists only the newest release of each major). **Set end-of-life date** announces the date it ends by itself. Each change of status or date shows every organization a notification in its console and can email every customer's owner (the ones with workstations on the major are told how many). As the date nears, every organization is reminded by itself, in its console and by email, 60, 30 and 7 days before it and once it has passed. Settings → Updates shows the organizations on the major the same warning.
 - **Major releases.** The first release of a new major arrives **closed**. An organization can ask for it from Settings → Updates; its request shows in the organization's row with **Grant** and **Decline** (with a reason shown to it). **Open to all** or **Grant to an organization** (by subdomain) makes it available too. An administrator of each organization then tries it on one workstation group, and confirms it for every workstation (recorded with their name), before the rest of its workstations are moved. **Take back** removes a grant, its trial and its confirmation; workstations already on the major keep it. Each step notifies the organization in its console. Whatever the gates allow, a workstation moves one major at a time, from the newest release of its own major.
 
 ### Notifications
 
-**System → Notifications** sends a notification to one organization or every organization: it shows at the top of their consoles until each member of staff dismisses it, and can be emailed to each owner too. The list below it shows every notification the platform has sent and how many people dismissed it. The platform notifies organizations by itself when it approves one, turns Remote Control on or off or changes its seats, changes its workstation limit or license, takes content down or restores it, grants it a major release, and when a release line changes status or nears its end of life. Sending is audited (`notification.send`).
+**System → Notifications** sends a notification to one organization or every organization: it shows at the top of their consoles until each member of staff dismisses it, and can be emailed to each owner too. The list below it shows every notification the platform has sent and how many people dismissed it. The platform notifies organizations by itself when it approves one, turns Remote Control on or off or changes its seats, changes its workstation limit or license, takes content down or restores it, grants it a major release, and when a major release changes status or nears its end of life. Sending is audited (`notification.send`).
 
 ### Legal terms
 
@@ -230,7 +230,7 @@ A cron trigger (`"0 * * * *"` in `wrangler.jsonc`) calls the worker's `scheduled
 - Files incoming mail the email Worker stored but could not hand over.
 - Replaces enrollment keys issued before keys carried a check character.
 - Reads the newest releases from GitHub for `/download` and writes a customer-facing summary of each with Workers AI (when the `AI` binding is set; the release's own change list is shown otherwise).
-- Sends the end-of-life reminders now due (60, 30 and 7 days before a line's date, and once it has passed) to every organization's console and owner.
+- Sends the end-of-life reminders now due (60, 30 and 7 days before a major's date, and once it has passed) to every organization's console and owner.
 - Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub writes a run), and reads back the status of up to 10 filed issues.
 
 Commands are not in D1: each organization's OrgHub expires its own after 60 seconds.

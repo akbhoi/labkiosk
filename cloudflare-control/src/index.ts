@@ -68,7 +68,8 @@ import {
   requestMajor,
   setMajorPilot,
   workstationGroupsIn,
-  isLineStatus,
+  isSupportStatus,
+  isReleaseMajor,
   listMajorGrants,
   listReleaseMajors,
   majorAccess,
@@ -76,14 +77,13 @@ import {
   newestOffered,
   organizationReleaseNotices,
   platformReleasePolicy,
-  RELEASE_LINE_PATTERN,
   setMajorGrant,
-  setReleaseLine,
+  setMajorSupport,
   setReleaseMajorOpen,
-  workstationsPerLine,
-  releaseLineNotice,
-  listReleaseLines,
-  effectiveLineStatus,
+  workstationsPerMajor,
+  majorSupportNotice,
+  listMajorSupport,
+  effectiveSupportStatus,
   endOfLifeReminderStage,
   setEndOfLifeReminderStage,
   sendEndOfLifeReminders,
@@ -303,7 +303,7 @@ import {
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
 import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
-import { latestIsoRelease, listReleaseNotes, storeReleaseNotes, syncReleaseNotes } from "./release_notes";
+import { majorDownloads, storeReleaseNotes, syncReleaseNotes } from "./release_notes";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
@@ -696,25 +696,26 @@ async function releaseTokenRefusal(
 }
 
 /**
- * GET /api/release-lines: the status each release line has now, for the daily
- * security rebuild (security-rebuild.yml), which rebuilds only the lines that
- * are not at end of life. Bearer RELEASE_NOTES_TOKEN, as the sync below.
- * 200 {lines: [{line, status, endOfLifeAt}]}, one entry per line the platform
- * has set; a line not listed is supported.
+ * GET /api/release-support: the support status each major release has now, for
+ * the daily security rebuild (security-rebuild.yml), which rebuilds only lines
+ * of majors that are not at end of life. Bearer RELEASE_NOTES_TOKEN, as the
+ * sync below. 200 {majors: [{major, status, endOfLifeAt}]}, one entry per major
+ * the platform has set; a major not listed is supported.
  */
-async function handleReleaseLinesForCi(
+async function handleReleaseSupportForCi(
   request: Request,
   env: Env,
   db: D1Database,
   headers: Record<string, string>
 ): Promise<Response> {
-  const refused = await releaseTokenRefusal(request, env, "Release line status", headers);
+  const refused = await releaseTokenRefusal(request, env, "Release support status", headers);
   if (refused) return refused;
   const now = Math.floor(Date.now() / 1000);
-  const lines = [...(await listReleaseLines(db)).values()]
-    .filter((row) => RELEASE_LINE_PATTERN.test(row.line))
-    .map((row) => ({ line: row.line, status: effectiveLineStatus(row, now), endOfLifeAt: row.end_of_life_at ?? null }));
-  return new Response(JSON.stringify({ lines }), { status: 200, headers });
+  const majors = [...(await listMajorSupport(db)).values()]
+    .filter((row) => isReleaseMajor(row.major))
+    .sort((a, b) => a.major - b.major)
+    .map((row) => ({ major: row.major, status: effectiveSupportStatus(row, now), endOfLifeAt: row.end_of_life_at ?? null }));
+  return new Response(JSON.stringify({ majors }), { status: 200, headers });
 }
 
 /**
@@ -1179,8 +1180,8 @@ export default {
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);
     }
-    if (path === "/api/release-lines" && method === "GET") {
-      return handleReleaseLinesForCi(request, env, db, jsonHeaders);
+    if (path === "/api/release-support" && method === "GET") {
+      return handleReleaseSupportForCi(request, env, db, jsonHeaders);
     }
     if (path === "/api/devices/update" && method === "GET") {
       return handleDeviceUpdate(request, env, db, jsonHeaders);
@@ -2038,24 +2039,25 @@ export default {
       return new Response(JSON.stringify({ status: "ok", releases: await listReleases(db) }), { headers: jsonHeaders });
     }
 
-    // POST /api/super/release-lines { line, status, endOfLifeAt?, note?, notify? }:
-    // a line's support status. "security_only" moves no workstation onto it and
-    // offers it only its security releases; "end_of_life" offers it nothing.
+    // POST /api/super/release-support { major, status, endOfLifeAt?, note?, notify? }:
+    // a major release's support status, which covers every release of that major.
+    // "security_only" moves no workstation onto it and offers the workstations
+    // already on it only its security releases; "end_of_life" offers it nothing.
     // endOfLifeAt (Unix seconds, or null) announces the date it ends by itself.
     // Every organization gets a console notification; notify emails every owner too.
-    if (path === "/api/super/release-lines" && method === "POST") {
+    if (path === "/api/super/release-support" && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
-      let body: { line?: unknown; status?: unknown; endOfLifeAt?: unknown; note?: unknown; notify?: unknown };
+      let body: { major?: unknown; status?: unknown; endOfLifeAt?: unknown; note?: unknown; notify?: unknown };
       try {
         body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
-      if (typeof body?.line !== "string" || !RELEASE_LINE_PATTERN.test(body.line)) {
-        return jsonError("A release line such as 2.8 is required", 400, jsonHeaders);
+      if (!isReleaseMajor(body?.major)) {
+        return jsonError("A major release number such as 3 is required", 400, jsonHeaders);
       }
-      if (!isLineStatus(body.status)) return jsonError("The status is supported, security_only or end_of_life", 400, jsonHeaders);
+      if (!isSupportStatus(body.status)) return jsonError("The status is supported, security_only or end_of_life", 400, jsonHeaders);
       const endOfLifeAt = body.endOfLifeAt ?? null;
       if (endOfLifeAt !== null && !(typeof endOfLifeAt === "number" && Number.isSafeInteger(endOfLifeAt) && endOfLifeAt > 0)) {
         return jsonError("endOfLifeAt is a date in Unix seconds, or null", 400, jsonHeaders);
@@ -2064,32 +2066,32 @@ export default {
         return jsonError("The note is text", 400, jsonHeaders);
       }
       const note = typeof body.note === "string" && body.note.trim() ? body.note.replace(/\r\n/g, "\n").trim().slice(0, 500) : null;
-      const line = body.line;
+      const major = body.major;
       const status = body.status;
-      const previous = (await listReleaseLines(db)).get(line);
+      const previous = (await listMajorSupport(db)).get(major);
       // A note alone tells nobody anything new.
       const changed =
         !previous || previous.status !== status || (previous.end_of_life_at === null ? null : Number(previous.end_of_life_at)) !== endOfLifeAt;
-      await setReleaseLine(db, line, status, endOfLifeAt as number | null, note, session!.user_id);
+      await setMajorSupport(db, major, status, endOfLifeAt as number | null, note, session!.user_id);
       await writeAuditLog(db, {
         tenantId: null,
         userId: session!.user_id,
-        action: "release.line",
-        details: `${line} ${status}${endOfLifeAt ? ` end_of_life_at=${endOfLifeAt}` : ""}`
+        action: "release.support",
+        details: `${major} ${status}${endOfLifeAt ? ` end_of_life_at=${endOfLifeAt}` : ""}`
       });
       await notifyOrganizationsOnline(env, db);
       // Every organization is told in its console; with notify, every owner is emailed too.
       let outcome: EmailOutcome = { emailed: 0, emailFailed: 0, emailProblem: null };
       if (changed && (status !== "supported" || endOfLifeAt !== null)) {
-        const notice = releaseLineNotice(line, status, endOfLifeAt as number | null, note);
+        const notice = majorSupportNotice(major, status, endOfLifeAt as number | null, note);
         await createNotification(db, { tenantId: null, kind: "release", title: notice.title, body: notice.body, createdBy: session!.user_id });
         // This announcement stands in for the reminders already due.
-        if (endOfLifeAt !== null) await setEndOfLifeReminderStage(db, line, endOfLifeReminderStage(endOfLifeAt as number));
+        if (endOfLifeAt !== null) await setEndOfLifeReminderStage(db, major, endOfLifeReminderStage(endOfLifeAt as number));
         if (body.notify === true) {
-          const usage = new Map((await workstationsPerLine(db)).filter((u) => u.line === line).map((u) => [u.tenantId, u.workstations]));
+          const usage = new Map((await workstationsPerMajor(db)).filter((u) => u.major === major).map((u) => [u.tenantId, u.workstations]));
           outcome = await emailOrganizations(env, await activeOrganizationOwners(db, null), notice.title, (owner) => {
             const running = usage.get(owner.tenantId);
-            return notice.body + (running ? `\n\n${running} of ${owner.name}'s workstations run Lab Kiosk ${line}.` : "");
+            return notice.body + (running ? `\n\n${running} of ${owner.name}'s workstations run Lab Kiosk ${major}.` : "");
           });
         }
       }
@@ -3885,7 +3887,7 @@ export default {
           securityUpdates,
           lanSharing,
           pending,
-          lines: notices.lines,
+          support: notices.support,
           majors: notices.majors,
           groups: (await listWorkstationGroups(db, tenantId)).map((g) => g.name)
         }),
@@ -4534,11 +4536,17 @@ export default {
       );
     }
     if (path === "/download") {
+      const now = Math.floor(Date.now() / 1000);
+      const releaseSupport = [...(await listMajorSupport(db)).values()].map((row) => ({
+        major: row.major,
+        status: effectiveSupportStatus(row, now),
+        endOfLifeAt: row.end_of_life_at ?? null
+      }));
       return new Response(
         renderDownloadHtml({
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
-          releases: await listReleaseNotes(db),
-          download: await latestIsoRelease(db),
+          releases: await majorDownloads(db),
+          releaseSupport,
           baseDomain,
           contactEmail: "contact@labkiosk.org",
           ...formChecks,

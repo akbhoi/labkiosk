@@ -206,14 +206,14 @@ CREATE TABLE IF NOT EXISTS releases (
 
 CREATE INDEX IF NOT EXISTS idx_releases_channel ON releases(channel);
 
-CREATE TABLE IF NOT EXISTS release_lines (
-  line TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS release_support (
+  major INTEGER PRIMARY KEY CHECK (major BETWEEN 0 AND 9999),
   status TEXT NOT NULL DEFAULT 'supported' CHECK (status IN ('supported', 'security_only', 'end_of_life')),
   end_of_life_at INTEGER,
   note TEXT,
+  eol_reminder_days INTEGER,
   updated_at INTEGER NOT NULL,
-  updated_by TEXT,
-  eol_reminder_days INTEGER
+  updated_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notifications (
@@ -691,8 +691,7 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT workstation_limit FROM tenants LIMIT 1").run();
     // 0033: Remote Control seats and revocation.
     await db.prepare("SELECT remote_control_seats, remote_control_revoked_at FROM tenants LIMIT 1").run();
-    // 0034: release lines, major releases and major upgrade grants.
-    await db.prepare("SELECT line, status, end_of_life_at FROM release_lines LIMIT 1").run();
+    // 0034: major releases and major upgrade grants (its release_lines went in 0040).
     await db.prepare("SELECT major, open FROM release_majors LIMIT 1").run();
     await db.prepare("SELECT tenant_id, major, granted_at, confirmed_at FROM major_upgrade_grants LIMIT 1").run();
     // 0035: legal acceptances and document versions.
@@ -707,9 +706,10 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     // 0038: console notifications and end-of-life reminders.
     await db.prepare("SELECT id, tenant_id, kind, title, body FROM notifications LIMIT 1").run();
     await db.prepare("SELECT notification_id, user_id, read_at FROM notification_reads LIMIT 1").run();
-    await db.prepare("SELECT eol_reminder_days FROM release_lines LIMIT 1").run();
     // 0039: major upgrade requests and pilot groups.
     await db.prepare("SELECT requested_at, pilot_group, pilot_at FROM major_upgrade_grants LIMIT 1").run();
+    // 0040: support status and end of life per major release.
+    await db.prepare("SELECT major, status, end_of_life_at, eol_reminder_days FROM release_support LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
