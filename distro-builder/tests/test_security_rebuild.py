@@ -130,6 +130,35 @@ class Lines(unittest.TestCase):
             rebuild.plan_lines(tags, "2.10", end_of_life=ended)
         self.assertEqual(rebuild.plan_lines(["v2.9.0", "v2.10.0"], end_of_life={2}), [])
 
+    def test_a_version_already_published_in_r2_is_never_built_again(self):
+        # 2.10.1 reached R2 but its tag push was refused: the next rebuild of
+        # v2.10.0 is 2.10.2, and the next one of 3.0 skips both 3.0.2 and 3.0.3.
+        published = rebuild.published_versions("releases/2.10.1/\nreleases/3.0.0/\n3.0.2\n\nreleases/3.0.3/\n")
+        self.assertEqual(published, {"2.10.1", "3.0.0", "3.0.2", "3.0.3"})
+        plan = rebuild.plan_lines(["v2.10.0", "v3.0.0", "v3.0.1"], end_of_life=set(), published=published)
+        self.assertEqual([(entry["base"], entry["version"]) for entry in plan], [("3.0.1", "3.0.4"), ("2.10.0", "2.10.2")])
+        self.assertEqual(rebuild.plan_lines(["v2.10.0", "v2.10.2-rc1"], published=set())[0]["version"], "2.10.1")
+        self.assertEqual(rebuild.plan_lines(["v2.10.0", "v2.10.1-rc1"], published=set())[0]["version"], "2.10.1",
+                         "a pre-release tag names another version: 2.10.1 is still free")
+        for text in ("releases/latest/", "releases/../2.10.1/", "2.10"):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    rebuild.published_versions(text)
+
+    def test_the_command_reads_the_published_versions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "published.txt")
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("releases/2.10.1/\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(rebuild.main(["lines", "--published", path, "v2.10.0"]), 0)
+            self.assertEqual([entry["version"] for entry in json.loads(out.getvalue())], ["2.10.2"])
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("None\n")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(rebuild.main(["lines", "--published", path, "v2.10.0"]), 1)
+
     def test_a_policy_that_cannot_be_read_is_an_error_not_an_empty_one(self):
         for text in ("", "[]", "{}", '{"majors": {}}', '{"majors": [{"major": 2}]}',
                      '{"majors": [{"major": "2", "status": "supported"}]}',
@@ -279,6 +308,20 @@ class Workflow(unittest.TestCase):
         positions = [self.workflow.find(step) for step in order]
         self.assertNotIn(-1, positions, dict(zip(order, positions)))
         self.assertEqual(positions, sorted(positions), "each step comes after the one it depends on")
+
+    def test_the_version_skips_what_r2_already_has(self):
+        self.assertIn("--prefix releases/ --delimiter /", self.workflow)
+        self.assertIn('--published "$RUNNER_TEMP/published.txt"', self.workflow)
+        self.assertLess(self.workflow.index("--prefix releases/"), self.workflow.index("security-rebuild.py lines"))
+
+    def test_the_tag_carries_the_default_branch_workflows(self):
+        # GitHub refuses a GITHUB_TOKEN push whose workflow files differ from the default branch's.
+        bump = self.workflow.index("security-rebuild.py bump")
+        copy = self.workflow.index("cp -a .github/workflows rebuild-src/.github/workflows")
+        commit = self.workflow.index("git commit --quiet")
+        self.assertLess(bump, copy)
+        self.assertLess(copy, commit)
+        self.assertIn("git add --all", self.workflow[copy:commit], "a workflow the base lacks is committed too")
 
     def test_the_github_release_carries_the_package_list_and_no_iso(self):
         start = self.workflow.index("- name: Create GitHub Release")
