@@ -291,9 +291,12 @@ class Update(unittest.TestCase):
     def test_a_chunk_that_does_not_match_the_manifest_is_never_written(self):
         folder, _ = self.publish("2.6.1")
         path = os.path.join(folder, "initrd.img")
+        # Flipped, not overwritten: a random byte is already b"X" one time in 256.
         with open(path, "r+b") as handle:
             handle.seek(CHUNK + 3)
-            handle.write(b"X")
+            byte = handle.read(1)
+            handle.seek(CHUNK + 3)
+            handle.write(bytes([byte[0] ^ 1]))
         _, url = self.serve()
         with self.assertRaisesRegex(update.UpdateError, "chunk 1 does not match"):
             self.download(url, "2.6.1")
