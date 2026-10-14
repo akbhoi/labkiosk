@@ -72,6 +72,11 @@ jobs:
         if: contains(matrix.platforms, 'arm64')
         uses: docker/setup-qemu-action@v4
 
+      # Today's date, so the package layer is rebuilt once a day (APT_REFRESH).
+      - name: Date the package layer
+        id: apt
+        run: echo "refresh=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -116,7 +121,9 @@ jobs:
           sbom: true
           # Layer cache keyed per image. The apt layer in each of these is
           # hundreds of megabytes and changes rarely; without a cache every run
-          # re-downloaded and re-installed all of it.
+          # re-downloaded and re-installed all of it. APT_REFRESH still rebuilds
+          # it once a day, so the cache never holds back a security fix.
+          build-args: APT_REFRESH=${{ steps.apt.outputs.refresh }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
