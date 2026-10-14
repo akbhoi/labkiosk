@@ -86,7 +86,7 @@ In transit, by HTTPS. At rest in D1, no. Anyone with database access can see the
 No. Every query filters by `tenant_id` and every route carries a guard; the test suite asserts an operator at one organization gets `403` for another's console, clients, and commands.
 
 **Is the 8-character VNC password a problem?**
-It would be, if it were the only control. The RFB protocol truncates passwords to 8 characters, so it is about 32 bits however you generate it. It is not: x11vnc listens on loopback only, and Remote Control reaches it only through the console's relay, which requires the console sign-in, the `workstations` permission and a one-time session token. → [Remote Control](Remote-Control#why-eight-characters)
+It would be, if it were the only control. The RFB protocol truncates passwords to 8 characters, so it is about 32 bits however you generate it. It is not: x11vnc listens on loopback only, and Remote Control reaches it only through the console's relay, which requires an administrator's console sign-in and a one-time session token. → [Remote Control](Remote-Control#why-eight-characters)
 
 ---
 

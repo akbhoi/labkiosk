@@ -10,6 +10,11 @@
  * same release rebuilt with patched Debian packages) installs at the
  * workstation's next start unless the organization approves those too.
  *
+ * Lines the workstations run that the platform has put on security fixes only
+ * or given an end-of-life date are warned about here, and a new major release
+ * the platform opened or granted the organization waits for an administrator
+ * to confirm it before any workstation is moved to it.
+ *
  * Sharing on the local network (phase 5, off by default) lets the workstations
  * at one site copy a release from each other instead of each downloading it.
  */
@@ -24,6 +29,8 @@ export function renderUpdatesPaneHtml(): string {
         <h2 class="card-title">System updates</h2>
         <p class="card-sub">Workstations installed on a disk download the release offered here in the background, check its signature, and wait. Install it from Workstations → Updates. A workstation started from a USB stick is updated by re-flashing it.</p>
         <div class="callout hidden" id="update-pending" role="status"></div>
+        <div class="callout callout-warning hidden" id="update-lines" role="status"></div>
+        <div class="hidden" id="update-majors"></div>
         <form id="form-update-channel">
           <div class="form-group">
             <label class="form-label" for="update-channel">Update channel</label>
@@ -64,7 +71,160 @@ export function renderUpdatesScript(nonce: string): string {
         const offer = document.getElementById("update-offer");
         const pending = document.getElementById("update-pending");
         const lanSharing = document.getElementById("lan-sharing");
-        if (!form || !select || !security || !offer || !pending || !lanSharing) return;
+        const linesBox = document.getElementById("update-lines");
+        const majorsBox = document.getElementById("update-majors");
+        if (!form || !select || !security || !offer || !pending || !lanSharing || !linesBox || !majorsBox) return;
+
+        function day(seconds) {
+          return new Date(seconds * 1000).toISOString().slice(0, 10);
+        }
+
+        // Majors its workstations run that are security-only, end of life, or have an end-of-life date.
+        function showLines(list) {
+          const body = document.createElement("div");
+          linesBox.replaceChildren(body);
+          const items = Array.isArray(list) ? list : [];
+          for (const item of items) {
+            const count = Number(item.workstations) || 0;
+            const who = count + (count === 1 ? " workstation runs " : " workstations run ") + "Lab Kiosk " + item.major;
+            const line = document.createElement("div");
+            line.textContent =
+              item.status === "end_of_life"
+                ? who + ", which has reached end of life: it receives no more updates, security fixes included. Install the newest release."
+                : item.status === "security_only"
+                ? who + ", which now receives security fixes only" + (item.endOfLifeAt ? " until " + day(item.endOfLifeAt) : "") + "."
+                : who + ", which reaches end of life on " + day(item.endOfLifeAt) + ". Install the newest release before then.";
+            body.append(line);
+            if (item.note) {
+              const note = document.createElement("div");
+              note.textContent = item.note;
+              body.append(note);
+            }
+          }
+          linesBox.classList.toggle("hidden", !items.length);
+        }
+
+        // New major releases, and where this organization is in the pipeline to each:
+        // ask Lab Kiosk for it, try it on one workstation group, then confirm it for all.
+        let groups = [];
+        function majorButton(label, tone, step, major) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "btn btn-sm " + tone;
+          b.textContent = label;
+          b.dataset.majorStep = step;
+          b.dataset.major = String(major);
+          return b;
+        }
+        function showMajors(list) {
+          majorsBox.replaceChildren();
+          const items = Array.isArray(list) ? list : [];
+          for (const item of items) {
+            const box = document.createElement("div");
+            box.className = "callout mt-sm";
+            const body = document.createElement("div");
+            const title = document.createElement("strong");
+            title.textContent = "Lab Kiosk " + item.major + " (" + item.newest + ")";
+            const text = document.createElement("div");
+            const actions = document.createElement("div");
+            actions.className = "row mt-sm";
+            body.append(title, text);
+            if (item.access === "closed") {
+              text.textContent = "A new major release. It is not available to your organization yet; ask Lab Kiosk for it and you are told the answer in Notifications.";
+              actions.append(majorButton("Ask for Lab Kiosk " + item.major, "btn-primary", "request", item.major));
+            } else if (item.access === "requested") {
+              text.textContent = "Requested " + (item.requestedAt ? day(item.requestedAt) : "") + ". Lab Kiosk tells you in Notifications when it is available to your organization.";
+            } else if (item.access === "confirmed") {
+              text.textContent = "Confirmed " + (item.confirmedAt ? day(item.confirmedAt) : "") + ": your workstations are offered it, and you install it from Workstations → Updates.";
+            } else if (item.access === "pilot") {
+              text.textContent = "Being tried on the workstation group " + item.pilotGroup + ": only its workstations are offered it. When they work as you expect, confirm it for every workstation.";
+              actions.append(
+                majorButton("Confirm for every workstation", "btn-primary", "confirm", item.major),
+                majorButton("End the trial", "btn-ghost", "end-pilot", item.major)
+              );
+            } else {
+              text.textContent = "A new major release is available to your organization. It can change how workstations look and behave, so none is moved to it yet. Try it on one workstation group first, then confirm it for every workstation; you still choose when each one installs it.";
+              if (groups.length) actions.append(majorButton("Try on a group", "btn-secondary", "pilot", item.major));
+              actions.append(majorButton("Confirm for every workstation", groups.length ? "btn-ghost" : "btn-primary", "confirm", item.major));
+            }
+            if (actions.childElementCount) body.append(actions);
+            box.append(body);
+            majorsBox.append(box);
+          }
+          majorsBox.classList.toggle("hidden", !items.length);
+        }
+
+        async function majorStep(step, major, group) {
+          const path = step === "request" ? "request-major" : step === "confirm" ? "confirm-major" : "pilot-major";
+          const payload = { major };
+          if (step === "pilot" || step === "end-pilot") payload.group = step === "pilot" ? group : null;
+          try {
+            const res = await fetch(labkioskApi("/api/settings/updates/" + path), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              lkToast(data.error || "The change could not be saved", "error");
+              return;
+            }
+            lkToast(
+              step === "request" ? "Lab Kiosk " + major + " requested." :
+              step === "pilot" ? "Lab Kiosk " + major + " is offered to the group " + group + "." :
+              step === "end-pilot" ? "The trial of Lab Kiosk " + major + " has ended." :
+              "Lab Kiosk " + major + " confirmed.",
+              "success"
+            );
+            load();
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        }
+
+        majorsBox.addEventListener("click", async (event) => {
+          const b = event.target && event.target.closest ? event.target.closest("[data-major-step]") : null;
+          if (!b) return;
+          const major = Number(b.dataset.major);
+          const step = b.dataset.majorStep;
+          if (step === "request") {
+            const ok = await lkConfirm({
+              title: "Ask for Lab Kiosk " + major + "?",
+              message: "Lab Kiosk reviews the request and tells you in Notifications. Nothing changes on your workstations until you then try it or confirm it.",
+              confirmLabel: "Ask"
+            });
+            if (ok) majorStep(step, major);
+            return;
+          }
+          if (step === "pilot") {
+            const group = await lkPrompt({
+              title: "Try Lab Kiosk " + major + " on a group",
+              label: "Workstation group",
+              choices: groups,
+              hint: "Only its workstations are offered it; each installs it when you choose, from Workstations → Updates.",
+              confirmLabel: "Try it"
+            });
+            if (group === null) return;
+            majorStep(step, major, group);
+            return;
+          }
+          if (step === "end-pilot") {
+            const ok = await lkConfirm({
+              title: "End the trial of Lab Kiosk " + major + "?",
+              message: "No more workstations of the group are offered it. Those that installed it already keep it.",
+              confirmLabel: "End the trial",
+              tone: "danger"
+            });
+            if (ok) majorStep(step, major);
+            return;
+          }
+          const ok = await lkConfirm({
+            title: "Confirm Lab Kiosk " + major + " for every workstation?",
+            message: "Your workstations will be offered Lab Kiosk " + major + ". Each one downloads it in the background and installs it only when you choose, from Workstations → Updates. This is recorded with your name.",
+            confirmLabel: "Confirm"
+          });
+          if (ok) majorStep("confirm", major);
+        });
 
         // Security fixes some workstations do not run yet; a warning once one has waited too long.
         function showPending(list, mode) {
@@ -103,6 +263,9 @@ export function renderUpdatesScript(nonce: string): string {
             ? "Offered now: " + o.version + (o.kind === "security" ? " (security update)" : "") + ", " + Math.round((Number(o.sizeBytes) || 0) / 1048576) + " MB."
             : "No release is offered on this channel yet.";
           showPending(data.pending, security.value);
+          showLines(data.support);
+          groups = Array.isArray(data.groups) ? data.groups : [];
+          showMajors(data.majors);
         }
 
         async function load() {

@@ -106,7 +106,9 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
     `lan` is null when the organization does not share, else `{peers}`, up to 8 site members'
     LAN addresses holding that release `ready`/`staged` within 48 h, from the hub's `/lan-peers`;
     `securityUpdates` is `next_boot` or `approval`; without `running`, as a 2.9.0 updater asks,
-    `security` is null) and downloads from `url` (`RELEASES_BASE_URL` + `releases/<version>`;
+    `security` is null; both are filtered by `eligibleReleases()`: nothing from an end-of-life major,
+    only the own major's security releases from a security-only one, nothing of a major closed to the
+    organization above the one it runs) and downloads from `url` (`RELEASES_BASE_URL` + `releases/<version>`;
     `503` when unset), after trying up to 3 peers at `http://<peer>:8890/<version>/`. A `security` release by its signed manifest, for the running line, under
     `next_boot`, is staged for the next boot (`staged`), with no reboot.
   - `install-update {version}`: only from `POST /api/clients/install-update` (`updates`
@@ -176,6 +178,14 @@ reports.
 - The agent writes `/etc/labkiosk/config.json` (0600) with `workerUrl` and `targetUrl`. On an
   installed disk `/etc/labkiosk` is the `LABKIOSK_DATA` partition; on live media it is RAM, which is
   correct. `persistentStorage` / `persistent` report which.
+- The organization's `workstation_limit` caps how many workstations hold a valid token: past it the
+  Worker answers `403` with a sentence the wizard shows as is. A workstation that still holds a valid
+  token always enrols again (counted once), so a lowered limit strands nobody; the check and the
+  insert are one statement (`createDeviceToken()` returns null when full).
+- Once the organization's `license_expires_at` has passed, enrolment answers `403` with a sentence
+  the wizard shows, except for a workstation that still holds a valid token
+  (`createDeviceToken({ existingOnly: true })`), and Remote Control is refused. Heartbeats, the hub,
+  updates and the pages keep working: an expired license never strands a workstation.
 - Worker URL: `https` only, except a local test server (loopback, container gateways, private IPv4
   `10/8`, `172.16/12`, `192.168/16`) — the same set as the Worker's `isDevHost()`.
 
@@ -197,6 +207,13 @@ stays on `127.0.0.1:5900` (`-localhost -noclipboard -noremote -nocmds`; per-boot
 removes). The 8-character RFB password is not the access control: the console sign-in, the
 `workstations` permission and the one-time session token are. Only agents on the WebSocket control
 channel can join; the HTTP heartbeat cannot carry the `remote` message. Migration `0019` dropped `tenants.tunnel_domain` and `client_devices.remote_host`.
+
+**Seats and revocation.** `/remote-open` carries the organization's `remote_control_seats`; the
+OrgHub keeps one row per workstation with an open session (`remote_seats`) and answers `429` with
+the holders when another workstation would exceed them. A relay tells the hub when its session ends
+(`/remote-ended`; the four-hour limit frees a seat whose notice was lost). Revoking (super admin) or
+turning it off (the organization) takes every holder from `/remote-revoke` and closes each relay
+(`/close`, close code `4009`).
 
 ## 5. Global rules both sides obey
 

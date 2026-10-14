@@ -27,6 +27,7 @@
  */
 
 import { Env } from "./types";
+import { hubRequest } from "./hub";
 
 /** Text either side sends to keep an idle session open; answered without waking this object. */
 export const RELAY_PING = '{"type":"ping"}';
@@ -42,6 +43,7 @@ export const RELAY_MAX_SECONDS = 4 * 60 * 60;
 export const CLOSE_RELAY_REPLACED = 4000;
 export const CLOSE_RELAY_PEER_GONE = 4004;
 export const CLOSE_RELAY_EXPIRED = 4008;
+export const CLOSE_RELAY_REVOKED = 4009;
 
 const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015]);
 
@@ -91,9 +93,11 @@ export const RELAY_TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 
 export class RemoteRelay {
   private readonly ctx: DurableObjectState;
+  private readonly env: Env;
 
-  constructor(ctx: DurableObjectState, _env: Env) {
+  constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
+    this.env = env;
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS binding (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       name TEXT NOT NULL
@@ -122,6 +126,12 @@ export class RemoteRelay {
         if (!RELAY_TOKEN_PATTERN.test(tokenHash) || !userId) return json({ error: "Missing session" }, 400);
         await this.open(tokenHash, userId, Math.floor(Date.now() / 1000));
         return json({ status: "ok", joinSeconds: RELAY_JOIN_SECONDS });
+      }
+      if (url.pathname === "/close" && request.method === "POST") {
+        const open = Boolean(this.session());
+        this.closeAll(CLOSE_RELAY_REVOKED, "Remote Control has been turned off for this organization");
+        await this.ended();
+        return json({ status: "ok", closed: open });
       }
       if (url.pathname === "/console" || url.pathname === "/device") {
         return await this.upgrade(request, url.pathname === "/console" ? "console" : "device");
@@ -191,8 +201,22 @@ export class RemoteRelay {
     return null;
   }
 
-  private endSession(): void {
+  /**
+   * The session is over: forget it, and give its seat back to the organization's
+   * OrgHub. A notice that cannot be delivered is logged; the hub frees the seat
+   * at the session's time limit anyway.
+   */
+  private async ended(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM session WHERE id = 1");
+    const bound = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM binding WHERE id = 1").toArray()[0]?.name || "";
+    const at = bound.indexOf(":");
+    if (at <= 0) return;
+    try {
+      const res = await hubRequest(this.env, bound.slice(0, at), "/remote-ended", { clientId: bound.slice(at + 1) });
+      if (!res.ok) console.error(`[RemoteRelay ${bound}] The organization hub answered HTTP ${res.status} to the end of a session`);
+    } catch (err) {
+      console.error(`[RemoteRelay ${bound}] Could not tell the organization hub a session ended:`, err);
+    }
   }
 
   /** Why a side may not join now, or null. Public so tests can ask without an upgrade. */
@@ -245,12 +269,12 @@ export class RemoteRelay {
     } catch (err) {
       console.warn("[RemoteRelay] Could not pass data on; ending the session:", err);
       this.closeAll(CLOSE_RELAY_PEER_GONE, "The other side of the session is gone");
-      this.endSession();
+      await this.ended();
     }
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
-    this.departed(ws);
+    await this.departed(ws);
     try {
       ws.close(RESERVED_CLOSE_CODES.has(code) ? 1000 : code, reason);
     } catch (err) {
@@ -260,18 +284,18 @@ export class RemoteRelay {
 
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     console.warn("[RemoteRelay] Socket error:", error);
-    this.departed(ws);
+    await this.departed(ws);
   }
 
   /** When either side leaves, the session is over: the other is closed and cannot rejoin. */
-  private departed(ws: WebSocket): void {
+  private async departed(ws: WebSocket): Promise<void> {
     const attachment = ws.deserializeAttachment() as RelayAttachment | null;
     const session = this.session();
     if (!attachment || !session || session.token_hash !== attachment.tokenHash) return;
     for (const other of this.ctx.getWebSockets()) {
       if (other !== ws) this.closeQuietly(other, CLOSE_RELAY_PEER_GONE, "The other side ended the session");
     }
-    this.endSession();
+    await this.ended();
   }
 
   async alarm(): Promise<void> {
@@ -281,10 +305,10 @@ export class RemoteRelay {
     const joined = Boolean(this.current("console", session.token_hash) && this.current("device", session.token_hash));
     if (now >= Number(session.ends_at)) {
       this.closeAll(CLOSE_RELAY_EXPIRED, "The Remote Control session reached its time limit");
-      this.endSession();
+      await this.ended();
     } else if (!joined && now >= Number(session.join_by)) {
       this.closeAll(CLOSE_RELAY_EXPIRED, "The workstation did not join the Remote Control session");
-      this.endSession();
+      await this.ended();
     } else {
       await this.ctx.storage.setAlarm((joined ? Number(session.ends_at) : Number(session.join_by)) * 1000);
     }
@@ -320,6 +344,18 @@ export async function openRelaySession(env: Env, tenantId: string, clientId: str
     })
   );
   if (!res.ok) console.error(`[RemoteRelay] Opening ${relayName(tenantId, clientId)} answered HTTP ${res.status}`);
+  return res.ok;
+}
+
+/** End a workstation's session, if it has one, closing both sides; returns false when the relay refused. */
+export async function closeRelaySession(env: Env, tenantId: string, clientId: string): Promise<boolean> {
+  const res = await relayStub(env, tenantId, clientId).fetch(
+    new Request("https://remote-relay/close", {
+      method: "POST",
+      headers: { "x-labkiosk-relay": relayName(tenantId, clientId) }
+    })
+  );
+  if (!res.ok) console.error(`[RemoteRelay] Closing ${relayName(tenantId, clientId)} answered HTTP ${res.status}`);
   return res.ok;
 }
 

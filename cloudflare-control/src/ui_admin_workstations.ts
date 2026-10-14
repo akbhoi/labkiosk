@@ -17,7 +17,7 @@ export function buildWorkstationsPage(options: AdminPageInput): AdminPageParts {
     title: "Workstation Grid & Control",
     contentHtml: renderWorkstationsPageHtml(tenantParam, groups, canUpdate),
     modalsHtml: renderWorkstationsModalsHtml(tenant, presets, groups),
-    scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups, canUpdate)
+    scriptsHtml: renderWorkstationsScripts(nonce, tenant, config, presets, sites, groups, canUpdate, options.canRemoteControl === true)
   };
 }
 
@@ -285,7 +285,8 @@ function renderWorkstationsScripts(
   presets: BroadcastPreset[] = [],
   sites: PortalSite[] = [],
   initialGroups: WorkstationGroup[] = [],
-  canUpdate = false
+  canUpdate = false,
+  canRemoteControl = false
 ): string {
   return `
     <script nonce="${escapeAttr(nonce)}">
@@ -509,7 +510,8 @@ function renderWorkstationsScripts(
           e.stopPropagation();
           sendCommand([id], "reload");
         });
-        actions.append(vncBtn, lockBtn, unlockBtn, reloadBtn);
+        if (CAN_REMOTE_CONTROL) actions.append(vncBtn);
+        actions.append(lockBtn, unlockBtn, reloadBtn);
 
         const footer = el("div", "kc-footer");
         const urlSpan = el("span", "kc-url", "Ready");
@@ -958,8 +960,14 @@ function renderWorkstationsScripts(
       // workstation to join a relay session (src/remote_relay.ts).
       // Remote Control is enabled per organization by the platform (Settings).
       const REMOTE_CONTROL_ENABLED = ${escapeJson(tenant?.remote_control_status === "approved")};
+      // Only the organization's administrators use Remote Control, never other staff.
+      const CAN_REMOTE_CONTROL = ${escapeJson(canRemoteControl)};
 
       function openVncSession(id) {
+        if (!CAN_REMOTE_CONTROL) {
+          lkToast("Only an administrator of the organization can use Remote Control.", "error");
+          return;
+        }
         if (!REMOTE_CONTROL_ENABLED) {
           lkToast("Remote Control is not enabled for this organization yet. An administrator can request it under Settings.", "error");
           return;

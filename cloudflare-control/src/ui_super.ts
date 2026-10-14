@@ -10,8 +10,12 @@ import { Tenant } from "./types";
 import { escapeHtml, escapeAttr } from "./escape";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
 import { DEMO_TENANTS, isDemoTenant } from "./demo";
+import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
+import { LICENSE_PLANS, licenseDate, licensePlanLabel, licenseState } from "./license";
 import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
+import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
+import { renderNotificationsPaneHtml, renderNotificationsPaneScript } from "./ui_super_notifications";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
@@ -20,6 +24,8 @@ export interface SuperConsoleTenant extends Tenant {
   admin_name: string;
   online_clients: number;
   total_clients: number;
+  /** Workstations holding a valid device token: what the workstation limit counts. */
+  enrolled_clients: number;
 }
 
 export interface SuperConsoleCatalog {
@@ -75,6 +81,19 @@ function renderViewTabsHtml(label: string, views: SuperView[]): string {
       .join("")}
     </nav>
   `;
+}
+
+/** The organization's license under its status: plan, and the end date when there is one. */
+function renderLicenseCell(t: Tenant): string {
+  const state = licenseState(t);
+  const ends =
+    state.expiresAt === null
+      ? ""
+      : state.expired
+        ? `, ended ${licenseDate(state.expiresAt)}`
+        : `, until ${licenseDate(state.expiresAt)}`;
+  const tone = state.expired ? "text-danger" : state.endingSoon ? "text-warning" : "";
+  return `<div class="cell-sub nowrap ${tone}">${escapeHtml(licensePlanLabel(state.plan) + ends)}</div>`;
 }
 
 export function renderSuperAdminHtml(data: SuperAdminOptions): string {
@@ -188,12 +207,21 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </td>
       <td>
         <span class="badge ${t.status === "active" ? "badge-green" : t.status === "suspended" ? "badge-red" : "badge-yellow"}">${escapeHtml(String(t.status).charAt(0).toUpperCase() + String(t.status).slice(1))}</span>
+        ${isDemo ? "" : renderLicenseCell(t)}
       </td>
       <td>
         <span class="row nowrap">
           <span class="stat-dot ${t.online_clients > 0 ? "dot-green" : "dot-neutral"}"></span>
           <span class="stat-val">${Number(t.online_clients) || 0} / ${Number(t.total_clients) || 0}</span>
         </span>
+        <div class="cell-sub nowrap ${Number(t.enrolled_clients) >= Number(t.workstation_limit) ? "text-danger" : ""}">${Number(t.enrolled_clients) || 0} of ${Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled</div>
+        ${
+          t.remote_control_status === "approved"
+            ? `<div class="cell-sub nowrap">Remote Control: ${Number(t.remote_control_seats) || 1} ${Number(t.remote_control_seats) === 1 ? "seat" : "seats"}</div>`
+            : t.remote_control_revoked_at
+              ? `<div class="cell-sub nowrap text-danger">Remote Control revoked</div>`
+              : ""
+        }
       </td>
       <td>
         <div class="cell-actions">
@@ -211,6 +239,33 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <div class="menu-popover" id="${escapeAttr(menuId)}" popover role="menu" aria-label="Organization actions">
             ${isDemo ? "" : `<button type="button" class="menu-item btn-edit-sub" role="menuitem" data-tenant="${escapeAttr(t.id)}">Edit Subdomain</button>`}
             <button type="button" class="menu-item btn-assign-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Custom Domain</button>
+            ${
+              t.remote_control_status === "approved"
+                ? `<button type="button" class="menu-item btn-remote-seats" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-seats="${escapeAttr(String(Number(t.remote_control_seats) || 1))}">Remote Control Seats</button>`
+                : ""
+            }
+            ${
+              t.remote_control_status !== "approved" && t.remote_control_revoked_at
+                ? `<button type="button" class="menu-item btn-remote-restore" role="menuitem" data-tenant="${escapeAttr(t.id)}">Restore Remote Control</button>`
+                : ""
+            }
+            ${
+              t.remote_control_status === "approved" && !isDemo
+                ? `<button type="button" class="menu-item menu-item-danger btn-remote-revoke" role="menuitem" data-tenant="${escapeAttr(t.id)}">Revoke Remote Control</button>`
+                : ""
+            }
+            <a class="menu-item" role="menuitem" href="${escapeAttr(`/api/super/legal/acceptances?tenantId=${encodeURIComponent(t.id)}&format=csv`)}" download>Legal Record (CSV)</a>
+            ${
+              isDemo
+                ? ""
+                : t.homepage_takedown_at
+                ? `<button type="button" class="menu-item btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="homepage" data-action-kind="restore">Restore Homepage</button>`
+                : `<button type="button" class="menu-item menu-item-danger btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="homepage" data-action-kind="takedown">Take Down Homepage</button>`
+            }
+            ${isDemo ? "" : `<button type="button" class="menu-item menu-item-danger btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="card" data-action-kind="takedown">Take Down a Portal Card</button>
+            <button type="button" class="menu-item btn-content" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-target="card" data-action-kind="restore">Restore a Portal Card</button>`}
+            ${isDemo ? "" : `<button type="button" class="menu-item btn-license" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-plan="${escapeAttr(t.license_plan || "")}" data-expires="${escapeAttr(t.license_expires_at ? licenseDate(Number(t.license_expires_at)) : "")}">License</button>`}
+            <button type="button" class="menu-item btn-workstation-limit" role="menuitem" data-tenant="${escapeAttr(t.id)}" data-limit="${escapeAttr(String(Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT))}" data-enrolled="${escapeAttr(String(Number(t.enrolled_clients) || 0))}">Workstation Limit</button>
             ${t.custom_domain ? `<button type="button" class="menu-item menu-item-danger btn-remove-custom" role="menuitem" data-tenant="${escapeAttr(t.id)}">Disconnect Custom Domain</button>` : ""}
             ${
               isDemo
@@ -304,7 +359,9 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     system: [
       { id: "system-arch", label: "Architecture & health", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>` },
       { id: "system-audit", label: "Audit log", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>` },
-      { id: "system-two-factor", label: "Two-factor sign-in", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>` }
+      { id: "system-two-factor", label: "Two-factor sign-in", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>` },
+      { id: "system-notifications", label: "Notifications", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>` },
+      { id: "system-legal", label: "Legal", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 15 11 17 15 13"/></svg>` }
     ]
   };
   const views = viewsByTab[activeTab] || [];
@@ -564,6 +621,14 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <div class="tab-pane" id="pane-system-two-factor">
         ${renderTwoFactorPaneHtml()}
       </div>
+      <div class="tab-pane" id="pane-system-notifications">
+        ${renderNotificationsPaneHtml(
+          tenants.filter((t) => t.status === "active" && !isDemoTenant(t, superAdminId)).map((t) => ({ id: t.id, name: t.name }))
+        )}
+      </div>
+      <div class="tab-pane" id="pane-system-legal">
+        ${renderLegalPaneHtml()}
+      </div>
     `
   };
 
@@ -635,7 +700,7 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const scriptsHtml = `${inboxScriptHtml}
 ${tabSwitchScriptHtml}
-${activeTab === "system" ? renderTwoFactorScript(nonce) : ""}
+${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.
@@ -792,6 +857,209 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
               window.location.reload();
             } else {
               lkToast(data.error || "Failed to assign subdomain", "error");
+            }
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      });
+
+      async function remoteControlAction(payload, failure) {
+        try {
+          const res = await fetch("/api/super/tenants/remote-control", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          if (data.status === "ok") {
+            window.location.reload();
+          } else {
+            lkToast(data.error || failure, "error");
+          }
+        } catch (err) {
+          lkToast("Network error: " + err.message, "error");
+        }
+      }
+
+      document.querySelectorAll(".btn-remote-seats").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const value = await lkPrompt({
+            title: "Remote Control seats for " + btn.closest("tr").querySelector(".cell-title").textContent,
+            message: "How many Remote Control sessions this organization may have open at once. Sessions open now are not ended.",
+            label: "Seats",
+            value: btn.dataset.seats,
+            hint: "A whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}.",
+            confirmLabel: "Save"
+          });
+          if (!value) return;
+          const seats = Number(value);
+          if (!Number.isInteger(seats) || seats < 1 || seats > ${MAX_REMOTE_CONTROL_SEATS}) {
+            lkToast("Enter a whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}.", "error");
+            return;
+          }
+          await remoteControlAction({ tenantId: btn.dataset.tenant, action: "seats", seats }, "Failed to change the seats");
+        });
+      });
+
+      document.querySelectorAll(".btn-remote-revoke").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.closest("tr").querySelector(".cell-title").textContent;
+          const reason = await lkPrompt({
+            title: "Revoke Remote Control for " + name + "?",
+            message: "Every open session ends now and the organization's administrator is emailed. Their workstations keep working.",
+            label: "Reason, included in the email",
+            placeholder: "For example: the subscription that included it has ended.",
+            hint: "Required: the organization is told why.",
+            confirmLabel: "Revoke",
+            tone: "danger"
+          });
+          if (!reason) return;
+          await remoteControlAction({ tenantId: btn.dataset.tenant, action: "revoke", reason }, "Failed to revoke Remote Control");
+        });
+      });
+
+      document.querySelectorAll(".btn-remote-restore").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const ok = await lkConfirm({
+            title: "Restore Remote Control?",
+            message: "Operators in " + btn.closest("tr").querySelector(".cell-title").textContent + " can open Remote Control again, with the seats it had.",
+            confirmLabel: "Restore"
+          });
+          if (!ok) return;
+          await remoteControlAction({ tenantId: btn.dataset.tenant, action: "restore" }, "Failed to restore Remote Control");
+        });
+      });
+
+      // Taking an organization's hosted content down after a report, or putting it back.
+      document.querySelectorAll(".btn-content").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const name = btn.closest("tr").querySelector(".cell-title").textContent;
+          const card = btn.dataset.target === "card";
+          const takedown = btn.dataset.actionKind === "takedown";
+          const payload = { tenantId: btn.dataset.tenant, target: btn.dataset.target, action: btn.dataset.actionKind };
+          if (card) {
+            const link = await lkPrompt({
+              title: (takedown ? "Take down a User Portal card of " : "Restore a User Portal card of ") + name,
+              label: "The card's link, as the report gives it",
+              placeholder: "https://example.com/page",
+              hint: "Every card of this organization linking to exactly this address is " + (takedown ? "hidden from its User Portal." : "shown again."),
+              confirmLabel: "Next"
+            });
+            if (!link) return;
+            payload.url = link;
+          }
+          if (takedown) {
+            const reason = await lkPrompt({
+              title: "Take down " + (card ? "this card" : name + "'s homepage") + "?",
+              message: card ? "The card disappears from the User Portal." : "The homepage shows \u201cThis content is unavailable\u201d instead.",
+              label: "Reason, emailed to the organization",
+              placeholder: "For example: reported as linking to a phishing page.",
+              hint: "Required: the organization is told why, and can contest it.",
+              confirmLabel: "Take down",
+              tone: "danger"
+            });
+            if (!reason) return;
+            payload.reason = reason;
+          } else if (!card) {
+            const ok = await lkConfirm({ title: "Restore " + name + "'s homepage?", message: "It shows what the organization published again.", confirmLabel: "Restore" });
+            if (!ok) return;
+          }
+          try {
+            const res = await fetch("/api/super/tenants/content", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              lkToast(data.error || "The change could not be made", "error");
+              return;
+            }
+            if (!card) window.location.reload();
+            else lkToast(takedown ? "Taken down" + (data.emailSent ? "; the organization was emailed" : "") : "Restored", "success");
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      });
+
+      document.querySelectorAll(".btn-license").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const organization = btn.closest("tr").querySelector(".cell-title").textContent;
+          const plan = await lkPrompt({
+            title: "License of " + organization,
+            message: "Which grant of the license this organization runs under.",
+            label: "Plan",
+            value: btn.dataset.plan,
+            hint: "education, evaluation, subscriber or commercial.",
+            confirmLabel: "Next"
+          });
+          if (!plan) return;
+          const planId = plan.toLowerCase();
+          if (!${JSON.stringify(LICENSE_PLANS.map((p) => p.id))}.includes(planId)) {
+            lkToast("The plan must be education, evaluation, subscriber or commercial.", "error");
+            return;
+          }
+          const ends = await lkPrompt({
+            title: "License of " + organization,
+            message: "Once this date has passed the organization enrols no new workstation and opens no Remote Control session. Enrolled workstations keep working.",
+            label: "End date",
+            value: btn.dataset.expires || "never",
+            hint: "A date as YYYY-MM-DD (00:00 UTC), or never.",
+            confirmLabel: "Save"
+          });
+          if (!ends) return;
+          const expiresOn = ends.toLowerCase() === "never" ? null : ends;
+          if (expiresOn !== null && !/^\\d{4}-\\d{2}-\\d{2}$/.test(expiresOn)) {
+            lkToast("Enter a date as YYYY-MM-DD, or never.", "error");
+            return;
+          }
+          try {
+            const res = await fetch("/api/super/tenants/license", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tenantId: btn.dataset.tenant, plan: planId, expiresOn })
+            });
+            const data = await res.json();
+            if (data.status === "ok") {
+              window.location.reload();
+            } else {
+              lkToast(data.error || "Failed to save the license", "error");
+            }
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      });
+
+      document.querySelectorAll(".btn-workstation-limit").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const value = await lkPrompt({
+            title: "Workstation limit for " + btn.closest("tr").querySelector(".cell-title").textContent,
+            message: btn.dataset.enrolled + " workstations are enrolled now. A lower limit stops new enrolments only; nothing enrolled is cut off.",
+            label: "Workstations",
+            value: btn.dataset.limit,
+            hint: "A whole number from 1 to ${MAX_WORKSTATION_LIMIT}.",
+            confirmLabel: "Save"
+          });
+          if (!value) return;
+          const limit = Number(value);
+          if (!Number.isInteger(limit) || limit < 1 || limit > ${MAX_WORKSTATION_LIMIT}) {
+            lkToast("Enter a whole number from 1 to ${MAX_WORKSTATION_LIMIT}.", "error");
+            return;
+          }
+          try {
+            const res = await fetch("/api/super/tenants/workstation-limit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tenantId: btn.dataset.tenant, limit })
+            });
+            const data = await res.json();
+            if (data.status === "ok") {
+              window.location.reload();
+            } else {
+              lkToast(data.error || "Failed to change the workstation limit", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");

@@ -21,15 +21,21 @@ export interface OrgHomeOptions {
   blocks: HomepageBlock[];
   /** Where the app grid lives. Always /home; passed so the route owns the path. */
   portalPath: string;
+  /** The platform's form for reporting this page. */
+  reportHref: string;
 }
 
 export function renderOrgHomeHtml(options: OrgHomeOptions): string {
-  const { tenant, blocks, portalPath } = options;
+  const { tenant, portalPath, reportHref } = options;
+  // Taken down by the platform: a neutral notice instead of anything the organization wrote.
+  const takenDown = Boolean(tenant.homepage_takedown_at);
+  const blocks = takenDown ? [] : options.blocks;
 
-  const headline = tenant.homepage_headline || tenant.name;
-  const intro =
-    tenant.homepage_intro ||
-    "Welcome. Everything on this workstation is chosen and managed by your organization's administrators.";
+  const headline = takenDown ? tenant.name : tenant.homepage_headline || tenant.name;
+  const intro = takenDown
+    ? "This content is unavailable."
+    : tenant.homepage_intro ||
+      "Welcome. Everything on this workstation is chosen and managed by your organization's administrators.";
 
   const blocksHtml = blocks
     .map((block) => {
@@ -201,6 +207,8 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
     ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Managed Workstation")}
     • <a href="/privacy">Privacy</a>
     • <a href="/terms">Terms</a>
+    • <a href="/content-policy">Content Policy</a>
+    • <a href="${escapeAttr(reportHref)}" rel="nofollow">Report this page</a>
   </footer>
 </body>
 </html>`;

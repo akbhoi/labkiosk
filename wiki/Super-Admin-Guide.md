@@ -12,6 +12,11 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | :--- | :--- |
 | Approve or reject organization registrations | Anyone can register; nothing works until a human approves |
 | Suspend or reactivate an organization | The platform's kill switch |
+| Set how many workstations an organization may enrol (**Workstation Limit**) | The license: 45 without a paid one |
+| Set Remote Control seats, revoke or restore Remote Control | An add-on the platform grants, and can take back |
+| See and export which version of the Terms each organization accepted, and email those that have not | The evidence of the contract with each customer |
+| Block domains on hosted pages; take an organization's homepage or a User Portal card down after a report | The platform hosts these pages under its own domain |
+| Classify releases; set each major release's support status and end-of-life date; open or grant a major release | What every workstation is offered, and for how long a version is kept safe |
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 | Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Registrations, Remote Control requests and every message sent to an address on the mail domain |
@@ -56,6 +61,41 @@ POST /api/super/tenants/approve
 Before approving, check that the subdomain is plausible for the organization, that it is not a [reserved slug](Configuration-Reference#reserved-subdomains), and that the admin email belongs to that organization's domain.
 
 On approval the organization can sign in, configure its portal, generate an enrollment key, and enrol workstations.
+
+A registration is activated from **Tasks**, with a **workstation limit** (prefilled from the number the organization expects; 45 is the most the license allows without a paid one). Enrolment past it answers `403`; a workstation that still holds a valid token always enrols again, so lowering the limit later under **Organizations → ⋯ → Workstation Limit** stops new enrolments only. Each organization's row shows `N of M enrolled`, and its console header shows the same.
+
+### Remote Control
+
+A Remote Control request is approved from **Tasks** with a number of **seats**: how many sessions the organization may have open at once (its OrgHub counts them; one more answers `429` naming the workstations in use). Under **Organizations → ⋯**:
+
+- **Remote Control Seats** changes that number; open sessions are not ended.
+- **Revoke Remote Control** turns it off with a reason: every open session ends at once, the organization's owner is emailed the reason, and its Settings show *Turned off* with the date. The organization can ask again.
+- **Restore Remote Control** turns a revoked organization back on with the seats it had. An organization that turned Remote Control off itself (Settings → Remote Control) asks again through Tasks instead.
+
+### Support, end of life and major releases
+
+Under **Releases**, below the release list:
+
+- **Support and end of life**, set per major release only (2.x covers every 2.x release). **Security only** keeps sending its security fixes to the workstations already on it and moves no other workstation onto it. **End of life** offers it nothing more, security fixes included, stops the daily security rebuild building it, and takes it off the download page, which names it as ended instead (the page lists only the newest release of each major). **Set end-of-life date** announces the date it ends by itself. Each change of status or date shows every organization a notification in its console and can email every customer's owner (the ones with workstations on the major are told how many). As the date nears, every organization is reminded by itself, in its console and by email, 60, 30 and 7 days before it and once it has passed. Settings → Updates shows the organizations on the major the same warning.
+- **Major releases.** The first release of a new major arrives **closed**. An organization can ask for it from Settings → Updates; its request shows in the organization's row with **Grant** and **Decline** (with a reason shown to it). **Open to all** or **Grant to an organization** (by subdomain) makes it available too. An administrator of each organization then tries it on one workstation group, and confirms it for every workstation (recorded with their name), before the rest of its workstations are moved. **Take back** removes a grant, its trial and its confirmation; workstations already on the major keep it. Each step notifies the organization in its console. Whatever the gates allow, a workstation moves one major at a time, from the newest release of its own major.
+
+### Notifications
+
+**System → Notifications** sends a notification to one organization or every organization: it shows at the top of their consoles until each member of staff dismisses it, and can be emailed to each owner too. The list below it shows every notification the platform has sent and how many people dismissed it. The platform notifies organizations by itself when it approves one, turns Remote Control on or off or changes its seats, changes its workstation limit or license, takes content down or restores it, grants it a major release, and when a major release changes status or nears its end of life. Sending is audited (`notification.send`).
+
+### Legal terms
+
+The documents in force are the Terms of Service (`/terms`, which include the Subscriber License the software license refers to), the Content Policy (`/content-policy`, part of the Terms; both are accepted) and the Privacy Policy (`/privacy`, acknowledged at registration). Their texts were drafted for review by a lawyer. Registration records the version of every legal document in force (`src/legal.ts`). When a document's text changes, its version changes; the first time the platform serves it, every organization that has not accepted it sees a notice in its console, and 30 days later its console asks before anything else until the owner or an `org_admin` accepts. Workstations, homepages and User Portals keep working throughout. **System → Legal** shows each document's version and how many active organizations accepted it, emails the owners of those that have not (**Email organizations**), and downloads every acceptance as CSV; **Organizations → ⋯ → Legal Record (CSV)** downloads one organization's.
+
+### License plan and end date
+
+**Organizations → ⋯ → License** records which grant of the license an organization runs under (*education*, *evaluation*, *subscriber* or *commercial*) and, optionally, the date it ends (00:00 UTC; *never* for none). The row shows the plan and the date. From 30 days before the end date the organization's console shows a reminder. Once it has passed the organization enrols no new workstation (a workstation that still holds a valid token enrols again) and opens no Remote Control session; its workstations, homepage and User Portal keep working, and its console says why. Renewing is setting a later date. Each change is audited (`tenant.license`), and each refused enrolment too (`device.enroll_license`).
+
+### Hosted pages: link rules, reports and takedown
+
+A homepage block's link and a User Portal card's address and thumbnail are refused when they use an IP address, a link shortener, a user name or password, or a domain on **System → Legal → Link blocklist** (subdomains included). Every organization homepage and User Portal has **Report this page** in its footer, which opens the contact form set to *Privacy, security or legal* with the page's address filled in; it arrives in **Mail** as a Legal (LGL) conversation.
+
+To act on a report, use **Organizations → ⋯**: **Take Down Homepage** replaces the homepage with *This content is unavailable*; **Take Down a Portal Card** asks for the card's link and hides every card of that organization linking there. Both need a reason, which the owner is emailed and the console shows; the same link cannot be added again until it is restored. **Restore Homepage** and **Restore a Portal Card** put them back. Each step is audited (`content.takedown`, `content.restore`, `content.block`, `content.unblock`).
 
 ### Rejecting
 
@@ -190,6 +230,7 @@ A cron trigger (`"0 * * * *"` in `wrangler.jsonc`) calls the worker's `scheduled
 - Files incoming mail the email Worker stored but could not hand over.
 - Replaces enrollment keys issued before keys carried a check character.
 - Reads the newest releases from GitHub for `/download` and writes a customer-facing summary of each with Workers AI (when the `AI` binding is set; the release's own change list is shown otherwise).
+- Sends the end-of-life reminders now due (60, 30 and 7 days before a major's date, and once it has passed) to every organization's console and owner.
 - Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub writes a run), and reads back the status of up to 10 filed issues.
 
 Commands are not in D1: each organization's OrgHub expires its own after 60 seconds.

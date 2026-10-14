@@ -7,7 +7,9 @@ decides something is here, so it is tested (distro-builder/tests/
 test_security_rebuild.py) instead of living in shell.
 
     lines     from the repository's tags, the release lines to look after --
-              the latest two that can update over the air -- and for each the
+              with --policy (the controller's GET /api/release-support), every
+              line that can update over the air and whose major release is not
+              at end of life; without it, the latest two -- and for each the
               newest tag and the version its rebuild gets (patch + 1).
     check     which packages installed in an image (its dpkg status file) have
               a newer version in the Debian security archive. The index is
@@ -70,12 +72,45 @@ def stable_version(tag):
     return tuple(int(part) for part in match.groups()) if match else None
 
 
-def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION):
+SUPPORT_STATUSES = ("supported", "security_only", "end_of_life")
+MAX_MAJOR = 9999
+
+
+def end_of_life_majors(policy_text):
     """
-    The release lines to rebuild, newest first: the `kept` highest lines among
-    the stable tags from `first` on, each with its newest tag and the version
-    its rebuild gets. A pre-release tag is never a base: it is not offered to
-    a stable organization, and its fixes arrive with the release it leads to.
+    The major releases at end of life, from the controller's answer to
+    GET /api/release-support: {"majors": [{"major": 2, "status": ...}]}.
+    Anything else is an error, never an empty set: a policy that cannot be read
+    must not rebuild a major the platform ended.
+    """
+    try:
+        policy = json.loads(policy_text)
+    except json.JSONDecodeError as err:
+        raise ValueError(f"the release support policy is not JSON: {err}") from err
+    entries = policy.get("majors") if isinstance(policy, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("the release support policy has no list of majors")
+    ended = set()
+    for entry in entries:
+        major = entry.get("major") if isinstance(entry, dict) else None
+        status = entry.get("status") if isinstance(entry, dict) else None
+        # bool is an int to Python; true is not a major release.
+        if (not isinstance(major, int) or isinstance(major, bool) or not 0 <= major <= MAX_MAJOR
+                or status not in SUPPORT_STATUSES):
+            raise ValueError(f"the release support policy has an entry that is not a major and a status: {entry!r}")
+        if status == "end_of_life":
+            ended.add(major)
+    return ended
+
+
+def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, end_of_life=None):
+    """
+    The release lines to rebuild, newest first, among the stable tags from
+    `first` on, each with its newest tag and the version its rebuild gets.
+    With `end_of_life` (the major releases the platform ended), every line of
+    every other major; without it, the `kept` highest lines. A pre-release tag is never a base:
+    it is not offered to a stable organization, and its fixes arrive with the
+    release it leads to.
     """
     floor = stable_version("v" + first)
     newest = {}
@@ -86,11 +121,17 @@ def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION):
         line = version[:2]
         if line not in newest or version > newest[line][0]:
             newest[line] = (version, tag)
-    chosen = sorted(newest, reverse=True)[:kept]
+    if end_of_life is None:
+        chosen = sorted(newest, reverse=True)[:kept]
+    else:
+        chosen = sorted((line for line in newest if line[0] not in end_of_life), reverse=True)
     if only_line is not None:
         if not LINE_PATTERN.match(only_line):
             raise ValueError(f"{only_line!r} is not a release line such as 2.9")
         wanted = tuple(int(part) for part in only_line.split("."))
+        if end_of_life is not None and wanted[0] in end_of_life:
+            raise ValueError(f"{only_line} belongs to Lab Kiosk {wanted[0]}, which has reached end of life: "
+                             "it receives no security rebuilds")
         if wanted not in chosen:
             raise ValueError(f"{only_line} is not one of the lines kept up to date: "
                              f"{', '.join('.'.join(map(str, line)) for line in chosen) or 'none'}")
@@ -328,6 +369,8 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     lines_parser = sub.add_parser("lines", help="the release lines to rebuild, from the repository's tags")
     lines_parser.add_argument("--line", help="only this line, such as 2.9")
+    lines_parser.add_argument("--policy", help="the controller's GET /api/release-support answer, as a file: "
+                              "rebuild every line whose major is not at end of life")
     lines_parser.add_argument("tags", nargs="*")
     check_parser = sub.add_parser("check", help="installed packages with a newer version in the security archive")
     check_parser.add_argument("--status", required=True, help="the image's var/lib/dpkg/status")
@@ -349,7 +392,11 @@ def main(argv=None):
 
     try:
         if args.command == "lines":
-            print(json.dumps(plan_lines(args.tags, args.line)))
+            ended = None
+            if args.policy:
+                with open(args.policy, "r", encoding="utf-8") as handle:
+                    ended = end_of_life_majors(handle.read())
+            print(json.dumps(plan_lines(args.tags, args.line, end_of_life=ended)))
         elif args.command == "check":
             with open(args.status, "r", encoding="utf-8") as handle:
                 installed = installed_packages(handle.read())

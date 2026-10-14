@@ -82,7 +82,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/clients` | `GET` | Fleet state with live thumbnails and remote-control details |
-| `/api/clients/remote-session` | `POST` | Open a Remote Control session through the console's relay; asks the workstation to join (`409` when it is not connected) |
+| `/api/clients/remote-session` | `POST` | Open a Remote Control session through the console's relay; asks the workstation to join (`409` when it is not connected, `429` when every seat is in use) |
+| `/api/tenant/remote-control/disable` | `POST` | The organization turns Remote Control off for itself; open sessions end (`settings`) |
+| `/api/notifications` | `GET` | The platform's notifications for this organization, each with `read` for this user |
+| `/api/notifications/read` | `POST` | `{ ids? }`: dismiss these notifications for this user, or all of them |
 | `/api/console/remote` | `GET` (WebSocket) | The viewer's side of a Remote Control session (VNC bytes) |
 | `/api/clients/remove` | `POST` | Decommission a workstation and revoke its token |
 | `/api/clients/group` | `POST` | Assign workstations to a group |
@@ -123,6 +126,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/release-notes/sync` | `POST` | The ISO build, right after publishing a release: re-reads GitHub's releases so `/download` offers the new one at once. `Authorization: Bearer <RELEASE_NOTES_TOKEN>`. `200 {stored, latest}`; `401` wrong token; `502` GitHub unreadable; `503` token not configured |
+| `/api/release-support` | `GET` | The daily security rebuild: the support status of every major release the platform has set (`supported`, `security_only`, `end_of_life`; a passed end-of-life date counts as `end_of_life`), so it rebuilds only lines of majors not at end of life. `Authorization: Bearer <RELEASE_NOTES_TOKEN>`. `200 {majors: [{major, status, endOfLifeAt}]}`; `401` wrong token; `503` token not configured |
 
 ### Super admin
 
@@ -137,6 +141,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/super/tenants/reject` | `POST` | Decline a requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Suspend an active organization |
 | `/api/super/tenants/reactivate` | `POST` | Reactivate a suspended organization |
+| `/api/super/tenants/workstation-limit` | `POST` | `{ tenantId, limit }`: how many workstations may enrol (1–100000) |
+| `/api/super/tenants/license` | `POST` | `{ tenantId, plan, expiresOn }`: the license plan (`education`, `evaluation`, `subscriber`, `commercial`) and end date (`YYYY-MM-DD` or `null`) |
+| `/api/super/notifications` | `GET` / `POST` | Every notification sent; `POST { tenantId \| null, title, body, email? }` notifies one organization or all of them in their consoles, and with `email` emails each owner |
+| `/api/super/tenants/remote-control` | `POST` | `{ tenantId, action: "revoke" \| "restore" \| "seats", seats?, reason? }`: revoking ends every open session and emails the owner |
 | `/api/super/tenants/custom-domain/approve` | `POST` | Approve and bind a custom domain |
 | `/api/super/tenants/custom-domain/reject` | `POST` | Reject a requested custom domain |
 | `/api/super/tenants/custom-domain/remove` | `POST` | Unbind an assigned custom domain |
@@ -152,6 +160,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/super` | Super Admin Master Console |
 | `/login`, `/register`, `/contact` | Landing-page sections |
 | `/privacy`, `/terms` | Privacy Policy and Terms of Service |
+| `/content-policy` | The Content Policy, part of the Terms of Service (public) |
 | `/terms/bug-reports` | The Automatic Bug Report Terms (public) |
 | `/download`, `/iso` | Redirect to `ISO_DOWNLOAD_URL` |
 

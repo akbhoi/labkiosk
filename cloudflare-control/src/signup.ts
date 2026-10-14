@@ -9,6 +9,7 @@
  * email sent from the console (src/inbox.ts).
  */
 
+import { LEGAL_DOCUMENTS, recordLegalAcceptances } from "./legal";
 import { Env, Session, Tenant } from "./types";
 import { jsonError, isReservedSlug } from "./guard";
 import { cleanSubdomain } from "./escape";
@@ -429,6 +430,17 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
   const profile: ProfileInput = { ...signup, email_verified_at: Math.floor(Date.now() / 1000) };
   await createOrganizationProfile(db, tenant.id, profile);
   await discardEmailCode(db, "signup", signup.contact_email);
+  // The record of what the registrant agreed to: every document in force, at its current version.
+  await recordLegalAcceptances(db, {
+    tenantId: tenant.id,
+    tenantName: signup.name,
+    userId: user.id,
+    userEmail: signup.contact_email,
+    documents: LEGAL_DOCUMENTS.map((doc) => ({ id: doc.id, version: doc.version })),
+    source: "registration",
+    ip: clientIp,
+    userAgent: ctx.request.headers.get("User-Agent")
+  });
 
   const conversation = await createConversation(db, {
     kind: "signup",

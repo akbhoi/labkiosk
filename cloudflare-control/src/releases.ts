@@ -13,6 +13,19 @@
  * organization's `security_updates` setting says whether it installs that at
  * its next boot by itself or waits for an administrator.
  *
+ * The platform also keeps a support status per major release
+ * (release_support) and decides which major releases a workstation may be
+ * moved to (release_majors, major_upgrade_grants): an end-of-life major is
+ * offered nothing, a security-only major only its security releases and only
+ * to the workstations already on it, and a closed major only to an
+ * organization it was opened or granted to and whose administrator confirmed it.
+ *
+ * The major upgrade pipeline: an administrator asks for a closed major
+ * (requested), a super admin grants it (available) or declines, the
+ * administrator tries it on one workstation group (pilot), then confirms it for
+ * every workstation (confirmed). A workstation moves one major at a time, and
+ * only from the newest release of the major it runs (eligibleReleases).
+ *
  * Nothing here decides whether an image is safe to boot: a workstation checks
  * the manifest's signature with the keys baked into its own image, refuses a
  * release below its security floor, and checks every chunk it downloads. The
@@ -22,6 +35,7 @@
 
 import { Env, SecurityUpdateMode, UpdateChannel } from "./types";
 import { safeHttpUrl } from "./escape";
+import { activeOrganizationOwners, createNotification, emailOrganizations } from "./notifications";
 
 /** A release version, as labkiosk-boot-slots' VERSION_PATTERN accepts it. */
 export const RELEASE_VERSION_PATTERN = /^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?$/;
@@ -100,6 +114,43 @@ export interface ReleaseOffer {
   sizeBytes: number;
   /** Unix seconds: when a super admin put it in its channel. */
   classifiedAt: number;
+  /** The support status of its major now; absent means supported. */
+  support?: SupportStatus;
+  /** Its major is closed to this organization: only a workstation already on that major or above takes it. */
+  gated?: boolean;
+  /** Its major is gated, but this organization is trying it on the workstations of this group. */
+  pilotGroup?: string;
+}
+
+export const SUPPORT_STATUSES = ["supported", "security_only", "end_of_life"] as const;
+export type SupportStatus = (typeof SUPPORT_STATUSES)[number];
+export const MAX_RELEASE_MAJOR = 9999;
+
+export function isSupportStatus(value: unknown): value is SupportStatus {
+  return typeof value === "string" && (SUPPORT_STATUSES as readonly string[]).includes(value);
+}
+
+export function isReleaseMajor(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_RELEASE_MAJOR;
+}
+
+/** One major release's support status, as release_support holds it (0040). */
+export interface MajorSupportRow {
+  major: number;
+  status: SupportStatus;
+  end_of_life_at: number | null;
+  note: string | null;
+  updated_at: number;
+  updated_by: string | null;
+  /** The last end-of-life reminder sent for end_of_life_at: 60, 30, 7, or 0 once passed. */
+  eol_reminder_days?: number | null;
+}
+
+/** A major's status now: an announced end-of-life date that has passed ends it. */
+export function effectiveSupportStatus(row: Pick<MajorSupportRow, "status" | "end_of_life_at"> | undefined, now: number): SupportStatus {
+  if (!row) return "supported";
+  if (row.end_of_life_at && row.end_of_life_at <= now) return "end_of_life";
+  return isSupportStatus(row.status) ? row.status : "supported";
 }
 
 /** What one workstation should fetch: a security release for its line, and the newest release. */
@@ -173,6 +224,226 @@ export function isSecurityUpdateMode(value: unknown): value is SecurityUpdateMod
 export function releaseLine(version: string): string {
   const core = versionKey(version).core;
   return `${core[0]}.${core[1]}`;
+}
+
+/** The major release a version belongs to: 2 for 2.8.1. */
+export function releaseMajor(version: string): number {
+  return versionKey(version).core[0];
+}
+
+/** Every major's recorded support status, by major. */
+export async function listMajorSupport(db: D1Database): Promise<Map<number, MajorSupportRow>> {
+  const res = await db.prepare("SELECT * FROM release_support").all<MajorSupportRow>();
+  return new Map((res.results || []).map((row) => [Number(row.major), { ...row, major: Number(row.major) }]));
+}
+
+/** Record a major's support status, end-of-life date and note. */
+export async function setMajorSupport(
+  db: D1Database,
+  major: number,
+  status: SupportStatus,
+  endOfLifeAt: number | null,
+  note: string | null,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  if (!isReleaseMajor(major)) throw new Error(`${JSON.stringify(major)} is not a major release`);
+  await db
+    .prepare(
+      `INSERT INTO release_support (major, status, end_of_life_at, note, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(major) DO UPDATE SET status = excluded.status, end_of_life_at = excluded.end_of_life_at,
+         note = excluded.note, updated_at = excluded.updated_at, updated_by = excluded.updated_by,
+         -- A new end-of-life date starts its reminders over.
+         eol_reminder_days = CASE WHEN release_support.end_of_life_at IS excluded.end_of_life_at
+           THEN release_support.eol_reminder_days ELSE NULL END`
+    )
+    .bind(major, status, endOfLifeAt, note, now, userId)
+    .run();
+}
+
+export async function listReleaseMajors(db: D1Database): Promise<Map<number, boolean>> {
+  const res = await db.prepare("SELECT major, open FROM release_majors").all<{ major: number; open: number }>();
+  return new Map((res.results || []).map((row) => [Number(row.major), Number(row.open) === 1]));
+}
+
+export async function setReleaseMajorOpen(
+  db: D1Database,
+  major: number,
+  open: boolean,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO release_majors (major, open, updated_at, updated_by) VALUES (?, ?, ?, ?)
+       ON CONFLICT(major) DO UPDATE SET open = excluded.open, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+    )
+    .bind(major, open ? 1 : 0, now, userId)
+    .run();
+}
+
+export interface MajorGrantRow {
+  tenant_id: string;
+  major: number;
+  granted_by: string | null;
+  granted_at: number | null;
+  confirmed_by: string | null;
+  confirmed_at: number | null;
+  requested_by: string | null;
+  requested_at: number | null;
+  pilot_group: string | null;
+  pilot_by: string | null;
+  pilot_at: number | null;
+}
+
+/** One organization's major upgrade grants and confirmations, by major. */
+export async function listMajorGrants(db: D1Database, tenantId: string): Promise<Map<number, MajorGrantRow>> {
+  const res = await db.prepare("SELECT * FROM major_upgrade_grants WHERE tenant_id = ?").bind(tenantId).all<MajorGrantRow>();
+  return new Map((res.results || []).map((row) => [Number(row.major), row]));
+}
+
+/** Every organization's grants and confirmations, for the platform's Releases page. */
+export async function listAllMajorGrants(db: D1Database): Promise<MajorGrantRow[]> {
+  return (await db.prepare("SELECT * FROM major_upgrade_grants ORDER BY major, tenant_id").all<MajorGrantRow>()).results || [];
+}
+
+/** Grant one organization a closed major, or take the grant back (and with it, its request, pilot and confirmation). */
+export async function setMajorGrant(
+  db: D1Database,
+  tenantId: string,
+  major: number,
+  granted: boolean,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  if (granted) {
+    await db
+      .prepare(
+        `INSERT INTO major_upgrade_grants (tenant_id, major, granted_by, granted_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(tenant_id, major) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at`
+      )
+      .bind(tenantId, major, userId, now)
+      .run();
+  } else {
+    await db.prepare("DELETE FROM major_upgrade_grants WHERE tenant_id = ? AND major = ?").bind(tenantId, major).run();
+  }
+}
+
+/** An organization administrator's confirmation that its workstations may move to a major. */
+export async function confirmMajor(
+  db: D1Database,
+  tenantId: string,
+  major: number,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO major_upgrade_grants (tenant_id, major, confirmed_by, confirmed_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(tenant_id, major) DO UPDATE SET confirmed_by = excluded.confirmed_by, confirmed_at = excluded.confirmed_at`
+    )
+    .bind(tenantId, major, userId, now)
+    .run();
+}
+
+/** An organization administrator's request for a major closed to it. */
+export async function requestMajor(
+  db: D1Database,
+  tenantId: string,
+  major: number,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO major_upgrade_grants (tenant_id, major, requested_by, requested_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(tenant_id, major) DO UPDATE SET requested_by = excluded.requested_by, requested_at = excluded.requested_at`
+    )
+    .bind(tenantId, major, userId, now)
+    .run();
+}
+
+/** A super admin's no to a request: the request is forgotten, so the organization may ask again. */
+export async function declineMajorRequest(db: D1Database, tenantId: string, major: number): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `DELETE FROM major_upgrade_grants
+       WHERE tenant_id = ? AND major = ? AND requested_at IS NOT NULL AND granted_at IS NULL AND confirmed_at IS NULL`
+    )
+    .bind(tenantId, major)
+    .run();
+  return Number(res.meta?.changes ?? 0) > 0;
+}
+
+/** The workstation group an organization tries a major on before confirming it, or none (null). */
+export async function setMajorPilot(
+  db: D1Database,
+  tenantId: string,
+  major: number,
+  group: string | null,
+  userId: string,
+  now = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO major_upgrade_grants (tenant_id, major, pilot_group, pilot_by, pilot_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(tenant_id, major) DO UPDATE SET pilot_group = excluded.pilot_group, pilot_by = excluded.pilot_by, pilot_at = excluded.pilot_at`
+    )
+    .bind(tenantId, major, group, group === null ? null : userId, group === null ? null : now)
+    .run();
+}
+
+/** Whether the organization is trying a major on a workstation group now. */
+export async function hasMajorPilot(db: D1Database, tenantId: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 AS one FROM major_upgrade_grants WHERE tenant_id = ? AND pilot_group IS NOT NULL AND confirmed_at IS NULL LIMIT 1")
+    .bind(tenantId)
+    .first<{ one: number }>();
+  return row !== null;
+}
+
+/** Ends every pilot whose workstation group no longer exists; how many it ended. */
+export async function endOrphanedMajorPilots(db: D1Database, tenantId: string): Promise<number> {
+  const res = await db
+    .prepare(
+      `UPDATE major_upgrade_grants SET pilot_group = NULL, pilot_by = NULL, pilot_at = NULL
+       WHERE tenant_id = ? AND pilot_group IS NOT NULL
+         AND pilot_group NOT IN (SELECT name FROM workstation_groups WHERE tenant_id = ?)`
+    )
+    .bind(tenantId, tenantId)
+    .run();
+  return Number(res.meta?.changes ?? 0);
+}
+
+/** The workstation group of each of the organization's workstations in one of `groups`. */
+export async function workstationGroupsIn(db: D1Database, tenantId: string, groups: readonly string[]): Promise<Map<string, string>> {
+  if (!groups.length) return new Map();
+  const res = await db
+    .prepare(`SELECT client_id, group_name FROM client_devices WHERE tenant_id = ? AND group_name IN (${groups.map(() => "?").join(",")})`)
+    .bind(tenantId, ...groups)
+    .all<{ client_id: string; group_name: string }>();
+  return new Map((res.results || []).map((row) => [row.client_id, row.group_name]));
+}
+
+/** Where one organization stands with one major. */
+export type MajorAccess = "free" | "closed" | "requested" | "available" | "pilot" | "confirmed";
+
+/**
+ * free: no row, offered as before. closed: neither open nor granted to it.
+ * requested: closed, and its administrator asked for it. available: open or
+ * granted, waiting for its administrator. pilot: its administrator is trying it
+ * on one workstation group. confirmed: its workstations may be moved to it.
+ */
+export function majorAccess(open: boolean | undefined, grant: MajorGrantRow | undefined): MajorAccess {
+  if (open === undefined) return "free";
+  if (!open && !grant?.granted_at) return grant?.requested_at ? "requested" : "closed";
+  if (grant?.confirmed_at) return "confirmed";
+  return grant?.pilot_group ? "pilot" : "available";
+}
+
+/** Whether a workstation of this organization needs the major confirmed (or piloted) before it is moved to it. */
+function majorGated(access: MajorAccess): boolean {
+  return access !== "free" && access !== "confirmed";
 }
 
 /**
@@ -279,6 +550,8 @@ export async function syncReleases(bucket: R2Bucket, db: D1Database, now = Math.
   } while (cursor);
 
   const result: SyncResult = { added: [], problems: [] };
+  const majors = new Set([...known].filter(isReleaseVersion).map(releaseMajor));
+  folders.sort(compareVersions);
   for (const version of folders.slice(0, MAX_NEW_PER_SYNC)) {
     try {
       const object = await bucket.get(`${RELEASE_PREFIX}${version}/manifest.json`);
@@ -295,6 +568,16 @@ export async function syncReleases(bucket: R2Bucket, db: D1Database, now = Math.
         )
         .bind(version, parsed.kind, parsed.baseVersion, parsed.securityFloor, parsed.sizeBytes, parsed.builtAt, text, now)
         .run();
+      // The first release of a major above every one recorded starts closed:
+      // no workstation is moved to it until a super admin opens or grants it.
+      const major = releaseMajor(version);
+      if (majors.size && major > Math.max(...majors)) {
+        await db
+          .prepare("INSERT OR IGNORE INTO release_majors (major, open, updated_at, updated_by) VALUES (?, 0, ?, NULL)")
+          .bind(major, now)
+          .run();
+      }
+      majors.add(major);
       result.added.push(version);
     } catch (err) {
       result.problems.push({ version, problem: err instanceof Error ? err.message : String(err) });
@@ -327,9 +610,24 @@ export async function revokeRelease(db: D1Database, version: string, now = Math.
   return Number(res.meta?.changes ?? 0) > 0;
 }
 
-/** Every unrevoked release an organization on this channel is offered, newest first. */
-export async function offeredReleases(db: D1Database, channel: UpdateChannel | null | undefined): Promise<ReleaseOffer[]> {
+/**
+ * Every unrevoked release of this channel, newest first, each marked with its
+ * major's support status now and whether its major is closed to the organization
+ * (`tenantId`; null for none). Which of them one workstation may take is
+ * eligibleReleases().
+ */
+export async function offeredReleases(
+  db: D1Database,
+  channel: UpdateChannel | null | undefined,
+  tenantId: string | null,
+  now = Math.floor(Date.now() / 1000)
+): Promise<ReleaseOffer[]> {
   const channels = channel === "beta" ? ["stable", "beta"] : ["stable"];
+  const [support, majors, grants] = await Promise.all([
+    listMajorSupport(db),
+    listReleaseMajors(db),
+    tenantId ? listMajorGrants(db, tenantId) : Promise.resolve(new Map<number, MajorGrantRow>())
+  ]);
   const res = await db
     .prepare(
       `SELECT version, kind, size_bytes, classified_at FROM releases
@@ -339,37 +637,101 @@ export async function offeredReleases(db: D1Database, channel: UpdateChannel | n
     .all<{ version: string; kind: ReleaseKind; size_bytes: number; classified_at: number | null }>();
   return (res.results || [])
     .filter((row) => isReleaseVersion(row.version))
-    .map((row) => ({
-      version: row.version,
-      kind: row.kind,
-      sizeBytes: Number(row.size_bytes) || 0,
-      classifiedAt: Number(row.classified_at) || 0
-    }))
+    .map((row): ReleaseOffer => {
+      const major = releaseMajor(row.version);
+      const access = majorAccess(majors.get(major), grants.get(major));
+      const status = effectiveSupportStatus(support.get(major), now);
+      return {
+        version: row.version,
+        kind: row.kind,
+        sizeBytes: Number(row.size_bytes) || 0,
+        classifiedAt: Number(row.classified_at) || 0,
+        ...(status !== "supported" ? { support: status } : {}),
+        ...(majorGated(access) ? { gated: true } : {}),
+        ...(access === "pilot" ? { pilotGroup: grants.get(major)!.pilot_group! } : {})
+      };
+    })
     .sort((a, b) => compareVersions(b.version, a.version));
 }
 
-/** The newest unrevoked release an organization on this channel is offered, or null. */
-export async function offeredRelease(db: D1Database, channel: UpdateChannel | null | undefined): Promise<ReleaseOffer | null> {
-  return (await offeredReleases(db, channel))[0] ?? null;
+/**
+ * The releases a workstation running `running`, in workstation group `group`,
+ * may be moved to, newest first: nothing of an end-of-life major; of a
+ * security-only major, only its security releases and only for a workstation
+ * already on that major; nothing of a major closed to its organization above
+ * the major it runs, unless the organization is trying that major on the
+ * workstation's group. A workstation moves one major at a time, and only once
+ * it runs the newest release of its own major it may take: 1.4 goes to 1.5
+ * before 2.x, and 2.x before 3.x. An unknown image (an updater from before
+ * phase 4 does not say) is treated as on no major.
+ */
+export function eligibleReleases(
+  releases: readonly ReleaseOffer[],
+  running: string | null | undefined,
+  group: string | null = null
+): ReleaseOffer[] {
+  const known = isReleaseVersion(running);
+  const major = known ? releaseMajor(running) : -1;
+  const supported = releases.filter((r) => {
+    if (r.support === "end_of_life") return false;
+    return !(r.support === "security_only" && (r.kind !== "security" || releaseMajor(r.version) !== major));
+  });
+  const allowed = supported.filter(
+    (r) => !(r.gated && releaseMajor(r.version) > major && !(r.pilotGroup && group !== null && r.pilotGroup === group))
+  );
+  if (!known) return allowed;
+  // The next major is the lowest one above it that has a release it could take
+  // once allowed: a gated major holds back every major above it as well.
+  const newerInMajor = allowed.some((r) => releaseMajor(r.version) === major && compareVersions(r.version, running) > 0);
+  const higher = supported.map((r) => releaseMajor(r.version)).filter((m) => m > major);
+  const nextMajor = newerInMajor || !higher.length ? major : Math.min(...higher);
+  return allowed.filter((r) => releaseMajor(r.version) <= nextMajor);
+}
+
+/** The newest release an organization offers a workstation that does not say what it runs, or null. */
+export function newestOffered(releases: readonly ReleaseOffer[], group: string | null = null): ReleaseOffer | null {
+  return eligibleReleases(releases, null, group)[0] ?? null;
+}
+
+/** Whether this channel has an unrevoked release of `major`, whoever it is offered to. */
+export async function releaseOfMajorOffered(db: D1Database, channel: UpdateChannel | null | undefined, major: number): Promise<boolean> {
+  return (await offeredReleases(db, channel, null)).some((r) => releaseMajor(r.version) === major);
+}
+
+/** The newest unrevoked release an organization on this channel offers any workstation, or null. */
+export async function offeredRelease(
+  db: D1Database,
+  channel: UpdateChannel | null | undefined,
+  tenantId: string
+): Promise<ReleaseOffer | null> {
+  return newestOffered(await offeredReleases(db, channel, tenantId));
 }
 
 /**
  * The newest security release for the line `running` belongs to and newer
  * than it, from releases sorted newest first; null for an unknown image.
  */
-export function securityReleaseFor(releases: readonly ReleaseOffer[], running: string | null | undefined): ReleaseOffer | null {
+export function securityReleaseFor(
+  releases: readonly ReleaseOffer[],
+  running: string | null | undefined,
+  group: string | null = null
+): ReleaseOffer | null {
   if (!isReleaseVersion(running)) return null;
   const line = releaseLine(running);
   return (
-    releases.find(
+    eligibleReleases(releases, running, group).find(
       (r) => r.kind === "security" && releaseLine(r.version) === line && compareVersions(r.version, running) > 0
     ) ?? null
   );
 }
 
-/** What a workstation running `running` is offered. */
-export function workstationOffer(releases: readonly ReleaseOffer[], running: string | null | undefined): WorkstationOffer {
-  return { release: releases[0] ?? null, security: securityReleaseFor(releases, running) };
+/** What a workstation running `running`, in workstation group `group`, is offered. */
+export function workstationOffer(
+  releases: readonly ReleaseOffer[],
+  running: string | null | undefined,
+  group: string | null = null
+): WorkstationOffer {
+  return { release: eligibleReleases(releases, running, group)[0] ?? null, security: securityReleaseFor(releases, running, group) };
 }
 
 /**
@@ -378,9 +740,13 @@ export function workstationOffer(releases: readonly ReleaseOffer[], running: str
  * else the newest release when that is newer than what it runs; null when
  * there is nothing to fetch. labkiosk-update run chooses the same way.
  */
-export function updateTargetFor(releases: readonly ReleaseOffer[], running: string | null | undefined): ReleaseOffer | null {
+export function updateTargetFor(
+  releases: readonly ReleaseOffer[],
+  running: string | null | undefined,
+  group: string | null = null
+): ReleaseOffer | null {
   if (!isReleaseVersion(running)) return null;
-  const { release, security } = workstationOffer(releases, running);
+  const { release, security } = workstationOffer(releases, running, group);
   const target = security ?? release;
   return target && compareVersions(target.version, running) > 0 ? target : null;
 }
@@ -404,11 +770,11 @@ export interface PendingSecurityRelease {
  */
 export function securityReleasesPending(
   releases: readonly ReleaseOffer[],
-  devices: ReadonlyArray<{ image_version?: string | null }>
+  devices: ReadonlyArray<{ image_version?: string | null; group_name?: string | null }>
 ): PendingSecurityRelease[] {
   const pending = new Map<string, PendingSecurityRelease>();
   for (const device of devices) {
-    const security = securityReleaseFor(releases, device.image_version);
+    const security = securityReleaseFor(releases, device.image_version, device.group_name ?? null);
     if (!security) continue;
     const entry = pending.get(security.version) ?? { version: security.version, offeredAt: security.classifiedAt, workstations: 0 };
     entry.workstations++;
@@ -478,4 +844,241 @@ export function sameUpdateReport(a: UpdateReport | undefined, b: UpdateReport | 
     a.kind === b.kind &&
     a.since === b.since
   );
+}
+
+/** A major some of an organization's workstations run that is not plainly supported. */
+export interface SupportNotice {
+  major: number;
+  status: SupportStatus;
+  /** Unix seconds: the announced end-of-life date, if any. */
+  endOfLifeAt: number | null;
+  note: string | null;
+  workstations: number;
+}
+
+/** A major above what an organization's workstations run, and where the organization stands with it. */
+export interface MajorNotice {
+  major: number;
+  access: Exclude<MajorAccess, "free">;
+  /** The newest release of that major its channel offers. */
+  newest: string;
+  confirmedAt: number | null;
+  requestedAt: number | null;
+  /** The workstation group it is being tried on. */
+  pilotGroup: string | null;
+}
+
+/**
+ * What an organization's Updates settings warn about: the majors its
+ * workstations run that are security-only, end of life or have an end-of-life
+ * date, and the closed majors above the lowest one they run (every closed major
+ * when none reports its image).
+ */
+export async function organizationReleaseNotices(
+  db: D1Database,
+  tenantId: string,
+  releases: readonly ReleaseOffer[],
+  devices: ReadonlyArray<{ image_version?: string | null }>,
+  now = Math.floor(Date.now() / 1000)
+): Promise<{ support: SupportNotice[]; majors: MajorNotice[] }> {
+  const [rows, majors, grants] = await Promise.all([listMajorSupport(db), listReleaseMajors(db), listMajorGrants(db, tenantId)]);
+  const perMajor = new Map<number, number>();
+  for (const device of devices) {
+    if (!isReleaseVersion(device.image_version)) continue;
+    const major = releaseMajor(device.image_version);
+    perMajor.set(major, (perMajor.get(major) ?? 0) + 1);
+  }
+  const lowestMajor = perMajor.size ? Math.min(...perMajor.keys()) : Infinity;
+  const support: SupportNotice[] = [];
+  for (const [major, workstations] of perMajor) {
+    const row = rows.get(major);
+    const status = effectiveSupportStatus(row, now);
+    if (status === "supported" && !row?.end_of_life_at) continue;
+    support.push({ major, status, endOfLifeAt: row?.end_of_life_at ?? null, note: row?.note ?? null, workstations });
+  }
+  support.sort((a, b) => a.major - b.major);
+  const notices: MajorNotice[] = [];
+  for (const release of releases) {
+    const major = releaseMajor(release.version);
+    if (Number.isFinite(lowestMajor) && major <= lowestMajor) continue;
+    if (notices.some((n) => n.major === major)) continue;
+    const access = majorAccess(majors.get(major), grants.get(major));
+    if (access === "free") continue;
+    if (release.support === "end_of_life" || release.support === "security_only") continue;
+    const grant = grants.get(major);
+    notices.push({
+      major,
+      access,
+      newest: release.version,
+      confirmedAt: grant?.confirmed_at ?? null,
+      requestedAt: grant?.requested_at ?? null,
+      pilotGroup: access === "pilot" ? grant?.pilot_group ?? null : null
+    });
+  }
+  return { support, majors: notices };
+}
+
+/** How many workstations each organization and major has, across the platform, from the registry. */
+export async function workstationsPerMajor(db: D1Database): Promise<Array<{ tenantId: string; major: number; workstations: number }>> {
+  const res = await db
+    .prepare("SELECT tenant_id, image_version, COUNT(*) AS n FROM client_devices WHERE image_version IS NOT NULL GROUP BY tenant_id, image_version")
+    .all<{ tenant_id: string; image_version: string; n: number }>();
+  const counts = new Map<string, { tenantId: string; major: number; workstations: number }>();
+  for (const row of res.results || []) {
+    if (!isReleaseVersion(row.image_version)) continue;
+    const major = releaseMajor(row.image_version);
+    const key = `${row.tenant_id}\n${major}`;
+    const entry = counts.get(key) ?? { tenantId: row.tenant_id, major, workstations: 0 };
+    entry.workstations += Number(row.n) || 0;
+    counts.set(key, entry);
+  }
+  return [...counts.values()];
+}
+
+/** One major as the platform's Releases page shows it. */
+export interface PlatformMajor {
+  major: number;
+  state: "free" | "open" | "closed";
+  /** The support status a super admin set. */
+  status: SupportStatus;
+  /** What applies now, once an announced end-of-life date has passed. */
+  effectiveStatus: SupportStatus;
+  endOfLifeAt: number | null;
+  note: string | null;
+  workstations: number;
+  organizations: number;
+  grants: Array<{
+    tenantId: string;
+    name: string;
+    requestedAt: number | null;
+    grantedAt: number | null;
+    pilotGroup: string | null;
+    confirmedAt: number | null;
+  }>;
+}
+
+/** Every major the platform has releases or settings for, newest first. */
+export async function platformReleasePolicy(
+  db: D1Database,
+  releases: readonly ReleaseSummary[],
+  tenantNames: ReadonlyMap<string, string>,
+  now = Math.floor(Date.now() / 1000)
+): Promise<{ majors: PlatformMajor[] }> {
+  const [rows, majors, grants, usage] = await Promise.all([
+    listMajorSupport(db),
+    listReleaseMajors(db),
+    listAllMajorGrants(db),
+    workstationsPerMajor(db)
+  ]);
+  const majorNumbers = new Set<number>([...majors.keys(), ...rows.keys()]);
+  for (const r of releases) majorNumbers.add(releaseMajor(r.version));
+  const majorList = [...majorNumbers]
+    .sort((a, b) => b - a)
+    .map((major): PlatformMajor => {
+      const open = majors.get(major);
+      const row = rows.get(major);
+      const using = usage.filter((u) => u.major === major);
+      return {
+        major,
+        state: open === undefined ? "free" : open ? "open" : "closed",
+        status: row && isSupportStatus(row.status) ? row.status : "supported",
+        effectiveStatus: effectiveSupportStatus(row, now),
+        endOfLifeAt: row?.end_of_life_at ?? null,
+        note: row?.note ?? null,
+        workstations: using.reduce((sum, u) => sum + u.workstations, 0),
+        organizations: using.length,
+        grants: grants
+          .filter((g) => Number(g.major) === major)
+          .map((g) => ({
+            tenantId: g.tenant_id,
+            name: tenantNames.get(g.tenant_id) ?? g.tenant_id,
+            requestedAt: g.requested_at ?? null,
+            grantedAt: g.granted_at ?? null,
+            pilotGroup: g.confirmed_at ? null : g.pilot_group ?? null,
+            confirmedAt: g.confirmed_at ?? null
+          }))
+      };
+    });
+  return { majors: majorList };
+}
+
+/** Days before a major's end-of-life date that every organization is reminded. */
+export const END_OF_LIFE_REMINDER_DAYS = [60, 30, 7] as const;
+
+/**
+ * Which reminder a major's end-of-life date calls for now: 60, 30 or 7 (days
+ * before), 0 once the date has passed, or null when it is further off.
+ */
+export function endOfLifeReminderStage(endOfLifeAt: number, now = Math.floor(Date.now() / 1000)): number | null {
+  if (endOfLifeAt <= now) return 0;
+  const daysLeft = Math.ceil((endOfLifeAt - now) / 86_400);
+  const due = END_OF_LIFE_REMINDER_DAYS.filter((days) => daysLeft <= days);
+  return due.length ? Math.min(...due) : null;
+}
+
+/** What organizations are told about a major's support status: a title and a message. */
+export function majorSupportNotice(
+  major: number,
+  status: SupportStatus,
+  endOfLifeAt: number | null,
+  note: string | null,
+  options: { reminder?: boolean; now?: number } = {}
+): { title: string; body: string } {
+  const now = options.now ?? Math.floor(Date.now() / 1000);
+  const name = `Lab Kiosk ${major}`;
+  const date = endOfLifeAt !== null ? new Date(endOfLifeAt * 1000).toISOString().slice(0, 10) : null;
+  let title: string;
+  let body: string;
+  if (status === "end_of_life" || (endOfLifeAt !== null && endOfLifeAt <= now)) {
+    title = `${name} has reached end of life`;
+    body =
+      `${name} has reached end of life. Workstations on it receive no further updates, security fixes included. ` +
+      `Install the newest supported release from Workstations → Updates to keep receiving them.`;
+  } else if (date) {
+    title = `${options.reminder ? "Reminder: " : ""}${name} reaches end of life on ${date}`;
+    body =
+      `${name} reaches end of life on ${date}. After that date workstations on it receive no further updates, security fixes included.` +
+      (status === "security_only" ? ` Until then it receives security fixes only.` : "") +
+      ` Move your workstations to a newer release before then from Workstations → Updates.`;
+  } else {
+    title = `${name} now receives security fixes only`;
+    body =
+      `${name} now receives security fixes only: no workstation is moved onto it, and workstations on it get only its security releases. ` +
+      `Move your workstations to a newer release from Workstations → Updates.`;
+  }
+  return { title, body: note ? `${body}\n\n${note}` : body };
+}
+
+/** Record which end-of-life reminder a major has had for its current date. */
+export async function setEndOfLifeReminderStage(db: D1Database, major: number, stage: number | null): Promise<void> {
+  await db.prepare("UPDATE release_support SET eol_reminder_days = ? WHERE major = ?").bind(stage, major).run();
+}
+
+/**
+ * The end-of-life reminders now due (hourly, from the cron): for each major with
+ * an end-of-life date, the first time it comes within 60, 30 and 7 days and the
+ * first time it has passed, every organization gets a console notification and
+ * its owner an email. Returns the majors reminded about.
+ */
+export async function sendEndOfLifeReminders(
+  env: Env,
+  db: D1Database,
+  now = Math.floor(Date.now() / 1000)
+): Promise<number[]> {
+  const reminded: number[] = [];
+  for (const row of (await listMajorSupport(db)).values()) {
+    if (row.end_of_life_at === null || row.end_of_life_at === undefined || row.status === "end_of_life") continue;
+    const endOfLifeAt = Number(row.end_of_life_at);
+    const stage = endOfLifeReminderStage(endOfLifeAt, now);
+    const last = row.eol_reminder_days === null || row.eol_reminder_days === undefined ? null : Number(row.eol_reminder_days);
+    if (stage === null || (last !== null && stage >= last)) continue;
+    const notice = majorSupportNotice(row.major, row.status, endOfLifeAt, row.note ?? null, { reminder: stage > 0, now });
+    // Recorded first: a failure part-way never repeats the reminder every hour.
+    await setEndOfLifeReminderStage(db, row.major, stage);
+    await createNotification(db, { tenantId: null, kind: "release", title: notice.title, body: notice.body, createdBy: null, now });
+    const outcome = await emailOrganizations(env, await activeOrganizationOwners(db, null), notice.title, () => notice.body);
+    if (outcome.emailProblem) console.warn(`[Worker] End-of-life reminder for ${row.major}: ${outcome.emailProblem}`);
+    reminded.push(row.major);
+  }
+  return reminded;
 }

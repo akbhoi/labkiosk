@@ -31,7 +31,7 @@ Every enrolled workstation appears as a live telemetry card refreshed from `/api
 - **Online Indicator**: Derived from `last_seen`; stale after 20 seconds.
 - **Active URL**: Where the machine is currently pointing.
 - **Lock State**: Whether the fullscreen lock curtain is currently up.
-- **Remote Control**: Opens the workstation's desktop through the console's relay; the workstation must be connected on its control channel (`workstations` permission).
+- **Remote Control**: Opens the workstation's desktop through the console's relay; the workstation must be connected on its control channel. Only the organization's administrators (its owner and `org_admin` staff) see it; other staff do not.
 
 Workstations in the main canvas are partitioned into collapsible **Group Sections** with headers, chevron collapse toggles, and group-wide selection checkboxes. Collapse states persist in `localStorage`.
 
@@ -119,7 +119,7 @@ Allows organization administrators to delegate lab control to colleagues with gr
   - `apps-web`: Manage broadcasts, user portal apps, and domain allowlists.
   - `staff`: Invite and manage other staff members.
   - `settings`: Modify organization identity, kiosk modes, and network parameters.
-  - `updates`: Choose the update channel, whether security fixes install at the next restart or wait for approval, and whether workstations share updates on the local network, and check for or install system updates on workstations.
+  - `updates`: Choose the update channel, whether security fixes install at the next restart or wait for approval, and whether workstations share updates on the local network; ask for a new major release, try it on one workstation group, then confirm it for every workstation; and check for or install system updates on workstations.
 
 ---
 

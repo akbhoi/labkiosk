@@ -379,6 +379,9 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     .stack { display: flex; flex-direction: column; gap: 12px; }
     .stack-sm { display: flex; flex-direction: column; gap: 6px; }
+    .notice-list { list-style: none; margin: 0; padding: 0; }
+    .notice-list > li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border-subtle); }
+    .notice-list > li:first-child { border-top: none; padding-top: 4px; }
     .mt-0 { margin-top: 0; }
     .mt-sm { margin-top: 8px; }
     .mt-md { margin-top: 16px; }
@@ -1453,6 +1456,7 @@ const CONSOLE_CSS = `${rootTokensCss()}
       font-size: 0.8125rem;
       font-weight: 500;
       color: var(--text-main);
+      text-decoration: none;
       cursor: pointer;
     }
     .menu-item > svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-muted); }
@@ -2764,6 +2768,7 @@ ${FONT_LINKS}
         <div class="canvas-footer-links">
           <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+          <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>
         </div>
       </footer>
     </div>
@@ -2937,7 +2942,7 @@ ${FONT_LINKS}
         });
       };
 
-      /** Ask for a value. Resolves null when dismissed or left empty. */
+      /** Ask for a value, typed or (with choices) picked. Resolves null when dismissed or left empty. */
       window.lkPrompt = function (options) {
         var opts = options || {};
         return new Promise(function (resolve) {
@@ -2950,11 +2955,24 @@ ${FONT_LINKS}
               label.textContent = opts.label;
               group.appendChild(label);
             }
-            var input = document.createElement("input");
-            input.type = "text";
-            input.className = "form-input";
-            input.value = opts.value || "";
-            input.placeholder = opts.placeholder || "";
+            var input;
+            if (Array.isArray(opts.choices)) {
+              input = document.createElement("select");
+              input.className = "form-select";
+              opts.choices.forEach(function (choice) {
+                var option = document.createElement("option");
+                option.value = String(choice);
+                option.textContent = String(choice);
+                input.appendChild(option);
+              });
+              if (opts.value) input.value = opts.value;
+            } else {
+              input = document.createElement("input");
+              input.type = "text";
+              input.className = "form-input";
+              input.value = opts.value || "";
+              input.placeholder = opts.placeholder || "";
+            }
             group.appendChild(input);
             if (opts.hint) {
               var hint = document.createElement("p");
@@ -2973,7 +2991,7 @@ ${FONT_LINKS}
               return value || null;
             }
           });
-          if (parts.field) { parts.field.focus(); parts.field.select(); }
+          if (parts.field) { parts.field.focus(); if (parts.field.select) parts.field.select(); }
         });
       };
     })();

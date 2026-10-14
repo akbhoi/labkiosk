@@ -5,6 +5,8 @@ export type KioskMode = "portal" | "single_url";
 export type CommandAction = "lock" | "unlock" | "navigate" | "reload" | "reboot" | "shutdown" | "clear-session" | "mute";
 export type CustomHostnameStatus = "none" | "pending" | "active" | "failed" | "local";
 export type RemoteControlStatus = "none" | "pending" | "approved" | "rejected";
+/** Which grant of LICENSE an organization runs under (0037). */
+export type LicensePlan = "education" | "evaluation" | "subscriber" | "commercial";
 export type TenantUserRole = "org_admin" | "sub_admin" | "operator" | "assistant" | "content_manager";
 
 export interface TenantUser {
@@ -81,6 +83,19 @@ export interface Tenant {
   security_updates?: SecurityUpdateMode;
   /** 1 when its workstations at one site share a new system image over the LAN (phase 5). */
   lan_sharing?: number;
+  /** Workstations the organization may enrol (0032). */
+  workstation_limit?: number;
+  /** Remote Control sessions the organization may have open at once (0033). */
+  remote_control_seats?: number;
+  /** When a super admin turned Remote Control off; NULL otherwise (0033). */
+  remote_control_revoked_at?: number | null;
+  /** A super admin took the organization homepage down; it shows a neutral notice. */
+  homepage_takedown_at?: number | null;
+  homepage_takedown_reason?: string | null;
+  /** Which grant of LICENSE the organization runs under; NULL until recorded (0037). */
+  license_plan?: LicensePlan | null;
+  /** Unix seconds the license ends; NULL: no end date (0037). */
+  license_expires_at?: number | null;
 }
 
 /** A release channel: `beta` organizations are offered beta and stable releases. */
@@ -115,6 +130,9 @@ export interface PortalSite {
   order_index: number;
   is_active: number; // 0 or 1
   created_at: number;
+  /** A super admin took this card down (it is inactive too). */
+  takedown_at?: number | null;
+  takedown_reason?: string | null;
 }
 
 export interface ClientDevice {

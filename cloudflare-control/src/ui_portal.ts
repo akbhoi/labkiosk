@@ -7,7 +7,7 @@ import { escapeHtml, safeHttpUrl, escapeAttr } from "./escape";
 import { FONT_LINKS, rootTokensCss, themeHeadHtml, LEGACY_PORTAL_ALIASES } from "./ui_tokens";
 import { FAVICON_LINK_HTML } from "./seo";
 
-export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string): string {
+export function renderPortalHtml(tenant: Tenant, sites: PortalSite[], nonce: string, reportHref: string): string {
   const FALLBACK_THUMBNAIL = "https://images.unsplash.com/photo-1509228468518-180dd4864904?w=600&q=80";
 
   // The column is NOT NULL with a default, but a row is not trusted to carry one:
@@ -482,7 +482,7 @@ ${rootTokensCss(LEGACY_PORTAL_ALIASES)}
   </main>
 
   <footer>
-    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Managed Workstation")} • <a href="/privacy">Privacy</a> • <a href="/terms">Terms</a>
+    ${escapeHtml(tenant.portal_footer || "Protected by Lab Kiosk OS • Managed Workstation")} • <a href="/privacy">Privacy</a> • <a href="/terms">Terms</a> • <a href="/content-policy">Content Policy</a> • <a href="${escapeAttr(reportHref)}" rel="nofollow">Report this page</a>
   </footer>
 
   <script nonce="${escapeAttr(nonce)}">

@@ -234,7 +234,7 @@ ${renderRemoteControlCard(tenant)}
         <div class="grid-2col">
           <div class="card" id="section-homepage">
             <h2 class="card-title">Homepage Identity &amp; Welcome</h2>
-            <p class="card-sub">The welcome page at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}/</code>.</p>
+            <p class="card-sub">The welcome page at <code>${escapeHtml(currentSubdomain)}.${escapeHtml(baseDomain)}/</code>. What you publish here follows the <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>.</p>
 
             <div class="form-group">
               <label class="form-label" for="homepage-headline">Headline</label>
@@ -381,20 +381,25 @@ ${renderUpdatesPaneHtml()}
  * says where the organization stands and, until it is on, lets it ask.
  */
 function renderRemoteControlCard(tenant: Tenant | undefined): string {
-  const status = tenant?.remote_control_status || "none";
+  const revoked = tenant?.remote_control_status === "rejected" && Boolean(tenant?.remote_control_revoked_at);
+  const status = revoked ? "revoked" : tenant?.remote_control_status || "none";
+  const seats = Number(tenant?.remote_control_seats) || 1;
   const badges: Record<string, string> = {
     none: `<span class="badge badge-neutral">Not enabled</span>`,
     pending: `<span class="badge badge-yellow">Requested</span>`,
     approved: `<span class="badge badge-green">Enabled</span>`,
-    rejected: `<span class="badge badge-red">Not approved</span>`
+    rejected: `<span class="badge badge-red">Not approved</span>`,
+    revoked: `<span class="badge badge-red">Turned off</span>`
   };
+  const revokedOn = revoked ? new Date(Number(tenant!.remote_control_revoked_at) * 1000).toISOString().slice(0, 10) : "";
   const explanation: Record<string, string> = {
     none: "See and control a workstation's screen from this console. It is enabled for each organization on request; we will email you the outcome, and licensing may need to be arranged first.",
     pending: "Your request is being reviewed. We will email you as soon as it has been decided.",
-    approved: "Operators with the Workstations permission can open Remote Control on any connected workstation.",
-    rejected: "Your last request was not approved. You can ask again, ideally with a note on what you need it for."
+    approved: `Operators with the Workstations permission can open Remote Control on any connected workstation, on up to ${seats} ${seats === 1 ? "workstation" : "workstations"} at once.`,
+    rejected: "Your last request was not approved. You can ask again, ideally with a note on what you need it for.",
+    revoked: `Lab Kiosk turned Remote Control off for this organization on ${escapeHtml(revokedOn)}. You can ask for it again.`
   };
-  const canRequest = status === "none" || status === "rejected";
+  const canRequest = status === "none" || status === "rejected" || status === "revoked";
   return `
       <div class="card mt-lg" id="section-remote-control">
         <div class="row-between">
@@ -411,7 +416,9 @@ function renderRemoteControlCard(tenant: Tenant | undefined): string {
           </div>
           <button type="submit" class="btn btn-primary">Request Remote Control</button>
         </form>`
-            : ""
+            : status === "approved"
+              ? `<div class="form-actions"><button type="button" class="btn btn-secondary" id="btn-remote-control-disable">Turn off Remote Control</button></div>`
+              : ""
         }
       </div>`;
 }
@@ -495,6 +502,35 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
               window.location.reload();
             } else {
               lkToast(data.error || "The request could not be sent", "error");
+            }
+          } catch (err) {
+            lkToast("Network error: " + err.message, "error");
+          }
+        });
+      }
+
+      const remoteControlDisable = document.getElementById("btn-remote-control-disable");
+      if (remoteControlDisable) {
+        remoteControlDisable.addEventListener("click", async () => {
+          const ok = await lkConfirm({
+            title: "Turn off Remote Control?",
+            message: "Every Remote Control session open now ends. Turning it on again is a new request to Lab Kiosk.",
+            confirmLabel: "Turn off",
+            tone: "danger"
+          });
+          if (!ok) return;
+          try {
+            const res = await fetch(labkioskApi("/api/tenant/remote-control/disable"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: "{}"
+            });
+            const data = await res.json();
+            if (res.ok && data.status === "ok") {
+              lkToastAfterReload("Remote Control is off.", "success");
+              window.location.reload();
+            } else {
+              lkToast(data.error || "Remote Control could not be turned off", "error");
             }
           } catch (err) {
             lkToast("Network error: " + err.message, "error");

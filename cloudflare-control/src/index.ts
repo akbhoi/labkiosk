@@ -26,7 +26,7 @@ import {
   SITE_STYLESHEET_PATH,
   SOCIAL_IMAGE_PATH
 } from "./ui_landing";
-import { renderBugReportTermsHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
+import { renderBugReportTermsHtml, renderContentPolicyHtml, renderPrivacyPolicyHtml, renderTermsOfServiceHtml } from "./ui_legal";
 import { GEO_DATA_PATH, GEO_JSON } from "./geo";
 import {
   FAVICON_PATH,
@@ -48,7 +48,7 @@ import {
 /** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
 const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
-const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/terms/bug-reports", "/admin", "/super"]);
+const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
 import { NOVNC_PATH, renderRemoteViewerHtml } from "./ui_remote_viewer";
 import { portalUrlFor, portalContextFrom } from "./portal_url";
@@ -60,6 +60,33 @@ import {
   listReleases,
   offeredRelease,
   offeredReleases,
+  confirmMajor,
+  declineMajorRequest,
+  endOrphanedMajorPilots,
+  hasMajorPilot,
+  releaseOfMajorOffered,
+  requestMajor,
+  setMajorPilot,
+  workstationGroupsIn,
+  isSupportStatus,
+  isReleaseMajor,
+  listMajorGrants,
+  listReleaseMajors,
+  majorAccess,
+  MAX_RELEASE_MAJOR,
+  newestOffered,
+  organizationReleaseNotices,
+  platformReleasePolicy,
+  setMajorGrant,
+  setMajorSupport,
+  setReleaseMajorOpen,
+  workstationsPerMajor,
+  majorSupportNotice,
+  listMajorSupport,
+  effectiveSupportStatus,
+  endOfLifeReminderStage,
+  setEndOfLifeReminderStage,
+  sendEndOfLifeReminders,
   releaseFolderUrl,
   isSecurityUpdateMode,
   securityReleasesPending,
@@ -90,6 +117,35 @@ function registryUpdate(row: ClientDevice | undefined): UpdateReport | undefined
  * changed, so each hub reloads its offer and reminds its workstations. One
  * with none online loads the offer when its first workstation connects.
  */
+/** The organization's owner, or a staff member with the org_admin role, may accept legal terms for it. */
+/** The session is an administrator of the organization: its owner or an `org_admin`. */
+async function isOrganizationAdministrator(db: D1Database, session: Session, tenant: Tenant): Promise<boolean> {
+  if (session.role === "super_admin") return false;
+  if (tenant.user_id === session.user_id) return true;
+  return (await getTenantUser(db, tenant.id, session.user_id))?.role === "org_admin";
+}
+
+/** The documents in force as the platform's Legal view shows them. */
+async function platformLegalOverview(db: D1Database, superAdminId: string) {
+  const [documents, counts, tenants] = await Promise.all([publishedLegalVersions(db), legalAcceptanceCounts(db), listAllTenants(db)]);
+  return {
+    noticeDays: LEGAL_NOTICE_DAYS,
+    // The platform's own demos accept nothing.
+    activeOrganizations: tenants.filter((t) => t.status === "active" && !isDemoTenant(t, superAdminId)).length,
+    documents: documents.map((d) => ({
+      id: d.id,
+      title: d.title,
+      path: d.path,
+      version: d.version,
+      required: d.required,
+      publishedAt: d.publishedAt,
+      effectiveAt: d.effectiveAt,
+      notifiedAt: d.notifiedAt,
+      acceptedBy: counts.get(`${d.id}@${d.version}`) ?? 0
+    }))
+  };
+}
+
 async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void> {
   const tenants = (await listAllTenants(db)).filter((t) => t.status === "active" && Number(t.online_clients) > 0);
   for (let i = 0; i < tenants.length; i += 20) {
@@ -99,6 +155,29 @@ async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void
     });
   }
 }
+import { addBlockedDomain, BLOCKLIST_DOMAIN_PATTERN, hostedLinkProblem, listLinkBlocklist, removeBlockedDomain } from "./link_rules";
+import {
+  acceptancesCsv,
+  isLegalDocumentId,
+  LEGAL_NOTICE_DAYS,
+  legalAcceptanceCounts,
+  listLegalAcceptances,
+  organizationLegalStatus,
+  publishedLegalVersions,
+  recordLegalAcceptances
+} from "./legal";
+import {
+  activeOrganizationOwners,
+  createNotification,
+  emailOrganizations,
+  isNotificationKind,
+  listNotificationsFor,
+  listSentNotifications,
+  markNotificationsRead,
+  NOTIFICATION_LIMITS,
+  type EmailOutcome
+} from "./notifications";
+import { isLicensePlan, licenseExpiredMessage, licensePlanLabel, licenseDate, licenseState, parseLicenseDate } from "./license";
 import {
   initSchema,
   ensureSuperAdmin,
@@ -117,6 +196,9 @@ import {
   deleteSession,
   deleteExpiredSessions,
   listPortalSites,
+  findTakenDownPortalSite,
+  listTakenDownPortalSites,
+  setPortalSiteTakedown,
   createPortalSite,
   deletePortalSite,
   listClientDevices,
@@ -127,6 +209,10 @@ import {
   assignClientsToGroup,
   setClientsBroadcast,
   createDeviceToken,
+  countEnrolledWorkstations,
+  DEFAULT_WORKSTATION_LIMIT,
+  MAX_WORKSTATION_LIMIT,
+  MAX_REMOTE_CONTROL_SEATS,
   revokeDeviceTokensForClient,
   addWhitelistDomain,
   removeWhitelistDomain,
@@ -217,20 +303,23 @@ import {
   WORKSTATION_ISSUE_RETENTION_DAYS
 } from "./boot_report";
 import { BUG_REPORT_TERMS_VERSION, bugReportRepository, processBugReports, setBugReportsEnabled } from "./bug_reports";
-import { latestIsoRelease, listReleaseNotes, storeReleaseNotes, syncReleaseNotes } from "./release_notes";
+import { majorDownloads, storeReleaseNotes, syncReleaseNotes } from "./release_notes";
 import { escapeHtml, cleanSubdomain, cleanCustomDomain, safeHttpUrl } from "./escape";
 import { getDatabase } from "./database";
 import { hubJson, hubRequest, hubUpgrade, notifyConfigChanged, requiredBindingsProblem } from "./hub";
 import { LiveStatus } from "./org_hub";
 import {
   RELAY_JOIN_SECONDS,
+  RELAY_MAX_SECONDS,
   RELAY_TOKEN_PATTERN,
+  closeRelaySession,
   hashRelayToken,
   newRelayToken,
   openRelaySession,
   relayUpgrade
 } from "./remote_relay";
 import { startCustomHostnameJob } from "./custom_hostnames";
+import { mailConfigProblem, sendMail } from "./mail";
 import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
 import { PALETTE } from "./ui_tokens";
 
@@ -343,15 +432,46 @@ const DEMO_LOCKED_MESSAGE = "The platform's demo organizations keep their names 
 /**
  * Remote Control is an add-on the platform approves per organization (Tasks).
  * Every way into a session -- the viewer page, opening a session, the
- * viewer's socket -- is refused until it has been approved.
+ * viewer's socket -- is refused until it has been approved, and to anyone but the
+ * organization's administrators (its owner and `org_admin` staff).
  */
-function remoteControlRefusal(tenant: Tenant | null, headers: Record<string, string>): Response | null {
-  if (tenant?.remote_control_status === "approved") return null;
-  return jsonError(
-    "Remote Control is not enabled for this organization. An administrator can request it under Settings.",
-    403,
-    headers
-  );
+async function remoteControlRefusal(
+  db: D1Database,
+  session: Session,
+  tenant: Tenant,
+  headers: Record<string, string>
+): Promise<Response | null> {
+  // Only the organization's administrators, never other staff; a super admin only in a demo (the guard).
+  if (session.role !== "super_admin" && !(await isOrganizationAdministrator(db, session, tenant))) {
+    return jsonError("Only an administrator of the organization can use Remote Control", 403, headers);
+  }
+  if (tenant.remote_control_status !== "approved") {
+    return jsonError(
+      "Remote Control is not enabled for this organization. An administrator can request it under Settings.",
+      403,
+      headers
+    );
+  }
+  const licenseEnded = licenseExpiredMessage(tenant);
+  return licenseEnded ? jsonError(licenseEnded, 403, headers) : null;
+}
+
+/**
+ * End every Remote Control session an organization has open, for Remote Control
+ * being turned off: its OrgHub gives back the workstations holding a seat, and
+ * each one's relay closes both sides. Returns how many were closed.
+ */
+async function closeAllRemoteSessions(env: Env, tenantId: string): Promise<number> {
+  const { clientIds } = await hubJson<{ clientIds: string[] }>(env, tenantId, "/remote-revoke", {});
+  if (!env.REMOTE_RELAY) return 0;
+  const closed = await Promise.all(clientIds.map((clientId) => closeRelaySession(env, tenantId, clientId)));
+  return closed.filter(Boolean).length;
+}
+
+/** Every organization's name by id, for the platform's views. */
+async function tenantNames(db: D1Database): Promise<Map<string, string>> {
+  const rows = (await db.prepare("SELECT id, name FROM tenants").all<{ id: string; name: string }>()).results || [];
+  return new Map(rows.map((t) => [t.id, t.name]));
 }
 
 /** DNS label limit; a longer organization slug can never resolve. */
@@ -553,6 +673,52 @@ async function handleWorkstationRequest(
 const RELEASE_NOTES_TOKEN_MIN_LENGTH = 32;
 
 /**
+ * Why a call from the repository's Actions is refused, or null: it must carry
+ * Bearer RELEASE_NOTES_TOKEN. 401 a wrong token; 503 the token is not
+ * configured, or too short to be one.
+ */
+async function releaseTokenRefusal(
+  request: Request,
+  env: Env,
+  what: string,
+  headers: Record<string, string>
+): Promise<Response | null> {
+  const expected = env.RELEASE_NOTES_TOKEN || "";
+  if (expected.length < RELEASE_NOTES_TOKEN_MIN_LENGTH) {
+    return jsonError(`${what} is not configured`, 503, headers);
+  }
+  const supplied = /^Bearer (\S+)$/.exec(request.headers.get("Authorization") || "")?.[1] || "";
+  // Both sides hashed first: equal lengths, so the comparison says nothing about the token's.
+  if (!supplied || !timingSafeEqual(await sha256Hex(supplied), await sha256Hex(expected))) {
+    return jsonError("Unauthorized", 401, headers);
+  }
+  return null;
+}
+
+/**
+ * GET /api/release-support: the support status each major release has now, for
+ * the daily security rebuild (security-rebuild.yml), which rebuilds only lines
+ * of majors that are not at end of life. Bearer RELEASE_NOTES_TOKEN, as the
+ * sync below. 200 {majors: [{major, status, endOfLifeAt}]}, one entry per major
+ * the platform has set; a major not listed is supported.
+ */
+async function handleReleaseSupportForCi(
+  request: Request,
+  env: Env,
+  db: D1Database,
+  headers: Record<string, string>
+): Promise<Response> {
+  const refused = await releaseTokenRefusal(request, env, "Release support status", headers);
+  if (refused) return refused;
+  const now = Math.floor(Date.now() / 1000);
+  const majors = [...(await listMajorSupport(db)).values()]
+    .filter((row) => isReleaseMajor(row.major))
+    .sort((a, b) => a.major - b.major)
+    .map((row) => ({ major: row.major, status: effectiveSupportStatus(row, now), endOfLifeAt: row.end_of_life_at ?? null }));
+  return new Response(JSON.stringify({ majors }), { status: 200, headers });
+}
+
+/**
  * POST /api/release-notes/sync: the ISO build calls this the moment it has
  * published a release (build-iso.yml), so /download offers the new ISO at once
  * instead of after the next hourly run. It only re-reads GitHub's public
@@ -568,15 +734,8 @@ async function handleReleaseNotesSync(
   db: D1Database,
   headers: Record<string, string>
 ): Promise<Response> {
-  const expected = env.RELEASE_NOTES_TOKEN || "";
-  if (expected.length < RELEASE_NOTES_TOKEN_MIN_LENGTH) {
-    return jsonError("Release notes sync is not configured", 503, headers);
-  }
-  const supplied = /^Bearer (\S+)$/.exec(request.headers.get("Authorization") || "")?.[1] || "";
-  // Both sides hashed first: equal lengths, so the comparison says nothing about the token's.
-  if (!supplied || !timingSafeEqual(await sha256Hex(supplied), await sha256Hex(expected))) {
-    return jsonError("Unauthorized", 401, headers);
-  }
+  const refused = await releaseTokenRefusal(request, env, "Release notes sync", headers);
+  if (refused) return refused;
   try {
     const result = await storeReleaseNotes(db, env);
     return new Response(JSON.stringify(result), { status: 200, headers });
@@ -735,7 +894,11 @@ async function handleDeviceUpdate(
   if (running !== null && !isReleaseVersion(running)) {
     return jsonError("running must be a release version", 400, jsonHeaders);
   }
-  const offer = workstationOffer(await offeredReleases(db, tenant.update_channel), running);
+  const releases = await offeredReleases(db, tenant.update_channel, tenant.id);
+  // Only a workstation in a group its organization is trying a major on needs its group.
+  const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
+  const group = (await workstationGroupsIn(db, tenant.id, pilots)).get(auth.device.client_id) ?? null;
+  const offer = workstationOffer(releases, running, group);
   const securityUpdates = isSecurityUpdateMode(tenant.security_updates) ? tenant.security_updates : "next_boot";
   const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string } | null> = {};
   for (const [name, release] of [["release", offer.release], ["security", offer.security]] as const) {
@@ -823,7 +986,7 @@ const output: Record<string, unknown> = Object.create(null);
 
 function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
-  if (path === "/terms/bug-reports") return true;
+  if (path === "/terms/bug-reports" || path === "/content-policy") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
@@ -921,6 +1084,12 @@ export default {
       // /download keeps showing the releases it already has.
       console.error("[Worker] Reading the releases from GitHub failed:", err);
     }
+    try {
+      const reminded = await sendEndOfLifeReminders(env, db);
+      if (reminded.length) console.log(`[Worker] End-of-life reminders sent for ${reminded.join(", ")}.`);
+    } catch (err) {
+      console.error("[Worker] End-of-life reminders failed:", err);
+    }
     const bugs = await processBugReports(db, env);
     if (bugs.filed || bugs.matched || bugs.linked || bugs.refreshed) {
       console.log(
@@ -1010,6 +1179,9 @@ export default {
     }
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);
+    }
+    if (path === "/api/release-support" && method === "GET") {
+      return handleReleaseSupportForCi(request, env, db, jsonHeaders);
     }
     if (path === "/api/devices/update" && method === "GET") {
       return handleDeviceUpdate(request, env, db, jsonHeaders);
@@ -1548,6 +1720,152 @@ export default {
       }
     }
 
+    // POST /api/super/tenants/workstation-limit: how many workstations an organization
+    // may enrol. Lowering it below what is enrolled only stops new enrolments.
+    if (path === "/api/super/tenants/workstation-limit" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown; limit?: unknown };
+      try {
+        body = (await request.json<{ tenantId?: unknown; limit?: unknown }>()) ?? {};
+      } catch (err) {
+        console.warn("[Worker] Unreadable workstation limit request:", err);
+        return jsonError("The request body is not valid JSON", 400, jsonHeaders);
+      }
+      const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      const limit = typeof body.limit === "number" ? body.limit : Number.NaN;
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_WORKSTATION_LIMIT) {
+        return jsonError(`The workstation limit must be a whole number from 1 to ${MAX_WORKSTATION_LIMIT}`, 400, jsonHeaders);
+      }
+      const enrolled = await countEnrolledWorkstations(db, target.id);
+      await updateTenant(db, target.id, { workstation_limit: limit });
+      await writeAuditLog(db, {
+        tenantId: target.id,
+        userId: session!.user_id,
+        action: "tenant.workstation_limit",
+        details: `limit=${limit} was=${Number(target.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled=${enrolled}`
+      });
+      await createNotification(db, { tenantId: target.id, kind: "account", title: "Workstation limit changed", body: `${target.name} may now enrol up to ${limit} workstation${limit === 1 ? "" : "s"}; ${enrolled} ${enrolled === 1 ? "is" : "are"} enrolled. Workstations already enrolled are never cut off.`, createdBy: session!.user_id });
+      return new Response(JSON.stringify({ status: "ok", limit, enrolled }), { headers: jsonHeaders });
+    }
+
+    // POST /api/super/tenants/license { tenantId, plan, expiresOn }: the license an
+    // organization runs under. expiresOn is "YYYY-MM-DD" (00:00 UTC that day) or null
+    // for no end date. Once it has passed, new enrolments and Remote Control stop.
+    if (path === "/api/super/tenants/license" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown; plan?: unknown; expiresOn?: unknown };
+      try {
+        body = (await request.json<{ tenantId?: unknown; plan?: unknown; expiresOn?: unknown }>()) ?? {};
+      } catch (err) {
+        console.warn("[Worker] Unreadable license request:", err);
+        return jsonError("The request body is not valid JSON", 400, jsonHeaders);
+      }
+      const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      if (!isLicensePlan(body.plan)) {
+        return jsonError("The plan must be education, evaluation, subscriber or commercial", 400, jsonHeaders);
+      }
+      let expiresAt: number | null = null;
+      if (body.expiresOn !== null && body.expiresOn !== undefined) {
+        expiresAt = typeof body.expiresOn === "string" ? parseLicenseDate(body.expiresOn) : null;
+        if (expiresAt === null) return jsonError("The end date must be a date as YYYY-MM-DD, or null for none", 400, jsonHeaders);
+      }
+      await updateTenant(db, target.id, { license_plan: body.plan, license_expires_at: expiresAt });
+      const was = target.license_expires_at ? licenseDate(Number(target.license_expires_at)) : "none";
+      await writeAuditLog(db, {
+        tenantId: target.id,
+        userId: session!.user_id,
+        action: "tenant.license",
+        details: `plan=${body.plan} expires=${expiresAt === null ? "none" : licenseDate(expiresAt)} was=${licensePlanLabel(target.license_plan)}/${was}`
+      });
+      await createNotification(db, { tenantId: target.id, kind: "license", title: "License updated", body: `Lab Kiosk recorded the license of ${target.name}: ${licensePlanLabel(body.plan)}${expiresAt === null ? ", with no end date" : `, until ${licenseDate(expiresAt)}`}.`, createdBy: session!.user_id });
+      return new Response(JSON.stringify({ status: "ok", plan: body.plan, expiresAt }), { headers: jsonHeaders });
+    }
+
+    // POST /api/super/tenants/remote-control { tenantId, action, seats? }: the platform's
+    // controls over an organization's Remote Control. "revoke" turns it off and ends
+    // every open session at once; "restore" turns it back on; "seats" sets how many
+    // sessions may be open at once.
+    if (path === "/api/super/tenants/remote-control" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown; action?: unknown; seats?: unknown; reason?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch (err) {
+        console.warn("[Worker] Unreadable Remote Control request:", err);
+        return jsonError("The request body is not valid JSON", 400, jsonHeaders);
+      }
+      const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      const action = body.action;
+      if (action !== "revoke" && action !== "restore" && action !== "seats") {
+        return jsonError("The action is revoke, restore or seats", 400, jsonHeaders);
+      }
+      const seats = body.seats;
+      const validSeats = typeof seats === "number" && Number.isInteger(seats) && seats >= 1 && seats <= MAX_REMOTE_CONTROL_SEATS;
+      if (action === "seats" && !validSeats) {
+        return jsonError(`Remote Control seats must be a whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}`, 400, jsonHeaders);
+      }
+      if (action === "revoke") {
+        if (isDemoTenant(target, session!.user_id)) return jsonError("The platform's demo organizations keep Remote Control", 400, jsonHeaders);
+        if (target.remote_control_status !== "approved") return jsonError("Remote Control is not on for this organization", 409, jsonHeaders);
+        const reason = typeof body.reason === "string" ? body.reason.replace(/\r\n/g, "\n").trim().slice(0, 2000) : "";
+        await updateTenant(db, target.id, { remote_control_status: "rejected", remote_control_revoked_at: Math.floor(Date.now() / 1000) });
+        const closed = await closeAllRemoteSessions(env, target.id);
+        await writeAuditLog(db, {
+          tenantId: target.id,
+          userId: session!.user_id,
+          action: "remote_control.revoke",
+          details: `sessions_closed=${closed}${reason ? ` reason=${reason.slice(0, 200)}` : ""}`
+        });
+        await createNotification(db, { tenantId: target.id, kind: "remote_control", title: "Remote Control has been turned off", body: `Lab Kiosk has turned Remote Control off for ${target.name}. Any session that was open has ended.${reason ? `\n\n${reason}` : ""}`, createdBy: session!.user_id });
+        const owner = await findUserById(db, target.user_id);
+        let emailSent = false;
+        if (owner?.email && !mailConfigProblem(env)) {
+          try {
+            await sendMail(env, {
+              to: owner.email,
+              toName: owner.name,
+              subject: "Remote Control has been turned off",
+              text:
+                `Hello ${owner.name || ""},\n\n` +
+                `Lab Kiosk has turned Remote Control off for ${target.name}. Any session that was open has ended.` +
+                (reason ? `\n\n${reason}` : "") +
+                `\n\nYour workstations keep working as before. To ask for Remote Control again, open Settings in your console, or reply to this email.\n\nLab Kiosk`,
+              template: { name: "notice", title: "Remote Control has been turned off" }
+            });
+            emailSent = true;
+          } catch (err) {
+            console.error(`[Worker] Could not email ${target.name} that Remote Control was turned off:`, err);
+          }
+        }
+        return new Response(JSON.stringify({ status: "ok", remoteControlStatus: "rejected", sessionsClosed: closed, emailSent }), { headers: jsonHeaders });
+      }
+      if (action === "restore") {
+        if (target.remote_control_status === "approved") return jsonError("Remote Control is already on for this organization", 409, jsonHeaders);
+        if (!target.remote_control_revoked_at) return jsonError("Only Remote Control the platform turned off can be restored; a new request goes through Tasks", 409, jsonHeaders);
+        const update: Partial<Tenant> = { remote_control_status: "approved", remote_control_revoked_at: null };
+        if (validSeats) update.remote_control_seats = seats as number;
+        await updateTenant(db, target.id, update);
+        await writeAuditLog(db, { tenantId: target.id, userId: session!.user_id, action: "remote_control.restore" });
+        await createNotification(db, { tenantId: target.id, kind: "remote_control", title: "Remote Control is on again", body: `Lab Kiosk has turned Remote Control back on for ${target.name}. Administrators can open it from a workstation's card.`, createdBy: session!.user_id });
+        return new Response(JSON.stringify({ status: "ok", remoteControlStatus: "approved" }), { headers: jsonHeaders });
+      }
+      await updateTenant(db, target.id, { remote_control_seats: seats as number });
+      await writeAuditLog(db, {
+        tenantId: target.id,
+        userId: session!.user_id,
+        action: "remote_control.seats",
+        details: `seats=${seats} was=${Number(target.remote_control_seats) || 1}`
+      });
+      await createNotification(db, { tenantId: target.id, kind: "remote_control", title: "Remote Control seats changed", body: `${target.name} may now have ${seats} Remote Control session${seats === 1 ? "" : "s"} open at once.`, createdBy: session!.user_id });
+      return new Response(JSON.stringify({ status: "ok", seats }), { headers: jsonHeaders });
+    }
+
     // GET /api/i18n: which interface languages this platform can supply.
     // Public and read-only: a workstation asks before it is enrolled.
     if (path === "/api/i18n" && method === "GET") {
@@ -1665,9 +1983,12 @@ export default {
       if (denied) return denied;
       if (!env.RELEASES) return jsonError("This server has no releases bucket (RELEASES binding)", 503, jsonHeaders);
       const sync = await syncReleases(env.RELEASES, db);
+      const releases = await listReleases(db);
+      const names = await tenantNames(db);
       return new Response(
         JSON.stringify({
-          releases: await listReleases(db),
+          releases,
+          ...(await platformReleasePolicy(db, releases, names)),
           added: sync.added,
           problems: sync.problems,
           downloadsConfigured: releaseFolderUrl(env, "0.0.0") !== null
@@ -1686,7 +2007,7 @@ export default {
       if (denied) return denied;
       let body: { version?: unknown; channel?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -1716,6 +2037,389 @@ export default {
       });
       await notifyOrganizationsOnline(env, db);
       return new Response(JSON.stringify({ status: "ok", releases: await listReleases(db) }), { headers: jsonHeaders });
+    }
+
+    // POST /api/super/release-support { major, status, endOfLifeAt?, note?, notify? }:
+    // a major release's support status, which covers every release of that major.
+    // "security_only" moves no workstation onto it and offers the workstations
+    // already on it only its security releases; "end_of_life" offers it nothing.
+    // endOfLifeAt (Unix seconds, or null) announces the date it ends by itself.
+    // Every organization gets a console notification; notify emails every owner too.
+    if (path === "/api/super/release-support" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { major?: unknown; status?: unknown; endOfLifeAt?: unknown; note?: unknown; notify?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!isReleaseMajor(body?.major)) {
+        return jsonError("A major release number such as 3 is required", 400, jsonHeaders);
+      }
+      if (!isSupportStatus(body.status)) return jsonError("The status is supported, security_only or end_of_life", 400, jsonHeaders);
+      const endOfLifeAt = body.endOfLifeAt ?? null;
+      if (endOfLifeAt !== null && !(typeof endOfLifeAt === "number" && Number.isSafeInteger(endOfLifeAt) && endOfLifeAt > 0)) {
+        return jsonError("endOfLifeAt is a date in Unix seconds, or null", 400, jsonHeaders);
+      }
+      if (body.note !== undefined && body.note !== null && typeof body.note !== "string") {
+        return jsonError("The note is text", 400, jsonHeaders);
+      }
+      const note = typeof body.note === "string" && body.note.trim() ? body.note.replace(/\r\n/g, "\n").trim().slice(0, 500) : null;
+      const major = body.major;
+      const status = body.status;
+      const previous = (await listMajorSupport(db)).get(major);
+      // A note alone tells nobody anything new.
+      const changed =
+        !previous || previous.status !== status || (previous.end_of_life_at === null ? null : Number(previous.end_of_life_at)) !== endOfLifeAt;
+      await setMajorSupport(db, major, status, endOfLifeAt as number | null, note, session!.user_id);
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: "release.support",
+        details: `${major} ${status}${endOfLifeAt ? ` end_of_life_at=${endOfLifeAt}` : ""}`
+      });
+      await notifyOrganizationsOnline(env, db);
+      // Every organization is told in its console; with notify, every owner is emailed too.
+      let outcome: EmailOutcome = { emailed: 0, emailFailed: 0, emailProblem: null };
+      if (changed && (status !== "supported" || endOfLifeAt !== null)) {
+        const notice = majorSupportNotice(major, status, endOfLifeAt as number | null, note);
+        await createNotification(db, { tenantId: null, kind: "release", title: notice.title, body: notice.body, createdBy: session!.user_id });
+        // This announcement stands in for the reminders already due.
+        if (endOfLifeAt !== null) await setEndOfLifeReminderStage(db, major, endOfLifeReminderStage(endOfLifeAt as number));
+        if (body.notify === true) {
+          const usage = new Map((await workstationsPerMajor(db)).filter((u) => u.major === major).map((u) => [u.tenantId, u.workstations]));
+          outcome = await emailOrganizations(env, await activeOrganizationOwners(db, null), notice.title, (owner) => {
+            const running = usage.get(owner.tenantId);
+            return notice.body + (running ? `\n\n${running} of ${owner.name}'s workstations run Lab Kiosk ${major}.` : "");
+          });
+        }
+      }
+      const { emailed, emailFailed, emailProblem } = outcome;
+      const releases = await listReleases(db);
+      const names = await tenantNames(db);
+      return new Response(
+        JSON.stringify({ status: "ok", emailed, emailFailed, emailProblem, ...(await platformReleasePolicy(db, releases, names)) }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // POST /api/super/release-majors { major, action, tenantId? | subdomain?, reason? }:
+    // whether workstations may be moved to a major release. "open" opens it to every
+    // organization, "close" closes it; "grant" and "ungrant" open or close it for
+    // one organization, and "decline" turns down an organization's request for it.
+    // Either way, an administrator of the organization still tries it on a group or
+    // confirms it before any of its workstations is moved. The organization is notified.
+    if (path === "/api/super/release-majors" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { major?: unknown; action?: unknown; tenantId?: unknown; subdomain?: unknown; reason?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const major = body?.major;
+      if (typeof major !== "number" || !Number.isInteger(major) || major < 0 || major > MAX_RELEASE_MAJOR) {
+        return jsonError("A major release number is required", 400, jsonHeaders);
+      }
+      const action = body.action;
+      if (action !== "open" && action !== "close" && action !== "grant" && action !== "ungrant" && action !== "decline") {
+        return jsonError("The action is open, close, grant, ungrant or decline", 400, jsonHeaders);
+      }
+      const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+      if (reason.length > 500) return jsonError("The reason is at most 500 characters", 400, jsonHeaders);
+      let details = `${major} ${action}`;
+      if (action === "open" || action === "close") {
+        const wasOpen = (await listReleaseMajors(db)).get(major) === true;
+        await setReleaseMajorOpen(db, major, action === "open", session!.user_id);
+        await writeAuditLog(db, { tenantId: null, userId: session!.user_id, action: "release.major", details });
+        if (action === "open" && !wasOpen) {
+          await createNotification(db, {
+            tenantId: null,
+            kind: "release",
+            title: `Lab Kiosk ${major} is available`,
+            body: `Lab Kiosk ${major} is a new major release. None of your workstations moves to it until an administrator tries it on a workstation group or confirms it under Settings → Updates.`,
+            createdBy: session!.user_id
+          });
+        }
+        await notifyOrganizationsOnline(env, db);
+      } else {
+        const target =
+          typeof body.tenantId === "string"
+            ? await findTenantById(db, body.tenantId)
+            : typeof body.subdomain === "string" && body.subdomain.trim()
+            ? await findTenantBySubdomain(db, body.subdomain.trim().toLowerCase())
+            : null;
+        if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+        if (action === "grant" && (await listReleaseMajors(db)).get(major) === undefined) {
+          return jsonError(`Release ${major} is not closed; every organization is offered it already`, 409, jsonHeaders);
+        }
+        let notice: { title: string; body: string };
+        if (action === "decline") {
+          if (!(await declineMajorRequest(db, target.id, major))) {
+            return jsonError(`${target.name} has no open request for Lab Kiosk ${major}`, 409, jsonHeaders);
+          }
+          notice = {
+            title: `Your request for Lab Kiosk ${major} was declined`,
+            body: `Lab Kiosk has declined the request of ${target.name} for Lab Kiosk ${major} for now. Your workstations stay on the release they run, and you may ask again later.`
+          };
+        } else {
+          await setMajorGrant(db, target.id, major, action === "grant", session!.user_id);
+          notice =
+            action === "grant"
+              ? {
+                  title: `Lab Kiosk ${major} is available to ${target.name}`,
+                  body: `Lab Kiosk ${major} is now available to your organization. No workstation moves to it yet: under Settings → Updates, try it on one workstation group first, then confirm it for every workstation.`
+                }
+              : {
+                  title: `Lab Kiosk ${major} is no longer available`,
+                  body: `Lab Kiosk has taken back Lab Kiosk ${major} from ${target.name}. Workstations that already run it keep it; no other workstation moves to it.`
+                };
+        }
+        if (reason) notice.body += `\n\n${reason}`;
+        await createNotification(db, { tenantId: target.id, kind: "release", ...notice, createdBy: session!.user_id });
+        details = `${major} ${action} tenant=${target.id}`;
+        await writeAuditLog(db, { tenantId: target.id, userId: session!.user_id, action: "release.major", details });
+        await notifyConfigChanged(env, target.id);
+      }
+      const releases = await listReleases(db);
+      const names = await tenantNames(db);
+      return new Response(JSON.stringify({ status: "ok", ...(await platformReleasePolicy(db, releases, names)) }), {
+        headers: jsonHeaders
+      });
+    }
+
+    // GET /api/super/notifications: what the platform has told organizations, newest first.
+    // POST /api/super/notifications { tenantId | null, title, body, email }: tell one
+    // organization (tenantId) or every organization (null) in its console, and
+    // with email, email its owner too.
+    if (path === "/api/super/notifications") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      if (method === "POST") {
+        let body: { tenantId?: unknown; title?: unknown; body?: unknown; email?: unknown };
+        try {
+          body = (await request.json<typeof body>()) ?? {};
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        const title = typeof body.title === "string" ? body.title.trim() : "";
+        const text = typeof body.body === "string" ? body.body.replace(/\r\n/g, "\n").trim() : "";
+        if (!title || title.length > NOTIFICATION_LIMITS.title) {
+          return jsonError(`A title of up to ${NOTIFICATION_LIMITS.title} characters is required`, 400, jsonHeaders);
+        }
+        if (!text || text.length > NOTIFICATION_LIMITS.body) {
+          return jsonError(`A message of up to ${NOTIFICATION_LIMITS.body} characters is required`, 400, jsonHeaders);
+        }
+        if (body.email !== undefined && typeof body.email !== "boolean") return jsonError("email is true or false", 400, jsonHeaders);
+        let tenantId: string | null = null;
+        if (body.tenantId !== null && body.tenantId !== undefined) {
+          const target = typeof body.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+          if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+          if (target.status !== "active") return jsonError("Only an active organization can be notified", 409, jsonHeaders);
+          tenantId = target.id;
+        }
+        const id = await createNotification(db, { tenantId, kind: "general", title, body: text, createdBy: session!.user_id });
+        const outcome: EmailOutcome =
+          body.email === true
+            ? await emailOrganizations(env, await activeOrganizationOwners(db, tenantId), title, () => text)
+            : { emailed: 0, emailFailed: 0, emailProblem: null };
+        await writeAuditLog(db, {
+          tenantId,
+          userId: session!.user_id,
+          action: "notification.send",
+          details: `id=${id} to=${tenantId ?? "all"} emailed=${outcome.emailed} failed=${outcome.emailFailed}`
+        });
+        return new Response(JSON.stringify({ status: "ok", id, ...outcome, notifications: await listSentNotifications(db) }), {
+          headers: jsonHeaders
+        });
+      }
+      if (method !== "GET") return jsonError("Method not allowed", 405, jsonHeaders);
+      return new Response(JSON.stringify({ status: "ok", notifications: await listSentNotifications(db) }), { headers: jsonHeaders });
+    }
+
+    // GET /api/super/legal: the documents in force, when each version was
+    // published, and how many active organizations accepted it.
+    // GET /api/super/legal/acceptances?tenantId=&format=csv: the acceptance
+    // record, of one organization or all, as JSON or CSV.
+    // POST /api/super/legal/notify { document }: email the owner of every active
+    // organization that has not accepted the current version.
+    if (path === "/api/super/legal" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      return new Response(JSON.stringify(await platformLegalOverview(db, session!.user_id)), { headers: jsonHeaders });
+    }
+    if (path === "/api/super/legal/acceptances" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const tenantId = url.searchParams.get("tenantId");
+      if (tenantId !== null && !(await findTenantById(db, tenantId))) return jsonError("Organization not found", 404, jsonHeaders);
+      const rows = await listLegalAcceptances(db, tenantId);
+      if (url.searchParams.get("format") === "csv") {
+        return new Response(acceptancesCsv(rows), {
+          headers: {
+            ...jsonHeaders,
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="legal-acceptances${tenantId ? `-${tenantId}` : ""}.csv"`
+          }
+        });
+      }
+      return new Response(JSON.stringify({ acceptances: rows }), { headers: jsonHeaders });
+    }
+    if (path === "/api/super/legal/notify" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { document?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!isLegalDocumentId(body?.document)) return jsonError("Name a legal document", 400, jsonHeaders);
+      const problem = mailConfigProblem(env);
+      if (problem) return jsonError("This server cannot send email", 503, jsonHeaders);
+      const doc = (await publishedLegalVersions(db)).find((d) => d.id === body.document)!;
+      if (!doc.required) return jsonError(`The ${doc.title} is not accepted by organizations`, 400, jsonHeaders);
+      const date = new Date(doc.effectiveAt * 1000).toISOString().slice(0, 10);
+      let emailed = 0;
+      let failed = 0;
+      const accepted = new Set(
+        ((await db
+          .prepare("SELECT DISTINCT tenant_id FROM legal_acceptances WHERE document = ? AND version = ?")
+          .bind(doc.id, doc.version)
+          .all<{ tenant_id: string }>()).results || []).map((r) => r.tenant_id)
+      );
+      const pending = (await listAllTenants(db)).filter(
+        (t) => t.status === "active" && !isDemoTenant(t, session!.user_id) && !accepted.has(t.id)
+      );
+      for (const tenant of pending) {
+        try {
+          await sendMail(env, {
+            to: tenant.admin_email,
+            toName: tenant.admin_name,
+            subject: `Updated Lab Kiosk ${doc.title}`,
+            text:
+              `Hello ${tenant.admin_name || ""},\n\n` +
+              `We have updated the Lab Kiosk ${doc.title} (version ${doc.version}). You can read it at https://${baseDomain}${doc.path}.\n\n` +
+              `An administrator of ${tenant.name} needs to accept it in your console. From ${date} the console asks for it before anything else; ` +
+              `your workstations, homepage and User Portal keep working throughout.\n\nLab Kiosk`,
+            template: { name: "notice", title: `Updated ${doc.title}` }
+          });
+          emailed++;
+        } catch (err) {
+          failed++;
+          console.error(`[Worker] Could not email ${tenant.name} about the ${doc.title}:`, err);
+        }
+      }
+      await db.prepare("UPDATE legal_versions SET notified_at = ? WHERE document = ? AND version = ?")
+        .bind(Math.floor(Date.now() / 1000), doc.id, doc.version)
+        .run();
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: "legal.notify",
+        details: `${doc.id}=${doc.version} emailed=${emailed} failed=${failed}`
+      });
+      return new Response(JSON.stringify({ status: "ok", emailed, failed, ...(await platformLegalOverview(db, session!.user_id)) }), { headers: jsonHeaders });
+    }
+
+    // GET /api/super/link-blocklist: the domains no hosted page may link to.
+    // POST /api/super/link-blocklist { domain, reason? }: add one.
+    // POST /api/super/link-blocklist/remove { domain }: remove one.
+    if (path === "/api/super/link-blocklist" || path === "/api/super/link-blocklist/remove") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      if (method === "GET" && path === "/api/super/link-blocklist") {
+        return new Response(JSON.stringify({ domains: await listLinkBlocklist(db) }), { headers: jsonHeaders });
+      }
+      if (method !== "POST") return jsonError("Method not allowed", 405, jsonHeaders);
+      let body: { domain?: unknown; reason?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const domain = typeof body?.domain === "string" ? body.domain.trim().toLowerCase().replace(/\.$/, "") : "";
+      if (!BLOCKLIST_DOMAIN_PATTERN.test(domain)) return jsonError("A domain name such as example.com is required", 400, jsonHeaders);
+      const remove = path.endsWith("/remove");
+      if (remove) {
+        if (!(await removeBlockedDomain(db, domain))) return jsonError("That domain is not on the blocklist", 404, jsonHeaders);
+      } else {
+        const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 300) : null;
+        await addBlockedDomain(db, domain, reason, session!.user_id);
+      }
+      await writeAuditLog(db, {
+        tenantId: null,
+        userId: session!.user_id,
+        action: remove ? "content.unblock" : "content.block",
+        details: domain
+      });
+      return new Response(JSON.stringify({ status: "ok", domains: await listLinkBlocklist(db) }), { headers: jsonHeaders });
+    }
+
+    // POST /api/super/tenants/content { tenantId, target: "homepage" | "card", action: "takedown" | "restore", url?, reason? }:
+    // take an organization's homepage, or the User Portal cards linking to `url`,
+    // down after a report, or put them back. Taking down emails the owner the reason.
+    if (path === "/api/super/tenants/content" && method === "POST") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      let body: { tenantId?: unknown; target?: unknown; action?: unknown; url?: unknown; reason?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const target = typeof body?.tenantId === "string" ? await findTenantById(db, body.tenantId) : null;
+      if (!target) return jsonError("Organization not found", 404, jsonHeaders);
+      if (body.target !== "homepage" && body.target !== "card") return jsonError("The target is homepage or card", 400, jsonHeaders);
+      if (body.action !== "takedown" && body.action !== "restore") return jsonError("The action is takedown or restore", 400, jsonHeaders);
+      const takedown = body.action === "takedown";
+      const reason = typeof body.reason === "string" ? body.reason.replace(/\r\n/g, "\n").trim().slice(0, 2000) : "";
+      if (takedown && !reason) return jsonError("Give the reason; the organization is told it", 400, jsonHeaders);
+      const now = Math.floor(Date.now() / 1000);
+      let what: string;
+      if (body.target === "homepage") {
+        if (takedown === Boolean(target.homepage_takedown_at)) {
+          return jsonError(takedown ? "The homepage is already taken down" : "The homepage is not taken down", 409, jsonHeaders);
+        }
+        await updateTenant(db, target.id, { homepage_takedown_at: takedown ? now : null, homepage_takedown_reason: takedown ? reason : null });
+        what = "organization homepage";
+      } else {
+        const cardUrl = safeHttpUrl(body.url);
+        if (!cardUrl) return jsonError("The card's link (an http or https address) is required", 400, jsonHeaders);
+        const changed = await setPortalSiteTakedown(db, target.id, cardUrl, takedown ? { at: now, reason } : null);
+        if (!changed) return jsonError(takedown ? "No active card of this organization links there" : "No card linking there is taken down", 404, jsonHeaders);
+        what = `User Portal card${changed === 1 ? "" : "s"} linking to ${cardUrl}`;
+        await notifyConfigChanged(env, target.id);
+      }
+      await writeAuditLog(db, {
+        tenantId: target.id,
+        userId: session!.user_id,
+        action: takedown ? "content.takedown" : "content.restore",
+        details: `${body.target}${body.target === "card" ? ` ${safeHttpUrl(body.url)}` : ""}${reason ? ` reason=${reason.slice(0, 200)}` : ""}`
+      });
+      await createNotification(db, { tenantId: target.id, kind: "content", title: takedown ? `Lab Kiosk took down your ${what}` : `Lab Kiosk restored your ${what}`, body: takedown ? `Lab Kiosk took down your ${what} under the Terms of Service and the Content Policy: ${reason}\n\nTo contest it, write to legal@labkiosk.org.` : `Lab Kiosk restored your ${what}. It is shown again.`, createdBy: session!.user_id });
+      let emailSent = false;
+      const owner = await findUserById(db, target.user_id);
+      if (takedown && owner?.email && !mailConfigProblem(env)) {
+        try {
+          await sendMail(env, {
+            to: owner.email,
+            toName: owner.name,
+            subject: `Lab Kiosk took down your ${body.target === "homepage" ? "organization homepage" : "User Portal card"}`,
+            text:
+              `Hello ${owner.name || ""},\n\n` +
+              `Lab Kiosk has taken down ${target.name}'s ${what} under the Terms of Service and the Content Policy.\n\n${reason}\n\n` +
+              `Your workstations keep working. To contest this, reply to this email or write to legal@labkiosk.org.\n\nLab Kiosk`,
+            template: { name: "notice", title: "Content taken down" }
+          });
+          emailSent = true;
+        } catch (err) {
+          console.error(`[Worker] Could not email ${target.name} about a takedown:`, err);
+        }
+      }
+      return new Response(JSON.stringify({ status: "ok", emailSent }), { headers: jsonHeaders });
     }
 
     // POST /api/super/tenants/approve: Approve or Assign Subdomain
@@ -1958,6 +2662,12 @@ export default {
         const thumbnailUrl = body.thumbnailUrl ? safeHttpUrl(body.thumbnailUrl) : null;
         if (body.thumbnailUrl && !thumbnailUrl) {
           return jsonError("Thumbnail URL must be a valid http(s) address", 400, jsonHeaders);
+        }
+        const blocked = (await listLinkBlocklist(db)).map((b) => b.domain);
+        const linkProblem = hostedLinkProblem(targetUrl, blocked) ?? (thumbnailUrl ? hostedLinkProblem(thumbnailUrl, blocked) : null);
+        if (linkProblem) return jsonError(linkProblem, 400, jsonHeaders);
+        if (await findTakenDownPortalSite(db, currentTenant!.id, targetUrl)) {
+          return jsonError("Lab Kiosk took a card with this link down. Write to legal@labkiosk.org to contest it.", 403, jsonHeaders);
         }
 
         const site = await createPortalSite(db, {
@@ -2676,6 +3386,11 @@ export default {
         const headline = String(body.headline ?? "").trim().slice(0, HOMEPAGE_LIMITS.headline);
         const intro = String(body.intro ?? "").trim().slice(0, HOMEPAGE_LIMITS.intro);
         const blocks = sanitizeHomepageBlocks(body.blocks);
+        const blocked = (await listLinkBlocklist(db)).map((b) => b.domain);
+        for (const [index, block] of blocks.entries()) {
+          const problem = block.url ? hostedLinkProblem(block.url, blocked) : null;
+          if (problem) return jsonError(`Block ${index + 1} (${block.title || "untitled"}): ${problem}`, 400, jsonHeaders);
+        }
 
         await updateTenant(db, currentTenant!.id, {
           // Empty means "use the default", which is the organization name and the
@@ -2689,7 +3404,7 @@ export default {
           tenantId: currentTenant!.id,
           userId: session!.user_id,
           action: "homepage.update",
-          details: `${blocks.length} block(s)`
+          details: `${blocks.length} block(s)${blocks.some((b) => b.url) ? `; links: ${blocks.flatMap((b) => (b.url ? [b.url] : [])).join(" ")}`.slice(0, 1500) : ""}`
         });
 
         return new Response(JSON.stringify({ status: "ok", blocks }), { headers: jsonHeaders });
@@ -2832,7 +3547,31 @@ export default {
           return jsonError("This organization is not active yet. Ask your administrator to approve it.", 403, jsonHeaders);
         }
 
-        const { token } = await createDeviceToken(db, { tenantId: tenant.id, clientId });
+        const licenseEnded = licenseExpiredMessage(tenant);
+        const issued = await createDeviceToken(db, { tenantId: tenant.id, clientId, existingOnly: licenseEnded !== null });
+        if (!issued && licenseEnded) {
+          await writeAuditLog(db, {
+            tenantId: tenant.id,
+            action: "device.enroll_license",
+            details: `client=${clientId}`
+          });
+          return jsonError(licenseEnded, 403, jsonHeaders);
+        }
+        if (!issued) {
+          const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
+          await writeAuditLog(db, {
+            tenantId: tenant.id,
+            action: "device.enroll_limit",
+            details: `client=${clientId} limit=${limit}`
+          });
+          return jsonError(
+            `${tenant.name} has enrolled all ${limit} workstations its plan allows. ` +
+              "Remove a workstation in the console, or ask Lab Kiosk to raise the limit.",
+            403,
+            jsonHeaders
+          );
+        }
+        const { token } = issued;
         // A workstation removed earlier and enrolled again is welcome again.
         forgetDeviceToken(tenant.id, clientId);
         await hubJson(env, tenant.id, "/device-enrolled", { clientId });
@@ -2946,7 +3685,7 @@ export default {
       }
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
-      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      const notEnabled = await remoteControlRefusal(db, session!, currentTenant!, jsonHeaders);
       if (notEnabled) return notEnabled;
       const clientId = url.searchParams.get("clientId") || "";
       if (!REMOTE_CLIENT_ID.test(clientId)) return jsonError("A workstation id is required", 400, jsonHeaders);
@@ -2965,18 +3704,40 @@ export default {
       return handleRemoteControlRequest(routeContext, currentTenant!);
     }
 
+    // POST /api/tenant/remote-control/disable: the organization turns Remote Control
+    // off for itself. Open sessions end at once; turning it on again is a new request.
+    if (path === "/api/tenant/remote-control/disable" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      if (session!.role === "super_admin") {
+        return jsonError("The demo organizations keep Remote Control", 400, jsonHeaders);
+      }
+      if (currentTenant!.remote_control_status !== "approved") {
+        return jsonError("Remote Control is not on for this organization", 409, jsonHeaders);
+      }
+      await updateTenant(db, currentTenant!.id, { remote_control_status: "none" });
+      const closed = await closeAllRemoteSessions(env, currentTenant!.id);
+      await writeAuditLog(db, {
+        tenantId: currentTenant!.id,
+        userId: session!.user_id,
+        action: "remote_control.disable",
+        details: `sessions_closed=${closed}`
+      });
+      return new Response(JSON.stringify({ status: "ok", sessionsClosed: closed }), { headers: jsonHeaders });
+    }
+
     // POST /api/clients/remote-session: Remote Control through the console's
     // own address (src/remote_relay.ts). { clientId } -> { socketPath, joinSeconds }.
     // The workstation is asked, over the connection it already holds, to join.
     if (path === "/api/clients/remote-session" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
       if (denied) return denied;
-      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      const notEnabled = await remoteControlRefusal(db, session!, currentTenant!, jsonHeaders);
       if (notEnabled) return notEnabled;
       if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
       let body: { clientId?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -2987,7 +3748,26 @@ export default {
       if (!(await openRelaySession(env, tenantId, clientId, await hashRelayToken(token), session!.user_id))) {
         return jsonError("The Remote Control relay could not open a session", 502, jsonHeaders);
       }
-      const asked = await hubRequest(env, tenantId, "/remote-open", { clientId, session: token });
+      const seats = Number(currentTenant!.remote_control_seats) || 1;
+      const asked = await hubRequest(env, tenantId, "/remote-open", {
+        clientId,
+        session: token,
+        userId: session!.user_id,
+        seats,
+        endsAt: Math.floor(Date.now() / 1000) + RELAY_MAX_SECONDS
+      });
+      if (asked.status === 429) {
+        // The relay session just opened is not used: close it rather than wait for it to expire.
+        await closeRelaySession(env, tenantId, clientId);
+        const { holders } = (await asked.json()) as { holders?: unknown };
+        const busy = Array.isArray(holders) ? holders.map(String).join(", ") : "";
+        return jsonError(
+          `All ${seats} Remote Control ${seats === 1 ? "seat is" : "seats are"} in use${busy ? ` (${busy})` : ""}. ` +
+            "End one of those sessions first, or ask Lab Kiosk for more seats.",
+          429,
+          jsonHeaders
+        );
+      }
       if (asked.status === 409) {
         return jsonError("This workstation is not connected to the console right now", 409, jsonHeaders);
       }
@@ -3015,7 +3795,7 @@ export default {
       if (denied) return denied;
       const crossSite = rejectCrossSiteSocket(request, { baseDomain: env.DEFAULT_DOMAIN }, jsonHeaders);
       if (crossSite) return crossSite;
-      const notEnabled = remoteControlRefusal(currentTenant, jsonHeaders);
+      const notEnabled = await remoteControlRefusal(db, session!, currentTenant!, jsonHeaders);
       if (notEnabled) return notEnabled;
       if (!env.REMOTE_RELAY) return jsonError("This server has no Remote Control relay (REMOTE_RELAY binding)", 503, jsonHeaders);
       const clientId = url.searchParams.get("clientId") || "";
@@ -3096,11 +3876,171 @@ export default {
           await notifyConfigChanged(env, tenantId);
         }
       }
-      const releases = await offeredReleases(db, channel);
-      const pending = securityReleasesPending(releases, await listClientDevices(db, tenantId));
-      return new Response(JSON.stringify({ channel, offer: releases[0] ?? null, securityUpdates, lanSharing, pending }), {
+      const releases = await offeredReleases(db, channel, tenantId);
+      const devices = await listClientDevices(db, tenantId);
+      const pending = securityReleasesPending(releases, devices);
+      const notices = await organizationReleaseNotices(db, tenantId, releases, devices);
+      return new Response(
+        JSON.stringify({
+          channel,
+          offer: newestOffered(releases),
+          securityUpdates,
+          lanSharing,
+          pending,
+          support: notices.support,
+          majors: notices.majors,
+          groups: (await listWorkstationGroups(db, tenantId)).map((g) => g.name)
+        }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // GET /api/notifications: the platform's notifications for this organization,
+    // newest first, with whether this user has dismissed each.
+    // POST /api/notifications/read { ids? }: dismiss them (every one when ids is left out).
+    if ((path === "/api/notifications" && method === "GET") || (path === "/api/notifications/read" && method === "POST")) {
+      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      if (method === "POST") {
+        let body: { ids?: unknown };
+        try {
+          body = (await request.json<typeof body>()) ?? {};
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        const ids = body.ids === undefined ? null : body.ids;
+        if (ids !== null && !(Array.isArray(ids) && ids.length <= 200 && ids.every((id) => typeof id === "string"))) {
+          return jsonError("ids is a list of notification ids", 400, jsonHeaders);
+        }
+        await markNotificationsRead(db, tenant.id, session!.user_id, ids as string[] | null);
+      }
+      const notifications = await listNotificationsFor(db, tenant.id, session!.user_id, { limit: 50 });
+      return new Response(
+        JSON.stringify({ status: "ok", notifications, unread: notifications.filter((n) => !n.read).length }),
+        { headers: jsonHeaders }
+      );
+    }
+
+    // GET /api/legal/status: the legal documents this organization has not
+    // accepted at their current version, whether its console now asks before
+    // anything else, and whether this account may accept them.
+    // POST /api/legal/accept { versions: { terms: "<version>", ... } }: accept
+    // them, on behalf of the organization. Only its owner or an org_admin may.
+    if ((path === "/api/legal/status" && method === "GET") || (path === "/api/legal/accept" && method === "POST")) {
+      const denied = requireTenantAdmin(session, currentTenant, jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      const canAccept = await isOrganizationAdministrator(db, session!, tenant);
+      const status = await organizationLegalStatus(db, tenant.id);
+      if (method === "GET") return new Response(JSON.stringify({ ...status, canAccept }), { headers: jsonHeaders });
+      if (session!.role === "super_admin") return jsonError("A platform administrator cannot accept terms for an organization", 403, jsonHeaders);
+      if (!canAccept) return jsonError("Only the organization's owner or an administrator can accept the terms", 403, jsonHeaders);
+      let body: { versions?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const versions = body?.versions;
+      if (!versions || typeof versions !== "object" || Array.isArray(versions)) {
+        return jsonError("versions names the version of each document accepted", 400, jsonHeaders);
+      }
+      if (!status.pending.length) return jsonError("The current terms are already accepted", 409, jsonHeaders);
+      const given = versions as Record<string, unknown>;
+      const stale = status.pending.filter((doc) => given[doc.id] !== doc.version);
+      if (stale.length) {
+        return jsonError(`Accept the current ${stale.map((d) => `${d.title} (version ${d.version})`).join(" and ")}; reload the page to read it`, 409, jsonHeaders);
+      }
+      const user = await findUserById(db, session!.user_id);
+      if (!user) return jsonError("Your account was not found", 403, jsonHeaders);
+      await recordLegalAcceptances(db, {
+        tenantId: tenant.id,
+        tenantName: tenant.name,
+        userId: user.id,
+        userEmail: user.email,
+        documents: status.pending.map((doc) => ({ id: doc.id, version: doc.version })),
+        source: "console",
+        ip: request.headers.get("CF-Connecting-IP"),
+        userAgent: request.headers.get("User-Agent")
+      });
+      await writeAuditLog(db, {
+        tenantId: tenant.id,
+        userId: user.id,
+        action: "legal.accept",
+        details: status.pending.map((d) => `${d.id}=${d.version}`).join(" ")
+      });
+      return new Response(JSON.stringify({ status: "ok", accepted: status.pending.map((d) => ({ id: d.id, version: d.version })) }), {
         headers: jsonHeaders
       });
+    }
+
+    // The major upgrade pipeline, each step recorded with who and when:
+    // POST /api/settings/updates/request-major { major }: ask Lab Kiosk for a major
+    // release closed to this organization.
+    // POST /api/settings/updates/pilot-major { major, group }: try a major the platform
+    // opened or granted it on one workstation group first (group null ends the trial).
+    // POST /api/settings/updates/confirm-major { major }: an administrator's
+    // confirmation that every workstation of this organization may be moved to it.
+    if (
+      (path === "/api/settings/updates/confirm-major" ||
+        path === "/api/settings/updates/request-major" ||
+        path === "/api/settings/updates/pilot-major") &&
+      method === "POST"
+    ) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
+      if (denied) return denied;
+      let body: { major?: unknown; group?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      const major = body?.major;
+      if (typeof major !== "number" || !Number.isInteger(major) || major < 0 || major > MAX_RELEASE_MAJOR) {
+        return jsonError("A major release number is required", 400, jsonHeaders);
+      }
+      const tenantId = currentTenant!.id;
+      const access = majorAccess((await listReleaseMajors(db)).get(major), (await listMajorGrants(db, tenantId)).get(major));
+      if (access === "free") return jsonError(`Release ${major} needs no confirmation`, 409, jsonHeaders);
+      if (access === "confirmed") return jsonError(`Release ${major} is already confirmed`, 409, jsonHeaders);
+      if (path.endsWith("/request-major")) {
+        if (access === "requested") return jsonError(`Release ${major} has been requested already`, 409, jsonHeaders);
+        if (access !== "closed") return jsonError(`Release ${major} is available to this organization already`, 409, jsonHeaders);
+        if (!(await releaseOfMajorOffered(db, currentTenant!.update_channel, major))) {
+          return jsonError(`No release of Lab Kiosk ${major} is offered on this organization's channel`, 404, jsonHeaders);
+        }
+        await requestMajor(db, tenantId, major, session!.user_id);
+        await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "update.major_request", details: String(major) });
+        return new Response(JSON.stringify({ status: "ok", major, access: "requested" }), { headers: jsonHeaders });
+      }
+      if (access === "closed" || access === "requested") {
+        return jsonError(`Release ${major} is not available to this organization yet; ask Lab Kiosk for it`, 403, jsonHeaders);
+      }
+      if (path.endsWith("/pilot-major")) {
+        let group: string | null = null;
+        if (body.group !== null) {
+          group = typeof body.group === "string" ? body.group.trim() : "";
+          if (!group) return jsonError("A workstation group is required", 400, jsonHeaders);
+          const chosen = group;
+          if (!(await listWorkstationGroups(db, tenantId)).some((g) => g.name === chosen)) {
+            return jsonError("Workstation group not found", 404, jsonHeaders);
+          }
+        }
+        await setMajorPilot(db, tenantId, major, group, session!.user_id);
+        await writeAuditLog(db, {
+          tenantId,
+          userId: session!.user_id,
+          action: "update.major_pilot",
+          details: `${major} group=${group ?? "none"}`
+        });
+        await notifyConfigChanged(env, tenantId);
+        return new Response(JSON.stringify({ status: "ok", major, access: group ? "pilot" : "available" }), { headers: jsonHeaders });
+      }
+      await confirmMajor(db, tenantId, major, session!.user_id);
+      await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "update.major_confirm", details: String(major) });
+      await notifyConfigChanged(env, tenantId);
+      return new Response(JSON.stringify({ status: "ok", major, access: "confirmed" }), { headers: jsonHeaders });
     }
 
     // POST /api/clients/check-update { clientIds }: ask these workstations to
@@ -3113,7 +4053,7 @@ export default {
       if (denied) return denied;
       let body: { clientIds?: unknown };
       try {
-        body = await request.json<typeof body>();
+        body = (await request.json<typeof body>()) ?? {};
       } catch {
         return jsonError("The request body must be JSON", 400, jsonHeaders);
       }
@@ -3128,7 +4068,7 @@ export default {
       const known = new Set((await listClientDevices(db, tenant.id)).map((row) => row.client_id));
       const clientIds = requested.filter((id) => known.has(id));
       const unknown = requested.filter((id) => !known.has(id)).map((clientId) => ({ clientId, reason: "Not found" }));
-      const offer = await offeredRelease(db, tenant.update_channel);
+      const offer = await offeredRelease(db, tenant.update_channel, tenant.id);
       const install = path.endsWith("/install-update");
       if (install && !offer) return jsonError("No release is offered to this organization", 409, jsonHeaders);
       let sent: string[] = [];
@@ -3224,6 +4164,8 @@ export default {
         for (let i = 0; i < clientIds.length; i += D1_IN_LIST_CHUNK) {
           await assignClientsToGroup(db, currentTenant!.id, clientIds.slice(i, i + D1_IN_LIST_CHUNK), groupName);
         }
+        // A workstation moved into or out of a group a major is being tried on is offered differently.
+        if (await hasMajorPilot(db, currentTenant!.id)) await notifyConfigChanged(env, currentTenant!.id);
 
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,
@@ -3297,6 +4239,8 @@ export default {
       if (!(await deleteWorkstationGroup(db, currentTenant!.id, groupId))) {
         return jsonError("Workstation group not found", 404, jsonHeaders);
       }
+      // A major being tried on the group is no longer tried anywhere.
+      if (await endOrphanedMajorPilots(db, currentTenant!.id)) await notifyConfigChanged(env, currentTenant!.id);
       await writeAuditLog(db, {
         tenantId: currentTenant!.id,
         userId: session!.user_id,
@@ -3498,6 +4442,9 @@ export default {
     if (path === "/terms") {
       return new Response(renderTermsOfServiceHtml({ canonicalUrl }), { headers: htmlHeaders });
     }
+    if (path === "/content-policy") {
+      return new Response(renderContentPolicyHtml({ canonicalUrl }), { headers: htmlHeaders });
+    }
     if (path === "/terms/bug-reports") {
       return new Response(renderBugReportTermsHtml(bugReportRepository(env), { canonicalUrl }), { headers: htmlHeaders });
     }
@@ -3589,11 +4536,17 @@ export default {
       );
     }
     if (path === "/download") {
+      const now = Math.floor(Date.now() / 1000);
+      const releaseSupport = [...(await listMajorSupport(db)).values()].map((row) => ({
+        major: row.major,
+        status: effectiveSupportStatus(row, now),
+        endOfLifeAt: row.end_of_life_at ?? null
+      }));
       return new Response(
         renderDownloadHtml({
           isoDownloadUrl: env.ISO_DOWNLOAD_URL,
-          releases: await listReleaseNotes(db),
-          download: await latestIsoRelease(db),
+          releases: await majorDownloads(db),
+          releaseSupport,
           baseDomain,
           contactEmail: "contact@labkiosk.org",
           ...formChecks,
@@ -3779,18 +4732,22 @@ export default {
         );
       }
 
-      const [portalSites, broadcastPresets, whitelist, staff, user, tenantUser, workstationGroups] = await Promise.all([
+      const [portalSites, broadcastPresets, whitelist, staff, user, tenantUser, workstationGroups, enrolledWorkstations] = await Promise.all([
         listPortalSites(db, tenant.id),
         listBroadcastPresets(db, tenant.id),
         buildEffectiveWhitelist(db, tenant.id),
         listTenantUsers(db, tenant.id),
         findUserById(db, session.user_id),
         getTenantUser(db, tenant.id, session.user_id),
-        listWorkstationGroups(db, tenant.id)
+        listWorkstationGroups(db, tenant.id),
+        countEnrolledWorkstations(db, tenant.id)
       ]);
       const userRole = session.role === "super_admin"
         ? "super_admin"
         : (tenant.user_id === session.user_id ? "org_admin" : (tenantUser?.role || "operator"));
+      // The platform's own demos have no customer to accept anything.
+      const legalStatus = isDemoTenant(tenant, session.user_id) ? null : await organizationLegalStatus(db, tenant.id);
+      const takenDownCards = await listTakenDownPortalSites(db, tenant.id);
 
       const config: LabConfig = {
         ...DEFAULT_CONFIG,
@@ -3815,7 +4772,15 @@ export default {
           presets: broadcastPresets,
           staff,
           groups: workstationGroups,
+          enrolledWorkstations,
           activePage,
+          legal: legalStatus && legalStatus.pending.length ? { ...legalStatus, canAccept: userRole === "org_admin" } : undefined,
+          license: isDemoTenant(tenant, session.user_id) ? undefined : licenseState(tenant),
+          notifications: await listNotificationsFor(db, tenant.id, session.user_id, { unreadOnly: true, limit: 50 }),
+          takedowns: {
+            homepage: tenant.homepage_takedown_at ? { at: tenant.homepage_takedown_at, reason: tenant.homepage_takedown_reason ?? null } : null,
+            cards: takenDownCards.map((c) => ({ title: c.title, url: c.url, at: Number(c.takedown_at), reason: c.takedown_reason ?? null }))
+          },
           currentUser: user ? { name: user.name, email: user.email, role: userRole, permissions: userPerms } : undefined,
           userPermissions: userPerms,
           isDevHost: isDev,
@@ -3879,6 +4844,9 @@ export default {
         console.warn(`[Worker] Tenant ${currentTenant.subdomain} has an invalid default_url; showing the portal instead.`);
       }
 
+      // Anyone can report a hosted page: the platform's contact form, preset to legal.
+      const reportHref = `${isDev ? url.origin : `https://${baseDomain}`}/contact?reason=legal&report=${encodeURIComponent(`${url.origin}${url.pathname}${namedTenant ? `?tenant=${currentTenant.subdomain}` : ""}`)}`;
+
       // The root is the organization's own page; the grid lives at /home.
       if (wantsOrganizationHome) {
         const portalPath = namedTenant
@@ -3888,14 +4856,15 @@ export default {
           renderOrgHomeHtml({
             tenant: currentTenant,
             blocks: parseHomepageBlocks(currentTenant.homepage_blocks),
-            portalPath
+            portalPath,
+            reportHref
           }),
           { headers: htmlHeaders }
         );
       }
 
       const portalSites = await listPortalSites(db, currentTenant.id);
-      return new Response(renderPortalHtml(currentTenant, portalSites, nonce), { headers: htmlHeaders });
+      return new Response(renderPortalHtml(currentTenant, portalSites, nonce, reportHref), { headers: htmlHeaders });
     }
 
     // 3. Public SaaS Landing Page (Root domain)

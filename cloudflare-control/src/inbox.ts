@@ -20,7 +20,7 @@
 
 import { Env } from "./types";
 import { jsonError, requireSuperAdmin } from "./guard";
-import { findTenantById, findUserById, updateTenant, writeAuditLog } from "./db";
+import { findTenantById, findUserById, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT, updateTenant, writeAuditLog } from "./db";
 import { notifyConfigChanged } from "./hub";
 import {
   addConversationMessage,
@@ -56,6 +56,7 @@ import { mailConfigProblem, mailDomain, parseAddress, sendingDomain } from "./ma
 import { clearPendingMail, deleteRawMail, isMailId, listPendingMail, loadRawMail, rawMailKey, storeRawMail } from "./mail_store";
 import { extractAttachment, parseEmail } from "./mime";
 import { consoleUrlFor, RouteContext, sendOnConversation } from "./signup";
+import { createNotification } from "./notifications";
 
 const SUPPORT_KINDS: readonly ConversationKind[] = ["support"];
 const INBOX_PATH =
@@ -71,13 +72,23 @@ function json(data: unknown, headers: Record<string, string>, status = 200): Res
   return new Response(JSON.stringify(data), { status, headers });
 }
 
-async function readMessage(request: Request): Promise<{ message: string; close: boolean; status: string } | null> {
+async function readMessage(
+  request: Request
+): Promise<{ message: string; close: boolean; status: string; workstationLimit: unknown; remoteControlSeats: unknown } | null> {
   try {
-    const body = await request.json<{ message?: unknown; close?: unknown; status?: unknown }>();
+    const body = await request.json<{
+      message?: unknown;
+      close?: unknown;
+      status?: unknown;
+      workstationLimit?: unknown;
+      remoteControlSeats?: unknown;
+    }>();
     return {
       message: String(body?.message ?? "").replace(/\r\n/g, "\n").trim().slice(0, MAX_MESSAGE_CHARS),
       close: body?.close === true,
-      status: String(body?.status ?? "")
+      status: String(body?.status ?? ""),
+      workstationLimit: body?.workstationLimit,
+      remoteControlSeats: body?.remoteControlSeats
     };
   } catch {
     return null;
@@ -413,10 +424,21 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
     if (tenant.status !== "pending") return jsonError("This organization is not waiting for approval", 409, jsonHeaders);
     if (!profile?.email_verified_at) return jsonError("The email address has not been verified", 409, jsonHeaders);
     if (!profile.phone_verified_at) return jsonError("Verify the phone number before approving", 409, jsonHeaders);
-    await updateTenant(db, tenant.id, { status: "active" });
+    const limit = input.workstationLimit;
+    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > MAX_WORKSTATION_LIMIT) {
+      return jsonError(`Set the workstation limit: a whole number from 1 to ${MAX_WORKSTATION_LIMIT}`, 400, jsonHeaders);
+    }
+    await updateTenant(db, tenant.id, { status: "active", workstation_limit: limit });
     await setConversationStatus(db, id, "approved", userId);
     await addConversationMessage(db, { conversationId: id, direction: "event", body: "Registration approved.", authorUserId: userId });
-    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.approve", details: `subdomain=${tenant.subdomain}` });
+    await writeAuditLog(db, { tenantId: tenant.id, userId, action: "tenant.approve", details: `subdomain=${tenant.subdomain} workstation_limit=${limit}` });
+    await createNotification(db, {
+      tenantId: tenant.id,
+      kind: "account",
+      title: "Welcome to Lab Kiosk",
+      body: `${tenant.name} is active and may enrol up to ${limit} workstation${limit === 1 ? "" : "s"}. Your enrollment key and the setup steps for your workstations are under Settings.`,
+      createdBy: userId
+    });
     await notifyConfigChanged(env, tenant.id);
     const sent = await sendOnConversation(
       env,
@@ -476,7 +498,17 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
   if ((action === "approve" || action === "reject") && conversation.kind === "remote_control") {
     if (tenant.status !== "active") return jsonError("The organization is not active", 409, jsonHeaders);
     const approve = action === "approve";
-    await updateTenant(db, tenant.id, { remote_control_status: approve ? "approved" : "rejected" });
+    const seats = input.remoteControlSeats;
+    if (approve && (typeof seats !== "number" || !Number.isInteger(seats) || seats < 1 || seats > MAX_REMOTE_CONTROL_SEATS)) {
+      return jsonError(`Set the Remote Control seats: a whole number from 1 to ${MAX_REMOTE_CONTROL_SEATS}`, 400, jsonHeaders);
+    }
+    await updateTenant(
+      db,
+      tenant.id,
+      approve
+        ? { remote_control_status: "approved", remote_control_seats: seats as number, remote_control_revoked_at: null }
+        : { remote_control_status: "rejected" }
+    );
     await setConversationStatus(db, id, approve ? "approved" : "rejected", userId);
     await addConversationMessage(db, {
       conversationId: id,
@@ -484,7 +516,16 @@ export async function handleInboxRoute(ctx: RouteContext): Promise<Response> {
       body: approve ? "Remote Control approved." : "Remote Control request rejected.",
       authorUserId: userId
     });
-    await writeAuditLog(db, { tenantId: tenant.id, userId, action: approve ? "remote_control.approve" : "remote_control.reject" });
+    await writeAuditLog(db, { tenantId: tenant.id, userId, action: approve ? "remote_control.approve" : "remote_control.reject", details: approve ? `seats=${seats}` : undefined });
+    await createNotification(db, {
+      tenantId: tenant.id,
+      kind: "remote_control",
+      title: approve ? "Remote Control is on" : "Remote Control request not approved",
+      body: approve
+        ? `Remote Control is now available to ${tenant.name}, with ${seats} session${seats === 1 ? "" : "s"} open at once. Administrators can open it from a connected workstation's card.`
+        : `Lab Kiosk is not able to turn on Remote Control for ${tenant.name} at this time. Reply to the email about your request to discuss it.`,
+      createdBy: userId
+    });
     const sent = await sendOnConversation(
       env,
       db,

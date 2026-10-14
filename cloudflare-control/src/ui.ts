@@ -6,8 +6,20 @@
  * owns its markup and its client script in one file, and what is left here is the routing between them.
  */
 
+import {
+  ConsoleLegal,
+  ConsoleTakedowns,
+  renderLegalNoticeHtml,
+  renderLegalNoticeScript,
+  renderLicenseNoticeHtml,
+  renderTakedownNoticeHtml
+} from "./ui_admin_legal";
+import type { LicenseState } from "./license";
+import type { NotificationRow } from "./notifications";
+import { renderNotificationsHtml, renderNotificationsScript } from "./ui_admin_notifications";
 import { LabConfig, Tenant, PortalSite, BroadcastPreset, TenantUser, WorkstationGroup } from "./types";
 import { renderLayoutHtml, NavItem, StatItem } from "./ui_layout";
+import { DEFAULT_WORKSTATION_LIMIT } from "./db";
 import {
   AdminPageInput,
   AdminPageParts,
@@ -33,6 +45,8 @@ export interface DashboardOptions {
   presets?: BroadcastPreset[];
   staff?: TenantUser[];
   groups?: WorkstationGroup[];
+  /** Workstations holding a valid device token, counted against tenant.workstation_limit. */
+  enrolledWorkstations?: number;
   activePage?: AdminPageId;
   currentUser?: { name: string; email?: string; role: string; permissions?: string[] };
   userPermissions?: string[];
@@ -51,6 +65,14 @@ export interface DashboardOptions {
    * itself does not carry the tenant subdomain).
    */
   needsTenantParam?: boolean;
+  /** Legal documents the organization has not accepted at their current version. */
+  legal?: ConsoleLegal;
+  /** The organization's content the platform took down. */
+  takedowns?: ConsoleTakedowns;
+  /** The organization's license; a notice shows while it is ending soon or has ended. */
+  license?: LicenseState;
+  /** The platform's notifications this user has not dismissed, newest first. */
+  notifications?: NotificationRow[];
   nonce: string;
 }
 
@@ -146,6 +168,16 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     { label: "Total", value: 0, color: "blue", id: "stat-total-count" },
     { label: "Locked", value: 0, color: "yellow", id: "stat-locked-count" }
   ];
+  if (tenant) {
+    const enrolled = options.enrolledWorkstations ?? 0;
+    const limit = Number(tenant.workstation_limit) || DEFAULT_WORKSTATION_LIMIT;
+    stats.push({
+      label: "Enrolled",
+      value: `${enrolled} of ${limit}`,
+      color: enrolled >= limit ? "red" : enrolled >= Math.ceil(limit * 0.9) ? "yellow" : "blue",
+      id: "stat-enrolled-count"
+    });
+  }
 
   const pageInput: AdminPageInput = {
     config,
@@ -158,6 +190,7 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     tenantParam,
     accountOnly: activePage === "settings" && !hasAll && !userPermissions.includes("settings"),
     canUpdate: hasAll || userPermissions.includes("updates"),
+    canRemoteControl: options.currentUser?.role === "org_admin" || options.currentUser?.role === "super_admin",
     nonce
   };
 
@@ -165,10 +198,20 @@ export function renderDashboardHtml(options: DashboardOptions): string {
   const page = build(pageInput);
 
   // The tenant scope has to be in place before any page script runs.
+  // Once their notice period has passed, terms not accepted replace the page.
+  const legal = options.legal;
+  const takedowns = options.takedowns;
+  const legalHtml =
+    (legal ? renderLegalNoticeHtml(legal, labName) : "") +
+    (takedowns && (takedowns.homepage || takedowns.cards.length) ? renderTakedownNoticeHtml(takedowns) : "") +
+    (options.license ? renderLicenseNoticeHtml(options.license, labName) : "") +
+    renderNotificationsHtml(options.notifications ?? []);
+  const gated = Boolean(legal?.gated);
   const scriptsHtml =
     renderApiScopeScript(nonce, tenantParam) +
-    page.scriptsHtml +
-    renderHeaderCountersScript(nonce, activePage);
+    (gated ? "" : page.scriptsHtml + renderHeaderCountersScript(nonce, activePage)) +
+    (legal ? renderLegalNoticeScript(nonce) : "") +
+    (options.notifications?.length ? renderNotificationsScript(nonce) : "");
 
   return renderLayoutHtml({
     title: `${labName} • ${page.title}`,
@@ -179,8 +222,8 @@ export function renderDashboardHtml(options: DashboardOptions): string {
     activeNavId: activePage,
     stats,
     userMeta: currentUser ? { name: currentUser.name, email: currentUser.email, role: roleLabel(currentUser.role) } : undefined,
-    contentHtml: page.contentHtml,
-    modalsHtml: page.modalsHtml || "",
+    contentHtml: gated ? legalHtml : legalHtml + page.contentHtml,
+    modalsHtml: gated ? "" : page.modalsHtml || "",
     scriptsHtml,
     nonce
   });

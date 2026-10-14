@@ -82,7 +82,17 @@ CREATE TABLE IF NOT EXISTS tenants (
   security_updates TEXT NOT NULL DEFAULT 'next_boot'
   CHECK (security_updates IN ('next_boot', 'approval')),
   lan_sharing INTEGER NOT NULL DEFAULT 0
-  CHECK (lan_sharing IN (0, 1))
+  CHECK (lan_sharing IN (0, 1)),
+  workstation_limit INTEGER NOT NULL DEFAULT 45
+  CHECK (workstation_limit BETWEEN 1 AND 100000),
+  remote_control_seats INTEGER NOT NULL DEFAULT 1
+  CHECK (remote_control_seats BETWEEN 1 AND 1000),
+  remote_control_revoked_at INTEGER,
+  homepage_takedown_at INTEGER,
+  homepage_takedown_reason TEXT,
+  license_plan TEXT
+  CHECK (license_plan IS NULL OR license_plan IN ('education', 'evaluation', 'subscriber', 'commercial')),
+  license_expires_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -104,7 +114,9 @@ CREATE TABLE IF NOT EXISTS portal_sites (
   thumbnail_url TEXT,
   order_index INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  takedown_at INTEGER,
+  takedown_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS client_devices (
@@ -193,6 +205,88 @@ CREATE TABLE IF NOT EXISTS releases (
 );
 
 CREATE INDEX IF NOT EXISTS idx_releases_channel ON releases(channel);
+
+CREATE TABLE IF NOT EXISTS release_support (
+  major INTEGER PRIMARY KEY CHECK (major BETWEEN 0 AND 9999),
+  status TEXT NOT NULL DEFAULT 'supported' CHECK (status IN ('supported', 'security_only', 'end_of_life')),
+  end_of_life_at INTEGER,
+  note TEXT,
+  eol_reminder_days INTEGER,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('general', 'account', 'release', 'legal', 'license', 'content', 'remote_control')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  created_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_tenant ON notifications(tenant_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notification_reads (
+  notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  read_at INTEGER NOT NULL,
+  PRIMARY KEY (notification_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS release_majors (
+  major INTEGER PRIMARY KEY CHECK (major BETWEEN 0 AND 9999),
+  open INTEGER NOT NULL DEFAULT 0 CHECK (open IN (0, 1)),
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS major_upgrade_grants (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  major INTEGER NOT NULL CHECK (major BETWEEN 0 AND 9999),
+  granted_by TEXT,
+  granted_at INTEGER,
+  confirmed_by TEXT,
+  confirmed_at INTEGER,
+  requested_by TEXT,
+  requested_at INTEGER,
+  pilot_group TEXT,
+  pilot_by TEXT,
+  pilot_at INTEGER,
+  PRIMARY KEY (tenant_id, major)
+);
+
+CREATE TABLE IF NOT EXISTS legal_acceptances (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  tenant_name TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  user_email TEXT NOT NULL,
+  document TEXT NOT NULL CHECK (document IN ('terms', 'privacy', 'aup', 'content')),
+  version TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('registration', 'console')),
+  accepted_at INTEGER NOT NULL,
+  ip TEXT,
+  user_agent TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_legal_acceptances_tenant ON legal_acceptances(tenant_id, document, version);
+
+CREATE TABLE IF NOT EXISTS link_blocklist (
+  domain TEXT PRIMARY KEY,
+  reason TEXT,
+  added_at INTEGER NOT NULL,
+  added_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS legal_versions (
+  document TEXT NOT NULL CHECK (document IN ('terms', 'privacy', 'aup', 'content')),
+  version TEXT NOT NULL,
+  published_at INTEGER NOT NULL,
+  notified_at INTEGER,
+  PRIMARY KEY (document, version)
+);
 
 CREATE TABLE IF NOT EXISTS bug_reports (
   signature TEXT PRIMARY KEY,
@@ -593,6 +687,29 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT lan_sharing FROM tenants LIMIT 1").run();
     // 0031: the log of a boot that ended without shutting down.
     await db.prepare("SELECT log_text FROM workstation_issues LIMIT 1").run();
+    // 0032: how many workstations an organization may enrol.
+    await db.prepare("SELECT workstation_limit FROM tenants LIMIT 1").run();
+    // 0033: Remote Control seats and revocation.
+    await db.prepare("SELECT remote_control_seats, remote_control_revoked_at FROM tenants LIMIT 1").run();
+    // 0034: major releases and major upgrade grants (its release_lines went in 0040).
+    await db.prepare("SELECT major, open FROM release_majors LIMIT 1").run();
+    await db.prepare("SELECT tenant_id, major, granted_at, confirmed_at FROM major_upgrade_grants LIMIT 1").run();
+    // 0035: legal acceptances and document versions.
+    await db.prepare("SELECT document, version, source FROM legal_acceptances LIMIT 1").run();
+    await db.prepare("SELECT document, version, published_at, notified_at FROM legal_versions LIMIT 1").run();
+    // 0036: hosted content controls.
+    await db.prepare("SELECT domain FROM link_blocklist LIMIT 1").run();
+    await db.prepare("SELECT homepage_takedown_at, homepage_takedown_reason FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT takedown_at, takedown_reason FROM portal_sites LIMIT 1").run();
+    // 0037: license plan and expiry.
+    await db.prepare("SELECT license_plan, license_expires_at FROM tenants LIMIT 1").run();
+    // 0038: console notifications and end-of-life reminders.
+    await db.prepare("SELECT id, tenant_id, kind, title, body FROM notifications LIMIT 1").run();
+    await db.prepare("SELECT notification_id, user_id, read_at FROM notification_reads LIMIT 1").run();
+    // 0039: major upgrade requests and pilot groups.
+    await db.prepare("SELECT requested_at, pilot_group, pilot_at FROM major_upgrade_grants LIMIT 1").run();
+    // 0040: support status and end of life per major release.
+    await db.prepare("SELECT major, status, end_of_life_at, eol_reminder_days FROM release_support LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -632,7 +749,8 @@ export async function ensureDemoTenants(db: D1Database, superAdminId: string): P
       // Remote Control is approved per organization; the platform's own demos have it.
       const seeded: Partial<Tenant> = {
         homepage_intro: `Demo organization. ${DEMO_TENANTS[slug].purpose}`,
-        remote_control_status: "approved"
+        remote_control_status: "approved",
+        remote_control_seats: 5
       };
       await updateTenant(db, tenant.id, seeded);
       demos.push({ ...tenant, ...seeded });
@@ -916,7 +1034,14 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "homepage_headline",
   "homepage_intro",
   "homepage_blocks",
-  "remote_control_status"
+  "remote_control_status",
+  "workstation_limit",
+  "remote_control_seats",
+  "homepage_takedown_at",
+  "homepage_takedown_reason",
+  "license_plan",
+  "license_expires_at",
+  "remote_control_revoked_at"
 ]);
 
 /** How many blocks an organization may publish, and how long each part may be. */
@@ -1265,17 +1390,18 @@ export async function getTenantUserPermissions(
 
 export async function listAllTenants(
   db: D1Database
-): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>> {
+): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number; enrolled_clients: number }>> {
   const res = await db
     .prepare(
       `SELECT t.*, u.email as admin_email, u.name as admin_name,
               t.online_workstations as online_clients,
-              (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id) as total_clients
+              (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id) as total_clients,
+              (SELECT COUNT(DISTINCT dt.client_id) FROM device_tokens dt WHERE dt.tenant_id = t.id AND dt.revoked = 0) as enrolled_clients
        FROM tenants t
        JOIN users u ON t.user_id = u.id
        ORDER BY t.created_at DESC`
     )
-    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number }>();
+    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number; enrolled_clients: number }>();
 
   return res.results || [];
 }
@@ -1333,6 +1459,46 @@ export async function listPortalSites(db: D1Database, tenantId: string): Promise
     .all<PortalSite>();
 
   return res.results || [];
+}
+
+/** A card of this organization linking to `url` that a super admin took down, if any. */
+export async function findTakenDownPortalSite(db: D1Database, tenantId: string, url: string): Promise<PortalSite | null> {
+  return db
+    .prepare("SELECT * FROM portal_sites WHERE tenant_id = ? AND url = ? AND takedown_at IS NOT NULL LIMIT 1")
+    .bind(tenantId, url)
+    .first<PortalSite>();
+}
+
+/** This organization's cards a super admin took down, newest first. */
+export async function listTakenDownPortalSites(db: D1Database, tenantId: string): Promise<PortalSite[]> {
+  return (
+    await db
+      .prepare("SELECT * FROM portal_sites WHERE tenant_id = ? AND takedown_at IS NOT NULL ORDER BY takedown_at DESC")
+      .bind(tenantId)
+      .all<PortalSite>()
+  ).results || [];
+}
+
+/**
+ * Take down every active card of this organization linking to `url` (making it
+ * inactive), or restore the ones taken down (null). Returns how many changed.
+ */
+export async function setPortalSiteTakedown(
+  db: D1Database,
+  tenantId: string,
+  url: string,
+  takedown: { at: number; reason: string } | null
+): Promise<number> {
+  const res = takedown
+    ? await db
+        .prepare("UPDATE portal_sites SET is_active = 0, takedown_at = ?, takedown_reason = ? WHERE tenant_id = ? AND url = ? AND is_active = 1")
+        .bind(takedown.at, takedown.reason, tenantId, url)
+        .run()
+    : await db
+        .prepare("UPDATE portal_sites SET is_active = 1, takedown_at = NULL, takedown_reason = NULL WHERE tenant_id = ? AND url = ? AND takedown_at IS NOT NULL")
+        .bind(tenantId, url)
+        .run();
+  return Number(res.meta?.changes ?? 0);
 }
 
 export async function createPortalSite(
@@ -1631,23 +1797,66 @@ export async function assignClientsToGroup(
  * against the telemetry API. Re-enrolling a client id revokes the tokens
  * previously issued to that same workstation.
  */
+/** Workstations a new organization may enrol: the most the LabKiosk Software License allows without a paid licence. */
+export const DEFAULT_WORKSTATION_LIMIT = 45;
+/** The highest limit a super admin can set; tenants.workstation_limit CHECKs the same. */
+export const MAX_WORKSTATION_LIMIT = 100000;
+/** The highest number of concurrent Remote Control sessions; tenants.remote_control_seats CHECKs the same. */
+export const MAX_REMOTE_CONTROL_SEATS = 1000;
+
+/** Workstations of an organization holding a valid device token. */
+export async function countEnrolledWorkstations(db: D1Database, tenantId: string): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(DISTINCT client_id) AS n FROM device_tokens WHERE tenant_id = ? AND revoked = 0")
+    .bind(tenantId)
+    .first<{ n: number }>();
+  return Number(row?.n) || 0;
+}
+
+/**
+ * Issue a device token, or null when the organization has reached its
+ * workstation limit. A workstation that still holds a valid token is always
+ * let back in, so lowering the limit never strands one already enrolled.
+ * The limit check and the insert are one statement: two workstations enrolling
+ * at once cannot both take the last place. `existingOnly` (an expired license)
+ * lets only such a workstation back in.
+ */
 export async function createDeviceToken(
   db: D1Database,
-  data: { tenantId: string; clientId: string }
-): Promise<{ token: string; device: DeviceToken }> {
+  data: { tenantId: string; clientId: string; existingOnly?: boolean }
+): Promise<{ token: string; device: DeviceToken } | null> {
   const token = generateDeviceToken();
   const tokenHash = await sha256Hex(token);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
 
-  await revokeDeviceTokensForClient(db, data.tenantId, data.clientId);
-
-  await db
+  const inserted = await db
     .prepare(
       `INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at, revoked)
-       VALUES (?, ?, ?, ?, ?, ?, 0)`
+       SELECT ?, ?, ?, ?, ?, ?, 0
+       WHERE EXISTS (SELECT 1 FROM device_tokens WHERE tenant_id = ? AND client_id = ? AND revoked = 0)
+          OR (? = 0 AND (SELECT COUNT(DISTINCT client_id) FROM device_tokens WHERE tenant_id = ? AND revoked = 0)
+             < (SELECT workstation_limit FROM tenants WHERE id = ?))`
     )
-    .bind(id, tokenHash, data.tenantId, data.clientId, now, now)
+    .bind(
+      id,
+      tokenHash,
+      data.tenantId,
+      data.clientId,
+      now,
+      now,
+      data.tenantId,
+      data.clientId,
+      data.existingOnly ? 1 : 0,
+      data.tenantId,
+      data.tenantId
+    )
+    .run();
+  if (Number(inserted.meta?.changes ?? 0) === 0) return null;
+
+  await db
+    .prepare("UPDATE device_tokens SET revoked = 1 WHERE tenant_id = ? AND client_id = ? AND id != ?")
+    .bind(data.tenantId, data.clientId, id)
     .run();
 
   return {

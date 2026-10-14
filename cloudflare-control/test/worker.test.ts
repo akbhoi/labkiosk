@@ -1,3 +1,6 @@
+import { hostedLinkProblem } from "../src/link_rules";
+import { acceptancesCsv, LEGAL_DOCUMENTS } from "../src/legal";
+import { activeOrganizationOwners } from "../src/notifications";
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -13,6 +16,8 @@ import {
   createUser,
   createTenant,
   findTenantBySubdomain,
+  countEnrolledWorkstations,
+  updateTenant,
   useAuditQueue,
   writeAuditLog,
   insertAuditEntries,
@@ -65,7 +70,11 @@ import {
   isReleaseVersion,
   normalizeUpdateReport,
   securityReleasesPending,
+  sendEndOfLifeReminders,
+  setEndOfLifeReminderStage,
+  setMajorSupport,
   updateTargetFor,
+  workstationOffer,
   type ReleaseOffer
 } from "../src/releases";
 import {
@@ -267,7 +276,7 @@ async function registerApprovedOrganization(overrides: Record<string, unknown>):
   const admin = await superCookie();
   const task = await taskByReference(admin, data.reference);
   assert.equal((await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin })).status, 200);
-  const approved = await call(`/api/super/inbox/${task.id}/approve`, { ...json({ message: "" }), cookie: admin });
+  const approved = await call(`/api/super/inbox/${task.id}/approve`, { ...json({ message: "", workstationLimit: 45 }), cookie: admin });
   assert.equal(approved.status, 200);
   const body = signupBody(overrides);
   const login = await call("/api/auth/login", json({ email: body.email, password: body.password }));
@@ -578,8 +587,13 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(tooEarly.data.error, /phone/);
 
     assert.equal((await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin })).status, 200);
+    for (const workstationLimit of [undefined, 0, 2.5, "45", 100001]) {
+      const noLimit = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ workstationLimit }), cookie: admin });
+      assert.equal(noLimit.res.status, 400, `a workstation limit of ${workstationLimit} is refused`);
+      assert.match(noLimit.data.error, /workstation limit/);
+    }
     const approved = await callJson(`/api/super/inbox/${task.id}/approve`, {
-      ...json({ message: "Your first 45 workstations are covered by the evaluation license." }),
+      ...json({ message: "Your first 45 workstations are covered by the evaluation license.", workstationLimit: 45 }),
       cookie: admin
     });
     assert.equal(approved.res.status, 200);
@@ -910,7 +924,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(task.kind, "remote_control");
     const verify = await call(`/api/super/inbox/${task.id}/verify-phone`, { ...json({}), cookie: admin });
     assert.equal(verify.status, 400, "a Remote Control request has no phone to verify");
-    const approved = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
+    for (const remoteControlSeats of [undefined, 0, 1.5, "2", 1001]) {
+      const noSeats = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ remoteControlSeats }), cookie: admin });
+      assert.equal(noSeats.res.status, 400, `${remoteControlSeats} seats are refused`);
+    }
+    const approved = await callJson(`/api/super/inbox/${task.id}/approve`, { ...json({ remoteControlSeats: 1 }), cookie: admin });
     assert.equal(approved.res.status, 200);
     assert.match(lastMailTo("operator@greenwood.example").subject, /Remote Control is on/);
     const after = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
@@ -1619,7 +1637,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.deepEqual((await listReleaseNotes(db)).map((r) => r.tag).slice(0, 3), ["v2.9.0", "v2.7.1", "v2.7.0"]);
       page = await (await call("/download")).text();
       assert.ok(page.includes("Latest Release v2.9.0"));
-      // A security release has no ISO: it is listed, and the download stays the newest release that has one.
+      // A security release has no ISO: it is named in its major's card, and the download stays the newest release that has one.
       const security = release("v2.9.1", "2026-10-12T06:00:00Z", {
         name: "Lab Kiosk v2.9.1 (security)",
         body: "## Security rebuild of v2.9.0",
@@ -1632,9 +1650,29 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.ok(page.includes("Latest Release v2.9.0") && page.includes("Download v2.9.0 (.ISO)"));
       assert.ok(page.includes('href="https://github.com/akbhoi/labkiosk/releases/download/v2.9.0/labkiosk-debian12-amd64.iso"'));
       assert.ok(!page.includes("Download v2.9.1") && !page.includes("releases/download/v2.9.1/labkiosk"), "no ISO is offered for it");
-      const card = page.slice(page.indexOf('<span class="changelog-version">v2.9.1</span>'), page.indexOf('<span class="changelog-version">v2.9.0</span>'));
-      assert.ok(card.includes("Security update") && card.includes("no ISO of its own") && !card.includes(">Latest<"), card);
-      assert.ok(page.slice(page.indexOf('<span class="changelog-version">v2.9.0</span>')).includes(">Latest<"));
+      const card = page.slice(page.indexOf('<span class="changelog-version">v2.9.0</span>'));
+      assert.ok(card.includes(">Latest<") && card.includes('Security update <a href="https://github.com/akbhoi/labkiosk/releases/tag/v2.9.1"'), card);
+      // Each major is listed by its newest release only: 2.9.1, 2.7.1, 2.7.0 and older stand behind 2.9.0.
+      for (const tag of ["v2.9.1", "v2.7.1", "v2.7.0", "v2.6.0"]) {
+        assert.ok(!page.includes(`<span class="changelog-version">${tag}</span>`), `${tag} is not listed`);
+      }
+      // A new major is listed above it; a major at end of life is named instead of listed.
+      githubAnswer = new Response(JSON.stringify([release("v3.0.0", "2026-10-13T06:00:00Z"), security, release("v2.9.0", "2026-10-10T10:18:00Z"), ...list]), { status: 200 });
+      assert.deepEqual(await (await syncCall(configured, `Bearer ${token}`)).json(), { stored: 7, latest: "v3.0.0" });
+      page = await (await call("/download")).text();
+      assert.ok(page.includes("Latest Release v3.0.0") && page.includes('<span class="changelog-version">v2.9.0</span>'));
+      assert.ok(!page.includes("End of life:</strong>"), "nothing is at end of life yet");
+      const endOfLifeAt = Date.parse("2027-03-31T00:00:00Z") / 1000;
+      await setMajorSupport(db, 2, "security_only", endOfLifeAt, null, "test");
+      page = await (await call("/download")).text();
+      const twoCard = page.slice(page.indexOf('<span class="changelog-version">v2.9.0</span>'));
+      assert.ok(twoCard.includes("Security fixes only") && twoCard.includes("Lab Kiosk 2.x reaches end of life on 31 March 2027"), twoCard);
+      await setMajorSupport(db, 2, "end_of_life", endOfLifeAt, null, "test");
+      page = await (await call("/download")).text();
+      assert.ok(!page.includes('<span class="changelog-version">v2.9.0</span>') && !page.includes("Download v2.9.0"), "an ended major is not offered");
+      assert.match(page, /End of life:<\/strong> Lab Kiosk 2\.x \(since 31 March 2027\)\. It receives no further updates/);
+      assert.ok(page.includes("Latest Release v3.0.0"));
+      await db.prepare("DELETE FROM release_support WHERE major = 2").run();
       githubAnswer = new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
       assert.equal((await syncCall(configured, `Bearer ${token}`)).status, 502);
       assert.ok((await listReleaseNotes(db)).some((r) => r.tag === "v2.9.0"), "a failed read keeps what is stored");
@@ -1744,11 +1782,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const tenant = { id: "t1", name: "Greenwood", subdomain: "greenwood" } as Tenant;
     for (const category of [null, undefined, "", "  "]) {
       const other = { ...site, id: "s2", title: "Ledger", category: "Finance" } as PortalSite;
-      const html = renderPortalHtml(tenant, [{ ...site, category } as unknown as PortalSite, other], "nonce");
+      const html = renderPortalHtml(tenant, [{ ...site, category } as unknown as PortalSite, other], "nonce", "https://labkiosk.org/contact");
       assert.ok(html.includes('data-category="general"') && html.includes('<span class="card-category">General</span>'));
       assert.ok(html.includes('class="category-pill" data-category="general">General</button>'), "and it can be filtered to");
     }
-    const named = renderPortalHtml(tenant, [{ ...site, category: "Maps & Travel" } as PortalSite], "nonce");
+    const named = renderPortalHtml(tenant, [{ ...site, category: "Maps & Travel" } as PortalSite], "nonce", "https://labkiosk.org/contact");
     assert.ok(named.includes('data-category="maps &amp; travel"') && named.includes("Maps &amp; Travel</span>"));
   });
 
@@ -2487,6 +2525,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/?tenant=no-such-organization", undefined, false],
       ["/privacy", undefined, false],
       ["/terms", undefined, false],
+      ["/content-policy", undefined, false],
       ["/terms/bug-reports", undefined, false]
     ];
     for (const [page, cookie, hasToggle] of pages) {
@@ -2600,6 +2639,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/home?tenant=greenwood", undefined],
       ["/privacy", undefined],
       ["/terms", undefined],
+      ["/content-policy", undefined],
       ["/terms/bug-reports", undefined],
       ["/admin/workstations?tenant=greenwood", orgSessionCookie],
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
@@ -2913,6 +2953,76 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(data.organizationName, "Greenwood Holdings");
     assert.match(data.deviceToken, /^[0-9a-f]{64}$/);
     deviceToken = data.deviceToken;
+  });
+
+  test("Only a super admin sets an organization's workstation limit, within 1 to 100000", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = (await findTenantBySubdomain(db, "greenwood"))!.id;
+    const anonymous = await call("/api/super/tenants/workstation-limit", json({ tenantId, limit: 500 }));
+    assert.ok(anonymous.status === 401 || anonymous.status === 403, "an anonymous caller is refused");
+    const asOrgAdmin = await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 500 }), cookie: orgSessionCookie });
+    assert.equal(asOrgAdmin.status, 403, "an organization cannot raise its own limit");
+    const admin = await superCookie();
+    for (const limit of [0, -1, 1.5, "10", 100001, null]) {
+      const bad = await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit }), cookie: admin });
+      assert.equal(bad.status, 400, `a limit of ${limit} is refused`);
+    }
+    const missing = await call("/api/super/tenants/workstation-limit", { ...json({ tenantId: "nope", limit: 5 }), cookie: admin });
+    assert.equal(missing.status, 404);
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.workstation_limit, 45, "nothing changed");
+  });
+
+  test("Enrolment stops at the workstation limit, but an enrolled workstation always gets back in", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = (await findTenantBySubdomain(db, "greenwood"))!.id;
+    const admin = await superCookie();
+    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    assert.ok(enrolled >= 1, "PC-01 is enrolled");
+
+    const lowered = await callJson("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: enrolled }), cookie: admin });
+    assert.equal(lowered.res.status, 200);
+    assert.equal(lowered.data.enrolled, enrolled);
+
+    const refused = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-OVER" }));
+    assert.equal(refused.res.status, 403, "one more workstation is refused");
+    assert.match(refused.data.error, new RegExp(`all ${enrolled} workstations`));
+    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "no token was issued");
+
+    const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-01" }));
+    assert.equal(again.res.status, 200, "a workstation that is already enrolled can enrol again");
+    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "and it still counts once");
+    const stale = await call("/api/telemetry?tenant=greenwood", { ...json({ clientId: "PC-01" }), bearer: deviceToken });
+    assert.equal(stale.status, 401, "its previous token is revoked");
+    deviceToken = again.data.deviceToken;
+
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    const entries = (logs.logs ?? logs) as any[];
+    assert.ok(entries.some((l) => l.action === "device.enroll_limit" && /client=PC-OVER/.test(l.details)));
+
+    const page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(page, new RegExp(`${enrolled} of ${enrolled}`), "the console shows the organization is full");
+
+    const restored = await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 45 }), cookie: admin });
+    assert.equal(restored.status, 200);
+    const superPage = await (await call("/super/organizations", { cookie: admin })).text();
+    assert.match(superPage, new RegExp(`${enrolled} of 45 enrolled`));
+  });
+
+  test("Two workstations enrolling at once cannot both take the last place", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = (await findTenantBySubdomain(db, "greenwood"))!.id;
+    const admin = await superCookie();
+    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: enrolled + 1 }), cookie: admin });
+    const results = await Promise.all(
+      ["PC-RACE-A", "PC-RACE-B", "PC-RACE-C"].map((clientId) => call("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId })))
+    );
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 403, 403]);
+    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled + 1);
+    for (const clientId of ["PC-RACE-A", "PC-RACE-B", "PC-RACE-C"]) {
+      await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
+    }
+    await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 45 }), cookie: admin });
   });
 
   // ------------------------------------------------------------- telemetry
@@ -4861,7 +4971,317 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       403,
       "another workstation holding the session token still reaches only its own relay"
     );
+    // Nobody joined: the relay's alarm ends the session, which gives its seat back.
+    const realNow = Date.now;
+    Date.now = () => realNow() + (RELAY_JOIN_SECONDS + 5) * 1000;
+    try {
+      await relays.entry(relayName(tenantId, "WS-R")).relay.alarm();
+    } finally {
+      Date.now = realNow;
+    }
     await device.closeFromClient();
+  });
+
+  test("Remote Control seats: one session per seat, freed when a session ends", async () => {
+    const tenantId = await greenwoodId();
+    const relays = fakeRelayNamespace();
+    const relayEnv = { ...mockEnv, REMOTE_RELAY: relays.namespace } as Env;
+    const open = (clientId: string) =>
+      worker.fetch(request("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie }), relayEnv);
+    const db = getDatabase(mockEnv);
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.remote_control_seats, 1, "approved with one seat");
+
+    await enrolAs("WS-S1");
+    await enrolAs("WS-S2");
+    const one = await hubs().connectDevice({ tenantId, clientId: "WS-S1", ip: "10.0.0.21", portal: portalContext() });
+    const two = await hubs().connectDevice({ tenantId, clientId: "WS-S2", ip: "10.0.0.22", portal: portalContext() });
+    assert.equal((await open("WS-S1")).status, 200);
+    assert.equal((await open("WS-S1")).status, 200, "a new session on the same workstation replaces its own, in the same seat");
+    const full = await open("WS-S2");
+    assert.equal(full.status, 429, "the only seat is taken");
+    assert.match(((await full.json()) as any).error, /All 1 Remote Control seat is in use \(WS-S1\)/);
+    assert.equal(ofType(two, "remote").length, 0, "the second workstation was never asked to join");
+    const unused = relays.entry(relayName(tenantId, "WS-S2")).state.storage.sql.exec("SELECT token_hash FROM session").toArray();
+    assert.equal(unused.length, 0, "the relay session opened for it was closed again");
+
+    // The session on WS-S1 ends (here: the workstation never joined, and its relay's alarm fires).
+    const relay = relays.entry(relayName(tenantId, "WS-S1")).relay;
+    const realNow = Date.now;
+    Date.now = () => realNow() + (RELAY_JOIN_SECONDS + 5) * 1000;
+    try {
+      await relay.alarm();
+    } finally {
+      Date.now = realNow;
+    }
+    assert.equal((await open("WS-S2")).status, 200, "the seat came back when the session ended");
+
+    const admin = await superCookie();
+    for (const seats of [0, 1.5, "3", 1001]) {
+      const bad = await call("/api/super/tenants/remote-control", { ...json({ tenantId, action: "seats", seats }), cookie: admin });
+      assert.equal(bad.status, 400, `${seats} seats are refused`);
+    }
+    assert.equal(
+      (await call("/api/super/tenants/remote-control", { ...json({ tenantId, action: "seats", seats: 2 }), cookie: orgSessionCookie })).status,
+      403,
+      "an organization cannot give itself seats"
+    );
+    assert.equal((await call("/api/super/tenants/remote-control", { ...json({ tenantId, action: "seats", seats: 2 }), cookie: admin })).status, 200);
+    assert.equal((await open("WS-S1")).status, 200, "a second seat");
+    await one.closeFromClient();
+    await two.closeFromClient();
+  });
+
+  test("Revoking Remote Control ends every open session, emails the organization and can be undone", async () => {
+    const tenantId = await greenwoodId();
+    const relays = fakeRelayNamespace();
+    const relayEnv = { ...mockEnv, REMOTE_RELAY: relays.namespace } as Env;
+    const open = (clientId: string) =>
+      worker.fetch(request("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie }), relayEnv);
+    const control = (body: Record<string, unknown>, cookie: string) =>
+      worker.fetch(request("/api/super/tenants/remote-control", { ...json(body), cookie }), relayEnv);
+    const admin = await superCookie();
+    const device = await hubs().connectDevice({ tenantId, clientId: "WS-S1", ip: "10.0.0.21", portal: portalContext() });
+    assert.equal((await open("WS-S1")).status, 200);
+    const relayState = relays.entry(relayName(tenantId, "WS-S1")).state;
+    assert.equal(relayState.storage.sql.exec("SELECT token_hash FROM session").toArray().length, 1);
+
+    assert.equal((await control({ tenantId, action: "revoke", reason: "x" }, orgSessionCookie)).status, 403, "only the platform revokes");
+    assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 409, "nothing to restore while it is on");
+    assert.equal((await control({ tenantId, action: "wipe" }, admin)).status, 400);
+    const revoked = await control({ tenantId, action: "revoke", reason: "The subscription that included it has ended." }, admin);
+    assert.equal(revoked.status, 200);
+    const result = (await revoked.json()) as any;
+    assert.equal(result.sessionsClosed, 2, "both sessions the earlier test left open were closed");
+    assert.equal(result.emailSent, true);
+    assert.equal(relayState.storage.sql.exec("SELECT token_hash FROM session").toArray().length, 0, "the relay forgot the session");
+    const mail = lastMailTo("operator@greenwood.example");
+    assert.equal(mail.subject, "Remote Control has been turned off");
+    assert.match(mail.text, /subscription that included it has ended/);
+
+    assert.equal((await open("WS-S1")).status, 403, "no new session");
+    const tenant = (await findTenantBySubdomain(getDatabase(mockEnv), "greenwood"))!;
+    assert.equal(tenant.remote_control_status, "rejected");
+    assert.ok(Number(tenant.remote_control_revoked_at) > 0);
+    const settings = await (await call("/admin/settings?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(settings, /badge-red">Turned off/);
+    assert.match(settings, /id="form-remote-control-request"/, "the organization can ask again");
+    assert.equal((await control({ tenantId, action: "revoke", reason: "x" }, admin)).status, 409, "already off");
+
+    assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 200);
+    assert.equal((await open("WS-S1")).status, 200, "back on, with the seats it had");
+
+    // The organization can turn it off itself; asking again is a new request.
+    const asRival = await call("/api/tenant/remote-control/disable?tenant=greenwood", { ...json({}), cookie: rivalSessionCookie });
+    assert.equal(asRival.status, 403);
+    const disabled = await worker.fetch(request("/api/tenant/remote-control/disable?tenant=greenwood", { ...json({}), cookie: orgSessionCookie }), relayEnv);
+    assert.equal(disabled.status, 200);
+    assert.equal(((await disabled.json()) as any).sessionsClosed, 1);
+    assert.equal((await findTenantBySubdomain(getDatabase(mockEnv), "greenwood"))!.remote_control_status, "none");
+    assert.equal((await control({ tenantId, action: "restore" }, admin)).status, 409, "a self-disabled organization asks again through Tasks");
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    const actions = (logs.logs as any[]).map((l) => l.action);
+    for (const action of ["remote_control.revoke", "remote_control.restore", "remote_control.disable", "remote_control.seats"]) {
+      assert.ok(actions.includes(action), `${action} is audited`);
+    }
+    // The tests after this one use Remote Control again.
+    await updateTenant(getDatabase(mockEnv), tenantId, { remote_control_status: "approved" });
+    await device.closeFromClient();
+  });
+
+  test("Notifications: the platform tells one organization or all of them, and each user dismisses their own", async () => {
+    const admin = await superCookie();
+    const send = (body: unknown, cookie?: string) => callJson("/api/super/notifications", { ...json(body), cookie });
+    const tenantId = await greenwoodId();
+    assert.ok([401, 403].includes((await send({ tenantId: null, title: "t", body: "b" })).res.status), "anonymous");
+    assert.equal((await send({ tenantId: null, title: "t", body: "b" }, orgSessionCookie)).res.status, 403, "an organization");
+    assert.ok([401, 403].includes((await call("/api/notifications?tenant=greenwood")).status), "anonymous reader");
+    assert.equal((await call("/api/notifications?tenant=greenwood", { cookie: rivalSessionCookie })).status, 403, "another organization");
+    for (const body of [
+      { tenantId: null, title: "", body: "b" },
+      { tenantId: null, title: "t".repeat(121), body: "b" },
+      { tenantId: null, title: "t", body: "" },
+      { tenantId: null, title: "t", body: "b", email: "yes" }
+    ]) {
+      assert.equal((await send(body, admin)).res.status, 400, JSON.stringify(body));
+    }
+    assert.equal((await send({ tenantId: "nope", title: "t", body: "b" }, admin)).res.status, 404);
+    // Start from a clean slate: earlier tests' platform changes notified Greenwood too.
+    await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+
+    const own = await send({ tenantId, title: "Maintenance tonight", body: "The console is read-only from 22:00 UTC." }, admin);
+    assert.equal(own.res.status, 200);
+    const everyone = await send({ tenantId: null, title: "New Content Policy", body: "Read it at /content-policy.", email: true }, admin);
+    assert.equal(everyone.res.status, 200);
+    assert.equal(everyone.data.emailed, (await activeOrganizationOwners(getDatabase(mockEnv), null)).length, "every customer's owner");
+    assert.ok(everyone.data.notifications.some((n: any) => n.title === "New Content Policy" && n.tenant_id === null));
+
+    const unread = async (cookie: string, tenant: string) =>
+      ((await callJson(`/api/notifications?tenant=${tenant}`, { cookie })).data.notifications as any[]).filter((n) => !n.read).map((n) => n.title);
+    assert.ok((await unread(orgSessionCookie, "greenwood")).includes("Maintenance tonight"));
+    assert.ok((await unread(orgSessionCookie, "greenwood")).includes("New Content Policy"));
+    assert.ok(!(await unread(rivalSessionCookie, "riverside")).includes("Maintenance tonight"), "one organization's stays its own");
+    assert.ok((await unread(rivalSessionCookie, "riverside")).includes("New Content Policy"));
+
+    const page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(page, /id="notifications-card"[\s\S]*Maintenance tonight/);
+
+    // Another organization's id is not this one's to dismiss.
+    const rivalOnly = await send({ tenantId: (await findTenantBySubdomain(getDatabase(mockEnv), "riverside"))!.id, title: "Rival only", body: "b" }, admin);
+    const crossed = await callJson("/api/notifications/read?tenant=greenwood", { ...json({ ids: [rivalOnly.data.id] }), cookie: orgSessionCookie });
+    assert.equal(crossed.res.status, 200);
+    assert.ok((await unread(rivalSessionCookie, "riverside")).includes("Rival only"));
+    assert.equal((await call("/api/notifications/read?tenant=greenwood", { ...json({ ids: "all" }), cookie: orgSessionCookie })).status, 400);
+
+    const dismissed = await callJson("/api/notifications/read?tenant=greenwood", { ...json({ ids: [own.data.id] }), cookie: orgSessionCookie });
+    assert.ok(!dismissed.data.notifications.find((n: any) => n.id === own.data.id && !n.read), "dismissed");
+    await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.deepEqual(await unread(orgSessionCookie, "greenwood"), [], "all dismissed");
+    const quiet = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(quiet, /id="notifications-card"/);
+
+    // The platform's own changes notify the organization.
+    await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 50 }), cookie: admin });
+    assert.ok((await unread(orgSessionCookie, "greenwood")).includes("Workstation limit changed"));
+    await call("/api/super/tenants/workstation-limit", { ...json({ tenantId, limit: 45 }), cookie: admin });
+    await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+
+    const { data: logs } = await callJson("/api/super/audit-logs", { cookie: admin });
+    assert.ok(((logs.logs ?? logs) as any[]).some((l) => l.action === "notification.send"));
+  });
+
+  test("End-of-life reminders go to every organization 60, 30 and 7 days before, and once it has passed", async () => {
+    const db = getDatabase(mockEnv);
+    const day = 86_400;
+    const start = Math.floor(Date.now() / 1000);
+    const endOfLifeAt = start + 90 * day;
+    await setMajorSupport(db, 31, "supported", endOfLifeAt, null, "test");
+    await setEndOfLifeReminderStage(db, 31, null);
+    const remindedAt = async (daysBefore: number) => (await sendEndOfLifeReminders(mockEnv, db, endOfLifeAt - daysBefore * day)).filter((m) => m === 31);
+    assert.deepEqual(await remindedAt(70), [], "too early");
+    assert.deepEqual(await remindedAt(59), [31], "60 days before");
+    assert.deepEqual(await remindedAt(58), [], "once");
+    assert.deepEqual(await remindedAt(10), [31], "30 days before (late is still sent once)");
+    assert.deepEqual(await remindedAt(6), [31], "7 days before");
+    assert.deepEqual(await remindedAt(-1), [31], "the date has passed");
+    assert.deepEqual(await remindedAt(-2), [], "and nothing after");
+    const titles = ((await callJson("/api/notifications?tenant=greenwood", { cookie: orgSessionCookie })).data.notifications as any[])
+      .map((n) => n.title)
+      .filter((t: string) => /Lab Kiosk 31 /.test(t));
+    assert.ok(titles.includes("Lab Kiosk 31 has reached end of life"));
+    assert.ok(titles.some((t: string) => /^Reminder: Lab Kiosk 31 reaches end of life on/.test(t)));
+    // A new date starts the reminders over.
+    await setMajorSupport(db, 31, "supported", endOfLifeAt + 200 * day, null, "test");
+    const row = await db.prepare("SELECT eol_reminder_days FROM release_support WHERE major = 31").first<{ eol_reminder_days: number | null }>();
+    assert.equal(row!.eol_reminder_days, null);
+    await db.prepare("DELETE FROM release_support WHERE major = 31").run();
+    await callJson("/api/notifications/read?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+  });
+
+  test("An ended license stops new enrolments and Remote Control, and the consoles say so", async () => {
+    const db = getDatabase(mockEnv);
+    const tenantId = await greenwoodId();
+    const admin = await superCookie();
+    const license = (body: Record<string, unknown>, cookie?: string) => call("/api/super/tenants/license", { ...json(body), cookie });
+    const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+
+    assert.ok([401, 403].includes((await license({ tenantId, plan: "commercial", expiresOn: null })).status), "an anonymous caller is refused");
+    assert.equal((await license({ tenantId, plan: "commercial", expiresOn: null }, orgSessionCookie)).status, 403, "an organization cannot set its own license");
+    for (const body of [
+      { tenantId, plan: "free", expiresOn: null },
+      { tenantId, plan: null, expiresOn: null },
+      { tenantId, plan: "commercial", expiresOn: "2027-02-30" },
+      { tenantId, plan: "commercial", expiresOn: "2027/01/01" },
+      { tenantId, plan: "commercial", expiresOn: 1798761600 }
+    ]) {
+      assert.equal((await license(body, admin)).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await license({ tenantId: "nope", plan: "commercial", expiresOn: null }, admin)).status, 404);
+    assert.equal((await call("/api/super/tenants/license", { ...json(null), cookie: admin })).status, 404, "a null body is an empty request");
+    assert.equal((await findTenantBySubdomain(db, "greenwood"))!.license_plan ?? null, null, "nothing changed");
+
+    const first = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
+    assert.equal(first.res.status, 200);
+    const ended = day(-1);
+    assert.equal((await license({ tenantId, plan: "subscriber", expiresOn: ended }, admin)).status, 200);
+    const enrolled = await countEnrolledWorkstations(db, tenantId);
+    const refused = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LAPSED" }));
+    assert.equal(refused.res.status, 403, "no new workstation");
+    assert.match(refused.data.error, new RegExp(`ended on ${ended}\\. Enrolled workstations keep working`));
+    assert.equal(await countEnrolledWorkstations(db, tenantId), enrolled, "no token was issued");
+    const again = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LICENSED" }));
+    assert.equal(again.res.status, 200, "a workstation that is already enrolled can enrol again");
+    const telemetry = await call("/api/telemetry?tenant=greenwood", { ...json({ clientId: "PC-LICENSED" }), bearer: again.data.deviceToken });
+    assert.equal(telemetry.status, 200, "and keeps working");
+
+    const viewer = await callJson("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie });
+    assert.equal(viewer.res.status, 403, "no Remote Control session");
+    assert.match(viewer.data.error, /license of .* ended on/);
+    const opened = await call("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "WS-R" }), cookie: orgSessionCookie });
+    assert.equal(opened.status, 403);
+
+    const consolePage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(consolePage, /id="license-notice"[\s\S]*License ended/);
+    const superPage = await (await call("/super/organizations", { cookie: admin })).text();
+    assert.match(superPage, new RegExp(`Subscriber, ended ${ended}`));
+    assert.match(superPage, /class="menu-item btn-license"/);
+
+    const soon = day(10);
+    assert.equal((await license({ tenantId, plan: "commercial", expiresOn: soon }, admin)).status, 200);
+    const reminded = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(reminded, new RegExp(`License ending soon[\\s\\S]*ends on ${soon}`));
+    const allowed = await call("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-LAPSED" }));
+    assert.equal(allowed.status, 200, "a license in force enrols as before");
+    for (const clientId of ["PC-LAPSED", "PC-LICENSED"]) {
+      await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie });
+    }
+
+    assert.equal((await license({ tenantId, plan: "education", expiresOn: null }, admin)).status, 200);
+    const quiet = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(quiet, /id="license-notice"/, "no end date, no notice");
+    assert.equal((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: orgSessionCookie })).status, 200);
+
+    const { data: logs } = await callJson("/api/audit-logs?tenant=greenwood", { cookie: orgSessionCookie });
+    const entries = logs.logs as any[];
+    assert.ok(entries.some((l) => l.action === "device.enroll_license" && /client=PC-LAPSED/.test(l.details)));
+    assert.ok(entries.some((l) => l.action === "tenant.license" && /plan=subscriber expires=/.test(l.details)));
+    await updateTenant(db, tenantId, { license_plan: null, license_expires_at: null });
+  });
+
+  test("Only the organization's administrators use Remote Control, never other staff", async () => {
+    const staff = async (role: string, email: string) => {
+      const { data } = await callJson("/api/tenant/staff?tenant=greenwood", {
+        ...json({ name: role, email, password: "StaffPassword123!", role, permissions: ["workstations"] }),
+        cookie: orgSessionCookie
+      });
+      assert.equal(data.status, "ok", JSON.stringify(data));
+      const login = await call("/api/auth/login", json({ email, password: "StaffPassword123!" }));
+      return { id: data.operator.id as string, cookie: login.headers.get("Set-Cookie")!.split(";")[0] };
+    };
+    const operator = await staff("operator", "rc-operator@greenwood.example");
+    const admin = await staff("org_admin", "rc-admin@greenwood.example");
+
+    const viewer = await callJson("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: operator.cookie });
+    assert.equal(viewer.res.status, 403, "an operator with the workstations permission is refused");
+    assert.match(viewer.data.error, /Only an administrator/);
+    const opened = await call("/api/clients/remote-session?tenant=greenwood", { ...json({ clientId: "WS-R" }), cookie: operator.cookie });
+    assert.equal(opened.status, 403);
+    const socket = await call(`/api/console/remote?tenant=greenwood&clientId=WS-R&session=${"e".repeat(64)}`, {
+      headers: { Upgrade: "websocket", Origin: BASE },
+      cookie: operator.cookie
+    });
+    assert.equal(socket.status, 403);
+    const operatorPage = await (await call("/admin/workstations?tenant=greenwood", { cookie: operator.cookie })).text();
+    assert.match(operatorPage, /const CAN_REMOTE_CONTROL = false;/, "the console offers it no Remote Control");
+
+    assert.equal((await call("/console/remote?tenant=greenwood&clientId=WS-R", { cookie: admin.cookie })).status, 200, "an org_admin may");
+    const adminPage = await (await call("/admin/workstations?tenant=greenwood", { cookie: admin.cookie })).text();
+    assert.match(adminPage, /const CAN_REMOTE_CONTROL = true;/);
+    const ownerPage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(ownerPage, /const CAN_REMOTE_CONTROL = true;/, "and so may the owner");
+
+    for (const member of [operator, admin]) {
+      await callJson(`/api/tenant/staff/${member.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    }
   });
 
   test("The Remote Control viewer is framed only by the console and loads noVNC from this site", async () => {
@@ -5721,12 +6141,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(termsRes.status, 200);
     const termsHtml = await termsRes.text();
     assert.match(termsHtml, /Terms of Service/);
-    assert.match(termsHtml, /Educational Use/);
-    assert.match(termsHtml, /45-Computer/);
-    assert.match(termsHtml, /Subscriber Licensing/);
-    assert.match(termsHtml, /Organization Responsibilities/);
+    assert.match(termsHtml, /accredited educational institutions and non-commercial evaluation on up to 45 computers/, "it describes LICENSE");
+    assert.match(termsHtml, /45-computer threshold/);
+    assert.match(termsHtml, /Subscriber License/);
+    assert.match(termsHtml, /Using the Platform Responsibly/);
     assert.match(termsHtml, /Third-Party Services/);
     assert.match(termsHtml, /href="\/terms\/bug-reports"/);
+    assert.match(termsHtml, /href="\/content-policy"/);
+    assert.match(termsHtml, new RegExp(`Version ${LEGAL_DOCUMENTS.find((d) => d.id === "terms")!.version}`), "the page shows the version consoles ask for");
+
+    // /content-policy: part of the Terms, with the link rules link_rules.ts enforces.
+    const contentRes = await call("/content-policy");
+    assert.equal(contentRes.status, 200);
+    const contentHtml = await contentRes.text();
+    assert.match(contentHtml, /<h1>Content Policy<\/h1>/);
+    assert.match(contentHtml, new RegExp(`Version ${LEGAL_DOCUMENTS.find((d) => d.id === "content")!.version}`));
+    for (const rule of ["bare IP address", "link shortener", "user name or password", "blocklist", "Report this page", "legal@labkiosk.org"]) {
+      assert.ok(contentHtml.includes(rule), `the Content Policy says ${rule}`);
+    }
+    assert.match(contentRes.headers.get("Content-Security-Policy") || "", /script-src 'nonce-[^']+'/);
+    // Every public page links it.
+    for (const path of ["/", "/privacy", "/terms", "/terms/bug-reports", "/home?tenant=greenwood", "/?tenant=greenwood"]) {
+      assert.match(await (await call(path)).text(), /href="\/content-policy"/, `${path} links the Content Policy`);
+    }
+    assert.match(await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text(), /href="\/content-policy"/);
     const termsCsp = termsRes.headers.get("Content-Security-Policy") || "";
     assert.match(termsCsp, /script-src 'nonce-[^']+'/);
   });
@@ -6377,6 +6815,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/contact",
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
+      "https://www.labkiosk.org/content-policy",
       "https://www.labkiosk.org/terms/bug-reports"
     ]);
     // Every listed page really is served, indexable, on the canonical host.
@@ -6400,6 +6839,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["www.labkiosk.org", "/docs"],
       ["www.labkiosk.org", "/privacy"],
       ["www.labkiosk.org", "/terms"],
+      ["www.labkiosk.org", "/content-policy"],
       ["www.labkiosk.org", "/terms/bug-reports"]
     ];
     for (const [host, path] of indexable) {
@@ -6623,6 +7063,30 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(!isReleaseVersion("2.9"));
     assert.ok(!isReleaseVersion("2.9.0\n"));
     assert.ok(!isReleaseVersion("../2.9.0"));
+  });
+
+  test("A workstation moves one major at a time, and a pilot group alone takes a major being tried", () => {
+    const release = (version: string, extra: Partial<ReleaseOffer> = {}): ReleaseOffer => ({
+      version,
+      kind: "feature",
+      sizeBytes: 1,
+      classifiedAt: 1,
+      ...extra
+    });
+    const releases = [release("4.0.0"), release("3.1.0", { gated: true, pilotGroup: "Lab A" }), release("2.5.0"), release("2.4.0")];
+    const next = (running: string, group: string | null = null) => workstationOffer(releases, running, group).release?.version ?? null;
+    assert.equal(next("2.4.0"), "2.5.0", "the newest of its own major first");
+    assert.equal(next("2.5.0"), "2.5.0", "3 is gated outside the pilot, and 4 is two majors away");
+    assert.equal(next("2.5.0", "Lab A"), "3.1.0", "the pilot group takes 3");
+    assert.equal(next("2.5.0", "Lab B"), "2.5.0");
+    assert.equal(next("3.1.0"), "4.0.0", "a workstation on 3 moves on to 4");
+    assert.equal(workstationOffer(releases, null).release?.version, "4.0.0", "an updater that does not say what it runs gets the newest");
+    assert.equal(updateTargetFor(releases, "2.5.0", "Lab A")?.version, "3.1.0");
+    assert.equal(updateTargetFor(releases, "2.5.0"), null);
+    const status = { imageVersion: "2.5.0", update: { phase: "idle" } } as Parameters<typeof installTargetFor>[1];
+    assert.equal(installTargetFor(releases, status, "Lab A")?.version, "3.1.0");
+    assert.equal(releaseNudgeTarget(releases, { phase: "idle" }, "2.5.0", "next_boot", "Lab A")?.version, "3.1.0");
+    assert.equal(releaseNudgeTarget(releases, { phase: "idle" }, "2.5.0", "next_boot"), null);
   });
 
   test("A workstation is reminded of a release only when it runs an older image and holds nothing newer", () => {
@@ -6996,6 +7460,448 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("Major releases: end of life, security only, and a closed major granted and confirmed", async () => {
+    const tenantId = await greenwoodId();
+    const policyEnv = {
+      ...releasesEnv,
+      RELEASES: fakeReleasesBucket({
+        "releases/2.20.0/manifest.json": releaseManifest("2.20.0"),
+        "releases/2.20.0/manifest.json.sig": "sig",
+        "releases/2.20.1/manifest.json": releaseManifest("2.20.1", "security", "2.20.0"),
+        "releases/2.20.1/manifest.json.sig": "sig",
+        "releases/2.21.0/manifest.json": releaseManifest("2.21.0"),
+        "releases/2.21.0/manifest.json.sig": "sig",
+        "releases/5.0.0/manifest.json": releaseManifest("5.0.0"),
+        "releases/5.0.0/manifest.json.sig": "sig"
+      })
+    } as Env;
+    const listed = await callWith(policyEnv, "/api/super/releases", { cookie: superSessionCookie });
+    assert.equal(listed.status, 200);
+    const policy = await listed.json<any>();
+    assert.equal(policy.majors.find((m: any) => m.major === 5)?.state, "closed", "a new major above the known ones starts closed");
+    assert.equal(policy.majors.find((m: any) => m.major === 2)?.state, "free", "the majors already in use stay offered");
+    assert.equal(policy.majors.find((m: any) => m.major === 2)?.status, "supported", "a major nobody set is supported");
+    assert.ok(policy.majors.find((m: any) => m.major === 2)?.workstations >= 3, "Greenwood's workstations on 2.8.0 count towards 2.x");
+    for (const version of ["2.20.0", "2.20.1", "2.21.0", "5.0.0"]) {
+      const res = await callWith(policyEnv, "/api/super/releases/classify", { ...json({ version, channel: "stable" }), cookie: superSessionCookie });
+      assert.equal(res.status, 200, `classifying ${version}`);
+    }
+    const token = await enrolOta("WS-LINES");
+    const ask = async (running: string) =>
+      (await callWith(policyEnv, `/api/devices/update${running ? `?running=${running}` : ""}`, { bearer: token })).json<any>();
+    let offer = await ask("2.20.0");
+    assert.equal(offer.release.version, "2.21.0", "a closed major is not offered");
+    assert.equal(offer.security.version, "2.20.1");
+    assert.equal((await ask("")).release.version, "2.21.0", "nor to an updater that does not say what it runs");
+    assert.equal((await ask("5.0.0")).release.version, "5.0.0", "a workstation already on it keeps its major");
+
+    // Only a super admin sets a major's support or its gate, with valid input.
+    const support = (payload: unknown, cookie = superSessionCookie) => callWith(policyEnv, "/api/super/release-support", { ...json(payload), cookie });
+    const majors = (payload: unknown, cookie = superSessionCookie) => callWith(policyEnv, "/api/super/release-majors", { ...json(payload), cookie });
+    for (const cookie of ["", orgSessionCookie, rivalSessionCookie]) {
+      assert.ok([401, 403].includes((await support({ major: 2, status: "end_of_life" }, cookie)).status));
+      assert.ok([401, 403].includes((await majors({ major: 5, action: "open" }, cookie)).status));
+    }
+    for (const payload of [
+      { line: "2.20", status: "end_of_life" },
+      { major: "2", status: "end_of_life" },
+      { major: 2.2, status: "end_of_life" },
+      { major: 10000, status: "end_of_life" },
+      { major: 2, status: "retired" },
+      { major: 2, status: "supported", endOfLifeAt: "tomorrow" },
+      { major: 2, status: "supported", note: 5 }
+    ]) {
+      assert.equal((await support(payload)).status, 400, JSON.stringify(payload));
+    }
+    for (const payload of [{ major: "5", action: "open" }, { major: 5, action: "delete" }, { major: 10000, action: "open" }]) {
+      assert.equal((await majors(payload)).status, 400, JSON.stringify(payload));
+    }
+    assert.equal((await majors({ major: 5, action: "grant", tenantId: "nope" })).status, 404);
+    assert.equal((await majors({ major: 2, action: "grant", tenantId })).status, 409, "a free major needs no grant");
+
+    // Security only: workstations on the major keep its fixes, and none is moved onto it.
+    assert.equal((await support({ major: 2, status: "security_only" })).status, 200);
+    offer = await ask("2.20.0");
+    assert.equal(offer.release.version, "2.20.1", "2.21.0 is a feature release of a security-only major");
+    assert.equal(offer.security.version, "2.20.1");
+    assert.equal((await ask("5.0.0")).release.version, "5.0.0", "a workstation on another major is not moved onto it");
+    // End of life: nothing of the major is offered, security fixes included.
+    const eol = await support({ major: 2, status: "end_of_life", note: "Move to 5." });
+    assert.equal(eol.status, 200);
+    assert.equal((await eol.json<any>()).majors.find((m: any) => m.major === 2).effectiveStatus, "end_of_life");
+    offer = await ask("2.20.0");
+    assert.equal(offer.security, null);
+    assert.equal(offer.release, null, "2.x is at end of life and 5 is closed");
+    assert.equal((await support({ major: 2, status: "supported" })).status, 200);
+    assert.equal((await ask("2.20.0")).release.version, "2.21.0");
+    // An announced date ends the major by itself once it has passed.
+    assert.equal((await support({ major: 2, status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) + 86400 })).status, 200);
+    assert.equal((await ask("2.20.0")).security.version, "2.20.1", "not yet");
+    assert.equal((await support({ major: 2, status: "supported", endOfLifeAt: Math.floor(Date.now() / 1000) - 1 })).status, 200);
+    assert.equal((await ask("2.20.0")).security, null, "the date has passed");
+    assert.equal((await support({ major: 2, status: "supported" })).status, 200);
+
+    // Announcing an end of life tells every organization in its console, and with
+    // notify emails every customer's owner; the ones on the major hear how many run it.
+    const owner = await getDatabase(mockEnv)
+      .prepare("SELECT u.email FROM users u JOIN tenants t ON t.user_id = u.id WHERE t.id = ?")
+      .bind(tenantId)
+      .first<{ email: string }>();
+    const customers = (await activeOrganizationOwners(getDatabase(mockEnv), null)).length;
+    assert.ok(customers > 1, "more than one customer, demos aside");
+    const eolDate = Math.floor(Date.now() / 1000) + 30 * 86400;
+    const announced = await support({ major: 2, status: "supported", endOfLifeAt: eolDate, notify: true });
+    assert.equal(announced.status, 200);
+    assert.equal((await announced.json<any>()).emailed, customers, "every customer is emailed");
+    const mail = [...localOutbox()].reverse().find((m) => m.to === owner!.email.toLowerCase() && /Lab Kiosk 2 reaches/.test(m.subject));
+    assert.ok(mail, "the owner is told");
+    assert.match(mail!.text, /4 of .*'s workstations run Lab Kiosk 2\./, "every Greenwood workstation on a 2.x image");
+    const consoleNotices = await callJson("/api/notifications?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.ok(consoleNotices.data.notifications.some((n: any) => /Lab Kiosk 2 reaches end of life on/.test(n.title) && !n.read));
+    const rivalNotices = await callJson("/api/notifications?tenant=riverside", { cookie: rivalSessionCookie });
+    assert.ok(rivalNotices.data.notifications.some((n: any) => /Lab Kiosk 2 reaches end of life on/.test(n.title)), "every organization");
+    const resent = await support({ major: 2, status: "supported", endOfLifeAt: eolDate, note: "x", notify: true });
+    assert.equal((await resent.json<any>()).emailed, 0, "the same date again tells nobody anything new");
+    const settings = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.deepEqual(
+      settings.data.support.map((l: any) => [l.major, l.status, l.workstations]),
+      [[2, "supported", 4]],
+      "the organization's Updates settings warn about the date"
+    );
+    assert.deepEqual(settings.data.majors.map((m: any) => [m.major, m.access]), [[5, "closed"]]);
+    assert.equal((await support({ major: 2, status: "supported" })).status, 200);
+
+    // A closed major, through the pipeline: asked for, declined, asked for again,
+    // granted, tried on one workstation group, then confirmed for every workstation.
+    const step = (kind: string, payload: unknown, cookie = orgSessionCookie) =>
+      call(`/api/settings/updates/${kind}-major?tenant=greenwood`, { ...json(payload), cookie });
+    const confirm = (cookie: string) => step("confirm", { major: 5 }, cookie);
+    const majorState = async () =>
+      (await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie })).data.majors.map((m: any) => [m.major, m.access]);
+    const greenwoodNotices = async () =>
+      (await callJson("/api/notifications?tenant=greenwood", { cookie: orgSessionCookie })).data.notifications as any[];
+    assert.equal((await confirm(orgSessionCookie)).status, 403, "not granted yet");
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" })).status, 403, "nor tried");
+    assert.equal((await majors({ major: 5, action: "decline", tenantId, reason: "No." })).status, 409, "nothing to decline yet");
+    const noUpdates = await staffWith("no-updates@greenwood.example", ["settings"]);
+    for (const cookie of [rivalSessionCookie, noUpdates]) {
+      assert.equal((await step("request", { major: 5 }, cookie)).status, 403);
+    }
+    assert.equal((await step("request", { major: 2 })).status, 409, "a free major needs no request");
+    assert.equal((await step("request", { major: 5 })).status, 200);
+    assert.equal((await step("request", { major: 5 })).status, 409, "once");
+    assert.deepEqual(await majorState(), [[5, "requested"]]);
+    const greenwoodGrant = async () =>
+      (await (await callWith(policyEnv, "/api/super/releases", { cookie: superSessionCookie })).json<any>()).majors
+        .find((m: any) => m.major === 5)
+        .grants.find((g: any) => g.tenantId === tenantId);
+    assert.equal(typeof (await greenwoodGrant()).requestedAt, "number", "the super admin sees the request");
+    assert.equal((await greenwoodGrant()).grantedAt, null);
+    assert.equal((await majors({ major: 5, action: "decline", tenantId, reason: "x".repeat(501) })).status, 400);
+    assert.equal((await majors({ major: 5, action: "decline", tenantId, reason: "Not on this hardware yet." })).status, 200);
+    assert.deepEqual(await majorState(), [[5, "closed"]], "declined: it may ask again");
+    const declined = (await greenwoodNotices()).find((n) => /request for Lab Kiosk 5 was declined/.test(n.title));
+    assert.ok(declined, "the organization is told");
+    assert.match(declined.body, /Not on this hardware yet\./);
+    assert.equal((await step("request", { major: 5 })).status, 200);
+    assert.equal((await majors({ major: 5, action: "grant", tenantId })).status, 200);
+    assert.ok((await greenwoodNotices()).some((n) => /Lab Kiosk 5 is available to/.test(n.title)), "a grant is told too");
+    assert.deepEqual(await majorState(), [[5, "available"]]);
+    assert.equal((await ask("2.21.0")).release.version, "2.21.0", "granted but not confirmed");
+    const available = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.deepEqual(available.data.majors.map((m: any) => [m.major, m.access, m.newest]), [[5, "available", "5.0.0"]]);
+    assert.equal((await confirm(rivalSessionCookie)).status, 403, "another organization cannot confirm it");
+    assert.equal((await confirm(noUpdates)).status, 403);
+    assert.equal((await step("confirm", { major: "5" })).status, 400);
+
+    // A pilot: only the workstations of one group are offered it.
+    const group = await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Pilot 5" }), cookie: orgSessionCookie });
+    assert.equal(group.res.status, 200);
+    const pilotToken = await enrolOta("WS-PILOT");
+    // A workstation is in the registry, and so in a group, once it has connected.
+    await hubs().connectDevice({ tenantId, clientId: "WS-PILOT", ip: "203.0.113.10", portal: portalContext() });
+    const askAs = async (bearer: string, running: string) =>
+      (await callWith(policyEnv, `/api/devices/update?running=${running}`, { bearer })).json<any>();
+    assert.equal(
+      (await call("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["WS-PILOT"], groupName: "Pilot 5" }), cookie: orgSessionCookie })).status,
+      200
+    );
+    assert.equal((await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients["WS-PILOT"]?.groupName, "Pilot 5");
+    assert.equal((await step("pilot", { major: 5, group: "Nowhere" })).status, 404);
+    assert.equal((await step("pilot", { major: 5, group: " " })).status, 400);
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" }, rivalSessionCookie)).status, 403);
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" }, noUpdates)).status, 403);
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" })).status, 200);
+    const piloting = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.deepEqual(piloting.data.majors.map((m: any) => [m.major, m.access, m.pilotGroup]), [[5, "pilot", "Pilot 5"]]);
+    assert.ok(piloting.data.groups.includes("Pilot 5"), "the console lists the groups to pick from");
+    assert.equal((await askAs(pilotToken, "2.21.0")).release.version, "5.0.0", "the pilot group is offered it");
+    assert.equal((await ask("2.21.0")).release.version, "2.21.0", "a workstation outside it is not");
+    assert.equal((await askAs(pilotToken, "2.20.0")).release.version, "2.21.0", "one step at a time: the newest of its own major first");
+    assert.equal((await greenwoodGrant()).pilotGroup, "Pilot 5");
+    // Deleting the group ends the trial.
+    const gone = await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Pilot gone" }), cookie: orgSessionCookie });
+    assert.equal((await step("pilot", { major: 5, group: "Pilot gone" })).status, 200);
+    assert.equal((await call(`/api/groups/${gone.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
+    assert.deepEqual(await majorState(), [[5, "available"]], "no trial on a group that is gone");
+    assert.equal((await step("pilot", { major: 5, group: "Pilot 5" })).status, 200);
+    assert.equal((await step("pilot", { major: 5, group: null })).status, 200, "ending the trial");
+    assert.deepEqual(await majorState(), [[5, "available"]]);
+    assert.equal((await askAs(pilotToken, "2.21.0")).release.version, "2.21.0", "the trial is over");
+
+    // Confirmed: every workstation, one major at a time.
+    assert.equal((await confirm(orgSessionCookie)).status, 200);
+    assert.equal((await confirm(orgSessionCookie)).status, 409, "once");
+    assert.equal((await ask("2.21.0")).release.version, "5.0.0");
+    assert.equal((await ask("2.20.0")).release.version, "2.21.0", "2.20 goes to 2.21 before 5");
+    // Taking the grant back takes the confirmation with it; opening it to everyone asks again.
+    assert.equal((await majors({ major: 5, action: "ungrant", tenantId })).status, 200);
+    assert.ok((await greenwoodNotices()).some((n) => /Lab Kiosk 5 is no longer available/.test(n.title)));
+    assert.equal((await ask("2.21.0")).release.version, "2.21.0");
+    assert.equal((await majors({ major: 5, action: "open" })).status, 200);
+    assert.ok((await greenwoodNotices()).some((n) => n.title === "Lab Kiosk 5 is available"), "opening it tells every organization");
+    assert.equal((await ask("2.21.0")).release.version, "2.21.0", "open, but not confirmed");
+    assert.equal((await confirm(orgSessionCookie)).status, 200);
+    assert.equal((await ask("")).release.version, "5.0.0");
+    assert.equal((await call(`/api/groups/${group.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
+
+    const platform = await (await call("/api/super/audit-logs?limit=100", { cookie: superSessionCookie })).json<any>();
+    assert.ok(platform.logs.some((l: any) => l.action === "release.support" && /^2 end_of_life/.test(l.details)));
+    assert.ok(platform.logs.some((l: any) => l.action === "release.major" && l.details === "5 open"));
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "update.major_confirm" && l.details === "5"));
+    assert.ok(logs.some((l: any) => l.action === "update.major_request" && l.details === "5"));
+    assert.ok(logs.some((l: any) => l.action === "update.major_pilot" && l.details === "5 group=Pilot 5"));
+    assert.ok(platform.logs.some((l: any) => l.action === "release.major" && l.details === `5 decline tenant=${tenantId}`));
+
+    await majors({ major: 5, action: "close" });
+    for (const version of ["2.20.0", "2.20.1", "2.21.0", "5.0.0"]) {
+      await callWith(policyEnv, "/api/super/releases/revoke", { ...json({ version }), cookie: superSessionCookie });
+    }
+  });
+
+  test("The security rebuild reads each major's support status with the shared token, and an ended major is listed as end of life", async () => {
+    const token = "a".repeat(64);
+    const supportCall = (env: Env, auth?: string, method = "GET") =>
+      worker.fetch(new Request("https://labkiosk.org/api/release-support", { method, headers: auth ? { Authorization: auth } : {} }), env);
+    assert.equal((await supportCall(mockEnv, `Bearer ${token}`)).status, 503, "not configured: refused");
+    const configured = { ...mockEnv, RELEASE_NOTES_TOKEN: token } as Env;
+    for (const auth of [undefined, `Bearer ${"b".repeat(64)}`, token, `Bearer ${token}x`]) {
+      assert.equal((await supportCall(configured, auth)).status, 401, String(auth));
+    }
+    const db = getDatabase(mockEnv);
+    const now = Math.floor(Date.now() / 1000);
+    await setMajorSupport(db, 71, "security_only", null, null, "test");
+    await setMajorSupport(db, 72, "end_of_life", null, null, "test");
+    await setMajorSupport(db, 73, "supported", now - 60, null, "test");
+    const res = await supportCall(configured, `Bearer ${token}`);
+    assert.equal(res.status, 200);
+    const status = new Map(((await res.json<any>()).majors as any[]).map((m) => [m.major, m.status]));
+    assert.equal(status.get(71), "security_only");
+    assert.equal(status.get(72), "end_of_life");
+    assert.equal(status.get(73), "end_of_life", "a passed end-of-life date ends the major by itself");
+    await db.prepare("DELETE FROM release_support WHERE major IN (71, 72, 73)").run();
+  });
+
+  test("Legal terms: registration records them, a new version is asked for, and gates the console after the notice period", async () => {
+    const tenantId = await greenwoodId();
+    const db = getDatabase(mockEnv);
+    const admin = await superCookie();
+    const record = await callJson(`/api/super/legal/acceptances?tenantId=${tenantId}`, { cookie: admin });
+    assert.equal(record.res.status, 200);
+    assert.deepEqual(
+      record.data.acceptances.map((a: any) => [a.document, a.source]).sort(),
+      [["content", "registration"], ["privacy", "registration"], ["terms", "registration"]],
+      "registration records every document in force"
+    );
+    assert.equal((await callJson("/api/legal/status?tenant=greenwood", { cookie: orgSessionCookie })).data.pending.length, 0);
+
+    // A version Greenwood has not accepted: asked for at once, required once the notice period has passed.
+    await db.prepare("DELETE FROM legal_acceptances WHERE tenant_id = ?").bind(tenantId).run();
+    let status = (await callJson("/api/legal/status?tenant=greenwood", { cookie: orgSessionCookie })).data;
+    assert.deepEqual(status.pending.map((d: any) => d.id), ["terms", "content"], "the Content Policy is accepted with the Terms");
+    assert.equal(status.gated, false);
+    assert.equal(status.canAccept, true);
+    let page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(page, /id="legal-notice"/);
+    assert.match(page, /id="btn-check-updates"/, "the console still works during the notice period");
+    await db.prepare("UPDATE legal_versions SET published_at = published_at - ? WHERE document = 'terms'").bind(31 * 86400).run();
+    status = (await callJson("/api/legal/status?tenant=greenwood", { cookie: orgSessionCookie })).data;
+    assert.equal(status.gated, true);
+    page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(page, /Accept the updated terms/);
+    assert.doesNotMatch(page, /id="btn-check-updates"/, "the terms are the page now");
+    const operator = await staffWith("terms-operator@greenwood.example", ["workstations"]);
+    const operatorPage = await (await call("/admin/workstations?tenant=greenwood", { cookie: operator })).text();
+    assert.match(operatorPage, /owner or an administrator needs to accept/);
+    assert.doesNotMatch(operatorPage, /id="form-legal-accept"/);
+
+    // Only the organization's owner or an org_admin accepts, the current version, once.
+    const accept = (versions: unknown, cookie = orgSessionCookie) => call("/api/legal/accept?tenant=greenwood", { ...json({ versions }), cookie });
+    const current = status.pending[0].version;
+    const contentVersion = status.pending[1].version;
+    const both = { terms: current, content: contentVersion };
+    assert.equal((await accept({ terms: current }, operator)).status, 403);
+    assert.equal((await accept({ terms: current }, rivalSessionCookie)).status, 403);
+    assert.ok([400, 403].includes((await accept({ terms: current }, admin)).status), "a platform administrator never accepts for an organization");
+    assert.ok([401, 403].includes((await call("/api/legal/accept?tenant=greenwood", json({ versions: { terms: current } }))).status));
+    assert.equal((await accept({ terms: "1999-01-01" })).status, 409, "an old page");
+    assert.equal((await accept("terms")).status, 400);
+    assert.equal((await accept({ terms: current })).status, 409, "the Content Policy too");
+    const crossSite = await call("/api/legal/accept?tenant=greenwood", {
+      ...json({ versions: { terms: current } }),
+      cookie: orgSessionCookie,
+      headers: { Origin: "https://evil.example", "User-Agent": "Evil" }
+    });
+    assert.equal(crossSite.status, 403);
+    const accepted = await call("/api/legal/accept?tenant=greenwood", {
+      ...json({ versions: both }),
+      cookie: orgSessionCookie,
+      headers: { "User-Agent": "TermsTest/1.0", "CF-Connecting-IP": "198.51.100.90" }
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal((await accept({ terms: current })).status, 409, "once");
+    page = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.doesNotMatch(page, /id="legal-notice"/);
+    assert.match(page, /id="btn-check-updates"/);
+    const after = await callJson(`/api/super/legal/acceptances?tenantId=${tenantId}`, { cookie: admin });
+    const row = after.data.acceptances.find((a: any) => a.source === "console" && a.document === "terms");
+    assert.ok(after.data.acceptances.some((a: any) => a.source === "console" && a.document === "content" && a.version === contentVersion));
+    assert.equal(row.document, "terms");
+    assert.equal(row.version, current);
+    assert.equal(row.user_agent, "TermsTest/1.0");
+    assert.equal(row.ip, "198.51.100.90");
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "legal.accept" && l.details === `terms=${current} content=${contentVersion}`));
+
+    // The platform's view, its CSV and its reminder email; only for a super admin.
+    for (const cookie of ["", orgSessionCookie]) {
+      assert.ok([401, 403].includes((await call("/api/super/legal", { cookie })).status));
+      assert.ok([401, 403].includes((await call(`/api/super/legal/acceptances?tenantId=${tenantId}&format=csv`, { cookie })).status));
+      assert.ok([401, 403].includes((await call("/api/super/legal/notify", { ...json({ document: "terms" }), cookie })).status));
+    }
+    const overview = await callJson("/api/super/legal", { cookie: admin });
+    const terms = overview.data.documents.find((d: any) => d.id === "terms");
+    assert.ok(terms.acceptedBy >= 1);
+    assert.equal(terms.effectiveAt - terms.publishedAt, 30 * 86400);
+    const csv = await call(`/api/super/legal/acceptances?tenantId=${tenantId}&format=csv`, { cookie: admin });
+    assert.match(csv.headers.get("Content-Type") || "", /text\/csv/);
+    assert.match(await csv.text(), /"terms","[0-9-]+","console"/);
+    assert.equal((await call("/api/super/legal/acceptances?tenantId=nope", { cookie: admin })).status, 404);
+    assert.equal((await call("/api/super/legal/notify", { ...json({ document: "cookies" }), cookie: admin })).status, 400);
+    assert.equal((await call("/api/super/legal/notify", { ...json({ document: "privacy" }), cookie: admin })).status, 400);
+    await db.prepare("DELETE FROM legal_acceptances WHERE tenant_id = ? AND source = 'console'").bind(tenantId).run();
+    const owner = await db.prepare("SELECT u.email FROM users u JOIN tenants t ON t.user_id = u.id WHERE t.id = ?").bind(tenantId).first<{ email: string }>();
+    const notified = await callJson("/api/super/legal/notify", { ...json({ document: "terms" }), cookie: admin });
+    assert.equal(notified.res.status, 200);
+    assert.ok(notified.data.emailed >= 1);
+    assert.ok(localOutbox().some((m) => m.to === owner!.email.toLowerCase() && /Updated Lab Kiosk Terms of Service/.test(m.subject)));
+
+    await accept({ terms: current });
+    await db.prepare("UPDATE legal_versions SET published_at = published_at + ? WHERE document = 'terms'").bind(31 * 86400).run();
+  });
+
+  test("The acceptance CSV quotes every field and defuses spreadsheet formulas", () => {
+    const csv = acceptancesCsv([
+      { tenant_id: "t", tenant_name: '=HYPERLINK("x")', user_id: "u", user_email: "a@example.com", document: "terms", version: "2026-10-04", source: "console", accepted_at: 0, ip: null, user_agent: 'Agent "1"' }
+    ]);
+    const line = csv.split("\r\n")[1];
+    assert.match(line, /^"t","'=HYPERLINK\(""x""\)","u"/);
+    assert.match(line, /"Agent ""1"""$/);
+  });
+
+  test("Hosted links: no IP addresses, shorteners, credentials or blocklisted domains", () => {
+    const blocked = ["evil.example"];
+    assert.equal(hostedLinkProblem("https://www.wikipedia.org/", blocked), null);
+    assert.match(String(hostedLinkProblem("http://192.168.1.10/admin", blocked)), /IP address/);
+    assert.match(String(hostedLinkProblem("http://2130706433/", blocked)), /IP address/, "a decimal address is still an address");
+    assert.match(String(hostedLinkProblem("http://[::1]/", blocked)), /IP address/);
+    assert.match(String(hostedLinkProblem("https://bit.ly/abc", blocked)), /shortener/);
+    assert.match(String(hostedLinkProblem("https://www.tinyurl.com/abc", blocked)), /shortener/);
+    assert.match(String(hostedLinkProblem("https://user:pw@example.com/", blocked)), /password/);
+    assert.match(String(hostedLinkProblem("https://login.evil.example/", blocked)), /evil\.example/);
+    assert.equal(hostedLinkProblem("https://notevil.example/", blocked), null, "only the domain and its subdomains");
+  });
+
+  test("Hosted content: the link blocklist, homepage and card takedown, and Report this page", async () => {
+    const tenantId = await greenwoodId();
+    const admin = await superCookie();
+    const block = (payload: unknown, cookie = admin, path = "/api/super/link-blocklist") => call(path, { ...json(payload), cookie });
+    for (const cookie of ["", orgSessionCookie]) {
+      assert.ok([401, 403].includes((await call("/api/super/link-blocklist", { cookie })).status));
+      assert.ok([401, 403].includes((await block({ domain: "evil.example" }, cookie)).status));
+      assert.ok([401, 403].includes((await call("/api/super/tenants/content", { ...json({ tenantId, target: "homepage", action: "takedown", reason: "x" }), cookie })).status));
+    }
+    for (const domain of ["", "https://evil.example/", "evil", "192.168.1.1"]) {
+      assert.equal((await block({ domain })).status, 400, domain);
+    }
+    assert.equal((await block({ domain: "Evil.Example.", reason: "Phishing" })).status, 200);
+    const listed = await callJson("/api/super/link-blocklist", { cookie: admin });
+    assert.deepEqual(listed.data.domains.map((d: any) => [d.domain, d.reason]), [["evil.example", "Phishing"]]);
+
+    // Organizations cannot publish such links.
+    const card = (url: string) => call("/api/portal-sites?tenant=greenwood", { ...json({ title: "Card", url }), cookie: orgSessionCookie });
+    assert.equal((await card("https://login.evil.example/")).status, 400);
+    assert.equal((await card("https://bit.ly/x")).status, 400);
+    assert.equal((await card("http://10.0.0.5/")).status, 400);
+    const homepage = (blocks: unknown[]) => call("/api/tenant/homepage?tenant=greenwood", { ...json({ headline: "", intro: "", blocks }), cookie: orgSessionCookie });
+    const refused = await homepage([{ title: "Short", body: "x", url: "https://tinyurl.com/x" }]);
+    assert.equal(refused.status, 400);
+    assert.match((await refused.json<any>()).error, /Block 1 \(Short\)/);
+    assert.equal((await homepage([{ title: "Maps", body: "x", url: "https://maps.example.org/" }])).status, 200);
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "homepage.update" && /links: https:\/\/maps\.example\.org\//.test(l.details)), "link changes are audited");
+    assert.equal((await block({ domain: "evil.example" }, admin, "/api/super/link-blocklist/remove")).status, 200);
+    assert.equal((await block({ domain: "evil.example" }, admin, "/api/super/link-blocklist/remove")).status, 404);
+
+    // Every hosted page carries Report this page, to the contact form preset to legal.
+    for (const page of ["/?tenant=greenwood", "/home?tenant=greenwood"]) {
+      const html = await (await call(page)).text();
+      assert.match(html, /href="[^"]*\/contact\?reason=legal&amp;report=[^"]+"[^>]*>Report this page</, page);
+    }
+
+    // Taking the homepage down replaces it with a neutral notice and tells the owner.
+    const content = (payload: Record<string, unknown>) => callJson("/api/super/tenants/content", { ...json({ tenantId, ...payload }), cookie: admin });
+    assert.equal((await content({ target: "homepage", action: "takedown" })).res.status, 400, "a reason is required");
+    assert.equal((await content({ target: "page", action: "takedown", reason: "x" })).res.status, 400);
+    assert.equal((await content({ tenantId: "nope", target: "homepage", action: "takedown", reason: "x" })).res.status, 404);
+    const down = await content({ target: "homepage", action: "takedown", reason: "Reported as misleading." });
+    assert.equal(down.res.status, 200);
+    assert.equal(down.data.emailSent, true);
+    assert.equal((await content({ target: "homepage", action: "takedown", reason: "again" })).res.status, 409);
+    let html = await (await call("/?tenant=greenwood")).text();
+    assert.match(html, /This content is unavailable/);
+    assert.doesNotMatch(html, /maps\.example\.org/);
+    let consolePage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(consolePage, /id="takedown-notice"/);
+    assert.match(consolePage, /Reported as misleading\./);
+    assert.equal((await content({ target: "homepage", action: "restore" })).res.status, 200);
+    html = await (await call("/?tenant=greenwood")).text();
+    assert.match(html, /maps\.example\.org/);
+
+    // A card: hidden from the User Portal, cannot be added again, and comes back on restore.
+    assert.equal((await card("https://cards.example.org/quiz")).status, 200);
+    assert.equal((await content({ target: "card", action: "takedown", url: "https://cards.example.org/other", reason: "x" })).res.status, 404);
+    assert.equal((await content({ target: "card", action: "takedown", url: "javascript:alert(1)", reason: "x" })).res.status, 400);
+    assert.equal((await content({ target: "card", action: "takedown", url: "https://cards.example.org/quiz", reason: "Copyright complaint." })).res.status, 200);
+    assert.doesNotMatch(await (await call("/home?tenant=greenwood")).text(), /cards\.example\.org\/quiz/);
+    assert.equal((await card("https://cards.example.org/quiz")).status, 403, "the same link cannot simply be added again");
+    consolePage = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
+    assert.match(consolePage, /Copyright complaint\./);
+    assert.equal((await content({ target: "card", action: "restore", url: "https://cards.example.org/quiz" })).res.status, 200);
+    assert.match(await (await call("/home?tenant=greenwood")).text(), /cards\.example\.org\/quiz/);
+    const platform = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(platform.logs.some((l: any) => l.action === "content.takedown" && /^card https:\/\/cards\.example\.org\/quiz/.test(l.details)));
+    assert.ok(platform.logs.some((l: any) => l.action === "content.restore" && l.details.startsWith("homepage")));
+
+    // Clean up for later tests.
+    const sites = (await callJson("/api/portal-sites?tenant=greenwood")).data.sites as Array<{ id: string; url: string }>;
+    for (const site of sites.filter((s) => s.url === "https://cards.example.org/quiz")) {
+      await call(`/api/portal-sites/${site.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    }
+    await homepage([]);
+  });
+
   test("The consoles offer updates only to those who may use them", async () => {
     const admin = await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text();
     assert.match(admin, /id="btn-check-updates"/);
@@ -7360,7 +8266,49 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0017"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0018"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0019"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0032"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0033"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0034"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0035"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0036"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
+  });
+
+  test("0033 gives organizations already using Remote Control five seats, and new approvals one", () => {
+    const db = migratedDb("0033");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, remote_control_status, created_at, updated_at) VALUES ('on', 'u1', 'On', 'on', 'active', 'approved', 1, 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, remote_control_status, created_at, updated_at) VALUES ('off', 'u1', 'Off', 'off', 'active', 'none', 1, 1);
+    `);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0033_remote_control_seats.sql"), "utf8"));
+    db.exec("COMMIT;");
+    const seats = (id: string) => (db.prepare("SELECT remote_control_seats AS n, remote_control_revoked_at AS r FROM tenants WHERE id = ?").get(id) as { n: number; r: number | null });
+    assert.deepEqual({ ...seats("on") }, { n: 5, r: null });
+    assert.deepEqual({ ...seats("off") }, { n: 1, r: null });
+    assert.throws(() => db.exec("UPDATE tenants SET remote_control_seats = 1001 WHERE id = 'on'"), /CHECK/);
+  });
+
+  test("0032 gives every organization a workstation limit of 45, or what it already has when that is more", () => {
+    const db = migratedDb("0032");
+    db.exec(`
+      INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES ('u1', 'a@example.com', 'h', 's', 'org_admin', 'A', 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('small', 'u1', 'Small', 'small', 'active', 1, 1);
+      INSERT INTO tenants (id, user_id, name, subdomain, status, created_at, updated_at) VALUES ('big', 'u1', 'Big', 'big', 'active', 1, 1);
+    `);
+    const token = db.prepare("INSERT INTO device_tokens (id, token_hash, tenant_id, client_id, created_at, last_used_at, revoked) VALUES (?, ?, ?, ?, 1, 1, ?)");
+    for (let i = 0; i < 60; i++) token.run(`b${i}`, `hb${i}`, "big", `PC-${i}`, 0);
+    token.run("b-again", "hb-again", "big", "PC-0", 0);
+    for (let i = 0; i < 10; i++) token.run(`r${i}`, `hr${i}`, "big", `GONE-${i}`, 1);
+    for (let i = 0; i < 3; i++) token.run(`s${i}`, `hs${i}`, "small", `PC-${i}`, 0);
+    db.exec("BEGIN;");
+    db.exec(fs.readFileSync(path.join(migrationDir, "0032_workstation_limit.sql"), "utf8"));
+    db.exec("COMMIT;");
+    const limit = (id: string) => (db.prepare("SELECT workstation_limit AS n FROM tenants WHERE id = ?").get(id) as { n: number }).n;
+    assert.equal(limit("small"), 45);
+    assert.equal(limit("big"), 60, "counted by workstation, valid tokens only");
+    assert.throws(() => db.exec("UPDATE tenants SET workstation_limit = 0 WHERE id = 'small'"), /CHECK/);
   });
 
   test("0019 drops the tunnel columns and keeps every organization, workstation and session", () => {

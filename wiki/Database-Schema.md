@@ -15,7 +15,7 @@ This is the single most important rule when touching the database, and the test 
 
 Both must be changed together. `test/worker.test.ts` compares them and fails on drift with `Columns of "x" differ between SCHEMA_SQL and migrations/`.
 
-**Never edit an applied migration.** Add a new numbered file — `0032_feature.sql` — and mirror the change in `SCHEMA_SQL`.
+**Never edit an applied migration.** Add a new numbered file — `0034_feature.sql` — and mirror the change in `SCHEMA_SQL`.
 
 ```bash
 # Local
@@ -64,6 +64,15 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0029_security_updates.sql` | Security releases at the next boot: `tenants.security_updates`; `client_devices.update_kind`, `update_since` |
 | `0030_lan_sharing.sql` | `tenants.lan_sharing`: the workstations at one site copy a release from each other instead of each downloading it |
 | `0031_restart_logs.sql` | `workstation_issues.log_text`: the end of the journal a restart report carried, cleared after 30 days |
+| `0032_workstation_limit.sql` | `tenants.workstation_limit`: how many workstations an organization may enrol (45 by default, or what it already had when more) |
+| `0033_remote_control_seats.sql` | `tenants.remote_control_seats` (concurrent sessions; 5 for organizations already approved, 1 for new approvals) and `remote_control_revoked_at` |
+| `0034_release_lines.sql` | The platform tables `release_lines` (each line's support status and end-of-life date) and `release_majors` (whether a major is open), and `major_upgrade_grants` (a closed major granted to one organization, and its administrator's confirmation) |
+| `0035_legal_acceptances.sql` | `legal_acceptances` (append-only, no foreign keys: who accepted which version of which legal document, when, from where) and `legal_versions` (when each version was first served) |
+| `0036_hosted_content.sql` | `link_blocklist` (domains no hosted page may link to); `tenants.homepage_takedown_at`, `homepage_takedown_reason`; `portal_sites.takedown_at`, `takedown_reason` |
+| `0037_license_plan.sql` | `tenants.license_plan` (`education`, `evaluation`, `subscriber`, `commercial`, or NULL) and `license_expires_at` |
+| `0038_notifications.sql` | `notifications` and `notification_reads` (the platform's notifications in organization consoles); `release_lines.eol_reminder_days` |
+| `0039_major_upgrade_pipeline.sql` | `major_upgrade_grants` gains `requested_by`/`requested_at` (an organization asked for a closed major) and `pilot_group`/`pilot_by`/`pilot_at` (the workstation group it tries a major on before confirming it) |
+| `0040_release_support_per_major.sql` | `release_support`: support status and end of life per major release, replacing `release_lines` (dropped; it never reached a release, so its rows are not carried over) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -116,12 +125,18 @@ One row per organization. This table has accumulated the most columns because it
 | `update_channel` | TEXT | `stable` (default) \| `beta`: which classified releases its workstations are offered; `beta` also takes `stable` ones |
 | `security_updates` | TEXT | `next_boot` (default) \| `approval`: whether a security release for a workstation's line installs at its next start by itself, or waits for an administrator |
 | `lan_sharing` | INTEGER | `1` when the organization's workstations share a release on their local network; default `0` |
+| `workstation_limit` | INTEGER | How many workstations may hold a valid device token (1–100000, default 45); set by a super admin at approval and under Organizations. Enrolment past it answers 403; a workstation that still holds a valid token always enrols again |
+| `remote_control_seats` | INTEGER | Remote Control sessions that may be open at once (1–1000); set when Remote Control is approved |
+| `remote_control_revoked_at` | INTEGER | When a super admin revoked Remote Control (status back to `rejected`); NULL otherwise |
 | `default_lock_message` | TEXT | Used when a `lock` command carries no message |
 | `portal_title` / `portal_subtitle` / `portal_description` / `portal_footer` | TEXT | User Portal copy |
 | `broadcast_url` | TEXT | Active synchronised page, or NULL |
 | `broadcast_epoch` | INTEGER | Monotonic marker; `0` when no broadcast is active |
 | `home_route` | TEXT | `/` (organization homepage) or `/home` (User Portal); where workstations land |
 | `homepage_headline` / `homepage_intro` / `homepage_blocks` | TEXT | Organization homepage copy; blocks are JSON, sanitised on the way in and escaped on the way out |
+| `homepage_takedown_at` / `homepage_takedown_reason` | INTEGER / TEXT | Set while a super admin has the homepage taken down (`0036`); it shows a neutral notice |
+| `license_plan` | TEXT | Which grant of `LICENSE` applies: `education`, `evaluation`, `subscriber`, `commercial`; NULL until a super admin records it (`0037`) |
+| `license_expires_at` | INTEGER | When the license ends (00:00 UTC of the date set); NULL for no end date. Once passed, new enrolments and Remote Control are refused; enrolled workstations keep working (`0037`, `src/license.ts`) |
 | `created_at` / `updated_at` | INTEGER | |
 
 `broadcast_url` and `broadcast_epoch` live here rather than in worker memory because isolates are per-colocation and short-lived. When they were module-level state, workstations in different colos disagreed about the current page and a recycled isolate forgot the broadcast entirely. A broadcast sent to **selected** workstations is recorded on each of their `client_devices` rows instead; the heartbeat hands a workstation whichever of the two is newer.
@@ -150,6 +165,7 @@ User Portal cards.
 | `order_index` | INTEGER | Display order |
 | `is_active` | INTEGER | `0` or `1` |
 | `created_at` | INTEGER | |
+| `takedown_at` / `takedown_reason` | INTEGER / TEXT | Set when a super admin takes the card down (`0036`); it is made inactive too |
 
 ### `client_devices`
 
@@ -283,6 +299,73 @@ The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when 
 | `classified_at` / `classified_by` | INTEGER / TEXT | Last classification, and the super admin who made it |
 | `revoked_at` | INTEGER | Set once, for good |
 
+### `release_support`
+
+A major release's support status (`0040`), covering every release of that major. **No `tenant_id`**; a major with no row is supported.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `major` | INTEGER PK | e.g. `2` for every 2.x; 0 to 9999 |
+| `status` | TEXT | `supported` \| `security_only` (only its security releases, only to workstations already on it) \| `end_of_life` (nothing offered, no security rebuilds, not listed on `/download`) |
+| `end_of_life_at` | INTEGER | Announced date; once passed the major is end of life whatever `status` says |
+| `note` | TEXT | Shown to organizations on the major and added to the email |
+| `eol_reminder_days` | INTEGER | The last end-of-life reminder sent for `end_of_life_at`: `60`, `30`, `7`, or `0` once passed; NULL when none yet. A new date resets it |
+| `updated_at` / `updated_by` | INTEGER / TEXT | Last change, and the super admin who made it |
+
+### `release_majors`
+
+Whether a major release is open (`0034`). **No `tenant_id`.** A major with no row is offered to everyone with no confirmation, as before; the Worker adds a closed row (`open = 0`) when it records the first release of a major above every one it has.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `major` | INTEGER PK | e.g. `3` |
+| `open` | INTEGER | 1: open to every organization that confirms it; 0: closed, only to organizations granted it |
+| `updated_at` / `updated_by` | INTEGER / TEXT | |
+
+### `major_upgrade_grants`
+
+One organization's standing with a major that has a `release_majors` row (`0034`, `0039`). Its workstations are moved to that major only when it is open or granted **and** `confirmed_at` is set; before that, only the workstations of `pilot_group` are.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `tenant_id` | TEXT FK | → `tenants.id`, `ON DELETE CASCADE`; PK with `major` |
+| `major` | INTEGER | |
+| `granted_by` / `granted_at` | TEXT / INTEGER | The super admin who granted a closed major; NULL when it is open to all |
+| `confirmed_by` / `confirmed_at` | TEXT / INTEGER | The organization's staff member (`updates` permission) who confirmed it |
+| `requested_by` / `requested_at` | TEXT / INTEGER | The staff member who asked for the closed major (`0039`); a declined request deletes the row |
+| `pilot_group` / `pilot_by` / `pilot_at` | TEXT / TEXT / INTEGER | The workstation group (`workstation_groups.name`) the organization tries the major on, who chose it and when (`0039`); cleared when the group is deleted |
+
+### `legal_acceptances`
+
+The evidence of what each organization agreed to (`0035`, `src/legal.ts`). **Append-only and without foreign keys**: nothing updates or deletes a row, and it outlives the organization and the user, so the organization's name and the user's email are copied in.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT PK | |
+| `tenant_id` / `tenant_name` | TEXT | The organization, and its name at the time |
+| `user_id` / `user_email` | TEXT | Who accepted, and their email at the time |
+| `document` | TEXT | `terms` \| `privacy` \| `aup` \| `content` |
+| `version` | TEXT | The version in `LEGAL_DOCUMENTS` |
+| `source` | TEXT | `registration` \| `console` |
+| `accepted_at` | INTEGER | |
+| `ip` / `user_agent` | TEXT | Where it came from |
+
+### `notifications`
+
+Notifications the platform shows in organization consoles (`0038`, `src/notifications.ts`). Columns: `id` (PK), `tenant_id` (FK, cascade; **NULL = every organization**, shown only to organizations that existed when it was written), `kind` (`general`, `account`, `release`, `legal`, `license`, `content`, `remote_control`), `title`, `body`, `created_at`, `created_by` (NULL when the platform wrote it by itself).
+
+### `notification_reads`
+
+Who dismissed which notification (`0038`): `notification_id` (FK, cascade), `user_id` (FK, cascade), `read_at`; PK (`notification_id`, `user_id`). Each member of staff dismisses for themselves.
+
+### `link_blocklist`
+
+Domains no organization homepage link or User Portal card may point to, including their subdomains (`0036`, `src/link_rules.ts`). **No `tenant_id`.** Columns: `domain` (PK), `reason`, `added_at`, `added_by`.
+
+### `legal_versions`
+
+When the Worker first served each document version (`0035`). An organization that has not accepted a required document's current version sees a notice in its console, and 30 days after `published_at` the console asks before anything else. `notified_at` is when a super admin last emailed organizations about it.
+
 ### `tenant_users`
 
 Staff accounts delegated by an organization.
@@ -344,7 +427,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0032_<description>.sql` (the next number after `0031`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0041_<description>.sql` (the next number after `0040`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

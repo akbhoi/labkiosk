@@ -11,7 +11,7 @@ Authoritative detail: `cloudflare-control/AGENTS.md` Rules 3, 3b, 3c; reference:
 
 - `migrations/NNNN_name.sql` is what a deployed D1 has; `SCHEMA_SQL` in `src/db.ts` builds the
   in-memory database for tests and `pnpm dev`. **Change both.**
-- Add a **new** numbered file (next: `0032_…`). **Never edit or rename an applied migration** —
+- Add a **new** numbered file (next: `0034_…`). **Never edit or rename an applied migration** —
   wrangler tracks them by file name, so a rename re-runs it (that is why `0008_school_homepage.sql`
   keeps its name).
 - Every query that touches tenant data filters by `tenant_id`; index what you query on.
@@ -143,7 +143,25 @@ reported about the update it is fetching or holding (written back by OrgHub), se
 `client_devices.update_kind`, `update_since`. `0030` adds `tenants.lan_sharing` (0 default, or 1:
 share releases on the LAN, phase 5); sites and peers are live hub state, not columns. `0031` adds
 `workstation_issues.log_text`: a restart report's journal tail, nulled after 30 days while the
-issue itself stays for 90.
+issue itself stays for 90. `0032` adds `tenants.workstation_limit` (45 default, CHECK 1–100000)
+and raises it to the enrolled count for an organization that already had more. `0033` adds
+`tenants.remote_control_seats` (1 default, 5 for organizations already approved) and
+`remote_control_revoked_at`; revoking sets the status back to `rejected` rather than adding a value
+to its CHECK, which would need the cascade-safe rebuild of `tenants`. `0034` adds the platform
+tables `release_lines` (no row = supported) and `release_majors` (no row = free, as before; a
+closed row is added by `syncReleases` for a new major), and `major_upgrade_grants`
+(`tenant_id` FK, cascade). `0035` adds `legal_acceptances` (append-only and deliberately without
+foreign keys, so the record survives deleting the organization) and `legal_versions`. `0036` adds
+`link_blocklist` and the takedown columns on `tenants` (homepage) and `portal_sites` (a card taken
+down is also `is_active = 0`). `0037` adds `tenants.license_plan` (CHECK `education`, `evaluation`,
+`subscriber`, `commercial`, or NULL) and `license_expires_at` (`src/license.ts`). `0038` adds
+`notifications` (`tenant_id` FK cascade, NULL for every organization), `notification_reads`
+(per-user dismissal) and `release_lines.eol_reminder_days` (`src/notifications.ts`). `0039` adds
+the major upgrade pipeline's columns to `major_upgrade_grants`: `requested_by`/`requested_at` and
+`pilot_group`/`pilot_by`/`pilot_at` (a group name, cleared by `endOrphanedMajorPilots` when the
+group is deleted). `0040` adds `release_support` (support status and end of life per major
+release, `major` INTEGER PK; no row = supported) and drops `0034`'s per-line `release_lines`, which
+never reached a release: end of life is set per major only.
 
 **Two-factor sign-in** (`0021`). `user_two_factor` (one row per user) holds the TOTP secret,
 `enabled_at` (NULL while being set up), `last_totp_step` (a code works once) and the recovery codes

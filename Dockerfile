@@ -61,6 +61,9 @@ ARG WITH_INTL_FONTS=1
 # runs Chromium as an unprivileged user with its sandbox on, as the real one does.
 # The upgrade pulls in security fixes the base image does not carry yet, so a
 # stale debian:bookworm-slim never ships (the publish scan fails on fixed criticals).
+# CI passes the date here: a new value rebuilds the package layer below at
+# least once a day, so a cached layer never keeps a package with a fixed CVE.
+ARG APT_REFRESH=
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
     xvfb \

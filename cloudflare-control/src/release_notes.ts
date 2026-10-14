@@ -18,7 +18,7 @@
 
 import { Env, WorkersAiBinding } from "./types";
 import { BUG_REPORT_AI_MODEL, modelText } from "./bug_reports";
-import { compareVersions } from "./releases";
+import { compareVersions, releaseMajor } from "./releases";
 
 /** The repository releases are published in. */
 export const RELEASES_REPO = "akbhoi/labkiosk";
@@ -78,14 +78,35 @@ export async function listReleaseNotes(db: D1Database, limit = RELEASES_SHOWN): 
     .slice(0, Math.max(1, Math.min(20, limit)));
 }
 
+/** One major release as /download lists it. */
+export interface MajorDownload {
+  major: number;
+  /** Its newest release with an ISO: what a new install of this major starts from. */
+  note: ReleaseNote;
+  /**
+   * Its newest release when that is newer than `note` and has no ISO (a
+   * security rebuild): installed workstations receive it over the air.
+   */
+  overTheAir: ReleaseNote | null;
+}
+
 /**
- * The newest release that has an ISO: what a new install starts from. A
- * security release ships its image to workstations over the air and has none,
- * so it is listed with the others but never offered as the download.
+ * The newest release of each major, newest major first: 3.1.0 stands for 3.x,
+ * not 3.0.0 beside it. A security release ships its image to workstations over
+ * the air and has no ISO, so the major is offered by its newest release that
+ * has one, with the newer security release named beside it.
  */
-export async function latestIsoRelease(db: D1Database): Promise<ReleaseNote | null> {
-  const result = await db.prepare("SELECT * FROM release_notes WHERE iso_url IS NOT NULL").all<ReleaseNote>();
-  return (result.results || []).filter((note) => TAG_PATTERN.test(note.tag)).sort(byVersion)[0] ?? null;
+export async function majorDownloads(db: D1Database): Promise<MajorDownload[]> {
+  const result = await db.prepare("SELECT * FROM release_notes").all<ReleaseNote>();
+  const notes = (result.results || []).filter((note) => TAG_PATTERN.test(note.tag)).sort(byVersion);
+  const byMajor = new Map<number, MajorDownload>();
+  for (const note of notes) {
+    const major = releaseMajor(note.tag.slice(1));
+    const entry = byMajor.get(major);
+    if (!entry) byMajor.set(major, { major, note, overTheAir: null });
+    else if (!entry.note.iso_url && !entry.overTheAir && note.iso_url) byMajor.set(major, { major, note, overTheAir: entry.note });
+  }
+  return [...byMajor.values()];
 }
 
 /** One sentence, on one line, no longer than a line of a changelog should be. */
