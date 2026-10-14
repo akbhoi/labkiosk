@@ -166,6 +166,9 @@ export interface EmailOutcome {
   emailProblem: string | null;
 }
 
+/** How many notification emails are sent at once. */
+const EMAILS_AT_ONCE = 10;
+
 /**
  * Email a notification to the owners it reaches. `text` builds each message's
  * body for one organization, between the greeting and the signature.
@@ -182,20 +185,28 @@ export async function emailOrganizations(
   }
   let emailed = 0;
   let emailFailed = 0;
-  for (const owner of owners) {
-    try {
-      await sendMail(env, {
-        to: owner.email,
-        toName: owner.ownerName,
-        subject,
-        text: `Hello ${owner.ownerName || ""},\n\n${text(owner)}\n\nLab Kiosk`,
-        template: { name: "notice", title: subject }
-      });
-      emailed++;
-    } catch (err) {
-      emailFailed++;
-      console.error(`[Worker] Could not email ${owner.name} (${subject}):`, err);
-    }
+  // A few at a time: one by one, every customer's owner would outlast the request.
+  for (let i = 0; i < owners.length; i += EMAILS_AT_ONCE) {
+    const batch = owners.slice(i, i + EMAILS_AT_ONCE);
+    const results = await Promise.allSettled(
+      batch.map((owner) =>
+        sendMail(env, {
+          to: owner.email,
+          toName: owner.ownerName,
+          subject,
+          text: `Hello ${owner.ownerName || ""},\n\n${text(owner)}\n\nLab Kiosk`,
+          template: { name: "notice", title: subject }
+        })
+      )
+    );
+    results.forEach((result, j) => {
+      if (result.status === "fulfilled") {
+        emailed++;
+      } else {
+        emailFailed++;
+        console.error(`[Worker] Could not email ${batch[j].name} (${subject}):`, result.reason);
+      }
+    });
   }
   return { emailed, emailFailed, emailProblem: null };
 }
