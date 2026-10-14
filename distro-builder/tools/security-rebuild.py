@@ -10,7 +10,8 @@ test_security_rebuild.py) instead of living in shell.
               with --policy (the controller's GET /api/release-support), every
               line that can update over the air and whose major release is not
               at end of life; without it, the latest two -- and for each the
-              newest tag and the version its rebuild gets (patch + 1).
+              newest tag and the version its rebuild gets (patch + 1, past any
+              version already tagged or, with --published, already in R2).
     check     which packages installed in an image (its dpkg status file) have
               a newer version in the Debian security archive. The index is
               read from --index files, or fetched from --mirror.
@@ -103,7 +104,37 @@ def end_of_life_majors(policy_text):
     return ended
 
 
-def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, end_of_life=None):
+def published_versions(text):
+    """
+    The versions already in the R2 releases bucket, from a listing with one
+    folder name per line (such as `2.10.1` or `releases/2.10.1/`). Anything
+    else on a line is an error: a listing that cannot be read must not let a
+    rebuild take a version that is already published.
+    """
+    versions = set()
+    for raw in text.splitlines():
+        name = raw.strip()
+        if not name:
+            continue
+        if name.startswith("releases/"):
+            name = name[len("releases/"):]
+        name = name.rstrip("/")
+        if not VERSION_PATTERN.match(name):
+            raise ValueError(f"the list of published releases has a line that is not a version: {raw!r}")
+        versions.add(name)
+    return versions
+
+
+def next_free_version(major, minor, patch, taken):
+    """The first version of the line above `patch` that no tag and no published release has."""
+    for candidate in range(patch + 1, 10000):
+        version = f"{major}.{minor}.{candidate}"
+        if version not in taken:
+            return version
+    raise ValueError(f"the line {major}.{minor} has no free patch version left")
+
+
+def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, end_of_life=None, published=()):
     """
     The release lines to rebuild, newest first, among the stable tags from
     `first` on, each with its newest tag and the version its rebuild gets.
@@ -111,6 +142,12 @@ def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, e
     every other major; without it, the `kept` highest lines. A pre-release tag is never a base:
     it is not offered to a stable organization, and its fixes arrive with the
     release it leads to.
+
+    The rebuild's version is the base's patch + 1, skipping every version that
+    is already a tag or already `published` in R2 without one (a run that
+    uploaded its release and then could not push its tag): the controller
+    keeps the first manifest it sees for a version, so a version is never
+    built twice.
     """
     floor = stable_version("v" + first)
     newest = {}
@@ -136,6 +173,10 @@ def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, e
             raise ValueError(f"{only_line} is not one of the lines kept up to date: "
                              f"{', '.join('.'.join(map(str, line)) for line in chosen) or 'none'}")
         chosen = [wanted]
+    taken = set(published)
+    for tag in tags:
+        if VERSION_PATTERN.match(tag[1:] if tag[:1] in ("v", "V") else ""):
+            taken.add(tag[1:])
     plan = []
     for line in chosen:
         (major, minor, patch), tag = newest[line]
@@ -143,7 +184,7 @@ def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, e
             "line": f"{major}.{minor}",
             "tag": tag,
             "base": f"{major}.{minor}.{patch}",
-            "version": f"{major}.{minor}.{patch + 1}",
+            "version": next_free_version(major, minor, patch, taken),
             "newest": line == max(newest),
         })
     return plan
@@ -371,6 +412,8 @@ def main(argv=None):
     lines_parser.add_argument("--line", help="only this line, such as 2.9")
     lines_parser.add_argument("--policy", help="the controller's GET /api/release-support answer, as a file: "
                               "rebuild every line whose major is not at end of life")
+    lines_parser.add_argument("--published", help="the folders of the R2 releases bucket, one per line, as a file: "
+                              "a rebuild never takes a version already published there")
     lines_parser.add_argument("tags", nargs="*")
     check_parser = sub.add_parser("check", help="installed packages with a newer version in the security archive")
     check_parser.add_argument("--status", required=True, help="the image's var/lib/dpkg/status")
@@ -396,7 +439,11 @@ def main(argv=None):
             if args.policy:
                 with open(args.policy, "r", encoding="utf-8") as handle:
                     ended = end_of_life_majors(handle.read())
-            print(json.dumps(plan_lines(args.tags, args.line, end_of_life=ended)))
+            published = set()
+            if args.published:
+                with open(args.published, "r", encoding="utf-8") as handle:
+                    published = published_versions(handle.read())
+            print(json.dumps(plan_lines(args.tags, args.line, end_of_life=ended, published=published)))
         elif args.command == "check":
             with open(args.status, "r", encoding="utf-8") as handle:
                 installed = installed_packages(handle.read())

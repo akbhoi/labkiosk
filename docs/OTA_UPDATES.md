@@ -544,8 +544,13 @@ and by hand (one line, `force`, `dry_run`):
    (checked against its `.sha256`); cached by tag.
 3. Compared with Debian's `bookworm-security` `Packages` indices (`check`; Debian version order as
    `dpkg --compare-versions`, tested against dpkg itself). Nothing newer, nothing built.
-4. Otherwise the tag's own source, with only its version raised one patch in the four files that
-   carry it (`bump`), committed and tagged locally, built with the builder image of that tree.
+4. Otherwise the tag's own source, with its version raised to the next patch that no tag and no
+   `releases/<version>/` folder in R2 has (`lines --published`: a run that uploaded its release
+   but could not push its tag leaves one, and the controller keeps the first manifest it reads
+   for a version), in the four files that carry it (`bump`). Its `.github/workflows` are replaced
+   with the default branch's, because GitHub refuses a `GITHUB_TOKEN` push of a tag whose
+   workflow files differ from the default branch's; they are not in the image. Committed and
+   tagged locally, built with the builder image of that tree.
 5. The new image's packages are checked again (`check --fail-if-outdated`): an image still missing
    a fix the archive has is refused, as one built without the security archive would be.
 6. That release's own `boot-test.sh`, then signed like a tag build but with

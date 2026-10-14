@@ -5,9 +5,9 @@ name: Security rebuild
 # platform has not put at end of life (the controller's GET /api/release-support), compare the
 # packages of the line's newest release with the Debian security archive. When
 # one of them has a fix, rebuild that release's own source -- unchanged but for
-# its version, one patch up -- so live-build installs the fixed packages, boot-
-# test it, sign it as a `security` release of its base, and publish it to R2
-# like build-iso.yml does. Its GitHub release carries the notes and the image's
+# its version, the next patch that no tag and no R2 release has -- so
+# live-build installs the fixed packages, boot-test it, sign it as a `security`
+# release of its base, and publish it to R2 like build-iso.yml does. Its GitHub release carries the notes and the image's
 # package list, but no ISO: workstations download the image from R2, and a new
 # install starts from the newest feature release's ISO and takes the security
 # release when it is offered. A super admin still classifies it on the
@@ -88,13 +88,50 @@ jobs:
           fi
           jq . "$policy"
 
+      # The versions already in R2. A run that uploaded its release and then
+      # could not push its tag leaves one there; the controller keeps the first
+      # manifest it reads for a version, so the next rebuild of that line takes
+      # the patch after it instead of building the same version again.
+      - name: Read which versions are already published
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_RELEASES_BUCKET: ${{ vars.R2_RELEASES_BUCKET }}
+          PUBLISH: ${{ github.event_name == 'schedule' || !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          published="$RUNNER_TEMP/published.txt"
+          : > "$published"
+          missing=""
+          for name in R2_ACCESS_KEY_ID:AWS_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY:AWS_SECRET_ACCESS_KEY CLOUDFLARE_ACCOUNT_ID:CLOUDFLARE_ACCOUNT_ID R2_RELEASES_BUCKET:R2_RELEASES_BUCKET; do
+            if [ -z "$(printenv "${name#*:}")" ]; then missing="$missing ${name%%:*}"; fi
+          done
+          if [ -n "$missing" ]; then
+            if [ "$PUBLISH" = "true" ]; then
+              echo "::error::A rebuild that publishes must know the versions already in R2, and these are not set:$missing. See distro-builder/README.md 'Over-the-air releases'."
+              exit 1
+            fi
+            echo "::warning::Dry run without R2 settings ($missing): versions are chosen from the tags alone."
+            exit 0
+          fi
+          listing="$(aws s3api list-objects-v2 --endpoint-url "https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --bucket "$R2_RELEASES_BUCKET" --prefix releases/ --delimiter / \
+            --query 'CommonPrefixes[].Prefix' --output text)"
+          # An empty bucket answers "None"; the planner refuses any other line that is not a version.
+          printf '%s\n' "$listing" | tr '\t' '\n' | { grep -v -e '^None$' -e '^$' || true; } > "$published"
+          echo "Published in R2: $(tr '\n' ' ' < "$published")"
+
       - name: List the lines and their newest releases
         id: lines
         env:
           LINE: ${{ inputs.line }}
         run: |
           set -euo pipefail
-          args=(--policy "$RUNNER_TEMP/release-support.json")
+          args=(--policy "$RUNNER_TEMP/release-support.json" --published "$RUNNER_TEMP/published.txt")
           if [ -n "${LINE:-}" ]; then args+=(--line "$LINE"); fi
           mapfile -t tags < <(git tag --list 'v*' 'V*')
           lines="$(python3 distro-builder/tools/security-rebuild.py lines "${args[@]}" "${tags[@]}")"
@@ -213,7 +250,7 @@ jobs:
           esac
 
       # The release's own source with one change: its version, in the four files
-      # that carry it. Committed now so the build's SOURCE_DATE_EPOCH and the tag
+      # that carry it (and the default branch's workflows, below). Committed now so the build's SOURCE_DATE_EPOCH and the tag
       # name the exact tree that was built; pushed only once it is published.
       - name: Bump ${{ matrix.base }} to ${{ matrix.version }}
         if: steps.check.outputs.rebuild == 'true'
@@ -221,10 +258,18 @@ jobs:
           set -euo pipefail
           python3 distro-builder/tools/security-rebuild.py bump --root rebuild-src \
             --from "${{ matrix.base }}" --to "${{ matrix.version }}"
+          # The workflows of the default branch, not the base's: GitHub refuses
+          # a tag pushed with GITHUB_TOKEN whose workflow files differ from the
+          # default branch's ("without `workflows` permission"). They are not in
+          # the image, so the release is the same either way.
+          rm -rf rebuild-src/.github/workflows
+          mkdir -p rebuild-src/.github
+          cp -a .github/workflows rebuild-src/.github/workflows
           cd rebuild-src
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit --all --quiet --message "chore(release): v${{ matrix.version }}, a security rebuild of ${{ matrix.tag }}"
+          git add --all
+          git commit --quiet --message "chore(release): v${{ matrix.version }}, a security rebuild of ${{ matrix.tag }}"
           git tag --annotate "v${{ matrix.version }}" --message "Lab Kiosk v${{ matrix.version }}: security rebuild of ${{ matrix.tag }}"
           git log -1 --stat
 
@@ -372,7 +417,7 @@ jobs:
           prefix="releases/${{ matrix.version }}"
           if found="$(aws s3api head-object --endpoint-url "$endpoint" --bucket "$R2_RELEASES_BUCKET" \
                         --key "$prefix/manifest.json" 2>&1)"; then
-            echo "::error::$prefix is already published in R2 but has no tag: an earlier run stopped halfway. Delete that folder from the bucket (it was never classified) and run this workflow again."
+            echo "::error::$prefix was published in R2 after this run chose its version. Run this workflow again: it takes the next free version."
             exit 1
           elif ! printf '%s' "$found" | grep -q '(404)'; then
             echo "::error::Could not check R2 for $prefix: $found"
