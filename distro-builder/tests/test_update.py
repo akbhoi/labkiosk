@@ -673,6 +673,69 @@ class Security(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(os.path.join(self.root, "images"))), [RUNNING, "2.6.1"])
 
 
+class Automatic(unittest.TestCase):
+    """A feature release the control plane marks automatic is staged for the next boot."""
+
+    setUpClass = Update.__dict__["setUpClass"]
+    tearDownClass = Update.__dict__["tearDownClass"]
+    publish = Update.publish
+    write_manifest = Update.write_manifest
+    serve = Update.serve
+    env = Update.env
+    setUp = Run.setUp
+    control_plane = Run.control_plane
+    run_update = Run.run_update
+    state = Run.state
+
+    def offer(self, releases, automatic, release="2.7.0"):
+        return {
+            "release": {"version": release, "kind": "feature", "sizeBytes": 1, "url": f"{releases}/{release}",
+                        "automatic": automatic},
+            "security": None,
+            "securityUpdates": "next_boot",
+        }
+
+    def test_a_minor_release_marked_automatic_is_staged_for_the_next_boot(self):
+        self.publish("2.7.0")
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases, True))
+        self.assertEqual(self.run_update(worker)["state"], "staged")
+        self.assertEqual(self.env(), {"current": RUNNING, "next": "2.7.0", "next_tries": "1"})
+        state = self.state()
+        self.assertEqual((state["phase"], state["version"], state["kind"]), ("staged", "2.7.0", "feature"))
+
+    def test_one_not_marked_automatic_waits_for_an_administrator(self):
+        self.publish("3.0.0")
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases, False, release="3.0.0"))
+        self.assertEqual(self.run_update(worker)["state"], "ready")
+        self.assertEqual(self.env(), {"current": RUNNING})
+
+    def test_the_signed_manifest_decides_not_the_control_plane(self):
+        # Marked automatic, but signed as a security release: only a feature release is staged this way.
+        self.publish("2.7.1", kind="security", base_version="2.7.0")
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases, True, release="2.7.1"))
+        self.assertEqual(self.run_update(worker)["state"], "ready")
+        self.assertEqual(self.env(), {"current": RUNNING})
+
+    def test_a_malformed_flag_is_refused(self):
+        _, worker = self.control_plane(None, body=self.offer("http://127.0.0.1:9", "yes"))
+        with self.assertRaisesRegex(update.UpdateError, "malformed"):
+            self.run_update(worker)
+
+    def test_one_that_rolled_back_is_not_tried_again_on_its_own(self):
+        self.publish("2.7.0")
+        _, releases = self.serve()
+        _, worker = self.control_plane(None, body=self.offer(releases, True))
+        self.run_update(worker)
+        slots.write_env(self.boot_dir, {"current": RUNNING, "next": "2.7.0", "next_tries": "0"})
+        with self.assertRaisesRegex(update.UpdateError, "not tried again"):
+            self.run_update(worker)
+        _, waiting = self.control_plane(None, body=self.offer(releases, False))
+        self.assertEqual(self.run_update(waiting)["state"], "ready")
+
+
 class Enrolment(unittest.TestCase):
     """`run` reads the kiosk user's files as root, and trusts nothing in them."""
 

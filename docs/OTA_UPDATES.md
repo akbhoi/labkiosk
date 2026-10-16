@@ -329,8 +329,8 @@ reports "updated to <v>"
 - **When a security fix and a feature release compete for the spare folder:** there's only one
   spare image folder. A security fix for the running line takes it first and installs at the
   next boot. After that, the feature release downloads into the spare folder, replacing the old
-  rollback image, and waits for approval as usual. A security fix never waits behind an
-  unapproved feature release.
+  rollback image, and installs at the next boot after that (or waits for approval under
+  `approval`). A security fix never waits behind a feature release.
 - **Which lines get security rebuilds:** CI rebuilds every release line of a major release the
   platform has **not put at end of life** (§5.13; a major with no status is supported). End of life
   is set per major, never per line: an organization that hasn't approved 2.8 yet still gets fixes
@@ -590,8 +590,18 @@ is `next_boot`, it gives the release its one try at the next boot straight away 
 "Finishing a system update" curtain and the health check of §5.6, with rollback. A staged release
 is not written again on later runs; one that rolled back is never staged again by itself (the
 console shows the error; with `approval` an administrator can still install it). With `approval`,
-or a control plane that sends no setting, the release stays `ready` like a feature release. The
-Worker can therefore delay a security release but never make a feature release install itself.
+or a control plane that sends no setting, the release stays `ready` for an administrator.
+
+**Minor and major releases.** Each release in the offer also carries `automatic`
+(`installsByItself`): a feature release of the major the workstation runs (a minor release, such
+as 3.1.0 for 3.0.x) is `automatic` under `next_boot`, so the updater stages it for the next boot
+like a security fix; under `approval` it waits `ready`. A release of a higher major is offered
+only once its organization's administrator confirmed the major (or is trying it on the
+workstation's group, §5.12), and that confirmation is the approval: it is then `automatic` whatever
+the setting, and installs at the next boot. Before that, Settings → Updates shows it as a new
+major version available to confirm, and nothing is downloaded. The updater stages a feature
+release only when the offer says `automatic` and its signed manifest says `kind: feature`, so a
+control plane from before this sends nothing that installs by itself.
 
 **The hub** reminds a workstation of the release meant for it (`updateTargetFor`): the security
 release for its line, else the newest. A `staged` workstation is left alone; one holding a

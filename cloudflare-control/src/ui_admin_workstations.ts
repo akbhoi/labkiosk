@@ -608,12 +608,13 @@ function renderWorkstationsScripts(
               ? { text: prefix + "security fix " + v + " ready to install", title: "Downloaded and verified; this organization approves security releases", tone: "ready" }
               : { text: prefix + v + " ready to install", title: "Downloaded and verified", tone: "ready" };
           case "staged": {
-            // A security release waits for the next start; flag one that has waited too long.
+            // A staged release waits for the next start; flag one that has waited too long.
             const days = typeof u.since === "number" ? Math.floor((Date.now() / 1000 - u.since) / 86400) : 0;
-            const title = "Security fix, downloaded and verified. It installs when the workstation next starts; Reboot installs it now.";
+            const what = u.kind === "security" ? "Security fix" : "Update";
+            const title = what + ", downloaded and verified. It installs when the workstation next starts; Reboot installs it now.";
             // Short enough for the card; the title says the rest.
             return days >= ${SECURITY_WAIT_WARN_DAYS}
-              ? { text: prefix + v + " \u00b7 not restarted in " + days + " days", title: "Security fix " + v + " installs at its next restart, and this workstation has not restarted in " + days + " days. Reboot installs it now.", tone: "warn" }
+              ? { text: prefix + v + " \u00b7 not restarted in " + days + " days", title: what + " " + v + " installs at its next restart, and this workstation has not restarted in " + days + " days. Reboot installs it now.", tone: "warn" }
               : { text: prefix + v + " installs at next restart", title: title, tone: "ready" };
           }
           case "installing":

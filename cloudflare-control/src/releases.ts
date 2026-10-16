@@ -129,6 +129,8 @@ export interface ReleaseOffer {
    * offered only to a workstation already on its line, never to move one there.
    */
   lineOnly?: boolean;
+  /** Its major is one this organization's administrator confirmed, or is trying on a workstation group. */
+  approved?: boolean;
 }
 
 export const SUPPORT_STATUSES = ["supported", "security_only", "end_of_life"] as const;
@@ -679,7 +681,8 @@ export async function offeredReleases(
         ...(status !== "supported" ? { support: status } : {}),
         ...(row.kind === "security" && !lines.has(releaseLine(row.version)) ? { lineOnly: true } : {}),
         ...(majorGated(access) ? { gated: true } : {}),
-        ...(access === "pilot" ? { pilotGroup: grants.get(major)!.pilot_group! } : {})
+        ...(access === "pilot" ? { pilotGroup: grants.get(major)!.pilot_group! } : {}),
+        ...(access === "confirmed" || access === "pilot" ? { approved: true } : {})
       };
     })
     .sort((a, b) => compareVersions(b.version, a.version));
@@ -758,6 +761,28 @@ export function securityReleaseFor(
       (r) => r.kind === "security" && releaseLine(r.version) === line && compareVersions(r.version, running) > 0
     ) ?? null
   );
+}
+
+/**
+ * Whether a workstation running `running` installs `release` at its next boot
+ * without an administrator, once it holds it: a security release for its line
+ * and a minor release of its major when the organization lets updates install
+ * themselves (`next_boot`), and a release of a higher major only once an
+ * administrator confirmed that major (or is trying it on the workstation's
+ * group). Anything else waits for Workstations -> Updates. The workstation's
+ * updater checks the signed manifest's kind and line again before it stages it.
+ */
+export function installsByItself(
+  release: ReleaseOffer,
+  running: string | null | undefined,
+  mode: SecurityUpdateMode | null | undefined
+): boolean {
+  if (!isReleaseVersion(running) || compareVersions(release.version, running) <= 0) return false;
+  const automatic = mode !== "approval";
+  if (release.kind === "security") return automatic && releaseLine(release.version) === releaseLine(running);
+  const major = releaseMajor(release.version);
+  if (major === releaseMajor(running)) return automatic;
+  return major > releaseMajor(running) && release.approved === true;
 }
 
 /** What a workstation running `running`, in workstation group `group`, is offered. */

@@ -60,6 +60,7 @@ import {
   listReleases,
   offeredRelease,
   offeredReleases,
+  installsByItself,
   stableFeatureReleases,
   type SyncResult,
   confirmMajor,
@@ -897,7 +898,10 @@ async function handleRestartReport(
  * reports itself up to date when it runs that version or newer. Phase 4 adds
  * `security`, the newest security release for the line `running` belongs to
  * (null without `running`, as a 2.9.0 updater asks), and `securityUpdates`,
- * whether the workstation installs that at its next boot by itself. 503 when
+ * whether the workstation installs that at its next boot by itself. Each
+ * release also says `automatic`: whether it installs at the next boot without
+ * an administrator (installsByItself: a minor release of the running major, or
+ * a major an administrator confirmed). 503 when
  * the platform has no public release address, so a workstation never mistakes
  * a missing setting for "up to date".
  *
@@ -927,7 +931,7 @@ async function handleDeviceUpdate(
   const group = (await workstationGroupsIn(db, tenant.id, pilots)).get(auth.device.client_id) ?? null;
   const offer = workstationOffer(releases, running, group);
   const securityUpdates = isSecurityUpdateMode(tenant.security_updates) ? tenant.security_updates : "next_boot";
-  const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string } | null> = {};
+  const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string; automatic: boolean } | null> = {};
   for (const [name, release] of [["release", offer.release], ["security", offer.security]] as const) {
     if (!release) {
       described[name] = null;
@@ -938,7 +942,13 @@ async function handleDeviceUpdate(
       console.error("[Worker] A release is offered but RELEASES_BASE_URL is missing or not an https address");
       return jsonError("Updates are not available from this server right now", 503, jsonHeaders);
     }
-    described[name] = { version: release.version, kind: release.kind, sizeBytes: release.sizeBytes, url: folder };
+    described[name] = {
+      version: release.version,
+      kind: release.kind,
+      sizeBytes: release.sizeBytes,
+      url: folder,
+      automatic: installsByItself(release, running, securityUpdates)
+    };
   }
   let lan: { peers: string[] } | null = null;
   if (tenant.lan_sharing === 1) {

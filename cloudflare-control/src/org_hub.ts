@@ -48,7 +48,7 @@ import {
   isReleaseVersion,
   normalizeUpdateReport,
   offeredReleases,
-  releaseLine,
+  installsByItself,
   sameUpdateReport,
   updateTargetFor,
   newestOffered,
@@ -1463,8 +1463,9 @@ function updateFieldsChanged(a: UpdateFields, b: UpdateFields): boolean {
  * than the release meant for it (updateTargetFor), which it is not already
  * fetching, holding or installing.
  *
- * A workstation holding a security release for its line `ready` is reminded
- * once its organization lets those install at the next boot, so it stages it.
+ * A workstation holding `ready` a release that now installs by itself
+ * (installsByItself: its organization lets updates install at the next boot,
+ * or confirmed the major) is reminded, so it stages it.
  * One whose updater predates phase 4 (it never reports `kind`) only ever
  * fetches the newest release; holding that, it is left alone.
  */
@@ -1482,11 +1483,7 @@ export function releaseNudgeTarget(
   if (update.phase === "checking" || update.phase === "downloading" || update.phase === "installing") return null;
   const holding = update.phase === "ready" || update.phase === "staged";
   if (holding && update.version === target.version) {
-    const stageable =
-      update.phase === "ready" &&
-      update.kind === "security" &&
-      securityUpdates !== "approval" &&
-      releaseLine(target.version) === releaseLine(imageVersion);
+    const stageable = update.phase === "ready" && update.kind === target.kind && installsByItself(target, imageVersion, securityUpdates);
     return stageable ? target : null;
   }
   if (holding && !update.kind && update.version === newestOffered(releases, group)?.version) return null;

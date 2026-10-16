@@ -67,6 +67,7 @@ import { HUB_PING, HUB_PONG, installRefusal, installTargetFor, releaseNudgeTarge
 import { LAN_HOLD_MAX_MS, LAN_SHARE_SECONDS, lanDecision, lanPeers, normalizeLanReport, siteKey } from "../src/lan_sharing";
 import {
   compareVersions,
+  installsByItself,
   isReleaseVersion,
   normalizeUpdateReport,
   securityReleasesPending,
@@ -7124,6 +7125,20 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(updateTargetFor(lineOnly, "2.9.0")?.version, "3.0.0", "one on another line is not moved onto 3.1");
     assert.equal(workstationOffer(lineOnly, null).release?.version, "3.0.0", "nor is an updater that does not say what it runs");
 
+    // A minor release installs at the next boot by itself; a new major only once its administrator confirmed it.
+    const minor = at("2.10.0", "feature");
+    assert.equal(installsByItself(minor, "2.9.0", "next_boot"), true);
+    assert.equal(installsByItself(minor, "2.9.0", "approval"), false, "an organization that approves updates waits");
+    assert.equal(installsByItself(minor, "2.10.0", "next_boot"), false, "already running it");
+    assert.equal(installsByItself(minor, null, "next_boot"), false, "an updater that does not say what it runs");
+    assert.equal(installsByItself(at("3.0.0", "feature"), "2.9.0", "next_boot"), false, "a major nobody confirmed");
+    assert.equal(installsByItself({ ...at("3.0.0", "feature"), approved: true }, "2.9.0", "approval"), true, "confirming the major is the approval");
+    assert.equal(installsByItself(at("2.9.2", "security"), "2.9.0", "next_boot"), true);
+    assert.equal(installsByItself(at("2.8.1", "security"), "2.9.0", "next_boot"), false, "another line's fix");
+    assert.equal(releaseNudgeTarget([minor], { phase: "ready", version: "2.10.0", kind: "feature" }, "2.9.0", "next_boot")?.version, "2.10.0",
+      "held ready, a minor release is staged once allowed");
+    assert.equal(releaseNudgeTarget([minor], { phase: "ready", version: "2.10.0", kind: "feature" }, "2.9.0", "approval"), null);
+
     const nudge = (update: Parameters<typeof releaseNudgeTarget>[1], image: string, mode: "next_boot" | "approval" = "next_boot") =>
       releaseNudgeTarget(releases, update, image, mode)?.version ?? null;
     assert.equal(nudge({ phase: "ready", version: "2.10.0", kind: "feature" }, "2.9.0"), "2.9.2", "a fix displaces a waiting feature release");
@@ -7280,8 +7295,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       version: "2.9.0",
       kind: "feature",
       sizeBytes: 948_000_000,
-      url: "https://releases.example.org/releases/2.9.0"
-    });
+      url: "https://releases.example.org/releases/2.9.0",
+      automatic: false
+    }, "an updater that does not say what it runs installs nothing by itself");
     assert.equal((await callWith(mockEnv, "/api/devices/update", { bearer: token })).status, 503, "no public address configured");
     const plainHttp = { ...releasesEnv, RELEASES_BASE_URL: "http://releases.example.org" } as Env;
     assert.equal((await callWith(plainHttp, "/api/devices/update", { bearer: token })).status, 503, "https only");
@@ -7414,7 +7430,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const ask = async (query: string) => (await callWith(securityEnv, `/api/devices/update${query}`, { bearer: token })).json<any>();
     const onOld = await ask("?running=2.8.0");
     assert.equal(onOld.release.version, "2.10.0");
-    assert.deepEqual(onOld.security, { version: "2.8.1", kind: "security", sizeBytes: 948_000_000, url: "https://releases.example.org/releases/2.8.1" });
+    assert.deepEqual(onOld.security, {
+      version: "2.8.1",
+      kind: "security",
+      sizeBytes: 948_000_000,
+      url: "https://releases.example.org/releases/2.8.1",
+      automatic: true
+    });
+    assert.equal(onOld.release.automatic, true, "a minor release of the running major installs at the next boot too");
     assert.equal(onOld.securityUpdates, "next_boot");
     assert.equal((await ask("?running=2.10.0")).security, null);
     assert.equal((await ask("")).security, null, "a 2.9.0 updater does not say what it runs");
