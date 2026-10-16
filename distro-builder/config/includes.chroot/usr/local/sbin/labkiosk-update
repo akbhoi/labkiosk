@@ -751,13 +751,21 @@ def release_line(version):
 
 
 def parse_offered(value, what):
-    """One offered release, {version, url}, or None when nothing is offered."""
+    """
+    One offered release, {version, url, automatic}, or None when nothing is
+    offered. `automatic` is true only when the control plane says so: the
+    release installs at the next boot without an administrator (a minor release
+    of the running major, or a major its administrator confirmed).
+    """
     if value is None:
         return None
     if not isinstance(value, dict) or not isinstance(value.get("url"), str) \
             or not slots.VERSION_PATTERN.match(str(value.get("version") or "")):
         raise UpdateError(f"the control plane's {what} is malformed")
-    return {"version": value["version"], "url": value["url"]}
+    automatic = value.get("automatic", False)
+    if not isinstance(automatic, bool):
+        raise UpdateError(f"the control plane's {what} is malformed")
+    return {"version": value["version"], "url": value["url"], "automatic": automatic}
 
 
 def parse_lan(value):
@@ -787,7 +795,8 @@ def fetch_offer(opener, worker_url, token, running):
     """
     What this workstation's organization is offered:
 
-        release          the newest release of its channel, or None
+        release          the newest release of its channel, or None; with
+                         `automatic`, whether it installs at the next boot
         security         the newest security release for the line `running`
                          belongs to and newer than it, or None (phase 4)
         securityUpdates  next_boot or approval
@@ -867,8 +876,10 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
 
     A security release -- by its signed manifest, not by what the control plane
     says -- for the running line is staged for the next boot when the
-    organization lets security releases install themselves; anything else waits,
-    `ready`, for an administrator. Every step is written to the update state;
+    organization lets updates install themselves. So is a feature release the
+    control plane marks `automatic`: a minor release of the running major, or a
+    major release an administrator confirmed. Anything else waits, `ready`, for
+    an administrator. Every step is written to the update state;
     an UpdateError is recorded there too, then raised.
 
     Phase 5: with LAN sharing, the release is copied from a peer at this site
@@ -923,7 +934,10 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
             kind = stored_kind(root, version)
             serve(settle("staged", version, kind))
             return {"state": "staged", "downloaded": version, "kind": kind, "already": True}
-        automatic = offer["securityUpdates"] == "next_boot"
+        if target is offer["security"]:
+            automatic = offer["securityUpdates"] == "next_boot"
+        else:
+            automatic = target["automatic"]
         if automatic and boot == "rolled-back" and env.get("next") == version:
             raise UpdateError(f"{version} did not start on this workstation, which went back to {running}; "
                               "it is not tried again on its own")
@@ -945,7 +959,10 @@ def run(root, running, floor, keyring_dir, worker_url, token, opener=None, gpgv=
                               report=progress, expected=version)
         if result["downloaded"] != version:
             raise UpdateError(f"the control plane offered {version} but its folder holds {result['downloaded']}")
-        staged = automatic and result["kind"] == "security" and release_line(version) == release_line(running)
+        if target is offer["security"]:
+            staged = automatic and result["kind"] == "security" and release_line(version) == release_line(running)
+        else:
+            staged = automatic and result["kind"] == "feature"
         if staged:
             install(root, version, running, floor, keyring_dir, gpgv)
     except UpdateError as err:

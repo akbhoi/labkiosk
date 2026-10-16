@@ -576,11 +576,14 @@ The system release this workstation's organization is offered, asked by the work
 updater (`labkiosk-update run`) when the hub sends `release-available`. `release` is the newest
 unrevoked release classified `stable`, and also `beta` ones when the organization's update channel
 is `beta`. `security` is the newest `security` release of that set for the line (major.minor) of
-`running`, the image the workstation runs, when it is newer; `securityUpdates` says whether the
-workstation installs it at its next start by itself (`next_boot`) or waits for an administrator
-(`approval`). Files are downloaded from `url` (`RELEASES_BASE_URL` + `releases/<version>`), not
-through the Worker; the workstation checks the manifest's signature before it uses any of them, and
-stages a release for its next start only when the signed manifest says `security`.
+`running`, the image the workstation runs, when it is newer; `securityUpdates` is always
+`next_boot`: it installs that at its next start by itself. Each release also carries `automatic`:
+whether it installs at the next start without an administrator (a security fix for its line, a minor
+release of the major it runs, or a release of a major its administrator confirmed). Files are
+downloaded from `url` (`RELEASES_BASE_URL` + `releases/<version>`), not through the Worker; the
+workstation checks the manifest's signature before it uses any of them, and stages a release for
+its next start only when the signed manifest agrees (`security` for its line, or `feature` marked
+`automatic`).
 
 `lan` is `null` unless the organization shares releases on its local network (Settings → Updates).
 Then it lists `peers`: up to 8 private LAN addresses of the organization's workstations at the same
@@ -597,8 +600,8 @@ against the same signed manifest, and once it holds the release it serves it to 
 
   ```json
   {
-    "release": { "version": "2.10.0", "kind": "feature", "sizeBytes": 735000000, "url": "https://releases.example.com/releases/2.10.0" },
-    "security": { "version": "2.9.1", "kind": "security", "sizeBytes": 734000000, "url": "https://releases.example.com/releases/2.9.1" },
+    "release": { "version": "2.10.0", "kind": "feature", "sizeBytes": 735000000, "url": "https://releases.example.com/releases/2.10.0", "automatic": true },
+    "security": { "version": "2.9.1", "kind": "security", "sizeBytes": 734000000, "url": "https://releases.example.com/releases/2.9.1", "automatic": true },
     "securityUpdates": "next_boot",
     "lan": { "peers": ["192.168.10.21", "192.168.10.37"] }
   }
@@ -960,23 +963,22 @@ audit log.
 #### `GET /api/settings/updates`, `POST /api/settings/updates`
 
 The **Updates** tab of Settings: which classified releases the organization's workstations are
-offered, and what they do with a security release for the line they run. `stable` (the default)
-offers stable releases; `beta` also offers beta ones. `securityUpdates` is `next_boot` (the
-default: installed at each workstation's next start, without approval) or `approval`. `lanSharing`
+offered. `stable` (the default) offers stable releases; `beta` also offers beta ones. Minor
+releases and security fixes always install at each workstation's next start, so there is no
+setting for them; a body with `securityUpdates` is refused (`400`). `lanSharing`
 (default `false`) lets the workstations at one site copy a release from each other: two download it,
-the others wait up to an hour for them. Changes are audited as `settings.update_channel`,
-`settings.security_updates` and `settings.lan_sharing`, and the organization's hub tells its
+the others wait up to an hour for them. Changes are audited as `settings.update_channel` and
+`settings.lan_sharing`, and the organization's hub tells its
 workstations at once.
 
 - **Access:** Organization Admin (requires `updates` permission)
-- **Request Body (`POST`):** `{ "channel": "beta", "securityUpdates": "approval", "lanSharing": true }` — any of them.
+- **Request Body (`POST`):** `{ "channel": "beta", "lanSharing": true }` — either of them.
 - **Response `200 OK`:**
 
   ```json
   {
     "channel": "beta",
     "offer": { "version": "2.10.0", "kind": "feature", "sizeBytes": 735000000, "classifiedAt": 1791638060 },
-    "securityUpdates": "next_boot",
     "lanSharing": false,
     "pending": [{ "version": "2.9.1", "offeredAt": 1791638060, "workstations": 3 }],
     "support": [{ "major": 2, "status": "supported", "endOfLifeAt": 1798675200, "note": null, "workstations": 2 }],

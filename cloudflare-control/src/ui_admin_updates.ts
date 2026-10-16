@@ -1,14 +1,14 @@
 /**
  * Settings -> Updates: which releases this organization's workstations are
- * offered, and what they do with a security release for the line they run.
+ * offered, and how they take minor, security and major releases.
  * Shown to an account holding the `updates` permission.
  *
  * Stable is every release the platform has classified stable; beta adds the
  * releases it is still trying out. A workstation downloads the offered release
- * in the background when it hears of it; installing a feature release is the
- * Workstations page's Updates menu, never automatic. A security release (the
- * same release rebuilt with patched Debian packages) installs at the
- * workstation's next start unless the organization approves those too.
+ * in the background when it hears of it. A minor release of the major it runs,
+ * and a security release (the same release rebuilt with patched Debian
+ * packages), always install at its next start. A new major release installs at
+ * the next start once an administrator confirmed it.
  *
  * Lines the workstations run that the platform has put on security fixes only
  * or given an end-of-life date are warned about here, and a new major release
@@ -27,7 +27,7 @@ export function renderUpdatesPaneHtml(): string {
   return `
       <div class="card" id="section-updates">
         <h2 class="card-title">System updates</h2>
-        <p class="card-sub">Workstations installed on a disk download the release offered here in the background, check its signature, and wait. Install it from Workstations → Updates. A workstation started from a USB stick is updated by re-flashing it.</p>
+        <p class="card-sub">Workstations installed on a disk download the release offered here in the background, check its signature, and install it when they next restart. A new major release waits until you confirm it below. A workstation started from a USB stick is updated by re-flashing it.</p>
         <div class="callout hidden" id="update-pending" role="status"></div>
         <div class="callout callout-warning hidden" id="update-lines" role="status"></div>
         <div class="hidden" id="update-majors"></div>
@@ -41,12 +41,7 @@ export function renderUpdatesPaneHtml(): string {
             <p class="form-hint" id="update-offer">Loading…</p>
           </div>
           <div class="form-group">
-            <label class="form-label" for="security-updates">Security fixes</label>
-            <select class="form-select" id="security-updates">
-              <option value="next_boot">Install at the next restart, without approval</option>
-              <option value="approval">Wait for approval, like any other release</option>
-            </select>
-            <p class="form-hint">A security fix is the release a workstation runs, rebuilt with patched system packages. Installed at the next restart, it changes nothing until the workstation starts again, and a workstation it does not start on goes back to its old image by itself.</p>
+            <p class="form-hint">Minor updates (a newer release of the major version a workstation runs, such as 3.1 for 3.0) and security fixes (the release it runs, rebuilt with patched system packages) install at the next restart, with no approval. An update changes nothing until the workstation starts again, and a workstation it does not start on goes back to its old image by itself. A new major version waits for you to confirm it.</p>
           </div>
           <div class="form-group">
             <label class="form-checkbox-label">
@@ -67,13 +62,12 @@ export function renderUpdatesScript(nonce: string): string {
       (function () {
         const form = document.getElementById("form-update-channel");
         const select = document.getElementById("update-channel");
-        const security = document.getElementById("security-updates");
         const offer = document.getElementById("update-offer");
         const pending = document.getElementById("update-pending");
         const lanSharing = document.getElementById("lan-sharing");
         const linesBox = document.getElementById("update-lines");
         const majorsBox = document.getElementById("update-majors");
-        if (!form || !select || !security || !offer || !pending || !lanSharing || !linesBox || !majorsBox) return;
+        if (!form || !select || !offer || !pending || !lanSharing || !linesBox || !majorsBox) return;
 
         function day(seconds) {
           return new Date(seconds * 1000).toISOString().slice(0, 10);
@@ -135,7 +129,7 @@ export function renderUpdatesScript(nonce: string): string {
             } else if (item.access === "requested") {
               text.textContent = "Requested " + (item.requestedAt ? day(item.requestedAt) : "") + ". Lab Kiosk tells you in Notifications when it is available to your organization.";
             } else if (item.access === "confirmed") {
-              text.textContent = "Confirmed " + (item.confirmedAt ? day(item.confirmedAt) : "") + ": your workstations are offered it, and you install it from Workstations → Updates.";
+              text.textContent = "Confirmed " + (item.confirmedAt ? day(item.confirmedAt) : "") + ": your workstations download it and install it at their next restart.";
             } else if (item.access === "pilot") {
               text.textContent = "Being tried on the workstation group " + item.pilotGroup + ": only its workstations are offered it. When they work as you expect, confirm it for every workstation.";
               actions.append(
@@ -143,7 +137,7 @@ export function renderUpdatesScript(nonce: string): string {
                 majorButton("End the trial", "btn-ghost", "end-pilot", item.major)
               );
             } else {
-              text.textContent = "A new major release is available to your organization. It can change how workstations look and behave, so none is moved to it yet. Try it on one workstation group first, then confirm it for every workstation; you still choose when each one installs it.";
+              text.textContent = "A new major release is available to your organization. It can change how workstations look and behave, so none is moved to it yet. Try it on one workstation group first, then confirm it for every workstation; once confirmed, each one downloads it and installs it at its next restart.";
               if (groups.length) actions.append(majorButton("Try on a group", "btn-secondary", "pilot", item.major));
               actions.append(majorButton("Confirm for every workstation", groups.length ? "btn-ghost" : "btn-primary", "confirm", item.major));
             }
@@ -220,14 +214,14 @@ export function renderUpdatesScript(nonce: string): string {
           }
           const ok = await lkConfirm({
             title: "Confirm Lab Kiosk " + major + " for every workstation?",
-            message: "Your workstations will be offered Lab Kiosk " + major + ". Each one downloads it in the background and installs it only when you choose, from Workstations → Updates. This is recorded with your name.",
+            message: "Your workstations will be offered Lab Kiosk " + major + ". Each one downloads it in the background and installs it at its next restart. This is recorded with your name.",
             confirmLabel: "Confirm"
           });
           if (ok) majorStep("confirm", major);
         });
 
         // Security fixes some workstations do not run yet; a warning once one has waited too long.
-        function showPending(list, mode) {
+        function showPending(list) {
           // One block inside the callout, which lays its children out in a row.
           const body = document.createElement("div");
           pending.replaceChildren(body);
@@ -245,9 +239,7 @@ export function renderUpdatesScript(nonce: string): string {
           }
           if (items.length) {
             const next = document.createElement("div");
-            next.textContent = mode === "approval"
-              ? "Install it from Workstations → Updates once it shows ready."
-              : "It installs when each workstation next starts; Workstations → Reboot installs it now.";
+            next.textContent = "It installs when each workstation next starts; Workstations → Reboot installs it now.";
             body.append(next);
           }
           pending.classList.toggle("callout-warning", late);
@@ -256,13 +248,12 @@ export function renderUpdatesScript(nonce: string): string {
 
         function show(data) {
           select.value = data.channel === "beta" ? "beta" : "stable";
-          security.value = data.securityUpdates === "approval" ? "approval" : "next_boot";
           lanSharing.checked = data.lanSharing === true;
           const o = data.offer;
           offer.textContent = o
             ? "Offered now: " + o.version + (o.kind === "security" ? " (security update)" : "") + ", " + Math.round((Number(o.sizeBytes) || 0) / 1048576) + " MB."
             : "No release is offered on this channel yet.";
-          showPending(data.pending, security.value);
+          showPending(data.pending);
           showLines(data.support);
           groups = Array.isArray(data.groups) ? data.groups : [];
           showMajors(data.majors);
@@ -288,7 +279,7 @@ export function renderUpdatesScript(nonce: string): string {
             const res = await fetch(labkioskApi("/api/settings/updates"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ channel: select.value, securityUpdates: security.value, lanSharing: lanSharing.checked })
+              body: JSON.stringify({ channel: select.value, lanSharing: lanSharing.checked })
             });
             const data = await res.json();
             if (!res.ok) {

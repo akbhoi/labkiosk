@@ -72,9 +72,13 @@ A Remote Control request is approved from **Tasks** with a number of **seats**: 
 - **Revoke Remote Control** turns it off with a reason: every open session ends at once, the organization's owner is emailed the reason, and its Settings show *Turned off* with the date. The organization can ask again.
 - **Restore Remote Control** turns a revoked organization back on with the seats it had. An organization that turned Remote Control off itself (Settings → Remote Control) asks again through Tasks instead.
 
+### Security releases
+
+Under **Releases → Security**: the daily security rebuilds, each naming the release it rebuilds. They need no classification: each is offered for download as soon as it arrives, to the workstations on its line, which install it at their next restart unless their organization approves security fixes. **Revoke** is the only action, for a rebuild that must never be installed. The rebuild covers each major's newest stable line and any newer one: once 3.1.0 is classified stable, 3.0 is rebuilt no more.
+
 ### Support, end of life and major releases
 
-Under **Releases**, below the release list:
+Under **Releases**, below the release lists:
 
 - **Support and end of life**, set per major release only (2.x covers every 2.x release). **Security only** keeps sending its security fixes to the workstations already on it and moves no other workstation onto it. **End of life** offers it nothing more, security fixes included, stops the daily security rebuild building it, and takes it off the download page, which names it as ended instead (the page lists only the newest release of each major). **Set end-of-life date** announces the date it ends by itself. Each change of status or date shows every organization a notification in its console and can email every customer's owner (the ones with workstations on the major are told how many). As the date nears, every organization is reminded by itself, in its console and by email, 60, 30 and 7 days before it and once it has passed. Settings → Updates shows the organizations on the major the same warning.
 - **Major releases.** The first release of a new major arrives **closed**. An organization can ask for it from Settings → Updates; its request shows in the organization's row with **Grant** and **Decline** (with a reason shown to it). **Open to all** or **Grant to an organization** (by subdomain) makes it available too. An administrator of each organization then tries it on one workstation group, and confirms it for every workstation (recorded with their name), before the rest of its workstations are moved. **Take back** removes a grant, its trial and its confirmation; workstations already on the major keep it. Each step notifies the organization in its console. Whatever the gates allow, a workstation moves one major at a time, from the newest release of its own major.

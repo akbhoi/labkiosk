@@ -1,8 +1,10 @@
 name: Security rebuild
 
 # Over-the-air updates, phase 4 (docs/OTA_UPDATES.md section 7). Every day,
-# for every release line that updates over the air and whose major release the
-# platform has not put at end of life (the controller's GET /api/release-support), compare the
+# for every release line that updates over the air, whose major release the
+# platform has not put at end of life and that no newer line of its major
+# classified stable supersedes (the controller's GET /api/release-support:
+# once 3.1.0 is stable, 3.0 is rebuilt no more), compare the
 # packages of the line's newest release with the Debian security archive. When
 # one of them has a fix, rebuild that release's own source -- unchanged but for
 # its version, the next patch that no tag and no R2 release has -- so
@@ -10,9 +12,10 @@ name: Security rebuild
 # release of its base, and publish it to R2 like build-iso.yml does. Its GitHub release carries the notes and the image's
 # package list, but no ISO: workstations download the image from R2, and a new
 # install starts from the newest feature release's ISO and takes the security
-# release when it is offered. A super admin still classifies it on the
-# Releases page before any workstation is offered it; organizations then
-# install it at their workstations' next start, or approve it.
+# release when it is offered. A security release needs no classification: the
+# controller records it when this run announces it and offers it at once, in
+# the Releases page's Security section; organizations install it at their
+# workstations' next start, or approve it.
 #
 # The decisions -- which lines, which packages, the version bump, the notes --
 # are distro-builder/tools/security-rebuild.py, tested in
@@ -29,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       line:
-        description: "Only this release line, such as 2.9 (empty: every line of a major not at end of life)"
+        description: "Only this release line, such as 2.9 (empty: every line of a major not at end of life that no newer stable line supersedes)"
         required: false
         default: ""
       force:
@@ -63,9 +66,10 @@ jobs:
           fetch-tags: true
 
       # Only the lines of major releases the platform has not ended get
-      # security rebuilds. A policy that cannot be read stops the run: it never
+      # security rebuilds, and of each major only its newest stable line and
+      # any newer one. A policy that cannot be read stops the run: it never
       # falls back to rebuilding a major a super admin put at end of life.
-      - name: Read which major releases are at end of life
+      - name: Read which major releases are at end of life and which are stable
         env:
           RELEASE_NOTES_TOKEN: ${{ secrets.RELEASE_NOTES_TOKEN }}
           CONTROLLER_URL: ${{ vars.CONTROLLER_URL }}
@@ -507,7 +511,7 @@ jobs:
             elif [ "$PUBLISH" != "true" ]; then
               echo "Dry run: v${{ matrix.version }} was built and boot-tested, and nothing was published."
             else
-              echo "v${{ matrix.version }} is published. Classify it on the Super Admin console's Releases page to offer it."
+              echo "v${{ matrix.version }} is published and offered to the workstations on its line; the Super Admin console lists it under Releases → Security."
             fi
             if [ -s "$RUNNER_TEMP/notes.md" ]; then echo; cat "$RUNNER_TEMP/notes.md"; fi
           } >> "$GITHUB_STEP_SUMMARY"

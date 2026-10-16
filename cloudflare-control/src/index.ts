@@ -7,7 +7,7 @@
  */
 
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, SecurityUpdateMode, UpdateChannel } from "./types";
+import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, UpdateChannel } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
@@ -60,6 +60,9 @@ import {
   listReleases,
   offeredRelease,
   offeredReleases,
+  installsByItself,
+  stableFeatureReleases,
+  type SyncResult,
   confirmMajor,
   declineMajorRequest,
   endOrphanedMajorPilots,
@@ -88,7 +91,6 @@ import {
   setEndOfLifeReminderStage,
   sendEndOfLifeReminders,
   releaseFolderUrl,
-  isSecurityUpdateMode,
   securityReleasesPending,
   workstationOffer,
   revokeRelease,
@@ -144,6 +146,22 @@ async function platformLegalOverview(db: D1Database, superAdminId: string) {
       acceptedBy: counts.get(`${d.id}@${d.version}`) ?? 0
     }))
   };
+}
+
+/**
+ * Record the releases CI uploaded since the last look. A security release is
+ * offered the moment it is recorded, so every hub with workstations online
+ * reloads; a feature release waits for a super admin to classify it.
+ */
+async function recordNewReleases(env: Env, db: D1Database): Promise<SyncResult | null> {
+  if (!env.RELEASES) return null;
+  const sync = await syncReleases(env.RELEASES, db);
+  for (const problem of sync.problems) console.error(`[Worker] Release ${problem.version} could not be recorded: ${problem.problem}`);
+  if (sync.security.length) {
+    await writeAuditLog(db, { tenantId: null, userId: null, action: "release.security_offered", details: sync.security.join(", ") });
+    await notifyOrganizationsOnline(env, db);
+  }
+  return sync;
 }
 
 async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void> {
@@ -698,9 +716,11 @@ async function releaseTokenRefusal(
 /**
  * GET /api/release-support: the support status each major release has now, for
  * the daily security rebuild (security-rebuild.yml), which rebuilds only lines
- * of majors that are not at end of life. Bearer RELEASE_NOTES_TOKEN, as the
- * sync below. 200 {majors: [{major, status, endOfLifeAt}]}, one entry per major
- * the platform has set; a major not listed is supported.
+ * of majors that are not at end of life, and of each major only the lines from
+ * its newest stable one on. Bearer RELEASE_NOTES_TOKEN, as the sync below.
+ * 200 {majors: [{major, status, endOfLifeAt}], stable: ["3.1.0", ...]}: one
+ * entry per major the platform has set (a major not listed is supported), and
+ * every unrevoked feature release classified stable.
  */
 async function handleReleaseSupportForCi(
   request: Request,
@@ -715,7 +735,8 @@ async function handleReleaseSupportForCi(
     .filter((row) => isReleaseMajor(row.major))
     .sort((a, b) => a.major - b.major)
     .map((row) => ({ major: row.major, status: effectiveSupportStatus(row, now), endOfLifeAt: row.end_of_life_at ?? null }));
-  return new Response(JSON.stringify({ majors }), { status: 200, headers });
+  const stable = await stableFeatureReleases(db);
+  return new Response(JSON.stringify({ majors, stable }), { status: 200, headers });
 }
 
 /**
@@ -736,6 +757,12 @@ async function handleReleaseNotesSync(
 ): Promise<Response> {
   const refused = await releaseTokenRefusal(request, env, "Release notes sync", headers);
   if (refused) return refused;
+  // CI calls this once a release is in the bucket: a security release is offered at once.
+  try {
+    await recordNewReleases(env, db);
+  } catch (err) {
+    console.error("[Worker] Recording the releases in the bucket failed:", err);
+  }
   try {
     const result = await storeReleaseNotes(db, env);
     return new Response(JSON.stringify(result), { status: 200, headers });
@@ -870,7 +897,11 @@ async function handleRestartReport(
  * reports itself up to date when it runs that version or newer. Phase 4 adds
  * `security`, the newest security release for the line `running` belongs to
  * (null without `running`, as a 2.9.0 updater asks), and `securityUpdates`,
- * whether the workstation installs that at its next boot by itself. 503 when
+ * always `next_boot`: the workstation installs that at its next boot by itself
+ * (an updater from before this reads the setting, and `approval` is no longer
+ * one). Each release also says `automatic`: whether it installs at the next
+ * boot without an administrator (installsByItself: a security fix for its line,
+ * a minor release of the running major, or a major an administrator confirmed). 503 when
  * the platform has no public release address, so a workstation never mistakes
  * a missing setting for "up to date".
  *
@@ -899,8 +930,8 @@ async function handleDeviceUpdate(
   const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
   const group = (await workstationGroupsIn(db, tenant.id, pilots)).get(auth.device.client_id) ?? null;
   const offer = workstationOffer(releases, running, group);
-  const securityUpdates = isSecurityUpdateMode(tenant.security_updates) ? tenant.security_updates : "next_boot";
-  const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string } | null> = {};
+  const securityUpdates = "next_boot";
+  const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string; automatic: boolean } | null> = {};
   for (const [name, release] of [["release", offer.release], ["security", offer.security]] as const) {
     if (!release) {
       described[name] = null;
@@ -911,7 +942,13 @@ async function handleDeviceUpdate(
       console.error("[Worker] A release is offered but RELEASES_BASE_URL is missing or not an https address");
       return jsonError("Updates are not available from this server right now", 503, jsonHeaders);
     }
-    described[name] = { version: release.version, kind: release.kind, sizeBytes: release.sizeBytes, url: folder };
+    described[name] = {
+      version: release.version,
+      kind: release.kind,
+      sizeBytes: release.sizeBytes,
+      url: folder,
+      automatic: installsByItself(release, running)
+    };
   }
   let lan: { peers: string[] } | null = null;
   if (tenant.lan_sharing === 1) {
@@ -1083,6 +1120,13 @@ export default {
     } catch (err) {
       // /download keeps showing the releases it already has.
       console.error("[Worker] Reading the releases from GitHub failed:", err);
+    }
+    try {
+      const recorded = await recordNewReleases(env, db);
+      if (recorded?.added.length) console.log(`[Worker] Releases recorded: ${recorded.added.join(", ")}.`);
+    } catch (err) {
+      // The next hour, or the Releases page, records them.
+      console.error("[Worker] Recording the releases in the bucket failed:", err);
     }
     try {
       const reminded = await sendEndOfLifeReminders(env, db);
@@ -1981,8 +2025,8 @@ export default {
     if (path === "/api/super/releases" && method === "GET") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
-      if (!env.RELEASES) return jsonError("This server has no releases bucket (RELEASES binding)", 503, jsonHeaders);
-      const sync = await syncReleases(env.RELEASES, db);
+      const sync = await recordNewReleases(env, db);
+      if (!sync) return jsonError("This server has no releases bucket (RELEASES binding)", 503, jsonHeaders);
       const releases = await listReleases(db);
       const names = await tenantNames(db);
       return new Response(
@@ -1999,8 +2043,9 @@ export default {
 
     // POST /api/super/releases/classify { version, channel: "beta" | "stable" | null }
     // POST /api/super/releases/revoke { version }
-    // Classifying puts a release in front of every organization on that channel;
-    // revoking withdraws it for good. Either way each organization's hub reloads,
+    // Classifying puts a feature release in front of every organization on that
+    // channel; a security release has no channel, it is offered from the moment
+    // it is recorded. Revoking withdraws either for good. Either way each organization's hub reloads,
     // so connected workstations hear of the change at once.
     if ((path === "/api/super/releases/classify" || path === "/api/super/releases/revoke") && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
@@ -2022,6 +2067,9 @@ export default {
         await revokeRelease(db, version);
         details = `${version} revoked`;
       } else {
+        if (release.kind === "security") {
+          return jsonError("A security release is offered on its line by itself; it can only be revoked", 409, jsonHeaders);
+        }
         const channel = body.channel === null || body.channel === "" ? null : body.channel;
         if (channel !== null && !isUpdateChannel(channel)) {
           return jsonError("The channel is beta, stable or none", 400, jsonHeaders);
@@ -3807,18 +3855,16 @@ export default {
     }
 
     // GET /api/settings/updates: which releases this organization's workstations
-    // are offered (its channel), the release that means right now, what they do
-    // with a security release for their line, and the security releases some of
-    // its workstations still do not run.
-    // POST /api/settings/updates { channel?: "stable" | "beta",
-    //                              securityUpdates?: "next_boot" | "approval",
-    //                              lanSharing?: boolean }.
+    // are offered (its channel), the release that means right now, and the
+    // security releases some of its workstations still do not run. Minor
+    // releases and security fixes always install at the next boot, so there is
+    // no setting for them.
+    // POST /api/settings/updates { channel?: "stable" | "beta", lanSharing?: boolean }.
     if (path === "/api/settings/updates" && (method === "GET" || method === "POST")) {
       const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
       if (denied) return denied;
       const tenantId = currentTenant!.id;
       let channel: UpdateChannel = currentTenant!.update_channel === "beta" ? "beta" : "stable";
-      let securityUpdates: SecurityUpdateMode = currentTenant!.security_updates === "approval" ? "approval" : "next_boot";
       let lanSharing = currentTenant!.lan_sharing === 1;
       if (method === "POST") {
         let body: { channel?: unknown; securityUpdates?: unknown; lanSharing?: unknown };
@@ -3832,22 +3878,19 @@ export default {
           typeof body !== "object" ||
           (body.channel === undefined && body.securityUpdates === undefined && body.lanSharing === undefined)
         ) {
-          return jsonError("Send a channel, a securityUpdates or a lanSharing setting", 400, jsonHeaders);
+          return jsonError("Send a channel or a lanSharing setting", 400, jsonHeaders);
+        }
+        if (body.securityUpdates !== undefined) {
+          return jsonError("Minor updates and security fixes always install at the next restart; there is no setting for it", 400, jsonHeaders);
         }
         if (body.channel !== undefined && !isUpdateChannel(body.channel)) {
           return jsonError("The channel is stable or beta", 400, jsonHeaders);
-        }
-        if (body.securityUpdates !== undefined && !isSecurityUpdateMode(body.securityUpdates)) {
-          return jsonError("securityUpdates is next_boot or approval", 400, jsonHeaders);
         }
         if (body.lanSharing !== undefined && typeof body.lanSharing !== "boolean") {
           return jsonError("lanSharing is true or false", 400, jsonHeaders);
         }
         const changes: Partial<Tenant> = {};
         if (isUpdateChannel(body.channel) && body.channel !== channel) changes.update_channel = channel = body.channel;
-        if (isSecurityUpdateMode(body.securityUpdates) && body.securityUpdates !== securityUpdates) {
-          changes.security_updates = securityUpdates = body.securityUpdates;
-        }
         if (typeof body.lanSharing === "boolean" && body.lanSharing !== lanSharing) {
           lanSharing = body.lanSharing;
           changes.lan_sharing = lanSharing ? 1 : 0;
@@ -3856,14 +3899,6 @@ export default {
           await updateTenant(db, tenantId, changes);
           if (changes.update_channel) {
             await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "settings.update_channel", details: channel });
-          }
-          if (changes.security_updates) {
-            await writeAuditLog(db, {
-              tenantId,
-              userId: session!.user_id,
-              action: "settings.security_updates",
-              details: securityUpdates
-            });
           }
           if (changes.lan_sharing !== undefined) {
             await writeAuditLog(db, {
@@ -3884,7 +3919,6 @@ export default {
         JSON.stringify({
           channel,
           offer: newestOffered(releases),
-          securityUpdates,
           lanSharing,
           pending,
           support: notices.support,

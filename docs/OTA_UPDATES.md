@@ -322,15 +322,14 @@ reports "updated to <v>"
 - **Machines that never restart.** A kiosk left on for weeks never picks the fix up. The
   console flags machines whose staged security release is older than N days, so the admin can
   reboot them.
-- **Organization setting `security_updates`:** `next_boot` (default) or `approval`, for
-  organizations that want to approve every change. With `approval`, security releases behave
-  like feature releases, and the console shows a banner when one has been waiting more than
-  N days.
+- **No approval setting.** Phase 4 let an organization choose `approval` (`security_updates`);
+  that choice is gone. Security fixes and minor releases always install at the next boot, and
+  only a new major waits for its administrator (§5.11). The column stays in `tenants`, unread.
 - **When a security fix and a feature release compete for the spare folder:** there's only one
   spare image folder. A security fix for the running line takes it first and installs at the
   next boot. After that, the feature release downloads into the spare folder, replacing the old
-  rollback image, and waits for approval as usual. A security fix never waits behind an
-  unapproved feature release.
+  rollback image, and installs at the next boot after that. A security fix never waits behind a
+  feature release.
 - **Which lines get security rebuilds:** CI rebuilds every release line of a major release the
   platform has **not put at end of life** (§5.13; a major with no status is supported). End of life
   is set per major, never per line: an organization that hasn't approved 2.8 yet still gets fixes
@@ -475,9 +474,10 @@ start anyway, to check what peers send.
 `RELEASES` (`labkiosk-releases`) under `releases/<version>/`. The **Releases** tab of the Super
 Admin console (`/super/releases`, `GET /api/super/releases`) records any new folder whose
 `manifest.json` parses and has `manifest.json.sig` beside it, in the platform table `releases`
-(migration 0027; no `tenant_id`). A release reaches no workstation until a super admin
+(migration 0027; no `tenant_id`). A feature release reaches no workstation until a super admin
 classifies it **Beta** or **Stable**; **Withdraw** takes it out of its channel, and **Revoke**
-withdraws it for good. Each change is audited (`release.classify`, `release.revoke`) and every
+withdraws it for good. A security release has no channel (§5.11): it is listed in its own
+**Security** section and can only be revoked. Each change is audited (`release.classify`, `release.revoke`) and every
 organization's hub reloads its offer.
 
 **The offer.** An organization's `update_channel` (`stable` by default, or `beta`, in
@@ -535,10 +535,13 @@ Phase 4 is §5.11 and phase 5 is §5.12.
 and by hand (one line, `force`, `dry_run`):
 
 1. From the controller (`GET /api/release-support`, Bearer `RELEASE_NOTES_TOKEN`), which major
-   releases are at end of life, an announced date that has passed included; the run stops if it
-   cannot read them. Then from the repository's tags, every stable line from 2.9 on whose major is
-   not at end of life, and the newest tag of each (`distro-builder/tools/security-rebuild.py lines --policy`). An older
-   line has no updater, so nothing rebuilt for it could reach a workstation.
+   releases are at end of life, an announced date that has passed included, and which feature
+   releases are classified stable (`stable`); the run stops if it cannot read them. Then from the
+   repository's tags, every stable line from 2.9 on whose major is not at end of life and that no
+   newer stable line of its major supersedes, and the newest tag of each
+   (`distro-builder/tools/security-rebuild.py lines --policy`): once 3.1.0 is stable, 3.0 is
+   rebuilt no more, while a newer line not yet stable (3.2 on beta) still is. A line older than
+   2.9 has no updater, so nothing rebuilt for it could reach a workstation.
 2. The installed packages of that tag's image (`var/lib/dpkg/status`): the `dpkg-status` its GitHub
    release carries when it is a security release, otherwise read from the squashfs of its ISO
    (checked against its `.sha256`); cached by tag.
@@ -564,14 +567,18 @@ and by hand (one line, `force`, `dry_run`):
    security release for its line. So the GitHub release is never "Latest", and `/download`
    offers the newest release that has an ISO, listing security releases by version beside it.
 
-A super admin classifies the rebuild on the Releases page like any release; nothing reaches a
-workstation before that.
+A security release needs no classification. The controller records it when the run calls the
+`/download` sync (and at the hourly run, or when the Releases page is opened), audits it
+(`release.security_offered`), and offers it at once: on every channel that offers a feature release
+of its line, and to a workstation already on its line whatever its channel, but never to move a
+workstation onto a line its channel does not offer. The Releases page lists it under
+**Security**, where a super admin can only revoke it.
 
 **The offer.** `GET /api/devices/update?running=<image version>` adds `security`, the newest
-classified `security` release for the line (major.minor) the workstation runs, newer than it, and
-`securityUpdates`, the organization's `tenants.security_updates` (`next_boot` by default, or
-`approval`; migration 0029, Settings → Updates). `release` is unchanged, so a 2.9.0 updater, which
-sends no `running`, works as before.
+unrevoked `security` release for the line (major.minor) the workstation runs, newer than it, and
+`securityUpdates`, now always `next_boot` (an updater reads it to stage a security fix; the
+organization's `approval` choice of migration 0029 is no longer offered). `release` is unchanged,
+so a 2.9.0 updater, which sends no `running`, works as before.
 
 **On the workstation.** `labkiosk-update run` fetches the `security` release before the newest
 one (a fix never waits behind an unapproved feature release, and replaces a downloaded one).
@@ -581,22 +588,30 @@ is `next_boot`, it gives the release its one try at the next boot straight away 
 `since`, when this boot first held it. The boot that follows is the install: GRUB's one try, the
 "Finishing a system update" curtain and the health check of §5.6, with rollback. A staged release
 is not written again on later runs; one that rolled back is never staged again by itself (the
-console shows the error; with `approval` an administrator can still install it). With `approval`,
-or a control plane that sends no setting, the release stays `ready` like a feature release. The
-Worker can therefore delay a security release but never make a feature release install itself.
+console shows the error; an administrator can still install it from Workstations → Updates). With
+a control plane that sends no setting, the release stays `ready` for an administrator.
+
+**Minor and major releases.** Each release in the offer also carries `automatic`
+(`installsByItself`): a feature release of the major the workstation runs (a minor release, such
+as 3.1.0 for 3.0.x) is always `automatic`, so the updater stages it for the next boot like a
+security fix. A release of a higher major is offered only once its organization's administrator
+confirmed the major (or is trying it on the workstation's group, §5.12), and that confirmation is
+the approval: it is then `automatic` and installs at the next boot. Before that, Settings → Updates shows it as a new
+major version available to confirm, and nothing is downloaded. The updater stages a feature
+release only when the offer says `automatic` and its signed manifest says `kind: feature`, so a
+control plane from before this sends nothing that installs by itself.
 
 **The hub** reminds a workstation of the release meant for it (`updateTargetFor`): the security
-release for its line, else the newest. A `staged` workstation is left alone; one holding a
-security release `ready` is reminded once its organization switches to `next_boot`, so it stages
-it. An updater from before phase 4 never reports `kind` and only fetches the newest release;
+release for its line, else the newest. A `staged` workstation is left alone; one holding `ready`
+a release that installs by itself (an updater from before this, or a major confirmed since) is
+reminded, so it stages it. An updater from before phase 4 never reports `kind` and only fetches the newest release;
 holding that, it is left alone. **Install update** sends each workstation the version meant for it
 and refuses a `staged` one ("Installs at its next restart; restart it to install now").
 
 **Console.** A workstation card shows "*v* installs at next restart", and in amber "…not restarted
-in *N* days" once it has waited 7 days (`SECURITY_WAIT_WARN_DAYS`), for **Reboot** to fix; with
-`approval`, "security fix *v* ready to install". Settings → Updates has the **Security fixes**
-choice and, per line, the newest security release some workstations do not run yet with how many
-and since when, in amber after 7 days. The change is audited as `settings.security_updates`.
+in *N* days" once it has waited 7 days (`SECURITY_WAIT_WARN_DAYS`), for **Reboot** to fix.
+Settings → Updates lists, per line, the newest security release some workstations do not run yet
+with how many and since when, in amber after 7 days.
 
 **Which images stage.** The updater in an image decides, so staging starts with the first feature
 release that carries phase 4. A 2.9.x image, and its security rebuilds (built from 2.9.x source),
@@ -741,9 +756,8 @@ of whatever it is offered, as before.
    live-build adds by default, and its Chromium is the security archive's
    `154.0.8037.92-1~deb12u1`. Each rebuild is checked again: one still missing a fix is refused.
 3. **Test.** The release's own `boot-test.sh` in QEMU, as for a tag build.
-4. **Publish.** Once a super admin classifies it, workstations download it automatically (later
-   sharing it over the LAN, §5.9) and boot it at their next start, unless the organization chose
-   `approval` for security releases.
+4. **Publish.** As soon as the controller records it, workstations download it automatically (later
+   sharing it over the LAN, §5.9) and boot it at their next start.
 5. **Report.** Settings → Updates lists, per line, how many workstations do not run the newest
    security release yet; each card says when one is staged, and since how many days.
 

@@ -130,6 +130,28 @@ class Lines(unittest.TestCase):
             rebuild.plan_lines(tags, "2.10", end_of_life=ended)
         self.assertEqual(rebuild.plan_lines(["v2.9.0", "v2.10.0"], end_of_life={2}), [])
 
+    def test_a_line_superseded_by_a_newer_stable_line_of_its_major_is_not_rebuilt(self):
+        tags = ["v3.0.0", "v3.0.1", "v3.1.0", "v4.0.0", "v4.1.0"]
+        policy = json.dumps({"majors": [], "stable": ["3.0.0", "3.1.0", "4.0.0"]})
+        stable = rebuild.stable_releases(policy)
+        self.assertEqual(stable, {(3, 0, 0), (3, 1, 0), (4, 0, 0)})
+        plan = rebuild.plan_lines(tags, end_of_life=set(), stable=stable)
+        self.assertEqual([entry["line"] for entry in plan], ["4.1", "4.0", "3.1"],
+                         "3.1 is stable, so 3.0 is left out; 4.1 is not stable yet, so 4.0 keeps its fixes")
+        self.assertEqual([entry["line"] for entry in rebuild.plan_lines(tags, end_of_life=set(), stable={(3, 0, 0)})],
+                         ["4.1", "4.0", "3.1", "3.0"], "a line nothing stable supersedes is rebuilt as before")
+        self.assertEqual([entry["line"] for entry in rebuild.plan_lines(tags, "3.1", end_of_life=set(), stable=stable)], ["3.1"])
+        with self.assertRaisesRegex(ValueError, "superseded by 3.1"):
+            rebuild.plan_lines(tags, "3.0", end_of_life=set(), stable=stable)
+
+    def test_a_stable_list_that_cannot_be_read_is_an_error_not_an_empty_one(self):
+        for text in ('{"majors": []}', '{"majors": [], "stable": {}}', '{"majors": [], "stable": [3]}',
+                     '{"majors": [], "stable": ["3.1"]}', '{"majors": [], "stable": ["3.1.0-rc1"]}',
+                     '{"majors": [], "stable": ["v3.1.0"]}', "[]", "not json"):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    rebuild.stable_releases(text)
+
     def test_a_version_already_published_in_r2_is_never_built_again(self):
         # 2.10.1 reached R2 but its tag push was refused: the next rebuild of
         # v2.10.0 is 2.10.2, and the next one of 3.0 skips both 3.0.2 and 3.0.3.
@@ -174,11 +196,16 @@ class Lines(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "policy.json")
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps({"majors": [{"major": 2, "status": "end_of_life"}]}))
+                handle.write(json.dumps({"majors": [{"major": 2, "status": "end_of_life"}], "stable": ["3.0.0", "3.1.0"]}))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                self.assertEqual(rebuild.main(["lines", "--policy", path, "v2.10.0", "v3.0.0"]), 0)
-            self.assertEqual([entry["line"] for entry in json.loads(out.getvalue())], ["3.0"])
+                self.assertEqual(rebuild.main(["lines", "--policy", path, "v2.10.0", "v3.0.0", "v3.1.0"]), 0)
+            self.assertEqual([entry["line"] for entry in json.loads(out.getvalue())], ["3.1"])
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps({"majors": []}))
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(rebuild.main(["lines", "--policy", path, "v3.0.0"]), 1,
+                                 "a controller that does not list its stable releases stops the run")
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write("not json")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

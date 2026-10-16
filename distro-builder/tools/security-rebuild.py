@@ -8,8 +8,9 @@ test_security_rebuild.py) instead of living in shell.
 
     lines     from the repository's tags, the release lines to look after --
               with --policy (the controller's GET /api/release-support), every
-              line that can update over the air and whose major release is not
-              at end of life; without it, the latest two -- and for each the
+              line that can update over the air, whose major release is not
+              at end of life and that no newer line of its major classified
+              stable supersedes; without it, the latest two -- and for each the
               newest tag and the version its rebuild gets (patch + 1, past any
               version already tagged or, with --published, already in R2).
     check     which packages installed in an image (its dpkg status file) have
@@ -104,6 +105,40 @@ def end_of_life_majors(policy_text):
     return ended
 
 
+def stable_releases(policy_text):
+    """
+    The feature releases a super admin classified stable, from the
+    controller's answer to GET /api/release-support: {"stable": ["3.1.0"]}.
+    Anything else is an error, never an empty list: a policy that cannot be
+    read must not decide which lines are superseded.
+    """
+    try:
+        policy = json.loads(policy_text)
+    except json.JSONDecodeError as err:
+        raise ValueError(f"the release support policy is not JSON: {err}") from err
+    entries = policy.get("stable") if isinstance(policy, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("the release support policy has no list of stable releases")
+    stable = set()
+    for entry in entries:
+        version = stable_version("v" + entry) if isinstance(entry, str) else None
+        if version is None:
+            raise ValueError(f"the release support policy lists a stable release that is not a version: {entry!r}")
+        stable.add(version)
+    return stable
+
+
+def superseded_lines(lines, stable):
+    """
+    The lines older than the newest line of their major with a release
+    classified stable: once 3.1 is stable, 3.0 gets no more security rebuilds.
+    """
+    newest_stable = {}
+    for major, minor, _patch in stable:
+        newest_stable[major] = max(newest_stable.get(major, minor), minor)
+    return {line for line in lines if line[0] in newest_stable and line[1] < newest_stable[line[0]]}
+
+
 def published_versions(text):
     """
     The versions already in the R2 releases bucket, from a listing with one
@@ -134,12 +169,16 @@ def next_free_version(major, minor, patch, taken):
     raise ValueError(f"the line {major}.{minor} has no free patch version left")
 
 
-def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, end_of_life=None, published=()):
+def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, end_of_life=None, published=(),
+               stable=None):
     """
     The release lines to rebuild, newest first, among the stable tags from
     `first` on, each with its newest tag and the version its rebuild gets.
     With `end_of_life` (the major releases the platform ended), every line of
-    every other major; without it, the `kept` highest lines. A pre-release tag is never a base:
+    every other major; without it, the `kept` highest lines. With `stable` (the
+    (major, minor, patch) of each release classified stable), a line older than
+    the newest stable line of its major is left out: its workstations move to
+    that line, which gets the fixes. A pre-release tag is never a base:
     it is not offered to a stable organization, and its fixes arrive with the
     release it leads to.
 
@@ -162,6 +201,8 @@ def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, e
         chosen = sorted(newest, reverse=True)[:kept]
     else:
         chosen = sorted((line for line in newest if line[0] not in end_of_life), reverse=True)
+    superseded = superseded_lines(newest, stable) if stable is not None else set()
+    chosen = [line for line in chosen if line not in superseded]
     if only_line is not None:
         if not LINE_PATTERN.match(only_line):
             raise ValueError(f"{only_line!r} is not a release line such as 2.9")
@@ -169,6 +210,10 @@ def plan_lines(tags, only_line=None, kept=LINES_KEPT, first=FIRST_OTA_VERSION, e
         if end_of_life is not None and wanted[0] in end_of_life:
             raise ValueError(f"{only_line} belongs to Lab Kiosk {wanted[0]}, which has reached end of life: "
                              "it receives no security rebuilds")
+        if wanted in superseded:
+            newer = max(minor for major, minor, _patch in stable if major == wanted[0])
+            raise ValueError(f"{only_line} is superseded by {wanted[0]}.{newer}, the newest stable line of Lab Kiosk "
+                             f"{wanted[0]}: it receives no security rebuilds")
         if wanted not in chosen:
             raise ValueError(f"{only_line} is not one of the lines kept up to date: "
                              f"{', '.join('.'.join(map(str, line)) for line in chosen) or 'none'}")
@@ -411,7 +456,8 @@ def main(argv=None):
     lines_parser = sub.add_parser("lines", help="the release lines to rebuild, from the repository's tags")
     lines_parser.add_argument("--line", help="only this line, such as 2.9")
     lines_parser.add_argument("--policy", help="the controller's GET /api/release-support answer, as a file: "
-                              "rebuild every line whose major is not at end of life")
+                              "rebuild every line whose major is not at end of life and that no newer "
+                              "stable line of its major supersedes")
     lines_parser.add_argument("--published", help="the folders of the R2 releases bucket, one per line, as a file: "
                               "a rebuild never takes a version already published there")
     lines_parser.add_argument("tags", nargs="*")
@@ -436,14 +482,18 @@ def main(argv=None):
     try:
         if args.command == "lines":
             ended = None
+            stable = None
             if args.policy:
                 with open(args.policy, "r", encoding="utf-8") as handle:
-                    ended = end_of_life_majors(handle.read())
+                    policy_text = handle.read()
+                ended = end_of_life_majors(policy_text)
+                stable = stable_releases(policy_text)
             published = set()
             if args.published:
                 with open(args.published, "r", encoding="utf-8") as handle:
                     published = published_versions(handle.read())
-            print(json.dumps(plan_lines(args.tags, args.line, end_of_life=ended, published=published)))
+            print(json.dumps(plan_lines(args.tags, args.line, end_of_life=ended, published=published,
+                                        stable=stable)))
         elif args.command == "check":
             with open(args.status, "r", encoding="utf-8") as handle:
                 installed = installed_packages(handle.read())

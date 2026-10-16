@@ -123,7 +123,7 @@ One row per organization. This table has accumulated the most columns because it
 | `bug_reports_enabled` | INTEGER | `1` when the organization opted in to automatic bug reports; default `0` |
 | `bug_reports_terms_version` / `bug_reports_terms_accepted_at` | TEXT / INTEGER | The Automatic Bug Report Terms version accepted, and when; reports are sent only under the current version |
 | `update_channel` | TEXT | `stable` (default) \| `beta`: which classified releases its workstations are offered; `beta` also takes `stable` ones |
-| `security_updates` | TEXT | `next_boot` (default) \| `approval`: whether a security release for a workstation's line installs at its next start by itself, or waits for an administrator |
+| `security_updates` | TEXT | `next_boot` (default) \| `approval`. No longer read: security fixes and minor releases always install at a workstation's next start. Kept because dropping a column is a table rebuild |
 | `lan_sharing` | INTEGER | `1` when the organization's workstations share a release on their local network; default `0` |
 | `workstation_limit` | INTEGER | How many workstations may hold a valid device token (1–100000, default 45); set by a super admin at approval and under Organizations. Enrolment past it answers 403; a workstation that still holds a valid token always enrols again |
 | `remote_control_seats` | INTEGER | Remote Control sessions that may be open at once (1–1000); set when Remote Control is approved |
@@ -284,7 +284,7 @@ Interface translations for the setup wizard and kiosk bar. **No `tenant_id`, on 
 
 ### `releases`
 
-The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when a super admin opens Super Admin → Releases. **No `tenant_id`**: releases are the platform's. A release reaches no workstation until it is classified, and a revoked one never again.
+The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when a super admin opens Super Admin → Releases. **No `tenant_id`**: releases are the platform's. A feature release reaches no workstation until it is classified; a security release is offered from the moment it is recorded (its `channel` stays NULL); a revoked one never again.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |

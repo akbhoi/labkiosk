@@ -79,7 +79,11 @@ export interface Tenant {
   remote_control_status?: RemoteControlStatus;
   /** Which classified releases its workstations are offered (migration 0027). */
   update_channel?: UpdateChannel;
-  /** What its workstations do with a security release for their line (phase 4). */
+  /**
+   * Phase 4's choice of installing security releases at the next boot or on
+   * approval. No longer read: security fixes and minor releases always install
+   * at the next boot. Kept because dropping a tenants column is a table rebuild.
+   */
   security_updates?: SecurityUpdateMode;
   /** 1 when its workstations at one site share a new system image over the LAN (phase 5). */
   lan_sharing?: number;
