@@ -284,7 +284,7 @@ Interface translations for the setup wizard and kiosk bar. **No `tenant_id`, on 
 
 ### `releases`
 
-The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when a super admin opens Super Admin → Releases. **No `tenant_id`**: releases are the platform's. A release reaches no workstation until it is classified, and a revoked one never again.
+The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when a super admin opens Super Admin → Releases. **No `tenant_id`**: releases are the platform's. A feature release reaches no workstation until it is classified; a security release is offered from the moment it is recorded (its `channel` stays NULL); a revoked one never again.
 
 | Column | Type | Notes |
 | :--- | :--- | :--- |

@@ -2,10 +2,11 @@
  * The Super Admin console's Releases tab (/super/releases): the signed system
  * images CI uploaded to the releases bucket, and the channel each is offered on.
  *
- * A release reaches no workstation until it is classified `beta` or `stable`
- * here. Beta organizations are offered the newest of both; every other
- * organization the newest stable one. A security release (a rebuild of an
- * earlier release with patched packages) is offered only to workstations on
+ * A feature release reaches no workstation until it is classified `beta` or
+ * `stable` here. Beta organizations are offered the newest of both; every
+ * other organization the newest stable one. A security release (a rebuild of
+ * an earlier release with patched packages) has a section of its own and no
+ * channel: it is offered from the moment it is recorded to the workstations on
  * its own line, which install it at their next start unless their organization
  * approves security fixes. Revoking withdraws a release for good.
  * The list is read from GET /api/super/releases, which first records any new
@@ -24,14 +25,13 @@ export function renderReleasesPaneHtml(): string {
       <div class="tab-pane active" id="pane-releases-list">
         <div class="card">
           <h2 class="card-title">System image releases</h2>
-          <p class="card-sub">Each release CI signed and uploaded. Classify one <strong>beta</strong> to offer it to organizations on the beta channel, or <strong>stable</strong> to offer it to every organization. Workstations check its signature themselves before they download it.</p>
+          <p class="card-sub">Each feature release CI signed and uploaded. Classify one <strong>beta</strong> to offer it to organizations on the beta channel, or <strong>stable</strong> to offer it to every organization. Workstations check its signature themselves before they download it.</p>
           <div class="callout callout-warning hidden" id="releases-notice" role="status"></div>
           <div class="table-container">
             <table>
               <thead>
                 <tr>
                   <th>Version</th>
-                  <th>Kind</th>
                   <th>Size</th>
                   <th>Built</th>
                   <th>Security floor</th>
@@ -40,6 +40,28 @@ export function renderReleasesPaneHtml(): string {
                 </tr>
               </thead>
               <tbody id="release-rows">
+                <tr><td colspan="6" class="table-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Security</h2>
+          <p class="card-sub">Each security rebuild of a release, with the Debian security fixes published since. A security release needs no classification: it is offered for download as soon as it is here, to every workstation on its line, which installs it at its next restart unless its organization approves security fixes. The daily rebuild covers each major's newest stable line and any newer one, so an older line stops receiving them once a newer line of its major is stable. Revoke one only if it must never be installed.</p>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Version</th>
+                  <th>Rebuild of</th>
+                  <th>Size</th>
+                  <th>Built</th>
+                  <th>Security floor</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="security-rows">
                 <tr><td colspan="7" class="table-empty">Loading…</td></tr>
               </tbody>
             </table>
@@ -94,10 +116,11 @@ export function renderReleasesScript(nonce: string): string {
     <script nonce="${escapeAttr(nonce)}">
       (function () {
         const rows = document.getElementById("release-rows");
+        const securityRows = document.getElementById("security-rows");
         const notice = document.getElementById("releases-notice");
         const lineRows = document.getElementById("line-rows");
         const majorRows = document.getElementById("major-rows");
-        if (!rows || !notice || !lineRows || !majorRows) return;
+        if (!rows || !securityRows || !notice || !lineRows || !majorRows) return;
         let majors = [];
 
         function cell(text, className) {
@@ -378,27 +401,49 @@ export function renderReleasesScript(nonce: string): string {
           notice.classList.toggle("hidden", lines.length === 0);
         }
 
-        function render(releases) {
-          rows.replaceChildren();
+        function built(r) {
+          return cell(String(r.builtAt || "").replace("T", " ").replace(/Z$/, " UTC"), "mono text-xs nowrap");
+        }
+
+        function renderSecurity(releases) {
+          securityRows.replaceChildren();
           if (!releases.length) {
-            rows.appendChild(placeholder("No releases in the bucket yet. CI uploads one under releases/<version>/ for every tagged build."));
+            securityRows.appendChild(placeholder("No security releases yet. The daily security rebuild uploads one when a release's packages have a Debian security fix."));
             return;
           }
           for (const r of releases) {
             const row = document.createElement("tr");
-            row.dataset.kind = r.kind === "security" ? "security" : "feature";
             row.appendChild(cell(r.version, "mono"));
-            const kind = document.createElement("td");
-            kind.appendChild(badge(r.kind === "security" ? "Security" : "Feature", r.kind === "security" ? "red" : "neutral"));
-            if (r.kind === "security" && r.baseVersion) {
-              const base = document.createElement("div");
-              base.className = "text-xs nowrap";
-              base.textContent = "Rebuild of " + r.baseVersion;
-              kind.appendChild(base);
-            }
-            row.appendChild(kind);
+            row.appendChild(cell(r.baseVersion || "", "mono"));
             row.appendChild(cell(size(r.sizeBytes), "nowrap"));
-            row.appendChild(cell(String(r.builtAt || "").replace("T", " ").replace(/Z$/, " UTC"), "mono text-xs nowrap"));
+            row.appendChild(built(r));
+            row.appendChild(cell(r.securityFloor, "mono"));
+            const state = document.createElement("td");
+            state.appendChild(r.revokedAt ? badge("Revoked", "red") : badge("Offered on its line", "green"));
+            row.appendChild(state);
+            const actions = document.createElement("td");
+            const wrap = document.createElement("div");
+            wrap.className = "cell-actions";
+            if (!r.revokedAt) wrap.appendChild(button("Revoke", "btn-danger", "revoke", r.version));
+            actions.appendChild(wrap);
+            row.appendChild(actions);
+            securityRows.appendChild(row);
+          }
+        }
+
+        function render(all) {
+          renderSecurity(all.filter((r) => r.kind === "security"));
+          const releases = all.filter((r) => r.kind !== "security");
+          rows.replaceChildren();
+          if (!releases.length) {
+            rows.appendChild(placeholder("No releases in the bucket yet. CI uploads one under releases/<version>/ for every tagged build.", 6));
+            return;
+          }
+          for (const r of releases) {
+            const row = document.createElement("tr");
+            row.appendChild(cell(r.version, "mono"));
+            row.appendChild(cell(size(r.sizeBytes), "nowrap"));
+            row.appendChild(built(r));
             row.appendChild(cell(r.securityFloor, "mono"));
             const channel = document.createElement("td");
             if (r.revokedAt) channel.appendChild(badge("Revoked", "red"));
@@ -426,7 +471,8 @@ export function renderReleasesScript(nonce: string): string {
             const res = await fetch("/api/super/releases");
             const data = await res.json();
             if (!res.ok) {
-              rows.replaceChildren(placeholder(data.error || "Releases could not be read"));
+              rows.replaceChildren(placeholder(data.error || "Releases could not be read", 6));
+              securityRows.replaceChildren(placeholder(data.error || "Security releases could not be read"));
               lineRows.replaceChildren(placeholder(data.error || "Support status could not be read", 6));
               majorRows.replaceChildren(placeholder(data.error || "Major releases could not be read", 4));
               return;
@@ -440,32 +486,30 @@ export function renderReleasesScript(nonce: string): string {
             render(Array.isArray(data.releases) ? data.releases : []);
             showPolicy(data);
           } catch (err) {
-            rows.replaceChildren(placeholder("Network error: " + err.message));
+            rows.replaceChildren(placeholder("Network error: " + err.message, 6));
+            securityRows.replaceChildren(placeholder("Network error: " + err.message));
           }
         }
 
-        rows.addEventListener("click", async (event) => {
+        async function onReleaseAction(event) {
           const b = event.target && event.target.closest ? event.target.closest("[data-release-action]") : null;
           if (!b) return;
           const version = b.dataset.version;
           const revoke = b.dataset.releaseAction === "revoke";
           const channel = b.dataset.channel || null;
-          const row = b.closest("tr");
-          const security = Boolean(row && row.dataset.kind === "security");
+          const security = b.closest("tbody") === securityRows;
           const line = String(version).split(".").slice(0, 2).join(".");
-          // A security release installs by itself at the next start, on its own line only.
-          const offerMessage = security
-            ? (channel === "stable" ? "Every organization's" : "Beta organizations'") +
-              " workstations on the " + line + " line will download it and install it at their next restart. " +
-              "Organizations that approve security fixes install it from Workstations \u2192 Updates instead."
-            : channel === "stable"
+          const offerMessage = channel === "stable"
             ? "Every organization's workstations will download it, and their administrators can install it."
             : "Workstations of organizations on the beta channel will download it, and their administrators can install it.";
           const agreed = await lkConfirm(
             revoke
               ? {
                   title: "Revoke " + version + "?",
-                  message: "No workstation is offered this release again. A workstation that already installed it keeps it until a newer release replaces it. This cannot be undone.",
+                  message: (security
+                    ? "Workstations on the " + line + " line stop installing this security fix at their next restart. "
+                    : "") +
+                    "No workstation is offered this release again. A workstation that already installed it keeps it until a newer release replaces it. This cannot be undone.",
                   confirmLabel: "Revoke",
                   tone: "danger"
                 }
@@ -498,7 +542,9 @@ export function renderReleasesScript(nonce: string): string {
           } catch (err) {
             lkToast("Network error: " + err.message, "error");
           }
-        });
+        }
+        rows.addEventListener("click", onReleaseAction);
+        securityRows.addEventListener("click", onReleaseAction);
 
         load();
       })();

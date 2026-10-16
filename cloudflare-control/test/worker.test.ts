@@ -7118,6 +7118,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(updateTargetFor(releases, "2.10.0"), null);
     assert.equal(updateTargetFor(releases, "garbage"), null);
 
+    // A security release of a line its channel offers no feature release of reaches that line alone.
+    const lineOnly = [at("3.1.1", "security"), at("3.0.0", "feature")].map((r) => (r.kind === "security" ? { ...r, lineOnly: true } : r));
+    assert.equal(updateTargetFor(lineOnly, "3.1.0")?.version, "3.1.1", "a workstation already on 3.1 gets its fix");
+    assert.equal(updateTargetFor(lineOnly, "2.9.0")?.version, "3.0.0", "one on another line is not moved onto 3.1");
+    assert.equal(workstationOffer(lineOnly, null).release?.version, "3.0.0", "nor is an updater that does not say what it runs");
+
     const nudge = (update: Parameters<typeof releaseNudgeTarget>[1], image: string, mode: "next_boot" | "approval" = "next_boot") =>
       releaseNudgeTarget(releases, update, image, mode)?.version ?? null;
     assert.equal(nudge({ phase: "ready", version: "2.10.0", kind: "feature" }, "2.9.0"), "2.9.2", "a fix displaces a waiting feature release");
@@ -7392,10 +7398,16 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       })
     } as Env;
     assert.equal((await callWith(securityEnv, "/api/super/releases", { cookie: superSessionCookie })).status, 200);
-    for (const version of ["2.8.1", "2.10.0"]) {
-      const res = await callWith(securityEnv, "/api/super/releases/classify", { ...json({ version, channel: "stable" }), cookie: superSessionCookie });
-      assert.equal(res.status, 200, `classifying ${version}`);
+    // A security release has no channel: it is offered as soon as it is recorded, and cannot be classified.
+    for (const channel of ["stable", "beta", null]) {
+      const res = await callWith(securityEnv, "/api/super/releases/classify", { ...json({ version: "2.8.1", channel }), cookie: superSessionCookie });
+      assert.equal(res.status, 409, `classifying 2.8.1 as ${channel}`);
     }
+    const listedSecurity = (await (await callWith(securityEnv, "/api/super/releases", { cookie: superSessionCookie })).json<any>()).releases.find(
+      (r: any) => r.version === "2.8.1"
+    );
+    assert.equal(listedSecurity.channel, null);
+    assert.equal((await callWith(securityEnv, "/api/super/releases/classify", { ...json({ version: "2.10.0", channel: "stable" }), cookie: superSessionCookie })).status, 200);
 
     // The offer names the fix for the line the workstation says it runs.
     const token = await enrolOta("WS-SEC");
@@ -7482,7 +7494,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(policy.majors.find((m: any) => m.major === 2)?.state, "free", "the majors already in use stay offered");
     assert.equal(policy.majors.find((m: any) => m.major === 2)?.status, "supported", "a major nobody set is supported");
     assert.ok(policy.majors.find((m: any) => m.major === 2)?.workstations >= 3, "Greenwood's workstations on 2.8.0 count towards 2.x");
-    for (const version of ["2.20.0", "2.20.1", "2.21.0", "5.0.0"]) {
+    for (const version of ["2.20.0", "2.21.0", "5.0.0"]) {
       const res = await callWith(policyEnv, "/api/super/releases/classify", { ...json({ version, channel: "stable" }), cookie: superSessionCookie });
       assert.equal(res.status, 200, `classifying ${version}`);
     }
@@ -7694,13 +7706,35 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await setMajorSupport(db, 71, "security_only", null, null, "test");
     await setMajorSupport(db, 72, "end_of_life", null, null, "test");
     await setMajorSupport(db, 73, "supported", now - 60, null, "test");
+    for (const [version, channel, kind, revoked] of [
+      ["70.1.0", "stable", "feature", null],
+      ["70.0.0", "stable", "feature", null],
+      ["70.1.1", null, "security", null],
+      ["70.2.0", "beta", "feature", null],
+      ["70.3.0", "stable", "feature", now]
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO releases (version, channel, kind, base_version, security_floor, size_bytes, built_at, manifest, found_at, revoked_at)
+           VALUES (?, ?, ?, ?, '0.0.0', 1, '2026-10-01T00:00:00Z', '{}', ?, ?)`
+        )
+        .bind(version, channel, kind, kind === "security" ? "70.1.0" : null, now, revoked)
+        .run();
+    }
     const res = await supportCall(configured, `Bearer ${token}`);
     assert.equal(res.status, 200);
-    const status = new Map(((await res.json<any>()).majors as any[]).map((m) => [m.major, m.status]));
+    const answer = await res.json<any>();
+    const status = new Map((answer.majors as any[]).map((m) => [m.major, m.status]));
+    assert.deepEqual(
+      (answer.stable as string[]).filter((v) => v.startsWith("70.")),
+      ["70.0.0", "70.1.0"],
+      "every unrevoked feature release classified stable: no beta, security or revoked one"
+    );
     assert.equal(status.get(71), "security_only");
     assert.equal(status.get(72), "end_of_life");
     assert.equal(status.get(73), "end_of_life", "a passed end-of-life date ends the major by itself");
     await db.prepare("DELETE FROM release_support WHERE major IN (71, 72, 73)").run();
+    await db.prepare("DELETE FROM releases WHERE version LIKE '70.%'").run();
   });
 
   test("Legal terms: registration records them, a new version is asked for, and gates the console after the notice period", async () => {
@@ -7916,8 +7950,10 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(staff, /name="perms" value="updates"/);
     const releases = await (await call("/super/releases", { cookie: superSessionCookie })).text();
     assert.match(releases, /id="release-rows"/);
-    // A security release names the release it rebuilds, and its confirmation says it installs at the next restart.
-    assert.ok(releases.includes('"Rebuild of " + r.baseVersion') && releases.includes("install it at their next restart"));
+    // Security releases have their own section, offered with no classification: they can only be revoked.
+    assert.match(releases, /id="security-rows"/);
+    assert.match(releases, /needs no classification/);
+    assert.ok(releases.includes('badge("Offered on its line", "green")'));
     assert.match(releases, /href="\/super\/releases"[^>]*aria-current="page"|aria-current="page"[^>]*href="\/super\/releases"/);
   });
 

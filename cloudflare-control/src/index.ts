@@ -60,6 +60,8 @@ import {
   listReleases,
   offeredRelease,
   offeredReleases,
+  stableFeatureReleases,
+  type SyncResult,
   confirmMajor,
   declineMajorRequest,
   endOrphanedMajorPilots,
@@ -144,6 +146,22 @@ async function platformLegalOverview(db: D1Database, superAdminId: string) {
       acceptedBy: counts.get(`${d.id}@${d.version}`) ?? 0
     }))
   };
+}
+
+/**
+ * Record the releases CI uploaded since the last look. A security release is
+ * offered the moment it is recorded, so every hub with workstations online
+ * reloads; a feature release waits for a super admin to classify it.
+ */
+async function recordNewReleases(env: Env, db: D1Database): Promise<SyncResult | null> {
+  if (!env.RELEASES) return null;
+  const sync = await syncReleases(env.RELEASES, db);
+  for (const problem of sync.problems) console.error(`[Worker] Release ${problem.version} could not be recorded: ${problem.problem}`);
+  if (sync.security.length) {
+    await writeAuditLog(db, { tenantId: null, userId: null, action: "release.security_offered", details: sync.security.join(", ") });
+    await notifyOrganizationsOnline(env, db);
+  }
+  return sync;
 }
 
 async function notifyOrganizationsOnline(env: Env, db: D1Database): Promise<void> {
@@ -698,9 +716,11 @@ async function releaseTokenRefusal(
 /**
  * GET /api/release-support: the support status each major release has now, for
  * the daily security rebuild (security-rebuild.yml), which rebuilds only lines
- * of majors that are not at end of life. Bearer RELEASE_NOTES_TOKEN, as the
- * sync below. 200 {majors: [{major, status, endOfLifeAt}]}, one entry per major
- * the platform has set; a major not listed is supported.
+ * of majors that are not at end of life, and of each major only the lines from
+ * its newest stable one on. Bearer RELEASE_NOTES_TOKEN, as the sync below.
+ * 200 {majors: [{major, status, endOfLifeAt}], stable: ["3.1.0", ...]}: one
+ * entry per major the platform has set (a major not listed is supported), and
+ * every unrevoked feature release classified stable.
  */
 async function handleReleaseSupportForCi(
   request: Request,
@@ -715,7 +735,8 @@ async function handleReleaseSupportForCi(
     .filter((row) => isReleaseMajor(row.major))
     .sort((a, b) => a.major - b.major)
     .map((row) => ({ major: row.major, status: effectiveSupportStatus(row, now), endOfLifeAt: row.end_of_life_at ?? null }));
-  return new Response(JSON.stringify({ majors }), { status: 200, headers });
+  const stable = await stableFeatureReleases(db);
+  return new Response(JSON.stringify({ majors, stable }), { status: 200, headers });
 }
 
 /**
@@ -736,6 +757,12 @@ async function handleReleaseNotesSync(
 ): Promise<Response> {
   const refused = await releaseTokenRefusal(request, env, "Release notes sync", headers);
   if (refused) return refused;
+  // CI calls this once a release is in the bucket: a security release is offered at once.
+  try {
+    await recordNewReleases(env, db);
+  } catch (err) {
+    console.error("[Worker] Recording the releases in the bucket failed:", err);
+  }
   try {
     const result = await storeReleaseNotes(db, env);
     return new Response(JSON.stringify(result), { status: 200, headers });
@@ -1083,6 +1110,13 @@ export default {
     } catch (err) {
       // /download keeps showing the releases it already has.
       console.error("[Worker] Reading the releases from GitHub failed:", err);
+    }
+    try {
+      const recorded = await recordNewReleases(env, db);
+      if (recorded?.added.length) console.log(`[Worker] Releases recorded: ${recorded.added.join(", ")}.`);
+    } catch (err) {
+      // The next hour, or the Releases page, records them.
+      console.error("[Worker] Recording the releases in the bucket failed:", err);
     }
     try {
       const reminded = await sendEndOfLifeReminders(env, db);
@@ -1981,8 +2015,8 @@ export default {
     if (path === "/api/super/releases" && method === "GET") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
-      if (!env.RELEASES) return jsonError("This server has no releases bucket (RELEASES binding)", 503, jsonHeaders);
-      const sync = await syncReleases(env.RELEASES, db);
+      const sync = await recordNewReleases(env, db);
+      if (!sync) return jsonError("This server has no releases bucket (RELEASES binding)", 503, jsonHeaders);
       const releases = await listReleases(db);
       const names = await tenantNames(db);
       return new Response(
@@ -1999,8 +2033,9 @@ export default {
 
     // POST /api/super/releases/classify { version, channel: "beta" | "stable" | null }
     // POST /api/super/releases/revoke { version }
-    // Classifying puts a release in front of every organization on that channel;
-    // revoking withdraws it for good. Either way each organization's hub reloads,
+    // Classifying puts a feature release in front of every organization on that
+    // channel; a security release has no channel, it is offered from the moment
+    // it is recorded. Revoking withdraws either for good. Either way each organization's hub reloads,
     // so connected workstations hear of the change at once.
     if ((path === "/api/super/releases/classify" || path === "/api/super/releases/revoke") && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
@@ -2022,6 +2057,9 @@ export default {
         await revokeRelease(db, version);
         details = `${version} revoked`;
       } else {
+        if (release.kind === "security") {
+          return jsonError("A security release is offered on its line by itself; it can only be revoked", 409, jsonHeaders);
+        }
         const channel = body.channel === null || body.channel === "" ? null : body.channel;
         if (channel !== null && !isUpdateChannel(channel)) {
           return jsonError("The channel is beta, stable or none", 400, jsonHeaders);

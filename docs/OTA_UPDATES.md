@@ -475,9 +475,10 @@ start anyway, to check what peers send.
 `RELEASES` (`labkiosk-releases`) under `releases/<version>/`. The **Releases** tab of the Super
 Admin console (`/super/releases`, `GET /api/super/releases`) records any new folder whose
 `manifest.json` parses and has `manifest.json.sig` beside it, in the platform table `releases`
-(migration 0027; no `tenant_id`). A release reaches no workstation until a super admin
+(migration 0027; no `tenant_id`). A feature release reaches no workstation until a super admin
 classifies it **Beta** or **Stable**; **Withdraw** takes it out of its channel, and **Revoke**
-withdraws it for good. Each change is audited (`release.classify`, `release.revoke`) and every
+withdraws it for good. A security release has no channel (§5.11): it is listed in its own
+**Security** section and can only be revoked. Each change is audited (`release.classify`, `release.revoke`) and every
 organization's hub reloads its offer.
 
 **The offer.** An organization's `update_channel` (`stable` by default, or `beta`, in
@@ -535,10 +536,13 @@ Phase 4 is §5.11 and phase 5 is §5.12.
 and by hand (one line, `force`, `dry_run`):
 
 1. From the controller (`GET /api/release-support`, Bearer `RELEASE_NOTES_TOKEN`), which major
-   releases are at end of life, an announced date that has passed included; the run stops if it
-   cannot read them. Then from the repository's tags, every stable line from 2.9 on whose major is
-   not at end of life, and the newest tag of each (`distro-builder/tools/security-rebuild.py lines --policy`). An older
-   line has no updater, so nothing rebuilt for it could reach a workstation.
+   releases are at end of life, an announced date that has passed included, and which feature
+   releases are classified stable (`stable`); the run stops if it cannot read them. Then from the
+   repository's tags, every stable line from 2.9 on whose major is not at end of life and that no
+   newer stable line of its major supersedes, and the newest tag of each
+   (`distro-builder/tools/security-rebuild.py lines --policy`): once 3.1.0 is stable, 3.0 is
+   rebuilt no more, while a newer line not yet stable (3.2 on beta) still is. A line older than
+   2.9 has no updater, so nothing rebuilt for it could reach a workstation.
 2. The installed packages of that tag's image (`var/lib/dpkg/status`): the `dpkg-status` its GitHub
    release carries when it is a security release, otherwise read from the squashfs of its ISO
    (checked against its `.sha256`); cached by tag.
@@ -564,11 +568,15 @@ and by hand (one line, `force`, `dry_run`):
    security release for its line. So the GitHub release is never "Latest", and `/download`
    offers the newest release that has an ISO, listing security releases by version beside it.
 
-A super admin classifies the rebuild on the Releases page like any release; nothing reaches a
-workstation before that.
+A security release needs no classification. The controller records it when the run calls the
+`/download` sync (and at the hourly run, or when the Releases page is opened), audits it
+(`release.security_offered`), and offers it at once: on every channel that offers a feature release
+of its line, and to a workstation already on its line whatever its channel, but never to move a
+workstation onto a line its channel does not offer. The Releases page lists it under
+**Security**, where a super admin can only revoke it.
 
 **The offer.** `GET /api/devices/update?running=<image version>` adds `security`, the newest
-classified `security` release for the line (major.minor) the workstation runs, newer than it, and
+unrevoked `security` release for the line (major.minor) the workstation runs, newer than it, and
 `securityUpdates`, the organization's `tenants.security_updates` (`next_boot` by default, or
 `approval`; migration 0029, Settings → Updates). `release` is unchanged, so a 2.9.0 updater, which
 sends no `running`, works as before.
@@ -741,7 +749,7 @@ of whatever it is offered, as before.
    live-build adds by default, and its Chromium is the security archive's
    `154.0.8037.92-1~deb12u1`. Each rebuild is checked again: one still missing a fix is refused.
 3. **Test.** The release's own `boot-test.sh` in QEMU, as for a tag build.
-4. **Publish.** Once a super admin classifies it, workstations download it automatically (later
+4. **Publish.** As soon as the controller records it, workstations download it automatically (later
    sharing it over the LAN, §5.9) and boot it at their next start, unless the organization chose
    `approval` for security releases.
 5. **Report.** Settings → Updates lists, per line, how many workstations do not run the newest

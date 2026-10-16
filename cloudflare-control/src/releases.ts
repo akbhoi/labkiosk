@@ -3,15 +3,19 @@
  *
  * CI signs each release and uploads it to the releases bucket as five files
  * under `releases/<version>/`. A super admin's Releases page finds them there,
- * records each one in `releases`, and classifies it `beta` or `stable`; until
- * then it reaches no workstation. An organization's workstations are offered
- * the newest unrevoked release of its channel (a `beta` organization also
- * takes `stable` ones), and download it from the bucket's public address.
+ * records each one in `releases`, and classifies a feature release `beta` or
+ * `stable`; until then it reaches no workstation. An organization's
+ * workstations are offered the newest unrevoked release of its channel (a
+ * `beta` organization also takes `stable` ones), and download it from the
+ * bucket's public address.
  *
  * Phase 4: a workstation is offered, before anything else, the newest
  * security release for the line it runs (2.8.1 for 2.8.0), and its
  * organization's `security_updates` setting says whether it installs that at
- * its next boot by itself or waits for an administrator.
+ * its next boot by itself or waits for an administrator. A security release
+ * has no channel: it is offered from the moment it is recorded until it is
+ * revoked, on every channel that offers a feature release of its line, and to
+ * any workstation already on its line whatever its channel.
  *
  * The platform also keeps a support status per major release
  * (release_support) and decides which major releases a workstation may be
@@ -112,7 +116,7 @@ export interface ReleaseOffer {
   version: string;
   kind: ReleaseKind;
   sizeBytes: number;
-  /** Unix seconds: when a super admin put it in its channel. */
+  /** Unix seconds: when a super admin put it in its channel; for a security release, when it was recorded. */
   classifiedAt: number;
   /** The support status of its major now; absent means supported. */
   support?: SupportStatus;
@@ -120,6 +124,11 @@ export interface ReleaseOffer {
   gated?: boolean;
   /** Its major is gated, but this organization is trying it on the workstations of this group. */
   pilotGroup?: string;
+  /**
+   * A security release of a line this channel offers no feature release of:
+   * offered only to a workstation already on its line, never to move one there.
+   */
+  lineOnly?: boolean;
 }
 
 export const SUPPORT_STATUSES = ["supported", "security_only", "end_of_life"] as const;
@@ -523,6 +532,8 @@ export async function findRelease(db: D1Database, version: string): Promise<Rele
 
 export interface SyncResult {
   added: string[];
+  /** The security releases among them: offered from now on, with no classification. */
+  security: string[];
   problems: Array<{ version: string; problem: string }>;
 }
 
@@ -549,7 +560,7 @@ export async function syncReleases(bucket: R2Bucket, db: D1Database, now = Math.
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
 
-  const result: SyncResult = { added: [], problems: [] };
+  const result: SyncResult = { added: [], security: [], problems: [] };
   const majors = new Set([...known].filter(isReleaseVersion).map(releaseMajor));
   folders.sort(compareVersions);
   for (const version of folders.slice(0, MAX_NEW_PER_SYNC)) {
@@ -579,6 +590,7 @@ export async function syncReleases(bucket: R2Bucket, db: D1Database, now = Math.
       }
       majors.add(major);
       result.added.push(version);
+      if (parsed.kind === "security") result.security.push(version);
     } catch (err) {
       result.problems.push({ version, problem: err instanceof Error ? err.message : String(err) });
     }
@@ -601,6 +613,17 @@ export async function classifyRelease(
   return Number(res.meta?.changes ?? 0) > 0;
 }
 
+/** Every unrevoked feature release classified stable, oldest first, for the daily security rebuild. */
+export async function stableFeatureReleases(db: D1Database): Promise<string[]> {
+  const res = await db
+    .prepare("SELECT version FROM releases WHERE revoked_at IS NULL AND channel = 'stable' AND kind = 'feature'")
+    .all<{ version: string }>();
+  return (res.results || [])
+    .map((row) => row.version)
+    .filter(isReleaseVersion)
+    .sort(compareVersions);
+}
+
 /** Withdraw a release for good: no workstation is offered it again. */
 export async function revokeRelease(db: D1Database, version: string, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
   const res = await db
@@ -611,7 +634,8 @@ export async function revokeRelease(db: D1Database, version: string, now = Math.
 }
 
 /**
- * Every unrevoked release of this channel, newest first, each marked with its
+ * Every unrevoked release of this channel and every unrevoked security
+ * release, newest first, each marked with its
  * major's support status now and whether its major is closed to the organization
  * (`tenantId`; null for none). Which of them one workstation may take is
  * eligibleReleases().
@@ -630,13 +654,18 @@ export async function offeredReleases(
   ]);
   const res = await db
     .prepare(
-      `SELECT version, kind, size_bytes, classified_at FROM releases
-       WHERE revoked_at IS NULL AND channel IN (${channels.map(() => "?").join(",")})`
+      `SELECT version, kind, channel, size_bytes, classified_at, found_at FROM releases
+       WHERE revoked_at IS NULL AND (kind = 'security' OR channel IN (${channels.map(() => "?").join(",")}))`
     )
     .bind(...channels)
-    .all<{ version: string; kind: ReleaseKind; size_bytes: number; classified_at: number | null }>();
-  return (res.results || [])
-    .filter((row) => isReleaseVersion(row.version))
+    .all<{ version: string; kind: ReleaseKind; channel: UpdateChannel | null; size_bytes: number; classified_at: number | null; found_at: number }>();
+  const rows = (res.results || []).filter((row) => isReleaseVersion(row.version));
+  // The lines this channel offers a feature release of: a security release of
+  // any other line is offered only to the workstations already on it.
+  const lines = new Set(
+    rows.filter((row) => row.kind !== "security" && row.channel && channels.includes(row.channel)).map((row) => releaseLine(row.version))
+  );
+  return rows
     .map((row): ReleaseOffer => {
       const major = releaseMajor(row.version);
       const access = majorAccess(majors.get(major), grants.get(major));
@@ -645,8 +674,10 @@ export async function offeredReleases(
         version: row.version,
         kind: row.kind,
         sizeBytes: Number(row.size_bytes) || 0,
-        classifiedAt: Number(row.classified_at) || 0,
+        // A security release is offered from the moment it is recorded.
+        classifiedAt: Number(row.kind === "security" ? row.found_at : row.classified_at) || 0,
         ...(status !== "supported" ? { support: status } : {}),
+        ...(row.kind === "security" && !lines.has(releaseLine(row.version)) ? { lineOnly: true } : {}),
         ...(majorGated(access) ? { gated: true } : {}),
         ...(access === "pilot" ? { pilotGroup: grants.get(major)!.pilot_group! } : {})
       };
@@ -662,8 +693,10 @@ export async function offeredReleases(
  * the major it runs, unless the organization is trying that major on the
  * workstation's group. A workstation moves one major at a time, and only once
  * it runs the newest release of its own major it may take: 1.4 goes to 1.5
- * before 2.x, and 2.x before 3.x. An unknown image (an updater from before
- * phase 4 does not say) is treated as on no major.
+ * before 2.x, and 2.x before 3.x. A security release its channel offers only
+ * on its own line (lineOnly) goes to a workstation already on that line alone.
+ * An unknown image (an updater from before phase 4 does not say) is treated as
+ * on no major.
  */
 export function eligibleReleases(
   releases: readonly ReleaseOffer[],
@@ -672,8 +705,10 @@ export function eligibleReleases(
 ): ReleaseOffer[] {
   const known = isReleaseVersion(running);
   const major = known ? releaseMajor(running) : -1;
+  const line = known ? releaseLine(running) : null;
   const supported = releases.filter((r) => {
     if (r.support === "end_of_life") return false;
+    if (r.lineOnly && releaseLine(r.version) !== line) return false;
     return !(r.support === "security_only" && (r.kind !== "security" || releaseMajor(r.version) !== major));
   });
   const allowed = supported.filter(
@@ -757,7 +792,7 @@ export const SECURITY_WAIT_WARN_DAYS = 7;
 /** A security release some of an organization's workstations on its line do not run yet. */
 export interface PendingSecurityRelease {
   version: string;
-  /** Unix seconds: when it was put in its channel. */
+  /** Unix seconds: since when it has been offered. */
   offeredAt: number;
   /** How many of the organization's workstations on its line run an older image. */
   workstations: number;
