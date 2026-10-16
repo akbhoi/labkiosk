@@ -10,9 +10,9 @@
  * bucket's public address.
  *
  * Phase 4: a workstation is offered, before anything else, the newest
- * security release for the line it runs (2.8.1 for 2.8.0), and its
- * organization's `security_updates` setting says whether it installs that at
- * its next boot by itself or waits for an administrator. A security release
+ * security release for the line it runs (2.8.1 for 2.8.0), which it installs
+ * at its next boot by itself, as it does a minor release of its major
+ * (installsByItself); a new major waits for its administrator. A security release
  * has no channel: it is offered from the moment it is recorded until it is
  * revoked, on every channel that offers a feature release of its line, and to
  * any workstation already on its line whatever its channel.
@@ -37,7 +37,7 @@
  * order releases, never to vouch for it.
  */
 
-import { Env, SecurityUpdateMode, UpdateChannel } from "./types";
+import { Env, UpdateChannel } from "./types";
 import { safeHttpUrl } from "./escape";
 import { activeOrganizationOwners, createNotification, emailOrganizations } from "./notifications";
 
@@ -66,7 +66,6 @@ export const UPDATE_PHASES = [
 export type UpdatePhase = (typeof UPDATE_PHASES)[number];
 export type ReleaseKind = "feature" | "security";
 
-export const SECURITY_UPDATE_MODES: readonly SecurityUpdateMode[] = ["next_boot", "approval"];
 
 export interface UpdateReport {
   phase: UpdatePhase;
@@ -227,9 +226,6 @@ export function isUpdateChannel(value: unknown): value is UpdateChannel {
   return value === "stable" || value === "beta";
 }
 
-export function isSecurityUpdateMode(value: unknown): value is SecurityUpdateMode {
-  return value === "next_boot" || value === "approval";
-}
 
 /** The line a release belongs to: "2.8" for 2.8.1 and 2.8.0-rc1. */
 export function releaseLine(version: string): string {
@@ -765,23 +761,18 @@ export function securityReleaseFor(
 
 /**
  * Whether a workstation running `running` installs `release` at its next boot
- * without an administrator, once it holds it: a security release for its line
- * and a minor release of its major when the organization lets updates install
- * themselves (`next_boot`), and a release of a higher major only once an
- * administrator confirmed that major (or is trying it on the workstation's
- * group). Anything else waits for Workstations -> Updates. The workstation's
- * updater checks the signed manifest's kind and line again before it stages it.
+ * without an administrator, once it holds it: always a security release for its
+ * line and a minor release of its major, and a release of a higher major only
+ * once an administrator confirmed that major (or is trying it on the
+ * workstation's group). Anything else waits for Workstations -> Updates. The
+ * workstation's updater checks the signed manifest's kind and line again
+ * before it stages it.
  */
-export function installsByItself(
-  release: ReleaseOffer,
-  running: string | null | undefined,
-  mode: SecurityUpdateMode | null | undefined
-): boolean {
+export function installsByItself(release: ReleaseOffer, running: string | null | undefined): boolean {
   if (!isReleaseVersion(running) || compareVersions(release.version, running) <= 0) return false;
-  const automatic = mode !== "approval";
-  if (release.kind === "security") return automatic && releaseLine(release.version) === releaseLine(running);
+  if (release.kind === "security") return releaseLine(release.version) === releaseLine(running);
   const major = releaseMajor(release.version);
-  if (major === releaseMajor(running)) return automatic;
+  if (major === releaseMajor(running)) return true;
   return major > releaseMajor(running) && release.approved === true;
 }
 

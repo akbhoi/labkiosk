@@ -7,7 +7,7 @@
  */
 
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, SecurityUpdateMode, UpdateChannel } from "./types";
+import { Env, LabConfig, ClientTelemetry, ClientDevice, Tenant, User, TenantUserRole, Session, AuditEntryMessage, UpdateChannel } from "./types";
 import { renderDashboardHtml, AdminPageId } from "./ui";
 import { renderPortalHtml } from "./ui_portal";
 import { renderOrgHomeHtml } from "./ui_org_home";
@@ -91,7 +91,6 @@ import {
   setEndOfLifeReminderStage,
   sendEndOfLifeReminders,
   releaseFolderUrl,
-  isSecurityUpdateMode,
   securityReleasesPending,
   workstationOffer,
   revokeRelease,
@@ -898,10 +897,11 @@ async function handleRestartReport(
  * reports itself up to date when it runs that version or newer. Phase 4 adds
  * `security`, the newest security release for the line `running` belongs to
  * (null without `running`, as a 2.9.0 updater asks), and `securityUpdates`,
- * whether the workstation installs that at its next boot by itself. Each
- * release also says `automatic`: whether it installs at the next boot without
- * an administrator (installsByItself: a minor release of the running major, or
- * a major an administrator confirmed). 503 when
+ * always `next_boot`: the workstation installs that at its next boot by itself
+ * (an updater from before this reads the setting, and `approval` is no longer
+ * one). Each release also says `automatic`: whether it installs at the next
+ * boot without an administrator (installsByItself: a security fix for its line,
+ * a minor release of the running major, or a major an administrator confirmed). 503 when
  * the platform has no public release address, so a workstation never mistakes
  * a missing setting for "up to date".
  *
@@ -930,7 +930,7 @@ async function handleDeviceUpdate(
   const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
   const group = (await workstationGroupsIn(db, tenant.id, pilots)).get(auth.device.client_id) ?? null;
   const offer = workstationOffer(releases, running, group);
-  const securityUpdates = isSecurityUpdateMode(tenant.security_updates) ? tenant.security_updates : "next_boot";
+  const securityUpdates = "next_boot";
   const described: Record<string, { version: string; kind: string; sizeBytes: number; url: string; automatic: boolean } | null> = {};
   for (const [name, release] of [["release", offer.release], ["security", offer.security]] as const) {
     if (!release) {
@@ -947,7 +947,7 @@ async function handleDeviceUpdate(
       kind: release.kind,
       sizeBytes: release.sizeBytes,
       url: folder,
-      automatic: installsByItself(release, running, securityUpdates)
+      automatic: installsByItself(release, running)
     };
   }
   let lan: { peers: string[] } | null = null;
@@ -3855,18 +3855,16 @@ export default {
     }
 
     // GET /api/settings/updates: which releases this organization's workstations
-    // are offered (its channel), the release that means right now, what they do
-    // with a security release for their line, and the security releases some of
-    // its workstations still do not run.
-    // POST /api/settings/updates { channel?: "stable" | "beta",
-    //                              securityUpdates?: "next_boot" | "approval",
-    //                              lanSharing?: boolean }.
+    // are offered (its channel), the release that means right now, and the
+    // security releases some of its workstations still do not run. Minor
+    // releases and security fixes always install at the next boot, so there is
+    // no setting for them.
+    // POST /api/settings/updates { channel?: "stable" | "beta", lanSharing?: boolean }.
     if (path === "/api/settings/updates" && (method === "GET" || method === "POST")) {
       const denied = await requireTenantPermission(db, session, currentTenant, "updates", jsonHeaders);
       if (denied) return denied;
       const tenantId = currentTenant!.id;
       let channel: UpdateChannel = currentTenant!.update_channel === "beta" ? "beta" : "stable";
-      let securityUpdates: SecurityUpdateMode = currentTenant!.security_updates === "approval" ? "approval" : "next_boot";
       let lanSharing = currentTenant!.lan_sharing === 1;
       if (method === "POST") {
         let body: { channel?: unknown; securityUpdates?: unknown; lanSharing?: unknown };
@@ -3880,22 +3878,19 @@ export default {
           typeof body !== "object" ||
           (body.channel === undefined && body.securityUpdates === undefined && body.lanSharing === undefined)
         ) {
-          return jsonError("Send a channel, a securityUpdates or a lanSharing setting", 400, jsonHeaders);
+          return jsonError("Send a channel or a lanSharing setting", 400, jsonHeaders);
+        }
+        if (body.securityUpdates !== undefined) {
+          return jsonError("Minor updates and security fixes always install at the next restart; there is no setting for it", 400, jsonHeaders);
         }
         if (body.channel !== undefined && !isUpdateChannel(body.channel)) {
           return jsonError("The channel is stable or beta", 400, jsonHeaders);
-        }
-        if (body.securityUpdates !== undefined && !isSecurityUpdateMode(body.securityUpdates)) {
-          return jsonError("securityUpdates is next_boot or approval", 400, jsonHeaders);
         }
         if (body.lanSharing !== undefined && typeof body.lanSharing !== "boolean") {
           return jsonError("lanSharing is true or false", 400, jsonHeaders);
         }
         const changes: Partial<Tenant> = {};
         if (isUpdateChannel(body.channel) && body.channel !== channel) changes.update_channel = channel = body.channel;
-        if (isSecurityUpdateMode(body.securityUpdates) && body.securityUpdates !== securityUpdates) {
-          changes.security_updates = securityUpdates = body.securityUpdates;
-        }
         if (typeof body.lanSharing === "boolean" && body.lanSharing !== lanSharing) {
           lanSharing = body.lanSharing;
           changes.lan_sharing = lanSharing ? 1 : 0;
@@ -3904,14 +3899,6 @@ export default {
           await updateTenant(db, tenantId, changes);
           if (changes.update_channel) {
             await writeAuditLog(db, { tenantId, userId: session!.user_id, action: "settings.update_channel", details: channel });
-          }
-          if (changes.security_updates) {
-            await writeAuditLog(db, {
-              tenantId,
-              userId: session!.user_id,
-              action: "settings.security_updates",
-              details: securityUpdates
-            });
           }
           if (changes.lan_sharing !== undefined) {
             await writeAuditLog(db, {
@@ -3932,7 +3919,6 @@ export default {
         JSON.stringify({
           channel,
           offer: newestOffered(releases),
-          securityUpdates,
           lanSharing,
           pending,
           support: notices.support,

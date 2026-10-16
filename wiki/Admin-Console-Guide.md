@@ -119,7 +119,7 @@ Allows organization administrators to delegate lab control to colleagues with gr
   - `apps-web`: Manage broadcasts, user portal apps, and domain allowlists.
   - `staff`: Invite and manage other staff members.
   - `settings`: Modify organization identity, kiosk modes, and network parameters.
-  - `updates`: Choose the update channel, whether minor updates and security fixes install at the next restart or wait for approval (a new major version always waits to be confirmed, then installs at the next restart), and whether workstations share updates on the local network; ask for a new major release, try it on one workstation group, then confirm it for every workstation; and check for or install system updates on workstations.
+  - `updates`: Choose the update channel, (minor updates and security fixes always install at the next restart; a new major version waits to be confirmed, then installs at the next restart), and whether workstations share updates on the local network; ask for a new major release, try it on one workstation group, then confirm it for every workstation; and check for or install system updates on workstations.
 
 ---
 

@@ -7086,14 +7086,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(updateTargetFor(releases, "2.5.0"), null);
     const status = { imageVersion: "2.5.0", update: { phase: "idle" } } as Parameters<typeof installTargetFor>[1];
     assert.equal(installTargetFor(releases, status, "Lab A")?.version, "3.1.0");
-    assert.equal(releaseNudgeTarget(releases, { phase: "idle" }, "2.5.0", "next_boot", "Lab A")?.version, "3.1.0");
-    assert.equal(releaseNudgeTarget(releases, { phase: "idle" }, "2.5.0", "next_boot"), null);
+    assert.equal(releaseNudgeTarget(releases, { phase: "idle" }, "2.5.0", "Lab A")?.version, "3.1.0");
+    assert.equal(releaseNudgeTarget(releases, { phase: "idle" }, "2.5.0"), null);
   });
 
   test("A workstation is reminded of a release only when it runs an older image and holds nothing newer", () => {
     const offer = { version: "2.9.0", kind: "feature" as const, sizeBytes: 1, classifiedAt: 1 };
     const wanted = (releases: ReleaseOffer[], update: Parameters<typeof releaseNudgeTarget>[1], image: string | undefined) =>
-      releaseNudgeTarget(releases, update, image, "next_boot")?.version ?? null;
+      releaseNudgeTarget(releases, update, image)?.version ?? null;
     assert.equal(wanted([offer], { phase: "idle" }, "2.8.0"), "2.9.0");
     assert.equal(wanted([offer], { phase: "error", detail: "x" }, "2.8.0"), "2.9.0");
     assert.equal(wanted([offer], { phase: "ready", version: "2.8.5" }, "2.8.0"), "2.9.0", "an older download is replaced");
@@ -7127,25 +7127,21 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // A minor release installs at the next boot by itself; a new major only once its administrator confirmed it.
     const minor = at("2.10.0", "feature");
-    assert.equal(installsByItself(minor, "2.9.0", "next_boot"), true);
-    assert.equal(installsByItself(minor, "2.9.0", "approval"), false, "an organization that approves updates waits");
-    assert.equal(installsByItself(minor, "2.10.0", "next_boot"), false, "already running it");
-    assert.equal(installsByItself(minor, null, "next_boot"), false, "an updater that does not say what it runs");
-    assert.equal(installsByItself(at("3.0.0", "feature"), "2.9.0", "next_boot"), false, "a major nobody confirmed");
-    assert.equal(installsByItself({ ...at("3.0.0", "feature"), approved: true }, "2.9.0", "approval"), true, "confirming the major is the approval");
-    assert.equal(installsByItself(at("2.9.2", "security"), "2.9.0", "next_boot"), true);
-    assert.equal(installsByItself(at("2.8.1", "security"), "2.9.0", "next_boot"), false, "another line's fix");
-    assert.equal(releaseNudgeTarget([minor], { phase: "ready", version: "2.10.0", kind: "feature" }, "2.9.0", "next_boot")?.version, "2.10.0",
-      "held ready, a minor release is staged once allowed");
-    assert.equal(releaseNudgeTarget([minor], { phase: "ready", version: "2.10.0", kind: "feature" }, "2.9.0", "approval"), null);
+    assert.equal(installsByItself(minor, "2.9.0"), true);
+    assert.equal(installsByItself(minor, "2.10.0"), false, "already running it");
+    assert.equal(installsByItself(minor, null), false, "an updater that does not say what it runs");
+    assert.equal(installsByItself(at("3.0.0", "feature"), "2.9.0"), false, "a major nobody confirmed");
+    assert.equal(installsByItself({ ...at("3.0.0", "feature"), approved: true }, "2.9.0"), true, "confirming the major is the approval");
+    assert.equal(installsByItself(at("2.9.2", "security"), "2.9.0"), true);
+    assert.equal(installsByItself(at("2.8.1", "security"), "2.9.0"), false, "another line's fix");
+    assert.equal(releaseNudgeTarget([minor], { phase: "ready", version: "2.10.0", kind: "feature" }, "2.9.0")?.version, "2.10.0",
+      "held ready (by an updater from before this), a minor release is staged");
 
-    const nudge = (update: Parameters<typeof releaseNudgeTarget>[1], image: string, mode: "next_boot" | "approval" = "next_boot") =>
-      releaseNudgeTarget(releases, update, image, mode)?.version ?? null;
+    const nudge = (update: Parameters<typeof releaseNudgeTarget>[1], image: string) => releaseNudgeTarget(releases, update, image)?.version ?? null;
     assert.equal(nudge({ phase: "ready", version: "2.10.0", kind: "feature" }, "2.9.0"), "2.9.2", "a fix displaces a waiting feature release");
     assert.equal(nudge({ phase: "staged", version: "2.9.2", kind: "security", since: 5 }, "2.9.0"), null, "staged: nothing to do");
     assert.equal(nudge({ phase: "staged", version: "2.9.1", kind: "security", since: 5 }, "2.9.0"), "2.9.2", "a newer fix replaces a staged one");
-    assert.equal(nudge({ phase: "ready", version: "2.9.2", kind: "security" }, "2.9.0"), "2.9.2", "held ready, it is staged once allowed");
-    assert.equal(nudge({ phase: "ready", version: "2.9.2", kind: "security" }, "2.9.0", "approval"), null, "or waits for approval");
+    assert.equal(nudge({ phase: "ready", version: "2.9.2", kind: "security" }, "2.9.0"), "2.9.2", "held ready, it is staged");
     assert.equal(nudge({ phase: "ready", version: "2.10.0" }, "2.9.0"), null, "a 2.9.0 updater only ever fetches the newest release");
 
     const status = (imageVersion: string, update: Parameters<typeof releaseNudgeTarget>[1]) => ({
@@ -7260,12 +7256,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(crossSite.status, 403);
     const bad = await call("/api/settings/updates?tenant=greenwood", { ...json({ channel: "nightly" }), cookie: orgSessionCookie });
     assert.equal(bad.status, 400);
-    for (const payload of [{ securityUpdates: "never" }, {}, { channel: "stable", securityUpdates: 1 }]) {
+    for (const payload of [{ securityUpdates: "never" }, {}, { channel: "stable", securityUpdates: "approval" }, { securityUpdates: "next_boot" }]) {
       const refused = await call("/api/settings/updates?tenant=greenwood", { ...json(payload), cookie: orgSessionCookie });
       assert.equal(refused.status, 400, JSON.stringify(payload));
     }
     const rivalWrite = await call("/api/settings/updates?tenant=greenwood", {
-      ...json({ securityUpdates: "approval" }),
+      ...json({ channel: "beta" }),
       cookie: rivalSessionCookie
     });
     assert.equal(rivalWrite.status, 403, "another organization's admin cannot change it");
@@ -7274,7 +7270,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(res.status, 200);
     assert.equal(data.channel, "stable", "every organization starts on stable");
     assert.equal(data.offer, null, "2.9.0 is beta only");
-    assert.equal(data.securityUpdates, "next_boot", "security releases install at the next boot by default");
+    assert.equal(data.securityUpdates, undefined, "minor updates and security fixes always install at the next boot");
     assert.deepEqual(data.pending, []);
   });
 
@@ -7464,16 +7460,18 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.deepEqual(staged.data.sent, []);
     assert.match(staged.data.skipped[0].reason, /next restart/);
 
-    // Approval: the setting is audited, the offer says so, and the fix is installed like any release.
-    const approval = await callJson("/api/settings/updates?tenant=greenwood", { ...json({ securityUpdates: "approval" }), cookie: orgSessionCookie });
-    assert.equal(approval.res.status, 200);
-    assert.equal(approval.data.securityUpdates, "approval");
-    assert.equal(approval.data.channel, "stable", "the channel is left as it was");
+    // There is no approval setting any more; Settings -> Updates lists the fix still pending.
+    const settings = await callJson("/api/settings/updates?tenant=greenwood", { cookie: orgSessionCookie });
+    assert.equal(settings.res.status, 200);
     // WS-SEC, and the two workstations of the phase 3 test, run 2.8.0.
-    assert.deepEqual(approval.data.pending, [{ version: "2.8.1", offeredAt: approval.data.pending[0].offeredAt, workstations: 3 }]);
-    assert.ok(approval.data.pending[0].offeredAt > 0);
-    assert.equal((await ask("?running=2.8.0")).securityUpdates, "approval");
+    assert.deepEqual(settings.data.pending, [{ version: "2.8.1", offeredAt: settings.data.pending[0].offeredAt, workstations: 3 }]);
+    assert.ok(settings.data.pending[0].offeredAt > 0);
+
+    // A workstation holding the fix ready (an updater from before, or after a rollback) is told again, so it stages it,
+    // and an administrator can still install it from Workstations -> Updates.
+    const before = released().length;
     await status({ phase: "ready", version: "2.8.1", kind: "security", since: 1_790_000_000 });
+    assert.equal(released().length, before + 1);
     const install = await callJson("/api/clients/install-update?tenant=greenwood", { ...json({ clientIds: ["WS-SEC"] }), cookie: orgSessionCookie });
     assert.deepEqual(install.data.sent, ["WS-SEC"]);
     assert.equal(install.data.version, "2.10.0", "the answer still names the newest release");
@@ -7481,12 +7479,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const installs = ofType(ws, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>).filter((c) => c.action === "install-update");
     assert.deepEqual(installs.map((c) => c.version), ["2.8.1"], "but the workstation installs the fix it holds");
 
-    // Back to the next boot: a workstation holding the fix ready is told again, so it stages it.
-    const before = released().length;
-    await callJson("/api/settings/updates?tenant=greenwood", { ...json({ securityUpdates: "next_boot" }), cookie: orgSessionCookie });
-    assert.equal(released().length, before + 1);
     const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
-    assert.ok(logs.some((l: any) => l.action === "settings.security_updates" && l.details === "approval"));
     assert.ok(logs.some((l: any) => l.action === "update.install" && /version=2\.8\.1/.test(l.details)));
 
     await ws.closeFromClient();

@@ -54,7 +54,6 @@ import {
   newestOffered,
   workstationGroupsIn
 } from "./releases";
-import type { SecurityUpdateMode } from "./types";
 import {
   LAN_HOLD_MAX_MS,
   LanReport,
@@ -1362,7 +1361,6 @@ export class OrgHub {
       config.releases,
       fields.update,
       fields.imageVersion,
-      config.tenant.security_updates,
       config.pilotGroups.get(clientId) ?? null
     );
     if (!target) return null;
@@ -1463,9 +1461,9 @@ function updateFieldsChanged(a: UpdateFields, b: UpdateFields): boolean {
  * than the release meant for it (updateTargetFor), which it is not already
  * fetching, holding or installing.
  *
- * A workstation holding `ready` a release that now installs by itself
- * (installsByItself: its organization lets updates install at the next boot,
- * or confirmed the major) is reminded, so it stages it.
+ * A workstation holding `ready` a release that installs by itself
+ * (installsByItself: a security fix or minor release, or a major its
+ * organization confirmed since) is reminded, so it stages it.
  * One whose updater predates phase 4 (it never reports `kind`) only ever
  * fetches the newest release; holding that, it is left alone.
  */
@@ -1473,7 +1471,6 @@ export function releaseNudgeTarget(
   releases: readonly ReleaseOffer[],
   update: UpdateReport | undefined,
   imageVersion: string | undefined,
-  securityUpdates: SecurityUpdateMode | undefined,
   group: string | null = null
 ): ReleaseOffer | null {
   if (!update || update.phase === "live") return null;
@@ -1483,7 +1480,7 @@ export function releaseNudgeTarget(
   if (update.phase === "checking" || update.phase === "downloading" || update.phase === "installing") return null;
   const holding = update.phase === "ready" || update.phase === "staged";
   if (holding && update.version === target.version) {
-    const stageable = update.phase === "ready" && update.kind === target.kind && installsByItself(target, imageVersion, securityUpdates);
+    const stageable = update.phase === "ready" && update.kind === target.kind && installsByItself(target, imageVersion);
     return stageable ? target : null;
   }
   if (holding && !update.kind && update.version === newestOffered(releases, group)?.version) return null;

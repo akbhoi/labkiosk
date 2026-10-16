@@ -1,15 +1,14 @@
 /**
  * Settings -> Updates: which releases this organization's workstations are
- * offered, and what they do with a security release for the line they run.
+ * offered, and how they take minor, security and major releases.
  * Shown to an account holding the `updates` permission.
  *
  * Stable is every release the platform has classified stable; beta adds the
  * releases it is still trying out. A workstation downloads the offered release
  * in the background when it hears of it. A minor release of the major it runs,
  * and a security release (the same release rebuilt with patched Debian
- * packages), install at its next start unless the organization approves
- * updates; then the Workstations page's Updates menu installs them. A new major
- * release installs at the next start once an administrator confirmed it.
+ * packages), always install at its next start. A new major release installs at
+ * the next start once an administrator confirmed it.
  *
  * Lines the workstations run that the platform has put on security fixes only
  * or given an end-of-life date are warned about here, and a new major release
@@ -42,12 +41,7 @@ export function renderUpdatesPaneHtml(): string {
             <p class="form-hint" id="update-offer">Loading…</p>
           </div>
           <div class="form-group">
-            <label class="form-label" for="security-updates">Minor updates and security fixes</label>
-            <select class="form-select" id="security-updates">
-              <option value="next_boot">Install at the next restart, without approval</option>
-              <option value="approval">Wait for approval from Workstations → Updates</option>
-            </select>
-            <p class="form-hint">A minor update is a newer release of the major version a workstation runs, such as 3.1 for 3.0; a security fix is the release it runs, rebuilt with patched system packages. Installed at the next restart, an update changes nothing until the workstation starts again, and a workstation it does not start on goes back to its old image by itself. A new major version always waits for you to confirm it.</p>
+            <p class="form-hint">Minor updates (a newer release of the major version a workstation runs, such as 3.1 for 3.0) and security fixes (the release it runs, rebuilt with patched system packages) install at the next restart, with no approval. An update changes nothing until the workstation starts again, and a workstation it does not start on goes back to its old image by itself. A new major version waits for you to confirm it.</p>
           </div>
           <div class="form-group">
             <label class="form-checkbox-label">
@@ -68,13 +62,12 @@ export function renderUpdatesScript(nonce: string): string {
       (function () {
         const form = document.getElementById("form-update-channel");
         const select = document.getElementById("update-channel");
-        const security = document.getElementById("security-updates");
         const offer = document.getElementById("update-offer");
         const pending = document.getElementById("update-pending");
         const lanSharing = document.getElementById("lan-sharing");
         const linesBox = document.getElementById("update-lines");
         const majorsBox = document.getElementById("update-majors");
-        if (!form || !select || !security || !offer || !pending || !lanSharing || !linesBox || !majorsBox) return;
+        if (!form || !select || !offer || !pending || !lanSharing || !linesBox || !majorsBox) return;
 
         function day(seconds) {
           return new Date(seconds * 1000).toISOString().slice(0, 10);
@@ -228,7 +221,7 @@ export function renderUpdatesScript(nonce: string): string {
         });
 
         // Security fixes some workstations do not run yet; a warning once one has waited too long.
-        function showPending(list, mode) {
+        function showPending(list) {
           // One block inside the callout, which lays its children out in a row.
           const body = document.createElement("div");
           pending.replaceChildren(body);
@@ -246,9 +239,7 @@ export function renderUpdatesScript(nonce: string): string {
           }
           if (items.length) {
             const next = document.createElement("div");
-            next.textContent = mode === "approval"
-              ? "Install it from Workstations → Updates once it shows ready."
-              : "It installs when each workstation next starts; Workstations → Reboot installs it now.";
+            next.textContent = "It installs when each workstation next starts; Workstations → Reboot installs it now.";
             body.append(next);
           }
           pending.classList.toggle("callout-warning", late);
@@ -257,13 +248,12 @@ export function renderUpdatesScript(nonce: string): string {
 
         function show(data) {
           select.value = data.channel === "beta" ? "beta" : "stable";
-          security.value = data.securityUpdates === "approval" ? "approval" : "next_boot";
           lanSharing.checked = data.lanSharing === true;
           const o = data.offer;
           offer.textContent = o
             ? "Offered now: " + o.version + (o.kind === "security" ? " (security update)" : "") + ", " + Math.round((Number(o.sizeBytes) || 0) / 1048576) + " MB."
             : "No release is offered on this channel yet.";
-          showPending(data.pending, security.value);
+          showPending(data.pending);
           showLines(data.support);
           groups = Array.isArray(data.groups) ? data.groups : [];
           showMajors(data.majors);
@@ -289,7 +279,7 @@ export function renderUpdatesScript(nonce: string): string {
             const res = await fetch(labkioskApi("/api/settings/updates"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ channel: select.value, securityUpdates: security.value, lanSharing: lanSharing.checked })
+              body: JSON.stringify({ channel: select.value, lanSharing: lanSharing.checked })
             });
             const data = await res.json();
             if (!res.ok) {
