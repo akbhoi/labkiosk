@@ -63,7 +63,15 @@ import {
   readIssueStatus,
   redactProblemText
 } from "../src/bug_reports";
-import { HUB_PING, HUB_PONG, installRefusal, installTargetFor, releaseNudgeTarget } from "../src/org_hub";
+import {
+  HUB_PING,
+  HUB_PONG,
+  HTTP_HEARTBEAT_ATTENDED_SECONDS,
+  HTTP_HEARTBEAT_IDLE_SECONDS,
+  installRefusal,
+  installTargetFor,
+  releaseNudgeTarget
+} from "../src/org_hub";
 import { LAN_HOLD_MAX_MS, LAN_SHARE_SECONDS, lanDecision, lanPeers, normalizeLanReport, siteKey } from "../src/lan_sharing";
 import {
   compareVersions,
@@ -4593,6 +4601,56 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     }
   });
 
+  test("The HTTP heartbeat is fast only while a console is in use, and asks for a screen only while it is watched", async () => {
+    const token = await enrolAs("HB-PACE");
+    const tenantId = await greenwoodId();
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const beat = async () => (await callJson("/api/telemetry", { ...json({}), bearer: token })).data;
+      // Long enough for any console request earlier in the file to have lapsed.
+      mock.timers.tick(120_000);
+      let reply = await beat();
+      assert.equal(reply.heartbeatSeconds, HTTP_HEARTBEAT_IDLE_SECONDS, "nobody at a console: the slow pace");
+      assert.equal(reply.frames, false, "nobody watching: no screen");
+
+      const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+      reply = await beat();
+      assert.equal(reply.heartbeatSeconds, HTTP_HEARTBEAT_ATTENDED_SECONDS, "an open console: the fast pace");
+      assert.equal(reply.frames, false, "open but not looking at this screen");
+      await viewer.fromClient({ type: "watch", clientIds: ["HB-PACE"] });
+      assert.equal((await beat()).frames, true, "watched: a screen with every heartbeat");
+      await viewer.closeFromClient();
+
+      mock.timers.tick(61_000);
+      assert.equal((await beat()).heartbeatSeconds, HTTP_HEARTBEAT_IDLE_SECONDS, "the console closed a minute ago");
+      // A console that polls instead of holding a socket counts too.
+      assert.equal((await call("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).status, 200);
+      assert.equal((await beat()).heartbeatSeconds, HTTP_HEARTBEAT_ATTENDED_SECONDS);
+
+      // At the slow pace a workstation is not shown offline between two heartbeats.
+      mock.timers.tick(HTTP_HEARTBEAT_IDLE_SECONDS * 2 * 1000);
+      let { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
+      assert.equal(data.clients["HB-PACE"].online, true, "two idle heartbeats late is still online");
+      mock.timers.tick(10_000);
+      ({ data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie }));
+      assert.equal(data.clients["HB-PACE"]?.online ?? false, false, "missing more than that is offline");
+
+      // The Super Admin list says how many of an organization's workstations are on the HTTP heartbeat.
+      await beat();
+      await hubs().runAlarm(tenantId);
+      const counts = await getDatabase(mockEnv)
+        .prepare("SELECT online_workstations, http_workstations FROM tenants WHERE id = ?")
+        .bind(tenantId)
+        .first<any>();
+      assert.ok(counts.http_workstations >= 1, "the hub writes back its HTTP heartbeat count");
+      assert.ok(counts.http_workstations <= counts.online_workstations);
+      const page = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+      assert.ok(page.includes(`${counts.http_workstations} on the HTTP heartbeat`), "shown on the organization's row");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
   test("A workstation that stops pinging is marked offline by the alarm", async () => {
     const tenantId = await greenwoodId();
     mock.timers.enable({ apis: ["Date"], now: Date.now() });
@@ -7225,6 +7283,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const body = await listed.json<any>();
     assert.deepEqual(body.releases.map((r: any) => r.version), ["2.9.0", "2.9.1-rc1"].sort((a, b) => compareVersions(b, a)));
     assert.equal(body.downloadsConfigured, true);
+    assert.equal(body.downloadsDevelopmentOnly, false, "a custom domain on the bucket is the production address");
+    const devAddress = { ...releasesEnv, RELEASES_BASE_URL: "https://pub-0123456789abcdef.r2.dev" } as Env;
+    const flagged = await (await callWith(devAddress, "/api/super/releases", { cookie: superSessionCookie })).json<any>();
+    assert.equal(flagged.downloadsConfigured, true, "r2.dev still works");
+    assert.equal(flagged.downloadsDevelopmentOnly, true, "but Super Admin is told it is rate-limited and uncached");
     assert.ok(body.releases.every((r: any) => r.channel === null), "nothing is offered until classified");
     assert.equal(body.releases.find((r: any) => r.version === "2.9.0").sizeBytes, 948_000_000);
     const problems = Object.fromEntries(body.problems.map((p: any) => [p.version, p.problem]));

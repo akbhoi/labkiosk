@@ -71,8 +71,18 @@ export const HUB_PONG = '{"type":"pong"}';
 
 /** A WebSocket workstation with no ping or message for this long is offline. */
 const SOCKET_STALE_MS = 75_000;
-/** An HTTP-heartbeat workstation (older agents, every 3 s) is offline after this. */
-const HTTP_ONLINE_MS = 12_000;
+/**
+ * Seconds between HTTP heartbeats the hub asks for. Every heartbeat is a Worker
+ * request and wakes this object, so a fleet stuck on the fallback (a proxy that
+ * drops WebSocket upgrades) polls quickly only while someone is at a console.
+ * Agents older than the field keep their fixed 3 s.
+ */
+export const HTTP_HEARTBEAT_ATTENDED_SECONDS = 3;
+export const HTTP_HEARTBEAT_IDLE_SECONDS = 15;
+/** A console request, or a queued command, keeps the HTTP heartbeat fast this long. */
+const HTTP_ATTENTION_MS = 60_000;
+/** An HTTP-heartbeat workstation is offline once it misses two idle heartbeats. */
+const HTTP_ONLINE_MS = (2 * HTTP_HEARTBEAT_IDLE_SECONDS + 6) * 1000;
 /** Longest a cached copy of the organization's settings is trusted without a reload. */
 const CONFIG_TTL_MS = 5 * 60_000;
 /** How long an undelivered command waits for an offline workstation. */
@@ -300,9 +310,12 @@ export class OrgHub {
   private readonly frames = new Map<string, string>();
   private readonly lastMessage = new Map<string, number>();
   private readonly pollWatch = new Map<string, number>();
+  /** Until when HTTP workstations are asked to heartbeat at the attended rate (ms). */
+  private attendedUntil = 0;
   /** Sockets whose departure was already handled, so a late close event is not counted twice. */
   private readonly departed = new WeakSet<WebSocket>();
   private flushedOnline: number;
+  private flushedHttp: number;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
@@ -334,6 +347,7 @@ export class OrgHub {
     )`);
     this.tenantId = this.readMeta("tenantId");
     this.flushedOnline = Number(this.readMeta("flushedOnline") ?? "-1");
+    this.flushedHttp = Number(this.readMeta("flushedHttp") ?? "-1");
     ctx.setWebSocketAutoResponse(autoResponsePair());
   }
 
@@ -354,8 +368,10 @@ export class OrgHub {
         case "/heartbeat":
           return await this.handleHeartbeat((await request.json()) as HeartbeatInput);
         case "/enqueue":
+          this.attendedUntil = Date.now() + HTTP_ATTENTION_MS;
           return json({ commandIds: await this.enqueue((await request.json()) as EnqueueInput) });
         case "/live": {
+          this.attendedUntil = Date.now() + HTTP_ATTENTION_MS;
           const body = request.method === "POST" ? ((await request.json()) as { watch?: unknown }) : {};
           await this.leasePollWatch(body.watch);
           return json({ clients: this.liveClients(true) });
@@ -651,7 +667,19 @@ export class OrgHub {
 
     const config = (await this.loadConfig())!;
     const { portalUrl, ...update } = this.configFor(config, clientId, input.portal);
-    return json({ status: "ok", commands: this.pendingFor(clientId, portalUrl), ...update });
+    return json({
+      status: "ok",
+      commands: this.pendingFor(clientId, portalUrl),
+      ...update,
+      heartbeatSeconds: this.httpHeartbeatSeconds(now),
+      frames: this.watchedIds().has(clientId)
+    });
+  }
+
+  /** The HTTP heartbeat interval to ask for: fast while a console is open or was just used. */
+  private httpHeartbeatSeconds(now: number): number {
+    const attended = now < this.attendedUntil || this.ctx.getWebSockets("console").length > 0;
+    return attended ? HTTP_HEARTBEAT_ATTENDED_SECONDS : HTTP_HEARTBEAT_IDLE_SECONDS;
   }
 
   /** Workstation-reported state, validated; unset fields keep what was known. */
@@ -1165,11 +1193,15 @@ export class OrgHub {
     }
     await this.writeRegistry(rows);
 
-    const online = Object.values(this.liveClients(false)).filter((c) => c.online).length;
-    if (online !== this.flushedOnline) {
-      await setTenantOnlineCount(getDatabase(this.env), this.tenantId!, online);
+    const live = Object.values(this.liveClients(false)).filter((c) => c.online);
+    const online = live.length;
+    const http = live.filter((c) => c.transport === "http").length;
+    if (online !== this.flushedOnline || http !== this.flushedHttp) {
+      await setTenantOnlineCount(getDatabase(this.env), this.tenantId!, online, http);
       this.flushedOnline = online;
+      this.flushedHttp = http;
       this.writeMeta("flushedOnline", String(online));
+      this.writeMeta("flushedHttp", String(http));
     }
   }
 

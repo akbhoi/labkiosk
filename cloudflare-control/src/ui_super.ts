@@ -23,6 +23,8 @@ export interface SuperConsoleTenant extends Tenant {
   admin_email: string;
   admin_name: string;
   online_clients: number;
+  /** Of those online, how many are on the HTTP heartbeat instead of the WebSocket. */
+  http_clients?: number;
   total_clients: number;
   /** Workstations holding a valid device token: what the workstation limit counts. */
   enrolled_clients: number;
@@ -215,6 +217,11 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <span class="stat-val">${Number(t.online_clients) || 0} / ${Number(t.total_clients) || 0}</span>
         </span>
         <div class="cell-sub nowrap ${Number(t.enrolled_clients) >= Number(t.workstation_limit) ? "text-danger" : ""}">${Number(t.enrolled_clients) || 0} of ${Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled</div>
+        ${
+          Number(t.http_clients) > 0
+            ? `<div class="cell-sub nowrap text-warning" title="These workstations post a heartbeat instead of holding a WebSocket: an agent without the WebSocket client, or a network that blocks WebSocket upgrades. Each heartbeat is a billed request.">${Number(t.http_clients)} on the HTTP heartbeat</div>`
+            : ""
+        }
         ${
           t.remote_control_status === "approved"
             ? `<div class="cell-sub nowrap">Remote Control: ${Number(t.remote_control_seats) || 1} ${Number(t.remote_control_seats) === 1 ? "seat" : "seats"}</div>`

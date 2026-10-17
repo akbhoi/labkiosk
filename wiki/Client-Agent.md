@@ -64,8 +64,10 @@ answers exactly that without waking the hub. → [REST API Reference](REST-API-R
 
 It needs Debian's `python3-websocket`. Without it, or when the server has no WebSocket route
 (an older Worker, or the Node development server), or after three failed connections in a row,
-the agent uses the older HTTP heartbeat for ten minutes and then tries again: every three seconds,
-`post_telemetry()` sends the same state with a thumbnail and receives the same updates back.
+the agent uses the older HTTP heartbeat for ten minutes and then tries again: `post_telemetry()`
+sends the same state and receives the same updates back, every 3 seconds while a console is open
+and every 15 seconds otherwise, as the reply's `heartbeatSeconds` says. It captures a thumbnail
+only while the reply's `frames` says a console is showing this screen.
 
 ```text
          +-----------------------------------------------+

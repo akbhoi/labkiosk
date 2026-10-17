@@ -90,6 +90,7 @@ import {
   endOfLifeReminderStage,
   setEndOfLifeReminderStage,
   sendEndOfLifeReminders,
+  releaseAddressIsDevelopmentOnly,
   releaseFolderUrl,
   securityReleasesPending,
   workstationOffer,
@@ -2035,7 +2036,8 @@ export default {
           ...(await platformReleasePolicy(db, releases, names)),
           added: sync.added,
           problems: sync.problems,
-          downloadsConfigured: releaseFolderUrl(env, "0.0.0") !== null
+          downloadsConfigured: releaseFolderUrl(env, "0.0.0") !== null,
+          downloadsDevelopmentOnly: releaseAddressIsDevelopmentOnly(env)
         }),
         { headers: jsonHeaders }
       );

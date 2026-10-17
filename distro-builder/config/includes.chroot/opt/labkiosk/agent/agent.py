@@ -192,6 +192,12 @@ LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8888
 HEARTBEAT_SECONDS = 3
 MAX_BACKOFF_SECONDS = 60
+# The HTTP heartbeat's reply names the next interval (`heartbeatSeconds`: fast
+# while a console is open, slower otherwise) and whether an operator is watching
+# this screen (`frames`). A control plane older than those fields gets the
+# 3-second cadence with a frame on every heartbeat, as before.
+HTTP_HEARTBEAT_BOUNDS = (HEARTBEAT_SECONDS, MAX_BACKOFF_SECONDS)
+http_pace = {"seconds": HEARTBEAT_SECONDS, "frames": True}
 # Upper bound on the base64 thumbnail in one heartbeat. At a 3-second cadence an
 # unbounded screenshot is a standing egress cost on an organization's uplink, and the
 # control plane documents this ceiling; a frame over budget is dropped rather
@@ -2838,7 +2844,8 @@ def post_telemetry():
         token = state["deviceToken"]
 
     payload = current_status()
-    payload["thumbnail"] = capture_thumbnail_base64()
+    if http_pace["frames"]:
+        payload["thumbnail"] = capture_thumbnail_base64()
 
     request = Request(
         f"{worker_url}/api/telemetry",
@@ -3582,7 +3589,19 @@ def http_heartbeat():
     clear_enrolment_rejected()
     control_plane_reached()
     apply_control_update(data)
+    if isinstance(data, dict):
+        http_pace["seconds"], http_pace["frames"] = http_pace_from(data)
     return "ok"
+
+
+def http_pace_from(data):
+    """The interval (seconds) and frame request an HTTP heartbeat reply asks for."""
+    seconds = data.get("heartbeatSeconds")
+    if isinstance(seconds, bool) or not isinstance(seconds, int):
+        seconds = HEARTBEAT_SECONDS
+    low, high = HTTP_HEARTBEAT_BOUNDS
+    frames = data.get("frames")
+    return min(max(seconds, low), high), frames if isinstance(frames, bool) else True
 
 
 # How one WebSocket session ended, which decides what the loop does next.
@@ -3953,8 +3972,9 @@ def telemetry_loop():
     Keep this workstation in touch with its control plane.
 
     A WebSocket when the image has websocket-client and the server has the
-    route; the HTTP heartbeat every 3 seconds otherwise, and for a while after
-    the WebSocket keeps failing. Both apply the same updates, and both send a
+    route; the HTTP heartbeat otherwise (every 3 seconds while a console is
+    open, slower when the hub says nobody is), and for a while after the
+    WebSocket keeps failing. Both apply the same updates, and both send a
     refused workstation to the re-enrolment form.
     """
     backoff = HEARTBEAT_SECONDS
@@ -3989,7 +4009,7 @@ def telemetry_loop():
         else:
             result = http_heartbeat()
             backoff = HEARTBEAT_SECONDS if result == "ok" else min(backoff * 2, MAX_BACKOFF_SECONDS)
-            wait = backoff
+            wait = http_pace["seconds"] if result == "ok" else backoff
 
         if heartbeat_wakeup.wait(wait):
             heartbeat_wakeup.clear()
