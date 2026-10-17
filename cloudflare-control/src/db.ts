@@ -1672,8 +1672,7 @@ export async function listDeviceBroadcasts(
   return map;
 }
 
-/** The number of workstations online, as the organization's OrgHub last counted it. */
-/** The hub's online count, and how many of those are on the HTTP heartbeat rather than the WebSocket. */
+/** The hub's online count, and how many of those are on the HTTP heartbeat rather than the WebSocket, as the organization's OrgHub last counted it. */
 export async function setTenantOnlineCount(db: D1Database, tenantId: string, online: number, http: number): Promise<void> {
   await db
     .prepare("UPDATE tenants SET online_workstations = ?, http_workstations = ? WHERE id = ?")
