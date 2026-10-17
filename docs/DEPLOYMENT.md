@@ -172,6 +172,14 @@ proxied DNS record on your zone), and make sure the worker serves custom hostnam
 guide for using a Worker as the SaaS origin describes the catch-all route. Each organization then
 points its domain at the fallback origin with a CNAME.
 
+**What custom domains cost.** Cloudflare for SaaS on the Free, Pro and Business plans includes 100
+custom hostnames, then charges $0.10 a month for each one, up to 50,000; beyond that needs
+Enterprise ([plans](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/plans/)).
+1,000 organizations on their own domain cost about $90 a month. Wildcard custom hostnames
+(`*.their-domain`) need Enterprise, so an organization gets one hostname. Super Admin → Tasks →
+Custom domains shows how many are in use and the monthly cost, and the approval asks you to
+confirm when the next one adds to it. A custom domain under the platform domain is refused.
+
 **Local development** needs none of this: `pnpm dev` (`wrangler dev --local`) runs every binding
 locally except Workers AI, which it leaves out,
 and with `ALLOW_LOCAL_DB=1` a custom domain is marked `local` instead of provisioned. wrangler's
@@ -435,6 +443,17 @@ In your Cloudflare Dashboard under your domain's **DNS Records**:
 1. **Apex / Host Record:** Add a `CNAME` or `A` record for `labkiosk.yourdomain.com` pointing to the Worker (Proxied: Orange Cloud).
 2. **Wildcard Subdomain Record:** Add a `CNAME` record with Name `*` or `*.labkiosk` targeting `labkiosk.yourdomain.com` (Proxied: Orange Cloud).
 3. **Custom Domain Support:** When organizations request custom domains (e.g. `kiosk.example.com`), they create a `CNAME` pointing to `labkiosk.yourdomain.com`. Once approved by the Super Admin in `/super`, Cloudflare Workers handles routing authoritatively via the `Host` header.
+
+**How many organizations this serves.** The two routes and the two DNS records serve every
+organization: a new one needs no DNS record, route or certificate of its own, so Cloudflare's
+per-zone DNS record quota (1,000 on Free zones created before September 2024, 200 after) never
+comes into it. Keep it that way. A test fails if `wrangler.jsonc` gains another route or the
+worker starts calling the DNS records or Workers routes API. Universal SSL covers a zone's apex
+and the first level below it only, so serve the platform from a zone apex, as `labkiosk.org` does:
+with `DEFAULT_DOMAIN` set to `labkiosk.yourdomain.com`, `<slug>.labkiosk.yourdomain.com` is a
+second level and needs an Advanced Certificate Manager certificate for `*.labkiosk.yourdomain.com`.
+For the same reason never add a level such as `<slug>.eu.labkiosk.org`; use a separate zone for a
+region. The one per-organization cost is a custom domain.
 
 ### 3. Search engines and website analytics
 

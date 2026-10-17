@@ -425,9 +425,12 @@ polls `POST /api/clients` with the same `watch` list.
 
 #### `POST /api/telemetry`
 
-The HTTP fallback, used by agents without the WebSocket client: a 3-second heartbeat carrying the
-active URL, a screen thumbnail and the remote-control details, answered with the configuration and
-any queued commands.
+The HTTP fallback, used by agents without the WebSocket client or whose network drops WebSocket
+upgrades: a heartbeat carrying the active URL, a screen thumbnail while one is asked for and the
+remote-control details, answered with the configuration and any queued commands. The reply paces
+the next one: `heartbeatSeconds` is 3 while a console is open or was used in the last minute and 15
+otherwise, and `frames` says whether a console is showing this screen (send `thumbnail` only then).
+A workstation is shown offline after 36 seconds without a heartbeat.
 
 - **Access:** Workstation (`Authorization: Bearer <deviceToken>`)
 - **Request Body:**
@@ -458,7 +461,9 @@ any queued commands.
     "mode": "portal",
     "targetUrl": "https://oakridge.labkiosk.example.com",
     "broadcastUrl": "",
-    "broadcastEpoch": 0
+    "broadcastEpoch": 0,
+    "heartbeatSeconds": 15,
+    "frames": false
   }
   ```
 

@@ -115,7 +115,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/api/devices/ws` | `GET` (WebSocket) | The control channel: status and frames up; configuration, commands and frame requests down |
-| `/api/telemetry` | `POST` | The HTTP fallback: a three-second heartbeat carrying the same |
+| `/api/telemetry` | `POST` | The HTTP fallback: a heartbeat (3 s while a console is open, 15 s otherwise) carrying the same |
 | `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
 | `/api/devices/restart-report` | `POST` | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/disk-health` | `POST` | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
@@ -238,8 +238,9 @@ showing and receives `snapshot`, `status`, `frame` and `removed` messages.
 
 ### `POST /api/telemetry`
 
-The HTTP heartbeat, called every three seconds by agents without the WebSocket client (and by any
-agent whose server has no WebSocket route). It carries the same state as the control channel in
+The HTTP heartbeat, used by agents without the WebSocket client (and by any agent whose server has
+no WebSocket route, or whose network drops WebSocket upgrades). The reply paces it: every 3 seconds
+while a console is open or was used in the last minute, every 15 seconds otherwise. It carries the same state as the control channel in
 one request and reply.
 
 **Access:** `Authorization: Bearer <deviceToken>`.
@@ -261,7 +262,7 @@ one request and reply.
 | `clientNum` | Integer workstation number; non-numeric values fall back to `1`. |
 | `activeUrl` | Validated by `safeHttpUrl()`; falls back to the tenant default. |
 | `isLocked` | Whether the lock curtain is currently up. |
-| `thumbnail` | Base64 JPEG from `scrot -t 20 -q 35`. **Omitted** when the encoded payload would exceed `MAX_THUMBNAIL_BYTES` (256 KB), so an oversized frame is dropped rather than allowed to bloat a three-second loop. No PIL/Pillow is involved — the agent is standard library only. |
+| `thumbnail` | Base64 JPEG from `scrot -t 20 -q 35`. Sent only while the last reply's `frames` was true (an agent older than the field sends it every time). **Omitted** when the encoded payload would exceed `MAX_THUMBNAIL_BYTES` (256 KB), so an oversized frame is dropped rather than allowed to bloat the loop. No PIL/Pillow is involved — the agent is standard library only. |
 | `vncPassword` | Per-boot ephemeral secret from `/tmp/labkiosk/vnc.secret`. Sent only when present, so the control plane keeps what it already knows otherwise. |
 
 There is **no `currentUrl` key and no `metrics` object.** The agent collects no CPU, RAM, or storage statistics; do not build a dashboard against fields that do not exist.
@@ -280,12 +281,16 @@ There is **no `currentUrl` key and no `metrics` object.** The agent collects no 
   "mode": "portal",
   "targetUrl": "https://oakridge.labkiosk.example.com",
   "broadcastUrl": "",
-  "broadcastEpoch": 0
+  "broadcastEpoch": 0,
+  "heartbeatSeconds": 15,
+  "frames": false
 }
 ```
 
 | Field | Notes |
 | :--- | :--- |
+| `heartbeatSeconds` | Seconds until the next heartbeat: 3 while a console is open or was used in the last minute, 15 otherwise. Every heartbeat is a billed request that wakes the organization's hub. A workstation is shown offline after 36 seconds without one. |
+| `frames` | Whether a console is showing this screen; send `thumbnail` only while it is true. |
 | `commands` | Pending commands for *this* workstation. The hub records each delivery, so each command executes exactly once rather than on every heartbeat. |
 | `whitelist` | Effective allowlist: the organization's own domains plus every portal app host, plus the active broadcast host if it is not already present. Merged into the Chromium managed policy. |
 | `targetUrl` | Where the kiosk should point. Validated as `http(s)` by `safe_navigable_url()` before the agent stores it, because it ends up in `window.location`. |

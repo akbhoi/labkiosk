@@ -43,7 +43,7 @@ No. `HardwareAccelerationModeEnabled` is on so Chromium uses whatever is availab
 ## Deployment
 
 **How many workstations can one organization have?**
-There is no hard limit. Each workstation is one row in `client_devices` and one heartbeat every three seconds. Storage is dominated by thumbnails — budget roughly 256 KB per workstation for the latest frame.
+There is no hard limit. Each workstation is one row in `client_devices` and one WebSocket to its organization's hub, which costs almost nothing while idle. Screen frames are relayed to a console only while it is showing that screen and are never stored.
 
 **Can an organization use its own domain?**
 Yes. Request it in Settings, create a `CNAME` to the platform apex, and a super admin approves it. → [Super Admin Guide](Super-Admin-Guide#custom-domains)

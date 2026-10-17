@@ -64,6 +64,7 @@ export interface Tenant {
   homepage_blocks?: string | null;
   /** Workstations online, as the organization's OrgHub last counted them. */
   online_workstations?: number;
+  http_workstations?: number;
   /** Cloudflare for SaaS custom hostname id for `custom_domain`, once provisioned. */
   custom_hostname_id?: string | null;
   /** none, pending (certificate being issued), active, failed, or local (development). */

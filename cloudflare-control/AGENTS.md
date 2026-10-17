@@ -161,8 +161,12 @@ cloudflare-control/
 - **What D1 still owns:** everything two requests must agree on (Rule 2) and the `client_devices`
   registry, written on connect, on disconnect, on a status change (batched by a 20 s alarm) and
   every 5 minutes for an unchanged workstation — never per ping or per frame.
-  `tenants.online_workstations` is the hub's count, so the super admin list needs no query per
-  organization.
+  `tenants.online_workstations` is the hub's count, and `http_workstations` how many of those are
+  on the HTTP heartbeat, so the super admin list needs no query per organization.
+- **The HTTP heartbeat is paced by the hub.** Every heartbeat is a billed Worker request that wakes
+  the hub, so its reply carries `heartbeatSeconds` (3 while a console is open or was used in the
+  last minute, 15 otherwise) and `frames` (whether a console is showing that screen). An HTTP
+  workstation is offline after missing two idle heartbeats (36 s).
 - **Hibernation rules.** Sockets are accepted with `ctx.acceptWebSocket()` and tags (`device`,
   `device:<id>`, `console`); per-socket state lives in `serializeAttachment()` (≤ 16 KB); timers are
   alarms; the ping is `setWebSocketAutoResponse('{"type":"ping"}' → '{"type":"pong"}')`, which the

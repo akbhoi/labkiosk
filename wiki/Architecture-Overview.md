@@ -101,7 +101,8 @@ Authorization: Bearer <device token>
 
 The ping is answered at the edge without waking the hub, so an idle workstation costs nothing.
 Agents without the WebSocket client, and any agent whose server lacks the route, use the older
-`POST /api/telemetry` every three seconds, which carries the same fields in one request and reply.
+`POST /api/telemetry` (every 3 seconds while a console is open, every 15 otherwise), which carries the
+same fields in one request and reply.
 
 The device token, never the request body, decides which workstation and which tenant the request belongs to. A payload claiming a different `clientId` is ignored.
 

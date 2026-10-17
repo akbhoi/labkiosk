@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   homepage_intro TEXT,
   homepage_blocks TEXT,
   online_workstations INTEGER NOT NULL DEFAULT 0,
+  http_workstations INTEGER NOT NULL DEFAULT 0,
   custom_hostname_id TEXT,
   custom_hostname_status TEXT NOT NULL DEFAULT 'none',
   created_at INTEGER NOT NULL,
@@ -710,6 +711,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT requested_at, pilot_group, pilot_at FROM major_upgrade_grants LIMIT 1").run();
     // 0040: support status and end of life per major release.
     await db.prepare("SELECT major, status, end_of_life_at, eol_reminder_days FROM release_support LIMIT 1").run();
+    // 0041: online workstations on the HTTP heartbeat.
+    await db.prepare("SELECT http_workstations FROM tenants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -1390,18 +1393,19 @@ export async function getTenantUserPermissions(
 
 export async function listAllTenants(
   db: D1Database
-): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number; enrolled_clients: number }>> {
+): Promise<Array<Tenant & { admin_email: string; admin_name: string; online_clients: number; http_clients: number; total_clients: number; enrolled_clients: number }>> {
   const res = await db
     .prepare(
       `SELECT t.*, u.email as admin_email, u.name as admin_name,
               t.online_workstations as online_clients,
+              t.http_workstations as http_clients,
               (SELECT COUNT(*) FROM client_devices cd WHERE cd.tenant_id = t.id) as total_clients,
               (SELECT COUNT(DISTINCT dt.client_id) FROM device_tokens dt WHERE dt.tenant_id = t.id AND dt.revoked = 0) as enrolled_clients
        FROM tenants t
        JOIN users u ON t.user_id = u.id
        ORDER BY t.created_at DESC`
     )
-    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; total_clients: number; enrolled_clients: number }>();
+    .all<Tenant & { admin_email: string; admin_name: string; online_clients: number; http_clients: number; total_clients: number; enrolled_clients: number }>();
 
   return res.results || [];
 }
@@ -1668,11 +1672,11 @@ export async function listDeviceBroadcasts(
   return map;
 }
 
-/** The number of workstations online, as the organization's OrgHub last counted it. */
-export async function setTenantOnlineCount(db: D1Database, tenantId: string, online: number): Promise<void> {
+/** The hub's online count, and how many of those are on the HTTP heartbeat rather than the WebSocket, as the organization's OrgHub last counted it. */
+export async function setTenantOnlineCount(db: D1Database, tenantId: string, online: number, http: number): Promise<void> {
   await db
-    .prepare("UPDATE tenants SET online_workstations = ? WHERE id = ?")
-    .bind(Math.max(0, Math.floor(online)), tenantId)
+    .prepare("UPDATE tenants SET online_workstations = ?, http_workstations = ? WHERE id = ?")
+    .bind(Math.max(0, Math.floor(online)), Math.max(0, Math.floor(http)), tenantId)
     .run();
 }
 

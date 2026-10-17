@@ -55,10 +55,14 @@ Both routes are answered before sessions and tenant resolution (`handleWorkstati
   - Close codes: `4001` removed, `4003` organization not active (→ `mark_enrolment_rejected()`),
     `4000` replaced by a newer connection (back off), `4008` stale (reconnect).
   - Handshake `404`/`426`/`501`, or three failed connects in a row → HTTP for 10 minutes.
-- **HTTP heartbeat** (every 3 s; older agents and the fallback): payload `clientNum`, `activeUrl`,
+- **HTTP heartbeat** (older agents and the fallback): payload `clientNum`, `activeUrl`,
   `isLocked`, `thumbnail`, `vncPassword`, and the same update fields (`current_status()` /
   `post_telemetry()` are the reference); reply
-  `whitelist`, `targetUrl`, `commands`, `broadcastUrl` / `broadcastEpoch`. Both transports apply
+  `whitelist`, `targetUrl`, `commands`, `broadcastUrl` / `broadcastEpoch`, `heartbeatSeconds` and
+  `frames`. The hub paces it: `heartbeatSeconds` is 3 while a console is open or was used in the
+  last minute and 15 otherwise (`HTTP_HEARTBEAT_*_SECONDS`), and `frames` is true only while a
+  console shows that screen, so `thumbnail` is sent only then (`http_pace` in `agent.py`). An agent
+  older than the fields keeps 3 s with a thumbnail every time. Both transports apply
   the reply through one function, `apply_control_update()`.
 - `thumbnail`/frame: base64 JPEG from `scrot -t 20 -q 35`, **dropped** above 256 KB
   (`MAX_THUMBNAIL_BYTES` = `MAX_FRAME_BYTES`); no Pillow, the agent is stdlib-only. Frames are

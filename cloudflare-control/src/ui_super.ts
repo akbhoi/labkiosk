@@ -13,6 +13,7 @@ import { DEMO_TENANTS, isDemoTenant } from "./demo";
 import { DEFAULT_WORKSTATION_LIMIT, MAX_REMOTE_CONTROL_SEATS, MAX_WORKSTATION_LIMIT } from "./db";
 import { LICENSE_PLANS, licenseDate, licensePlanLabel, licenseState } from "./license";
 import { WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
+import { CUSTOM_HOSTNAMES_INCLUDED, CUSTOM_HOSTNAMES_MAX, CUSTOM_HOSTNAME_MONTHLY_USD, customHostnameBudget } from "./custom_hostnames";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
 import { renderNotificationsPaneHtml, renderNotificationsPaneScript } from "./ui_super_notifications";
@@ -23,6 +24,8 @@ export interface SuperConsoleTenant extends Tenant {
   admin_email: string;
   admin_name: string;
   online_clients: number;
+  /** Of those online, how many are on the HTTP heartbeat instead of the WebSocket. */
+  http_clients?: number;
   total_clients: number;
   /** Workstations holding a valid device token: what the workstation limit counts. */
   enrolled_clients: number;
@@ -103,6 +106,14 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
   const pendingList = tenants.filter((t) => t.status !== "pending" && t.requested_subdomain);
   const inbox = { deletedSupport: 0, ...(data.inbox || { openTasks: 0, openSupport: 0, unreadSupport: 0 }) };
   const pendingCustomList = tenants.filter((t) => t.custom_domain_status === "pending" && t.requested_custom_domain);
+  const customBudget = customHostnameBudget(tenants.filter((t) => t.custom_domain).length);
+  const customBudgetLine =
+    `${customBudget.inUse} custom domain${customBudget.inUse === 1 ? "" : "s"} in use. ` +
+    `Cloudflare includes ${CUSTOM_HOSTNAMES_INCLUDED}; each one after that costs $${CUSTOM_HOSTNAME_MONTHLY_USD.toFixed(2)} a month` +
+    (customBudget.billable > 0 ? ` (${customBudget.billable} now, $${customBudget.monthlyUsd.toFixed(2)} a month)` : "") +
+    `, up to ${CUSTOM_HOSTNAMES_MAX.toLocaleString("en-US")} without Enterprise. Subdomains cost nothing.`;
+  // Approving one more after the included ones adds to the bill (replacing a domain does not); the confirmation says so.
+  const nextCustomAddsCost = customBudget.inUse >= CUSTOM_HOSTNAMES_INCLUDED;
   const totalClients = tenants.reduce((acc, t) => acc + (t.total_clients || 0), 0);
   const totalOnline = tenants.reduce((acc, t) => acc + (t.online_clients || 0), 0);
   const domainRequestCount = pendingList.length + pendingCustomList.length;
@@ -171,7 +182,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       </td>
       <td>
         <div class="cell-actions">
-          <button class="btn btn-sm btn-primary btn-approve-custom" data-tenant="${escapeAttr(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}">Approve Domain</button>
+          <button class="btn btn-sm btn-primary btn-approve-custom" data-tenant="${escapeAttr(t.id)}" data-domain="${escapeAttr(t.requested_custom_domain || "")}"${nextCustomAddsCost && !t.custom_domain ? ` data-adds-cost="${escapeAttr(CUSTOM_HOSTNAME_MONTHLY_USD.toFixed(2))}"` : ""}>Approve Domain</button>
           <button class="btn btn-sm btn-danger btn-reject-custom" data-tenant="${escapeAttr(t.id)}">Reject</button>
         </div>
       </td>
@@ -215,6 +226,11 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
           <span class="stat-val">${Number(t.online_clients) || 0} / ${Number(t.total_clients) || 0}</span>
         </span>
         <div class="cell-sub nowrap ${Number(t.enrolled_clients) >= Number(t.workstation_limit) ? "text-danger" : ""}">${Number(t.enrolled_clients) || 0} of ${Number(t.workstation_limit) || DEFAULT_WORKSTATION_LIMIT} enrolled</div>
+        ${
+          Number(t.http_clients) > 0
+            ? `<div class="cell-sub nowrap text-warning" title="These workstations post a heartbeat instead of holding a WebSocket: an agent without the WebSocket client, or a network that blocks WebSocket upgrades. Each heartbeat is a billed request.">${Number(t.http_clients)} on the HTTP heartbeat</div>`
+            : ""
+        }
         ${
           t.remote_control_status === "approved"
             ? `<div class="cell-sub nowrap">Remote Control: ${Number(t.remote_control_seats) || 1} ${Number(t.remote_control_seats) === 1 ? "seat" : "seats"}</div>`
@@ -461,6 +477,7 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <div class="card">
         <h2 class="card-title">Pending Custom Domain Requests (${pendingCustomList.length})</h2>
         <p class="card-sub">Organizations requesting their own custom domains (e.g. <code>kiosk.example.com</code>).</p>
+        <p class="card-sub">${escapeHtml(customBudgetLine)}</p>
         <div class="table-container">
           <table>
             <thead>
@@ -784,7 +801,9 @@ ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
           const customDomain = btn.dataset.domain;
           const agreed = await lkConfirm({
             title: "Approve " + customDomain + "?",
-            message: "Traffic on that hostname will route to this organization. Their DNS has to point at the worker before it resolves.",
+            message:
+              "Traffic on that hostname will route to this organization. Their DNS has to point at the worker before it resolves." +
+              (btn.dataset.addsCost ? " It is beyond the custom domains Cloudflare includes, so it adds $" + btn.dataset.addsCost + " a month." : ""),
             confirmLabel: "Approve domain"
           });
           if (!agreed) return;

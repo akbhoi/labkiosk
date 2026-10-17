@@ -22,6 +22,47 @@ const STATUS_CHECKS = 30;
 /** Between checks: Cloudflare's own guidance is minutes, not seconds. */
 const STATUS_CHECK_INTERVAL = "2 minutes";
 
+/**
+ * Cloudflare for SaaS on the Free, Pro and Business plans: 100 custom hostnames included, $0.10
+ * a month for each one after that, and no more than 50,000 without Enterprise
+ * (https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/plans/).
+ * Organization subdomains cost nothing: one wildcard route and one wildcard DNS record serve them all.
+ */
+export const CUSTOM_HOSTNAMES_INCLUDED = 100;
+export const CUSTOM_HOSTNAME_MONTHLY_USD = 0.1;
+export const CUSTOM_HOSTNAMES_MAX = 50_000;
+
+export interface CustomHostnameBudget {
+  inUse: number;
+  /** Hostnames beyond the included ones, each billed monthly. */
+  billable: number;
+  monthlyUsd: number;
+  /** How many more Cloudflare accepts before Enterprise. */
+  remaining: number;
+}
+
+export function customHostnameBudget(inUse: number): CustomHostnameBudget {
+  const count = Math.max(0, Math.floor(inUse));
+  const billable = Math.max(0, count - CUSTOM_HOSTNAMES_INCLUDED);
+  return {
+    inUse: count,
+    billable,
+    monthlyUsd: Math.round(billable * CUSTOM_HOSTNAME_MONTHLY_USD * 100) / 100,
+    remaining: Math.max(0, CUSTOM_HOSTNAMES_MAX - count)
+  };
+}
+
+/**
+ * Whether a domain is the platform domain or under it. Those are served by the wildcard and can
+ * never be an organization's custom domain; a custom hostname there would also be a second
+ * subdomain level that Universal SSL does not cover.
+ */
+export function isPlatformHostname(env: Pick<Env, "DEFAULT_DOMAIN">, domain: string): boolean {
+  const base = (env.DEFAULT_DOMAIN || "").replace(/^\./, "").toLowerCase();
+  if (!base) return false;
+  return domain === base || domain.endsWith("." + base);
+}
+
 /** The part of a Workflow step the job uses. */
 export interface JobStep {
   do<T>(name: string, callback: () => Promise<T>): Promise<T>;

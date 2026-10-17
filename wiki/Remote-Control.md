@@ -28,7 +28,7 @@ A session is opened only by an administrator of the organization (its owner or `
 
 An organization has as many **seats** as the platform approved: that many sessions may be open at once, counted by its OrgHub (one per workstation; a session's relay gives the seat back when it ends, and its four-hour limit frees it if that notice is lost). One more answers `429` naming the workstations in use. A super admin can revoke Remote Control (every open session ends at once, close code `4009`, and the owner is emailed), and an organization can turn it off itself under Settings.
 
-Remote Control needs an agent on the WebSocket control channel (`/api/devices/ws`), because the request to join travels over it. An agent still on the three-second HTTP heartbeat cannot join.
+Remote Control needs an agent on the WebSocket control channel (`/api/devices/ws`), because the request to join travels over it. An agent still on the HTTP heartbeat cannot join.
 
 ---
 

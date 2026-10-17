@@ -81,7 +81,7 @@ organization instead has one **OrgHub** (`src/org_hub.ts`, `idFromName(tenant.id
 - It pushes configuration (`notifyConfigChanged()` after every admin change) and commands the
   moment they exist, and asks a workstation for screen frames only while a console is showing it.
 - It writes back to `client_devices` on connect, disconnect, a change (batched by a 20 s alarm)
-  and every 5 minutes, and keeps `tenants.online_workstations` current. A quiet workstation costs
+  and every 5 minutes, and keeps `tenants.online_workstations` and `http_workstations` current. A quiet workstation costs
   D1 nothing.
 - It hibernates between messages: sockets are accepted with tags, per-socket state lives in
   attachments, timers are alarms, and the ping is answered at the edge without waking it.
@@ -169,7 +169,7 @@ Notable helpers:
 | `buildEffectiveWhitelist(db, tenantId)` | Unions `tenant_whitelist` with every `portal_sites.domain`; the hub caches it and reloads it on a configuration change |
 | `upsertDeviceRegistry(db, rows)` | The hub's batched write-back to `client_devices`; never touches the group or broadcast columns |
 | `listDeviceBroadcasts(db, tenantId)` | Per-workstation broadcasts, for the hub's configuration |
-| `setTenantOnlineCount(db, tenantId, n)` | `tenants.online_workstations` |
+| `setTenantOnlineCount(db, tenantId, online, http)` | `tenants.online_workstations` and `http_workstations` (those on the HTTP heartbeat) |
 | `rateLimitWait` / `recordRateLimitHit` | Public-endpoint throttling |
 | `writeAuditLog(db, {…})` | Through the audit queue when bound, directly otherwise |
 | `archiveOldAuditLogs(db, bucket, now)` | The 180-day retention, from `scheduled()` |

@@ -43,7 +43,7 @@ import {
   taxIdProblem
 } from "../src/geo";
 import { normalizePhone } from "../src/signup";
-import { isHostUnder } from "../src/guard";
+import { hostSubdomain, isHostUnder } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
@@ -63,7 +63,15 @@ import {
   readIssueStatus,
   redactProblemText
 } from "../src/bug_reports";
-import { HUB_PING, HUB_PONG, installRefusal, installTargetFor, releaseNudgeTarget } from "../src/org_hub";
+import {
+  HUB_PING,
+  HUB_PONG,
+  HTTP_HEARTBEAT_ATTENDED_SECONDS,
+  HTTP_HEARTBEAT_IDLE_SECONDS,
+  installRefusal,
+  installTargetFor,
+  releaseNudgeTarget
+} from "../src/org_hub";
 import { LAN_HOLD_MAX_MS, LAN_SHARE_SECONDS, lanDecision, lanPeers, normalizeLanReport, siteKey } from "../src/lan_sharing";
 import {
   compareVersions,
@@ -89,7 +97,7 @@ import {
   relayName
 } from "../src/remote_relay";
 import { CONSOLE_STYLESHEET_PATH, UNSAVED_CHANGES_SCRIPT } from "../src/ui_layout";
-import { runCustomHostnameJob } from "../src/custom_hostnames";
+import { CUSTOM_HOSTNAMES_MAX, customHostnameBudget, runCustomHostnameJob } from "../src/custom_hostnames";
 import { BUSY_SCRIPT, PALETTE } from "../src/ui_tokens";
 import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
@@ -3988,6 +3996,22 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(data.customDomainStatus, "pending");
   });
 
+  test("A custom domain under the platform domain is refused, and Super Admin sees what custom domains cost", async () => {
+    const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
+      ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.labkiosk.org" }),
+      cookie: superSessionCookie
+    });
+    assert.equal(res.status, 400);
+    assert.match(data.error, /subdomain of the platform domain/);
+    const greenwood = await getDatabase(mockEnv).prepare("SELECT custom_domain FROM tenants WHERE subdomain = 'greenwood'").first<{ custom_domain: string | null }>();
+    assert.notEqual(greenwood?.custom_domain, "kiosk.greenwood.labkiosk.org");
+
+    const html = await (await call("/super/tasks", { cookie: superSessionCookie })).text();
+    assert.match(html, /\d+ custom domains? in use\. Cloudflare includes 100; each one after that costs \$0\.10 a month, up to 50,000 without Enterprise\. Subdomains cost nothing\./);
+    // Fewer than 100 in use: approving one more costs nothing, so the confirmation says nothing about cost.
+    assert.ok(!html.includes("data-adds-cost"));
+  });
+
   test("Allows Super Admin to approve custom domain and routes traffic via Host header", async () => {
     const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
       ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.example" }),
@@ -4395,6 +4419,42 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(safeHttpUrl("canvas.example.com:8080#section"), "https://canvas.example.com:8080/#section");
   });
 
+  test("Organization subdomains stay on one wildcard, and custom domains are budgeted", () => {
+    // Every organization is served by one wildcard route and one wildcard DNS record, so there
+    // is no per-organization record to hit Cloudflare's per-zone DNS quota. Adding a route or a
+    // DNS record per organization would bring that limit back.
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const wrangler = JSON.parse(
+      fs
+        .readFileSync(path.join(root, "wrangler.jsonc"), "utf8")
+        .split("\n")
+        .filter((line) => !/^\s*\/\//.test(line))
+        .join("\n")
+    ) as { routes: Array<{ pattern: string; zone_name: string }> };
+    assert.deepEqual(
+      wrangler.routes.map((r) => r.pattern).sort(),
+      ["*.labkiosk.org/*", "labkiosk.org/*"],
+      "the Worker is routed by the apex and one wildcard only"
+    );
+    const srcDir = path.join(root, "src");
+    for (const file of fs.readdirSync(srcDir).filter((f) => f.endsWith(".ts"))) {
+      const source = fs.readFileSync(path.join(srcDir, file), "utf8");
+      assert.ok(!/dns_records|workers\/routes|workers\/domains/.test(source), `${file} must not create DNS records or Workers routes per organization`);
+    }
+
+    // A second label under the platform domain is not an organization: Universal SSL does not cover it.
+    const host = (h: string) => new Request("https://labkiosk.org/", { headers: { host: h } });
+    assert.equal(hostSubdomain(host("greenwood.labkiosk.org"), "labkiosk.org"), "greenwood");
+    assert.equal(hostSubdomain(host("eu.greenwood.labkiosk.org"), "labkiosk.org"), null);
+    // Wildcard custom hostnames need Cloudflare Enterprise, so a custom domain is one hostname.
+    assert.equal(cleanCustomDomain("*.example.com"), null);
+
+    assert.deepEqual(customHostnameBudget(0), { inUse: 0, billable: 0, monthlyUsd: 0, remaining: CUSTOM_HOSTNAMES_MAX });
+    assert.equal(customHostnameBudget(100).billable, 0);
+    assert.deepEqual(customHostnameBudget(1000), { inUse: 1000, billable: 900, monthlyUsd: 90, remaining: 49_000 });
+    assert.equal(customHostnameBudget(60_000).remaining, 0);
+  });
+
   test("A custom domain is cleaned in linear time, whatever a workstation sends", () => {
     assert.equal(cleanCustomDomain("https://Kiosk.Example.com:8443/path/to/page"), "kiosk.example.com");
     assert.equal(cleanCustomDomain("pc-01.labkiosk.example.com"), "pc-01.labkiosk.example.com");
@@ -4588,6 +4648,56 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       await hubs().runAlarm(tenantId);
       const second = await db.prepare("SELECT updated_at FROM client_devices WHERE id = ?").bind(`${tenantId}:HB-QUIET`).first<any>();
       assert.equal(second.updated_at, first.updated_at, "an unchanged workstation's row is left alone");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  test("The HTTP heartbeat is fast only while a console is in use, and asks for a screen only while it is watched", async () => {
+    const token = await enrolAs("HB-PACE");
+    const tenantId = await greenwoodId();
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      const beat = async () => (await callJson("/api/telemetry", { ...json({}), bearer: token })).data;
+      // Long enough for any console request earlier in the file to have lapsed.
+      mock.timers.tick(120_000);
+      let reply = await beat();
+      assert.equal(reply.heartbeatSeconds, HTTP_HEARTBEAT_IDLE_SECONDS, "nobody at a console: the slow pace");
+      assert.equal(reply.frames, false, "nobody watching: no screen");
+
+      const viewer = await hubs().connectConsole({ tenantId, userId: "u-viewer" });
+      reply = await beat();
+      assert.equal(reply.heartbeatSeconds, HTTP_HEARTBEAT_ATTENDED_SECONDS, "an open console: the fast pace");
+      assert.equal(reply.frames, false, "open but not looking at this screen");
+      await viewer.fromClient({ type: "watch", clientIds: ["HB-PACE"] });
+      assert.equal((await beat()).frames, true, "watched: a screen with every heartbeat");
+      await viewer.closeFromClient();
+
+      mock.timers.tick(61_000);
+      assert.equal((await beat()).heartbeatSeconds, HTTP_HEARTBEAT_IDLE_SECONDS, "the console closed a minute ago");
+      // A console that polls instead of holding a socket counts too.
+      assert.equal((await call("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).status, 200);
+      assert.equal((await beat()).heartbeatSeconds, HTTP_HEARTBEAT_ATTENDED_SECONDS);
+
+      // At the slow pace a workstation is not shown offline between two heartbeats.
+      mock.timers.tick(HTTP_HEARTBEAT_IDLE_SECONDS * 2 * 1000);
+      let { data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie });
+      assert.equal(data.clients["HB-PACE"].online, true, "two idle heartbeats late is still online");
+      mock.timers.tick(10_000);
+      ({ data } = await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie }));
+      assert.equal(data.clients["HB-PACE"]?.online ?? false, false, "missing more than that is offline");
+
+      // The Super Admin list says how many of an organization's workstations are on the HTTP heartbeat.
+      await beat();
+      await hubs().runAlarm(tenantId);
+      const counts = await getDatabase(mockEnv)
+        .prepare("SELECT online_workstations, http_workstations FROM tenants WHERE id = ?")
+        .bind(tenantId)
+        .first<any>();
+      assert.ok(counts.http_workstations >= 1, "the hub writes back its HTTP heartbeat count");
+      assert.ok(counts.http_workstations <= counts.online_workstations);
+      const page = await (await call("/super/organizations", { cookie: superSessionCookie })).text();
+      assert.ok(page.includes(`${counts.http_workstations} on the HTTP heartbeat`), "shown on the organization's row");
     } finally {
       mock.timers.reset();
     }
@@ -7225,6 +7335,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const body = await listed.json<any>();
     assert.deepEqual(body.releases.map((r: any) => r.version), ["2.9.0", "2.9.1-rc1"].sort((a, b) => compareVersions(b, a)));
     assert.equal(body.downloadsConfigured, true);
+    assert.equal(body.downloadsDevelopmentOnly, false, "a custom domain on the bucket is the production address");
+    const devAddress = { ...releasesEnv, RELEASES_BASE_URL: "https://pub-0123456789abcdef.r2.dev" } as Env;
+    const flagged = await (await callWith(devAddress, "/api/super/releases", { cookie: superSessionCookie })).json<any>();
+    assert.equal(flagged.downloadsConfigured, true, "r2.dev still works");
+    assert.equal(flagged.downloadsDevelopmentOnly, true, "but Super Admin is told it is rate-limited and uncached");
     assert.ok(body.releases.every((r: any) => r.channel === null), "nothing is offered until classified");
     assert.equal(body.releases.find((r: any) => r.version === "2.9.0").sizeBytes, 948_000_000);
     const problems = Object.fromEntries(body.problems.map((p: any) => [p.version, p.problem]));

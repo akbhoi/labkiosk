@@ -100,8 +100,8 @@ with **no `tenant_id` on purpose** and holds redacted text only.
 each organization's OrgHub (its own SQLite: `commands`, `deliveries`, `revoked`, `meta`), and
 frames are relayed, never stored. `client_devices` is the **registry** the hub writes back to
 (connect, disconnect, batched changes, a 5-minute refresh) — never per heartbeat.
-`tenants.online_workstations` is the hub's count, for the super admin list without a query per
-organization. `tenants.custom_hostname_id` / `custom_hostname_status`
+`tenants.online_workstations` is the hub's count, and `http_workstations` (0041) how many of those
+are on the HTTP heartbeat, for the super admin list without a query per organization. `tenants.custom_hostname_id` / `custom_hostname_status`
 (`none | pending | active | failed | local`) track the Cloudflare for SaaS hostname. `audit_logs`
 keeps 180 days (`AUDIT_RETENTION_DAYS`); the hourly cron moves older rows to R2 as NDJSON.
 A DO's own schema is not a D1 migration: it is created in `OrgHub`'s constructor, and changing it
