@@ -43,7 +43,7 @@ import {
   taxIdProblem
 } from "../src/geo";
 import { normalizePhone } from "../src/signup";
-import { isHostUnder } from "../src/guard";
+import { hostSubdomain, isHostUnder } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
@@ -97,7 +97,7 @@ import {
   relayName
 } from "../src/remote_relay";
 import { CONSOLE_STYLESHEET_PATH, UNSAVED_CHANGES_SCRIPT } from "../src/ui_layout";
-import { runCustomHostnameJob } from "../src/custom_hostnames";
+import { CUSTOM_HOSTNAMES_MAX, customHostnameBudget, runCustomHostnameJob } from "../src/custom_hostnames";
 import { BUSY_SCRIPT, PALETTE } from "../src/ui_tokens";
 import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
@@ -3996,6 +3996,22 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(data.customDomainStatus, "pending");
   });
 
+  test("A custom domain under the platform domain is refused, and Super Admin sees what custom domains cost", async () => {
+    const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
+      ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.labkiosk.org" }),
+      cookie: superSessionCookie
+    });
+    assert.equal(res.status, 400);
+    assert.match(data.error, /subdomain of the platform domain/);
+    const greenwood = await getDatabase(mockEnv).prepare("SELECT custom_domain FROM tenants WHERE subdomain = 'greenwood'").first<{ custom_domain: string | null }>();
+    assert.notEqual(greenwood?.custom_domain, "kiosk.greenwood.labkiosk.org");
+
+    const html = await (await call("/super/tasks", { cookie: superSessionCookie })).text();
+    assert.match(html, /\d+ custom domains? in use\. Cloudflare includes 100; each one after that costs \$0\.10 a month, up to 50,000 without Enterprise\. Subdomains cost nothing\./);
+    // Fewer than 100 in use: approving one more costs nothing, so the confirmation says nothing about cost.
+    assert.ok(!html.includes("data-adds-cost"));
+  });
+
   test("Allows Super Admin to approve custom domain and routes traffic via Host header", async () => {
     const { res, data } = await callJson("/api/super/tenants/custom-domain/approve", {
       ...json({ subdomain: "greenwood", customDomain: "kiosk.greenwood.example" }),
@@ -4401,6 +4417,42 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://canvas.example.com:8080/?param=1#section"
     );
     assert.equal(safeHttpUrl("canvas.example.com:8080#section"), "https://canvas.example.com:8080/#section");
+  });
+
+  test("Organization subdomains stay on one wildcard, and custom domains are budgeted", () => {
+    // Every organization is served by one wildcard route and one wildcard DNS record, so there
+    // is no per-organization record to hit Cloudflare's per-zone DNS quota. Adding a route or a
+    // DNS record per organization would bring that limit back.
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const wrangler = JSON.parse(
+      fs
+        .readFileSync(path.join(root, "wrangler.jsonc"), "utf8")
+        .split("\n")
+        .filter((line) => !/^\s*\/\//.test(line))
+        .join("\n")
+    ) as { routes: Array<{ pattern: string; zone_name: string }> };
+    assert.deepEqual(
+      wrangler.routes.map((r) => r.pattern).sort(),
+      ["*.labkiosk.org/*", "labkiosk.org/*"],
+      "the Worker is routed by the apex and one wildcard only"
+    );
+    const srcDir = path.join(root, "src");
+    for (const file of fs.readdirSync(srcDir).filter((f) => f.endsWith(".ts"))) {
+      const source = fs.readFileSync(path.join(srcDir, file), "utf8");
+      assert.ok(!/dns_records|workers\/routes|workers\/domains/.test(source), `${file} must not create DNS records or Workers routes per organization`);
+    }
+
+    // A second label under the platform domain is not an organization: Universal SSL does not cover it.
+    const host = (h: string) => new Request("https://labkiosk.org/", { headers: { host: h } });
+    assert.equal(hostSubdomain(host("greenwood.labkiosk.org"), "labkiosk.org"), "greenwood");
+    assert.equal(hostSubdomain(host("eu.greenwood.labkiosk.org"), "labkiosk.org"), null);
+    // Wildcard custom hostnames need Cloudflare Enterprise, so a custom domain is one hostname.
+    assert.equal(cleanCustomDomain("*.example.com"), null);
+
+    assert.deepEqual(customHostnameBudget(0), { inUse: 0, billable: 0, monthlyUsd: 0, remaining: CUSTOM_HOSTNAMES_MAX });
+    assert.equal(customHostnameBudget(100).billable, 0);
+    assert.deepEqual(customHostnameBudget(1000), { inUse: 1000, billable: 900, monthlyUsd: 90, remaining: 49_000 });
+    assert.equal(customHostnameBudget(60_000).remaining, 0);
   });
 
   test("A custom domain is cleaned in linear time, whatever a workstation sends", () => {

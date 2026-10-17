@@ -154,6 +154,8 @@ Organizations with their own domain can serve Lab Kiosk from `kiosk.acme.edu` ra
 
 5. **Cloudflare** must route that hostname to the worker. With a proxied `CNAME` into your zone this is automatic; a domain in a zone you do not control needs a Cloudflare for SaaS custom hostname.
 
+   Custom hostnames beyond the first 100 cost $0.10 a month each. The Custom domains view shows how many are in use and what they cost, and the approval says when the next one adds to the bill. A domain under the platform domain is refused: organization subdomains are already served by the wildcard.
+
 `custom_domain` carries a **unique index**, so two organizations cannot claim the same FQDN.
 
 ### Rejecting or removing

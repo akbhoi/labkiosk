@@ -157,6 +157,25 @@ In Cloudflare DNS:
 
 The orange cloud is required. An unproxied record bypasses the worker entirely.
 
+**How many organizations this serves.** The two routes and the two DNS records serve every
+organization: a new one needs no DNS record, route or certificate of its own, so Cloudflare's
+per-zone DNS record quota (1,000 on Free zones created before September 2024, 200 after) never
+comes into it. Keep it that way. A test fails if `wrangler.jsonc` gains another route or the
+worker starts calling the DNS records or Workers routes API. Universal SSL covers a zone's apex
+and the first level below it only, so serve the platform from a zone apex, as `labkiosk.org` does:
+with `DEFAULT_DOMAIN` set to `labkiosk.yourdomain.com`, `<slug>.labkiosk.yourdomain.com` is a
+second level and needs an Advanced Certificate Manager certificate for `*.labkiosk.yourdomain.com`.
+For the same reason never add a level such as `<slug>.eu.labkiosk.org`; use a separate zone for a
+region. The one per-organization cost is a custom domain.
+
+**What custom domains cost.** Cloudflare for SaaS on the Free, Pro and Business plans includes 100
+custom hostnames, then charges $0.10 a month for each one, up to 50,000; beyond that needs
+Enterprise ([plans](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/plans/)).
+1,000 organizations on their own domain cost about $90 a month. Wildcard custom hostnames
+(`*.their-domain`) need Enterprise, so an organization gets one hostname. Super Admin → Tasks →
+Custom domains shows how many are in use and the monthly cost, and the approval asks you to
+confirm when the next one adds to it. A custom domain under the platform domain is refused.
+
 ---
 
 ## 5. Deploy

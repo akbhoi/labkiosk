@@ -337,7 +337,7 @@ import {
   openRelaySession,
   relayUpgrade
 } from "./remote_relay";
-import { startCustomHostnameJob } from "./custom_hostnames";
+import { isPlatformHostname, startCustomHostnameJob } from "./custom_hostnames";
 import { mailConfigProblem, sendMail } from "./mail";
 import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
 import { PALETTE } from "./ui_tokens";
@@ -2578,6 +2578,9 @@ export default {
         if (!domain) {
           return jsonError("Valid domain name required (e.g. kiosk.example.com)", 400, jsonHeaders);
         }
+        if (isPlatformHostname(env, domain)) {
+          return jsonError("Custom domain cannot be a subdomain of the platform domain", 400, jsonHeaders);
+        }
 
         const existing = await findTenantByCustomDomain(db, domain);
         if (existing && existing.id !== targetTenant.id) {
@@ -3076,12 +3079,8 @@ export default {
           return jsonError("Please enter a valid domain name (e.g. kiosk.example.com)", 400, jsonHeaders);
         }
 
-        // Prevent setting the platform apex or its subdomains as custom domain
-        if (env.DEFAULT_DOMAIN) {
-          const base = env.DEFAULT_DOMAIN.replace(/^\./, "").toLowerCase();
-          if (domain === base || domain.endsWith("." + base)) {
-            return jsonError("Custom domain cannot be a subdomain of the platform domain", 400, jsonHeaders);
-          }
+        if (isPlatformHostname(env, domain)) {
+          return jsonError("Custom domain cannot be a subdomain of the platform domain", 400, jsonHeaders);
         }
 
         // Check collisions
