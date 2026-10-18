@@ -44,7 +44,7 @@ import {
   taxIdProblem
 } from "../src/geo";
 import { normalizePhone } from "../src/signup";
-import { isHostUnder } from "../src/guard";
+import { isHostUnder, superAdminHost } from "../src/guard";
 import { Env, AuditEntryMessage } from "../src/types";
 import { localHubNamespace } from "../src/hub";
 import { portalContextFrom } from "../src/portal_url";
@@ -4356,6 +4356,36 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       headers: { Origin: "https://evil.example" }
     });
     assert.equal(device.status, 200);
+  });
+
+  test("With SUPER_ADMIN_HOST set, the platform console answers on its own host only", async () => {
+    const confined = { ...mockEnv, SUPER_ADMIN_HOST: "super.labkiosk.org" } as Env;
+    const on = (host: string, path: string, init: RequestInit & { cookie?: string } = {}) =>
+      worker.fetch(request(path, { ...init, headers: { ...(init.headers as Record<string, string>), host } }), confined);
+
+    // Elsewhere, the page moves there and the API is not there at all.
+    const page = await on("labkiosk.org", "/super/organizations?x=1");
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get("Location"), "https://super.labkiosk.org/super/organizations?x=1");
+    assert.equal((await on("labkiosk.org", "/api/super/inbox", { cookie: superSessionCookie })).status, 404);
+    assert.equal((await on("greenwood.labkiosk.org", "/api/super/inbox", { cookie: superSessionCookie })).status, 404);
+    // On its host it is served as before.
+    assert.equal((await on("super.labkiosk.org", "/api/super/inbox?box=tasks&filter=all", { cookie: superSessionCookie })).status, 200);
+    // Signed out there, "/" offers the sign-in page instead of redirecting to itself.
+    const signedOut = await on("super.labkiosk.org", "/");
+    assert.equal(new URL(signedOut.headers.get("Location")!).pathname + new URL(signedOut.headers.get("Location")!).search, "/?login=1");
+    assert.equal((await on("super.labkiosk.org", "/?login=1")).status, 200);
+
+    // A super admin signing in on the apex is handed to the console host.
+    const res = await signIn({ email: mockEnv.SUPER_ADMIN_EMAIL!, password: mockEnv.SUPER_ADMIN_PASSWORD! }, confined);
+    const { redirect } = (await res.clone().json()) as { redirect: string };
+    assert.equal(destination(redirect), "https://super.labkiosk.org/super");
+    assert.ok(!res.headers.getSetCookie().some((c) => c.startsWith("__Host-labkiosk_session=")), "no platform session on the public apex");
+
+    // It must be one name under the platform domain.
+    assert.throws(() => superAdminHost({ SUPER_ADMIN_HOST: "admin.example.com", DEFAULT_DOMAIN: "labkiosk.org" }), /SUPER_ADMIN_HOST/);
+    assert.throws(() => superAdminHost({ SUPER_ADMIN_HOST: "a.b.labkiosk.org", DEFAULT_DOMAIN: "labkiosk.org" }), /SUPER_ADMIN_HOST/);
+    assert.equal(superAdminHost({ DEFAULT_DOMAIN: "labkiosk.org" }), null);
   });
 
   test("A super admin's session lasts a working day, and the old domain-wide cookie is not read", async () => {

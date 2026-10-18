@@ -140,6 +140,12 @@ refuses to serve. Keep a copy with your other secrets; losing or changing it mak
 password stop working, and each user then needs a password reset. Hashes stored before the pepper
 are wrapped in it by the hourly cron, with no sign-in needed.
 
+Optionally set the variable `SUPER_ADMIN_HOST` to one name under the platform domain, such as
+`super.labkiosk.org`, to serve the Super Admin console only there: `/super` elsewhere redirects to
+it and `/api/super/*` elsewhere answers `404`, so the platform session never exists on the public
+apex or an organization's host. The wildcard route and certificate already cover that name. A
+super admin's session lasts 12 hours wherever it lives.
+
 New passwords (registration, staff accounts, password changes) are checked against Have I Been
 Pwned's breached-password list. Only the first five characters of the password's SHA-1 leave the
 worker. If the service cannot be reached the password is allowed; set the variable

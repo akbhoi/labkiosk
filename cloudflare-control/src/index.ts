@@ -307,6 +307,7 @@ import {
   isDevHost,
   isHostUnder,
   isReservedSlug,
+  superAdminHost,
   rejectCrossSiteMutation,
   rejectCrossSiteSocket
 } from "./guard";
@@ -552,6 +553,8 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
       if (production) {
         const missing = requiredBindingsProblem(env);
         if (missing) throw new Error(missing);
+        // A misspelt console host is a startup error, not a console nobody can reach.
+        superAdminHost(env);
       }
       if (!production && (Boolean(email) !== Boolean(password))) {
         throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must be set together, or both left unset for local development.");
@@ -599,8 +602,11 @@ function postLoginRedirect(options: {
   requestedSlug: string | null;
   isDev: boolean;
   baseDomain: string;
+  /** SUPER_ADMIN_HOST, when the platform console is confined to its own host. */
+  superHost?: string | null;
+  host?: string;
 }): string {
-  const { role, ownSubdomain, hostSlug, requestedSlug, isDev, baseDomain } = options;
+  const { role, ownSubdomain, hostSlug, requestedSlug, isDev, baseDomain, superHost, host } = options;
 
   const consoleFor = (slug: string) =>
     isDev ? `/admin?tenant=${encodeURIComponent(slug)}` : `https://${slug}.${baseDomain}/admin`;
@@ -609,7 +615,7 @@ function postLoginRedirect(options: {
     // The organization they were already looking at, if they are allowed in it.
     const context = hostSlug || requestedSlug;
     if (isDemoSlug(context)) return consoleFor(context);
-    return "/super";
+    return superHost && !isDev && host !== superHost ? `https://${superHost}/super` : "/super";
   }
 
   if (ownSubdomain) return consoleFor(ownSubdomain);
@@ -1410,6 +1416,19 @@ export default {
     /** What every public page needs to draw the checks its forms carry. */
     const formChecks = { turnstileSiteKey: turnstileSiteKey(env), loginTurnstile };
 
+    // With SUPER_ADMIN_HOST set, the platform console and its API answer on that host only, so the
+    // public apex (landing, registration, legal pages) never shares an origin with it.
+    const superHost = superAdminHost(env);
+    if (
+      superHost &&
+      !isDev &&
+      hostname(request) !== superHost &&
+      (path === "/super" || path.startsWith("/super/") || path === "/api/super" || path.startsWith("/api/super/"))
+    ) {
+      if (method === "GET" && !path.startsWith("/api/")) return Response.redirect(`https://${superHost}${path}${url.search}`, 302);
+      return jsonError("The Super Admin console is served on its own host", 404, jsonHeaders);
+    }
+
     // A cookie-authenticated mutation must come from this site.
     if (path.startsWith("/api/")) {
       const crossSite = rejectCrossSiteMutation(
@@ -1553,7 +1572,9 @@ export default {
               requestedSlug:
                 cleanSubdomain(url.searchParams.get("tenant") || body.tenant || "") || null,
             isDev,
-            baseDomain
+            baseDomain,
+            superHost: superAdminHost(env),
+            host: hostname(request)
           })
         });
       } catch (err: any) {
@@ -1681,7 +1702,8 @@ export default {
       return Response.redirect(redirectUrl.toString(), 302);
     }
 
-    if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/")) {
+    // On the console's own host (super.<domain>), "/" is the console; "/?login=1" stays the sign-in page.
+    if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/" && !url.searchParams.has("login"))) {
       // Signed out: the sign-in page, as /admin does.
       if (!session) return Response.redirect(`${url.origin}/?login=1`, 302);
       if (session.role !== "super_admin") {

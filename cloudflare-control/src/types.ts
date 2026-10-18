@@ -350,6 +350,8 @@ export interface Env {
   SUPER_ADMIN_PASSWORD?: string;
   /** HMAC key over every stored password hash; required in production (auth.ts passwordPepper). */
   PASSWORD_PEPPER?: string;
+  /** Optional: confine /super and /api/super to this host, e.g. "super.labkiosk.org" (guard.ts superAdminHost). */
+  SUPER_ADMIN_HOST?: string;
   /** "off" skips the Have I Been Pwned check on new passwords (auth.ts breachedPasswordProblem). */
   BREACHED_PASSWORD_CHECK?: string;
   DEFAULT_DOMAIN?: string; // e.g. "labkiosk.org"
