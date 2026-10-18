@@ -17,7 +17,7 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
-| **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Operator Lab Dashboard, Super Admin console |
+| **Session cookie** | `Cookie: __Host-labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`, host-only; `labkiosk_session` on plain-HTTP dev hosts) | Operator Lab Dashboard, Super Admin console |
 | **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report` and `/api/devices/disk-health` |
 | **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
@@ -503,7 +503,10 @@ Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()
 ```
 
 → `{ "status": "ok", "role": "org_admin", "subdomain": "oakridge", "redirect": "…" }`, plus the
-`labkiosk_session` and `labkiosk_device` cookies. An account with two-factor sign-in, on a browser it
+host-only `__Host-labkiosk_session` and `labkiosk_device` cookies. When the console is on another
+host than the sign-in, the session cookie is not set here: `redirect` is that host's
+`/api/auth/handoff?code=…&next=…`, which spends the one-time, host-bound code (valid 60 s) and sets the
+cookie there. An account with two-factor sign-in, on a browser it
 has not trusted, gets `{ "status": "two_factor", "challenge": "…" }` instead, completed with
 `POST /api/auth/login/verify`.
 

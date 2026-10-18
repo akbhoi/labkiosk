@@ -25,6 +25,7 @@
 import { Env, Session, User, UserRole } from "./types";
 import { jsonError } from "./guard";
 import { bufferToHex, parseCookies, sha256Hex, timingSafeEqual, verifyPassword, passwordPepper } from "./auth";
+import { clearSessionCookies, sessionSecondsFor, signInDestination } from "./session_handoff";
 import { clearLoginFailures, createSession, findTenantById, findUserById, getLockoutRemaining, recordLoginFailure, writeAuditLog } from "./db";
 import { uniformBelow } from "./conversations";
 import { mailConfigProblem, sendMail } from "./mail";
@@ -39,7 +40,6 @@ const EMAIL_CODES_PER_CHALLENGE = 3;
 const EMAIL_CODE_GAP_SECONDS = 60;
 /** How long "Trust this browser" skips the second factor. */
 const TRUST_SECONDS = 30 * 24 * 3600;
-const SESSION_SECONDS = 7 * 24 * 3600;
 const TOTP_STEP_SECONDS = 30;
 const RECOVERY_CODE_COUNT = 10;
 const RECOVERY_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
@@ -231,16 +231,17 @@ export async function revokeTrustedBrowsers(db: D1Database, userId: string): Pro
 // ------------------------------------------------------------- cookies
 
 export interface CookieOptions {
-  domain?: string;
   secure: boolean;
-  /** Builds the session cookie exactly as the rest of the Worker does. */
-  sessionCookie: (token: string) => string;
+  /** The parent domain earlier releases scoped cookies to; a sign-in clears those. */
+  legacyDomain?: string;
+  /** Builds the host-only session cookie exactly as the rest of the Worker does. */
+  sessionCookie: (token: string, maxAgeSeconds: number) => string;
 }
 
 function deviceCookie(token: string, options: CookieOptions): string {
-  // Read only by the sign-in routes; a year is as long as browsers keep a cookie.
+  // Read only by the sign-in routes; a year is as long as browsers keep a cookie. Host-only,
+  // like the session: trusting a browser on one host says nothing about another.
   const parts = [`${DEVICE_COOKIE}=${token}`, "Path=/api/auth", `Max-Age=${400 * 24 * 3600}`, "HttpOnly", "SameSite=Strict"];
-  if (options.domain) parts.push(`Domain=.${options.domain.replace(/^\./, "")}`);
   if (options.secure) parts.push("Secure");
   return parts.join("; ");
 }
@@ -342,12 +343,13 @@ async function completeSignIn(
 ): Promise<Response> {
   const { db, env, request, jsonHeaders, clientIp } = ctx;
   const token = bufferToHex(crypto.getRandomValues(new Uint8Array(32)));
+  const sessionSeconds = sessionSecondsFor(target.role);
   await createSession(db, {
     token,
     user_id: target.userId,
     tenant_id: target.tenantId,
     role: target.role,
-    expires_at: now() + SESSION_SECONDS
+    expires_at: now() + sessionSeconds
   });
   await writeAuditLog(db, {
     tenantId: target.tenantId,
@@ -379,11 +381,16 @@ async function completeSignIn(
     .run();
   if (!known && anyKnown) await sendSignInAlert(env, db, target, { ip: clientIp, userAgent });
 
+  // A console on another host gets the session through a one-time handoff there, never here.
+  const destination = await signInDestination(env, request, token, target.redirect, passwordPepper(env));
   const headers = new Headers(jsonHeaders);
-  headers.append("Set-Cookie", cookies.sessionCookie(token));
+  if (destination.cookieHere) headers.append("Set-Cookie", cookies.sessionCookie(token, sessionSeconds));
+  for (const cleared of clearSessionCookies({ secure: cookies.secure, legacyDomain: cookies.legacyDomain }).slice(1)) {
+    headers.append("Set-Cookie", cleared);
+  }
   headers.append("Set-Cookie", deviceCookie(device, cookies));
   const tenant = target.tenantId ? await findTenantById(db, target.tenantId) : null;
-  return new Response(JSON.stringify({ status: "ok", role: target.role, subdomain: tenant?.subdomain || null, redirect: target.redirect }), {
+  return new Response(JSON.stringify({ status: "ok", role: target.role, subdomain: tenant?.subdomain || null, redirect: destination.redirect }), {
     headers
   });
 }

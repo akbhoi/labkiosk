@@ -284,8 +284,6 @@ import {
   verifyPassword,
   generateSessionToken,
   parseCookies,
-  createSessionCookie,
-  clearSessionCookie,
   timingSafeEqual,
   sha256Hex,
   validatePasswordStrength,
@@ -341,6 +339,7 @@ import {
   relayUpgrade
 } from "./remote_relay";
 import { startCustomHostnameJob } from "./custom_hostnames";
+import { HANDOFF_PATH, clearSessionCookies, createSessionCookie, handleSessionHandoff, sessionCookieName } from "./session_handoff";
 import { mailConfigProblem, sendMail } from "./mail";
 import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
 import { PALETTE } from "./ui_tokens";
@@ -1343,14 +1342,6 @@ export default {
     }
 
     // --- Identity -----------------------------------------------------------
-    const cookies = parseCookies(request.headers.get("cookie"));
-    const authHeader = request.headers.get("authorization");
-    const usedCookie = Boolean(cookies["labkiosk_session"]);
-    const sessionToken =
-      cookies["labkiosk_session"] ||
-      (authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null);
-    const session = sessionToken ? await getSession(db, sessionToken) : null;
-
     const isDev = isDevHost(request);
     const isHttps = Boolean(
       url.protocol === "https:" ||
@@ -1358,12 +1349,19 @@ export default {
       request.headers.get("cf-visitor")?.includes('"scheme":"https"')
     );
     const secureCookies = Boolean(isHttps && !isDev);
-    const cookieDomain =
+    // Sessions are host-only (session_handoff.ts). Earlier releases set one cookie for the whole
+    // platform domain; it is no longer read, and sign-in and sign-out clear it.
+    const legacyCookieDomain =
       isHttps && !isDev && env.DEFAULT_DOMAIN && isHostUnder(hostname(request), env.DEFAULT_DOMAIN)
         ? env.DEFAULT_DOMAIN
         : undefined;
-    const sessionCookie = (token: string) =>
-      createSessionCookie(token, { domain: cookieDomain, secure: secureCookies });
+    const cookies = parseCookies(request.headers.get("cookie"));
+    const authHeader = request.headers.get("authorization");
+    const cookieToken = cookies[sessionCookieName(secureCookies)] || "";
+    const usedCookie = Boolean(cookieToken);
+    const sessionToken = cookieToken || (authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null);
+    const session = sessionToken ? await getSession(db, sessionToken) : null;
+    const sessionCookie = (token: string, maxAgeSeconds: number) => createSessionCookie(token, { secure: secureCookies, maxAgeSeconds });
     const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
 
     // A coarse per-address limit in front of what a stranger can hammer. The
@@ -1456,7 +1454,7 @@ export default {
       baseDomain,
       isDev
     };
-    const signInCookies = { domain: cookieDomain, secure: secureCookies, sessionCookie };
+    const signInCookies = { secure: secureCookies, legacyDomain: legacyCookieDomain, sessionCookie };
 
     // POST /api/auth/register/email-code: prove the email address before signing up.
     if (path === "/api/auth/register/email-code" && method === "POST") {
@@ -1589,12 +1587,19 @@ export default {
       if (sessionToken) {
         await deleteSession(db, sessionToken);
       }
-      return new Response(null, {
-        status: 302,
-        headers: {
-          Location: "/",
-          "Set-Cookie": clearSessionCookie({ domain: cookieDomain, secure: secureCookies })
-        }
+      const signedOut = new Headers({ Location: "/" });
+      for (const cleared of clearSessionCookies({ secure: secureCookies, legacyDomain: legacyCookieDomain })) {
+        signedOut.append("Set-Cookie", cleared);
+      }
+      return new Response(null, { status: 302, headers: signedOut });
+    }
+
+    // GET /api/auth/handoff: a sign-in on another host hands its session to this one.
+    if (path === HANDOFF_PATH && method === "GET") {
+      return handleSessionHandoff(db, request, url, {
+        pepper: passwordPepper(env),
+        secure: secureCookies,
+        legacyDomain: legacyCookieDomain
       });
     }
 

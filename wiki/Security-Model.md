@@ -28,7 +28,7 @@ What Lab Kiosk defends, how, and what it explicitly does not defend. A security 
 | Salt | 32 cryptographically random bytes per user |
 | Derived key | 256 bits, hex-encoded |
 | Session token | 32 random bytes, hex; **only its SHA-256 is stored** |
-| Cookie | `HttpOnly; Secure; SameSite=Lax`, scoped to the parent domain |
+| Cookie | `__Host-labkiosk_session`: `HttpOnly; Secure; SameSite=Lax; Path=/`, host-only, so no subdomain sees or can overwrite another host's session. Signing in on the apex for an organization's console hands the session over through a one-time, host-bound code (`/api/auth/handoff`). Super admin sessions last 12 hours, others 7 days |
 | Comparison | `timingSafeEqual()` |
 
 There are **zero runtime npm dependencies**. No auth framework, no routing library, no ORM. Every primitive is a Web API, which removes the supply-chain surface entirely and keeps cold start under 10 ms.

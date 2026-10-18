@@ -470,6 +470,11 @@ cloudflare-control/
 
 ### Rule 6: State-Changing Requests Prove Their Origin
 
+- Sessions are host-only (`src/session_handoff.ts`): `__Host-labkiosk_session` on HTTPS, never a
+  `Domain` attribute, 12 hours for a super admin and 7 days otherwise. A sign-in whose console is on
+  another host sets no cookie where it happened; it redirects through that host's
+  `/api/auth/handoff`, whose code is sealed with a key derived from `PASSWORD_PEPPER`, bound to the
+  host, valid 60 s, and spent by replacing the session. Never reintroduce a parent-domain cookie.
 - Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host or the platform domain. A dev-host origin (`localhost`, ...) is accepted **only when the request itself is on a dev host**; in production it would admit any page served from the operator's own machine. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.
 

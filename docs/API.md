@@ -18,7 +18,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 
 | Scheme | Mechanism | Used By |
 | :--- | :--- | :--- |
-| **Session Cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Web Consoles: Operator Lab Dashboard, Super Admin Console |
+| **Session Cookie** | `Cookie: __Host-labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`, host-only; `labkiosk_session` on plain-HTTP dev hosts) | Web Consoles: Operator Lab Dashboard, Super Admin Console |
 | **Device Bearer Token** | `Authorization: Bearer <hex32>` | Workstation Client Agent (`agent.py`) for `/api/telemetry` |
 | **Public / Key-Exchanged** | No auth or one-time verification (`enrollmentKey`) | Setup wizard, sign-in, signup, user portal sites, health probe |
 
@@ -231,7 +231,7 @@ Authenticates an operator or platform super administrator.
   }
   ```
 
-- **Response `200 OK`:** Sets the `labkiosk_session` cookie and the `labkiosk_device` cookie
+- **Response `200 OK`:** Sets the host-only `__Host-labkiosk_session` cookie and the `labkiosk_device` cookie. When the console is on another host (an organization subdomain signed in to from the apex), no session cookie is set here: `redirect` is that host's `/api/auth/handoff?code=…&next=…`, which spends the one-time code, sets the cookie there and continues to `next`
   (`Path=/api/auth`, the browser's identity for sign-in alerts and "trust this browser").
 
   ```json

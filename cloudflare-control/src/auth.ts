@@ -251,35 +251,3 @@ export function parseCookies(cookieHeader: string | null): Record<string, string
   return cookies;
 }
 
-/**
- * Build HttpOnly Set-Cookie string for session
- */
-export function createSessionCookie(
-  token: string,
-  options: { maxAgeSeconds?: number; domain?: string; secure?: boolean } = {}
-): string {
-  const { maxAgeSeconds = 7 * 24 * 3600, domain, secure = true } = options;
-  const parts = [
-    `labkiosk_session=${token}`,
-    "Path=/",
-    `Max-Age=${maxAgeSeconds}`,
-    "HttpOnly",
-    "SameSite=Lax"
-  ];
-  // Scope to the parent domain so a session created on labkiosk.org is still sent
-  // to greenwood.labkiosk.org, which is where the admin console actually lives.
-  if (domain) parts.push(`Domain=.${domain.replace(/^\./, "")}`);
-  if (secure) parts.push("Secure");
-  return parts.join("; ");
-}
-
-/**
- * Build expired Set-Cookie string to log out
- */
-export function clearSessionCookie(options: { domain?: string; secure?: boolean } = {}): string {
-  const { domain, secure = true } = options;
-  const parts = ["labkiosk_session=", "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Lax"];
-  if (domain) parts.push(`Domain=.${domain.replace(/^\./, "")}`);
-  if (secure) parts.push("Secure");
-  return parts.join("; ");
-}
