@@ -18,7 +18,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 
 | Scheme | Mechanism | Used By |
 | :--- | :--- | :--- |
-| **Session Cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Web Consoles: Operator Lab Dashboard, Super Admin Console |
+| **Session Cookie** | `Cookie: __Host-labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`, host-only; `labkiosk_session` on plain-HTTP dev hosts) | Web Consoles: Operator Lab Dashboard, Super Admin Console |
 | **Device Bearer Token** | `Authorization: Bearer <hex32>` | Workstation Client Agent (`agent.py`) for `/api/telemetry` |
 | **Public / Key-Exchanged** | No auth or one-time verification (`enrollmentKey`) | Setup wizard, sign-in, signup, user portal sites, health probe |
 
@@ -55,11 +55,15 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/auth/me` | `GET` | Session | Retrieve current authenticated user profile & tenant |
 | `/api/auth/logout` | `POST` | Session | Invalidate session token and clear cookies |
 | `/api/auth/change-password` | `POST` | Session | Rotate user password, revoke other active sessions and every trusted browser |
-| `/api/auth/login` | `POST` | Public | `{"email", "password", "tenant"?}`: `{"status":"ok", "redirect"}` with the session cookie, or `{"status":"two_factor", "challenge", "method": "email"\|"app", "sentTo"}` when a second step is needed (always for a super admin; for an organization account that turned it on). With `method: "email"` the code has already been emailed |
-| `/api/auth/login/verify` | `POST` | Public | `{"challenge", "code", "trustBrowser"?}`: the second step of a sign-in; `code` is the emailed code, the app's six digits or a recovery code |
+| `/api/auth/login` | `POST` | Public | `{"email", "password", "tenant"?}`: `{"status":"ok", "redirect"}` with the session cookie, or `{"status":"two_factor", "challenge", "method": "passkey"\|"app"\|"email", "passkey", "app", "sentTo"}` when a second step is needed (always for an administrator: the super admin, an organization's owner, `org_admin` staff; for other staff who turned it on or added an app or passkey). With `method: "email"` the code has already been emailed |
+| `/api/auth/login/verify` | `POST` | Public | `{"challenge", "code" \| "passkey", "trustBrowser"?}`: the second step of a sign-in; `code` is the emailed code, the app's six digits or a recovery code; `passkey` is `navigator.credentials.get()`'s answer `{id, clientDataJSON, authenticatorData, signature}` (base64url) to the options from `/api/auth/login/passkey` |
+| `/api/auth/login/passkey` | `POST` | Public | `{"challenge"}`: WebAuthn request options (`challenge`, `rpId`, `allowCredentials`) for the sign-in's passkeys on this site; each call replaces the challenge, which an answer spends; `409` when the account has none here |
 | `/api/auth/login/email-code` | `POST` | Public | `{"challenge"}`: email a sign-in code to the account (three per sign-in, one a minute) |
-| `/api/auth/two-factor` | `GET` | Session | `emailCodes` (an emailed code is asked for), `required` (it cannot be turned off: a super admin), `mailAvailable`, `enabled` (an authenticator app is on) and recovery codes left |
-| `/api/auth/two-factor/email` | `POST` | Session | `{"password", "enabled"}`: turn the emailed sign-in code on or off for this account; `409` turning it off as a super admin, `503` turning it on where email is not configured |
+| `/api/auth/two-factor` | `GET` | Session | `emailCodes` (an emailed code is asked for), `required` (it cannot be turned off: an administrator), `mailAvailable`, `enabled` (an authenticator app is on), recovery codes left, and `passkeys` (`id`, `name`, `site`, `here`, `createdAt`, `lastUsedAt`) |
+| `/api/auth/two-factor/email` | `POST` | Session | `{"password", "enabled"}`: turn the emailed sign-in code on or off for this account; `409` turning it off as an administrator, `503` turning it on where email is not configured |
+| `/api/auth/two-factor/passkey-options` | `POST` | Session | `{"password"}`: WebAuthn creation options for a new passkey (valid five minutes; ES256 or RS256, attestation `none`); `409` at ten passkeys |
+| `/api/auth/two-factor/passkey-register` | `POST` | Session | `{"name", "credential": {clientDataJSON, attestationObject}}` (base64url): keep the new passkey; signs other browsers out |
+| `/api/auth/two-factor/passkey-delete` | `POST` | Session | `{"password", "id"}`: remove one of this account's passkeys |
 | `/api/auth/two-factor/setup` | `POST` | Session | `{"password"}`: a new authenticator secret and `otpauth://` URI (not on until enabled) |
 | `/api/auth/two-factor/enable` | `POST` | Session | `{"code"}`: turn it on; returns ten recovery codes once and signs other browsers out |
 | `/api/auth/two-factor/recovery-codes` | `POST` | Session | `{"password", "code"}`: replace the recovery codes |
@@ -231,7 +235,7 @@ Authenticates an operator or platform super administrator.
   }
   ```
 
-- **Response `200 OK`:** Sets the `labkiosk_session` cookie and the `labkiosk_device` cookie
+- **Response `200 OK`:** Sets the host-only `__Host-labkiosk_session` cookie and the `labkiosk_device` cookie. When the console is on another host (an organization subdomain signed in to from the apex), no session cookie is set here: `redirect` is that host's `/api/auth/handoff?code=…&next=…`, which spends the one-time code, sets the cookie there and continues to `next`
   (`Path=/api/auth`, the browser's identity for sign-in alerts and "trust this browser").
 
   ```json
@@ -245,8 +249,8 @@ Authenticates an operator or platform super administrator.
 
 - **Two-factor sign-in:** when the account has it on and the browser is not trusted, no cookie is
   set and the answer is `{ "status": "two_factor", "challenge": "<64 hex>", "expiresIn": 600 }`.
-  `POST /api/auth/login/verify` with the challenge and a code completes it (five wrong codes end the
-  challenge); `POST /api/auth/login/email-code` sends a code by email instead.
+  `POST /api/auth/login/verify` with the challenge and a code or a passkey's answer completes it
+  (five wrong answers end the challenge); `POST /api/auth/login/email-code` sends a code by email instead.
 - **New-browser alert:** a successful sign-in from a browser the account has not used before is
   reported to the account's email address (the first browser an account ever uses is not).
 

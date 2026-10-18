@@ -55,7 +55,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0020_signup_approvals_support.sql` | Registration review and the platform inbox: `tenants.remote_control_status`, `organization_profiles`, `email_codes`, `conversations`, `conversation_messages` |
 | `0021_two_factor.sql` | `user_two_factor` (authenticator app, recovery codes), `login_challenges`, `user_devices` (new-browser alerts, trusted browsers) |
 | `0022_mail_deleted.sql` | `conversations.deleted_at`: Mail's Deleted folder (delete moves there first) |
-| `0023_two_factor_email.sql` | `users.two_factor_email`: an organization account asked for an emailed sign-in code (a super admin is always asked) |
+| `0023_two_factor_email.sql` | `users.two_factor_email`: an organization account asked for an emailed sign-in code (administrators are always asked) |
 | `0024_conversation_category.sql` | `conversations.category`: what a conversation is about, which names its tracking ID's prefix (`REG`, `RMT`, `SUP`, `SAL`, `BIL`, `LGL`, `GEN`, `LTR`) |
 | `0025_release_notes.sql` | `release_notes`: each GitHub release with its change list and a summary written for customers, for `/download`. A platform table, no `tenant_id` |
 | `0026_contact_email_code.sql` | `email_codes` rebuilt so its `purpose` also allows `contact`: the contact page proves its sender's address with a code, as registration does |
@@ -74,6 +74,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0039_major_upgrade_pipeline.sql` | `major_upgrade_grants` gains `requested_by`/`requested_at` (an organization asked for a closed major) and `pilot_group`/`pilot_by`/`pilot_at` (the workstation group it tries a major on before confirming it) |
 | `0040_release_support_per_major.sql` | `release_support`: support status and end of life per major release, replacing `release_lines` (dropped; it never reached a release, so its rows are not carried over) |
 | `0041_http_fallback_count.sql` | `tenants.http_workstations`: how many of an organization's online workstations are on the HTTP heartbeat instead of the WebSocket |
+| `0042_passkeys.sql` | `user_passkeys` (credential id, relying party, public key as JWK, COSE algorithm, signature counter), `passkey_registrations` (a registration's challenge), `login_challenges.passkey_challenge` |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 

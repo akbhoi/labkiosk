@@ -17,7 +17,7 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
-| **Session cookie** | `Cookie: labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`) | Operator Lab Dashboard, Super Admin console |
+| **Session cookie** | `Cookie: __Host-labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`, host-only; `labkiosk_session` on plain-HTTP dev hosts) | Operator Lab Dashboard, Super Admin console |
 | **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report` and `/api/devices/disk-health` |
 | **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
@@ -73,9 +73,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/auth/me` | `GET` | Current user profile and tenant |
 | `/api/auth/logout` | `POST` | Invalidate this session and clear the cookie |
 | `/api/auth/change-password` | `POST` | Rotate password, revoking the account's other sessions and trusted browsers |
-| `/api/auth/login/verify` | `POST` | Second step of a two-factor sign-in (app code, emailed code or recovery code) |
+| `/api/auth/login/verify` | `POST` | Second step of a two-factor sign-in (passkey, app code, emailed code or recovery code) |
 | `/api/auth/login/email-code` | `POST` | Email a sign-in code for a pending two-factor sign-in |
-| `/api/auth/two-factor[/setup,/enable,/recovery-codes,/disable]` | `GET`/`POST` | The signed-in account's own two-factor sign-in |
+| `/api/auth/login/passkey` | `POST` | The WebAuthn request options for a pending two-factor sign-in |
+| `/api/auth/two-factor[/email,/setup,/enable,/recovery-codes,/disable,/passkey-options,/passkey-register,/passkey-delete]` | `GET`/`POST` | The signed-in account's own two-factor sign-in |
 
 ### Operator admin
 
@@ -508,7 +509,10 @@ Reserved slugs are refused. Passwords are checked by `validatePasswordStrength()
 ```
 
 → `{ "status": "ok", "role": "org_admin", "subdomain": "oakridge", "redirect": "…" }`, plus the
-`labkiosk_session` and `labkiosk_device` cookies. An account with two-factor sign-in, on a browser it
+host-only `__Host-labkiosk_session` and `labkiosk_device` cookies. When the console is on another
+host than the sign-in, the session cookie is not set here: `redirect` is that host's
+`/api/auth/handoff?code=…&next=…`, which spends the one-time, host-bound code (valid 60 s) and sets the
+cookie there. An account with two-factor sign-in, on a browser it
 has not trusted, gets `{ "status": "two_factor", "challenge": "…" }` instead, completed with
 `POST /api/auth/login/verify`.
 

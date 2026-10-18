@@ -24,49 +24,60 @@ export function hexToBuffer(hex: string): Uint8Array {
 }
 
 /**
- * Hash password with PBKDF2-HMAC-SHA256 and unique 32-byte salt
+ * Stored password hashes are PBKDF2-HMAC-SHA256 (100 000 iterations, the most Workers'
+ * crypto.subtle allows) under a per-user 32-byte salt, then HMAC-SHA256 under the
+ * PASSWORD_PEPPER secret. The pepper never reaches D1, so a leaked database export cannot be
+ * cracked offline without it. Peppered hashes carry this prefix; older bare PBKDF2 hashes are
+ * still accepted and are wrapped in place by `pepperLegacyHash()` (the hourly cron), which
+ * needs no password because the HMAC is over the PBKDF2 output.
  */
-export async function hashPassword(
-  password: string,
-  saltHex?: string
-): Promise<{ hashHex: string; saltHex: string }> {
-  const salt = saltHex ? hexToBuffer(saltHex) : crypto.getRandomValues(new Uint8Array(32));
-  const enc = new TextEncoder();
-  const passwordKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(password),
-    { name: "PBKDF2" },
-    false,
-    ["deriveBits"]
-  );
+export const PEPPERED_HASH_PREFIX = "p1$";
+/** The shortest PASSWORD_PEPPER accepted: 32 characters, e.g. `openssl rand -hex 32` gives 64. */
+export const MIN_PEPPER_LENGTH = 32;
+/** Local development and tests only; a deployed worker refuses to start without its own secret. */
+const LOCAL_DEVELOPMENT_PEPPER = "labkiosk-local-development-pepper-not-for-production";
 
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      salt: salt,
-      iterations: PBKDF2_ITERATIONS,
-      hash: "SHA-256"
-    },
-    passwordKey,
-    KEY_LENGTH
+/** The pepper this deployment hashes passwords with. Throws when production has none. */
+export function passwordPepper(env: { PASSWORD_PEPPER?: string; ALLOW_LOCAL_DB?: string }): string {
+  const pepper = env.PASSWORD_PEPPER || "";
+  if (pepper.length >= MIN_PEPPER_LENGTH) return pepper;
+  if (!pepper && env.ALLOW_LOCAL_DB === "1") return LOCAL_DEVELOPMENT_PEPPER;
+  throw new Error(
+    `PASSWORD_PEPPER must be set as a Wrangler secret of at least ${MIN_PEPPER_LENGTH} characters (\`openssl rand -hex 32 | npx wrangler secret put PASSWORD_PEPPER\`). Losing it signs every user out of their password, so keep a copy with your other secrets.`
   );
-
-  return {
-    hashHex: bufferToHex(derivedBits),
-    saltHex: bufferToHex(salt)
-  };
 }
 
-/**
- * Verify plaintext password against stored hash & salt
- */
-export async function verifyPassword(
-  password: string,
-  storedHashHex: string,
-  storedSaltHex: string
-): Promise<boolean> {
-  const { hashHex } = await hashPassword(password, storedSaltHex);
-  return timingSafeEqual(hashHex, storedHashHex);
+async function pbkdf2(password: string, salt: Uint8Array): Promise<ArrayBuffer> {
+  const passwordKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), { name: "PBKDF2" }, false, [
+    "deriveBits"
+  ]);
+  return await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" }, passwordKey, KEY_LENGTH);
+}
+
+async function pepperBytes(pepper: string, bytes: ArrayBuffer | Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(pepper), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return PEPPERED_HASH_PREFIX + bufferToHex(await crypto.subtle.sign("HMAC", key, bytes));
+}
+
+/** Hash a password with a fresh (or the given) salt, peppered. */
+export async function hashPassword(password: string, pepper: string, saltHex?: string): Promise<{ hashHex: string; saltHex: string }> {
+  const salt = saltHex ? hexToBuffer(saltHex) : crypto.getRandomValues(new Uint8Array(32));
+  return { hashHex: await pepperBytes(pepper, await pbkdf2(password, salt)), saltHex: bufferToHex(salt) };
+}
+
+/** Verify a password against a stored hash, peppered or (until the cron wraps it) bare PBKDF2. */
+export async function verifyPassword(password: string, storedHashHex: string, storedSaltHex: string, pepper: string): Promise<boolean> {
+  const derived = await pbkdf2(password, hexToBuffer(storedSaltHex));
+  if (storedHashHex.startsWith(PEPPERED_HASH_PREFIX)) {
+    return timingSafeEqual(await pepperBytes(pepper, derived), storedHashHex);
+  }
+  return timingSafeEqual(bufferToHex(derived), storedHashHex);
+}
+
+/** The peppered form of a bare PBKDF2 hash, or null when it is already peppered or not one. */
+export async function pepperLegacyHash(storedHashHex: string, pepper: string): Promise<string | null> {
+  if (storedHashHex.startsWith(PEPPERED_HASH_PREFIX) || !/^[0-9a-f]{64}$/.test(storedHashHex)) return null;
+  return await pepperBytes(pepper, hexToBuffer(storedHashHex));
 }
 
 /**
@@ -162,6 +173,49 @@ export function validatePasswordStrength(password: string): string | null {
   return null;
 }
 
+const PWNED_PASSWORDS_RANGE = "https://api.pwnedpasswords.com/range/";
+const PWNED_PASSWORDS_TIMEOUT_MS = 3000;
+
+/**
+ * Whether a password appears in Have I Been Pwned's breached-password corpus.
+ *
+ * k-anonymity: only the first five hex characters of the password's SHA-1 leave the worker,
+ * and `Add-Padding` hides how many suffixes came back. `BREACHED_PASSWORD_CHECK=off` turns the
+ * check off (tests do; a deployment that may not call out can too). If the service cannot be
+ * reached the password is allowed and the failure logged: an outage there must not stop sign-up
+ * or a password change.
+ */
+export async function breachedPasswordProblem(
+  password: string,
+  env: { BREACHED_PASSWORD_CHECK?: string },
+  fetcher: typeof fetch = fetch
+): Promise<string | null> {
+  if (env.BREACHED_PASSWORD_CHECK === "off") return null;
+  const digest = bufferToHex(await crypto.subtle.digest("SHA-1", new TextEncoder().encode(password))).toUpperCase();
+  const prefix = digest.slice(0, 5);
+  const suffix = digest.slice(5);
+  let body: string;
+  try {
+    const res = await fetcher(PWNED_PASSWORDS_RANGE + prefix, {
+      headers: { "Add-Padding": "true", "User-Agent": "labkiosk-controller" },
+      signal: AbortSignal.timeout(PWNED_PASSWORDS_TIMEOUT_MS)
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    body = await res.text();
+  } catch (err) {
+    console.warn(`[Worker] Breached-password check unavailable, password allowed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+  for (const line of body.split("\n")) {
+    const [candidate, count] = line.trim().split(":");
+    // Padding entries carry a count of 0.
+    if (candidate === suffix && Number(count) > 0) {
+      return "This password has appeared in a data breach. Please choose a different one.";
+    }
+  }
+  return null;
+}
+
 /** Loose RFC 5322 shape check; the point is to reject garbage, not to validate deliverability. */
 export function isPlausibleEmail(value: unknown): boolean {
   const email = String(value ?? "").trim();
@@ -197,35 +251,3 @@ export function parseCookies(cookieHeader: string | null): Record<string, string
   return cookies;
 }
 
-/**
- * Build HttpOnly Set-Cookie string for session
- */
-export function createSessionCookie(
-  token: string,
-  options: { maxAgeSeconds?: number; domain?: string; secure?: boolean } = {}
-): string {
-  const { maxAgeSeconds = 7 * 24 * 3600, domain, secure = true } = options;
-  const parts = [
-    `labkiosk_session=${token}`,
-    "Path=/",
-    `Max-Age=${maxAgeSeconds}`,
-    "HttpOnly",
-    "SameSite=Lax"
-  ];
-  // Scope to the parent domain so a session created on labkiosk.org is still sent
-  // to greenwood.labkiosk.org, which is where the admin console actually lives.
-  if (domain) parts.push(`Domain=.${domain.replace(/^\./, "")}`);
-  if (secure) parts.push("Secure");
-  return parts.join("; ");
-}
-
-/**
- * Build expired Set-Cookie string to log out
- */
-export function clearSessionCookie(options: { domain?: string; secure?: boolean } = {}): string {
-  const { domain, secure = true } = options;
-  const parts = ["labkiosk_session=", "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Lax"];
-  if (domain) parts.push(`Domain=.${domain.replace(/^\./, "")}`);
-  if (secure) parts.push("Secure");
-  return parts.join("; ");
-}

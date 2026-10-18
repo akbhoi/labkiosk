@@ -155,8 +155,9 @@ Structured into 5 semantic, deep-linkable tab panes (`?tab=...`) with horizontal
 
 How your own account signs in. Every staff account can open Settings for this tab, whatever its permissions; without the `settings` permission it is the only tab shown.
 
-- **Emailed code**: turn it on and every sign-in asks for a six-digit code sent to your address. Nothing to set up.
+- **Emailed code**: turn it on and every sign-in asks for a six-digit code sent to your address. Nothing to set up. The organization's owner and staff with the `org_admin` role always have it and cannot turn it off.
 - **Authenticator app**: optional. Sign-in then asks for the app's code (an emailed one stays available), and you get ten recovery codes.
+- **Passkeys**: optional, up to ten. Sign-in then offers **Use your passkey** first (a touch or fingerprint on this computer, your phone or a security key); an emailed code stays available. A passkey cannot be used on a fake copy of the site. One made on the organization's own domain works only there.
 
 ### 5. Errors & Warnings (`?tab=issues`)
 

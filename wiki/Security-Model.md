@@ -28,12 +28,12 @@ What Lab Kiosk defends, how, and what it explicitly does not defend. A security 
 | Salt | 32 cryptographically random bytes per user |
 | Derived key | 256 bits, hex-encoded |
 | Session token | 32 random bytes, hex; **only its SHA-256 is stored** |
-| Cookie | `HttpOnly; Secure; SameSite=Lax`, scoped to the parent domain |
+| Cookie | `__Host-labkiosk_session`: `HttpOnly; Secure; SameSite=Lax; Path=/`, host-only, so no subdomain sees or can overwrite another host's session. Signing in on the apex for an organization's console hands the session over through a one-time, host-bound code (`/api/auth/handoff`). Super admin sessions last 12 hours, others 7 days |
 | Comparison | `timingSafeEqual()` |
 
 There are **zero runtime npm dependencies**. No auth framework, no routing library, no ORM. Every primitive is a Web API, which removes the supply-chain surface entirely and keeps cold start under 10 ms.
 
-**Two-step sign-in.** After the password, a super admin is always emailed a six-digit code (it works for that sign-in only, for ten minutes, five wrong tries). An organization account turns the same on under **Settings → Two-factor sign-in**; every account can add an authenticator app (TOTP) with ten recovery codes on top. A browser can be trusted for 30 days. Where email is not configured, an account with no app signs in with its password alone and the server logs why, rather than locking every account out. `SUPER_ADMIN_EMAIL` must therefore reach an inbox that can be read without signing in to the console.
+**Two-step sign-in.** After the password, every administrator (the super admin, an organization's owner and staff with the `org_admin` role) is always emailed a six-digit code (it works for that sign-in only, for ten minutes, five wrong tries). Other staff turn the same on under **Settings → Two-factor sign-in**. Every account can add passkeys and an authenticator app (TOTP, with ten recovery codes) on top; a passkey is offered first and cannot be phished, because the browser signs only for the site it was made on. Passkeys are verified in the Worker with `crypto.subtle` (ES256 or RS256; signature counter checked, attestation not required) and work on the platform domain and every organization subdomain; a custom domain is its own site. A browser can be trusted for 30 days. Where email is not configured, an account with no app and no passkey signs in with its password alone and the server logs why, rather than locking every account out. `SUPER_ADMIN_EMAIL` must therefore reach an inbox that can be read without signing in to the console.
 
 Password changes go through one path — `POST /api/auth/change-password` — which verifies the current password and **revokes the account's other sessions**, so a stolen cookie does not outlive a password change.
 

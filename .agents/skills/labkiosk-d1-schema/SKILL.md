@@ -169,4 +169,8 @@ as a JSON list of SHA-256 hashes. `login_challenges` is a password-checked sign-
 second factor, keyed by the SHA-256 of the browser's token, purged hourly. `user_devices` keys
 browsers by `(user_id, token_hash)` for new-browser alerts and `trusted_until`.
 `users.two_factor_email` (`0023`) is 1 when an organization account asked for an emailed code at
-sign-in; a super admin is always emailed one, whatever the column says.
+sign-in; administrators (super admin, organization owner, `org_admin` staff) are always emailed one,
+whatever the column says. `user_passkeys` (`0042`) keys passkeys by credential id with their
+relying party, JWK public key, COSE algorithm and signature counter; `passkey_registrations` holds
+one pending registration challenge per account; `login_challenges.passkey_challenge` is the
+WebAuthn challenge the second step asked a passkey to sign.

@@ -101,7 +101,11 @@ Production **fails closed** without them. There is no default administrative cre
 ```bash
 npx wrangler secret put SUPER_ADMIN_EMAIL
 npx wrangler secret put SUPER_ADMIN_PASSWORD
+openssl rand -hex 32 | npx wrangler secret put PASSWORD_PEPPER
 ```
+
+`PASSWORD_PEPPER` keys an HMAC over every stored password hash, so a database copy alone cannot be
+cracked offline. Keep a copy: losing or changing it invalidates every password.
 
 Changing `SUPER_ADMIN_EMAIL` later migrates the super-admin account to the new address. Once signed in to `/super`, rotate the password from the authenticated form rather than the secret — that path verifies the current password and revokes the account's other sessions.
 

@@ -4,6 +4,8 @@
 
 A minimal, security-hardened Debian 12 (Bookworm) live kiosk operating system designed for educational workstation fleets and thin-client workstations.
 
+> **Base OS support.** Debian 12 left regular security support on 12 July 2026 and is maintained by Debian LTS until 30 June 2028. A move to Debian 13 is planned as the next major release; see item 14 of [SECURITY.md](../SECURITY.md).
+
 ---
 
 ## 🌟 Architecture & Operating System Design
@@ -310,6 +312,11 @@ docker run --privileged --rm -e LABKIOSK_GRUB_PBKDF2="grub.pbkdf2.sha512.200000.
 
 `LABKIOSK_GRUB_PBKDF2` takes precedence over `grub.pin`. The `grub.pin` file remains as a
 fallback for a single organisation building an image for its own lab.
+
+The release workflow (`build-iso.yml`) passes a repository secret named `LABKIOSK_GRUB_PBKDF2` to
+the build, so a tagged release can lock its live menu without the hash ever being committed. With
+no secret and no `grub.pin` it warns; set the repository variable `REQUIRE_LOCKED_LIVE_MENU` to
+`true` to make that a failure.
 
 #### Where each mechanism applies
 

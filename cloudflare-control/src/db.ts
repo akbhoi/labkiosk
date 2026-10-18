@@ -22,6 +22,8 @@ import {
 import {
   hashPassword,
   verifyPassword,
+  pepperLegacyHash,
+  PEPPERED_HASH_PREFIX,
   sha256Hex,
   generateDeviceToken,
   generateEnrollmentKey,
@@ -417,7 +419,27 @@ CREATE TABLE IF NOT EXISTS login_challenges (
   email_codes_sent INTEGER NOT NULL DEFAULT 0,
   email_code_sent_at INTEGER,
   expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  passkey_challenge TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_passkeys (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  rp_id TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  algorithm INTEGER NOT NULL CHECK (algorithm IN (-7, -257)),
+  sign_count INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS passkey_registrations (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  challenge TEXT NOT NULL,
+  rp_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS user_devices (
@@ -494,6 +516,7 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversatio
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messages(email_message_id);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_expires ON login_challenges(expires_at);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_user ON login_challenges(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_passkeys_user ON user_passkeys(user_id, rp_id);
 `;
 
 /**
@@ -551,7 +574,8 @@ export const LOCAL_DEV_SUPER_ADMIN = { email: "admin@labkiosk.org", password: "S
  */
 export async function ensureSuperAdmin(
   db: D1Database,
-  credentials: { email: string; password: string }
+  credentials: { email: string; password: string },
+  pepper: string
 ): Promise<User> {
   const email = credentials.email.toLowerCase().trim();
   const existing = await db
@@ -559,16 +583,12 @@ export async function ensureSuperAdmin(
     .first<User>();
 
   if (existing) {
-    const passwordMatches = await verifyPassword(
-      credentials.password,
-      existing.password_hash,
-      existing.salt
-    );
+    const passwordMatches = await verifyPassword(credentials.password, existing.password_hash, existing.salt, pepper);
     // The database was initialised with a legacy placeholder, the configured email
     // changed, or the configured password does not match the stored hash: move
     // the account to the configured credentials and clear any lockout.
     if (existing.email === "admin@labkiosk.io" || existing.email !== email || !passwordMatches) {
-      const { hashHex, saltHex } = await hashPassword(credentials.password);
+      const { hashHex, saltHex } = await hashPassword(credentials.password, pepper);
       await db
         .prepare("UPDATE users SET email = ?, password_hash = ?, salt = ? WHERE id = ?")
         .bind(email, hashHex, saltHex, existing.id)
@@ -582,7 +602,7 @@ export async function ensureSuperAdmin(
     return existing;
   }
 
-  const { hashHex, saltHex } = await hashPassword(credentials.password);
+  const { hashHex, saltHex } = await hashPassword(credentials.password, pepper);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
 
@@ -713,6 +733,9 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT major, status, end_of_life_at, eol_reminder_days FROM release_support LIMIT 1").run();
     // 0041: online workstations on the HTTP heartbeat.
     await db.prepare("SELECT http_workstations FROM tenants LIMIT 1").run();
+    // 0042: passkeys.
+    await db.prepare("SELECT id, rp_id, sign_count FROM user_passkeys LIMIT 1").run();
+    await db.prepare("SELECT passkey_challenge FROM login_challenges LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -792,9 +815,10 @@ export async function findUserById(db: D1Database, id: string): Promise<User | n
 
 export async function createUser(
   db: D1Database,
-  data: { email: string; password: string; name: string; role?: "super_admin" | "org_admin" }
+  data: { email: string; password: string; name: string; role?: "super_admin" | "org_admin" },
+  pepper: string
 ): Promise<User> {
-  const { hashHex, saltHex } = await hashPassword(data.password);
+  const { hashHex, saltHex } = await hashPassword(data.password, pepper);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
   const role = data.role || "org_admin";
@@ -1249,7 +1273,8 @@ export async function createTenantUser(
     password?: string;
     role?: TenantUserRole;
     permissions?: string[];
-  }
+  },
+  pepper: string
 ): Promise<TenantUser> {
   const email = data.email.toLowerCase().trim();
   let user = await findUserByEmail(db, email);
@@ -1259,7 +1284,7 @@ export async function createTenantUser(
       name: data.name.trim(),
       password: data.password || crypto.randomUUID().slice(0, 16) + "Aa1!",
       role: "org_admin"
-    });
+    }, pepper);
   }
 
   const id = crypto.randomUUID();
@@ -1420,12 +1445,38 @@ export async function createSession(db: D1Database, session: Session): Promise<v
 }
 
 /** Replace a user's password hash; every other session of that user should be dropped by the caller. */
-export async function updateUserPassword(db: D1Database, userId: string, password: string): Promise<void> {
-  const { hashHex, saltHex } = await hashPassword(password);
+export async function updateUserPassword(db: D1Database, userId: string, password: string, pepper: string): Promise<void> {
+  const { hashHex, saltHex } = await hashPassword(password, pepper);
   await db
     .prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?")
     .bind(hashHex, saltHex, userId)
     .run();
+}
+
+/** Rows wrapped per run by `pepperLegacyPasswordHashes()`; the hourly cron gets through the rest. */
+const PEPPER_BATCH = 200;
+
+/**
+ * Wrap bare PBKDF2 password hashes (from before PASSWORD_PEPPER) in the pepper, no password
+ * needed. Each update applies only if the row still holds the hash that was read, so a password
+ * changed meanwhile is left alone. Returns how many rows were wrapped.
+ */
+export async function pepperLegacyPasswordHashes(db: D1Database, pepper: string): Promise<number> {
+  const rows = await db
+    .prepare("SELECT id, password_hash FROM users WHERE length(password_hash) = 64 AND password_hash NOT LIKE ? LIMIT ?")
+    .bind(`${PEPPERED_HASH_PREFIX}%`, PEPPER_BATCH)
+    .all<{ id: string; password_hash: string }>();
+  let wrapped = 0;
+  for (const row of rows.results || []) {
+    const peppered = await pepperLegacyHash(row.password_hash, pepper);
+    if (!peppered) continue;
+    const res = await db
+      .prepare("UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?")
+      .bind(peppered, row.id, row.password_hash)
+      .run();
+    wrapped += res.meta?.changes ?? 0;
+  }
+  return wrapped;
 }
 
 /** Delete every session a user holds except, optionally, the one they are using right now. */

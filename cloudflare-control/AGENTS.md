@@ -31,7 +31,8 @@ cloudflare-control/
 │   ├── seo.ts                          # robots.txt, sitemap, noindex outside public pages, Zaraz CSP
 │   ├── signup.ts                       # Registration and the contact form, each with an email code; Remote Control requests
 │   ├── geo.ts                          # Countries for registration: calling codes, states, postal and tax ID formats; one table for the server's checks and the form (/assets/geo-<hash>.json)
-│   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional TOTP app, recovery codes), sign-in alerts
+│   ├── two_factor.ts                   # Two-factor sign-in (emailed code by default, optional passkeys and TOTP app, recovery codes), sign-in alerts
+│   ├── webauthn.ts                     # Passkeys: CBOR, authenticator data, ES256/RS256 verification with crypto.subtle
 │   ├── turnstile.ts                    # Optional Cloudflare Turnstile on the registration code, the contact code and sign-in
 │   ├── inbox.ts                        # Super Admin Tasks/Mail API, filing inbound mail (MailIntake, email())
 │   ├── conversations.ts                # Conversations, messages, organization profiles, email codes (D1)
@@ -343,7 +344,7 @@ cloudflare-control/
   - **Settings Page Layout (`/admin/settings`)**:
     - **Semantic Tab Panes & Segmented Nav**: Converted 9 fragile vertical scroll jumps into distinct semantic tab panes (`General & Kiosk`, `Domains & Network`, `Organization Homepage`, `Security & Audit`, `Two-factor sign-in`, `Errors & Warnings`, and `Updates` for accounts holding `updates`) with instant client-side switching, companion in-canvas `.segmented-nav` tabs, and deep linking (`?tab=...`).
     - **Two-factor sign-in is a tab, not a dialog** (`ui_two_factor.ts`): `?tab=two-factor` here and `/super/system?tab=system-two-factor` in the super console, linked from the profile menu. It is the signed-in account's own, so `/admin/settings` opens for every staff account: without the `settings` permission it renders that tab alone (`accountOnly`), and nothing of the organization's.
-    - **The second factor is an emailed code by default** (`two_factor.ts`): a super admin is always asked; an organization account turns it on in that tab (`users.two_factor_email`, migration `0023`, `POST /api/auth/two-factor/email { password, enabled }`). An authenticator app is optional on top. Where email is not configured, an account with no app signs in with its password alone and the server logs why.
+    - **The second factor is an emailed code by default** (`two_factor.ts`): every administrator is always asked (`isAdministratorAccount()`: the super admin, an organization's owner, `org_admin` staff); other staff turn it on in that tab (`users.two_factor_email`, migration `0023`, `POST /api/auth/two-factor/email { password, enabled }`). Passkeys (`webauthn.ts`, migration `0042`) and an authenticator app are optional on top; a passkey is offered first. The relying party is `DEFAULT_DOMAIN` on every host under it and the host itself on a custom domain; the origin must be the request's own. Every WebAuthn challenge is spent by the first answer, right or wrong, and the signature counter must move forward unless both sides are 0. Where email is not configured, an account with no app and no passkey signs in with its password alone and the server logs why.
     - **Horizontal Card Grouping (`grid-2col`)**: Organizes related configuration cards side-by-side (Organization Profile & Kiosk Mode | Kiosk Routing & Home URL; Subdomain | Custom Domain; Homepage Identity | Content Blocks; Enrollment Key & Admin Password | Recent Activity).
     - **Scrollable Activity Table (`.table-scrollable`)**: Recent Activity table is constrained with `.table-scrollable` (`max-height: 480px; overflow-y: auto;`) with sticky pinned table headers (`th` with `position: sticky; top: 0; z-index: 2;`) and thin scrollbars, keeping the card compact and neatly aligned with the left column.
   - **Content Area & Clean Top Header**: Fluid layout adapting smoothly to panel states without content jumping. The top canvas header is kept clean and minimal, displaying solely breadcrumbs and telemetry counters; profile and sign-out controls strictly reside in the bottom-left avatar menu.
@@ -474,6 +475,14 @@ cloudflare-control/
 
 ### Rule 6: State-Changing Requests Prove Their Origin
 
+- Sessions are host-only (`src/session_handoff.ts`): `__Host-labkiosk_session` on HTTPS, never a
+  `Domain` attribute, 12 hours for a super admin and 7 days otherwise. A sign-in whose console is on
+  another host sets no cookie where it happened; it redirects through that host's
+  `/api/auth/handoff`, whose code is sealed with a key derived from `PASSWORD_PEPPER`, bound to the
+  host, valid 60 s, and spent by replacing the session. Never reintroduce a parent-domain cookie.
+- `SUPER_ADMIN_HOST` (optional, `superAdminHost()` in `guard.ts`) confines `/super` and
+  `/api/super/*` to one host under `DEFAULT_DOMAIN`; it is checked before any other routing, and a
+  bad value stops the worker.
 - Cookie-authenticated `POST`/`DELETE` calls under `/api/` pass `rejectCrossSiteMutation()` in `guard.ts`: a browser-supplied `Origin` must be this host or the platform domain. A dev-host origin (`localhost`, ...) is accepted **only when the request itself is on a dev host**; in production it would admit any page served from the operator's own machine. Bearer-authenticated device routes are exempt.
 - Passwords change only through `POST /api/auth/change-password`, which verifies the current password and revokes the account's other sessions.
 
@@ -481,7 +490,7 @@ cloudflare-control/
 
 - Missing configuration is an error, not a reason to fall back to something weaker.
 - `getDatabase()` throws without a D1 binding unless `ALLOW_LOCAL_DB=1`.
-- With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`); it never creates tables in production.
+- With a D1 binding present, `bootstrap()` in `index.ts` refuses to serve unless **both** `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are set, and `PASSWORD_PEPPER` (32+ characters, `passwordPepper()` in `auth.ts`) keys the HMAC over every stored password hash, and refuses a database whose migrations have not been applied (`assertSchemaCurrent()`); it never creates tables in production.
 - In production it also refuses to serve without every platform resource (`requiredBindingsProblem()` in `hub.ts`, Rule 2d), naming each one that is missing. `ALLOW_LOCAL_DB=1` lets a missing one fall back to an in-process stand-in.
 - Public endpoints are throttled per source address (`rateLimitWait` / `recordRateLimitHit` in `db.ts`): registration and failed enrolments. Reserved slugs (`RESERVED_SLUGS` in `guard.ts`) can neither be registered nor assigned.
 

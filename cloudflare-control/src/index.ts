@@ -204,6 +204,7 @@ import {
   findUserByEmail,
   findUserById,
   createUser,
+  pepperLegacyPasswordHashes,
   findTenantBySubdomain,
   findTenantById,
   findTenantByUserId,
@@ -284,11 +285,12 @@ import {
   verifyPassword,
   generateSessionToken,
   parseCookies,
-  createSessionCookie,
-  clearSessionCookie,
   timingSafeEqual,
   sha256Hex,
   validatePasswordStrength,
+  breachedPasswordProblem,
+  passwordPepper,
+  PEPPERED_HASH_PREFIX,
   isPlausibleEmail,
   isEnrollmentKey,
   generateNonce
@@ -306,6 +308,7 @@ import {
   isDevHost,
   isHostUnder,
   isReservedSlug,
+  superAdminHost,
   rejectCrossSiteMutation,
   rejectCrossSiteSocket
 } from "./guard";
@@ -338,6 +341,7 @@ import {
   relayUpgrade
 } from "./remote_relay";
 import { isPlatformHostname, startCustomHostnameJob } from "./custom_hostnames";
+import { HANDOFF_PATH, clearSessionCookies, createSessionCookie, handleSessionHandoff, sessionCookieName } from "./session_handoff";
 import { mailConfigProblem, sendMail } from "./mail";
 import { consoleStylesheet, CONSOLE_STYLESHEET_PATH } from "./ui_layout";
 import { PALETTE } from "./ui_tokens";
@@ -369,6 +373,7 @@ import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstil
 import {
   continueSignIn,
   handleLoginEmailCode,
+  handleLoginPasskeyOptions,
   handleLoginVerify,
   handleTwoFactorRoute,
   isTwoFactorRoute,
@@ -550,13 +555,16 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
       if (production) {
         const missing = requiredBindingsProblem(env);
         if (missing) throw new Error(missing);
+        // A misspelt console host is a startup error, not a console nobody can reach.
+        superAdminHost(env);
       }
       if (!production && (Boolean(email) !== Boolean(password))) {
         throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD must be set together, or both left unset for local development.");
       }
       const superAdmin = await ensureSuperAdmin(
         db,
-        email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN
+        email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN,
+        passwordPepper(env)
       );
       const demos = await ensureDemoTenants(db, superAdmin.id);
       return { superAdmin, demos };
@@ -596,8 +604,11 @@ function postLoginRedirect(options: {
   requestedSlug: string | null;
   isDev: boolean;
   baseDomain: string;
+  /** SUPER_ADMIN_HOST, when the platform console is confined to its own host. */
+  superHost?: string | null;
+  host?: string;
 }): string {
-  const { role, ownSubdomain, hostSlug, requestedSlug, isDev, baseDomain } = options;
+  const { role, ownSubdomain, hostSlug, requestedSlug, isDev, baseDomain, superHost, host } = options;
 
   const consoleFor = (slug: string) =>
     isDev ? `/admin?tenant=${encodeURIComponent(slug)}` : `https://${slug}.${baseDomain}/admin`;
@@ -606,7 +617,7 @@ function postLoginRedirect(options: {
     // The organization they were already looking at, if they are allowed in it.
     const context = hostSlug || requestedSlug;
     if (isDemoSlug(context)) return consoleFor(context);
-    return "/super";
+    return superHost && !isDev && host !== superHost ? `https://${superHost}/super` : "/super";
   }
 
   if (ownSubdomain) return consoleFor(ownSubdomain);
@@ -1102,6 +1113,8 @@ export default {
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);
+    const peppered = await pepperLegacyPasswordHashes(db, passwordPepper(env));
+    if (peppered) console.log(`[Worker] Wrapped ${peppered} password hashes in PASSWORD_PEPPER.`);
     for (const tenantId of await rotateUncheckedEnrollmentKeys(db)) {
       await writeAuditLog(db, { tenantId, userId: null, action: "settings.rotate_enrollment_key", details: "reason=check_character" });
     }
@@ -1337,14 +1350,6 @@ export default {
     }
 
     // --- Identity -----------------------------------------------------------
-    const cookies = parseCookies(request.headers.get("cookie"));
-    const authHeader = request.headers.get("authorization");
-    const usedCookie = Boolean(cookies["labkiosk_session"]);
-    const sessionToken =
-      cookies["labkiosk_session"] ||
-      (authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null);
-    const session = sessionToken ? await getSession(db, sessionToken) : null;
-
     const isDev = isDevHost(request);
     const isHttps = Boolean(
       url.protocol === "https:" ||
@@ -1352,12 +1357,19 @@ export default {
       request.headers.get("cf-visitor")?.includes('"scheme":"https"')
     );
     const secureCookies = Boolean(isHttps && !isDev);
-    const cookieDomain =
+    // Sessions are host-only (session_handoff.ts). Earlier releases set one cookie for the whole
+    // platform domain; it is no longer read, and sign-in and sign-out clear it.
+    const legacyCookieDomain =
       isHttps && !isDev && env.DEFAULT_DOMAIN && isHostUnder(hostname(request), env.DEFAULT_DOMAIN)
         ? env.DEFAULT_DOMAIN
         : undefined;
-    const sessionCookie = (token: string) =>
-      createSessionCookie(token, { domain: cookieDomain, secure: secureCookies });
+    const cookies = parseCookies(request.headers.get("cookie"));
+    const authHeader = request.headers.get("authorization");
+    const cookieToken = cookies[sessionCookieName(secureCookies)] || "";
+    const usedCookie = Boolean(cookieToken);
+    const sessionToken = cookieToken || (authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null);
+    const session = sessionToken ? await getSession(db, sessionToken) : null;
+    const sessionCookie = (token: string, maxAgeSeconds: number) => createSessionCookie(token, { secure: secureCookies, maxAgeSeconds });
     const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
 
     // A coarse per-address limit in front of what a stranger can hammer. The
@@ -1369,6 +1381,7 @@ export default {
       (path === "/api/auth/login" ||
         path === "/api/auth/login/verify" ||
         path === "/api/auth/login/email-code" ||
+        path === "/api/auth/login/passkey" ||
         path === "/api/auth/register" ||
         path === "/api/auth/register/email-code" ||
         path === "/api/contact" ||
@@ -1405,6 +1418,19 @@ export default {
     const loginTurnstile = isDev || isHostUnder(hostname(request), env.DEFAULT_DOMAIN);
     /** What every public page needs to draw the checks its forms carry. */
     const formChecks = { turnstileSiteKey: turnstileSiteKey(env), loginTurnstile };
+
+    // With SUPER_ADMIN_HOST set, the platform console and its API answer on that host only, so the
+    // public apex (landing, registration, legal pages) never shares an origin with it.
+    const superHost = superAdminHost(env);
+    if (
+      superHost &&
+      !isDev &&
+      hostname(request) !== superHost &&
+      (path === "/super" || path.startsWith("/super/") || path === "/api/super" || path.startsWith("/api/super/"))
+    ) {
+      if (method === "GET" && !path.startsWith("/api/")) return Response.redirect(`https://${superHost}${path}${url.search}`, 302);
+      return jsonError("The Super Admin console is served on its own host", 404, jsonHeaders);
+    }
 
     // A cookie-authenticated mutation must come from this site.
     if (path.startsWith("/api/")) {
@@ -1450,7 +1476,7 @@ export default {
       baseDomain,
       isDev
     };
-    const signInCookies = { domain: cookieDomain, secure: secureCookies, sessionCookie };
+    const signInCookies = { secure: secureCookies, legacyDomain: legacyCookieDomain, sessionCookie };
 
     // POST /api/auth/register/email-code: prove the email address before signing up.
     if (path === "/api/auth/register/email-code" && method === "POST") {
@@ -1509,8 +1535,8 @@ export default {
         // Always run a verification so a missing account and a wrong password
         // take comparable time and cannot be told apart by response latency.
         const isValid = user
-          ? await verifyPassword(body.password, user.password_hash, user.salt)
-          : await verifyPassword(body.password, "0".repeat(64), "0".repeat(64));
+          ? await verifyPassword(body.password, user.password_hash, user.salt, passwordPepper(env))
+          : await verifyPassword(body.password, PEPPERED_HASH_PREFIX + "0".repeat(64), "0".repeat(64), passwordPepper(env));
 
         if (!user || !isValid) {
           await recordLoginFailure(db, identifier);
@@ -1549,7 +1575,9 @@ export default {
               requestedSlug:
                 cleanSubdomain(url.searchParams.get("tenant") || body.tenant || "") || null,
             isDev,
-            baseDomain
+            baseDomain,
+            superHost: superAdminHost(env),
+            host: hostname(request)
           })
         });
       } catch (err: any) {
@@ -1558,12 +1586,15 @@ export default {
       }
     }
 
-    // POST /api/auth/login/verify, /email-code: the second step of a two-factor sign-in.
+    // POST /api/auth/login/verify, /email-code, /passkey: the second step of a two-factor sign-in.
     if (path === "/api/auth/login/verify" && method === "POST") {
       return handleLoginVerify(routeContext, signInCookies);
     }
     if (path === "/api/auth/login/email-code" && method === "POST") {
       return handleLoginEmailCode(routeContext);
+    }
+    if (path === "/api/auth/login/passkey" && method === "POST") {
+      return handleLoginPasskeyOptions(routeContext);
     }
 
     // /api/auth/two-factor...: the signed-in account turns its own second factor on or off.
@@ -1583,12 +1614,19 @@ export default {
       if (sessionToken) {
         await deleteSession(db, sessionToken);
       }
-      return new Response(null, {
-        status: 302,
-        headers: {
-          Location: "/",
-          "Set-Cookie": clearSessionCookie({ domain: cookieDomain, secure: secureCookies })
-        }
+      const signedOut = new Headers({ Location: "/" });
+      for (const cleared of clearSessionCookies({ secure: secureCookies, legacyDomain: legacyCookieDomain })) {
+        signedOut.append("Set-Cookie", cleared);
+      }
+      return new Response(null, { status: 302, headers: signedOut });
+    }
+
+    // GET /api/auth/handoff: a sign-in on another host hands its session to this one.
+    if (path === HANDOFF_PATH && method === "GET") {
+      return handleSessionHandoff(db, request, url, {
+        pepper: passwordPepper(env),
+        secure: secureCookies,
+        legacyDomain: legacyCookieDomain
       });
     }
 
@@ -1634,14 +1672,16 @@ export default {
         if (passwordProblem) return jsonError(passwordProblem, 400, jsonHeaders);
 
         const user = await findUserById(db, session.user_id);
-        if (!user || !(await verifyPassword(currentPassword, user.password_hash, user.salt))) {
+        if (!user || !(await verifyPassword(currentPassword, user.password_hash, user.salt, passwordPepper(env)))) {
           return jsonError("Current password is not correct", 400, jsonHeaders);
         }
         if (currentPassword === newPassword) {
           return jsonError("New password must differ from the current one", 400, jsonHeaders);
         }
+        const breached = await breachedPasswordProblem(newPassword, env);
+        if (breached) return jsonError(breached, 400, jsonHeaders);
 
-        await updateUserPassword(db, user.id, newPassword);
+        await updateUserPassword(db, user.id, newPassword, passwordPepper(env));
         await revokeTrustedBrowsers(db, user.id);
         // Any other browser holding this account is signed out; this one stays.
         await deleteSessionsForUser(db, user.id, sessionToken || undefined);
@@ -1668,7 +1708,8 @@ export default {
       return Response.redirect(redirectUrl.toString(), 302);
     }
 
-    if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/")) {
+    // On the console's own host (super.<domain>), "/" is the console; "/?login=1" stays the sign-in page.
+    if (path === "/super" || path.startsWith("/super/") || (hostname(request).split(".")[0] === "super" && path === "/" && !url.searchParams.has("login"))) {
       // Signed out: the sign-in page, as /admin does.
       if (!session) return Response.redirect(`${url.origin}/?login=1`, 302);
       if (session.role !== "super_admin") {
@@ -3272,7 +3313,8 @@ export default {
         if (refused) return jsonError(refused, 403, jsonHeaders);
 
         if (body.password !== undefined && body.password !== "") {
-          const passwordProblem = validatePasswordStrength(String(body.password));
+          const passwordProblem =
+            validatePasswordStrength(String(body.password)) || (await breachedPasswordProblem(String(body.password), env));
           if (passwordProblem) return jsonError(passwordProblem, 400, jsonHeaders);
         }
 
@@ -3290,7 +3332,7 @@ export default {
           password: body.password,
           role,
           permissions
-        });
+        }, passwordPepper(env));
 
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,

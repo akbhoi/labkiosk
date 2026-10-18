@@ -118,6 +118,21 @@ export function isHostUnder(host: string, base: string | undefined): boolean {
 }
 
 /**
+ * The host the Super Admin console is confined to, from SUPER_ADMIN_HOST, or null when it is
+ * served wherever the platform is (the default). It must sit under DEFAULT_DOMAIN, where the
+ * wildcard route and certificate already cover it; `super` is a reserved slug for this.
+ */
+export function superAdminHost(env: { SUPER_ADMIN_HOST?: string; DEFAULT_DOMAIN?: string }): string | null {
+  const host = (env.SUPER_ADMIN_HOST || "").trim().toLowerCase();
+  if (!host) return null;
+  const base = (env.DEFAULT_DOMAIN || "").replace(/^\./, "").toLowerCase();
+  if (!base || host === base || !host.endsWith("." + base) || host.slice(0, -base.length - 1).includes(".")) {
+    throw new Error(`SUPER_ADMIN_HOST must be one name directly under DEFAULT_DOMAIN (e.g. super.${base || "labkiosk.org"}), not "${host}"`);
+  }
+  return host;
+}
+
+/**
  * The organization slug carried by the Host header, or null when the host carries none.
  *
  * When `baseDomain` is configured the host must be exactly `<slug>.<baseDomain>`.
