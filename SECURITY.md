@@ -104,3 +104,12 @@ Instead, please submit your findings privately via GitHub Security Advisories:
     Cloudflare token, the R2 keys and the update signing key, so every `uses:` line names a full commit
     SHA followed by its version (`@3d3c42e… # v7.0.1`), never a tag that can be moved. Dependabot
     proposes new pins weekly, and `distro-builder/tests/test_workflows.py` fails on an unpinned action.
+14. **Know the Base OS's Support Status:** the workstation image is built on Debian 12 (Bookworm).
+    Debian's regular security support for it ended on 12 July 2026; it is now maintained by Debian
+    LTS until 30 June 2028, which covers most but not every package
+    (<https://www.debian.org/News/2026/20260712.en.html>). The daily security rebuild keeps taking
+    fixes from `bookworm-security`, which LTS publishes to. Moving the image to Debian 13 (Trixie) is
+    planned as a new major release. Only then does the data partition's TPM key bind to more than
+    PCR 7, through systemd's `pcrlock` policies, which keep Debian's signed shim, GRUB and kernel
+    and so keep Secure Boot and unattended boot working. A self-signed unified kernel image would
+    need a key enrolled at every workstation.

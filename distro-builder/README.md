@@ -4,6 +4,8 @@
 
 A minimal, security-hardened Debian 12 (Bookworm) live kiosk operating system designed for educational workstation fleets and thin-client workstations.
 
+> **Base OS support.** Debian 12 left regular security support on 12 July 2026 and is maintained by Debian LTS until 30 June 2028. A move to Debian 13 is planned as the next major release; see item 14 of [SECURITY.md](../SECURITY.md).
+
 ---
 
 ## 🌟 Architecture & Operating System Design
