@@ -311,6 +311,11 @@ docker run --privileged --rm -e LABKIOSK_GRUB_PBKDF2="grub.pbkdf2.sha512.200000.
 `LABKIOSK_GRUB_PBKDF2` takes precedence over `grub.pin`. The `grub.pin` file remains as a
 fallback for a single organisation building an image for its own lab.
 
+The release workflow (`build-iso.yml`) passes a repository secret named `LABKIOSK_GRUB_PBKDF2` to
+the build, so a tagged release can lock its live menu without the hash ever being committed. With
+no secret and no `grub.pin` it warns; set the repository variable `REQUIRE_LOCKED_LIVE_MENU` to
+`true` to make that a failure.
+
 #### Where each mechanism applies
 
 | Target | Mechanism | Set by |

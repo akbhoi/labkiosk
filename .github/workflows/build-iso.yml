@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # debootstrap, the squashfs and the finished hybrid ISO together need
       # well over the free space a stock runner has once its preinstalled
@@ -40,11 +40,29 @@ jobs:
           sudo docker image prune --all --force >/dev/null 2>&1 || true
           echo "After:"; df -h / | tail -1
 
-      - name: Warn when a release build has no GRUB password pinned
+      # The live USB is not a trust boundary: installed disks get their own boot-menu
+      # password in the setup wizard. A repository secret LABKIOSK_GRUB_PBKDF2 locks the
+      # live menu too (Route 2), and the variable REQUIRE_LOCKED_LIVE_MENU=true turns
+      # this warning into a failure for whoever ships the live USB to users.
+      - name: Check the live boot menu is locked (on tag)
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+        env:
+          LABKIOSK_GRUB_PBKDF2: ${{ secrets.LABKIOSK_GRUB_PBKDF2 }}
+          REQUIRE_LOCKED_LIVE_MENU: ${{ vars.REQUIRE_LOCKED_LIVE_MENU }}
         run: |
-          if ! grep -q '^PASSWORD_PBKDF2=grub\.pbkdf2\.sha512\.' distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin; then
-            echo "::warning file=distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin::No GRUB password is pinned. This release ISO boots with an editable boot menu; see distro-builder/README.md 'Securing the Boot Chain'."
+          pin=distro-builder/config/includes.chroot/usr/share/labkiosk/grub.pin
+          if [ -n "$LABKIOSK_GRUB_PBKDF2" ]; then
+            case "$LABKIOSK_GRUB_PBKDF2" in
+              grub.pbkdf2.sha512.*) echo "The live boot menu is locked by the LABKIOSK_GRUB_PBKDF2 secret." ;;
+              *) echo "::error::LABKIOSK_GRUB_PBKDF2 is set but is not a grub.pbkdf2.sha512 hash."; exit 1 ;;
+            esac
+          elif grep -q '^PASSWORD_PBKDF2=grub\.pbkdf2\.sha512\.' "$pin"; then
+            echo "The live boot menu is locked by grub.pin."
+          elif [ "$REQUIRE_LOCKED_LIVE_MENU" = "true" ]; then
+            echo "::error file=$pin::REQUIRE_LOCKED_LIVE_MENU is true and no GRUB password is set: add the LABKIOSK_GRUB_PBKDF2 secret. See distro-builder/README.md 'Securing the Boot Chain'."
+            exit 1
+          else
+            echo "::warning file=$pin::No GRUB password is set. This release ISO's live boot menu is editable; installed disks still get their own password in the setup wizard. See distro-builder/README.md 'Securing the Boot Chain'."
           fi
 
       # Over-the-air updates, phase 2: a release is also a signed update in R2.
@@ -81,13 +99,13 @@ jobs:
           fi
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Built through buildx so the apt layer is cached. The scope is shared
       # with docker-publish.yml, so a publish run and a release build reuse the
       # same layers instead of each installing live-build from scratch.
       - name: Build the ISO builder image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: distro-builder
           file: distro-builder/Dockerfile
@@ -100,9 +118,13 @@ jobs:
       # GitHub runners give a rootful Docker daemon, so --privileged really is
       # privileged and debootstrap's mknod succeeds. See distro-builder/README.md.
       - name: Compile the ISO
+        env:
+          LABKIOSK_GRUB_PBKDF2: ${{ secrets.LABKIOSK_GRUB_PBKDF2 }}
         run: |
           mkdir -p distro-builder/out
+          # Passed by name only, so the hash never appears in the command line or the log.
           docker run --privileged --rm \
+            -e LABKIOSK_GRUB_PBKDF2 \
             -v "$PWD/distro-builder/out:/build/out" \
             ghcr.io/akbhoi/labkiosk-iso-builder:ci
 
@@ -114,7 +136,7 @@ jobs:
           ls -lh labkiosk-debian12-amd64.iso
 
       - name: Upload ISO Artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: labkiosk-debian12-amd64-iso
           # The checksum travels with the image; an artifact nobody can verify
@@ -139,7 +161,7 @@ jobs:
 
       - name: Upload boot-test screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: boot-test-screenshots
           path: ${{ runner.temp }}/boot-test/*.ppm
@@ -220,7 +242,7 @@ jobs:
 
       - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: "Lab Kiosk ${{ github.ref_name }}"
           generate_release_notes: true

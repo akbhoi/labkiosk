@@ -61,7 +61,10 @@ Instead, please submit your findings privately via GitHub Security Advisories:
    on `LABKIOSK_ROOT`, outside every system image, so image updates and rollbacks keep it. To lock the
    live USB menu as well, build a per-customer ISO with `LABKIOSK_GRUB_PBKDF2` (or `grub.pin` for a
    single organization's own image); see `distro-builder/README.md`. Booting never prompts: only
-   editing an entry or opening the GRUB shell asks for the password.
+   editing an entry or opening the GRUB shell asks for the password. **The live USB is not a trust
+   boundary:** anyone holding it can boot it, so keep release USBs with your administration kit. The
+   release workflow locks the published ISO's live menu when the repository has a `LABKIOSK_GRUB_PBKDF2`
+   secret, warns when it has none, and fails instead when the variable `REQUIRE_LOCKED_LIVE_MENU` is `true`.
 7. **Keep noVNC Pinned:** The console serves the Remote Control viewer from the exactly pinned
    `@novnc/novnc` devDependency in `cloudflare-control/package.json`. Do not relax this to a version
    range or an unpinned "latest" download.
@@ -94,3 +97,7 @@ Instead, please submit your findings privately via GitHub Security Advisories:
     host names and identifiers are masked before anything leaves the control plane, but issues in a
     public repository are public: point `GITHUB_ISSUES_REPO` at a private repository if that matters,
     and give the token access to that one repository only (`docs/DEPLOYMENT.md`).
+13. **Keep GitHub Actions Pinned to Commit SHAs:** the deploy and release workflows hold the
+    Cloudflare token, the R2 keys and the update signing key, so every `uses:` line names a full commit
+    SHA followed by its version (`@3d3c42e… # v7.0.1`), never a tag that can be moved. Dependabot
+    proposes new pins weekly, and `distro-builder/tests/test_workflows.py` fails on an unpinned action.
