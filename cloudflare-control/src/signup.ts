@@ -13,7 +13,7 @@ import { LEGAL_DOCUMENTS, recordLegalAcceptances } from "./legal";
 import { Env, Session, Tenant } from "./types";
 import { jsonError, isReservedSlug } from "./guard";
 import { cleanSubdomain } from "./escape";
-import { isPlausibleEmail, validatePasswordStrength } from "./auth";
+import { breachedPasswordProblem, isPlausibleEmail, passwordPepper, validatePasswordStrength } from "./auth";
 import {
   createTenant,
   createUser,
@@ -409,6 +409,9 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
   }
   await recordRateLimitHit(db, registerKey, REGISTER_RATE_LIMIT.windowSeconds);
 
+  const breached = await breachedPasswordProblem(signup.password, ctx.env);
+  if (breached) return jsonError(breached, 400, jsonHeaders);
+
   const verdict = await checkEmailCode(db, "signup", signup.contact_email, signup.emailCode);
   if (verdict === "expired") return jsonError("That code has expired. Ask for a new one.", 400, jsonHeaders);
   if (verdict === "wrong") return jsonError("That code is not correct", 400, jsonHeaders);
@@ -425,7 +428,7 @@ export async function handleRegister(ctx: RouteContext): Promise<Response> {
     password: signup.password,
     name: signup.contact_name,
     role: "org_admin"
-  });
+  }, passwordPepper(ctx.env));
   const tenant = await createTenant(db, { userId: user.id, name: signup.name, subdomain: signup.subdomain, status: "pending" });
   const profile: ProfileInput = { ...signup, email_verified_at: Math.floor(Date.now() / 1000) };
   await createOrganizationProfile(db, tenant.id, profile);

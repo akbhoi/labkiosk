@@ -129,8 +129,21 @@ npx wrangler secret put SUPER_ADMIN_EMAIL
 # Enter the platform administrator email (e.g., admin@yourdomain.com)
 
 npx wrangler secret put SUPER_ADMIN_PASSWORD
-# Enter a strong password (minimum 8 characters)
+# Enter a strong password (minimum 12 characters, letters and numbers)
+
+openssl rand -hex 32 | npx wrangler secret put PASSWORD_PEPPER
 ```
+
+`PASSWORD_PEPPER` is an HMAC key over every stored password hash, so a copy of the database alone
+cannot be cracked offline. Set it **before** deploying a worker that needs it: without it the worker
+refuses to serve. Keep a copy with your other secrets; losing or changing it makes every stored
+password stop working, and each user then needs a password reset. Hashes stored before the pepper
+are wrapped in it by the hourly cron, with no sign-in needed.
+
+New passwords (registration, staff accounts, password changes) are checked against Have I Been
+Pwned's breached-password list. Only the first five characters of the password's SHA-1 leave the
+worker. If the service cannot be reached the password is allowed; set the variable
+`BREACHED_PASSWORD_CHECK=off` to turn the check off.
 
 > [!NOTE]
 > Updating `SUPER_ADMIN_EMAIL` in the future will automatically migrate the super-admin account to the new email address. Once logged in to the `/super` console, passwords can also be rotated directly via the authenticated password-change interface.

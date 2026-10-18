@@ -78,8 +78,11 @@ Instead, please submit your findings privately via GitHub Security Advisories:
    only to that organization's operators, carries the same sensitivity as the live screen thumbnails, and
    changes on every reboot.
 9. **Set the Super Admin Secrets Before the First Deploy:** with a D1 database bound, the worker
-   refuses to start until `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` are both set. There is no
-   default account in production. Change the password from the `/super` console afterwards; doing so
+   refuses to start until `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD` and `PASSWORD_PEPPER` are all
+   set. There is no default account in production. `PASSWORD_PEPPER` keys an HMAC over every stored
+   password hash, so a leaked database export cannot be cracked offline; keep a copy, because losing
+   it invalidates every password. New passwords are refused when they appear in Have I Been Pwned's
+   breach corpus (only a 5-character hash prefix is sent). Change the password from the `/super` console afterwards; doing so
    signs out every other browser holding the account.
 10. **Browser-side defences are part of the design:** every page ships a nonce-based
     Content-Security-Policy with no inline event handlers, HSTS and `frame-ancestors 'none'`; a

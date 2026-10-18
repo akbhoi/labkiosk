@@ -179,6 +179,7 @@ An organization can request a different subdomain (`POST /api/settings/subdomain
 | :--- | :--- | :--- |
 | `SUPER_ADMIN_EMAIL` | `wrangler secret put` | Changing it **migrates** the super-admin account to the new address |
 | `SUPER_ADMIN_PASSWORD` | `wrangler secret put` | Bootstrap credential; rotate it from inside `/super` afterwards |
+| `PASSWORD_PEPPER` | `wrangler secret put` | Required. HMAC key over stored password hashes; never change or lose it |
 | `GITHUB_ISSUES_TOKEN` | `wrangler secret put` | Optional. Fine-grained GitHub token for automatic bug reports (below) |
 
 Once signed in, use the authenticated password-change form rather than the secret — it verifies the current password and revokes the account's other sessions.

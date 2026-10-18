@@ -348,6 +348,10 @@ export interface Env {
   CF_ZONE_ID?: string;
   SUPER_ADMIN_EMAIL?: string;
   SUPER_ADMIN_PASSWORD?: string;
+  /** HMAC key over every stored password hash; required in production (auth.ts passwordPepper). */
+  PASSWORD_PEPPER?: string;
+  /** "off" skips the Have I Been Pwned check on new passwords (auth.ts breachedPasswordProblem). */
+  BREACHED_PASSWORD_CHECK?: string;
   DEFAULT_DOMAIN?: string; // e.g. "labkiosk.org"
   /**
    * The host the public pages are listed under in search results, when the zone

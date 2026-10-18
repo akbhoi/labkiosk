@@ -12,6 +12,8 @@ Every knob, where it is set, and what happens if it is wrong.
 | :--- | :--- | :--- |
 | `SUPER_ADMIN_EMAIL` | **Yes**, with a D1 binding | The worker refuses to serve |
 | `SUPER_ADMIN_PASSWORD` | **Yes**, with a D1 binding | The worker refuses to serve |
+| `PASSWORD_PEPPER` | **Yes**, with a D1 binding | The worker refuses to serve. At least 32 characters (`openssl rand -hex 32`); an HMAC key over every stored password hash. Losing or changing it invalidates every password. |
+| `BREACHED_PASSWORD_CHECK` | No | A variable: `off` stops checking new passwords against Have I Been Pwned (only a 5-character hash prefix is sent; an outage allows the password). |
 | `CF_API_TOKEN` | For custom domains | Approving a custom domain cannot create its Cloudflare for SaaS custom hostname. An API token for the platform zone with **Zone · SSL and Certificates · Edit**. |
 | `CF_ZONE_ID` | For custom domains | As above. The zone id of the platform domain (zone **Overview** → *API* → *Zone ID*). |
 | `RELEASE_NOTES_TOKEN` | For releases | `POST /api/release-notes/sync` and `GET /api/release-support` answer `503`, so `/download` offers a new release only after the next hourly run, a tag build fails, and the daily security rebuild stops (it rebuilds no line without knowing which major releases are at end of life). At least 32 characters; the same value as the repository's Actions secret of that name. |

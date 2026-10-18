@@ -14,6 +14,7 @@ import {
   assertSchemaCurrent,
   ensureDemoTenants,
   createUser,
+  pepperLegacyPasswordHashes,
   createTenant,
   findTenantBySubdomain,
   countEnrolledWorkstations,
@@ -94,7 +95,17 @@ import { BUSY_SCRIPT, PALETTE } from "../src/ui_tokens";
 import { envelopeFor, localOutbox, mailConfigProblem, parseAddress, sendMail } from "../src/mail";
 import { listPendingMail, loadRawMail, markPendingMail, rawMailKey, storeRawMail } from "../src/mail_store";
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, InboundMessage } from "../src/inbox";
-import { ENROLLMENT_KEY_ALPHABET, enrollmentKeyCheckCharacter, generateEnrollmentKey, isEnrollmentKey } from "../src/auth";
+import {
+  ENROLLMENT_KEY_ALPHABET,
+  breachedPasswordProblem,
+  enrollmentKeyCheckCharacter,
+  generateEnrollmentKey,
+  hashPassword,
+  isEnrollmentKey,
+  passwordPepper,
+  pepperLegacyHash,
+  verifyPassword
+} from "../src/auth";
 import { rotateUncheckedEnrollmentKeys } from "../src/db";
 import { listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
 import { DOCS_NAV, DOCS_PAGES } from "../src/docs_content.generated";
@@ -114,7 +125,9 @@ const mockEnv: Env = {
   DEFAULT_DOMAIN: "labkiosk.org",
   SUPER_ADMIN_EMAIL: "admin@labkiosk.org",
   SUPER_ADMIN_PASSWORD: "SuperAdminPassword2026!",
-  ALLOW_LOCAL_DB: "1"
+  ALLOW_LOCAL_DB: "1",
+  // Tests never call Have I Been Pwned; the check has its own tests with a stand-in fetch.
+  BREACHED_PASSWORD_CHECK: "off"
 };
 
 const BASE = "https://labkiosk.org";
@@ -4353,6 +4366,90 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(newPassword.status, 200);
   });
 
+  test("Password hashes are peppered, and older ones are wrapped without the password", async () => {
+    const pepper = passwordPepper(mockEnv);
+    const { hashHex, saltHex } = await hashPassword("CorrectHorse2026!", pepper);
+    assert.match(hashHex, /^p1\$[0-9a-f]{64}$/);
+    assert.ok(await verifyPassword("CorrectHorse2026!", hashHex, saltHex, pepper));
+    assert.ok(!(await verifyPassword("WrongHorse2026!", hashHex, saltHex, pepper)));
+    assert.ok(!(await verifyPassword("CorrectHorse2026!", hashHex, saltHex, "x".repeat(64))), "a different pepper fails");
+
+    // A bare PBKDF2 hash from before the pepper: still accepted, then wrapped by the cron.
+    const db = getDatabase(mockEnv);
+    const salt = "ab".repeat(32);
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode("LegacyPassword2026!"), { name: "PBKDF2" }, false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: Buffer.from(salt, "hex"), iterations: 100000, hash: "SHA-256" }, key, 256);
+    const legacy = Buffer.from(bits).toString("hex");
+    assert.ok(await verifyPassword("LegacyPassword2026!", legacy, salt, pepper));
+    const wrapped = await pepperLegacyHash(legacy, pepper);
+    assert.ok(wrapped && (await verifyPassword("LegacyPassword2026!", wrapped, salt, pepper)));
+    assert.equal(await pepperLegacyHash(wrapped!, pepper), null, "an already peppered hash is left alone");
+
+    const now = Math.floor(Date.now() / 1000);
+    await db
+      .prepare("INSERT INTO users (id, email, password_hash, salt, role, name, created_at) VALUES (?, ?, ?, ?, 'org_admin', 'Legacy', ?)")
+      .bind("legacy-user", "legacy@example.com", legacy, salt, now)
+      .run();
+    assert.ok((await pepperLegacyPasswordHashes(db, pepper)) >= 1);
+    const row = await db.prepare("SELECT password_hash FROM users WHERE id = 'legacy-user'").first<{ password_hash: string }>();
+    assert.equal(row?.password_hash, wrapped);
+    assert.equal(await pepperLegacyPasswordHashes(db, pepper), 0, "nothing left to wrap");
+    const signIn = await call("/api/auth/login", json({ email: "legacy@example.com", password: "LegacyPassword2026!" }));
+    assert.notEqual(signIn.status, 401, "the wrapped hash still signs in");
+
+    // Production refuses to run without a pepper; local development has a fixed one.
+    assert.throws(() => passwordPepper({}), /PASSWORD_PEPPER must be set/);
+    assert.ok(passwordPepper({ ALLOW_LOCAL_DB: "1" }).length >= 32);
+  });
+
+  test("A new password that has appeared in a breach is refused; only a hash prefix leaves", async () => {
+    const sha1 = (await crypto.subtle.digest("SHA-1", new TextEncoder().encode("Password123456"))).valueOf() as ArrayBuffer;
+    const digest = Buffer.from(sha1).toString("hex").toUpperCase();
+    const asked: string[] = [];
+    const corpus = (body: string) =>
+      (async (url: string | URL | Request, init?: RequestInit) => {
+        asked.push(String(url));
+        assert.equal(new Headers(init?.headers).get("Add-Padding"), "true");
+        return new Response(body);
+      }) as typeof fetch;
+    const on = {};
+
+    const breached = await breachedPasswordProblem("Password123456", on, corpus(`0000000000000000000000000000000000A:3\r\n${digest.slice(5)}:52\r\n`));
+    assert.match(breached!, /appeared in a data breach/);
+    assert.deepEqual(asked, [`https://api.pwnedpasswords.com/range/${digest.slice(0, 5)}`], "only the first five characters are sent");
+
+    // Padding lines carry a count of 0 and are not a match.
+    assert.equal(await breachedPasswordProblem("Password123456", on, corpus(`${digest.slice(5)}:0\r\n`)), null);
+    assert.equal(await breachedPasswordProblem("Password123456", on, corpus("")), null);
+    // An outage allows the password rather than blocking sign-up.
+    const down = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+    assert.equal(await breachedPasswordProblem("Password123456", on, down), null);
+    asked.length = 0;
+    assert.equal(await breachedPasswordProblem("Password123456", { BREACHED_PASSWORD_CHECK: "off" }, corpus(`${digest.slice(5)}:9\r\n`)), null);
+    assert.equal(asked.length, 0, "switched off, nothing is sent");
+
+    // The password change route asks before it stores anything.
+    const pwned = mock.method(globalThis, "fetch", async () => new Response(`${digest.slice(5)}:52\r\n`));
+    try {
+      const res = await worker.fetch(
+        request("/api/auth/change-password", {
+          method: "POST",
+          cookie: rivalSessionCookie,
+          body: JSON.stringify({ currentPassword: "RiversideNewPass789!", newPassword: "Password123456" })
+        }),
+        { ...mockEnv, BREACHED_PASSWORD_CHECK: undefined }
+      );
+      assert.equal(res.status, 400);
+      assert.match(((await res.json()) as { error: string }).error, /data breach/);
+    } finally {
+      pwned.mock.restore();
+    }
+    const unchanged = await call("/api/auth/login", json({ email: "operator@riverside.example", password: "RiversideNewPass789!" }));
+    assert.equal(unchanged.status, 200);
+  });
+
   // ------------------------------------------------------ registration rules
 
   test("Rejects reserved subdomains and implausible emails at registration", async () => {
@@ -5423,8 +5520,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         ["ORG_HUB", "REMOTE_RELAY", "ASSETS", "AUDIT_QUEUE", "AUDIT_ARCHIVE", "FLEET_METRICS", "AUTH_RATE_LIMITER", "CUSTOM_HOSTNAMES", "CF_API_TOKEN", "CF_ZONE_ID"]
           .every((name) => err.message.includes(name))
     );
-    // With them bound, the same database serves normally.
-    const res = await worker.fetch(request("/"), {
+    const bindings = {
       ...secrets,
       ORG_HUB: {} as DurableObjectNamespace,
       REMOTE_RELAY: {} as DurableObjectNamespace,
@@ -5436,7 +5532,12 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       CUSTOM_HOSTNAMES: {} as Workflow,
       CF_API_TOKEN: "test-token",
       CF_ZONE_ID: "test-zone"
-    } as Env);
+    };
+    // Bound, but without PASSWORD_PEPPER no password can be hashed or checked.
+    await assert.rejects(() => worker.fetch(request("/"), bindings as Env), /PASSWORD_PEPPER must be set/);
+    await assert.rejects(() => worker.fetch(request("/"), { ...bindings, PASSWORD_PEPPER: "too-short" } as Env), /at least 32 characters/);
+    // With the pepper too, the same database serves normally.
+    const res = await worker.fetch(request("/"), { ...bindings, PASSWORD_PEPPER: "p".repeat(64) } as Env);
     assert.equal(res.status, 200);
   });
 
@@ -5664,9 +5765,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   test("Startup never adopts a demo name another organization already holds", async () => {
     const db = createLocalD1Database();
     await initSchema(db);
-    const platform = await createUser(db, { email: "platform@example.com", password: "PlatformPassword123!", name: "Platform", role: "super_admin" });
-    const earlierPlatform = await createUser(db, { email: "old-platform@example.com", password: "PlatformPassword123!", name: "Old", role: "super_admin" });
-    const stranger = await createUser(db, { email: "stranger@example.com", password: "StrangerPassword123!", name: "Stranger" });
+    const platform = await createUser(db, { email: "platform@example.com", password: "PlatformPassword123!", name: "Platform", role: "super_admin" }, passwordPepper(mockEnv));
+    const earlierPlatform = await createUser(db, { email: "old-platform@example.com", password: "PlatformPassword123!", name: "Old", role: "super_admin" }, passwordPepper(mockEnv));
+    const stranger = await createUser(db, { email: "stranger@example.com", password: "StrangerPassword123!", name: "Stranger" }, passwordPepper(mockEnv));
     await createTenant(db, { userId: stranger.id, name: "Someone Else", subdomain: "web-demo", status: "active" });
     await createTenant(db, { userId: earlierPlatform.id, name: "Local VM Demo", subdomain: "local-demo", status: "active" });
 

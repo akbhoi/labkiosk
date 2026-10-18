@@ -24,7 +24,7 @@
 
 import { Env, Session, User, UserRole } from "./types";
 import { jsonError } from "./guard";
-import { bufferToHex, parseCookies, sha256Hex, timingSafeEqual, verifyPassword } from "./auth";
+import { bufferToHex, parseCookies, sha256Hex, timingSafeEqual, verifyPassword, passwordPepper } from "./auth";
 import { clearLoginFailures, createSession, findTenantById, findUserById, getLockoutRemaining, recordLoginFailure, writeAuditLog } from "./db";
 import { uniformBelow } from "./conversations";
 import { mailConfigProblem, sendMail } from "./mail";
@@ -569,7 +569,7 @@ export async function handleTwoFactorRoute(ctx: RouteContext, sessionToken: stri
   }
   /** Changes to the factor itself need the password again: a borrowed session is not enough. */
   const passwordOk = async () => {
-    const ok = await verifyPassword(String(body.password ?? ""), user.password_hash, user.salt);
+    const ok = await verifyPassword(String(body.password ?? ""), user.password_hash, user.salt, passwordPepper(env));
     if (!ok) await recordLoginFailure(db, user.email);
     return ok;
   };

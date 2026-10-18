@@ -203,6 +203,7 @@ import {
   findUserByEmail,
   findUserById,
   createUser,
+  pepperLegacyPasswordHashes,
   findTenantBySubdomain,
   findTenantById,
   findTenantByUserId,
@@ -288,6 +289,9 @@ import {
   timingSafeEqual,
   sha256Hex,
   validatePasswordStrength,
+  breachedPasswordProblem,
+  passwordPepper,
+  PEPPERED_HASH_PREFIX,
   isPlausibleEmail,
   isEnrollmentKey,
   generateNonce
@@ -555,7 +559,8 @@ function bootstrap(db: D1Database, env: Env): Promise<Bootstrapped> {
       }
       const superAdmin = await ensureSuperAdmin(
         db,
-        email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN
+        email && password ? { email, password } : LOCAL_DEV_SUPER_ADMIN,
+        passwordPepper(env)
       );
       const demos = await ensureDemoTenants(db, superAdmin.id);
       return { superAdmin, demos };
@@ -1101,6 +1106,8 @@ export default {
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);
+    const peppered = await pepperLegacyPasswordHashes(db, passwordPepper(env));
+    if (peppered) console.log(`[Worker] Wrapped ${peppered} password hashes in PASSWORD_PEPPER.`);
     for (const tenantId of await rotateUncheckedEnrollmentKeys(db)) {
       await writeAuditLog(db, { tenantId, userId: null, action: "settings.rotate_enrollment_key", details: "reason=check_character" });
     }
@@ -1508,8 +1515,8 @@ export default {
         // Always run a verification so a missing account and a wrong password
         // take comparable time and cannot be told apart by response latency.
         const isValid = user
-          ? await verifyPassword(body.password, user.password_hash, user.salt)
-          : await verifyPassword(body.password, "0".repeat(64), "0".repeat(64));
+          ? await verifyPassword(body.password, user.password_hash, user.salt, passwordPepper(env))
+          : await verifyPassword(body.password, PEPPERED_HASH_PREFIX + "0".repeat(64), "0".repeat(64), passwordPepper(env));
 
         if (!user || !isValid) {
           await recordLoginFailure(db, identifier);
@@ -1633,14 +1640,16 @@ export default {
         if (passwordProblem) return jsonError(passwordProblem, 400, jsonHeaders);
 
         const user = await findUserById(db, session.user_id);
-        if (!user || !(await verifyPassword(currentPassword, user.password_hash, user.salt))) {
+        if (!user || !(await verifyPassword(currentPassword, user.password_hash, user.salt, passwordPepper(env)))) {
           return jsonError("Current password is not correct", 400, jsonHeaders);
         }
         if (currentPassword === newPassword) {
           return jsonError("New password must differ from the current one", 400, jsonHeaders);
         }
+        const breached = await breachedPasswordProblem(newPassword, env);
+        if (breached) return jsonError(breached, 400, jsonHeaders);
 
-        await updateUserPassword(db, user.id, newPassword);
+        await updateUserPassword(db, user.id, newPassword, passwordPepper(env));
         await revokeTrustedBrowsers(db, user.id);
         // Any other browser holding this account is signed out; this one stays.
         await deleteSessionsForUser(db, user.id, sessionToken || undefined);
@@ -3271,7 +3280,8 @@ export default {
         if (refused) return jsonError(refused, 403, jsonHeaders);
 
         if (body.password !== undefined && body.password !== "") {
-          const passwordProblem = validatePasswordStrength(String(body.password));
+          const passwordProblem =
+            validatePasswordStrength(String(body.password)) || (await breachedPasswordProblem(String(body.password), env));
           if (passwordProblem) return jsonError(passwordProblem, 400, jsonHeaders);
         }
 
@@ -3289,7 +3299,7 @@ export default {
           password: body.password,
           role,
           permissions
-        });
+        }, passwordPepper(env));
 
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,
