@@ -2364,6 +2364,16 @@ ${BUSY_CSS}    .btn.is-loading::before, .menu-item.is-loading::before, .profile-
       font-family: var(--font-mono);
       font-size: 0.875rem;
     }
+    .passkey-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .passkey-row strong { overflow-wrap: anywhere; }
     .modal-vnc {
       max-width: 1100px;
       width: 96%;

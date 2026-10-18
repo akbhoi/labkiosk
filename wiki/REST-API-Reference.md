@@ -73,9 +73,10 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/auth/me` | `GET` | Current user profile and tenant |
 | `/api/auth/logout` | `POST` | Invalidate this session and clear the cookie |
 | `/api/auth/change-password` | `POST` | Rotate password, revoking the account's other sessions and trusted browsers |
-| `/api/auth/login/verify` | `POST` | Second step of a two-factor sign-in (app code, emailed code or recovery code) |
+| `/api/auth/login/verify` | `POST` | Second step of a two-factor sign-in (passkey, app code, emailed code or recovery code) |
 | `/api/auth/login/email-code` | `POST` | Email a sign-in code for a pending two-factor sign-in |
-| `/api/auth/two-factor[/setup,/enable,/recovery-codes,/disable]` | `GET`/`POST` | The signed-in account's own two-factor sign-in |
+| `/api/auth/login/passkey` | `POST` | The WebAuthn request options for a pending two-factor sign-in |
+| `/api/auth/two-factor[/email,/setup,/enable,/recovery-codes,/disable,/passkey-options,/passkey-register,/passkey-delete]` | `GET`/`POST` | The signed-in account's own two-factor sign-in |
 
 ### Operator admin
 

@@ -211,7 +211,7 @@ These can be neither registered nor resolved as an organization. Add one to `RES
 
 ## The console
 
-The rail has five tabs: **Organizations** (the directory, filtered by status), **Tasks**, **Mail**, **Catalogs** and **System**. Each tab's views appear both as tabs above the content and under *Views* in the side panel. Signing in always asks for a six-digit code emailed to the super admin address; an authenticator app can be added under **System → Two-factor sign-in**.
+The rail has five tabs: **Organizations** (the directory, filtered by status), **Tasks**, **Mail**, **Catalogs** and **System**. Each tab's views appear both as tabs above the content and under *Views* in the side panel. Signing in always asks for a six-digit code emailed to the super admin address; passkeys and an authenticator app can be added under **System → Two-factor sign-in**, and a passkey is then offered first.
 
 **Tasks** holds what needs a decision: *Requests* (registrations and Remote Control requests), *Subdomain changes* and *Custom domains*.
 

@@ -1,7 +1,8 @@
 /**
  * The "Two-factor sign-in" tab: the signed-in account turns the emailed
- * sign-in code on or off, adds or removes an authenticator app, and replaces
- * its recovery codes (src/two_factor.ts holds the rules).
+ * sign-in code on or off, adds or removes an authenticator app, replaces
+ * its recovery codes, and adds or removes passkeys (src/two_factor.ts holds
+ * the rules).
  *
  * It is a tab of Settings in the organization console and of System in the
  * Super Admin console, and the profile menu links to it. Staff without the
@@ -26,6 +27,11 @@ export function renderTwoFactorPaneHtml(): string {
           <p class="card-sub">Optional. Sign-in then asks for the code from an app on your phone, such as Google Authenticator, Microsoft Authenticator or 1Password, and works when email is slow.</p>
           <form id="two-factor-body" aria-live="polite" novalidate></form>
         </div>
+        <div class="card">
+          <h2 class="card-title">Passkeys</h2>
+          <p class="card-sub">Optional. A passkey on this computer, your phone or a security key finishes sign-in with a touch or your fingerprint, and cannot be used on a fake copy of this site.</p>
+          <form id="two-factor-passkeys" aria-live="polite" novalidate></form>
+        </div>
       </div>`;
 }
 
@@ -36,10 +42,11 @@ export function renderTwoFactorScript(nonce: string): string {
       "use strict";
       var emailBox = document.getElementById("two-factor-email");
       var body = document.getElementById("two-factor-body");
-      if (!emailBox || !body) return;
+      var passkeyBox = document.getElementById("two-factor-passkeys");
+      if (!emailBox || !body || !passkeyBox) return;
       // Forms so the browser and a password manager treat each password field as one;
       // the buttons do the work, so Enter must not send the page anywhere.
-      [emailBox, body].forEach(function (form) {
+      [emailBox, body, passkeyBox].forEach(function (form) {
         form.addEventListener("submit", function (event) { event.preventDefault(); });
       });
 
@@ -116,7 +123,7 @@ export function renderTwoFactorScript(nonce: string): string {
           if (!state.emailCodes) return;
         }
         if (state.required) {
-          emailBox.append(callout("success", "On. Every sign-in emails a code to " + state.email + ". A platform administrator cannot turn this off."));
+          emailBox.append(callout("success", "On. Every sign-in emails a code to " + state.email + ". An administrator account cannot turn this off."));
           return;
         }
         emailBox.append(state.emailCodes
@@ -273,17 +280,120 @@ export function renderTwoFactorScript(nonce: string): string {
         body.append(status, password.group, code.group, error, actions);
       }
 
+      // ------------------------------------------------------------ passkeys
+      function fromB64url(value) {
+        var text = atob(value.replace(/-/g, "+").replace(/_/g, "/"));
+        return Uint8Array.from(text, function (c) { return c.charCodeAt(0); });
+      }
+      function toB64url(buffer) {
+        var text = "";
+        new Uint8Array(buffer).forEach(function (b) { text += String.fromCharCode(b); });
+        return btoa(text).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+      }
+
+      function renderPasskeys(state) {
+        passkeyBox.replaceChildren();
+        var keys = state.passkeys || [];
+        var supported = Boolean(window.PublicKeyCredential && navigator.credentials);
+        var name = input("two-factor-passkey-name", "text", "Name for a new passkey", { maxlength: "60", placeholder: "Work laptop", autocomplete: "off" });
+        name.group.classList.add("mt-md");
+        var password = input("two-factor-passkey-password", "password", "Your password", { autocomplete: "current-password" });
+        if (!supported) password.group.classList.add("mt-md");
+        var error = errorLine();
+        if (keys.length) {
+          var list = el("ul", "stack-sm");
+          keys.forEach(function (key) {
+            var item = el("li", "passkey-row");
+            var text = el("div");
+            text.append(el("strong", null, key.name));
+            text.append(el("div", "text-xs text-muted",
+              "Added " + when(key.createdAt) +
+              (key.lastUsedAt ? ", last used " + when(key.lastUsedAt) : ", not used yet") +
+              (key.here ? "" : ". Works on " + key.site + " only")));
+            item.append(text, button("Remove", "btn-danger", async function () {
+              error.textContent = "";
+              var ok = await lkConfirm({
+                title: "Remove the passkey " + key.name + "?",
+                message: "It will no longer sign in to this account. Enter your password below first.",
+                confirmLabel: "Remove",
+                tone: "danger"
+              });
+              if (!ok) return;
+              try {
+                await api("/api/auth/two-factor/passkey-delete", { password: password.field.value, id: key.id });
+                lkToast("The passkey was removed.", "success");
+                await render();
+              } catch (err) {
+                error.textContent = err.message;
+              }
+            }));
+            list.append(item);
+          });
+          passkeyBox.append(list);
+        } else {
+          passkeyBox.append(el("p", "text-muted", "No passkey is set up for this account."));
+        }
+        if (!supported) {
+          passkeyBox.append(callout("warning", "This browser cannot create passkeys."));
+          // Removing one still works here.
+          if (keys.length) passkeyBox.append(password.group, error);
+          return;
+        }
+        var actions = el("div", "form-actions");
+        actions.append(button("Add a passkey", "btn-secondary", async function () {
+          error.textContent = "";
+          try {
+            var options = await api("/api/auth/two-factor/passkey-options", { password: password.field.value });
+            var credential;
+            try {
+              credential = await navigator.credentials.create({
+                publicKey: {
+                  challenge: fromB64url(options.challenge),
+                  rp: options.rp,
+                  user: { id: fromB64url(options.user.id), name: options.user.name, displayName: options.user.displayName },
+                  pubKeyCredParams: options.pubKeyCredParams,
+                  timeout: options.timeout,
+                  attestation: options.attestation,
+                  authenticatorSelection: options.authenticatorSelection,
+                  excludeCredentials: options.excludeCredentials.map(function (c) { return { type: c.type, id: fromB64url(c.id) }; })
+                }
+              });
+            } catch (err) {
+              error.textContent = err && err.name === "InvalidStateError"
+                ? "This device already holds a passkey for this account."
+                : "No passkey was created.";
+              return;
+            }
+            await api("/api/auth/two-factor/passkey-register", {
+              name: name.field.value,
+              credential: {
+                clientDataJSON: toB64url(credential.response.clientDataJSON),
+                attestationObject: toB64url(credential.response.attestationObject)
+              }
+            });
+            lkToast("The passkey was added. Other browsers signed in to this account were signed out.", "success");
+            await render();
+          } catch (err) {
+            error.textContent = err.message;
+          }
+        }));
+        passkeyBox.append(name.group, password.group, error, actions);
+      }
+
       async function render() {
         emailBox.replaceChildren(el("p", "text-muted", "Loading…"));
         body.replaceChildren(el("p", "text-muted", "Loading…"));
+        passkeyBox.replaceChildren(el("p", "text-muted", "Loading…"));
         try {
           var state = await api("/api/auth/two-factor");
           renderEmail(state);
           if (state.enabled) renderOn(state);
           else renderOff();
+          renderPasskeys(state);
         } catch (err) {
           emailBox.replaceChildren(el("p", "form-error", "Could not load: " + err.message));
           body.replaceChildren();
+          passkeyBox.replaceChildren();
         }
       }
 

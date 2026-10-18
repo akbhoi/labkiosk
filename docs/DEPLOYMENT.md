@@ -271,13 +271,14 @@ Fastmail show the logo with that alone. Gmail and Apple Mail show it only with a
 Mark Certificate (a paid certificate from DigiCert or Entrust; a VMC also needs a registered
 trademark), whose PEM URL then goes in the same record as `a=<url>`.
 
-**Sign-in security** needs no setup. After the password, a super admin is always emailed a
-six-digit code, so `SUPER_ADMIN_EMAIL` must reach an inbox that can be read without signing in to
-the console (not a mailbox that exists only in its **Mail** tab). An organization account turns the
-emailed code on under Settings → Two-factor sign-in; an authenticator app with ten recovery codes is
-optional on top for every account. A sign-in from a browser the account has not used before is
-emailed to the account. Where email is not configured, an account without an app signs in with its
-password alone and the server logs why.
+**Sign-in security** needs no setup. After the password, every administrator (the super admin, an
+organization's owner and staff with the `org_admin` role) is always emailed a six-digit code, so
+`SUPER_ADMIN_EMAIL` must reach an inbox that can be read without signing in to the console (not a
+mailbox that exists only in its **Mail** tab). Other staff turn the emailed code on under Settings →
+Two-factor sign-in. Passkeys and an authenticator app with ten recovery codes are optional on top for
+every account. A sign-in from a browser the account has not used before is emailed to the account.
+Where email is not configured, an account without an app or a passkey signs in with its password
+alone and the server logs why.
 
 Locally (`ALLOW_LOCAL_DB=1`) nothing is sent unless `MAIL_FROM` is set: messages go to an in-process
 outbox the tests read (`localOutbox()` in `src/mail.ts`) and each subject is logged, so under

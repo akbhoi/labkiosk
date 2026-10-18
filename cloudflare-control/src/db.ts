@@ -418,7 +418,27 @@ CREATE TABLE IF NOT EXISTS login_challenges (
   email_codes_sent INTEGER NOT NULL DEFAULT 0,
   email_code_sent_at INTEGER,
   expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  passkey_challenge TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_passkeys (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  rp_id TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  algorithm INTEGER NOT NULL CHECK (algorithm IN (-7, -257)),
+  sign_count INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS passkey_registrations (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  challenge TEXT NOT NULL,
+  rp_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS user_devices (
@@ -495,6 +515,7 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversatio
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messages(email_message_id);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_expires ON login_challenges(expires_at);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_user ON login_challenges(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_passkeys_user ON user_passkeys(user_id, rp_id);
 `;
 
 /**
@@ -709,6 +730,9 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT requested_at, pilot_group, pilot_at FROM major_upgrade_grants LIMIT 1").run();
     // 0040: support status and end of life per major release.
     await db.prepare("SELECT major, status, end_of_life_at, eol_reminder_days FROM release_support LIMIT 1").run();
+    // 0042: passkeys.
+    await db.prepare("SELECT id, rp_id, sign_count FROM user_passkeys LIMIT 1").run();
+    await db.prepare("SELECT passkey_challenge FROM login_challenges LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

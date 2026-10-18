@@ -265,6 +265,7 @@ ${FONT_LINKS}
       </form>
       <form id="login-2fa-form" hidden>
         <div class="notice-box" id="login-2fa-notice" role="status"></div>
+        <button type="button" class="btn btn-primary btn-block" id="login-2fa-passkey" hidden style="margin-bottom: 14px;">Use your passkey</button>
         <div class="form-group">
           <label class="form-label" for="login-2fa-code" id="login-2fa-label">Sign-in code</label>
           <input type="text" class="form-input" id="login-2fa-code" required inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123456" style="font-family: var(--font-mono); letter-spacing: 0.2em;">
@@ -944,22 +945,97 @@ ${FONT_LINKS}
       alertBox.textContent = message;
       alertBox.style.display = 'block';
     }
-    // The second step is an emailed code unless the account added an authenticator app.
+    // The second step leads with a passkey, then an authenticator app, then an emailed code.
+    const passkeyButton = document.getElementById('login-2fa-passkey');
+    const passkeysWork = Boolean(window.PublicKeyCredential && navigator.credentials);
     function showSecondStep(data) {
       const byEmail = data.method === 'email';
+      const byPasskey = data.method === 'passkey' && passkeysWork;
       loginChallenge = data.challenge;
       loginForm.hidden = true;
       secondForm.hidden = false;
       secondNotice.textContent = byEmail
         ? 'We emailed a six-digit code to ' + data.sentTo + '. Enter it below.'
-        : 'Your account uses two-factor sign-in. Enter the six-digit code from your authenticator app.';
-      document.getElementById('login-2fa-label').textContent = byEmail ? 'Code from the email' : 'Code from your authenticator app';
+        : byPasskey
+          ? 'Your account has a passkey. Use it to finish signing in' + (data.app ? ', or enter a code from your authenticator app.' : ', or have a code emailed to you.')
+          : data.app
+            ? 'Your account uses two-factor sign-in. Enter the six-digit code from your authenticator app.'
+            : 'This browser cannot use your passkey. Have a code emailed to you and enter it below.';
+      passkeyButton.hidden = !byPasskey;
+      document.getElementById('login-2fa-label').textContent = byEmail ? 'Code from the email' : data.app ? 'Code from your authenticator app' : 'Code from the email';
       document.getElementById('login-2fa-email').textContent = byEmail ? 'Send a new code' : 'Email me a code instead';
-      document.getElementById('login-2fa-recovery').hidden = byEmail;
+      document.getElementById('login-2fa-recovery').hidden = !data.app;
       secondNotice.style.display = 'block';
       document.getElementById('login-2fa-code').value = '';
-      document.getElementById('login-2fa-code').focus();
+      if (byPasskey) passkeyButton.focus();
+      else document.getElementById('login-2fa-code').focus();
     }
+    function fromB64url(value) {
+      const text = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
+      return Uint8Array.from(text, (c) => c.charCodeAt(0));
+    }
+    function toB64url(buffer) {
+      let text = '';
+      new Uint8Array(buffer).forEach((b) => { text += String.fromCharCode(b); });
+      return btoa(text).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+    }
+    passkeyButton.addEventListener('click', async () => {
+      document.getElementById('login-alert').style.display = 'none';
+      passkeyButton.disabled = true;
+      try {
+        const asked = await fetch('/api/auth/login/passkey', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ challenge: loginChallenge })
+        });
+        const options = await asked.json();
+        if (!asked.ok) {
+          loginError(options.error || 'The passkey could not be used.');
+          if (asked.status === 401) startOver();
+          return;
+        }
+        let credential;
+        try {
+          credential = await navigator.credentials.get({
+            publicKey: {
+              challenge: fromB64url(options.challenge),
+              rpId: options.rpId,
+              timeout: options.timeout,
+              userVerification: options.userVerification,
+              allowCredentials: options.allowCredentials.map((c) => ({ type: c.type, id: fromB64url(c.id) }))
+            }
+          });
+        } catch (err) {
+          loginError('The passkey was not used. Try again, or use a code instead.');
+          return;
+        }
+        const res = await fetch('/api/auth/login/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            challenge: loginChallenge,
+            trustBrowser: document.getElementById('login-2fa-trust').checked,
+            passkey: {
+              id: toB64url(credential.rawId),
+              clientDataJSON: toB64url(credential.response.clientDataJSON),
+              authenticatorData: toB64url(credential.response.authenticatorData),
+              signature: toB64url(credential.response.signature)
+            }
+          })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          window.location.href = data.redirect || '/admin';
+          return;
+        }
+        loginError(data.error || 'The passkey was not accepted.');
+        if (res.status === 401) startOver();
+      } catch (err) {
+        loginError('Network error during sign-in');
+      } finally {
+        passkeyButton.disabled = false;
+      }
+    });
     function startOver() {
       loginChallenge = '';
       secondForm.hidden = true;
@@ -3446,7 +3522,7 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .code-row .btn { white-space: nowrap; }
     .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 0.8125rem; color: var(--text-muted); text-align: left; line-height: 1.5; }
     .check-row input { margin-top: 3px; }
-    #login-form[hidden], #login-2fa-form[hidden] { display: none; }
+    #login-form[hidden], #login-2fa-form[hidden], #login-2fa-passkey[hidden] { display: none; }
     #sim-broadcast-form[hidden], #sim-modal-ok[hidden] { display: none; }
     #sim-modal-text { overflow-wrap: anywhere; }
     .check-row a { color: var(--accent-text); }

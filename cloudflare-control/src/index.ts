@@ -372,6 +372,7 @@ import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstil
 import {
   continueSignIn,
   handleLoginEmailCode,
+  handleLoginPasskeyOptions,
   handleLoginVerify,
   handleTwoFactorRoute,
   isTwoFactorRoute,
@@ -1379,6 +1380,7 @@ export default {
       (path === "/api/auth/login" ||
         path === "/api/auth/login/verify" ||
         path === "/api/auth/login/email-code" ||
+        path === "/api/auth/login/passkey" ||
         path === "/api/auth/register" ||
         path === "/api/auth/register/email-code" ||
         path === "/api/contact" ||
@@ -1583,12 +1585,15 @@ export default {
       }
     }
 
-    // POST /api/auth/login/verify, /email-code: the second step of a two-factor sign-in.
+    // POST /api/auth/login/verify, /email-code, /passkey: the second step of a two-factor sign-in.
     if (path === "/api/auth/login/verify" && method === "POST") {
       return handleLoginVerify(routeContext, signInCookies);
     }
     if (path === "/api/auth/login/email-code" && method === "POST") {
       return handleLoginEmailCode(routeContext);
+    }
+    if (path === "/api/auth/login/passkey" && method === "POST") {
+      return handleLoginPasskeyOptions(routeContext);
     }
 
     // /api/auth/two-factor...: the signed-in account turns its own second factor on or off.

@@ -116,6 +116,7 @@ import { SITE_STYLESHEET_PATH } from "../src/ui_landing";
 import { referenceInSubject, subjectWithReference } from "../src/conversations";
 import { extractAttachment, htmlToText, parseEmail, stripQuotedHistory } from "../src/mime";
 import { base32Decode, base32Encode, currentTotpStep, totpCode } from "../src/two_factor";
+import { coseToJwk, decodeCbor, derToRawEcdsa, passkeyRelyingParty, PasskeyError } from "../src/webauthn";
 
 /**
  * The suite runs against the in-memory D1 adapter, which a production
@@ -323,9 +324,108 @@ async function registerApprovedOrganization(overrides: Record<string, unknown>):
   const approved = await call(`/api/super/inbox/${task.id}/approve`, { ...json({ message: "", workstationLimit: 45 }), cookie: admin });
   assert.equal(approved.status, 200);
   const body = signupBody(overrides);
-  const login = await call("/api/auth/login", json({ email: body.email, password: body.password }));
+  const login = await signIn({ email: body.email as string, password: body.password as string });
   assert.equal(login.status, 200, "an approved organization can sign in");
   return (await sessionOf(login));
+}
+
+// ------------------------------------------------- a software passkey for tests
+
+/** CBOR for what a test authenticator sends: unsigned and negative integers, bytes, text, maps. */
+function cbor(value: unknown): Uint8Array {
+  const head = (major: number, n: number): number[] =>
+    n < 24 ? [(major << 5) | n] : n < 256 ? [(major << 5) | 24, n] : [(major << 5) | 25, n >> 8, n & 0xff];
+  if (typeof value === "number") return Uint8Array.from(value >= 0 ? head(0, value) : head(1, -1 - value));
+  if (typeof value === "string") {
+    const text = new TextEncoder().encode(value);
+    return Uint8Array.from([...head(3, text.length), ...text]);
+  }
+  if (value instanceof Uint8Array) return Uint8Array.from([...head(2, value.length), ...value]);
+  if (value instanceof Map) {
+    const parts: number[] = head(5, value.size);
+    for (const [k, v] of value) parts.push(...cbor(k), ...cbor(v));
+    return Uint8Array.from(parts);
+  }
+  throw new Error(`cbor(): ${typeof value} is not supported`);
+}
+
+const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
+const sha256Bytes = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+
+/** A raw r||s ECDSA signature as the DER sequence authenticators send. */
+function rawToDer(raw: Uint8Array): Uint8Array {
+  const int = (bytes: Uint8Array) => {
+    let i = 0;
+    while (i < bytes.length - 1 && bytes[i] === 0) i++;
+    const trimmed = bytes.subarray(i);
+    const body = trimmed[0] & 0x80 ? [0, ...trimmed] : [...trimmed];
+    return [0x02, body.length, ...body];
+  };
+  const seq = [...int(raw.subarray(0, 32)), ...int(raw.subarray(32))];
+  return Uint8Array.from([0x30, seq.length, ...seq]);
+}
+
+/** An ES256 authenticator: makes one credential, then signs assertions with a rising counter. */
+class TestPasskey {
+  readonly id = crypto.getRandomValues(new Uint8Array(32));
+  counter = 0;
+  private constructor(private readonly keys: CryptoKeyPair) {}
+  static async create(): Promise<TestPasskey> {
+    return new TestPasskey((await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair);
+  }
+  get credentialId(): string {
+    return b64url(this.id);
+  }
+  async attestation(options: { challenge: string; rp: { id: string } }, origin = BASE) {
+    const jwk = (await crypto.subtle.exportKey("jwk", this.keys.publicKey)) as JsonWebKey;
+    const coseKey = new Map<number, unknown>([
+      [1, 2],
+      [3, -7],
+      [-1, 1],
+      [-2, new Uint8Array(Buffer.from(jwk.x!, "base64url"))],
+      [-3, new Uint8Array(Buffer.from(jwk.y!, "base64url"))]
+    ]);
+    const authData = Uint8Array.from([
+      ...(await sha256Bytes(new TextEncoder().encode(options.rp.id))),
+      0x41, // user present, attested credential data
+      0, 0, 0, 0,
+      ...new Uint8Array(16),
+      0, this.id.length,
+      ...this.id,
+      ...cbor(coseKey)
+    ]);
+    const clientData = new TextEncoder().encode(JSON.stringify({ type: "webauthn.create", challenge: options.challenge, origin }));
+    const attestationObject = cbor(new Map<string, unknown>([["fmt", "none"], ["attStmt", new Map()], ["authData", authData]]));
+    return { id: this.credentialId, clientDataJSON: b64url(clientData), attestationObject: b64url(attestationObject) };
+  }
+  async assertion(options: { challenge: string; rpId: string }, tweak: { origin?: string; counter?: number; flags?: number } = {}) {
+    const counter = tweak.counter ?? ++this.counter;
+    const authData = Uint8Array.from([
+      ...(await sha256Bytes(new TextEncoder().encode(options.rpId))),
+      tweak.flags ?? 0x01,
+      (counter >>> 24) & 0xff, (counter >>> 16) & 0xff, (counter >>> 8) & 0xff, counter & 0xff
+    ]);
+    const clientData = new TextEncoder().encode(JSON.stringify({ type: "webauthn.get", challenge: options.challenge, origin: tweak.origin ?? BASE }));
+    const signed = Uint8Array.from([...authData, ...(await sha256Bytes(clientData))]);
+    const raw = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, this.keys.privateKey, signed));
+    return { id: this.credentialId, clientDataJSON: b64url(clientData), authenticatorData: b64url(authData), signature: b64url(rawToDer(raw)) };
+  }
+}
+
+/** Add a staff member to an organization and sign them in: their session cookie. */
+async function addStaffMember(
+  ownerCookie: string,
+  subdomain: string,
+  staff: { name: string; email: string; password: string; role?: string; permissions?: string[] }
+): Promise<{ id: string; cookie: string }> {
+  const { data } = await callJson(`/api/tenant/staff?tenant=${subdomain}`, {
+    ...json({ role: "operator", permissions: ["workstations"], ...staff }),
+    cookie: ownerCookie
+  });
+  assert.equal(data.status, "ok", JSON.stringify(data));
+  const login = await signIn({ email: staff.email, password: staff.password });
+  assert.equal(login.status, 200, "the new staff member signs in");
+  return { id: data.operator.id as string, cookie: await sessionOf(login) };
 }
 
 /** The parts of the Durable Object runtime RemoteRelay uses, in this process. */
@@ -651,7 +751,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const again = await call(`/api/super/inbox/${task.id}/approve`, { ...json({}), cookie: admin });
     assert.equal(again.status, 409, "a decided task stays decided");
 
-    const login = await call("/api/auth/login", json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" }));
+    // The organization's owner administers it, so sign-in asks for an emailed code as well.
+    const login = await signIn({ email: "operator@greenwood.example", password: "OrganizationPassword123!" });
     assert.equal(login.status, 200);
     // Sessions are host-only: signing in on the apex sets no session there for an organization's
     // console, clears the parent-domain cookie earlier releases set, and hands off to the subdomain.
@@ -736,7 +837,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       verdicts.push({ success: true, action: "login" });
       const signedIn = await post("/api/auth/login", { ...credentials, turnstileToken: "good" });
       assert.equal(signedIn.status, 200);
-      assert.ok(signedIn.headers.get("Set-Cookie"));
+      assert.equal(((await signedIn.json()) as any).status, "two_factor", "the password was checked: the owner's second step follows");
       // An organization's own domain is not a host name the widget runs on, so
       // sign-in there carries no check and relies on the lockouts.
       const elsewhere = await worker.fetch(
@@ -784,9 +885,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Two-factor sign-in: set up with an app, then a code, an emailed code or a recovery code", async () => {
-    const email = "operator@hillside.example";
-    const password = "HillsidePass789!";
-    const cookie = await registerApprovedOrganization({ name: "Hillside Library", contactName: "Hana Hill", email, password, subdomain: "hillside" });
+    const owner = await registerApprovedOrganization({
+      name: "Hillside Library",
+      contactName: "Hana Hill",
+      email: "operator@hillside.example",
+      password: "HillsidePass789!",
+      subdomain: "hillside"
+    });
+    // A staff member who does not administer the organization chooses their own second factor.
+    const email = "desk@hillside.example";
+    const password = "HillsideDesk789!";
+    const { cookie } = await addStaffMember(owner, "hillside", { name: "Dev Desk", email, password });
     const login = (device?: string) => call("/api/auth/login", { ...json({ email, password }), cookie: device });
     const cookiesOf = (res: Response) => res.headers.getSetCookie().map((c) => c.split(";")[0]);
     const session = (res: Response) => sessionOf(res);
@@ -800,6 +909,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(off.enabled, false);
     assert.equal(off.emailCodes, false, "an organization account chooses the emailed code");
     assert.equal(off.required, false);
+    const { data: ownerState } = await callJson("/api/auth/two-factor", { cookie: owner });
+    assert.equal(ownerState.emailCodes, true, "the organization's owner is always emailed a code");
+    assert.equal(ownerState.required, true);
     const { data: superState } = await callJson("/api/auth/two-factor", { cookie: await superCookie() });
     assert.equal(superState.enabled, false, "super admins have it too");
     assert.equal(superState.emailCodes, true, "a super admin is always emailed a code");
@@ -809,7 +921,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/two-factor/setup", { ...json({ password: "wrong" }), cookie })).status, 400, "setup needs the password");
     const { res: setupRes, data: setup } = await callJson("/api/auth/two-factor/setup", { ...json({ password }), cookie });
     assert.equal(setupRes.status, 200);
-    assert.match(setup.otpauthUri, /^otpauth:\/\/totp\/Lab%20Kiosk%3Aoperator%40hillside\.example\?secret=[A-Z2-7]{32}&issuer=Lab%20Kiosk/);
+    assert.match(setup.otpauthUri, /^otpauth:\/\/totp\/Lab%20Kiosk%3Adesk%40hillside\.example\?secret=[A-Z2-7]{32}&issuer=Lab%20Kiosk/);
     const secret = base32Decode(setup.secret);
     assert.equal(((await (await login()).json()) as { status: string }).status, "ok", "not on until a code proves the app");
 
@@ -853,7 +965,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(step2.status, "two_factor", "a known browser is not a trusted one");
     const sent = await callJson("/api/auth/login/email-code", json({ challenge: step2.challenge }));
     assert.equal(sent.res.status, 200);
-    assert.equal(sent.data.sentTo, "o•••@hillside.example");
+    assert.equal(sent.data.sentTo, "d•••@hillside.example");
     assert.equal((await call("/api/auth/login/email-code", json({ challenge: step2.challenge }))).status, 429, "one code a minute");
     const emailed = mailTo().at(-1)!;
     const emailedCode = /is your Lab Kiosk sign-in code/.test(emailed.subject) ? emailed.subject.slice(0, 6) : "";
@@ -885,10 +997,17 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/two-factor/enable", { ...json({ code: "123456" }), cookie })).status, 409, "a new setup starts over");
   });
 
-  test("Two-factor sign-in: an emailed code needs no setup, and a super admin cannot turn it off", async () => {
-    const email = "operator@lakeside.example";
-    const password = "LakesidePass789!";
-    const cookie = await registerApprovedOrganization({ name: "Lakeside Library", contactName: "Lena Lake", email, password, subdomain: "lakeside" });
+  test("Two-factor sign-in: an emailed code needs no setup, and administrators cannot turn it off", async () => {
+    const owner = await registerApprovedOrganization({
+      name: "Lakeside Library",
+      contactName: "Lena Lake",
+      email: "operator@lakeside.example",
+      password: "LakesidePass789!",
+      subdomain: "lakeside"
+    });
+    const email = "desk@lakeside.example";
+    const password = "LakesideDesk789!";
+    const { cookie } = await addStaffMember(owner, "lakeside", { name: "Dee Desk", email, password });
     const set = (body: unknown, as?: string) => call("/api/auth/two-factor/email", { ...json(body), cookie: as });
 
     // Only the signed-in account, with its password, and only a clear on or off.
@@ -907,7 +1026,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const { res: step, data: challenge } = await callJson("/api/auth/login", json({ email, password }));
     assert.equal(challenge.status, "two_factor");
     assert.equal(challenge.method, "email");
-    assert.equal(challenge.sentTo, "o•••@lakeside.example");
+    assert.equal(challenge.sentTo, "d•••@lakeside.example");
     assert.equal(step.headers.get("Set-Cookie"), null, "no session before the code");
     const code = lastMailTo(email).subject.match(/^(\d{6}) is your Lab Kiosk sign-in code$/)![1];
     const wrong = code === "000000" ? "111111" : "000000";
@@ -921,9 +1040,14 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await set({ password, enabled: false }, cookie)).status, 200);
     assert.equal(((await (await call("/api/auth/login", json({ email, password }))).json()) as any).status, "ok");
 
-    // A super admin cannot turn it off.
+    // A super admin, an organization's owner and a staff member with the org_admin role cannot turn it off.
     const admin = await superCookie();
     assert.equal((await set({ password: mockEnv.SUPER_ADMIN_PASSWORD, enabled: false }, admin)).status, 409);
+    assert.equal((await set({ password: "LakesidePass789!", enabled: false }, owner)).status, 409);
+    const deputy = await addStaffMember(owner, "lakeside", { name: "Dana Deputy", email: "deputy@lakeside.example", password: "LakesideDeputy789!", role: "org_admin", permissions: [] });
+    const { data: deputyState } = await callJson("/api/auth/two-factor", { cookie: deputy.cookie });
+    assert.equal(deputyState.required, true, "staff with the org_admin role administer the organization too");
+    assert.equal((await set({ password: "LakesideDeputy789!", enabled: false }, deputy.cookie)).status, 409);
 
     // Where email is not configured a code cannot be sent: the password alone signs in, and the choice is refused.
     const noMail = { ...mockEnv, EMAIL: {}, MAIL_FROM: "Lab Kiosk <support@email.labkiosk.org>" } as unknown as Env;
@@ -937,8 +1061,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Two-factor sign-in: a challenge takes five wrong codes, then the password is needed again", async () => {
-    const email = "operator@hillside.example";
-    const password = "HillsidePass789!";
+    const email = "desk@hillside.example";
+    const password = "HillsideDesk789!";
     const cookie = await sessionOf(await call("/api/auth/login", json({ email, password })));
     const { data: setup } = await callJson("/api/auth/two-factor/setup", { ...json({ password }), cookie });
     const step = currentTotpStep();
@@ -950,6 +1074,116 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal((await call("/api/auth/login/verify", json({ challenge, code: "000000" }))).status, 401);
     const late = await call("/api/auth/login/verify", json({ challenge, code: await totpCode(base32Decode(setup.secret), step + 1) }));
     assert.equal(late.status, 401, "the challenge is gone, even for the right code");
+  });
+
+  test("Passkeys: registered with the password, then a sign-in's second step, once per challenge", async () => {
+    const email = "keys@greenwood.example";
+    const password = "GreenwoodKeys789!";
+    const { cookie } = await addStaffMember(orgSessionCookie, "greenwood", { name: "Kit Keys", email, password });
+    const options = (body: unknown, as = cookie) => callJson("/api/auth/two-factor/passkey-options", { ...json(body), cookie: as });
+    const register = (body: unknown, as = cookie) => callJson("/api/auth/two-factor/passkey-register", { ...json(body), cookie: as });
+    const key = await TestPasskey.create();
+
+    // Only the signed-in account, and only with its password.
+    assert.equal((await call("/api/auth/two-factor/passkey-options", json({ password }))).status, 401);
+    assert.equal((await options({ password: "wrong" })).res.status, 400);
+    assert.deepEqual((await callJson("/api/auth/two-factor", { cookie })).data.passkeys, []);
+
+    // A credential made for another site, or answering another challenge, is refused, and the setup is spent.
+    const first = (await options({ password })).data;
+    assert.equal(first.rp.id, "labkiosk.org", "one passkey for the apex and every organization subdomain");
+    assert.equal(first.attestation, "none");
+    assert.deepEqual(first.pubKeyCredParams.map((p: any) => p.alg), [-7, -257]);
+    const phished = await register({ name: "Laptop", credential: await key.attestation(first, "https://labkiosk-login.example") });
+    assert.equal(phished.res.status, 400);
+    assert.match(phished.data.error, /different site/);
+    assert.equal((await register({ name: "Laptop", credential: await key.attestation(first) })).res.status, 409, "a setup is used once");
+    const second = (await options({ password })).data;
+    const wrongRp = await register({ name: "Laptop", credential: await key.attestation({ ...second, rp: { id: "evil.example" } }) });
+    assert.equal(wrongRp.res.status, 400);
+
+    // Registered: listed, and other browsers signed in without it are signed out.
+    const otherBrowser = await sessionOf(await signIn({ email, password }));
+    const third = (await options({ password })).data;
+    const added = await register({ name: "  Laptop\u0007  ", credential: await key.attestation(third) });
+    assert.equal(added.res.status, 200, JSON.stringify(added.data));
+    assert.equal(added.data.name, "Laptop");
+    assert.equal((await callJson("/api/auth/me", { cookie: otherBrowser })).data.user, null);
+    const listed = (await callJson("/api/auth/two-factor", { cookie })).data.passkeys;
+    assert.deepEqual(listed.map((p: any) => [p.id, p.name, p.site, p.here]), [[key.credentialId, "Laptop", "labkiosk.org", true]]);
+    assert.deepEqual((await options({ password })).data.excludeCredentials, [{ type: "public-key", id: key.credentialId }]);
+
+    // The password now leads to the passkey; nothing is emailed until asked for.
+    const mailsBefore = localOutbox().filter((m) => m.to === email).length;
+    const login = async () => (await callJson("/api/auth/login", json({ email, password }))).data;
+    const step = await login();
+    assert.equal(step.status, "two_factor");
+    assert.equal(step.method, "passkey");
+    assert.equal(step.passkey, true);
+    assert.equal(step.sentTo, null);
+    assert.equal(localOutbox().filter((m) => m.to === email).length, mailsBefore, "no code is emailed while a passkey is offered");
+    const ask = (challenge: string) => callJson("/api/auth/login/passkey", json({ challenge }));
+    const verify = (challenge: string, passkey: unknown) => call("/api/auth/login/verify", json({ challenge, passkey }));
+    assert.equal((await ask("f".repeat(64))).res.status, 401);
+    const request1 = (await ask(step.challenge)).data;
+    assert.equal(request1.rpId, "labkiosk.org");
+    assert.deepEqual(request1.allowCredentials, [{ type: "public-key", id: key.credentialId }]);
+
+    // Signed for another site, unsigned by the person, or stale: refused, and each answer spends the request.
+    assert.equal((await verify(step.challenge, await key.assertion(request1, { origin: "https://labkiosk-login.example" }))).status, 400);
+    const stale = await verify(step.challenge, await key.assertion(request1));
+    assert.equal(stale.status, 400, "the request was spent by the refused answer");
+    const request2 = (await ask(step.challenge)).data;
+    assert.equal((await verify(step.challenge, await key.assertion(request2, { flags: 0x00 }))).status, 400, "no user presence");
+    const request3 = (await ask(step.challenge)).data;
+    const forged = await key.assertion(request3);
+    forged.signature = (await (await TestPasskey.create()).assertion(request3)).signature;
+    assert.equal((await verify(step.challenge, forged)).status, 400, "another key's signature");
+
+    // The right answer signs in once.
+    const request4 = (await ask(step.challenge)).data;
+    const answer = await key.assertion(request4);
+    const signedIn = await verify(step.challenge, answer);
+    assert.equal(signedIn.status, 200);
+    assert.ok(await sessionOf(signedIn));
+    assert.equal((await verify(step.challenge, answer)).status, 401, "a challenge signs in once");
+    assert.ok((await callJson("/api/auth/two-factor", { cookie })).data.passkeys[0].lastUsedAt);
+
+    // A counter that does not move forward means a copied authenticator.
+    const again = await login();
+    const request5 = (await ask(again.challenge)).data;
+    const cloned = await verify(again.challenge, await key.assertion(request5, { counter: key.counter }));
+    assert.equal(cloned.status, 400);
+    assert.match(((await cloned.json()) as any).error, /counter went backwards/);
+    // An emailed code is still there when the passkey is not.
+    assert.equal((await call("/api/auth/login/email-code", json({ challenge: again.challenge }))).status, 200);
+
+    // On an organization's own domain it is not offered: that is another site.
+    const custom = new Request("https://kiosk.customer.example/");
+    assert.deepEqual(passkeyRelyingParty(mockEnv, custom), { rpId: "kiosk.customer.example", origin: "https://kiosk.customer.example" });
+    assert.deepEqual(passkeyRelyingParty(mockEnv, new Request("https://greenwood.labkiosk.org/")), { rpId: "labkiosk.org", origin: "https://greenwood.labkiosk.org" });
+
+    // Removing it needs the password, and only the owner can.
+    const remove = (body: unknown, as = cookie) => call("/api/auth/two-factor/passkey-delete", { ...json(body), cookie: as });
+    assert.equal((await remove({ password, id: key.credentialId }, rivalSessionCookie)).status, 404, "another account cannot remove it");
+    assert.equal((await remove({ password: "wrong", id: key.credentialId })).status, 400);
+    assert.equal((await remove({ password, id: key.credentialId })).status, 200);
+    assert.equal((await login()).status, "ok", "with no second factor left, the password is enough for this account");
+  });
+
+  test("Passkey data is read strictly", async () => {
+    assert.deepEqual(decodeCbor(Uint8Array.from([0xa2, 0x01, 0x02, 0x20, 0x43, 1, 2, 3])).value, new Map<any, any>([[1, 2], [-1, Uint8Array.from([1, 2, 3])]]));
+    assert.throws(() => decodeCbor(Uint8Array.from([0x9f, 0x01, 0xff])), PasskeyError, "indefinite lengths are refused");
+    assert.throws(() => decodeCbor(Uint8Array.from([0x5a, 0xff, 0xff, 0xff, 0xff])), PasskeyError, "a length past the end is refused");
+    assert.throws(() => decodeCbor(Uint8Array.from([0xa2, 0x01, 0x01, 0x01, 0x02])), PasskeyError, "a repeated key is refused");
+    assert.throws(() => decodeCbor(Uint8Array.from([0xfb, 0, 0, 0, 0, 0, 0, 0, 0])), PasskeyError, "floats are refused");
+    const raw = crypto.getRandomValues(new Uint8Array(64));
+    raw[0] = 0;
+    raw[32] = 0x80;
+    assert.deepEqual(derToRawEcdsa(rawToDer(raw)), raw);
+    assert.throws(() => derToRawEcdsa(Uint8Array.from([0x30, 0x02, 0x02, 0x00])), PasskeyError);
+    assert.throws(() => coseToJwk(new Map<any, any>([[1, 1], [3, -8]])), /ES256 or RS256/);
+    assert.throws(() => coseToJwk(new Map<any, any>([[1, 2], [3, -7], [-1, 2], [-2, new Uint8Array(32)], [-3, new Uint8Array(32)]])), /P-256/);
   });
 
   test("Remote Control is off until an organization asks and the platform approves", async () => {
@@ -4415,10 +4649,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(still.data.user, "a GET must not have ended the session");
 
     // Sign a throwaway session out properly.
-    const { res: loginRes } = await callJson(
-      "/api/auth/login",
-      json({ email: "operator@greenwood.example", password: "OrganizationPassword123!" })
-    );
+    const loginRes = await signIn({ email: "operator@greenwood.example", password: "OrganizationPassword123!" });
     const throwaway = (await sessionOf(loginRes));
     const viaPost = await call("/api/auth/logout", { method: "POST", cookie: throwaway });
     assert.equal(viaPost.status, 302);
@@ -4430,10 +4661,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   // ---------------------------------------------------------- password change
 
   test("Lets a signed-in user change their password and ends their other sessions", async () => {
-    const { res: otherLogin } = await callJson(
-      "/api/auth/login",
-      json({ email: "operator@riverside.example", password: "RiversidePass456!" })
-    );
+    const otherLogin = await signIn({ email: "operator@riverside.example", password: "RiversidePass456!" });
     const otherCookie = (await sessionOf(otherLogin));
 
     const wrong = await callJson("/api/auth/change-password", {
@@ -4462,7 +4690,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     const oldPassword = await call("/api/auth/login", json({ email: "operator@riverside.example", password: "RiversidePass456!" }));
     assert.equal(oldPassword.status, 401);
-    const newPassword = await call("/api/auth/login", json({ email: "operator@riverside.example", password: "RiversideNewPass789!" }));
+    const newPassword = await signIn({ email: "operator@riverside.example", password: "RiversideNewPass789!" });
     assert.equal(newPassword.status, 200);
   });
 
@@ -5452,7 +5680,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
         cookie: orgSessionCookie
       });
       assert.equal(data.status, "ok", JSON.stringify(data));
-      const login = await call("/api/auth/login", json({ email, password: "StaffPassword123!" }));
+      const login = await signIn({ email, password: "StaffPassword123!" });
       return { id: data.operator.id as string, cookie: (await sessionOf(login)) };
     };
     const operator = await staff("operator", "rc-operator@greenwood.example");
