@@ -3855,6 +3855,87 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.equal(known.status, 200, "a finding already listed is still answered");
   });
 
+  const videoReport = (overrides: Record<string, unknown> = {}) => ({
+    gpus: [
+      {
+        vendor: "intel",
+        kernelDriver: "i915",
+        vaDriver: "Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()",
+        decode: ["vp9", "h264", "hevc", "av1"],
+        encode: ["h264"],
+        ...overrides
+      }
+    ]
+  });
+
+  test("Refuses a video decoding report without a valid device token", async () => {
+    assert.equal((await call("/api/devices/video-decoding?tenant=greenwood", json(videoReport()))).status, 401);
+    const forged = await call("/api/devices/video-decoding", { ...json(videoReport()), bearer: "f".repeat(64) });
+    assert.equal(forged.status, 401);
+  });
+
+  test("Refuses a malformed video decoding report", async () => {
+    const bad: unknown[] = [
+      [],
+      { gpus: "intel" },
+      { gpus: [] },
+      { gpus: Array.from({ length: 5 }, () => videoReport().gpus[0]) },
+      videoReport({ vendor: "matrox" }),
+      videoReport({ kernelDriver: "../i915" }),
+      videoReport({ kernelDriver: "x".repeat(41) }),
+      videoReport({ decode: ["h264", "realvideo"] }),
+      videoReport({ decode: "h264" }),
+      videoReport({ encode: [42] }),
+      videoReport({ vaDriver: { name: "iHD" } }),
+      videoReport({ problem: ["no"] })
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/video-decoding", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    const unreadable = await call("/api/devices/video-decoding", { method: "POST", body: "{", bearer: deviceToken });
+    assert.equal(unreadable.status, 400);
+  });
+
+  test("Keeps the latest video decoding report on the token's own workstation", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-VIDEO" }));
+    const token = data.deviceToken;
+    const early = await call("/api/devices/video-decoding", { ...json(videoReport()), bearer: token });
+    assert.equal(early.status, 409, "a workstation the hub has not written yet is asked to report again later");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 200);
+
+    const report = {
+      ...videoReport({ vaDriver: "Intel\u0007 iHD driver", decode: ["vp9", "h264", "h264"] }),
+      // Ignored: the token decides the organization and the workstation.
+      tenant: "riverside",
+      clientId: "PC-EVIL"
+    };
+    const kept = await callJson("/api/devices/video-decoding", { ...json(report), bearer: token });
+    assert.equal(kept.res.status, 200);
+    let clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    const video = clients["PC-VIDEO"].videoDecoding;
+    assert.equal(video.gpus.length, 1);
+    assert.deepEqual(video.gpus[0].decode, ["h264", "vp9"], "codecs are listed once, in a fixed order");
+    assert.equal(video.gpus[0].vaDriver, "Intel iHD driver");
+    assert.equal(video.gpus[0].kernelDriver, "i915");
+    assert.ok(video.reportedAt > 0);
+    assert.equal(clients["PC-EVIL"], undefined);
+    const rival = (await callJson("/api/clients?tenant=riverside", { cookie: rivalSessionCookie })).data.clients;
+    assert.ok(Object.values(rival).every((client: any) => !client.videoDecoding), "another organization sees none of it");
+
+    // An NVIDIA card: no driver, so the next start says so and replaces the report.
+    const nvidia = { gpus: [{ vendor: "nvidia", kernelDriver: "nouveau", vaDriver: "", decode: [], encode: [], problem: "vainfo found no VA-API driver" }] };
+    assert.equal((await call("/api/devices/video-decoding", { ...json(nvidia), bearer: token })).status, 200);
+    clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    assert.deepEqual(clients["PC-VIDEO"].videoDecoding.gpus, nvidia.gpus);
+
+    const none = { gpus: [], problem: "No GPU render device (/dev/dri/renderD*)." };
+    assert.equal((await call("/api/devices/video-decoding", { ...json(none), bearer: token })).status, 200);
+    clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    assert.equal(clients["PC-VIDEO"].videoDecoding.problem, none.problem);
+    assert.equal(clients["PC-01"].videoDecoding, undefined, "a workstation that never reported shows nothing");
+  });
+
   test("Clears restart logs past their retention and keeps the issue", async () => {
     const db = getDatabase(mockEnv);
     const { id: tenantId } = (await callJson("/api/auth/me", { cookie: orgSessionCookie })).data.tenant;

@@ -78,6 +78,14 @@ Live thumbnails, the lock curtain, broadcast, reload, reboot, shutdown, clear se
 
 ---
 
+## Performance
+
+x11vnc encodes the screen on the workstation's CPU (Tight, ZRLE and the other classic VNC encodings), and noVNC decodes it in the operator's browser. That is light for what Remote Control is for: helping a user with a form or a setting. It is heavy for full-screen video, which is not the use case.
+
+Hardware encoding is not a flag away. noVNC (1.7.0 here) can display an H.264 stream, but x11vnc cannot produce one; getting the workstation's GPU to encode would mean replacing x11vnc with another VNC server or with WebRTC and a GStreamer VA-API pipeline, and changing the relay. That is only worth doing if operators report lag on real networks, so measure first: how smooth the session feels and how busy the workstation's CPU is during a typical help session, on the organization's own network. Under Wayland, planned with the Debian 13 release, `wayvnc` replaces x11vnc and the question is reopened then.
+
+---
+
 ## Testing in the simulator
 
 ```bash

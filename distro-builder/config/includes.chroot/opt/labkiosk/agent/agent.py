@@ -130,6 +130,40 @@ DISK_PROBLEM_STATES = ("warning", "failing")
 DISK_FIELDS = ("device", "model", "serial", "state", "summary")
 MAX_DISK_HEALTH_BYTES = 16 * 1024
 MAX_DISKS_REPORTED = 8
+# Video decoding: what each GPU's VA-API driver can decode and encode, read
+# with vainfo once per agent start and sent to the console, so an operator can
+# tell a lab decoding video on the GPU from one decoding it on the CPU.
+DRM_CLASS_DIR = "/sys/class/drm"
+RENDER_NODE_PATTERN = re.compile(r"^renderD[0-9]{3}\Z")
+MAX_GPUS_REPORTED = 4
+VAINFO_TIMEOUT_SECONDS = 15
+# PCI vendor ids; anything else is "other".
+GPU_VENDORS = {
+    "0x8086": "intel",
+    "0x1002": "amd",
+    "0x10de": "nvidia",
+    "0x1af4": "virtual",  # virtio-gpu
+    "0x1234": "virtual",  # QEMU standard VGA
+    "0x15ad": "virtual",  # VMware SVGA
+    "0x1414": "virtual",  # Hyper-V
+    "0x80ee": "virtual",  # VirtualBox
+}
+# VAProfile name prefixes, longest first, and the codec each is reported as.
+VA_PROFILE_CODECS = (
+    ("VAProfileH264", "h264"),
+    ("VAProfileHEVC", "hevc"),
+    ("VAProfileVP8", "vp8"),
+    ("VAProfileVP9", "vp9"),
+    ("VAProfileAV1", "av1"),
+    ("VAProfileMPEG2", "mpeg2"),
+    ("VAProfileVC1", "vc1"),
+    ("VAProfileJPEG", "jpeg"),
+)
+VA_DECODE_ENTRYPOINTS = frozenset({"VAEntrypointVLD"})
+VA_ENCODE_ENTRYPOINTS = frozenset({"VAEntrypointEncSlice", "VAEntrypointEncSliceLP", "VAEntrypointEncPicture"})
+VA_PROFILE_LINE = re.compile(r"^\s*(VAProfile[A-Za-z0-9_]+)\s*:\s*(VAEntrypoint[A-Za-z0-9_]+)\s*\Z")
+VA_DRIVER_LINE = re.compile(r"Driver version:\s*(.+?)\s*\Z")
+MAX_VA_DRIVER_LENGTH = 120
 RESTART_REPORTS_SENT_FILE = "/etc/labkiosk/restart-reports-sent.json"
 RESTART_REPORT_NAME_PATTERN = re.compile(r"^([0-9a-f]{32})\.json\Z")
 # A report carries at most 16 KB of journal; anything far larger is not root's.
@@ -3448,14 +3482,158 @@ def report_disk_health(progress, path=DISK_HEALTH_FILE):
     progress["checked"] = checked
 
 
+def parse_vainfo(output):
+    """
+    vainfo's report as {"vaDriver", "decode", "encode"}: the driver's own name
+    and the codecs it decodes (VLD) and encodes, each sorted. ValueError when
+    the output names no driver, which is how vainfo says none loaded.
+    """
+    driver = ""
+    decode, encode = set(), set()
+    for line in output.splitlines():
+        found = VA_DRIVER_LINE.search(line)
+        if found:
+            driver = "".join(ch for ch in found.group(1) if ch.isprintable())[:MAX_VA_DRIVER_LENGTH]
+            continue
+        match = VA_PROFILE_LINE.match(line)
+        if not match:
+            continue
+        profile, entrypoint = match.groups()
+        codec = next((name for prefix, name in VA_PROFILE_CODECS if profile.startswith(prefix)), None)
+        if codec is None:
+            continue
+        if entrypoint in VA_DECODE_ENTRYPOINTS:
+            decode.add(codec)
+        elif entrypoint in VA_ENCODE_ENTRYPOINTS:
+            encode.add(codec)
+    if not driver:
+        raise ValueError("vainfo found no VA-API driver")
+    return {"vaDriver": driver, "decode": sorted(decode), "encode": sorted(encode)}
+
+
+def gpu_identity(node, drm_dir=DRM_CLASS_DIR):
+    """The vendor (intel, amd, nvidia, virtual, other) and kernel driver behind a render node."""
+    device = os.path.join(drm_dir, node, "device")
+    try:
+        with open(os.path.join(device, "vendor"), encoding="ascii") as handle:
+            vendor = GPU_VENDORS.get(handle.read().strip().lower(), "other")
+    except (OSError, UnicodeDecodeError):
+        vendor = "other"
+    try:
+        driver = os.path.basename(os.readlink(os.path.join(device, "driver")))
+    except OSError:
+        driver = ""
+    if not re.match(r"^[A-Za-z0-9_.-]{1,40}\Z", driver):
+        driver = ""
+    return vendor, driver
+
+
+def run_vainfo(device):
+    """vainfo's output for one render node. Raises OSError or ValueError when it cannot say."""
+    try:
+        proc = subprocess.run(
+            ["vainfo", "--display", "drm", "--device", device],
+            capture_output=True, text=True, timeout=VAINFO_TIMEOUT_SECONDS, check=False,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise OSError(f"vainfo did not answer within {VAINFO_TIMEOUT_SECONDS} s") from err
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        raise ValueError(detail[-1][:200] if detail else f"vainfo exited with {proc.returncode}")
+    return proc.stdout
+
+
+def probe_video_decoding(drm_dir=DRM_CLASS_DIR, vainfo=None):
+    """
+    What this machine's GPUs decode in hardware: {"gpus": [...]}, one entry
+    per render node (at most MAX_GPUS_REPORTED) with its vendor, kernel driver,
+    VA-API driver and codec lists, or "problem" saying why there is none.
+    Chromium decodes on the CPU whenever this finds nothing.
+    """
+    vainfo = vainfo or run_vainfo
+    try:
+        nodes = sorted(n for n in os.listdir(drm_dir) if RENDER_NODE_PATTERN.match(n))
+    except OSError:
+        nodes = []
+    if not nodes:
+        return {"gpus": [], "problem": "No GPU render device (/dev/dri/renderD*)."}
+    gpus = []
+    for node in nodes[:MAX_GPUS_REPORTED]:
+        vendor, driver = gpu_identity(node, drm_dir)
+        gpu = {"vendor": vendor, "kernelDriver": driver, "vaDriver": "", "decode": [], "encode": []}
+        try:
+            gpu.update(parse_vainfo(vainfo(f"/dev/dri/{node}")))
+        except FileNotFoundError:
+            gpu["problem"] = "vainfo is not installed."
+        except (OSError, ValueError) as err:
+            gpu["problem"] = str(err)[:200]
+        gpus.append(gpu)
+    return {"gpus": gpus}
+
+
+def post_video_decoding(report):
+    """Send the video decoding report. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}/api/devices/video-decoding",
+        data=json.dumps(report).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=15) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_video_decoding(progress):
+    """
+    Read the GPUs once and send what they decode, once per agent start.
+
+    `progress["report"]` is the probe's result, `progress["done"]` true once
+    the control plane has answered for good. Offline or a workstation not
+    written yet (409) is tried again next round.
+    """
+    if progress["done"]:
+        return
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    if progress["report"] is None:
+        progress["report"] = probe_video_decoding()
+        decoders = sorted({codec for gpu in progress["report"]["gpus"] for codec in gpu["decode"]})
+        log(f"Hardware video decoding: {', '.join(decoders) if decoders else 'none, Chromium decodes on the CPU'}.")
+    try:
+        status = post_video_decoding(progress["report"])
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        if not progress["logged"]:
+            progress["logged"] = True
+            log(f"Video decoding not reported yet: {err}")
+        return
+    if status == 200:
+        progress["done"] = True
+    elif status in BOOT_REPORT_SETTLED_STATUSES:
+        log(f"The control plane did not take the video decoding report (HTTP {status}); not sending it again.")
+        progress["done"] = True
+
+
 def boot_report_loop():
     settled = None
     restarts = {"sent": load_sent_restart_reports(), "logged": set(), "held": False}
     disks = {"checked": None, "logged": set()}
+    video = {"report": None, "done": False, "logged": False}
     while True:
         settled = report_boot_outcome(settled)
         report_restarts(restarts)
         report_disk_health(disks)
+        report_video_decoding(video)
         time.sleep(BOOT_REPORT_INTERVAL_SECONDS)
 
 

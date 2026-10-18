@@ -500,6 +500,139 @@ class AgentReportsDiskHealth(unittest.TestCase):
         self.assertEqual(self.sent, [], "a disk without its fields is not sent")
 
 
+INTEL_VAINFO = """libva info: VA-API version 1.17.0
+libva info: va_openDriver() returns 0
+vainfo: VA-API version: 1.17 (libva 2.12.0)
+vainfo: Driver version: Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()
+vainfo: Supported profile and entrypoints
+      VAProfileNone                   :\tVAEntrypointVideoProc
+      VAProfileMPEG2Simple            :\tVAEntrypointVLD
+      VAProfileH264Main               :\tVAEntrypointVLD
+      VAProfileH264Main               :\tVAEntrypointEncSliceLP
+      VAProfileH264High               :\tVAEntrypointVLD
+      VAProfileHEVCMain10             :\tVAEntrypointVLD
+      VAProfileVP9Profile0            :\tVAEntrypointVLD
+      VAProfileAV1Profile0            :\tVAEntrypointVLD
+      VAProfileJPEGBaseline           :\tVAEntrypointEncPicture
+      VAProfileH264StereoHigh         :\tVAEntrypointFEI
+"""
+
+
+class AgentReportsVideoDecoding(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.drm = os.path.join(self.tmp.name, "drm")
+        os.mkdir(self.drm)
+        saved = {name: getattr(agent, name) for name in ("probe_video_decoding", "post_video_decoding", "log")}
+        saved_state = dict(agent.state)
+
+        def restore():
+            for name, value in saved.items():
+                setattr(agent, name, value)
+            agent.state.clear()
+            agent.state.update(saved_state)
+
+        self.addCleanup(restore)
+        self.logged = []
+        agent.log = self.logged.append
+        agent.state["isConfigured"] = True
+
+    def gpu(self, node, vendor, driver):
+        device = os.path.join(self.tmp.name, "devices", node)
+        os.makedirs(os.path.join(self.tmp.name, "drivers", driver), exist_ok=True)
+        os.makedirs(device)
+        with open(os.path.join(device, "vendor"), "w", encoding="ascii") as handle:
+            handle.write(vendor + "\n")
+        os.symlink(os.path.join(self.tmp.name, "drivers", driver), os.path.join(device, "driver"))
+        os.makedirs(os.path.join(self.drm, node))
+        os.symlink(device, os.path.join(self.drm, node, "device"))
+
+    def test_vainfo_output_becomes_codec_lists(self):
+        self.assertEqual(agent.parse_vainfo(INTEL_VAINFO), {
+            "vaDriver": "Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()",
+            "decode": ["av1", "h264", "hevc", "mpeg2", "vp9"],
+            "encode": ["h264", "jpeg"],
+        })
+
+    def test_vainfo_without_a_driver_is_a_problem(self):
+        with self.assertRaises(ValueError):
+            agent.parse_vainfo("libva info: VA-API version 1.17.0\nlibva error: vaGetDriverNameByIndex() failed\n")
+
+    def test_each_render_node_is_asked_and_named(self):
+        self.gpu("renderD128", "0x8086", "i915")
+        self.gpu("renderD129", "0x10de", "nouveau")
+        os.makedirs(os.path.join(self.drm, "card0"))
+        asked = []
+
+        def vainfo(device):
+            asked.append(device)
+            if device.endswith("129"):
+                raise ValueError("vaInitialize failed with error code -1 (unknown libva error),exit")
+            return INTEL_VAINFO
+
+        report = agent.probe_video_decoding(self.drm, vainfo)
+        self.assertEqual(asked, ["/dev/dri/renderD128", "/dev/dri/renderD129"])
+        intel, nvidia = report["gpus"]
+        self.assertEqual((intel["vendor"], intel["kernelDriver"]), ("intel", "i915"))
+        self.assertIn("av1", intel["decode"])
+        self.assertNotIn("problem", intel)
+        self.assertEqual((nvidia["vendor"], nvidia["kernelDriver"], nvidia["decode"]), ("nvidia", "nouveau", []))
+        self.assertIn("vaInitialize failed", nvidia["problem"])
+
+    def test_no_gpu_or_no_vainfo_says_why(self):
+        report = agent.probe_video_decoding(self.drm, lambda device: INTEL_VAINFO)
+        self.assertEqual(report, {"gpus": [], "problem": "No GPU render device (/dev/dri/renderD*)."})
+        self.gpu("renderD128", "0x1af4", "virtio-pci")
+
+        def missing(device):
+            raise FileNotFoundError("vainfo")
+
+        gpu = agent.probe_video_decoding(self.drm, missing)["gpus"][0]
+        self.assertEqual((gpu["vendor"], gpu["problem"]), ("virtual", "vainfo is not installed."))
+
+    def test_the_report_is_sent_until_the_control_plane_answers(self):
+        probes = []
+        agent.probe_video_decoding = lambda: probes.append(1) or {"gpus": [], "problem": "No GPU render device (/dev/dri/renderD*)."}
+        answers = [OSError("offline"), 409, 200]
+        sent = []
+
+        def post(report):
+            sent.append(report)
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        agent.post_video_decoding = post
+        progress = {"report": None, "done": False, "logged": False}
+        for _ in range(5):
+            agent.report_video_decoding(progress)
+        self.assertEqual(len(sent), 3)
+        self.assertEqual(len(probes), 1, "the GPUs are read once per agent start")
+        self.assertTrue(progress["done"])
+        self.assertIn("Hardware video decoding: none, Chromium decodes on the CPU.", self.logged)
+
+    def test_a_refused_report_is_not_sent_again_and_nothing_goes_before_enrolment(self):
+        agent.probe_video_decoding = lambda: {"gpus": [], "problem": "No GPU render device (/dev/dri/renderD*)."}
+        sent = []
+        agent.post_video_decoding = lambda report: sent.append(report) or 400
+        progress = {"report": None, "done": False, "logged": False}
+        agent.state["isConfigured"] = False
+        agent.report_video_decoding(progress)
+        self.assertEqual(sent, [])
+        agent.state["isConfigured"] = True
+        agent.report_video_decoding(progress)
+        agent.report_video_decoding(progress)
+        self.assertEqual(len(sent), 1)
+
+    def test_the_image_ships_vainfo_and_lets_the_agent_run_it(self):
+        self.assertIn("vainfo", package_list())
+        profile = read(CHROOT, "etc/apparmor.d/labkiosk-agent")
+        self.assertIn("\n  /usr/bin/vainfo ix,\n", profile)
+        self.assertIn("\n  /dev/dri/renderD* rw,\n", profile)
+
+
 class Fonts(unittest.TestCase):
     def test_chinese_japanese_and_korean_pages_have_fonts(self):
         self.assertIn("fonts-noto-cjk", package_list())

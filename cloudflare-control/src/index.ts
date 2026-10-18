@@ -318,6 +318,9 @@ import {
   parseBootReport,
   parseRestartReport,
   parseDiskHealthReport,
+  parseVideoDecodingReport,
+  recordVideoDecoding,
+  storedVideoDecoding,
   recordDiskHealthReport,
   purgeOldWorkstationIssues,
   recordBootReport,
@@ -859,6 +862,36 @@ async function handleDiskHealthReport(
 }
 
 /**
+ * POST /api/devices/video-decoding: a workstation reports what its GPUs decode
+ * in hardware, once per agent start. The device token alone decides the
+ * organization and the workstation; the latest report replaces the last.
+ *
+ * 200 kept; 400 malformed (the agent drops it); 409 the workstation's row does
+ * not exist yet (the agent tries again).
+ */
+async function handleVideoDecodingReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let report;
+  try {
+    report = parseVideoDecodingReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Video decoding report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const kept = await recordVideoDecoding(db, device.tenant_id, device.client_id, report, Math.floor(Date.now() / 1000));
+  if (!kept) {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: jsonHeaders });
+}
+
+/**
  * POST /api/devices/restart-report: an installed workstation reports a boot
  * that ended without shutting down, with the end of that boot's journal. The
  * device token alone decides the organization and the workstation.
@@ -1234,6 +1267,9 @@ export default {
     }
     if (path === "/api/devices/disk-health" && method === "POST") {
       return handleDiskHealthReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/video-decoding" && method === "POST") {
+      return handleVideoDecodingReport(request, db, jsonHeaders);
     }
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);
@@ -3743,7 +3779,8 @@ export default {
           imageVersion: status?.imageVersion || row?.image_version || undefined,
           agentVersion: status?.agentVersion || row?.agent_version || undefined,
           update: status?.update ?? registryUpdate(row),
-          updateWaitingSince: status?.online ? status.updateWaitingSince : undefined
+          updateWaitingSince: status?.online ? status.updateWaitingSince : undefined,
+          videoDecoding: storedVideoDecoding(row?.video_decoding, row?.video_decoding_at)
         };
       };
       for (const row of rows) clients[row.client_id] = toTelemetry(live.clients[row.client_id], row);

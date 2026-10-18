@@ -56,6 +56,12 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   @{PROC}/@{pid}/mounts r,
   @{PROC}/@{pid}/cmdline r,
   /sys/class/net/** r,
+  # Which GPU each render node is, for the video decoding report.
+  /sys/class/drm/ r,
+  /sys/devices/**/drm/renderD*/ r,
+  /sys/devices/**/vendor r,
+  /sys/devices/**/driver r,
+  /dev/dri/renderD* rw,
   /sys/firmware/efi/ r,
   /sys/firmware/efi/efivars/SecureBoot-* r,
 
@@ -70,6 +76,7 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   /usr/bin/nmcli ix,
   /usr/bin/pkill ix,
   /usr/bin/scrot ix,
+  /usr/bin/vainfo ix,
   /usr/bin/setxkbmap ix,
   /usr/bin/systemctl ix,
   /usr/sbin/ip ix,

@@ -63,6 +63,9 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
 - **Disk health** (same loop): `report_disk_health()` reads `/run/labkiosk-health/disks.json`
   (root-owned, ≤ 16 KiB, written by `labkiosk-health`) once per check and posts the `warning` /
   `failing` disks to `POST /api/devices/disk-health`. Contract: `labkiosk-core` §2d.
+- **Video decoding** (same loop): `report_video_decoding()` runs `vainfo` on each render node once
+  per start and posts what each GPU decodes to `POST /api/devices/video-decoding`. NVIDIA decodes
+  on the CPU (no out-of-tree driver). Contract: `labkiosk-core` §2e.
 - The session runs the agent as `/opt/labkiosk/agent/agent.py` itself (shebang, 0755), never
   `python3 agent.py`: its AppArmor profile (`labkiosk-agent`, complain mode) attaches to that path.
 - Enrolment reply names the organization via `organization_name()` (`organizationName`, falling

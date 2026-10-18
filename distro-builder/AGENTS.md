@@ -354,6 +354,19 @@ distro-builder/
   `[HEALTH] …` lines, including which user Xorg runs as and both AppArmor labels. smartmontools'
   own daemon is disabled and masked. The agent sends `warning`/`failing` disks to
   `POST /api/devices/disk-health` (`labkiosk-core`); a disk without data is `unknown`, never sent.
+- **Video decoding is VA-API, and reported.** Chromium decodes through VA-API with the drivers in
+  the package list (`intel-media-va-driver-non-free`, `i965-va-driver`, `mesa-va-drivers`) and the
+  `CHROMIUM_GPU_FEATURES` in the autostart. NVIDIA cards decode on the CPU: the proprietary driver
+  is an out-of-tree module (Rule 2 forbids it), and nouveau offers no usable VA-API decoding, so
+  the documentation recommends Intel or AMD graphics. Once per start the agent runs `vainfo` on each
+  render node and sends what each GPU decodes to `POST /api/devices/video-decoding`
+  (`labkiosk-core` 2e); the console shows it on the workstation's card. Keep `vainfo` in the package
+  list and `/usr/bin/vainfo ix`, `/dev/dri/renderD* rw` in the agent's profile.
+- **X11 until Debian 13.** The session is Xorg + Openbox, and `xdotool`, `scrot`, `unclutter`,
+  `x11vnc`, `xkbcomp` and `labkiosk-lock-keys` all need it. A move to Wayland (`cage` as the
+  compositor, `wayvnc` for Remote Control, `grim` for thumbnails, the compositor's own key
+  handling for the lockdown) replaces every one of them, so it belongs to the Debian 13 major
+  release, not before; do not start it piecemeal.
 - `distro-builder/tests/test_hardening.py` pins all of this; `tests/vm/boot-test.sh` step **4b**
   checks from the journal on DATA that `nftables.service` finished, Xorg ran as `kiosk`, both
   profiles attached in complain mode and the disk was checked.

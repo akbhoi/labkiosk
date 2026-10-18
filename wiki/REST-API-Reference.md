@@ -18,7 +18,7 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
 | **Session cookie** | `Cookie: __Host-labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`, host-only; `labkiosk_session` on plain-HTTP dev hosts) | Operator Lab Dashboard, Super Admin console |
-| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report` and `/api/devices/disk-health` |
+| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health` and `/api/devices/video-decoding` |
 | **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
 Session tokens are random 32-byte hex strings; only their SHA-256 hash is stored in D1. Device tokens are handled the same way — the plaintext token exists only on the workstation that was issued it.
@@ -33,7 +33,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `requireTenantAdmin()` | `401` anonymous, `400` no organization, `403` wrong tenant (and a super admin outside its own demos) | `GET /api/broadcast-presets`, `GET /api/whitelist`, the `/admin` pages |
 | `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*` (but `/api/settings/updates`), `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/console/remote`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `updates`: `/api/settings/updates`, `/api/clients/check-update`, `/api/clients/install-update`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
 | `requireSuperAdmin()` | `401` / `403` | all `/api/super/*` |
-| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/remote` |
+| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/video-decoding`, `/api/devices/remote` |
 | `rejectCrossSiteMutation()` | `403` | every cookie-authenticated `POST`/`DELETE` under `/api/` |
 
 ### Rate limiting
@@ -120,6 +120,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/devices/boot-report` | `POST` | An installed workstation's boot outcome (update installed, failed, rolled back, fallback, error) |
 | `/api/devices/restart-report` | `POST` | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/disk-health` | `POST` | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
+| `/api/devices/video-decoding` | `POST` | What the workstation's GPUs decode in hardware (VA-API), read with `vainfo` at each agent start |
 | `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
 ### Release build
@@ -342,6 +343,22 @@ The machine's own disks that `labkiosk-health` (root, 90 s after boot and every 
 ```
 
 **`200 OK`** → `{ "status": "ok", "recorded": 1 }`; `recorded` counts the disks newly listed (`0` when each is already listed in that state). **`400`** malformed, not sent again. **`401`** bad token. **`409`** the workstation has not checked in yet, sent again later. **`429`** more than 8 disk issues in a day from this workstation; the next check sends again.
+
+---
+
+### `POST /api/devices/video-decoding`
+
+What the workstation's GPUs decode in hardware, read by the agent with `vainfo --display drm` on each render node once per start; Chromium decodes everything else on the CPU. The latest report replaces the last (`client_devices.video_decoding`) and comes back as `videoDecoding` (with `reportedAt`, ms) in `GET /api/clients`.
+
+**Access:** `Authorization: Bearer <deviceToken>`; the token decides the organization and the workstation.
+
+**Request:** `gpus`, 0 to 4 objects with `vendor` (`intel` | `amd` | `nvidia` | `virtual` | `other`), `kernelDriver` (may be empty), `vaDriver` (≤ 120 characters), `decode` and `encode` (from `h264`, `hevc`, `vp8`, `vp9`, `av1`, `mpeg2`, `vc1`, `jpeg`) and an optional `problem` (≤ 200 characters). With no GPU, a top-level `problem` says why.
+
+```json
+{ "gpus": [ { "vendor": "intel", "kernelDriver": "i915", "vaDriver": "Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()", "decode": ["av1", "h264", "hevc", "vp9"], "encode": ["h264"] } ] }
+```
+
+**`200 OK`** → `{ "status": "ok" }`. **`400`** malformed, not sent again. **`401`** bad token. **`409`** the workstation has not checked in yet, sent again later.
 
 ---
 

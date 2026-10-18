@@ -523,7 +523,10 @@ function renderWorkstationsScripts(
         const updateLine = el("div", "kc-update");
         updateLine.dataset.role = "update";
 
-        card.append(head, thumbBox, actions, footer, updateLine);
+        const videoLine = el("div", "kc-update hidden");
+        videoLine.dataset.role = "video";
+
+        card.append(head, thumbBox, actions, footer, updateLine, videoLine);
         if (selectedClientIds.has(id)) card.classList.add("selected");
         return card;
       }
@@ -577,6 +580,58 @@ function renderWorkstationsScripts(
           updateLine.classList.toggle("kc-update-warn", line.tone === "warn");
           updateLine.classList.toggle("hidden", !line.text);
         }
+        const videoLine = card.querySelector('[data-role="video"]');
+        if (videoLine) {
+          const line = videoText(client);
+          videoLine.textContent = line.text;
+          videoLine.title = line.title;
+          videoLine.classList.toggle("kc-update-warn", line.tone === "warn");
+          videoLine.classList.toggle("hidden", !line.text);
+        }
+      }
+
+      const CODEC_NAMES = { h264: "H.264", hevc: "HEVC", vp8: "VP8", vp9: "VP9", av1: "AV1", mpeg2: "MPEG-2", vc1: "VC-1", jpeg: "JPEG" };
+      // The codecs a viewer cares about first; the rest are in the title.
+      const MAIN_CODECS = ["h264", "hevc", "vp9", "av1"];
+
+      // What the workstation's GPU decodes in hardware, from its agent's last start.
+      function videoText(client) {
+        const v = client && client.videoDecoding;
+        if (!v || !Array.isArray(v.gpus)) return { text: "", title: "", tone: "" };
+        const names = (list) => list.map((codec) => CODEC_NAMES[codec] || codec).join(", ");
+        let best = null;
+        for (const gpu of v.gpus) {
+          if (gpu.decode.length && (!best || gpu.decode.length > best.decode.length)) best = gpu;
+        }
+        if (best) {
+          const main = best.decode.filter((codec) => MAIN_CODECS.includes(codec));
+          const missing = MAIN_CODECS.filter((codec) => !best.decode.includes(codec));
+          let title = "Decoded on the GPU (" + (best.vaDriver || best.kernelDriver || "VA-API") + "): " + names(best.decode) + ".";
+          if (missing.length) title += " " + names(missing) + " video plays on the CPU.";
+          if (best.encode.length) title += " Encodes " + names(best.encode) + ".";
+          return { text: "Video: GPU \u00b7 " + (main.length ? names(main) : names(best.decode)), title: title, tone: "" };
+        }
+        const vendors = v.gpus.map((gpu) => gpu.vendor);
+        const reason = (v.gpus.find((gpu) => gpu.problem) || v).problem || "";
+        if (vendors.includes("nvidia")) {
+          return {
+            text: "Video: CPU \u00b7 NVIDIA graphics",
+            title: "The system image has no NVIDIA driver, so Chromium decodes video on the CPU. Intel or AMD graphics decode it in hardware." + (reason ? " (" + reason + ")" : ""),
+            tone: "warn"
+          };
+        }
+        if (vendors.length && vendors.every((vendor) => vendor === "virtual")) {
+          return {
+            text: "Video: CPU \u00b7 virtual machine",
+            title: "A virtual graphics card decodes nothing in hardware, so Chromium decodes video on the CPU." + (reason ? " (" + reason + ")" : ""),
+            tone: ""
+          };
+        }
+        return {
+          text: "Video: CPU only",
+          title: "No hardware video decoder found, so Chromium decodes video on the CPU." + (reason ? " (" + reason + ")" : ""),
+          tone: "warn"
+        };
       }
 
       // The system image a workstation runs, and the update it is fetching or holding.

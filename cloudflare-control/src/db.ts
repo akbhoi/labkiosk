@@ -147,7 +147,9 @@ CREATE TABLE IF NOT EXISTS client_devices (
   update_detail TEXT,
   agent_version TEXT,
   update_kind TEXT,
-  update_since INTEGER
+  update_since INTEGER,
+  video_decoding TEXT,
+  video_decoding_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -736,6 +738,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     // 0042: passkeys.
     await db.prepare("SELECT id, rp_id, sign_count FROM user_passkeys LIMIT 1").run();
     await db.prepare("SELECT passkey_challenge FROM login_challenges LIMIT 1").run();
+    // 0043: hardware video decoding per workstation.
+    await db.prepare("SELECT video_decoding, video_decoding_at FROM client_devices LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

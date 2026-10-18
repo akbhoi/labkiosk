@@ -31,6 +31,7 @@ Every enrolled workstation appears as a live telemetry card refreshed from `/api
 - **Online Indicator**: Derived from `last_seen`; stale after 20 seconds.
 - **Active URL**: Where the machine is currently pointing.
 - **Lock State**: Whether the fullscreen lock curtain is currently up.
+- **Video**: What the workstation's graphics decode in hardware, from its last start: `Video: GPU · H.264, HEVC, VP9, AV1`, or `Video: CPU · NVIDIA graphics` / `Video: CPU only` in the warning colour when videos play on the processor. Point at the line for the driver and the full codec list. Nothing is shown until the workstation runs an agent that reports it.
 - **Remote Control**: Opens the workstation's desktop through the console's relay; the workstation must be connected on its control channel. Only the organization's administrators (its owner and `org_admin` staff) see it; other staff do not.
 
 Workstations in the main canvas are partitioned into collapsible **Group Sections** with headers, chevron collapse toggles, and group-wide selection checkboxes. Collapse states persist in `localStorage`.

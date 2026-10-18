@@ -36,7 +36,10 @@ Both. The ISO boots via ISOLINUX on BIOS and GRUB EFI on UEFI, and the installer
 You can, but on live media the enrolment token lives in the RAM overlay and is lost at power-off, so you would re-enrol every boot. The system is designed to be installed.
 
 **Does it need a GPU?**
-No. `HardwareAccelerationModeEnabled` is on so Chromium uses whatever is available, and the package list includes `fbdev` and `vesa` drivers for machines with nothing better.
+No. `HardwareAccelerationModeEnabled` is on so Chromium uses whatever is available, and the package list includes `fbdev` and `vesa` drivers for machines with nothing better. Without a GPU that decodes video, though, every video plays on the CPU, which a thin client struggles with above 720p.
+
+**Which graphics should we buy for video?**
+Intel or AMD. Their VA-API drivers are in the image (Intel's iHD and i965, Mesa's for AMD Radeon), so Chromium decodes H.264, HEVC and VP9, and AV1 on recent chips, in hardware. **NVIDIA graphics decode video on the CPU**: NVIDIA's own driver is an out-of-tree kernel module, which would need a key enrolled by hand on every machine to keep Secure Boot and unattended boot, so the image does not carry it, and the open `nouveau` driver gives no usable hardware decoding. NVIDIA machines work; video simply costs CPU. Each workstation's card in the admin console says which it is (`Video: GPU · H.264, HEVC, VP9, AV1` or `Video: CPU · NVIDIA graphics`).
 
 ---
 

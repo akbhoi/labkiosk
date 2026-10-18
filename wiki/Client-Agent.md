@@ -272,6 +272,12 @@ An installed disk keeps its system journal on `LABKIOSK_DATA` for seven days (`l
 
 The same loop as the boot reports reads that file (root-owned, at most 16 KiB) after each check and posts the warning and failing disks to `POST /api/devices/disk-health`. A `200`, `400` or `404` settles that check, as does `429` (too many disk reports today; the next check sends again); `409` (the workstation is not written yet), any other status and a network failure are retried next round. The Worker lists each disk once per state under Settings → **Errors & Warnings**.
 
+## Video decoding
+
+Chromium decodes video through VA-API when the GPU has a driver for it, and on the CPU otherwise, which a thin client notices at once. Once per agent start, after enrolment, the same loop as the boot reports runs `vainfo --display drm --device /dev/dri/renderDNNN` on each render node (at most four), names the GPU from sysfs (Intel, AMD, NVIDIA, a virtual adapter, or other, with its kernel driver) and posts what each decodes and encodes (H.264, HEVC, VP8, VP9, AV1, MPEG-2, VC-1, JPEG) to `POST /api/devices/video-decoding`. A machine with no render node, a GPU without a VA-API driver, or a `vainfo` that fails says so in `problem`. `200`, `400` and `404` settle it; `409` (the workstation is not written yet) and network failures are retried every 30 s. The log line `Hardware video decoding: av1, h264, hevc, vp9.` (or `none, Chromium decodes on the CPU.`) says the same on the workstation.
+
+The admin console shows the result on the workstation's card: `Video: GPU · H.264, HEVC, VP9, AV1`, or `Video: CPU · NVIDIA graphics` or `Video: CPU only` in the warning colour. `vainfo` reports what the driver offers; Chromium uses it for the codecs and resolutions its own decoder supports, so a codec listed here is decoded in hardware in practice but not guaranteed for every stream.
+
 ---
 
 ## Enrolment

@@ -75,6 +75,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0040_release_support_per_major.sql` | `release_support`: support status and end of life per major release, replacing `release_lines` (dropped; it never reached a release, so its rows are not carried over) |
 | `0041_http_fallback_count.sql` | `tenants.http_workstations`: how many of an organization's online workstations are on the HTTP heartbeat instead of the WebSocket |
 | `0042_passkeys.sql` | `user_passkeys` (credential id, relying party, public key as JWK, COSE algorithm, signature counter), `passkey_registrations` (a registration's challenge), `login_challenges.passkey_challenge` |
+| `0043_video_decoding.sql` | `client_devices.video_decoding`, `video_decoding_at` (what the workstation's GPUs decode in hardware, from `POST /api/devices/video-decoding`) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -197,6 +198,7 @@ The fleet registry. OrgHub writes it back on connect, disconnect, a change and e
 | `update_version` / `update_progress` / `update_detail` | TEXT / INTEGER / TEXT | The release that phase is about, the download's percent, and why the last attempt failed |
 | `agent_version` | TEXT | The agent version the workstation reports |
 | `update_kind` / `update_since` | TEXT / INTEGER | For `ready` and `staged`: the release's kind (`feature` or `security`, from its signed manifest), and since when (unix seconds) the workstation has held it in this boot |
+| `video_decoding` / `video_decoding_at` | TEXT / INTEGER | What its GPUs decode in hardware, as validated JSON (`parseVideoDecodingReport`), and when that arrived (unix seconds); written by `POST /api/devices/video-decoding` once per agent start, `NULL` before |
 
 ### `workstation_issues`
 
@@ -430,7 +432,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0042_<description>.sql` (the next number after `0041`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0044_<description>.sql` (the next number after `0043`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

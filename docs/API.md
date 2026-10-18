@@ -102,6 +102,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/boot-report` | `POST` | Device Token | An installed workstation's boot outcome (update installed, failed, rolled back, error) |
 | `/api/devices/restart-report` | `POST` | Device Token | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/disk-health` | `POST` | Device Token | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
+| `/api/devices/video-decoding` | `POST` | Device Token | What the workstation's GPUs decode in hardware (VA-API), read with `vainfo` at each agent start |
 | `/api/devices/update` | `GET` | Device Token | The system release this workstation may take (its organization's channel, its line's status, the majors open to it) and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
 | `/api/settings/updates` | `GET`, `POST` | Organization Admin (`updates`) | The organization's update channel and the release it is offered; `POST {"channel": "stable"\|"beta"}` changes the channel |
 | `/api/notifications` | `GET` | Organization staff | The platform's notifications for this organization, newest first (50), each with `read` for this user, and `unread` |
@@ -579,6 +580,30 @@ or one with no health data (a virtual disk), is never sent. Each disk is listed 
   workstation has not checked in yet, sent again later; `429` more than 8 disk issues from this
   workstation in a day, sent again after its next check.
 
+#### `POST /api/devices/video-decoding`
+
+What the workstation's GPUs decode in hardware, as the agent read it with `vainfo --display drm`
+on each render node (`/dev/dri/renderD*`) once per start. Chromium decodes every other video on the
+CPU. The latest report replaces the last on the workstation's row (`client_devices.video_decoding`)
+and is returned as `videoDecoding` by `GET /api/clients`; the Workstations page shows it on each card.
+
+- **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
+  organization and the workstation.
+- **Request Body:** `gpus`, 0 to 4 objects with `vendor` (`intel` | `amd` | `nvidia` | `virtual` |
+  `other`, from the PCI vendor id), `kernelDriver` (such as `i915`, `amdgpu`, `nouveau`; may be
+  empty), `vaDriver` (vainfo's driver line, at most 120 characters), `decode` and `encode` (codecs
+  from `h264`, `hevc`, `vp8`, `vp9`, `av1`, `mpeg2`, `vc1`, `jpeg`) and, when vainfo could not say,
+  `problem` (at most 200 characters). A report with no GPU must carry a top-level `problem`.
+
+  ```json
+  { "gpus": [ { "vendor": "intel", "kernelDriver": "i915",
+                "vaDriver": "Intel iHD driver for Intel(R) Gen Graphics - 23.1.1 ()",
+                "decode": ["av1", "h264", "hevc", "vp9"], "encode": ["h264"] } ] }
+  ```
+
+- **Responses:** `200 {"status":"ok"}`; `400` malformed, not sent again; `401` bad token; `409` the
+  workstation has not checked in yet, sent again later.
+
 #### `GET /api/devices/update`
 
 The system release this workstation's organization is offered, asked by the workstation's root
@@ -648,11 +673,20 @@ screens' frames for the next 10 seconds.
         "vncPassword": "randomBootPassword12",
         "imageVersion": "2.9.0",
         "agentVersion": "2.9.0",
-        "update": { "phase": "ready", "version": "2.9.1" }
+        "update": { "phase": "ready", "version": "2.9.1" },
+        "videoDecoding": {
+          "gpus": [ { "vendor": "intel", "kernelDriver": "i915", "vaDriver": "Intel iHD driver …",
+                      "decode": ["h264", "hevc", "vp9", "av1"], "encode": ["h264"] } ],
+          "reportedAt": 1726300000000
+        }
       }
     }
   }
   ```
+
+  `videoDecoding` is the workstation's last
+  [video decoding report](#post-apidevicesvideo-decoding), with `reportedAt` in milliseconds; absent
+  until an agent new enough to send it has started.
 
 #### `POST /api/command`
 

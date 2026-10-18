@@ -1,3 +1,4 @@
+import type { VideoDecoding } from "./boot_report";
 import type { UpdateReport } from "./releases";
 export type UserRole = "super_admin" | "org_admin";
 export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
@@ -176,6 +177,10 @@ export interface ClientDevice {
   update_since?: number | null;
   /** The workstation agent's own version. */
   agent_version?: string | null;
+  /** Its last video decoding report, as JSON (0043; parseVideoDecodingReport). */
+  video_decoding?: string | null;
+  /** When that report arrived, seconds. */
+  video_decoding_at?: number | null;
 }
 
 export interface WorkstationGroup {
@@ -265,6 +270,8 @@ export interface ClientTelemetry {
   update?: UpdateReport;
   /** It waits for a workstation at its site to fetch the release it is due, since (ms; phase 5). */
   updateWaitingSince?: number;
+  /** What its GPUs decode in hardware, from its last start; absent until an agent new enough reports it. */
+  videoDecoding?: VideoDecoding & { reportedAt: number };
 }
 
 export interface RemoteCommand {

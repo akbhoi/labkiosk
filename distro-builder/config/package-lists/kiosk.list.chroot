@@ -79,6 +79,9 @@ xserver-xorg-input-all
 intel-media-va-driver-non-free
 i965-va-driver
 mesa-va-drivers
+# vainfo: the agent asks it once per boot which codecs the GPU decodes, and
+# reports that next to the workstation in the admin console.
+vainfo
 # The kiosk session (labkiosk-session.service) is xinit run by the kiosk user,
 # not a display manager; pam_systemd registers it with logind, which is what
 # lets the X server run without root.
