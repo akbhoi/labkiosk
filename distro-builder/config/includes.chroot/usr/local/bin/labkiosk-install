@@ -103,6 +103,8 @@ ESP_TYPE_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 # clusters, and 128 MiB holds 262144 of 512 bytes.
 BESIDE_ESP_MIB = 128
 BESIDE_ESP_LABEL = "LABKIOSKESP"
+# Seconds to wait for the kernel to add the new partitions' device nodes.
+PARTITION_NODE_ATTEMPTS = 30
 EFI_FIRMWARE_DIR = "/sys/firmware/efi"
 BOOT_ENTRY_LABEL = "Lab Kiosk"
 BOOT_ENTRY_LOADER = "\\EFI\\LabKiosk\\shimx64.efi"
@@ -641,13 +643,23 @@ def partition_beside(target_disk, plan):
     part_root = partition_node(target_disk, make(root_name, "ext4", root_start, swap_start))
     part_data = partition_node(target_disk, make(data_name, "ext4", swap_end, end))
     part_swap = partition_node(target_disk, make(swap_name, "linux-swap", swap_start, swap_end))
-    time.sleep(2)
-    run_cmd(["partprobe", target_disk], check=False)
-    for _ in range(10):
-        if all(os.path.exists(node) for node in (part_esp, part_root, part_data, part_swap)):
-            break
-        time.sleep(0.5)
+    wait_for_partition_nodes(target_disk, (part_esp, part_root, part_data, part_swap))
     return esp_number, part_esp, part_root, part_data, part_swap
+
+
+def wait_for_partition_nodes(target_disk, nodes, attempts=PARTITION_NODE_ATTEMPTS):
+    """
+    The kernel adds a new partition's device node a moment after parted
+    returns, sometimes only after the table is re-read again. Ask it once a
+    second; formatting a node that is not there yet would fail half-way.
+    """
+    for _ in range(attempts):
+        time.sleep(1)
+        run_cmd(["partprobe", target_disk], check=False)
+        missing = [node for node in nodes if not os.path.exists(node)]
+        if not missing:
+            return
+    raise RuntimeError(f"The new partitions {', '.join(missing)} did not appear on {target_disk}.")
 
 
 def boot_entries(listing):
@@ -1024,9 +1036,6 @@ def partition_whole_disk(target_disk):
     # keeps number 4. parted gives it the GPT Linux swap type, which
     # labkiosk-swap checks before it touches it; nothing is formatted here.
     run_cmd(["parted", "-s", target_disk, "--", "mkpart", "SWAP", "linux-swap", f"{swap_start}MiB", f"{swap_end}MiB"])
-    time.sleep(2)
-    run_cmd(["partprobe", target_disk], check=False)
-    time.sleep(1)
 
     # Partition 1 is the bios_grub area: it holds no filesystem and is never
     # mounted, so only the ESP, ROOT and DATA node names are needed here.
@@ -1036,12 +1045,7 @@ def partition_whole_disk(target_disk):
     part_data = f"{target_disk}p4" if is_p_style else f"{target_disk}4"
     part_swap = f"{target_disk}p5" if is_p_style else f"{target_disk}5"
 
-    for _ in range(10):
-        if os.path.exists(part_root) and os.path.exists(part_esp) and os.path.exists(part_data) \
-                and os.path.exists(part_swap):
-            break
-        time.sleep(0.5)
-
+    wait_for_partition_nodes(target_disk, (part_esp, part_root, part_data, part_swap))
     return part_esp, part_root, part_data, part_swap
 
 

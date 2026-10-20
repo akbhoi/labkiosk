@@ -247,6 +247,19 @@ class PartitioningBeside(unittest.TestCase):
         self.assertEqual(calls[0], ["wipefs", "-a", "/dev/sda2"])
         self.assertEqual(calls[1], ["parted", "-s", "/dev/sda", "rm", "2"])
 
+    def test_it_waits_for_the_new_device_nodes_and_stops_without_them(self):
+        seen = iter([False, False, True, True])
+        with mock.patch.object(installer, "run_cmd", return_value="") as run, \
+                mock.patch.object(installer.time, "sleep"), \
+                mock.patch.object(installer.os.path, "exists", side_effect=lambda node: next(seen)):
+            installer.wait_for_partition_nodes("/dev/sda", ("/dev/sda3", "/dev/sda4"))
+        self.assertEqual(run.call_count, 2)
+        with mock.patch.object(installer, "run_cmd", return_value=""), \
+                mock.patch.object(installer.time, "sleep"), \
+                mock.patch.object(installer.os.path, "exists", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "/dev/sda3 did not appear"):
+                installer.wait_for_partition_nodes("/dev/sda", ("/dev/sda3",), attempts=3)
+
     def test_one_new_partition_per_mkpart_or_it_stops(self):
         plan = {"region": (41061, 102399), "replace": None}
         with mock.patch.object(installer, "partition_numbers", return_value={1, 2}), \

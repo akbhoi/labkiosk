@@ -210,10 +210,13 @@ install_disk() {
     mkdir -p "$ROOTFS/run/live/medium/live"
     mount --bind "$LIVE" "$ROOTFS/run/live/medium/live"
     install -m 0644 "$HERE/install_into_disk.py" "$ROOTFS/tmp/install_into_disk.py"
-    chroot "$ROOTFS" /usr/bin/python3 /tmp/install_into_disk.py "$LOOP" "${@:2}"
+    local status=0
+    chroot "$ROOTFS" /usr/bin/python3 /tmp/install_into_disk.py "$LOOP" "${@:2}" || status=$?
     umount -R "$ROOTFS/run" "$ROOTFS/tmp" "$ROOTFS/sys" "$ROOTFS/proc" "$ROOTFS/dev"
     losetup -d "$LOOP"
     LOOP=""
+    # The installer's own outcome, not the clean-up's.
+    return "$status"
 }
 
 # partition_offset IMAGE NAME: the byte offset of the GPT partition NAME.
