@@ -4417,7 +4417,7 @@ usage_counter = UsageCounter()
 
 
 def report_usage(counter=usage_counter):
-    """Send what was counted. Kept for the next round when offline or refused for now; dropped when malformed."""
+    """Send what was counted. Kept for the next round when offline or refused for now; dropped when malformed or not taken at all (404)."""
     with state_lock:
         configured = state["isConfigured"]
     if not configured:
@@ -4435,6 +4435,10 @@ def report_usage(counter=usage_counter):
         return
     if status == 400:
         log("The control plane refused a usage report as malformed (HTTP 400); dropping it.")
+        return
+    if status == 404:
+        # A control plane older than usage reports: it has nowhere to keep them.
+        log("The control plane does not take usage reports (HTTP 404); dropping this one.")
         return
     counter.put_back(report)
     log(f"Usage not reported yet (HTTP {status}).")

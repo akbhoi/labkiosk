@@ -829,6 +829,15 @@ class AgentCountsUsage(unittest.TestCase):
         agent.report_usage(self.counter)
         self.assertEqual(len(sent), 1)
 
+    def test_a_control_plane_without_usage_reports_gets_each_report_once(self):
+        self.day[0] = time.strftime("%Y-%m-%d")
+        self.counter.session_started()
+        sent = []
+        agent.post_device_json = lambda path, payload: sent.append(payload) or 404
+        agent.report_usage(self.counter)
+        agent.report_usage(self.counter)
+        self.assertEqual(len(sent), 1, "a 404 is not sent again")
+
     def test_the_extension_ticks_with_the_senders_address_and_the_idle_state(self):
         background = read(CHROOT, "opt/labkiosk/extension/background.js")
         self.assertIn("chrome.idle.queryState(USAGE_IDLE_SECONDS)", background)
