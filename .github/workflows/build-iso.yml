@@ -32,10 +32,11 @@ jobs:
       # debootstrap, the squashfs and the finished hybrid ISO all live under
       # Docker's data directory on /. Deleting the preinstalled toolchains
       # takes minutes, so it happens only when / has less free than the build
-      # needs (NEED_GIB, from the peak printed after "Compile the ISO").
+      # needs (NEED_GIB: the build's peak, printed after "Compile the ISO", was
+      # 6 GiB in October 2026; this is that with a wide margin).
       - name: Free disk space on the runner (only if needed)
         env:
-          NEED_GIB: 25
+          NEED_GIB: 15
         run: |
           df -h / /mnt
           free_gib=$(( $(df --output=avail -B1G / | tail -1) ))
