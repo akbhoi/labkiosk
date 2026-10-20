@@ -647,19 +647,35 @@ def partition_beside(target_disk, plan):
     return esp_number, part_esp, part_root, part_data, part_swap
 
 
+def is_block_device(node):
+    try:
+        return stat.S_ISBLK(os.stat(node).st_mode)
+    except FileNotFoundError:
+        return False
+
+
 def wait_for_partition_nodes(target_disk, nodes, attempts=PARTITION_NODE_ATTEMPTS):
     """
-    The kernel adds a new partition's device node a moment after parted
-    returns, sometimes only after the table is re-read again. Ask it once a
-    second; formatting a node that is not there yet would fail half-way.
+    Wait until every new partition's device node is there, and still there a
+    second later. parted tells the kernel about each partition itself; a
+    re-read of the table (partprobe) removes and re-adds every partition node,
+    so it is asked for only while a node is missing, and a node seen just
+    after one may vanish again. Formatting a node that is not there would
+    fail half-way through the install.
     """
+    seen_in_a_row = 0
+    missing = list(nodes)
     for _ in range(attempts):
         time.sleep(1)
-        run_cmd(["partprobe", target_disk], check=False)
-        missing = [node for node in nodes if not os.path.exists(node)]
-        if not missing:
+        missing = [node for node in nodes if not is_block_device(node)]
+        if missing:
+            seen_in_a_row = 0
+            run_cmd(["partprobe", target_disk], check=False)
+            continue
+        seen_in_a_row += 1
+        if seen_in_a_row == 2:
             return
-    raise RuntimeError(f"The new partitions {', '.join(missing)} did not appear on {target_disk}.")
+    raise RuntimeError(f"The new partitions {', '.join(missing or nodes)} did not settle on {target_disk}.")
 
 
 def boot_entries(listing):

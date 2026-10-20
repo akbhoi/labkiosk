@@ -223,7 +223,7 @@ class PartitioningBeside(unittest.TestCase):
         with mock.patch.object(installer, "partition_numbers", side_effect=lambda disk: next(numbers)), \
                 mock.patch.object(installer, "run_cmd", side_effect=lambda cmd, check=True: calls.append(cmd) or ""), \
                 mock.patch.object(installer.time, "sleep"), \
-                mock.patch.object(installer.os.path, "exists", return_value=True):
+                mock.patch.object(installer, "is_block_device", return_value=True):
             nodes = installer.partition_beside("/dev/sda", plan)
         return nodes, calls
 
@@ -248,16 +248,27 @@ class PartitioningBeside(unittest.TestCase):
         self.assertEqual(calls[1], ["parted", "-s", "/dev/sda", "rm", "2"])
 
     def test_it_waits_for_the_new_device_nodes_and_stops_without_them(self):
-        seen = iter([False, False, True, True])
+        # Missing, so the table is re-read; then there twice in a row.
+        seen = iter([False, True, True, True, True, True])
         with mock.patch.object(installer, "run_cmd", return_value="") as run, \
                 mock.patch.object(installer.time, "sleep"), \
-                mock.patch.object(installer.os.path, "exists", side_effect=lambda node: next(seen)):
+                mock.patch.object(installer, "is_block_device", side_effect=lambda node: next(seen)):
             installer.wait_for_partition_nodes("/dev/sda", ("/dev/sda3", "/dev/sda4"))
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list, [mock.call(["partprobe", "/dev/sda"], check=False)])
+
+    def test_a_node_that_vanishes_again_is_waited_for(self):
+        seen = iter([True, False, True, True])
+        with mock.patch.object(installer, "run_cmd", return_value="") as run, \
+                mock.patch.object(installer.time, "sleep"), \
+                mock.patch.object(installer, "is_block_device", side_effect=lambda node: next(seen)):
+            installer.wait_for_partition_nodes("/dev/sda", ("/dev/sda3",))
+        self.assertEqual(run.call_count, 1)
+
+    def test_nodes_that_never_settle_stop_the_install(self):
         with mock.patch.object(installer, "run_cmd", return_value=""), \
                 mock.patch.object(installer.time, "sleep"), \
-                mock.patch.object(installer.os.path, "exists", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "/dev/sda3 did not appear"):
+                mock.patch.object(installer, "is_block_device", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "/dev/sda3 did not settle"):
                 installer.wait_for_partition_nodes("/dev/sda", ("/dev/sda3",), attempts=3)
 
     def test_one_new_partition_per_mkpart_or_it_stops(self):
