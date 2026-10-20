@@ -152,7 +152,7 @@ jobs:
       # prove the one try, the promotion and both kinds of rollback. Before
       # the release step, so an ISO that cannot roll back is never published.
       # It also installs beside another system (dual boot) and boots over the
-      # network: UEFI HTTP Boot and PXE with Secure Boot on, and BIOS iPXE.
+      # network: UEFI PXE with Secure Boot on, and BIOS iPXE.
       - name: Boot-test the installed disk
         run: |
           sudo apt-get update

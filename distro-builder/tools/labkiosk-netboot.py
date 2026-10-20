@@ -251,7 +251,6 @@ def prepare(args):
 
     host = args.server_address
     print(f"Lab Kiosk OS {version} is ready for network boot in {out}.")
-    print(f"  UEFI HTTP Boot:  http://{host}/labkiosk/shimx64.efi")
     print("  UEFI PXE:        labkiosk/shimx64.efi over TFTP from the same folder")
     if undionly:
         print("  BIOS PXE:        labkiosk/undionly.kpxe over TFTP, then "

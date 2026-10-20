@@ -45,15 +45,19 @@
 #
 #  11. dual boot a disk that already holds another system (its EFI system
 #                partition, its own partition, free space) gets Lab Kiosk in
-#                the free space: the other partitions and the other system's
-#                boot files are untouched, and the firmware entry the
-#                installer registers starts Lab Kiosk, which promotes a try
-#  12. http boot UEFI HTTP Boot with Secure Boot on: shim, GRUB, kernel and
-#                image come from a boot server laid out by
-#                tools/labkiosk-netboot.py, and the workstation enrols by
+#                the free space, with its own ESP: the other partitions and
+#                the other system's ESP are untouched (a planted
+#                EFI/debian/grub.cfg is never read), and the firmware entry
+#                the installer registers starts Lab Kiosk, which promotes a try
+#  12. pxe boot  UEFI PXE with Secure Boot on: shim, GRUB, kernel and initrd
+#                over TFTP, the image over HTTP, from a boot server laid out
+#                by tools/labkiosk-netboot.py; the workstation enrols by
 #                itself and sends heartbeats with its token
-#  13. pxe boot  the same over UEFI PXE (TFTP for shim and GRUB)
-#  14. ipxe boot the same from legacy BIOS through iPXE, under the same name
+#  13. ipxe boot the same from legacy BIOS through iPXE, under the same name
+#
+# UEFI HTTP Boot is not offered: Debian 12's signed GRUB starts over HTTP but
+# has no HTTP client, so it stops at its prompt without its menu (seen here,
+# GRUB 2.06-13+deb12u2; Debian bug #1016873).
 #
 # First of all, the image's phase 3 wiring, read from its root filesystem: the
 # two update units, the updater they run, and the polkit rule that lets the
@@ -969,20 +973,13 @@ netboot_scenario() {
     stop_vm
 }
 
-log "12. http boot: UEFI HTTP Boot with Secure Boot on"
-virt-fw-vars --input "$OVMF_VARS" --output "$WORK/vars-http.fd" \
-    --set-boot-uri http://10.0.2.2/labkiosk/shimx64.efi >/dev/null 2>&1
-NETBOOT_LOG_FROM="$(wc -l < "$WORK/netboot-server.log")"
-VM_SERIAL="file:$WORK/http-boot-serial.log" VM_VARS="$WORK/vars-http.fd" start_vm none
-netboot_scenario "http boot"
-
-log "13. pxe boot: UEFI PXE with Secure Boot on, shim and GRUB over TFTP"
+log "12. pxe boot: UEFI PXE with Secure Boot on, shim and GRUB over TFTP"
 NETBOOT_LOG_FROM="$(wc -l < "$WORK/netboot-server.log")"
 VM_SERIAL="file:$WORK/pxe-boot-serial.log" \
     VM_NIC="user,model=virtio-net-pci,tftp=$NETROOT,bootfile=labkiosk/shimx64.efi" start_vm none
 netboot_scenario "pxe boot"
 
-log "14. ipxe boot: legacy BIOS through iPXE"
+log "13. ipxe boot: legacy BIOS through iPXE"
 NETBOOT_LOG_FROM="$(wc -l < "$WORK/netboot-server.log")"
 rm -f "$WORK/qmp.sock"
 qemu-system-x86_64 \

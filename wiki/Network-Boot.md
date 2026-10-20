@@ -43,7 +43,7 @@ It writes:
 | :--- | :--- |
 | `labkiosk/shimx64.efi` | Microsoft-signed shim, taken from the release itself |
 | `labkiosk/grubx64.efi` | Debian-signed network GRUB, which shim starts |
-| `labkiosk/grub.cfg` | The boot menu; copied to `debian-installer/amd64/grub/` and `grub/`, where that GRUB may look for it |
+| `labkiosk/grub.cfg` | The boot menu; copied to `debian-installer/amd64/grub/`, where that GRUB looks for it, and `grub/` |
 | `labkiosk/boot.ipxe` | The same boot for iPXE (legacy BIOS) |
 | `labkiosk/undionly.kpxe` | iPXE for BIOS PXE, when the server has the `ipxe` package |
 | `labkiosk/<version>/` | `vmlinuz`, `initrd.img`, `filesystem.squashfs` |
@@ -56,18 +56,19 @@ Serve the folder on port 80 (any web server; `python3 -m http.server 80 --direct
 
 | Workstation firmware | DHCP answer |
 | :--- | :--- |
-| UEFI, HTTP Boot (client architecture 16) | Vendor class `HTTPClient`, boot file `http://<server>/labkiosk/shimx64.efi` |
 | UEFI, PXE (client architecture 7 or 9) | Boot file `labkiosk/shimx64.efi`, over TFTP |
 | Legacy BIOS (client architecture 0) | Boot file `labkiosk/undionly.kpxe` over TFTP; then, when the request comes from iPXE (user class `iPXE`), `http://<server>/labkiosk/boot.ipxe` |
 
-How to express this depends on the DHCP server; its documentation for "UEFI HTTP boot", "PXE" and "iPXE chainloading" covers it. In the firmware of each workstation, enable network boot (and HTTP Boot, where offered) and put it first.
+How to express this depends on the DHCP server; its documentation for "PXE" and "iPXE chainloading" covers it. In the firmware of each workstation, enable network boot (PXE) and put it first.
+
+**UEFI HTTP Boot is not supported.** Debian 12's signed GRUB, which Secure Boot requires, has no HTTP client ([Debian bug #1016873](https://bugs.debian.org/1016873)): started over HTTP it stops at its own prompt without reading its menu. Use PXE on UEFI machines; the system image itself still comes over HTTP.
 
 UEFI workstations boot with **Secure Boot on**: the firmware checks shim, shim checks GRUB, GRUB checks the kernel, exactly as from the disk. Legacy BIOS has no Secure Boot.
 
 ## What each workstation does
 
-1. The firmware fetches shim and GRUB (or iPXE); GRUB shows **Lab Kiosk OS** for three seconds and starts it with nobody at the keyboard.
-2. The kernel and initrd come over HTTP; live-boot downloads `filesystem.squashfs` into RAM (`fetch=`) and starts it under the RAM overlay.
+1. The firmware fetches shim and GRUB over TFTP (or iPXE); GRUB shows **Lab Kiosk OS** for three seconds and starts it with nobody at the keyboard.
+2. The kernel and initrd come over TFTP (over HTTP with iPXE); live-boot downloads `filesystem.squashfs` into RAM (`fetch=`) and starts it under the RAM overlay.
 3. `labkiosk-hostname` names the machine `labkiosk-` and six hex digits derived from its network card, the same at every start.
 4. The agent sees `labkiosk.netboot=1` and enrols with the organization and key from the boot menu, under that name in capitals (`LABKIOSK-3FA92C`). While the control plane is unreachable it tries again every 15 seconds; after a refusal (a wrong or rotated key) every 10 minutes, because failed enrolments are rate-limited per public address and a whole room shares one.
 5. The control plane knows the name from the last start and issues it a new device token, so the workstation keeps its place, its group and its history in the admin console. No token is stored anywhere.
@@ -78,7 +79,7 @@ The setup wizard on a network-booted workstation shows **NETWORK BOOT** and has 
 
 Know what this trusts before you use it:
 
-- **The boot network.** GRUB's menu, the initrd and the system image come over plain HTTP, and Secure Boot checks only shim, GRUB and the kernel. Anyone who can answer DHCP or intercept HTTP on that network can start a modified system on the workstations. Keep the boot network to the workstations and the server (its own VLAN, DHCP snooping on the switches).
+- **The boot network.** GRUB's menu, the kernel, the initrd (TFTP, or HTTP with iPXE) and the system image (HTTP) come unencrypted, and Secure Boot checks only shim, GRUB and the kernel. Anyone who can answer DHCP or intercept TFTP or HTTP on that network can start a modified system on the workstations. Keep the boot network to the workstations and the server (its own VLAN, DHCP snooping on the switches).
 - **The enrollment key** is in the boot menu, readable by anyone on that network and on each workstation's kernel command line. It can only enrol workstations, and each enrolment shows in the console; rotate it in the console if it leaks, then run `prepare` again.
 - **The boot menu.** Without `--admin-hash`, anyone at a UEFI workstation can edit the boot entry and start a root shell. iPXE (legacy BIOS) cannot be locked this way: anyone pressing Ctrl+B while it starts gets its shell.
 - **The firmware.** As with any kiosk, set a firmware password and allow only network boot ([Installation Guide](Installation-Guide#step-5--lock-down-the-firmware)).

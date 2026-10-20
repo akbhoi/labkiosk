@@ -427,8 +427,12 @@ distro-builder/
   workstation's token, so nothing per machine is stored anywhere.
 - The administrator gate follows `labkiosk.admin=`: set, it gates like an installed disk; absent,
   settings are open like live media. A malformed digest keeps the gate shut.
-- The boot network is trusted: GRUB's menu, the initrd and the squashfs come over plain HTTP and
-  Secure Boot verifies only shim, GRUB and the kernel. The enrollment key is readable on that
+- **UEFI PXE and BIOS iPXE only.** Debian 12's signed network GRUB has no HTTP client (Debian
+  bug #1016873; the VM test saw 2.06-13+deb12u2 stop at `grub>` after a UEFI HTTP Boot), so the
+  GRUB menu loads the kernel and initrd from GRUB's own boot device (TFTP), never `(http,…)`, and
+  UEFI HTTP Boot is not offered. Revisit with the Debian 13 major release.
+- The boot network is trusted: GRUB's menu, kernel and initrd come over plain TFTP (or HTTP for
+  iPXE), the squashfs over plain HTTP, and Secure Boot verifies only shim, GRUB and the kernel. The enrollment key is readable on that
   network. Say so wherever network boot is documented.
 
 ### Rule 2c: No Distribution Package
@@ -821,8 +825,8 @@ the ISO's own installer writes a virtual disk, which then boots under QEMU + OVM
 through four scenarios — promote, broken squashfs, recover, unhealthy image — read back from
 `grubenv`, then the signed download, the TPM, an install beside another system (dual boot, with
 `efibootmgr` played by `install_into_disk.py` and the entry given to the VM by `virt-fw-vars`) and
-network boot from `tools/labkiosk-netboot.py`'s layout (UEFI HTTP Boot and PXE with Secure Boot
-on, BIOS iPXE). An installed disk's BIOS boot is covered only by the GRUB menu tests in
+network boot from `tools/labkiosk-netboot.py`'s layout (UEFI PXE with Secure Boot on, BIOS
+iPXE). An installed disk's BIOS boot is covered only by the GRUB menu tests in
 `test_client.py`. It needs root and
 `/dev/kvm`, so it does not run on Windows:
 
