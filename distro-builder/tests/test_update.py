@@ -984,6 +984,12 @@ class Image(unittest.TestCase):
         duplicates = sorted(name for name in set(packages) if packages.count(name) > 1)
         self.assertEqual(duplicates, [], "listed more than once in kiosk.list.chroot")
 
+    def test_the_system_image_is_zstd_compressed(self):
+        # Faster to build and to read at every boot than live-build's default xz.
+        with open(os.path.join(ROOT, "auto/config"), encoding="utf-8") as handle:
+            config = handle.read()
+        self.assertIn("    --chroot-squashfs-compression-type zstd \\\n", config)
+
     def test_no_raw_string_double_escapes_an_anchor(self):
         for path in (os.path.join(CHROOT, "usr/local/sbin/labkiosk-update"),
                      os.path.join(ROOT, "tools/make-release-manifest.py")):

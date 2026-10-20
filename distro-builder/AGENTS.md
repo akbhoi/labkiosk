@@ -442,6 +442,23 @@ distro-builder/
   overlay, read-only root, only `LABKIOSK_DATA` persists) cannot hold. Whole-disk, dual boot and
   network boot all boot this image.
 
+### Rule 2d: Compile Only What Measurement Says Is Slow
+
+- The system image is a **zstd** squashfs (`--chroot-squashfs-compression-type zstd` in
+  `auto/config`): faster to build and to read at every boot than live-build's default xz, for a
+  somewhat larger image. The initrd stays xz (`labkiosk-compress`).
+- The client stays Python and the pages stay HTML: the ISO build, the installer, the pixel work
+  (`scrot`, `x11vnc`) and the Worker's crypto already run compiled code, and Chromium renders
+  only HTML, CSS and JavaScript. Do not rewrite a component in Rust or C for speed without a
+  measurement that shows it is the bottleneck. `tests/vm/boot-test.sh` step 4b prints the last
+  boot's timings (`boot_timings.py`): systemd's split, when the session started, and each
+  `labkiosk-*` unit's start time. Compare runs of that test with each other, not with hardware.
+- If the Python one-shots ever show up on the boot's critical path, merge them into one
+  early-boot program before changing language. If compiled code is ever written, the candidate is
+  the agent, in Rust (long-running, on the network, parsing untrusted input; less RAM than
+  CPython), and only as a planned port that removes `python3` from the image once every script is
+  ported, or a new hot path such as a hardware-encoded Remote Control streamer.
+
 ### Rule 3: The Installer Copies the Image, Not the Root
 
 - The installer no longer `rsync`s the running root. It copies the live medium's
@@ -826,7 +843,7 @@ through four scenarios â€” promote, broken squashfs, recover, unhealthy image â€
 `grubenv`, then the signed download, the TPM, an install beside another system (dual boot, with
 `efibootmgr` played by `install_into_disk.py` and the entry given to the VM by `virt-fw-vars`) and
 network boot from `tools/labkiosk-netboot.py`'s layout (UEFI PXE with Secure Boot on, BIOS
-iPXE). An installed disk's BIOS boot is covered only by the GRUB menu tests in
+iPXE). Step 4b prints the boot's timings. An installed disk's BIOS boot is covered only by the GRUB menu tests in
 `test_client.py`. It needs root and
 `/dev/kvm`, so it does not run on Windows:
 
