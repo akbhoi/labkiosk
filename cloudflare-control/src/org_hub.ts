@@ -64,6 +64,15 @@ import {
   sameLanReport,
   siteKey
 } from "./lan_sharing";
+import {
+  MAX_WAKE_MACS_PER_COMMAND,
+  PowerRule,
+  LAST_AGENT_WITHOUT_WAKE,
+  WorkstationPower,
+  effectivePower,
+  isWakeableMac,
+  loadPowerRules
+} from "./power";
 
 /** Text a workstation sends to prove it is alive; answered without waking the object. */
 export const HUB_PING = '{"type":"ping"}';
@@ -128,7 +137,10 @@ type CommandAction =
   // Over-the-air updates (src/releases.ts). Never accepted by POST /api/command:
   // only the update routes, guarded by the `updates` permission, queue them.
   | "release-available"
-  | "install-update";
+  | "install-update"
+  // Wake-on-LAN (src/power.ts): sent only by /wake, to a workstation at the
+  // sleeping one's site, with the MAC addresses its own hardware report named.
+  | "wake";
 
 /** What a workstation reports about its system image and its update, besides the screen. */
 interface UpdateFields {
@@ -229,6 +241,8 @@ interface HubConfig {
   releases: ReleaseOffer[];
   /** The group of each workstation in a group a major is being tried on (ReleaseOffer.pilotGroup). */
   pilotGroups: Map<string, string>;
+  /** Power schedules, and the group of each grouped workstation when any schedule is for a group. */
+  power: { rules: PowerRule[]; groupOf: Map<string, string> };
   loadedAt: number;
 }
 
@@ -242,6 +256,8 @@ export interface WorkstationConfig {
   lanSharing: boolean;
   /** Whether its usage reports name the sites visited (src/usage.ts); false and it sends none. */
   usageSites: boolean;
+  /** When it switches itself off and on, day by day (src/power.ts); null: never. */
+  power: WorkstationPower | null;
 }
 
 export interface QueuedCommand {
@@ -253,6 +269,8 @@ export interface QueuedCommand {
   epoch?: number;
   /** The release an update command is about. */
   version?: string;
+  /** The workstations a `wake` command sends a magic packet to. */
+  macs?: string[];
   timestamp: number;
 }
 
@@ -279,6 +297,7 @@ export interface EnqueueInput {
   message?: string;
   epoch?: number;
   version?: string;
+  macs?: string[];
   portal?: boolean;
   /** The organization's broadcast changed with this command; reload before delivering. */
   reloadConfig?: boolean;
@@ -346,6 +365,14 @@ export class OrgHub {
       client_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       ends_at INTEGER NOT NULL
+    )`);
+    // Where each workstation last was on its LAN (src/lan_sharing.ts's siteKey),
+    // kept after it goes offline: Wake-on-LAN looks for a workstation that is on
+    // at a sleeping one's site. Written when it changes, never per message.
+    sql.exec(`CREATE TABLE IF NOT EXISTS last_sites (
+      client_id TEXT PRIMARY KEY,
+      site TEXT NOT NULL,
+      seen_at INTEGER NOT NULL
     )`);
     this.tenantId = this.readMeta("tenantId");
     this.flushedOnline = Number(this.readMeta("flushedOnline") ?? "-1");
@@ -415,6 +442,10 @@ export class OrgHub {
         case "/lan-peers": {
           const body = (await request.json()) as { clientId?: unknown; version?: unknown };
           return json({ peers: await this.lanPeersFor(String(body.clientId || ""), String(body.version || "")) });
+        }
+        case "/wake": {
+          const body = (await request.json()) as { targets?: unknown };
+          return json(await this.wake(body.targets));
         }
         case "/device-enrolled":
           this.deviceEnrolled(String(((await request.json()) as { clientId?: unknown }).clientId || ""));
@@ -496,14 +527,15 @@ export class OrgHub {
       this.config = null;
       return null;
     }
-    const [whitelist, broadcasts, releases] = await Promise.all([
+    const [whitelist, broadcasts, releases, power] = await Promise.all([
       buildEffectiveWhitelist(db, tenant.id),
       listDeviceBroadcasts(db, tenant.id),
-      offeredReleases(db, tenant.update_channel, tenant.id)
+      offeredReleases(db, tenant.update_channel, tenant.id),
+      loadPowerRules(db, tenant.id)
     ]);
     const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
     const pilotGroups = await workstationGroupsIn(db, tenant.id, pilots);
-    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, pilotGroups, loadedAt: Date.now() };
+    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, pilotGroups, power, loadedAt: Date.now() };
     return this.config;
   }
 
@@ -553,6 +585,7 @@ export class OrgHub {
       broadcastEpoch: active?.epoch || 0,
       lanSharing: tenant.lan_sharing === 1,
       usageSites: tenant.usage_sites !== 0,
+      power: effectivePower(config.power.rules, config.power.groupOf.get(clientId)),
       portalUrl
     };
   }
@@ -664,7 +697,10 @@ export class OrgHub {
       await this.writeRegistry([this.registryRow({ clientId, ...client }, now)]);
       this.recordEvent("connect", clientId);
     }
-    if (changed) this.notifyConsoles({ type: "status", client: this.httpStatus(clientId, client, now) });
+    if (changed) {
+      this.notifyConsoles({ type: "status", client: this.httpStatus(clientId, client, now) });
+      this.rememberSite(clientId, client.ip, client.lan);
+    }
     if (client.dirty) await this.ensureAlarm(FLUSH_DELAY_MS);
     await this.nudgeHttp(clientId, client);
 
@@ -747,6 +783,7 @@ export class OrgHub {
         await this.nudgeSocket(ws, updated);
         // A seed finished, failed or moved: those waiting at its site may go now.
         await this.nudgeSite(siteKey(updated.ip, updated.lan), updated.clientId);
+        this.rememberSite(updated.clientId, updated.ip, updated.lan);
       }
     } else if (data.type === "frame") {
       const frame = acceptableFrame(data.thumbnail);
@@ -808,6 +845,7 @@ export class OrgHub {
     this.http.delete(clientId);
     this.frames.delete(clientId);
     this.lastMessage.delete(clientId);
+    this.ctx.storage.sql.exec("DELETE FROM last_sites WHERE client_id = ?", clientId);
     this.notifyConsoles({ type: "removed", clientId });
   }
 
@@ -838,6 +876,7 @@ export class OrgHub {
       message: input.message,
       epoch: input.epoch,
       ...(input.version ? { version: input.version } : {}),
+      ...(input.macs?.length ? { macs: input.macs } : {}),
       ...(input.portal ? { portal: true } : {})
     });
     const ids: string[] = [];
@@ -910,7 +949,7 @@ export class OrgHub {
 
     const commands: QueuedCommand[] = [];
     for (const row of rows) {
-      let payload: { url?: string; message?: string; epoch?: number; version?: string; portal?: boolean } = {};
+      let payload: { url?: string; message?: string; epoch?: number; version?: string; macs?: string[]; portal?: boolean } = {};
       try {
         payload = row.payload_json ? JSON.parse(row.payload_json) : {};
       } catch (err) {
@@ -925,6 +964,7 @@ export class OrgHub {
         message: payload.message,
         epoch: payload.epoch,
         ...(payload.version ? { version: payload.version } : {}),
+        ...(Array.isArray(payload.macs) ? { macs: payload.macs.filter(isWakeableMac) } : {}),
         timestamp: row.created_at
       });
       if (row.target === clientId) {
@@ -1349,6 +1389,96 @@ export class OrgHub {
     const self = this.ctx.getWebSockets(`device:${clientId}`).map((ws) => this.deviceAttachment(ws)).find(Boolean);
     if (!self) return [];
     return lanPeers(self, version, this.siteMembers(), Date.now());
+  }
+
+  // ------------------------------------------------------------- Wake-on-LAN
+
+  /** Keep where a workstation is on its LAN, for waking it once it is off. */
+  private rememberSite(clientId: string, ip: string, lan: LanReport | undefined): void {
+    const site = siteKey(ip, lan);
+    if (!site) return;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO last_sites (client_id, site, seen_at) VALUES (?, ?, ?)
+       ON CONFLICT(client_id) DO UPDATE SET site = excluded.site, seen_at = excluded.seen_at`,
+      clientId,
+      site,
+      Math.floor(Date.now() / 1000)
+    );
+  }
+
+  /**
+   * Wake workstations that are off: for each, a workstation that is on at its
+   * last known site, running an agent that sends magic packets, is sent a
+   * `wake` command with the MAC addresses the Worker read from the sleeping
+   * one's own hardware report. The rest come back with the reason.
+   */
+  async wake(raw: unknown): Promise<{ sent: Array<{ clientId: string; via: string }>; skipped: Array<{ clientId: string; reason: string }> }> {
+    const targets = (Array.isArray(raw) ? raw : []).flatMap((t) => {
+      const entry = t && typeof t === "object" ? (t as { clientId?: unknown; macs?: unknown }) : {};
+      const clientId = String(entry.clientId || "");
+      if (!CLIENT_ID_PATTERN.test(clientId)) return [];
+      return [{ clientId, macs: (Array.isArray(entry.macs) ? entry.macs : []).filter(isWakeableMac) }];
+    });
+    const now = Date.now();
+    // Who is on now, and where.
+    const awake: Array<{ clientId: string; site: string | null; agentVersion?: string; socket: boolean }> = [];
+    for (const ws of this.ctx.getWebSockets("device")) {
+      const a = this.deviceAttachment(ws);
+      if (a && now - this.lastSeenOf(ws, a) < SOCKET_STALE_MS) {
+        awake.push({ clientId: a.clientId, site: siteKey(a.ip, a.lan), agentVersion: a.agentVersion, socket: true });
+      }
+    }
+    for (const [clientId, c] of this.http) {
+      if (now - c.lastSeen < HTTP_ONLINE_MS) awake.push({ clientId, site: siteKey(c.ip, c.lan), agentVersion: c.agentVersion, socket: false });
+    }
+    const canWake = (agentVersion: string | undefined) =>
+      Boolean(agentVersion && isReleaseVersion(agentVersion) && compareVersions(agentVersion, LAST_AGENT_WITHOUT_WAKE) > 0);
+
+    const sent: Array<{ clientId: string; via: string }> = [];
+    const skipped: Array<{ clientId: string; reason: string }> = [];
+    const byPeer = new Map<string, string[]>();
+    for (const target of targets) {
+      if (awake.some((w) => w.clientId === target.clientId)) {
+        skipped.push({ clientId: target.clientId, reason: "It is already on" });
+        continue;
+      }
+      if (!target.macs.length) {
+        skipped.push({ clientId: target.clientId, reason: "It has reported no wired network adapter, which Wake-on-LAN needs" });
+        continue;
+      }
+      const row = this.ctx.storage.sql
+        .exec("SELECT site FROM last_sites WHERE client_id = ?", target.clientId)
+        .toArray()[0] as { site?: string } | undefined;
+      if (!row?.site) {
+        skipped.push({
+          clientId: target.clientId,
+          reason: "Its local network is not known yet: it is learnt while the workstation is on, on an installed disk"
+        });
+        continue;
+      }
+      const there = awake.filter((w) => w.site === row.site);
+      const able = there.filter((w) => canWake(w.agentVersion));
+      if (!able.length) {
+        skipped.push({
+          clientId: target.clientId,
+          reason: there.length
+            ? "The workstations that are on at its site run an agent too old to send the wake signal; update them"
+            : "No workstation of this organization is on at its site to send the wake signal"
+        });
+        continue;
+      }
+      // A socket hears the command at once; an HTTP heartbeat within seconds.
+      const peer = able.find((w) => w.socket) ?? able[0];
+      byPeer.set(peer.clientId, [...(byPeer.get(peer.clientId) ?? []), ...target.macs]);
+      sent.push({ clientId: target.clientId, via: peer.clientId });
+    }
+    for (const [peer, macs] of byPeer) {
+      const unique = [...new Set(macs)];
+      for (let i = 0; i < unique.length; i += MAX_WAKE_MACS_PER_COMMAND) {
+        await this.enqueue({ targets: [peer], action: "wake", macs: unique.slice(i, i + MAX_WAKE_MACS_PER_COMMAND) });
+      }
+    }
+    return { sent, skipped };
   }
 
   /**

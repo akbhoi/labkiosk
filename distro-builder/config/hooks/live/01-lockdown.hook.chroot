@@ -158,6 +158,8 @@ chmod +x /usr/local/sbin/labkiosk-share || true
 # the swap partition is never used.
 chmod 0755 /usr/local/sbin/labkiosk-logs /usr/local/sbin/labkiosk-swap /usr/local/sbin/labkiosk-hostname \
     /usr/local/sbin/labkiosk-data-unlock /usr/local/sbin/labkiosk-health
+# Not "|| true": without it a power schedule never switches a workstation on.
+chmod 0755 /usr/local/sbin/labkiosk-wake-alarm
 # Not "|| true": without it nothing mounts the data partition on an installed disk.
 chmod 0755 /etc/systemd/system-generators/labkiosk-data-generator
 chmod +x /usr/local/bin/labkiosk-lock-keys || true
@@ -357,6 +359,14 @@ cat << 'EOF' > /etc/sudoers.d/51-labkiosk-localization
 kiosk ALL=(ALL) NOPASSWD: /usr/local/sbin/labkiosk-localization
 EOF
 chmod 0440 /etc/sudoers.d/51-labkiosk-localization
+
+# A power schedule's switch-on: the RTC wake alarm is root's to write. One
+# named program, which takes a plain number of seconds within the next eight
+# days, or `clear`, and writes /sys/class/rtc/rtc0/wakealarm and nothing else.
+cat << 'EOF' > /etc/sudoers.d/52-labkiosk-wake-alarm
+kiosk ALL=(ALL) NOPASSWD: /usr/local/sbin/labkiosk-wake-alarm
+EOF
+chmod 0440 /etc/sudoers.d/52-labkiosk-wake-alarm
 
 # 7. Enable kiosk services.
 systemctl set-default graphical.target

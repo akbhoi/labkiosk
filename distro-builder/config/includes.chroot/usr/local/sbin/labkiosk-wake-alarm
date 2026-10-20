@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""
+Lab Kiosk: set the hardware clock to switch this workstation on.
+
+    labkiosk-wake-alarm set <seconds since the epoch>
+    labkiosk-wake-alarm clear
+
+The agent runs this through its sudoers entry (01-lockdown.hook.chroot) just
+before a power schedule shuts the machine down, with the next switch-on time;
+with none, it clears an alarm left from before. It writes the kernel's RTC
+wake alarm, /sys/class/rtc/rtc0/wakealarm, and nothing else.
+
+Every argument is checked here, not trusted from the caller: `set` takes only a
+plain number of seconds, at least MIN_LEAD_SECONDS and at most MAX_LEAD_SECONDS
+from now (the schedule's next switch-on is never more than a week and a day
+away). The kernel counts the RTC as UTC; where /etc/adjtime says the RTC keeps
+local time (a machine that also starts Windows), the alarm is moved by the
+local offset so it still rings at the moment asked for.
+
+Exit status: 0 done; 2 the arguments were refused; 3 this machine has no RTC
+that can wake it; 4 the RTC refused the alarm. The reason is on stderr.
+"""
+
+import os
+import re
+import sys
+import time
+
+WAKEALARM = "/sys/class/rtc/rtc0/wakealarm"
+ADJTIME = "/etc/adjtime"
+MIN_LEAD_SECONDS = 60
+MAX_LEAD_SECONDS = 8 * 24 * 60 * 60 + 3600
+EPOCH_PATTERN = re.compile(r"[0-9]{9,11}\Z")
+
+EXIT_REFUSED = 2
+EXIT_NO_RTC = 3
+EXIT_RTC_FAILED = 4
+
+
+class Refused(ValueError):
+    pass
+
+
+class NoRtc(OSError):
+    pass
+
+
+def parse_epoch(text, now):
+    """The alarm time asked for, or Refused: digits only, MIN_LEAD to MAX_LEAD seconds from now."""
+    if not isinstance(text, str) or not EPOCH_PATTERN.match(text):
+        raise Refused(f"the wake time must be seconds since the epoch, not {text[:40]!r}")
+    when = int(text)
+    if when < now + MIN_LEAD_SECONDS:
+        raise Refused(f"the wake time {when} is less than {MIN_LEAD_SECONDS} seconds from now")
+    if when > now + MAX_LEAD_SECONDS:
+        raise Refused(f"the wake time {when} is more than {MAX_LEAD_SECONDS // 86400} days from now")
+    return when
+
+
+def rtc_keeps_local_time(adjtime=ADJTIME):
+    """True when /etc/adjtime's third line says LOCAL; UTC, the default, otherwise."""
+    try:
+        with open(adjtime, "r", encoding="ascii", errors="replace") as handle:
+            lines = handle.read(256).splitlines()
+    except FileNotFoundError:
+        return False
+    return len(lines) >= 3 and lines[2].strip() == "LOCAL"
+
+
+def rtc_value(when, local_rtc):
+    """What to write for `when`: the same instant, or that instant's local wall time on a local-time RTC."""
+    if not local_rtc:
+        return when
+    return when + time.localtime(when).tm_gmtoff
+
+
+def write_alarm(value, path=WAKEALARM):
+    """Write one value to the wake alarm; NoRtc when there is no such file."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+    except FileNotFoundError as err:
+        raise NoRtc(f"{path} does not exist: this machine has no RTC that can switch it on") from err
+    try:
+        os.write(fd, f"{value}\n".encode("ascii"))
+    finally:
+        os.close(fd)
+
+
+def read_alarm(path=WAKEALARM):
+    with open(path, "r", encoding="ascii") as handle:
+        text = handle.read(32).strip()
+    return int(text) if text.isdigit() else 0
+
+
+def arm(when, local_rtc, path=WAKEALARM):
+    """Set the alarm for `when`, and check the RTC kept it."""
+    value = rtc_value(when, local_rtc)
+    # An alarm that is already set must be cleared first, or the kernel answers EBUSY.
+    write_alarm(0, path)
+    write_alarm(value, path)
+    kept = read_alarm(path)
+    if abs(kept - value) > 1:
+        raise OSError(f"the RTC kept {kept} instead of {value}")
+
+
+def clear(path=WAKEALARM):
+    write_alarm(0, path)
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        print("labkiosk-wake-alarm: must run as root", file=sys.stderr)
+        return EXIT_REFUSED
+    try:
+        if len(argv) == 1 and argv[0] == "clear":
+            clear()
+            print("labkiosk-wake-alarm: wake alarm cleared", file=sys.stderr)
+            return 0
+        if len(argv) != 2 or argv[0] != "set":
+            raise Refused("usage: labkiosk-wake-alarm set <seconds since the epoch> | clear")
+        when = parse_epoch(argv[1], int(time.time()))
+        arm(when, rtc_keeps_local_time())
+        print(f"labkiosk-wake-alarm: wakes at {time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(when))}", file=sys.stderr)
+        return 0
+    except Refused as err:
+        print(f"labkiosk-wake-alarm: {err}", file=sys.stderr)
+        return EXIT_REFUSED
+    except NoRtc as err:
+        print(f"labkiosk-wake-alarm: {err}", file=sys.stderr)
+        return EXIT_NO_RTC
+    except OSError as err:
+        print(f"labkiosk-wake-alarm: the RTC refused the alarm: {err}", file=sys.stderr)
+        return EXIT_RTC_FAILED
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

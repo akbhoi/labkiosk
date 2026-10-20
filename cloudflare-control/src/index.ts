@@ -393,6 +393,19 @@ import {
   storedHardware
 } from "./hardware";
 import {
+  MAX_POWER_SCHEDULES,
+  deleteGroupPowerSchedules,
+  deletePowerSchedule,
+  groupPowerScheduleCount,
+  hasGroupPowerSchedules,
+  listPowerSchedules,
+  parsePowerReport,
+  parsePowerScheduleInput,
+  powerScheduleConflict,
+  recordPowerReport,
+  savePowerSchedule
+} from "./power";
+import {
   deleteUsageSites,
   MAX_REPORT_DAYS,
   parseUsageReport,
@@ -952,6 +965,37 @@ async function handleHardwareReport(
 }
 
 /**
+ * POST /api/devices/power-report: a workstation about to switch itself off by
+ * its power schedule could not set its hardware clock to switch it on again
+ * (no RTC, or the write failed). Listed under Settings -> Errors & Warnings once
+ * per kind of problem and day (src/power.ts).
+ *
+ * 200 kept (or already listed today); 400 malformed (the agent drops it); 409
+ * the workstation's row does not exist yet.
+ */
+async function handlePowerReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let report;
+  try {
+    report = parsePowerReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Power report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const outcome = await recordPowerReport(db, device.tenant_id, device.client_id, report, Math.floor(Date.now() / 1000));
+  if (outcome === "unknown-workstation") {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok", recorded: outcome === "recorded" }), { status: 200, headers: jsonHeaders });
+}
+
+/**
  * POST /api/devices/usage: a workstation sends what it counted since its last
  * report (src/usage.ts): per day, seconds on and in use, sessions and, when
  * the organization records them, the sites. The counts are added, so the
@@ -1372,6 +1416,9 @@ export default {
     }
     if (path === "/api/devices/usage" && method === "POST") {
       return handleUsageReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/power-report" && method === "POST") {
+      return handlePowerReport(request, db, jsonHeaders);
     }
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);
@@ -4208,6 +4255,66 @@ export default {
       return new Response(JSON.stringify(summary), { headers: jsonHeaders });
     }
 
+    // GET /api/power-schedules: the organization's power schedules and the groups
+    // one may be for. POST /api/power-schedules {id?, days, off, on?, groupId?}:
+    // create one, or replace the one with `id`. DELETE /api/power-schedules/:id.
+    // Workstations hear of every change at once (src/power.ts).
+    if (
+      (path === "/api/power-schedules" && (method === "GET" || method === "POST")) ||
+      (path.startsWith("/api/power-schedules/") && method === "DELETE")
+    ) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      if (method === "GET") {
+        const [schedules, groups] = await Promise.all([listPowerSchedules(db, tenant.id), listWorkstationGroups(db, tenant.id)]);
+        return new Response(
+          JSON.stringify({ schedules, groups: groups.map((g) => ({ id: g.id, name: g.name })) }),
+          { headers: jsonHeaders }
+        );
+      }
+      if (method === "DELETE") {
+        const id = path.slice("/api/power-schedules/".length).trim();
+        if (!id || !(await deletePowerSchedule(db, tenant.id, id))) return jsonError("Power schedule not found", 404, jsonHeaders);
+        await writeAuditLog(db, { tenantId: tenant.id, userId: session!.user_id, action: "power.schedule_delete", details: `id=${id}` });
+        await notifyConfigChanged(env, tenant.id);
+        return new Response(JSON.stringify({ status: "ok" }), { headers: jsonHeaders });
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = (await request.json<Record<string, unknown>>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      let input;
+      try {
+        input = parsePowerScheduleInput(body);
+      } catch (err: any) {
+        return jsonError(err?.message || "The schedule is not valid", 400, jsonHeaders);
+      }
+      const id = typeof body?.id === "string" && body.id ? body.id : undefined;
+      const [existing, groups] = await Promise.all([listPowerSchedules(db, tenant.id), listWorkstationGroups(db, tenant.id)]);
+      const group = input.groupId ? groups.find((g) => g.id === input.groupId) : null;
+      if (input.groupId && !group) return jsonError("Workstation group not found", 404, jsonHeaders);
+      if (id && !existing.some((s) => s.id === id)) return jsonError("Power schedule not found", 404, jsonHeaders);
+      if (!id && existing.length >= MAX_POWER_SCHEDULES) {
+        return jsonError(`An organization keeps at most ${MAX_POWER_SCHEDULES} power schedules`, 409, jsonHeaders);
+      }
+      const conflict = powerScheduleConflict(existing, input, id);
+      if (conflict) return jsonError(conflict, 409, jsonHeaders);
+      const savedId = await savePowerSchedule(db, tenant.id, input, Math.floor(Date.now() / 1000), id);
+      if (!savedId) return jsonError("Power schedule not found", 404, jsonHeaders);
+      const schedule = (await listPowerSchedules(db, tenant.id)).find((s) => s.id === savedId)!;
+      await writeAuditLog(db, {
+        tenantId: tenant.id,
+        userId: session!.user_id,
+        action: id ? "power.schedule_update" : "power.schedule_create",
+        details: `id=${savedId} group=${group?.name ?? "all"} days=${schedule.days.join("")} off=${schedule.off} on=${schedule.on ?? "none"}`
+      });
+      await notifyConfigChanged(env, tenant.id);
+      return new Response(JSON.stringify({ status: "ok", schedule }), { headers: jsonHeaders });
+    }
+
     // GET /api/notifications: the platform's notifications for this organization,
     // newest first, with whether this user has dismissed each.
     // POST /api/notifications/read { ids? }: dismiss them (every one when ids is left out).
@@ -4415,6 +4522,58 @@ export default {
       );
     }
 
+    // POST /api/clients/wake { clientIds }: switch on workstations that are off,
+    // through a workstation that is on at the same site (Wake-on-LAN,
+    // src/power.ts). The MAC addresses come from each one's own hardware report
+    // in this organization's rows, never from the request. 200 with `sent` and
+    // `skipped` (each with its reason) when at least one was woken; 409 with the
+    // reasons when none could be.
+    if (path === "/api/clients/wake" && method === "POST") {
+      const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
+      if (denied) return denied;
+      let body: { clientIds?: unknown };
+      try {
+        body = (await request.json<typeof body>()) ?? {};
+      } catch {
+        return jsonError("The request body must be JSON", 400, jsonHeaders);
+      }
+      if (!Array.isArray(body?.clientIds)) return jsonError("Client IDs array required", 400, jsonHeaders);
+      const requested = Array.from(new Set(body.clientIds.map((c) => String(c ?? "").trim()).filter(Boolean)));
+      if (!requested.length) return jsonError("Client IDs array required", 400, jsonHeaders);
+      if (requested.length > MAX_BATCH_TARGETS) {
+        return jsonError(`At most ${MAX_BATCH_TARGETS} workstations can be addressed at once`, 400, jsonHeaders);
+      }
+      const tenant = currentTenant!;
+      const rows = new Map((await listClientDevices(db, tenant.id)).map((row) => [row.client_id, row]));
+      const targets: Array<{ clientId: string; macs: string[] }> = [];
+      let skipped: Array<{ clientId: string; reason: string }> = [];
+      for (const clientId of requested) {
+        const row = rows.get(clientId);
+        if (!row) skipped.push({ clientId, reason: "Not found" });
+        else targets.push({ clientId, macs: storedHardware(row.hardware, row.hardware_at)?.macs ?? [] });
+      }
+      let sent: Array<{ clientId: string; via: string }> = [];
+      if (targets.length) {
+        const result = await hubJson<{ sent: typeof sent; skipped: typeof skipped }>(env, tenant.id, "/wake", { targets });
+        sent = result.sent;
+        skipped = skipped.concat(result.skipped);
+      }
+      if (sent.length) {
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: "command.wake",
+          details: `clients=${sent.map((s) => `${s.clientId} via ${s.via}`).join(",")}`
+        });
+      }
+      if (!sent.length) {
+        const reasons = [...new Set(skipped.map((s) => s.reason))];
+        const error = requested.length === 1 ? `${requested[0]} was not woken: ${reasons[0]}` : `No workstation was woken: ${reasons.join("; ")}`;
+        return new Response(JSON.stringify({ error, sent, skipped }), { status: 409, headers: jsonHeaders });
+      }
+      return new Response(JSON.stringify({ status: "ok", sent, skipped }), { headers: jsonHeaders });
+    }
+
     // POST /api/clients/remove: Decommission a workstation
     if (path === "/api/clients/remove" && method === "POST") {
       const denied = await requireTenantPermission(db, session, currentTenant, "workstations", jsonHeaders);
@@ -4477,8 +4636,12 @@ export default {
         for (let i = 0; i < clientIds.length; i += D1_IN_LIST_CHUNK) {
           await assignClientsToGroup(db, currentTenant!.id, clientIds.slice(i, i + D1_IN_LIST_CHUNK), groupName);
         }
-        // A workstation moved into or out of a group a major is being tried on is offered differently.
-        if (await hasMajorPilot(db, currentTenant!.id)) await notifyConfigChanged(env, currentTenant!.id);
+        // A workstation moved into or out of a group a major is being tried on is
+        // offered differently, and one moved into or out of a group with a power
+        // schedule follows another week.
+        if ((await hasMajorPilot(db, currentTenant!.id)) || (await hasGroupPowerSchedules(db, currentTenant!.id))) {
+          await notifyConfigChanged(env, currentTenant!.id);
+        }
 
         await writeAuditLog(db, {
           tenantId: currentTenant!.id,
@@ -4549,11 +4712,14 @@ export default {
       const groupId = path.slice("/api/groups/".length).trim();
       if (!groupId) return jsonError("Group ID is required", 400, jsonHeaders);
 
+      const groupSchedules = await groupPowerScheduleCount(db, currentTenant!.id, groupId);
       if (!(await deleteWorkstationGroup(db, currentTenant!.id, groupId))) {
         return jsonError("Workstation group not found", 404, jsonHeaders);
       }
+      // The group's power schedules go with it.
+      if (groupSchedules) await deleteGroupPowerSchedules(db, currentTenant!.id, groupId);
       // A major being tried on the group is no longer tried anywhere.
-      if (await endOrphanedMajorPilots(db, currentTenant!.id)) await notifyConfigChanged(env, currentTenant!.id);
+      if ((await endOrphanedMajorPilots(db, currentTenant!.id)) || groupSchedules) await notifyConfigChanged(env, currentTenant!.id);
       await writeAuditLog(db, {
         tenantId: currentTenant!.id,
         userId: session!.user_id,

@@ -53,6 +53,7 @@ distro-builder/
 │       │   ├── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
 │       │   ├── labkiosk-update         # Root-only: signed release download and install (Rule 8)
 │       │   ├── labkiosk-health         # Root-only: SMART / eMMC disk health every 6 h (Rule 1j)
+│       │   ├── labkiosk-wake-alarm     # Sudo (52-labkiosk-wake-alarm): RTC wake alarm for a power schedule
 │       │   └── labkiosk-share          # Unprivileged: serves verified images to the site's LAN (Rule 8)
 │       └── usr/share/labkiosk/         # chromium-policy-base.json (the single policy declaration)
 │                                       #   plus the grub.pin build pin, version (the image's release)

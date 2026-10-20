@@ -1393,6 +1393,9 @@ const CONSOLE_CSS = `${rootTokensCss()}
     .usage-chart-axis { stroke: var(--border-subtle); stroke-width: 1; }
     .usage-chart-label { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 
+    /* Settings -> Power: the days of a schedule, Monday to Sunday, wrapping on a phone. */
+    .power-days { display: flex; flex-wrap: wrap; gap: 2px 18px; }
+
     /* Key-value list (panel summaries, detail blocks). */
     .kv-list { display: flex; flex-direction: column; gap: 6px; padding: 0 8px; font-size: 0.8125rem; }
     .kv-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-muted); }

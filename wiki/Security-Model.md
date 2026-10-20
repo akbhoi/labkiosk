@@ -158,6 +158,11 @@ The extension's service worker owns the `host_permissions` grant for that origin
 
 Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate their inputs inside the agent *and* inside the installer, because the sudoers rule lets `kiosk` invoke the installer directly. The agent is not a trust boundary.
 
+### Power schedules and Wake-on-LAN
+
+- **`labkiosk-wake-alarm`** is the only root program a power schedule uses (`/etc/sudoers.d/52-labkiosk-wake-alarm`, no arguments in the rule). It takes `set <epoch>` or `clear` and nothing else: the epoch must match `[0-9]{9,11}\Z` and fall 60 s to 8 days and an hour from now, and it writes only `/sys/class/rtc/rtc0/wakealarm`, through `O_NOFOLLOW`. A compromised agent can at worst switch the machine on at some time in the next week.
+- **A `wake` command carries only MAC addresses the Worker read from that organization's own hardware reports** (`client_devices.hardware`, filtered by `tenant_id`), never addresses from the request, and goes only to a workstation of the same organization at the same LAN site. The agent re-validates each address (unicast, at most 64) before it broadcasts a magic packet, which can do nothing but switch a machine on.
+
 ---
 
 ## Known limits

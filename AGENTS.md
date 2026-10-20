@@ -136,7 +136,8 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-logs \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-data-unlock \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-wake-alarm
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests

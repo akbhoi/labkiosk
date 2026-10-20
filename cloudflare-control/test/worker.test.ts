@@ -28,6 +28,7 @@ import {
 import { DEMO_SLUGS } from "../src/demo";
 import { listHardwareModels, listPublicHardwareModels, rebuildHardwareModels } from "../src/hardware";
 import { platformUsage, purgeOldUsage, recordUsage, rollUpPlatformUsage, USAGE_RETENTION_DAYS } from "../src/usage";
+import { effectivePower, parsePowerScheduleInput, powerScheduleConflict } from "../src/power";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
@@ -9070,6 +9071,277 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     });
     assert.equal(res.status, 403);
   });
+
+  // ------------------------------------------------------ power schedules and Wake-on-LAN (src/power.ts)
+
+  // From an address of their own: earlier tests spend the shared one's enrolment budget.
+  const enrolPower = async (clientId: string) => {
+    const { res, data } = await callJson("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId }),
+      headers: { "CF-Connecting-IP": "198.51.100.88" }
+    });
+    assert.equal(res.status, 200, `enrolling ${clientId}`);
+    return data.deviceToken as string;
+  };
+  // Greenwood is near its workstation limit by now: each test removes what it enrolled.
+  const removeAll = async (ids: string[]) => {
+    for (const clientId of ids) {
+      assert.equal((await call("/api/clients/remove?tenant=greenwood", { ...json({ clientId }), cookie: orgSessionCookie })).status, 200);
+    }
+  };
+
+  test("Power schedules are validated: days, times, the gap between them, and one schedule per day per scope", () => {
+    const ok = parsePowerScheduleInput({ days: [1, 2, 3, 4, 5], off: "18:00", on: "07:30" });
+    assert.deepEqual(ok, { groupId: null, days: 0b0111110, offMinute: 1080, onMinute: 450 });
+    assert.equal(parsePowerScheduleInput({ days: [0], off: "00:00", on: null }).onMinute, null);
+    assert.equal(parsePowerScheduleInput({ days: [6], off: "23:59", on: "" }).onMinute, null);
+    const bad: unknown[] = [
+      null,
+      [],
+      { days: [], off: "18:00" },
+      { days: [7], off: "18:00" },
+      { days: [-1], off: "18:00" },
+      { days: [1.5], off: "18:00" },
+      { days: [1, 1], off: "18:00" },
+      { days: "1,2", off: "18:00" },
+      { days: [0, 1, 2, 3, 4, 5, 6, 0], off: "18:00" },
+      { days: [1], off: "24:00" },
+      { days: [1], off: "8:00" },
+      { days: [1], off: "18:00:00" },
+      { days: [1], off: 1080 },
+      { days: [1] },
+      { days: [1], off: "18:00", on: "18:10" },
+      { days: [1], off: "23:55", on: "00:05" },
+      { days: [1], off: "18:00", on: "7:30" },
+      { days: [1], off: "18:00", groupId: 5 },
+      { days: [1], off: "18:00", groupId: "g".repeat(65) }
+    ];
+    for (const body of bad) assert.throws(() => parsePowerScheduleInput(body), Error, JSON.stringify(body));
+    assert.doesNotThrow(() => parsePowerScheduleInput({ days: [1], off: "18:00", on: "18:15" }), "fifteen minutes is enough");
+
+    const existing = [
+      { id: "a", groupId: null, groupName: null, days: [1, 2, 3, 4, 5] },
+      { id: "b", groupId: "g1", groupName: "Library", days: [6] }
+    ];
+    assert.match(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [5, 6], off: "20:00" }))!, /every workstation already covers Friday/);
+    assert.equal(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [5, 6], off: "20:00" }), "a"), null, "a schedule never collides with itself");
+    assert.equal(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [1, 2, 3, 4, 5], off: "20:00", groupId: "g1" })), null, "a group's schedule may cover the organization's days");
+    assert.match(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [6], off: "20:00", groupId: "g1" }))!, /group Library already covers Saturday/);
+    assert.equal(powerScheduleConflict(existing, parsePowerScheduleInput({ days: [6], off: "20:00", groupId: "g2" })), null);
+  });
+
+  test("Each workstation follows its group's schedule on that group's days, the organization's on the rest", () => {
+    const rules = [
+      { groupName: null, orphaned: false, days: 0b0111110, off: 1080, on: 450 },
+      { groupName: "Library", orphaned: false, days: 0b1100000, off: 1200, on: null },
+      { groupName: "Gone", orphaned: true, days: 0b0000001, off: 600, on: null }
+    ];
+    const everyone = effectivePower(rules, null)!;
+    assert.deepEqual(everyone.week, [null, { off: 1080, on: 450 }, { off: 1080, on: 450 }, { off: 1080, on: 450 }, { off: 1080, on: 450 }, { off: 1080, on: 450 }, null]);
+    const library = effectivePower(rules, "Library")!;
+    assert.deepEqual(library.week[5], { off: 1200, on: null }, "the group's Friday wins");
+    assert.deepEqual(library.week[6], { off: 1200, on: null });
+    assert.deepEqual(library.week[1], { off: 1080, on: 450 }, "the organization's Monday stands");
+    assert.equal(effectivePower(rules, "Gone")!.week[0], null, "a deleted group's schedule applies to nobody");
+    assert.equal(effectivePower([], "Library"), null, "no schedule, no switch-off");
+  });
+
+  test("Power schedules are for the organization's settings staff only, and malformed ones are refused", async () => {
+    const base = "/api/power-schedules?tenant=greenwood";
+    const valid = { days: [1, 2, 3, 4, 5], off: "18:00", on: "07:30" };
+    for (const [path, init] of [
+      [base, {}],
+      [base, json(valid)],
+      ["/api/power-schedules/x?tenant=greenwood", { method: "DELETE" }]
+    ] as const) {
+      assert.ok([401, 403].includes((await call(path, init)).status), `${path}: anonymous`);
+      assert.ok([401, 403].includes((await call(path, { ...init, cookie: rivalSessionCookie })).status), `${path}: another organization`);
+    }
+    const crossSite = await call(base, { ...json(valid), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+    assert.equal(crossSite.status, 403, "cross-site");
+    const workstationsOnly = await staffWith("power-ws@greenwood.example", ["workstations"]);
+    assert.equal((await call(base, { cookie: workstationsOnly })).status, 403, "workstations is not settings");
+    assert.equal((await call(base, { ...json(valid), cookie: workstationsOnly })).status, 403);
+    for (const body of [{ days: [], off: "18:00" }, { days: [1], off: "25:00" }, { days: [1], off: "18:00", on: "18:05" }]) {
+      assert.equal((await call(base, { ...json(body), cookie: orgSessionCookie })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call(base, { method: "POST", body: "{", cookie: orgSessionCookie })).status, 400);
+    assert.equal((await call(base, { ...json({ ...valid, groupId: "no-such-group" }), cookie: orgSessionCookie })).status, 404);
+    assert.equal((await call(base, { ...json({ ...valid, id: "no-such-schedule" }), cookie: orgSessionCookie })).status, 404);
+    assert.equal((await call("/api/power-schedules/no-such-schedule?tenant=greenwood", { method: "DELETE", cookie: orgSessionCookie })).status, 404);
+    // Another organization's group and schedule are as unknown as made-up ones.
+    const rivalGroup = await callJson("/api/groups?tenant=riverside", { ...json({ name: "Rival power group" }), cookie: rivalSessionCookie });
+    assert.equal((await call(base, { ...json({ ...valid, groupId: rivalGroup.data.group.id }), cookie: orgSessionCookie })).status, 404);
+    const rivalSchedule = await callJson("/api/power-schedules?tenant=riverside", { ...json(valid), cookie: rivalSessionCookie });
+    assert.equal(rivalSchedule.res.status, 200);
+    const rivalId = rivalSchedule.data.schedule.id;
+    assert.equal((await call(base, { ...json({ ...valid, id: rivalId }), cookie: orgSessionCookie })).status, 404);
+    assert.equal((await call(`/api/power-schedules/${rivalId}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 404);
+    const mine = (await callJson(base, { cookie: orgSessionCookie })).data;
+    assert.ok(!mine.schedules.some((s: any) => s.id === rivalId), "another organization's schedules are not listed");
+    assert.ok(!mine.groups.some((g: any) => g.id === rivalGroup.data.group.id));
+    await call(`/api/power-schedules/${rivalId}?tenant=riverside`, { method: "DELETE", cookie: rivalSessionCookie });
+    await call(`/api/groups/${rivalGroup.data.group.id}?tenant=riverside`, { method: "DELETE", cookie: rivalSessionCookie });
+  });
+
+  test("A saved power schedule is audited and reaches each workstation as its own week", async () => {
+    const tenantId = await greenwoodId();
+    const base = "/api/power-schedules?tenant=greenwood";
+    await enrolPower("PWR-ALL");
+    await enrolPower("PWR-LIB");
+    const group = (await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Power Library" }), cookie: orgSessionCookie })).data.group;
+    const all = await hubs().connectDevice({ tenantId, clientId: "PWR-ALL", ip: "10.0.0.41", portal: portalContext() });
+    const lib = await hubs().connectDevice({ tenantId, clientId: "PWR-LIB", ip: "10.0.0.42", portal: portalContext() });
+    assert.equal(ofType(all, "config")[0].power, null, "no schedule: never switched off");
+    await callJson("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PWR-LIB"], groupName: "Power Library" }), cookie: orgSessionCookie });
+    const latestPower = (socket: typeof all) => ofType(socket, "config").at(-1)!.power as { week: Array<{ off: number; on: number | null } | null> } | null;
+
+    const weekdays = await callJson(base, { ...json({ days: [1, 2, 3, 4, 5], off: "18:00", on: "07:30" }), cookie: orgSessionCookie });
+    assert.equal(weekdays.res.status, 200);
+    assert.deepEqual(
+      { days: weekdays.data.schedule.days, off: weekdays.data.schedule.off, on: weekdays.data.schedule.on, groupId: weekdays.data.schedule.groupId },
+      { days: [1, 2, 3, 4, 5], off: "18:00", on: "07:30", groupId: null }
+    );
+    assert.deepEqual(latestPower(all)!.week[1], { off: 1080, on: 450 }, "pushed at once");
+    assert.equal(latestPower(all)!.week[0], null);
+
+    // The group's own Friday and Saturday; the organization's Friday stands for everyone else.
+    const library = await callJson(base, { ...json({ days: [5, 6], off: "20:00", groupId: group.id }), cookie: orgSessionCookie });
+    assert.equal(library.res.status, 200);
+    assert.equal(library.data.schedule.groupName, "Power Library");
+    assert.deepEqual(latestPower(lib)!.week[5], { off: 1200, on: null });
+    assert.deepEqual(latestPower(lib)!.week[1], { off: 1080, on: 450 });
+    assert.deepEqual(latestPower(all)!.week[5], { off: 1080, on: 450 });
+
+    // Overlaps within one scope are refused with the days named.
+    const overlap = await callJson(base, { ...json({ days: [0, 5], off: "17:00" }), cookie: orgSessionCookie });
+    assert.equal(overlap.res.status, 409);
+    assert.match(overlap.data.error, /Friday/);
+    const weekend = await callJson(base, { ...json({ days: [0, 6], off: "13:00" }), cookie: orgSessionCookie });
+    assert.equal(weekend.res.status, 200, "another scope's days are free");
+    assert.equal((await callJson(base, { ...json({ id: weekend.data.schedule.id, days: [0, 1], off: "13:00" }), cookie: orgSessionCookie })).res.status, 409);
+    const edited = await callJson(base, { ...json({ id: weekdays.data.schedule.id, days: [1, 2, 3, 4], off: "19:00", on: null }), cookie: orgSessionCookie });
+    assert.equal(edited.res.status, 200);
+    assert.deepEqual(latestPower(all)!.week[1], { off: 1140, on: null });
+    assert.equal(latestPower(all)!.week[5], null, "Friday was taken out");
+
+    // Moving a workstation out of the group gives it the organization's week.
+    await callJson("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PWR-LIB"], groupName: null }), cookie: orgSessionCookie });
+    assert.deepEqual(latestPower(lib)!.week[6], { off: 780, on: null });
+    await callJson("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PWR-LIB"], groupName: "Power Library" }), cookie: orgSessionCookie });
+    assert.deepEqual(latestPower(lib)!.week[6], { off: 1200, on: null });
+
+    // Deleting the group deletes its schedules, and its workstations hear of it.
+    assert.equal((await call(`/api/groups/${group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
+    const listed = (await callJson(base, { cookie: orgSessionCookie })).data.schedules;
+    assert.ok(!listed.some((s: any) => s.id === library.data.schedule.id));
+    assert.deepEqual(latestPower(lib)!.week[6], { off: 780, on: null });
+
+    for (const s of listed) {
+      assert.equal((await call(`/api/power-schedules/${s.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie })).status, 200);
+    }
+    assert.equal(latestPower(all), null, "every schedule deleted: never switched off");
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=100", { cookie: orgSessionCookie })).json<any>();
+    for (const action of ["power.schedule_create", "power.schedule_update", "power.schedule_delete"]) {
+      assert.ok(logs.some((l: any) => l.action === action), action);
+    }
+    // The legacy heartbeat carries the same week.
+    await callJson(base, { ...json({ days: [3], off: "16:00", on: "08:00" }), cookie: orgSessionCookie });
+    const token = await enrolPower("PWR-HTTP");
+    const beat = await callJson("/api/telemetry", { ...json({}), bearer: token });
+    assert.deepEqual(beat.data.power.week[3], { off: 960, on: 480 });
+    for (const s of (await callJson(base, { cookie: orgSessionCookie })).data.schedules) {
+      await call(`/api/power-schedules/${s.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    }
+    await all.closeFromClient();
+    await lib.closeFromClient();
+    await removeAll(["PWR-ALL", "PWR-LIB", "PWR-HTTP"]);
+  });
+
+  test("Wake-on-LAN goes through a workstation that is on at the sleeping one's site, with its own reported addresses", async () => {
+    const tenantId = await greenwoodId();
+    const wake = (clientIds: unknown, cookie = orgSessionCookie) => callJson("/api/clients/wake?tenant=greenwood", { ...json({ clientIds }), cookie });
+    const status = (socket: Awaited<ReturnType<ReturnType<typeof hubs>["connectDevice"]>>, address: string, agentVersion = "3.3.0") =>
+      socket.fromClient({ type: "status", activeUrl: "https://www.wikipedia.org/", isLocked: false, agentVersion, lan: { address, prefix: 24 } });
+    const tokens: Record<string, string> = {};
+    for (const id of ["WOL-SLEEP", "WOL-PEER", "WOL-FAR", "WOL-NOMAC"]) tokens[id] = await enrolPower(id);
+
+    // The sleeping one was on at the site once, and reported its wired adapter.
+    const sleeper = await hubs().connectDevice({ tenantId, clientId: "WOL-SLEEP", ip: "203.0.113.70", portal: portalContext() });
+    await status(sleeper, "192.168.40.11");
+    assert.equal((await call("/api/devices/hardware", { ...json(hardwareReport({ macs: ["8c:16:45:00:00:01"] })), bearer: tokens["WOL-SLEEP"] })).status, 200);
+    const already = await wake(["WOL-SLEEP"]);
+    assert.equal(already.res.status, 409);
+    assert.match(already.data.error, /already on/);
+    await sleeper.closeFromClient();
+    // One that never reported a wired adapter.
+    await (await hubs().connectDevice({ tenantId, clientId: "WOL-NOMAC", ip: "203.0.113.70", portal: portalContext() })).closeFromClient();
+
+    // Nobody on at its site yet.
+    const far = await hubs().connectDevice({ tenantId, clientId: "WOL-FAR", ip: "198.51.100.70", portal: portalContext() });
+    await status(far, "192.168.40.12");
+    const alone = await wake(["WOL-SLEEP"]);
+    assert.equal(alone.res.status, 409);
+    assert.match(alone.data.error, /No workstation of this organization is on at its site/);
+
+    // One on at the site with an agent too old to send it, then a new one.
+    const peer = await hubs().connectDevice({ tenantId, clientId: "WOL-PEER", ip: "203.0.113.70", portal: portalContext() });
+    await status(peer, "192.168.40.13", "3.2.0");
+    assert.match((await wake(["WOL-SLEEP"])).data.error, /too old/);
+    await status(peer, "192.168.40.13", "3.3.0");
+
+    const woken = await callJson("/api/clients/wake?tenant=greenwood", {
+      ...json({ clientIds: ["WOL-SLEEP", "WOL-NOMAC", "PC-EVIL"], macs: ["ff:ff:ff:ff:ff:ff"] }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(woken.res.status, 200);
+    assert.deepEqual(woken.data.sent, [{ clientId: "WOL-SLEEP", via: "WOL-PEER" }]);
+    const reasons = Object.fromEntries(woken.data.skipped.map((s: any) => [s.clientId, s.reason]));
+    assert.equal(reasons["PC-EVIL"], "Not found");
+    assert.match(reasons["WOL-NOMAC"], /no wired network adapter/);
+    const commands = ofType(peer, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>).filter((c) => c.action === "wake");
+    assert.deepEqual(commands.map((c) => c.macs), [["8c:16:45:00:00:01"]], "only the sleeping one's own reported address, never the request's");
+    assert.equal(ofType(far, "commands").flatMap((m) => m.commands as Array<Record<string, unknown>>).filter((c) => c.action === "wake").length, 0, "never a peer at another site");
+    const { logs } = await (await call("/api/audit-logs?tenant=greenwood&limit=50", { cookie: orgSessionCookie })).json<any>();
+    assert.ok(logs.some((l: any) => l.action === "command.wake" && l.details === "clients=WOL-SLEEP via WOL-PEER"));
+
+    // Who may ask, and what they may send.
+    assert.ok([401, 403].includes((await call("/api/clients/wake?tenant=greenwood", json({ clientIds: ["WOL-SLEEP"] }))).status), "anonymous");
+    assert.ok([401, 403].includes((await wake(["WOL-SLEEP"], rivalSessionCookie)).res.status), "another organization");
+    const crossSite = await call("/api/clients/wake?tenant=greenwood", { ...json({ clientIds: ["WOL-SLEEP"] }), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+    assert.equal(crossSite.status, 403, "cross-site");
+    const settingsOnly = await staffWith("wake-settings@greenwood.example", ["settings"]);
+    assert.equal((await wake(["WOL-SLEEP"], settingsOnly)).res.status, 403, "settings is not workstations");
+    for (const body of [{}, { clientIds: "WOL-SLEEP" }, { clientIds: [] }, { clientIds: Array.from({ length: 501 }, (_, i) => `W${i}`) }]) {
+      assert.equal((await call("/api/clients/wake?tenant=greenwood", { ...json(body), cookie: orgSessionCookie })).status, 400, JSON.stringify(body).slice(0, 40));
+    }
+    for (const socket of [far, peer]) await socket.closeFromClient();
+    await removeAll(["WOL-SLEEP", "WOL-PEER", "WOL-FAR", "WOL-NOMAC"]);
+  });
+
+  test("A workstation that cannot set its wake alarm is listed under Errors & Warnings, once a day", async () => {
+    const report = { problem: "no-rtc", wakeAt: "2026-10-21 07:30", detail: "/sys/class/rtc/rtc0/wakealarm does not exist" };
+    assert.equal((await call("/api/devices/power-report?tenant=greenwood", json(report))).status, 401);
+    assert.equal((await call("/api/devices/power-report", { ...json(report), bearer: "f".repeat(64) })).status, 401);
+    for (const body of [[], { ...report, problem: "late" }, { ...report, wakeAt: "tomorrow" }, { ...report, wakeAt: "2026-10-21 24:00" }, { ...report, detail: 5 }]) {
+      assert.equal((await call("/api/devices/power-report", { ...json(body), bearer: deviceToken })).status, 400, JSON.stringify(body));
+    }
+    const token = await enrolPower("PWR-RTC");
+    assert.equal((await call("/api/devices/power-report", { ...json(report), bearer: token })).status, 409, "no row yet");
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 200);
+    const first = await callJson("/api/devices/power-report", { ...json({ ...report, clientId: "PC-EVIL", tenant: "riverside" }), bearer: token });
+    assert.equal(first.res.status, 200);
+    assert.equal(first.data.recorded, true);
+    assert.equal((await callJson("/api/devices/power-report", { ...json(report), bearer: token })).data.recorded, false, "once a day");
+    const failed = await callJson("/api/devices/power-report", { ...json({ ...report, problem: "failed", detail: "write error\u0007: Invalid argument" }), bearer: token });
+    assert.equal(failed.data.recorded, true, "another problem is its own row");
+    const issues = (await issuesOf(orgSessionCookie, "greenwood")).filter((i) => i.client_id === "PWR-RTC");
+    assert.deepEqual(issues.map((i) => [i.kind, i.severity]).sort(), [["wake_alarm", "warning"], ["wake_alarm", "warning"]]);
+    assert.ok(issues.some((i) => /no hardware clock/.test(i.details) && /2026-10-21 07:30/.test(i.details)));
+    assert.ok(issues.some((i) => /write error : Invalid argument/.test(i.details)), "control characters are cleaned");
+    assert.ok(!(await issuesOf(rivalSessionCookie, "riverside")).some((i) => i.client_id === "PWR-RTC" || i.client_id === "PC-EVIL"));
+    await removeAll(["PWR-RTC"]);
+  });
 });
 
 /**
@@ -9238,6 +9510,7 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0044"))), /missing the current schema/);
     // 0046: single sign-on settings and the sign-ins in flight.
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0046"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0045"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

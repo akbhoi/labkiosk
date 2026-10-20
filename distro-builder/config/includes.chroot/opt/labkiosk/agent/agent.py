@@ -31,7 +31,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     import syslog
 except ImportError:
@@ -2542,6 +2542,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             network_boot = is_network_boot()
             online = test_connectivity()["ok"]
             screen = update_screen()
+            power_off = power_off_screen()
             inputs = input_devices_report()
             with state_lock:
                 self._send(
@@ -2592,6 +2593,10 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # False and a text field gets the focus.
                         "keyboardPresent": inputs["keyboardPresent"],
                         "touchPresent": inputs["touchPresent"],
+                        # A switch-off by the power schedule under way: the
+                        # kiosk bar counts down to `at` (ms); `postponed` while
+                        # a system update installs. None otherwise.
+                        "powerOff": power_off,
                     },
                 )
             return
@@ -3142,6 +3147,9 @@ def execute_command(cmd_data):
             # leave the new image half-staged.
             log(f"Ignoring {action}: the update to {installing} is installing.")
             return
+        if action == "shutdown":
+            # Switched off from the console, it still switches itself on by its schedule.
+            prepare_wake_alarm()
         run_x11(["systemctl", "reboot" if action == "reboot" else "poweroff"])
     elif action == "release-available":
         # The organization is offered a newer release: the root updater asks the
@@ -3166,6 +3174,10 @@ def execute_command(cmd_data):
     elif action == "mute":
         # Plain ALSA: the image ships alsa-utils and no sound server.
         run_x11(["amixer", "-q", "set", "Master", "mute"])
+    elif action == "wake":
+        # Workstations at this site that are off: the control plane took their
+        # addresses from their own hardware reports (POST /api/clients/wake).
+        send_magic_packets(cmd_data.get("macs"))
     else:
         log(f"Ignoring unknown action: {action}")
 
@@ -4020,17 +4032,18 @@ def read_memory_mb(meminfo=MEMINFO_FILE):
     return 0
 
 
-def wired_macs(net_dir=NET_CLASS_DIR):
+def wired_adapters(net_dir=NET_CLASS_DIR):
     """
-    The MAC addresses of this machine's wired Ethernet adapters: physical
-    (a `device` link), not wireless, ARP type 1. What Wake-on-LAN can reach.
+    This machine's wired Ethernet adapters as (name, MAC address): physical
+    (a `device` link), not wireless, ARP type 1. What Wake-on-LAN can reach,
+    and what a wake command sends its magic packets on.
     """
-    macs = []
+    adapters = []
     try:
         names = sorted(os.listdir(net_dir))
     except OSError as err:
         log(f"Could not list the network adapters: {err}")
-        return macs
+        return adapters
     for name in names:
         base = os.path.join(net_dir, name)
         if not os.path.exists(os.path.join(base, "device")):
@@ -4040,11 +4053,16 @@ def wired_macs(net_dir=NET_CLASS_DIR):
         if read_sys_text(os.path.join(base, "type"), 8) != "1":
             continue
         mac = read_sys_text(os.path.join(base, "address"), 32).lower()
-        if MAC_ADDRESS_PATTERN.match(mac) and mac != "00:00:00:00:00:00" and mac not in macs:
-            macs.append(mac)
-        if len(macs) >= MAX_WIRED_MACS:
+        if MAC_ADDRESS_PATTERN.match(mac) and mac != "00:00:00:00:00:00" and mac not in (m for _, m in adapters):
+            adapters.append((name, mac))
+        if len(adapters) >= MAX_WIRED_MACS:
             break
-    return macs
+    return adapters
+
+
+def wired_macs(net_dir=NET_CLASS_DIR):
+    """The MAC addresses of this machine's wired Ethernet adapters (wired_adapters)."""
+    return [mac for _, mac in wired_adapters(net_dir)]
 
 
 def probe_hardware(dmi_dir=DMI_DIR, net_dir=NET_CLASS_DIR, efi_dir=EFI_DIR, cpuinfo=CPUINFO_FILE, meminfo=MEMINFO_FILE,
@@ -4278,6 +4296,445 @@ def usage_loop(sleep=time.sleep, clock=time.monotonic):
             report_usage()
 
 
+# --------------------------------------------------------------------------
+# Power schedules and Wake-on-LAN
+# --------------------------------------------------------------------------
+#
+# The organization's power schedule arrives with the configuration as `power`:
+# {"week": [day, ...]} with seven entries, Sunday first, each null or
+# {"off": minutes, "on": minutes|null} after midnight on this machine's own
+# clock (src/power.ts). At a switch-off time the kiosk bar warns for
+# POWER_WARNING_SECONDS, then the machine shuts down cleanly -- never while a
+# system update installs: that waits, and is retried, and a restart the update
+# makes picks the shutdown up again (POWER_PENDING_FILE). Before it shuts down,
+# the hardware clock is set to wake the machine at the next switch-on through
+# labkiosk-wake-alarm (root, via sudo), and a machine that cannot be set is
+# reported to the console (POST /api/devices/power-report).
+#
+# A `wake` command names the MAC addresses of workstations that are off at
+# this one's site; the agent sends each a magic packet on its wired networks.
+
+POWER_WARNING_SECONDS = 5 * 60
+POWER_CHECK_SECONDS = 15
+# A shutdown an installing update holds back is tried again this often.
+POWER_POSTPONE_SECONDS = 60
+# Two checks further apart than this are a clock change (the first time sync
+# after boot), not a switch-off that was missed: nothing fires for it.
+POWER_CLOCK_JUMP_SECONDS = 5 * 60
+# A shutdown an update held back, kept across the restart the update makes.
+POWER_PENDING_FILE = "/etc/labkiosk/power-pending.json"
+# ...and honoured only this long after its switch-off time.
+POWER_PENDING_MAX_AGE_SECONDS = 2 * 60 * 60
+WAKE_ALARM_HELPER = "/usr/local/sbin/labkiosk-wake-alarm"
+WAKE_ALARM_TIMEOUT_SECONDS = 15
+# The helper's exit codes (labkiosk-wake-alarm).
+WAKE_ALARM_EXIT_NO_RTC = 3
+# A switch-on is looked for this many days ahead: a week, and the day after.
+WAKE_LOOKAHEAD_DAYS = 8
+# The helper refuses a time sooner than this; a switch-on closer than that is skipped.
+WAKE_MIN_LEAD_SECONDS = 120
+# What POST /api/devices/power-report accepts (WAKE_ALARM_PROBLEMS in src/power.ts).
+POWER_PROBLEMS = ("no-rtc", "failed")
+WOL_PORT = 9
+MAX_WAKE_MACS = 64
+WOL_REPEATS = 3
+
+power_lock = threading.Lock()
+power_state = {
+    # The week the control plane sent, normalized; None: never switched off.
+    "week": None,
+    # The shutdown under way: {"day", "minute", "event", "shutdownAt",
+    # "postponed", "resumed"}; None when there is none.
+    "pending": None,
+}
+
+
+def normalize_power_week(raw):
+    """The control plane's `power`, validated: seven entries of None or {"off", "on"}; None for none."""
+    if not isinstance(raw, dict):
+        return None
+    week = raw.get("week")
+    if not isinstance(week, list) or len(week) != 7:
+        return None
+
+    def minute(value):
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 1440
+
+    days = []
+    for entry in week:
+        if entry is None:
+            days.append(None)
+            continue
+        if not isinstance(entry, dict) or not minute(entry.get("off")):
+            return None
+        on = entry.get("on")
+        if on is not None and not minute(on):
+            return None
+        days.append({"off": entry["off"], "on": on})
+    return days if any(days) else None
+
+
+def schedule_day(moment):
+    """The week's index for a local datetime: 0 Sunday to 6 Saturday, as the control plane counts."""
+    return (moment.weekday() + 1) % 7
+
+
+def at_minute(day_start, minute):
+    return day_start + timedelta(minutes=minute)
+
+
+def switch_off_due(week, last, now):
+    """
+    The latest switch-off time after `last` and no later than `now` (local
+    datetimes), or None. A gap longer than POWER_CLOCK_JUMP_SECONDS, or the
+    clock going back, is a clock change and fires nothing.
+    """
+    if not week or now <= last or (now - last).total_seconds() > POWER_CLOCK_JUMP_SECONDS:
+        return None
+    due = None
+    day = datetime(last.year, last.month, last.day)
+    while day <= now:
+        entry = week[schedule_day(day)]
+        if entry:
+            event = at_minute(day, entry["off"])
+            if last < event <= now:
+                due = event
+        day += timedelta(days=1)
+    return due
+
+
+def next_switch_on(week, after):
+    """The first switch-on time later than `after` (local datetime) within WAKE_LOOKAHEAD_DAYS, or None."""
+    if not week:
+        return None
+    day = datetime(after.year, after.month, after.day)
+    for _ in range(WAKE_LOOKAHEAD_DAYS + 1):
+        entry = week[schedule_day(day)]
+        if entry and entry["on"] is not None:
+            event = at_minute(day, entry["on"])
+            if event > after:
+                return event
+        day += timedelta(days=1)
+    return None
+
+
+def local_epoch(moment):
+    """A local datetime as seconds since the epoch, daylight saving time included."""
+    return int(time.mktime(moment.timetuple()))
+
+
+def apply_power_schedule(raw):
+    """Keep the week the control plane sent; a shutdown it no longer asks for is called off."""
+    week = normalize_power_week(raw)
+    with power_lock:
+        changed = week != power_state["week"]
+        power_state["week"] = week
+        pending = power_state["pending"]
+        if pending and not pending.get("resumed"):
+            entry = week[pending["day"]] if week else None
+            if not entry or entry["off"] != pending["minute"]:
+                power_state["pending"] = None
+                log("The power schedule changed: the switch-off under way is called off.")
+                forget_power_pending()
+    if changed:
+        log(f"Power schedule: {json.dumps(week) if week else 'none'}")
+
+
+def power_off_screen():
+    """What the kiosk bar shows of a switch-off under way: {"at": ms, "postponed": bool}, or None."""
+    with power_lock:
+        pending = power_state["pending"]
+        if not pending:
+            return None
+        return {"at": int(pending["shutdownAt"] * 1000), "postponed": bool(pending.get("postponed"))}
+
+
+def update_units_active():
+    """Whether either update unit is running; True when systemd cannot say, so nothing is cut short."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", UPDATE_DOWNLOAD_UNIT, UPDATE_INSTALL_UNIT],
+            capture_output=True,
+            text=True,
+            timeout=SYSTEMCTL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        log(f"Could not ask systemd whether an update is running: {err}")
+        return True
+    # is-active exits 0 when at least one of the units is active.
+    return result.returncode == 0
+
+
+def update_blocks_shutdown(installing=None, report=None, units_active=None):
+    """
+    Whether a system update is being installed or staged right now: an
+    administrator's install (the agent's own flag, or the updater's
+    `installing` phase), or an update unit still running (the download unit
+    stages a security release into the boot partition itself).
+    """
+    if is_live_session():
+        return False
+    if installing is None:
+        with state_lock:
+            installing = state["updateInstalling"]
+    if installing:
+        return True
+    if report is None:
+        report = read_update_report()
+    if report.get("phase") == "installing":
+        return True
+    return update_units_active() if units_active is None else units_active
+
+
+def run_wake_alarm_helper(args):
+    """Run labkiosk-wake-alarm through its sudoers entry. Returns (exit code, message)."""
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", WAKE_ALARM_HELPER, *args],
+            capture_output=True,
+            text=True,
+            timeout=WAKE_ALARM_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as err:
+        return 1, f"{WAKE_ALARM_HELPER} is not installed on this image ({err})"
+    except (OSError, subprocess.SubprocessError) as err:
+        return 1, f"the wake alarm helper did not run: {err}"
+    return proc.returncode, (proc.stderr or proc.stdout).strip()[:300]
+
+
+def report_power_problem(problem, wake_at, detail):
+    """Tell the console this workstation will not switch itself on. Logged either way."""
+    if problem not in POWER_PROBLEMS:
+        raise ValueError(f"{problem} is not a power problem")
+    payload = {"problem": problem, "wakeAt": wake_at.strftime("%Y-%m-%d %H:%M"), "detail": detail[:300]}
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    try:
+        status = post_device_json("/api/devices/power-report", payload, timeout=10)
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        log(f"Could not tell the console the wake alarm was not set: {err}")
+        return
+    if status != 200:
+        log(f"The console did not take the power report (HTTP {status}).")
+
+
+def prepare_wake_alarm(now=None):
+    """
+    Before a shutdown: set the hardware clock to wake the machine at the next
+    switch-on, or clear an alarm left from before when there is none. A machine
+    without an RTC, or one that refuses the time, is logged and reported.
+    """
+    now = now or datetime.now()
+    with power_lock:
+        week = power_state["week"]
+    wake_at = next_switch_on(week, now + timedelta(seconds=WAKE_MIN_LEAD_SECONDS))
+    if wake_at is None:
+        code, message = run_wake_alarm_helper(["clear"])
+        if code not in (0, WAKE_ALARM_EXIT_NO_RTC):
+            log(f"Could not clear the wake alarm: {message or f'exit {code}'}")
+        return None
+    code, message = run_wake_alarm_helper(["set", str(local_epoch(wake_at))])
+    if code == 0:
+        log(f"Wake alarm set for {wake_at:%Y-%m-%d %H:%M}.")
+        return "armed"
+    problem = "no-rtc" if code == WAKE_ALARM_EXIT_NO_RTC else "failed"
+    log(f"Wake alarm NOT set for {wake_at:%Y-%m-%d %H:%M} ({problem}): {message or f'exit {code}'}")
+    report_power_problem(problem, wake_at, message or f"labkiosk-wake-alarm exited with {code}")
+    return problem
+
+
+def remember_power_pending(event):
+    try:
+        fd = os.open(POWER_PENDING_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"event": int(event)}, handle)
+    except OSError as err:
+        log(f"Could not keep the postponed switch-off across a restart: {err}")
+
+
+def forget_power_pending():
+    try:
+        os.unlink(POWER_PENDING_FILE)
+    except FileNotFoundError:
+        pass
+    except OSError as err:
+        log(f"Could not remove {POWER_PENDING_FILE}: {err}")
+
+
+def take_power_pending(now_epoch, path=None):
+    """
+    A switch-off an update held back before this start, if it is recent enough:
+    the epoch of its switch-off time, or None. The file is removed either way.
+    """
+    path = path or POWER_PENDING_FILE
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as err:
+        log(f"Ignoring an unreadable {path}: {err}")
+        data = None
+    try:
+        os.unlink(path)
+    except OSError as err:
+        log(f"Could not remove {path}: {err}")
+    event = data.get("event") if isinstance(data, dict) else None
+    if not isinstance(event, int) or isinstance(event, bool):
+        return None
+    if not 0 <= now_epoch - event <= POWER_PENDING_MAX_AGE_SECONDS:
+        return None
+    return event
+
+
+def begin_switch_off(event, resumed=False, clock=time.time):
+    """Show the warning; the machine shuts down POWER_WARNING_SECONDS from now."""
+    with power_lock:
+        if power_state["pending"]:
+            return
+        power_state["pending"] = {
+            "day": schedule_day(event),
+            "minute": event.hour * 60 + event.minute,
+            "event": local_epoch(event),
+            "shutdownAt": clock() + POWER_WARNING_SECONDS,
+            "postponed": False,
+            "resumed": resumed,
+        }
+    log(f"Switching off by the power schedule in {POWER_WARNING_SECONDS // 60} minutes"
+        f"{' (held back by a system update before the last restart)' if resumed else ''}.")
+
+
+def power_off_step(clock=time.time, blocked=update_blocks_shutdown, arm=prepare_wake_alarm, poweroff=None):
+    """
+    Shut down when the warning is over, unless an update is installing: then
+    wait POWER_POSTPONE_SECONDS and look again. Returns "waiting", "postponed",
+    "off" or None (nothing under way).
+    """
+    with power_lock:
+        pending = power_state["pending"]
+        if not pending:
+            return None
+        if clock() < pending["shutdownAt"]:
+            return "waiting"
+    if blocked():
+        with power_lock:
+            first = not pending["postponed"]
+            pending["postponed"] = True
+            pending["shutdownAt"] = clock() + POWER_POSTPONE_SECONDS
+        if first:
+            log("A system update is installing: the scheduled switch-off waits for it.")
+            remember_power_pending(pending["event"])
+        return "postponed"
+    with power_lock:
+        if power_state["pending"] is not pending:
+            # Called off by a schedule change while the update was asked about.
+            return None
+    arm()
+    forget_power_pending()
+    log("Switching off by the power schedule.")
+    (poweroff or (lambda: run_x11(["systemctl", "poweroff"])))()
+    return "off"
+
+
+def power_loop(sleep=time.sleep, now=datetime.now):
+    resumed = take_power_pending(int(time.time()))
+    if resumed is not None:
+        begin_switch_off(datetime.fromtimestamp(resumed), resumed=True)
+    last = now()
+    while True:
+        sleep(POWER_CHECK_SECONDS)
+        # The time zone can change while the agent runs (Language & Region).
+        time.tzset()
+        current = now()
+        with power_lock:
+            week = power_state["week"]
+            idle = power_state["pending"] is None
+        event = switch_off_due(week, last, current) if idle else None
+        last = current
+        if event:
+            begin_switch_off(event)
+        if power_off_step() == "off":
+            return
+
+
+def magic_packet(mac):
+    """The Wake-on-LAN magic packet for one MAC address: six 0xFF bytes, then the address sixteen times."""
+    if not MAC_ADDRESS_PATTERN.match(mac):
+        raise ValueError(f"{mac!r} is not a MAC address")
+    return b"\xff" * 6 + bytes.fromhex(mac.replace(":", "")) * 16
+
+
+def wakeable_macs(raw):
+    """The `wake` command's addresses, validated: unicast, not zero, at most MAX_WAKE_MACS, each once."""
+    macs = []
+    for value in raw if isinstance(raw, list) else []:
+        mac = value.lower() if isinstance(value, str) else ""
+        if not MAC_ADDRESS_PATTERN.match(mac) or mac == "00:00:00:00:00:00" or int(mac[:2], 16) & 1:
+            continue
+        if mac not in macs:
+            macs.append(mac)
+    return macs[:MAX_WAKE_MACS]
+
+
+def wired_broadcast_addresses(net_dir=NET_CLASS_DIR):
+    """(local address, broadcast address) of each IPv4 network on this machine's wired adapters."""
+    pairs = []
+    for name, _mac in wired_adapters(net_dir):
+        if not NET_DEVICE_PATTERN.match(name):
+            continue
+        try:
+            links = _ip_json(["-4", "addr", "show", "dev", name]) or []
+        except (OSError, ValueError, subprocess.SubprocessError) as err:
+            log(f"Could not read the addresses of {name}: {err}")
+            continue
+        for link in links if isinstance(links, list) else []:
+            for info in (link.get("addr_info") or []) if isinstance(link, dict) else []:
+                if not isinstance(info, dict) or info.get("family") != "inet":
+                    continue
+                local, broadcast = info.get("local"), info.get("broadcast")
+                try:
+                    if ipaddress.ip_address(local).version == 4 and ipaddress.ip_address(broadcast).version == 4:
+                        pairs.append((local, broadcast))
+                except ValueError:
+                    continue
+    return pairs
+
+
+def send_magic_packets(raw_macs, networks=None, open_socket=None):
+    """Broadcast a magic packet to each address on every wired IPv4 network. Returns how many were sent."""
+    macs = wakeable_macs(raw_macs)
+    if not macs:
+        log("Ignoring a wake command without a usable MAC address.")
+        return 0
+    networks = wired_broadcast_addresses() if networks is None else networks
+    if not networks:
+        log(f"Cannot wake {', '.join(macs)}: no wired network with an IPv4 address here.")
+        return 0
+    open_socket = open_socket or (lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+    sent = 0
+    for local, broadcast in networks:
+        try:
+            with open_socket() as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.bind((local, 0))
+                for mac in macs:
+                    packet = magic_packet(mac)
+                    # UDP is not acknowledged; a few copies get past a dropped one.
+                    for _ in range(WOL_REPEATS):
+                        sock.sendto(packet, (broadcast, WOL_PORT))
+                    sent += 1
+        except OSError as err:
+            log(f"Could not send the wake signal on {local}: {err}")
+    if sent:
+        log(f"Wake signal sent to {', '.join(macs)} on {len(networks)} wired network(s).")
+    return sent
+
+
+
 def boot_report_loop():
     settled = None
     restarts = {"sent": load_sent_restart_reports(), "logged": set(), "held": False}
@@ -4392,6 +4849,9 @@ def apply_control_update(data):
 
     if "lanSharing" in data:
         apply_lan_sharing(data["lanSharing"])
+
+    if "power" in data:
+        apply_power_schedule(data["power"])
 
     if isinstance(data.get("usageSites"), bool) and data["usageSites"] != usage_counter.record_sites:
         usage_counter.set_record_sites(data["usageSites"])
@@ -4877,6 +5337,7 @@ def main():
     threading.Thread(target=start_local_server, daemon=True).start()
     threading.Thread(target=boot_report_loop, daemon=True).start()
     threading.Thread(target=usage_loop, daemon=True).start()
+    threading.Thread(target=power_loop, daemon=True).start()
     if is_network_boot():
         threading.Thread(target=network_boot_enrol_loop, name="network-boot-enrol", daemon=True).start()
 

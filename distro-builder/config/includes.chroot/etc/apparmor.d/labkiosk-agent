@@ -104,6 +104,8 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
 
   # Root's helpers, through their sudoers entries. They are not confined by
   # this profile: each re-validates its arguments against the system's own
-  # tables (01-lockdown.hook.chroot).
+  # tables (01-lockdown.hook.chroot). labkiosk-wake-alarm, a power schedule's
+  # switch-on, is one of them; its postponed shutdown (power-pending.json) is
+  # under /etc/labkiosk above, and Wake-on-LAN is a UDP broadcast (inet dgram).
   /usr/bin/sudo Ux,
 }

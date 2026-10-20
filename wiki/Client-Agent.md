@@ -98,7 +98,7 @@ only while the reply's `frames` says a console is showing this screen.
 
 ## Command execution
 
-`execute_command()` handles exactly seven actions. Anything else is logged and ignored.
+`execute_command()` handles the actions below. Anything else is logged and ignored.
 
 | Action | Implementation |
 | :--- | :--- |
@@ -109,6 +109,7 @@ only while the reply's `frames` says a console is showing this screen.
 | `reboot` | `systemctl reboot` via logind |
 | `shutdown` | Powers off via logind |
 | `mute` | Mutes output through `alsa-utils` |
+| `wake` | Sends a Wake-on-LAN magic packet for each MAC address in the command (validated: unicast, at most 64) as a UDP broadcast to port 9 on each wired IPv4 network, three times |
 
 `reboot` and `shutdown` work because `/etc/polkit-1/rules.d/50-labkiosk-power.rules` grants the `kiosk` user exactly those two logind actions and nothing else. The agent runs as `kiosk`; without that rule the command would be accepted and then silently do nothing.
 
@@ -288,6 +289,18 @@ Once per agent start, after enrolment, the same loop as the boot reports reads w
 ## Usage reports
 
 `UsageCounter` adds up, per local calendar day, how long the workstation was switched on (credited every minute by `usage_loop`, at most 2 minutes at a time so a suspend or a stopped clock does not count), how long it was in use (the extension's `/api/usage/tick`: someone used the keyboard, mouse or touchscreen in the last minute; capped at the time switched on), sessions (each agent start and each `clear-session`), and, while the organization records sites (`usageSites` in the configuration), seconds in use and visits per hostname (at most 100 a day; IP addresses and `localhost` are never recorded). Every 15 minutes `usage_loop` sends what has accumulated to `POST /api/devices/usage` and starts again from zero; a network failure or any status but `200` and `400` puts the report back to be sent with the next one, and days more than 7 days old are dropped. Nothing is sent before enrolment. The counts live in memory, so at most 15 minutes are lost when the workstation is switched off at the button.
+
+## Power schedules
+
+The configuration carries `power`: `{"week": [...]}`, seven entries from Sunday, each `null` or `{"off": minutes, "on": minutes|null}` on the workstation's own clock, or `null` for no schedule (`normalize_power_week()` drops anything malformed). `power_loop` looks every 15 s; when the clock passes a switch-off time it starts a five-minute warning (`/api/status` `powerOff`: `{"at": ms, "postponed": bool}`), which the extension shows in its Shadow DOM with a countdown. A jump of more than five minutes, or the clock going back (the first time sync after boot), fires nothing, so a workstation switched on after its switch-off time stays on. A schedule change that no longer asks for the switch-off under way calls it off.
+
+When the warning is over the agent shuts down with `systemctl poweroff`, **never while a system update installs or stages** (`state.updateInstalling`, the updater's `installing` phase, or either update unit running): it waits and looks again every minute, and keeps `/etc/labkiosk/power-pending.json` so that the restart the update makes picks the shutdown up again (within two hours).
+
+Just before shutting down — by the schedule or by an operator's `shutdown` — `prepare_wake_alarm()` runs `sudo -n /usr/local/sbin/labkiosk-wake-alarm set <epoch>` for the next switch-on (or `clear` when there is none). The helper accepts only a plain number of seconds 60 s to 8 days and an hour ahead, writes `/sys/class/rtc/rtc0/wakealarm` (cleared first, then read back) and allows for an RTC kept in local time (`/etc/adjtime`). Exit `3` (no RTC) and any other failure are logged and sent to `POST /api/devices/power-report`.
+
+Wake-on-LAN is armed on the wired adapters at boot: `/etc/systemd/network/99-default.link.d/labkiosk-wake-on-lan.conf` (`WakeOnLan=magic`) and `/etc/NetworkManager/conf.d/50-labkiosk-wake-on-lan.conf` (`ethernet.wake-on-lan=magic`).
+
+---
 
 ## Enrolment
 

@@ -64,10 +64,11 @@ The top toolbar provides multi-device room operations:
   - **Clear Session**: Sign every user out without restarting. The browser restarts in a few seconds with all website sign-ins, cookies, history and cache removed, then reopens its assigned page. Unsaved work in open pages is lost.
   - **Reboot**: Safely restart selected thin clients.
   - **Shutdown**: Safely power off selected thin clients at the end of the day.
+  - **Wake (n)**, at the top of the menu: switch on the selected (or, with none selected, every) workstation that is off. A workstation that is on at the same site sends it the Wake-on-LAN signal; a toast says how many were woken and why any others could not be (no workstation on at its site, no wired adapter, its network not known yet, or an agent too old to send the signal). The machines' firmware must allow Wake-on-LAN.
 
 ### Per-Workstation Card Commands
 
-Individual cards offer targeted actions: **Lock / Unlock**, **Navigate**, **Reload**, **Reboot**, **Shutdown**, **Mute**, **Remote Control** (noVNC), and **Decommission** (revokes token).
+Individual cards offer targeted actions: **Lock / Unlock**, **Navigate**, **Reload**, **Reboot**, **Shutdown**, **Mute**, **Remote Control** (noVNC), and **Decommission** (revokes token). A workstation that is off shows **Wake** instead, which switches it on through a workstation that is on at the same site (needs the `workstations` permission).
 
 ---
 
@@ -188,6 +189,8 @@ Problems workstations reported themselves, kept apart from Recent Activity (whic
 | **Stopped responding** | Error | The workstation hung and its hardware watchdog restarted it. |
 | **Disk wearing out or failing** | Warning, or Error when failing | The workstation's own disk reports wear or faults (SMART, or an eMMC card's wear figures), e.g. *Disk Example SSD 256GB (nvme0n1): Wearing out: 93% of its rated life used. Plan to replace it.* A failing disk ends *Replace it before it stops working.* Each disk is listed once per state, and never sent as an automatic bug report. |
 
+A workstation that switched itself off by a power schedule but could not set its hardware clock to switch on again shows **Cannot switch itself on** (warning): the machine has no RTC that can wake it, or the RTC refused the alarm. Switch it on by hand or with **Wake**, and check the firmware's power settings.
+
 Each row shows when the workstation recorded it (its own clock), the workstation and image version, and the details. A restart carries the end of the workstation's system log from before it: **Show log** opens it. Logs are cleared after 30 days and are never sent with automatic bug reports.
 
 **Automatic bug reports (opt-in).** When the platform has set them up, the card offers **Send automatic bug reports**. To turn it on, tick **I accept the Automatic Bug Report Terms** (`/terms/bug-reports`) and then the option itself. From then on, new errors and warnings are filed as GitHub issues in the repository the hint names, where anyone may be able to read them. A report carries the kind of problem, the image version and the problem text with network addresses, host names and identifiers removed; never the organization's or its workstations' names. Problems listed before you turned it on are not sent. If the terms change, nothing is sent until you tick the box again to accept the new version. Untick the option to stop. When the platform has not set them up, the hint says so and the option cannot be turned on.
@@ -198,6 +201,16 @@ Under each problem, the report line shows where it stands:
 - **New bug report #N**: it opened GitHub issue #N.
 - **Already reported #N**: it matched an issue already filed, which received a comment instead.
 - A badge with that issue's status on GitHub: **In progress** (assigned or labelled "in progress"), **PR created** (a pull request references it, with a **View PR** link), **Resolved** (closed as completed) or **Closed** (closed for another reason). An open issue shows no badge.
+
+### Power (`?tab=power`)
+
+Power schedules switch the organization's workstations off at the end of the day and, optionally, on again in the morning. Viewing and changing them needs the `settings` permission.
+
+- **Add a schedule**: choose who it is for (**Every workstation** or one group), the days, the **Switch off at** time and, optionally, **Switch on at**. Times are each workstation's own clock (the time zone set in its Language & Region step).
+- **The rule when schedules overlap**: on each day, a workstation follows its group's schedule for that day when there is one; otherwise the schedule for every workstation. Two schedules for the same workstations cannot share a day, and switch-on is at least 15 minutes from switch-off.
+- **At the switch-off time** the workstation shows a five-minute warning with a countdown, then shuts down cleanly. A system update that is installing is never interrupted: the shutdown waits for it, and is picked up again after the update's restart. A workstation switched on after its switch-off time stays on until the next one.
+- **Switch-on** is set in the workstation's hardware clock just before it shuts down. A machine that cannot be set reports **Cannot switch itself on** under Errors & Warnings. The firmware must allow waking from the RTC (often *Wake on RTC* or *Resume by alarm*), and the machine must keep power.
+- Every change is recorded in Recent Activity and reaches the workstations at once.
 
 ---
 

@@ -1024,6 +1024,55 @@ const BAR_INTRO_MS = 2500;
           color: #9ca3af;
           line-height: 1.6;
         }
+
+        /* A power schedule's switch-off: five minutes' notice, then shutdown. */
+        #power-notice {
+          position: fixed;
+          left: 50%;
+          bottom: 24px;
+          transform: translateX(-50%);
+          width: min(560px, calc(100vw - 32px));
+          box-sizing: border-box;
+          background: #111827;
+          border: 1px solid #f59e0b;
+          border-radius: 12px;
+          padding: 16px 20px;
+          color: #ffffff;
+          z-index: 2147483646;
+          box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.8);
+          font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+
+        #power-notice.hidden {
+          display: none;
+        }
+
+        .power-head {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 6px;
+        }
+
+        .power-title {
+          font-size: 17px;
+          font-weight: 700;
+        }
+
+        .power-countdown {
+          font-size: 22px;
+          font-weight: 800;
+          color: #fbbf24;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .power-msg {
+          font-size: 14px;
+          color: #d1d5db;
+          line-height: 1.5;
+          margin: 0;
+        }
       </style>
 
       <div id="kiosk-sensor"></div>
@@ -1099,6 +1148,14 @@ const BAR_INTRO_MS = 2500;
           <h1 class="lock-title" id="lock-title">Attention Please</h1>
           <p class="lock-msg" id="lock-text">This screen has been locked by an administrator. Please wait.</p>
         </div>
+      </div>
+
+      <div id="power-notice" class="hidden" role="alert" aria-live="assertive">
+        <div class="power-head">
+          <span class="power-title" data-i18n="bar.power-off-title">This workstation is switching off</span>
+          <span class="power-countdown" id="power-countdown"></span>
+        </div>
+        <p class="power-msg" id="power-text" data-i18n="bar.power-off-text">The organization's power schedule switches it off in a few minutes. Save your work now.</p>
       </div>
 
       <div id="admin-modal" class="modal-overlay hidden">
@@ -1238,6 +1295,8 @@ const BAR_INTRO_MS = 2500;
       if (curtain) curtain.setAttribute("dir", dir);
       const adminModal = shadow.getElementById("admin-modal");
       if (adminModal) adminModal.setAttribute("dir", dir);
+      const powerNotice = shadow.getElementById("power-notice");
+      if (powerNotice) powerNotice.setAttribute("dir", dir);
       keyboard.relabel();
     }).catch(() => { /* English stands */ });
 
@@ -1784,6 +1843,36 @@ const BAR_INTRO_MS = 2500;
   let shadowRoot = null;
 
   // 3. Periodic Synchronization with local agent
+  /*
+   * A power schedule's switch-off, as the agent reports it: {at: ms, postponed}.
+   * A countdown to the shutdown, or, while a system update is installing, a
+   * note that it waits for the update. Hidden when nothing is under way.
+   */
+  function showPowerNotice(root, powerOff) {
+    const notice = root.getElementById("power-notice");
+    if (!notice) return;
+    const at = powerOff && typeof powerOff === "object" ? Number(powerOff.at) : NaN;
+    if (!Number.isFinite(at) || at <= 0) {
+      notice.classList.add("hidden");
+      return;
+    }
+    const countdown = root.getElementById("power-countdown");
+    const text = root.getElementById("power-text");
+    if (powerOff.postponed) {
+      if (countdown) countdown.textContent = "";
+      if (text) text.textContent = t("bar.power-off-postponed", "A system update is installing, so it waits for the update to finish and then switches off.");
+    } else {
+      const left = Math.max(0, Math.round((at - Date.now()) / 1000));
+      if (countdown) {
+        countdown.textContent = left > 0
+          ? Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0")
+          : t("bar.power-off-now", "Now");
+      }
+      if (text) text.textContent = t("bar.power-off-text", "The organization's power schedule switches it off in a few minutes. Save your work now.");
+    }
+    notice.classList.remove("hidden");
+  }
+
   async function syncLoop() {
     try {
       // A hostile or merely over-eager page can remove our host node; rebuild it
@@ -1869,6 +1958,7 @@ const BAR_INTRO_MS = 2500;
           }
         }
         keyboard.setLocked(isLocked);
+        showPowerNotice(shadowRoot, data.powerOff);
         // No keyboard attached (the agent read /proc/bus/input/devices): the
         // on-screen keyboard opens by itself on a text field. Unknown (null)
         // and true leave it to the bar's button.

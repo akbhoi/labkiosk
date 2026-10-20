@@ -16,6 +16,7 @@ import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor"
 import { renderUpdatesPaneHtml, renderUpdatesScript } from "./ui_admin_updates";
 import { renderUsagePaneHtml, renderUsageScript } from "./ui_admin_usage";
 import { renderSsoCardHtml, renderSsoScript } from "./ui_admin_sso";
+import { renderPowerPaneHtml, renderPowerScript } from "./ui_admin_power";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
@@ -44,7 +45,8 @@ ${canUpdate ? renderUpdatesPaneHtml() : ""}`,
       renderTwoFactorScript(nonce) +
       (canUpdate ? renderUpdatesScript(nonce) : "") +
       renderUsageScript(nonce) +
-      renderSsoScript(nonce)
+      renderSsoScript(nonce) +
+      renderPowerScript(nonce)
   };
 }
 
@@ -108,6 +110,10 @@ function renderSettingsPageHtml(
       <button type="button" class="segmented-tab" data-action="tab-usage">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         <span>Usage</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-power">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+        <span>Power</span>
       </button>
     </nav>
 
@@ -350,6 +356,10 @@ ${renderUpdatesPaneHtml()}
 ${renderUsagePaneHtml()}
     </div>
 
+    <div class="tab-pane" id="pane-power">
+${renderPowerPaneHtml()}
+    </div>
+
     <!-- ============================================================== -->
     <!-- TAB 5: ERRORS & WARNINGS                                       -->
     <!-- ============================================================== -->
@@ -454,7 +464,8 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         "section-sso": "security",
         "section-issues": "issues",
         "section-updates": "updates",
-        "section-usage": "usage"
+        "section-usage": "usage",
+        "section-power": "power"
       };
 
       function switchTab(tabId) {
@@ -861,7 +872,8 @@ ${WHEN_PANE_SHOWN_JS}
             boot_error: "Boot record error",
             unexpected_restart: "Restarted without shutting down",
             watchdog_reset: "Stopped responding",
-            disk_health: "Disk wearing out or failing"
+            disk_health: "Disk wearing out or failing",
+            wake_alarm: "Cannot switch itself on"
           };
           // The end of the journal a workstation sent with a restart, fetched
           // when someone asks for it: a log can be 16 KiB, the list is 100 rows.

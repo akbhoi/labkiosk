@@ -93,6 +93,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/console/remote` | `GET` (WebSocket) | The viewer's side of a Remote Control session (VNC bytes) |
 | `/api/clients/remove` | `POST` | Decommission a workstation and revoke its token |
 | `/api/clients/group` | `POST` | Assign workstations to a group |
+| `/api/clients/wake` | `POST` | `{ clientIds }`: switch on workstations that are off, through one that is on at the same site (Wake-on-LAN; `workstations`) |
+| `/api/power-schedules` | `GET` `POST` | List the organization's power schedules (with its groups), or create or replace one (`settings`) |
+| `/api/power-schedules/:id` | `DELETE` | Delete a power schedule (`settings`) |
 | `/api/groups` | `GET` `POST` | List and create workstation groups |
 | `/api/groups/:id` | `DELETE` | Delete a workstation group |
 | `/api/tenant/staff` | `GET` `POST` | List and create delegated staff (requires `staff`; see the delegation limits in `docs/API.md`) |
@@ -130,6 +133,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/devices/video-decoding` | `POST` | What the workstation's GPUs decode in hardware (VA-API), read with `vainfo` at each agent start |
 | `/api/devices/hardware` | `POST` | The machine it runs on, once per agent start: `{ vendor, model, cpu, cores, memoryMb, bootMode: "uefi"\|"bios", keyboard, touch, macs }` (`keyboard`/`touch` are `null` when the agent could not tell; at most 8 wired MAC addresses). `400` on a malformed report, `409` before the workstation's row exists |
 | `/api/devices/usage` | `POST` | Time switched on and in use since the last report, every 15 minutes: `{ days: [{ day, onSeconds, activeSeconds, sessions, sites: [{ domain, seconds, visits }] }] }`. Days are the workstation's own calendar days, at most 7 days old; amounts are added to what is stored. `sites` is ignored while the organization does not record sites |
+| `/api/devices/power-report` | `POST` | A workstation switching off by its power schedule could not set its hardware clock to switch it on again |
 | `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
 ### Release build
@@ -370,6 +374,50 @@ What the workstation's GPUs decode in hardware, read by the agent with `vainfo -
 ```
 
 **`200 OK`** → `{ "status": "ok" }`. **`400`** malformed, not sent again. **`401`** bad token. **`409`** the workstation has not checked in yet, sent again later.
+
+---
+
+### `POST /api/devices/power-report`
+
+Sent just before a power schedule shuts the workstation down, when `labkiosk-wake-alarm` could not set the hardware clock to switch it on again. Listed under Settings → Errors & Warnings as **Cannot switch itself on** (warning), once per workstation, problem and day, and never sent as an automatic bug report.
+
+**Access:** `Authorization: Bearer <deviceToken>`.
+
+**Request:** `problem` (`no-rtc`: the machine has no RTC that can wake it; `failed`: the RTC refused the alarm), `wakeAt` (`YYYY-MM-DD HH:MM`, the workstation's local time it should have switched on) and an optional `detail` (≤ 300 characters, control characters removed).
+
+```json
+{ "problem": "no-rtc", "wakeAt": "2026-10-26 07:30", "detail": "/sys/class/rtc/rtc0/wakealarm does not exist" }
+```
+
+**`200 OK`** → `{ "status": "ok", "recorded": true }` (`false` when already listed today). **`400`** malformed. **`401`** bad token. **`409`** the workstation has not checked in yet.
+
+---
+
+### Power schedules: `GET` / `POST /api/power-schedules`, `DELETE /api/power-schedules/:id`
+
+**Access:** a session with the `settings` permission, on the organization's own host (cross-site `Origin` refused).
+
+`GET` → `{ "schedules": [ { "id", "groupId", "groupName", "days": [1,2,3,4,5], "off": "18:00", "on": "07:30", "updatedAt" } ], "groups": [ { "id", "name" } ] }`. Days are `0` Sunday to `6` Saturday.
+
+`POST` `{ id?, days, off, on?, groupId? }` creates a schedule, or replaces the one named by `id`. `off` and `on` are `HH:MM` on each workstation's own clock; leave `on` out to switch the workstations on by hand. `groupId` limits it to one workstation group; without it the schedule is for every workstation. **The rule:** for each day, a workstation follows its group's schedule for that day when there is one, else the all-workstations one. **`200`** `{ "status": "ok", "schedule": {…} }`. **`400`** no day, a malformed time, or switch-on within 15 minutes of switch-off. **`404`** unknown group or `id`. **`409`** another schedule for the same workstations already covers one of those days, or the organization already has 50.
+
+`DELETE /api/power-schedules/:id` → **`200`**, or **`404`**.
+
+Every change writes `power.schedule_create`, `power.schedule_update` or `power.schedule_delete` to the audit log, and the workstations receive their new schedule at once: `power` in the control channel's configuration and in the `POST /api/telemetry` reply, `{ "week": [ { "off": 1080, "on": 450 } | null, … seven, Sunday first ] }` in minutes, or `null`.
+
+---
+
+### `POST /api/clients/wake`
+
+Switches on workstations that are off, by Wake-on-LAN. **Access:** a session with the `workstations` permission, on the organization's own host.
+
+**Request:** `{ "clientIds": ["PC-01", …] }`, 1 to 500.
+
+For each one the Worker takes the wired MAC addresses from that workstation's **own hardware report** in this organization's rows (never from the request), picks a workstation of the same organization that is on at the same LAN site (the private network it last reported; an installed disk's agent reports it) and runs an agent that can send it, and queues that one a `wake` command carrying those addresses (at most 64 per command). The agent broadcasts a magic packet (six `0xFF` bytes, then the MAC sixteen times) to UDP port 9 on each of its wired networks.
+
+**`200 OK`** → `{ "status": "ok", "sent": [ { "clientId", "via" } ], "skipped": [ { "clientId", "reason" } ] }`, audit `command.wake`. **`409`** when none could be woken, with `error` and the same lists; the reasons are: already on; no wired adapter reported; its local network not known yet; no workstation on at its site; the ones on at its site run an agent too old to send it. **`400`** malformed or more than 500.
+
+The machine's firmware must allow it (*Wake on LAN* / *Power on by PCI-E*), and the network must carry the broadcast to it.
 
 ---
 

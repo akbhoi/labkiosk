@@ -87,6 +87,9 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/clients` | `GET` | Organization Admin | List active workstation fleet with live thumbnails |
 | `/api/clients/remove` | `POST` | Organization Admin | Decommission workstation and revoke its device token |
 | `/api/clients/group` | `POST` | Organization Admin | Assign multiple workstations to a named group |
+| `/api/clients/wake` | `POST` | Organization Admin (`workstations`) | `{"clientIds"}`: switch on workstations that are off through one that is on at the same site (Wake-on-LAN); `409` with each one's reason when none could be |
+| `/api/power-schedules` | `GET`, `POST` | Organization Admin (`settings`) | The organization's power schedules and groups; `POST {"id"?, "days", "off", "on"?, "groupId"?}` creates or replaces one (`409` on a day another schedule for the same workstations covers) |
+| `/api/power-schedules/:id` | `DELETE` | Organization Admin (`settings`) | Delete a power schedule |
 | `/api/groups` | `GET` | Organization Admin | List workstation groups for the organization tenant |
 | `/api/groups` | `POST` | Organization Admin | Create a new workstation group |
 | `/api/groups/:id` | `DELETE` | Organization Admin | Delete a workstation group |
@@ -103,6 +106,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/devices/restart-report` | `POST` | Device Token | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/disk-health` | `POST` | Device Token | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
 | `/api/devices/video-decoding` | `POST` | Device Token | What the workstation's GPUs decode in hardware (VA-API), read with `vainfo` at each agent start |
+| `/api/devices/power-report` | `POST` | Device Token | `{"problem": "no-rtc"\|"failed", "wakeAt", "detail"?}`: the workstation could not set its hardware clock to switch on by its power schedule; listed under Errors & Warnings |
 | `/api/devices/update` | `GET` | Device Token | The system release this workstation may take (its organization's channel, its line's status, the majors open to it) and the folder to download it from, or `{"release": null}`; `503` when the platform has no https `RELEASES_BASE_URL` |
 | `/api/settings/updates` | `GET`, `POST` | Organization Admin (`updates`) | The organization's update channel and the release it is offered; `POST {"channel": "stable"\|"beta"}` changes the channel |
 | `/api/notifications` | `GET` | Organization staff | The platform's notifications for this organization, newest first (50), each with `read` for this user, and `unread` |
@@ -807,6 +811,32 @@ Assigns multiple workstations to a designated group (or unassigns if `groupName`
 
 - **Response `200 OK`:** `{ "status": "ok", "count": 2 }`
 - **Errors:** `404` when `groupName` is not an existing group; `400` for more than 500 ids.
+
+#### `POST /api/clients/wake`
+
+Switches on workstations that are off, by Wake-on-LAN, through a workstation of the same
+organization that is on at the same LAN site. The MAC addresses are the ones each workstation
+reported in its own hardware report, read from this organization's rows; the request names only
+the workstations.
+
+- **Access:** Organization Admin (requires `workstations` permission)
+- **Request Body:** `{ "clientIds": ["PC-01", "PC-02"] }` (1 to 500)
+- **Response `200 OK`:** `{ "status": "ok", "sent": [{ "clientId": "PC-01", "via": "PC-07" }], "skipped": [{ "clientId": "PC-02", "reason": "It is already on" }] }`
+- **Errors:** `409` `{ "error", "sent": [], "skipped" }` when none could be woken; `400` malformed or more than 500 ids.
+
+#### Power schedules: `GET`/`POST /api/power-schedules`, `DELETE /api/power-schedules/:id`
+
+- **Access:** Organization Admin (requires `settings` permission)
+- **`POST` body:** `{ "id"?: "…", "days": [1,2,3,4,5], "off": "18:00", "on"?: "07:30", "groupId"?: "…" }`;
+  days `0` (Sunday) to `6`, times on each workstation's own clock. Without `groupId` the schedule is
+  for every workstation. For each day a workstation follows its group's schedule when there is one,
+  else the all-workstations one.
+- **Errors:** `400` invalid days or times (switch-on within 15 minutes of switch-off); `404` unknown
+  group or schedule; `409` another schedule for the same workstations covers one of those days, or 50
+  schedules already.
+- Workstations receive `power: { "week": [ { "off": 1080, "on": 450 } | null × 7 ] } | null` in their
+  configuration (control channel and telemetry reply) at once. See
+  [REST-API-Reference](../wiki/REST-API-Reference.md#power-schedules-get--post-apipower-schedules-delete-apipower-schedulesid).
 
 #### `POST /api/clients/remove`
 

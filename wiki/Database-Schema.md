@@ -77,6 +77,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0042_passkeys.sql` | `user_passkeys` (credential id, relying party, public key as JWK, COSE algorithm, signature counter), `passkey_registrations` (a registration's challenge), `login_challenges.passkey_challenge` |
 | `0043_video_decoding.sql` | `client_devices.video_decoding`, `video_decoding_at` (what the workstation's GPUs decode in hardware, from `POST /api/devices/video-decoding`) |
 | `0044_usage_and_hardware.sql` | Usage reports: `usage_daily`, `usage_sites`, `tenants.usage_sites`, and the anonymous platform tables `platform_usage_daily` and `platform_usage_sites`. Hardware: `client_devices.hardware`, `hardware_at`, and the platform table `hardware_models` behind `/hardware` |
+| `0045_power_schedules.sql` | `power_schedules`: when an organization's workstations switch themselves off and on again (Settings → Power), for every workstation or one group |
 | `0046_single_sign_on.sql` | `sso_settings` (an organization's Google Workspace / Microsoft Entra ID sign-in) and `sso_states` (sign-ins in flight) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
@@ -445,6 +446,22 @@ An `org_admin` row, or owning the organization (`tenants.user_id`), means full a
 | `name` | TEXT | 1–50 characters, unique per organization case-insensitively (index `idx_workstation_groups_tenant_name`; membership is by name) |
 | `created_at` | INTEGER | |
 
+### `power_schedules`
+
+An organization's power schedules (Settings → Power, `src/power.ts`). Times are on each workstation's own clock; there is no time zone column.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT PK | |
+| `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
+| `group_id` | TEXT → `workstation_groups.id` | `ON DELETE CASCADE`; NULL for every workstation |
+| `days` | INTEGER | Bitmask, bit 0 Sunday to bit 6 Saturday; `CHECK 1..127` |
+| `off_minute` | INTEGER | Switch-off, minutes after midnight, `0..1439` |
+| `on_minute` | INTEGER | Switch-on, `0..1439`, or NULL (switched on by hand) |
+| `created_at`, `updated_at` | INTEGER | |
+
+For each day a workstation follows its group's schedule for that day when there is one, else the all-workstations one. Two schedules for the same workstations never share a day (the route answers `409`), and switch-on and switch-off are at least 15 minutes apart. At most 50 per organization. A later cascade-safe rebuild of `tenants` or `workstation_groups` must hold this table too.
+
 ### `audit_logs`
 
 | Column | Type | Notes |
@@ -474,6 +491,7 @@ idx_tenant_whitelist_tenant        tenant_whitelist(tenant_id)
 idx_broadcast_presets_tenant       broadcast_presets(tenant_id)
 idx_audit_logs_tenant              audit_logs(tenant_id, created_at)
 idx_workstation_issues_tenant      workstation_issues(tenant_id, created_at)
+idx_power_schedules_tenant         power_schedules(tenant_id)
 idx_bug_reports_issue              bug_reports(issue_number)   -- platform table, no tenant_id
 idx_usage_daily_tenant_day         usage_daily(tenant_id, day)
 idx_usage_daily_day                usage_daily(day)            -- the cron's platform rollup and retention only
@@ -488,7 +506,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0045_<description>.sql` (the next number after `0044`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0048_<description>.sql` (the next number after `0047`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.
