@@ -15,6 +15,7 @@ import { AdminPageInput, AdminPageParts, WHEN_PANE_SHOWN_JS } from "./ui_admin_s
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderUpdatesPaneHtml, renderUpdatesScript } from "./ui_admin_updates";
 import { renderUsagePaneHtml, renderUsageScript } from "./ui_admin_usage";
+import { renderSsoCardHtml, renderSsoScript } from "./ui_admin_sso";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
@@ -42,7 +43,8 @@ ${canUpdate ? renderUpdatesPaneHtml() : ""}`,
       renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)) +
       renderTwoFactorScript(nonce) +
       (canUpdate ? renderUpdatesScript(nonce) : "") +
-      renderUsageScript(nonce)
+      renderUsageScript(nonce) +
+      renderSsoScript(nonce)
   };
 }
 
@@ -303,6 +305,7 @@ ${renderRemoteControlCard(tenant)}
               <button type="submit" class="btn btn-secondary">Change Password</button>
             </form>
           </div>
+${renderSsoCardHtml()}
         </div>
 
         <div>
@@ -448,6 +451,7 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         "section-enrollment": "security",
         "section-password": "security",
         "section-activity": "security",
+        "section-sso": "security",
         "section-issues": "issues",
         "section-updates": "updates",
         "section-usage": "usage"

@@ -35,6 +35,19 @@ There are **zero runtime npm dependencies**. No auth framework, no routing libra
 
 **Two-step sign-in.** After the password, every administrator (the super admin, an organization's owner and staff with the `org_admin` role) is always emailed a six-digit code (it works for that sign-in only, for ten minutes, five wrong tries). Other staff turn the same on under **Settings → Two-factor sign-in**. Every account can add passkeys and an authenticator app (TOTP, with ten recovery codes) on top; a passkey is offered first and cannot be phished, because the browser signs only for the site it was made on. Passkeys are verified in the Worker with `crypto.subtle` (ES256 or RS256; signature counter checked, attestation not required) and work on the platform domain and every organization subdomain; a custom domain is its own site. A browser can be trusted for 30 days. Where email is not configured, an account with no app and no passkey signs in with its password alone and the server logs why, rather than locking every account out. `SUPER_ADMIN_EMAIL` must therefore reach an inbox that can be read without signing in to the console.
 
+### Single sign-on
+
+Organization staff can sign in with **Google Workspace** or **Microsoft Entra ID** where their organization turned it on (Settings → Security; `src/sso.ts`). Never the super admin, never a workstation.
+
+- **Protocol.** OpenID Connect authorization code flow with PKCE (S256), a random `state` and `nonce` per sign-in, and the platform's client secret at the token endpoint. One redirect URI for every organization, on the platform host. Scopes `openid email profile`; no access or refresh token is kept.
+- **State.** Each sign-in is a row in `sso_states` (SHA-256 of the state, the PKCE verifier, the nonce, the organization, where the browser started). The callback spends it on first use, right or wrong; it expires after ten minutes and the hourly run purges it.
+- **ID token.** Verified in the Worker with `crypto.subtle`: RS256 only, against the provider's published keys (cached per isolate for an hour, read again for an unknown `kid` at most once a minute), then `iss`, `aud` (and `azp` with several audiences), `exp`/`iat`/`nbf` with two minutes of skew, and `nonce`. Google: `email_verified` must be true and `hd` one of the organization's Workspace domains (a personal Gmail account has none). Microsoft: `tid` must be one of the organization's Entra tenant IDs and `iss` must name that same tenant. Microsoft documents `email` as unverified across tenants, so it is trusted only together with that tenant check; `preferred_username` stands in only when no `email` is issued and it has the shape of an address.
+- **Who may configure it.** Reading needs `settings`; changing it needs an administrator (the owner or `org_admin` staff). Whoever administers a listed directory decides which email address its accounts carry, so listing a directory is trusting its administrators with every staff account of the organization. Every change is audited (`settings.sso`).
+- **Matching.** The verified email must belong to an existing account of that organization: its owner or a member of its staff. Nothing is created; removed staff, another organization's accounts, the super admin and inactive organizations are refused. A refused match counts as a failed sign-in for that address, and a locked address is refused, as with a password.
+- **The hand-off.** Sessions are host-only, so the callback (platform host) never sets one. It stores the matched account and the SHA-256 of a one-time code on the state row and sends the browser back to the sign-in page it started on. That page posts the code to `/api/auth/sso/redeem` on its own host; the code works once, for two minutes, only on that host and only in the browser that started (a `SameSite=Strict`, host-only cookie whose hash is on the row). Login CSRF — sending someone a link that signs them in as the attacker — fails on that cookie.
+- **Second factor.** The redeem continues exactly as a password does (`continueSignIn`): administrators always confirm with their second factor, other staff when they turned it on, a trusted browser skips it. Then the usual handoff to the console's host.
+- **Require single sign-on.** An organization can refuse password sign-in for its staff. The owner keeps the password, so the organization can always get back in to fix its directory or turn the requirement off; and while the platform offers none of the providers the organization turned on, passwords work again rather than locking everyone out. The refusal is said only after the password checked out.
+
 Password changes go through one path — `POST /api/auth/change-password` — which verifies the current password and **revokes the account's other sessions**, so a stolen cookie does not outlive a password change.
 
 ### Tenant isolation
@@ -94,7 +107,7 @@ Cache-Control: no-store                 (API responses)
 
 ### Rate limiting
 
-- **Sign-in:** exponential back-off per identifier via `login_attempts`, answered `429`.
+- **Sign-in:** exponential back-off per identifier via `login_attempts`, answered `429`. Single sign-on counts against the same identifier (the verified email address) and is refused while it is locked; starting one is limited to 30 per source address per ten minutes.
 - **Registration and failed enrolment:** throttled per source address.
 - **Reserved slugs:** `www`, `super`, `labkiosk`, `api`, `admin`, `portal`, `status`, `mail`, `app`, `kiosk`, `root` — neither registerable nor resolvable.
 

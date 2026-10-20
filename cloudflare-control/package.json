@@ -7,7 +7,7 @@
     "dev": "wrangler dev --local --ip 0.0.0.0 --local-upstream localhost:8787 --var ALLOW_LOCAL_DB:1",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc --noEmit --project tsconfig.test.json",
-    "test": "tsx --tsconfig tsconfig.runtime.json --test test/worker.test.ts",
+    "test": "tsx --tsconfig tsconfig.runtime.json --test test/worker.test.ts test/sso.test.ts",
     "predev": "wrangler d1 migrations apply labkiosk-db --local",
     "docs": "node tools/build-docs.mjs"
   },

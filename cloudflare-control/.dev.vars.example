@@ -22,3 +22,11 @@ ALLOW_LOCAL_DB=1
 # system updates from (the folder that holds releases/<version>/). https only,
 # except a local address for testing with a local release server.
 # RELEASES_BASE_URL=https://releases.example.org
+
+# Optional: staff sign-in with Google Workspace / Microsoft Entra ID (src/sso.ts).
+# Use test OAuth clients whose redirect URI is this dev server's own origin, e.g.
+# http://localhost:8787/api/auth/sso/callback. A provider needs both of its values.
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+# MICROSOFT_CLIENT_ID=
+# MICROSOFT_CLIENT_SECRET=

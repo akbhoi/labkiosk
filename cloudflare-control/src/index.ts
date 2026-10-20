@@ -375,6 +375,15 @@ import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, han
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
 import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
 import {
+  handleSsoCallback,
+  handleSsoRedeem,
+  handleSsoSettings,
+  handleSsoStart,
+  passwordSignInRefusal,
+  purgeExpiredSsoStates,
+  ssoButtonsFor
+} from "./sso";
+import {
   hardwareModelsComputedAt,
   listHardwareModels,
   listPublicHardwareModels,
@@ -1150,6 +1159,8 @@ function isPublicTenantRoute(path: string, method: string): boolean {
   if (path === "/" || path === "/home" || path === "/privacy" || path === "/terms" || path === "/api/status") return true;
   if (path === "/terms/bug-reports" || path === "/content-policy" || path === "/dpa") return true;
   if (path === "/api/portal-sites" && method === "GET") return true;
+  // Single sign-on starts from an organization's sign-in page, which may be the platform host with ?tenant=.
+  if (path === "/api/auth/sso/start" && method === "GET") return true;
   if (path === "/api/devices/enroll" || path === "/api/telemetry") return true;
   // Interface catalogs. A workstation asks for its language before it is
   // enrolled and holds no credential at that point, and the text is the same
@@ -1226,6 +1237,7 @@ export default {
     await purgeStaleLoginAttempts(db);
     await purgeExpiredEmailCodes(db);
     await purgeExpiredLoginChallenges(db);
+    await purgeExpiredSsoStates(db);
     const peppered = await pepperLegacyPasswordHashes(db, passwordPepper(env));
     if (peppered) console.log(`[Worker] Wrapped ${peppered} password hashes in PASSWORD_PEPPER.`);
     for (const tenantId of await rotateUncheckedEnrollmentKeys(db)) {
@@ -1503,8 +1515,11 @@ export default {
     // this keeps a flood from reaching the database at all.
     if (
       env.AUTH_RATE_LIMITER &&
-      method === "POST" &&
-      (path === "/api/auth/login" ||
+      (method === "POST" || path === "/api/auth/sso/start" || path === "/api/auth/sso/callback") &&
+      (path === "/api/auth/sso/start" ||
+        path === "/api/auth/sso/callback" ||
+        path === "/api/auth/sso/redeem" ||
+        path === "/api/auth/login" ||
         path === "/api/auth/login/verify" ||
         path === "/api/auth/login/email-code" ||
         path === "/api/auth/login/passkey" ||
@@ -1684,6 +1699,10 @@ export default {
             jsonHeaders
           );
         }
+        // Staff of an organization that signs them in with Google or Microsoft (src/sso.ts).
+        // Said only after the password checked out, like the approval message above.
+        const ssoOnly = await passwordSignInRefusal(db, env, user, tenant);
+        if (ssoOnly) return jsonError(ssoOnly, 403, jsonHeaders);
         // A session now, or a second step first for an account with two-factor sign-in.
         return await continueSignIn(routeContext, signInCookies, {
           userId: user.id,
@@ -1721,6 +1740,29 @@ export default {
     }
     if (path === "/api/auth/login/passkey" && method === "POST") {
       return handleLoginPasskeyOptions(routeContext);
+    }
+
+    // Single sign-on with Google Workspace or Microsoft Entra ID (src/sso.ts): start on the
+    // sign-in page's host, come back on the platform host, redeem on the sign-in page's host.
+    if (path === "/api/auth/sso/start" && method === "GET") {
+      return handleSsoStart(routeContext, currentTenant, secureCookies);
+    }
+    if (path === "/api/auth/sso/callback" && method === "GET") {
+      return handleSsoCallback(routeContext, htmlHeaders);
+    }
+    if (path === "/api/auth/sso/redeem" && method === "POST") {
+      return handleSsoRedeem(routeContext, signInCookies, (tenant) =>
+        postLoginRedirect({
+          role: "org_admin",
+          ownSubdomain: tenant.subdomain,
+          hostSlug: hostSubdomain(request, env.DEFAULT_DOMAIN),
+          requestedSlug: null,
+          isDev,
+          baseDomain,
+          superHost: superAdminHost(env),
+          host: hostname(request)
+        })
+      );
     }
 
     // /api/auth/two-factor...: the signed-in account turns its own second factor on or off.
@@ -4118,6 +4160,15 @@ export default {
       );
     }
 
+    // GET /api/settings/sso: the organization's single sign-on (src/sso.ts), for `settings`.
+    // POST /api/settings/sso { google: {enabled, domains}, microsoft: {enabled, tenants}, requireSso }:
+    // administrators only, since a listed directory decides which addresses its accounts carry.
+    if (path === "/api/settings/sso" && (method === "GET" || method === "POST")) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      return handleSsoSettings(routeContext, currentTenant!);
+    }
+
     // GET /api/usage?days=N: the organization's usage over the last N days (1 to
     // MAX_REPORT_DAYS) by day, by workstation and by site (src/usage.ts).
     // POST /api/usage/settings { recordSites }: record the sites visited, or stop.
@@ -5164,6 +5215,8 @@ export default {
             : path === "/iso" || url.searchParams.has("download") || url.searchParams.has("iso")
               ? "iso"
               : undefined;
+      // The sign-in page of one organization (its host, or ?tenant=) offers the single sign-on it turned on.
+      const ssoProviders = openModal === "login" ? await ssoButtonsFor(db, env, currentTenant) : [];
       return new Response(
         renderLandingHtml({
           openModal,
@@ -5172,6 +5225,7 @@ export default {
           contactEmail: "contact@labkiosk.org",
           ...formChecks,
           canonicalUrl,
+          sso: ssoProviders.length && currentTenant ? { providers: ssoProviders, tenantSlug: currentTenant.subdomain } : undefined,
           nonce
         }),
         { headers: htmlHeaders }

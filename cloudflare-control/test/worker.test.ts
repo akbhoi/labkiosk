@@ -9236,6 +9236,8 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0035"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0036"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0044"))), /missing the current schema/);
+    // 0046: single sign-on settings and the sign-ins in flight.
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0046"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

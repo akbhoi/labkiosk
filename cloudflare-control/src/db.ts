@@ -544,6 +544,33 @@ CREATE TABLE IF NOT EXISTS hardware_models (
   PRIMARY KEY (vendor, model)
 );
 
+CREATE TABLE IF NOT EXISTS sso_settings (
+  tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  google_enabled INTEGER NOT NULL DEFAULT 0 CHECK (google_enabled IN (0, 1)),
+  google_domains TEXT NOT NULL DEFAULT '[]',
+  microsoft_enabled INTEGER NOT NULL DEFAULT 0 CHECK (microsoft_enabled IN (0, 1)),
+  microsoft_tenants TEXT NOT NULL DEFAULT '[]',
+  require_sso INTEGER NOT NULL DEFAULT 0 CHECK (require_sso IN (0, 1)),
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS sso_states (
+  state_hash TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('google', 'microsoft')),
+  code_verifier TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  return_origin TEXT NOT NULL,
+  browser_hash TEXT NOT NULL,
+  used_at INTEGER,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  handoff_hash TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
@@ -576,6 +603,8 @@ CREATE INDEX IF NOT EXISTS idx_user_passkeys_user ON user_passkeys(user_id, rp_i
 CREATE INDEX IF NOT EXISTS idx_usage_daily_tenant_day ON usage_daily(tenant_id, day);
 CREATE INDEX IF NOT EXISTS idx_usage_daily_day ON usage_daily(day);
 CREATE INDEX IF NOT EXISTS idx_usage_sites_day ON usage_sites(day);
+CREATE INDEX IF NOT EXISTS idx_sso_states_expires ON sso_states(expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_states_handoff ON sso_states(handoff_hash);
 `;
 
 /**
@@ -805,6 +834,9 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT organizations FROM platform_usage_daily LIMIT 1").run();
     await db.prepare("SELECT organizations FROM platform_usage_sites LIMIT 1").run();
     await db.prepare("SELECT organizations FROM hardware_models LIMIT 1").run();
+    // 0046: single sign-on with Google Workspace or Microsoft Entra ID.
+    await db.prepare("SELECT google_domains, microsoft_tenants, require_sso FROM sso_settings LIMIT 1").run();
+    await db.prepare("SELECT state_hash, code_verifier, return_origin, handoff_hash FROM sso_states LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

@@ -77,6 +77,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0042_passkeys.sql` | `user_passkeys` (credential id, relying party, public key as JWK, COSE algorithm, signature counter), `passkey_registrations` (a registration's challenge), `login_challenges.passkey_challenge` |
 | `0043_video_decoding.sql` | `client_devices.video_decoding`, `video_decoding_at` (what the workstation's GPUs decode in hardware, from `POST /api/devices/video-decoding`) |
 | `0044_usage_and_hardware.sql` | Usage reports: `usage_daily`, `usage_sites`, `tenants.usage_sites`, and the anonymous platform tables `platform_usage_daily` and `platform_usage_sites`. Hardware: `client_devices.hardware`, `hardware_at`, and the platform table `hardware_models` behind `/hardware` |
+| `0046_single_sign_on.sql` | `sso_settings` (an organization's Google Workspace / Microsoft Entra ID sign-in) and `sso_states` (sign-ins in flight) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -278,6 +279,37 @@ Operator-defined quick-launch shortcuts: `id`, `tenant_id`, `title`, `url`, `cre
 | `last_failed_at` | INTEGER | |
 | `locked_until` | INTEGER | Exponential back-off; drives `429` |
 
+### `sso_settings`
+
+One row per organization that configured single sign-on (`src/sso.ts`); no row means it is off. Deleted with the organization.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `tenant_id` | TEXT PK | FK `tenants`, cascade |
+| `google_enabled` / `microsoft_enabled` | INTEGER | 0 or 1 |
+| `google_domains` | TEXT | JSON list of Google Workspace domains (the ID token's `hd`) |
+| `microsoft_tenants` | TEXT | JSON list of Entra tenant IDs (the ID token's `tid`) |
+| `require_sso` | INTEGER | 1: staff other than the owner may not sign in with a password while a provider is on and offered |
+| `updated_at` / `updated_by` | INTEGER / TEXT | `updated_by` FK `users`, set null |
+
+### `sso_states`
+
+A single sign-on in flight; purged hourly once expired.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `state_hash` | TEXT PK | SHA-256 of the `state` sent to the provider |
+| `tenant_id` | TEXT | FK `tenants`, cascade |
+| `provider` | TEXT | `google` or `microsoft` |
+| `code_verifier` / `nonce` | TEXT | PKCE verifier; the nonce the ID token must carry |
+| `redirect_uri` | TEXT | The callback the provider was given (the token exchange repeats it) |
+| `return_origin` | TEXT | The sign-in page's origin the browser goes back to |
+| `browser_hash` | TEXT | SHA-256 of the cookie binding the sign-in to the browser that started it |
+| `used_at` | INTEGER | Set when the callback spends the state |
+| `user_id` | TEXT | FK `users`, cascade: the matched account, after the callback |
+| `handoff_hash` | TEXT | SHA-256 of the one-time code the sign-in page redeems (UNIQUE) |
+| `created_at` / `expires_at` | INTEGER | Ten minutes for the provider; two once the code is issued |
+
 ### `ui_catalogs`
 
 Interface translations for the setup wizard and kiosk bar. **No `tenant_id`, on purpose**: the text is the same for every organization, and a workstation fetches it before it is enrolled. Written only by a super admin.
@@ -446,6 +478,8 @@ idx_bug_reports_issue              bug_reports(issue_number)   -- platform table
 idx_usage_daily_tenant_day         usage_daily(tenant_id, day)
 idx_usage_daily_day                usage_daily(day)            -- the cron's platform rollup and retention only
 idx_usage_sites_day                usage_sites(day)            -- the cron's platform rollup and retention only
+idx_sso_states_expires             sso_states(expires_at)
+idx_sso_states_handoff             sso_states(handoff_hash)    -- UNIQUE
 ```
 
 Every index leads with `tenant_id` wherever the table is tenant-scoped, matching the query shape that `db.ts` always uses. The two `day` indexes are the exception: only the hourly cron reads by day across organizations, to build the anonymous platform totals and delete old rows.

@@ -51,6 +51,7 @@ labkiosk/
 │   │                        lan_sharing.ts (sites, seeds and peers for sharing a release on the LAN),
 │   │                        seo.ts (robots.txt, sitemap, noindex, canonical host, analytics CSP),
 │   │                        two_factor.ts (TOTP, recovery codes, sign-in alerts), turnstile.ts,
+│   │                        sso.ts (staff sign-in with Google Workspace / Microsoft Entra ID, OIDC + PKCE),
 │   │                        legal.ts (versioned legal documents, the acceptance record and the console gate),
 │   │                        link_rules.ts (what a link on a hosted page may point to: no IPs, shorteners, blocklist),
 │   │                        license.ts (an organization's license plan and end date),

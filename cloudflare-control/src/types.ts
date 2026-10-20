@@ -403,6 +403,16 @@ export interface Env {
    */
   RELEASE_NOTES_TOKEN?: string;
   /**
+   * Staff sign-in with Google Workspace or Microsoft Entra ID (src/sso.ts), secrets.
+   * One OAuth client per provider for the whole platform, its redirect URI
+   * https://<CANONICAL_HOST or DEFAULT_DOMAIN>/api/auth/sso/callback. A provider without both
+   * of its values is not offered.
+   */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  MICROSOFT_CLIENT_ID?: string;
+  MICROSOFT_CLIENT_SECRET?: string;
+  /**
    * Outbound email through Cloudflare Email Service (src/mail.ts): signup codes,
    * approval decisions and replies written in the Super Admin console. Without
    * the binding and MAIL_FROM, signup and replies refuse with 503 rather than

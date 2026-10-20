@@ -110,6 +110,36 @@ export interface LandingOptions {
   turnstileSiteKey?: string | null;
   /** False on an organization's own domain, where the sign-in form carries no check (the router says why). */
   loginTurnstile?: boolean;
+  /** On one organization's sign-in page: the single sign-on providers it offers (src/sso.ts). */
+  sso?: { providers: ReadonlyArray<"google" | "microsoft">; tenantSlug: string };
+}
+
+/** Brand marks drawn in the text colour: no external image, no literal colour. */
+const SSO_MARKS: Record<"google" | "microsoft", { label: string; svg: string }> = {
+  google: {
+    label: "Google",
+    svg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/></svg>`
+  },
+  microsoft: {
+    label: "Microsoft",
+    svg: `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="10.5" height="10.5"/><rect x="12.5" y="1" width="10.5" height="10.5" opacity="0.75"/><rect x="1" y="12.5" width="10.5" height="10.5" opacity="0.75"/><rect x="12.5" y="12.5" width="10.5" height="10.5" opacity="0.5"/></svg>`
+  }
+};
+
+/** "Continue with …" links for an organization's sign-in page; plain links, so they work before any script. */
+function ssoOptionsHtml(sso: LandingOptions["sso"]): string {
+  if (!sso || !sso.providers.length) return "";
+  const links = sso.providers
+    .map(
+      (provider) =>
+        `<a class="btn btn-ghost btn-block sso-btn" href="/api/auth/sso/start?provider=${provider}&amp;tenant=${encodeURIComponent(sso.tenantSlug)}">${SSO_MARKS[provider].svg}<span>Continue with ${SSO_MARKS[provider].label}</span></a>`
+    )
+    .join("\n        ");
+  return `<div class="sso-options" id="login-sso">
+        ${links}
+        <div class="sso-divider" role="separator"><span>or sign in with your password</span></div>
+      </div>
+      `;
 }
 
 function renderPublicShell(
@@ -252,7 +282,7 @@ ${FONT_LINKS}
       <h2 class="modal-title" id="login-modal-title">Admin &amp; Staff Sign In</h2>
       <p class="modal-sub">Sign in to manage your organization's workstations.</p>
       <div class="alert-box" id="login-alert" role="alert"></div>
-      <form id="login-form">
+      ${ssoOptionsHtml(data.sso)}<form id="login-form">
         <div class="form-group">
           <label class="form-label" for="login-email">Email Address</label>
           <input type="email" class="form-input" id="login-email" required placeholder="you@example.com" autocomplete="email">
@@ -939,6 +969,7 @@ ${FONT_LINKS}
 
     // The second step of a two-factor sign-in: the app's code, an emailed one, or a recovery code.
     const loginForm = document.getElementById('login-form');
+    const ssoOptions = document.getElementById('login-sso');
     const secondForm = document.getElementById('login-2fa-form');
     const secondNotice = document.getElementById('login-2fa-notice');
     let loginChallenge = '';
@@ -955,6 +986,7 @@ ${FONT_LINKS}
       const byPasskey = data.method === 'passkey' && passkeysWork;
       loginChallenge = data.challenge;
       loginForm.hidden = true;
+      if (ssoOptions) ssoOptions.hidden = true;
       secondForm.hidden = false;
       secondNotice.textContent = byEmail
         ? 'We emailed a six-digit code to ' + data.sentTo + '. Enter it below.'
@@ -1042,9 +1074,60 @@ ${FONT_LINKS}
       loginChallenge = '';
       secondForm.hidden = true;
       loginForm.hidden = false;
+      if (ssoOptions) ssoOptions.hidden = false;
       document.getElementById('login-password').value = '';
       document.getElementById('login-password').focus();
     }
+
+    // Back from Google or Microsoft (src/sso.ts): the callback left a one-time code, or why it
+    // refused, in the address. Both leave the address at once; the code is redeemed on this host,
+    // in this browser, and answers as a password sign-in does: the console, or the second step.
+    const SSO_ERRORS = {
+      cancelled: 'The sign-in with your work account was cancelled.',
+      unavailable: 'Single sign-on is not available for this organization right now. Sign in with your password.',
+      directory: 'That account is not in a directory this organization allows. Choose your work account.',
+      no_account: 'No staff account of this organization uses that email address. Ask an administrator to add you.',
+      locked: 'Too many failed sign-in attempts. Try again in a few minutes.',
+      provider: 'Google or Microsoft could not complete the sign-in. Try again.',
+      identity: 'The sign-in could not be verified. Try again.'
+    };
+    (function finishSingleSignOn() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('sso');
+      const refused = params.get('sso_error');
+      if (code === null && refused === null) return;
+      params.delete('sso');
+      params.delete('sso_error');
+      const rest = params.toString();
+      history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash);
+      if (refused !== null) {
+        loginError(Object.prototype.hasOwnProperty.call(SSO_ERRORS, refused) ? SSO_ERRORS[refused] : SSO_ERRORS.identity);
+        return;
+      }
+      if (!/^[0-9a-f]{64}$/.test(code)) {
+        loginError(SSO_ERRORS.identity);
+        return;
+      }
+      (async () => {
+        try {
+          const res = await fetch('/api/auth/sso/redeem', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code })
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            window.location.href = data.redirect || '/admin';
+          } else if (data.status === 'two_factor') {
+            showSecondStep(data);
+          } else {
+            loginError(data.error || SSO_ERRORS.identity);
+          }
+        } catch (err) {
+          loginError('Network error during sign-in');
+        }
+      })();
+    })();
     document.getElementById('login-2fa-back').addEventListener('click', () => {
       document.getElementById('login-alert').style.display = 'none';
       startOver();
@@ -3586,7 +3669,11 @@ ${BUSY_CSS}    .btn.is-loading::before { margin-inline-end: 0; }
     .code-row .btn { white-space: nowrap; }
     .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 0.8125rem; color: var(--text-muted); text-align: left; line-height: 1.5; }
     .check-row input { margin-top: 3px; }
-    #login-form[hidden], #login-2fa-form[hidden], #login-2fa-passkey[hidden] { display: none; }
+    #login-form[hidden], #login-2fa-form[hidden], #login-2fa-passkey[hidden], #login-sso[hidden] { display: none; }
+    .sso-options { display: grid; gap: 10px; margin-bottom: 18px; }
+    .sso-btn { min-height: 44px; }
+    .sso-divider { display: flex; align-items: center; gap: 12px; margin-top: 8px; font-size: 0.8125rem; color: var(--text-muted); }
+    .sso-divider::before, .sso-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
     #sim-broadcast-form[hidden], #sim-modal-ok[hidden] { display: none; }
     #sim-modal-text { overflow-wrap: anywhere; }
     .check-row a { color: var(--accent-text); }

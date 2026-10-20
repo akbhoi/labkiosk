@@ -63,6 +63,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/contact/email-code` | `POST` | Emails the code that proves the sender's address (`{ email, turnstileToken? }`) |
 | `/api/contact` | `POST` | The contact page's message (`{ name, organization?, email, emailCode, reason, message }`); filed in Mail under its reason |
 | `/api/auth/login` | `POST` | Sign in as operator or super admin |
+| `/api/auth/sso/start` | `GET` | `?provider=google\|microsoft`: start single sign-on from the organization's sign-in page (its host, or `?tenant=` on the platform host); redirects to the provider |
+| `/api/auth/sso/callback` | `GET` | The provider's redirect URI, on the platform host only; spends the state, verifies the ID token and sends the browser back to its sign-in page with a one-time code |
+| `/api/auth/sso/redeem` | `POST` | `{ code }` on the sign-in page's host, in the browser that started; answers as `/api/auth/login` does (a session, or the second step) |
 | `/api/portal-sites` | `GET` | List the host tenant's user portal cards |
 | `/api/devices/enroll` | `POST` | Exchange an enrollment key for a device token |
 
@@ -113,6 +116,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/usage/settings` | `POST` | `{ recordSites: boolean }`: whether workstations send the sites they spend time on; pushed to workstations at once (requires `settings`) |
 | `/api/usage/sites/delete` | `POST` | Delete every site the organization recorded; the time on and in use stays (requires `settings`) |
 | `/api/settings/bug-reports` | `POST` | Opt in to or out of automatic, redacted GitHub bug reports; turning them on accepts the current terms version (requires `settings`) |
+| `/api/settings/sso` | `GET` `POST` | Single sign-on: `{ google: { enabled, domains }, microsoft: { enabled, tenants }, requireSso }`. Reading requires `settings`; changing it also an administrator (owner or `org_admin`), `409` when turning on a provider the platform has not set up |
 
 ### Device
 
@@ -541,6 +545,23 @@ has not trusted, gets `{ "status": "two_factor", "challenge": "…" }` instead, 
 `POST /api/auth/login/verify`.
 
 Repeated failures back off exponentially per identifier, tracked in `login_attempts`.
+Staff of an organization that requires single sign-on get `403` once their password checked out
+(the owner never does).
+
+### Single sign-on: `/api/auth/sso/start`, `/callback`, `/redeem`
+
+1. The sign-in page links `GET /api/auth/sso/start?provider=google&tenant=<slug>`. The Worker stores
+   a `sso_states` row, sets the host-only `labkiosk_sso` cookie (`Path=/api/auth/sso`,
+   `SameSite=Strict`) and answers `302` to the provider with `state`, `nonce`, `code_challenge`
+   (S256) and the platform's redirect URI. An organization that did not turn the provider on, or a
+   platform without its secrets, goes back to the sign-in page with `sso_error=unavailable`.
+2. The provider returns to `GET /api/auth/sso/callback?state&code` on the platform host. A missing,
+   unknown, used or expired state is a `400` page. Otherwise the browser goes back to
+   `<sign-in page>/?login=1&tenant=<slug>&sso=<code>`, or with `sso_error=` one of `cancelled`,
+   `unavailable`, `directory`, `no_account`, `locked`, `provider`, `identity`.
+3. The page posts `POST /api/auth/sso/redeem { "code": "<64 hex>" }`. `401` when the code is spent,
+   expired, from another host or another browser, or the account was removed meanwhile; `403` for a
+   cross-site `Origin`. Success is the `/api/auth/login` answer above.
 
 ---
 
