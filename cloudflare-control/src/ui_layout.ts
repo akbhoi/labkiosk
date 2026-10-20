@@ -1383,6 +1383,16 @@ const CONSOLE_CSS = `${rootTokensCss()}
     }
     .stat-tile-hint { font-size: 0.75rem; color: var(--text-subtle); margin-top: 2px; }
 
+    /* Settings -> Usage: hours in use per day, one bar per day. */
+    .card-subtitle { font-size: 0.8125rem; font-weight: 600; margin-bottom: 8px; }
+    .usage-chart { width: 100%; min-width: 0; }
+    .usage-chart-svg { display: block; width: 100%; height: 160px; overflow: visible; }
+    .usage-chart-bar { fill: var(--accent); pointer-events: none; }
+    .usage-chart-hit { fill: transparent; }
+    .usage-chart-hit:hover { fill: var(--bg-subtle); }
+    .usage-chart-axis { stroke: var(--border-subtle); stroke-width: 1; }
+    .usage-chart-label { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
     /* Key-value list (panel summaries, detail blocks). */
     .kv-list { display: flex; flex-direction: column; gap: 6px; padding: 0 8px; font-size: 0.8125rem; }
     .kv-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-muted); }

@@ -64,6 +64,16 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   /dev/dri/renderD* rw,
   /sys/firmware/efi/ r,
   /sys/firmware/efi/efivars/SecureBoot-* r,
+  # What the machine is, for the hardware report: its firmware's maker and
+  # model, CPU, memory, and its wired adapters' MAC addresses for Wake-on-LAN
+  # (/sys/class/net/* links into /sys/devices).
+  /sys/devices/virtual/dmi/id/sys_vendor r,
+  /sys/devices/virtual/dmi/id/product_name r,
+  /sys/devices/virtual/dmi/id/product_version r,
+  /sys/devices/**/net/*/address r,
+  /sys/devices/**/net/*/type r,
+  @{PROC}/cpuinfo r,
+  @{PROC}/meminfo r,
 
   # Its log, screen thumbnails and the per-boot VNC secret.
   owner /tmp/lab-agent.log w,

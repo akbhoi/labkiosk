@@ -26,6 +26,8 @@ import {
   AUDIT_RETENTION_DAYS
 } from "../src/db";
 import { DEMO_SLUGS } from "../src/demo";
+import { listHardwareModels, listPublicHardwareModels, rebuildHardwareModels } from "../src/hardware";
+import { platformUsage, purgeOldUsage, recordUsage, rollUpPlatformUsage, USAGE_RETENTION_DAYS } from "../src/usage";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
@@ -2008,7 +2010,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
 
     // An organization's host does not serve the platform's pages under its own name.
     for (const host of ["greenwood.labkiosk.org", "web-demo.labkiosk.org"]) {
-      for (const path of ["/features", "/specs", "/pricing", "/download", "/docs"]) {
+      for (const path of ["/features", "/specs", "/hardware", "/pricing", "/download", "/docs"]) {
         const res = await at(`https://${host}${path}`);
         assert.equal(res.status, 301, `${host}${path}`);
         assert.equal(res.headers.get("Location"), `https://labkiosk.org${path}`);
@@ -3934,6 +3936,240 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
     assert.equal(clients["PC-VIDEO"].videoDecoding.problem, none.problem);
     assert.equal(clients["PC-01"].videoDecoding, undefined, "a workstation that never reported shows nothing");
+  });
+
+  const hardwareReport = (overrides: Record<string, unknown> = {}) => ({
+    vendor: "LENOVO",
+    model: "ThinkCentre M720q",
+    cpu: "Intel(R) Core(TM) i5-8500T CPU @ 2.10GHz",
+    cores: 6,
+    memoryMb: 7851,
+    bootMode: "uefi",
+    keyboard: true,
+    touch: false,
+    macs: ["8c:16:45:aa:bb:cc"],
+    ...overrides
+  });
+
+  test("Refuses a hardware or usage report without a valid device token", async () => {
+    for (const path of ["/api/devices/hardware", "/api/devices/usage"]) {
+      assert.equal((await call(`${path}?tenant=greenwood`, json(hardwareReport()))).status, 401, path);
+      assert.equal((await call(path, { ...json(hardwareReport()), bearer: "f".repeat(64) })).status, 401, path);
+    }
+  });
+
+  test("Refuses a malformed hardware report", async () => {
+    const bad: unknown[] = [
+      [],
+      "LENOVO",
+      hardwareReport({ bootMode: "efi" }),
+      hardwareReport({ cores: 0 }),
+      hardwareReport({ cores: 2.5 }),
+      hardwareReport({ memoryMb: "8 GB" }),
+      hardwareReport({ memoryMb: 10 }),
+      hardwareReport({ vendor: { name: "Dell" } }),
+      hardwareReport({ keyboard: "yes" }),
+      hardwareReport({ macs: "8c:16:45:aa:bb:cc" }),
+      hardwareReport({ macs: ["8c-16-45-aa-bb-cc"] }),
+      hardwareReport({ macs: Array.from({ length: 9 }, (_, i) => `02:00:00:00:00:0${i}`) })
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/hardware", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call("/api/devices/hardware", { method: "POST", body: "{", bearer: deviceToken })).status, 400);
+  });
+
+  test("Keeps the latest hardware report on the token's own workstation", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-HARDWARE" }));
+    const token = data.deviceToken;
+    assert.equal((await call("/api/devices/hardware", { ...json(hardwareReport()), bearer: token })).status, 409);
+    assert.equal((await call("/api/telemetry", { ...json({}), bearer: token })).status, 200);
+    const report = {
+      ...hardwareReport({
+        vendor: "To Be Filled By O.E.M.",
+        model: "Opti\u0007Plex  7050",
+        macs: ["8C:16:45:AA:BB:CC", "8c:16:45:aa:bb:cc", "01:00:5e:00:00:01", "00:00:00:00:00:00"]
+      }),
+      tenant: "riverside",
+      clientId: "PC-EVIL"
+    };
+    assert.equal((await call("/api/devices/hardware", { ...json(report), bearer: token })).status, 200);
+    const clients = (await callJson("/api/clients?tenant=greenwood", { cookie: orgSessionCookie })).data.clients;
+    const hardware = clients["PC-HARDWARE"].hardware;
+    assert.equal(hardware.vendor, "", "a firmware placeholder names no maker");
+    assert.equal(hardware.model, "Opti Plex 7050");
+    assert.deepEqual(hardware.macs, ["8c:16:45:aa:bb:cc"], "one wakeable address, once");
+    assert.ok(hardware.reportedAt > 0);
+    assert.equal(clients["PC-EVIL"], undefined);
+    const rival = (await callJson("/api/clients?tenant=riverside", { cookie: rivalSessionCookie })).data.clients;
+    assert.ok(Object.values(rival).every((client: any) => !client.hardware), "another organization sees none of it");
+  });
+
+  const today = () => new Date().toISOString().slice(0, 10);
+  const usageReport = (overrides: Record<string, unknown> = {}) => ({
+    days: [
+      {
+        day: today(),
+        onSeconds: 900,
+        activeSeconds: 600,
+        sessions: 1,
+        sites: [
+          { domain: "docs.example.org", seconds: 400, visits: 2 },
+          { domain: "127.0.0.1", seconds: 100, visits: 1 }
+        ],
+        ...overrides
+      }
+    ]
+  });
+
+  test("Refuses a malformed usage report", async () => {
+    const old = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10);
+    const future = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    const bad: unknown[] = [
+      [],
+      { days: [] },
+      { days: "today" },
+      usageReport({ day: "2026-02-30" }),
+      usageReport({ day: old }),
+      usageReport({ day: future }),
+      usageReport({ onSeconds: -1 }),
+      usageReport({ onSeconds: 200_000 }),
+      usageReport({ sessions: 1.5 }),
+      usageReport({ sites: [{ domain: 7, seconds: 1, visits: 1 }] }),
+      usageReport({ sites: Array.from({ length: 101 }, (_, i) => ({ domain: `s${i}.example.org`, seconds: 1, visits: 1 })) }),
+      { days: [usageReport().days[0], usageReport().days[0]] }
+    ];
+    for (const body of bad) {
+      const res = await call("/api/devices/usage", { ...json(body), bearer: deviceToken });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+  });
+
+  test("Adds usage reports up for the organization's Usage reports and nobody else's", async () => {
+    const { data } = await callJson("/api/devices/enroll", json({ subdomain: "greenwood", enrollmentKey, clientId: "PC-USAGE" }));
+    const token = data.deviceToken;
+    for (let n = 0; n < 2; n++) {
+      assert.equal((await call("/api/devices/usage", { ...json({ ...usageReport(), clientId: "PC-EVIL" }), bearer: token })).status, 200);
+    }
+    const report = (await callJson("/api/usage?tenant=greenwood&days=7", { cookie: orgSessionCookie })).data;
+    const mine = report.workstations.find((w: any) => w.clientId === "PC-USAGE");
+    assert.deepEqual(
+      { on: mine.onSeconds, active: mine.activeSeconds, sessions: mine.sessions },
+      { on: 1800, active: 1200, sessions: 2 },
+      "the counts are added"
+    );
+    assert.ok(!report.workstations.some((w: any) => w.clientId === "PC-EVIL"));
+    assert.deepEqual(report.sites.find((s: any) => s.domain === "docs.example.org"), { domain: "docs.example.org", activeSeconds: 800, visits: 4 });
+    assert.ok(!report.sites.some((s: any) => s.domain === "127.0.0.1"), "an IP address is no site");
+    assert.equal(report.recordSites, true, "sites are recorded by default");
+    const rival = (await callJson("/api/usage?tenant=riverside&days=7", { cookie: rivalSessionCookie })).data;
+    assert.ok(!rival.workstations.some((w: any) => w.clientId === "PC-USAGE"), "another organization sees none of it");
+
+    // Turned off: the hub tells workstations, and sites sent anyway are not kept.
+    const off = await callJson("/api/usage/settings?tenant=greenwood", { ...json({ recordSites: false }), cookie: orgSessionCookie });
+    assert.equal(off.data.recordSites, false);
+    assert.equal((await call("/api/devices/usage", { ...json(usageReport()), bearer: token })).status, 200);
+    let after = (await callJson("/api/usage?tenant=greenwood&days=7", { cookie: orgSessionCookie })).data;
+    assert.equal(after.recordSites, false);
+    assert.equal(after.sites.find((s: any) => s.domain === "docs.example.org").visits, 4);
+    const deleted = await callJson("/api/usage/sites/delete?tenant=greenwood", { ...json({}), cookie: orgSessionCookie });
+    assert.ok(deleted.data.deleted >= 1);
+    after = (await callJson("/api/usage?tenant=greenwood&days=7", { cookie: orgSessionCookie })).data;
+    assert.deepEqual(after.sites, []);
+    assert.ok(after.workstations.some((w: any) => w.clientId === "PC-USAGE"), "time on and in use stays");
+    await callJson("/api/usage/settings?tenant=greenwood", { ...json({ recordSites: true }), cookie: orgSessionCookie });
+  });
+
+  test("Usage reports are for the organization's settings staff only", async () => {
+    for (const [path, init] of [
+      ["/api/usage?tenant=greenwood", {}],
+      ["/api/usage/settings?tenant=greenwood", json({ recordSites: false })],
+      ["/api/usage/sites/delete?tenant=greenwood", json({})]
+    ] as const) {
+      assert.ok([401, 403].includes((await call(path, init)).status), `${path}: anonymous`);
+      assert.ok([401, 403].includes((await call(path, { ...init, cookie: rivalSessionCookie })).status), `${path}: another organization`);
+    }
+    for (const path of ["/api/usage/settings?tenant=greenwood", "/api/usage/sites/delete?tenant=greenwood"]) {
+      const crossSite = await call(path, { ...json({ recordSites: false }), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+      assert.equal(crossSite.status, 403, `${path}: cross-site`);
+    }
+    for (const days of ["0", "400", "x", "2.5"]) {
+      assert.equal((await call(`/api/usage?tenant=greenwood&days=${days}`, { cookie: orgSessionCookie })).status, 400, days);
+    }
+    assert.equal((await call("/api/usage/settings?tenant=greenwood", { ...json({ recordSites: "no" }), cookie: orgSessionCookie })).status, 400);
+    const { data: created } = await callJson("/api/tenant/staff?tenant=greenwood", {
+      ...json({ name: "Uma Usage", email: "uma@greenwood.example", password: "UmaPassword123!", role: "operator", permissions: ["workstations"] }),
+      cookie: orgSessionCookie
+    });
+    const operatorCookie = await sessionOf(await call("/api/auth/login", json({ email: "uma@greenwood.example", password: "UmaPassword123!" })));
+    assert.equal((await call("/api/usage?tenant=greenwood", { cookie: operatorCookie })).status, 403);
+    await callJson(`/api/tenant/staff/${created.operator.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+    // The platform's totals are the platform's administrators' alone.
+    assert.ok([401, 403].includes((await call("/api/super/usage")).status));
+    assert.ok([401, 403].includes((await call("/api/super/usage", { cookie: orgSessionCookie })).status));
+    assert.equal((await call("/api/super/usage?days=0", { cookie: superSessionCookie })).status, 400);
+    const platform = await callJson("/api/super/usage?days=30", { cookie: superSessionCookie });
+    assert.equal(platform.res.status, 200);
+    assert.ok(Array.isArray(platform.data.days) && Array.isArray(platform.data.hardware.models));
+    assert.ok(!JSON.stringify(platform.data).includes("greenwood"), "nothing in it names an organization");
+  });
+
+  test("The platform's totals and the hardware list name no organization and need three of them", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const owner = await createUser(db, { email: "owner@example.com", password: "OwnerPassword123!", name: "Owner" }, passwordPepper(mockEnv));
+    const tenants = [];
+    for (const name of ["alpha", "bravo", "charlie", "web-demo"]) {
+      tenants.push(await createTenant(db, { userId: owner.id, name, subdomain: name, status: "active" }));
+    }
+    const day = today();
+    const now = Math.floor(Date.now() / 1000);
+    for (const [index, tenant] of tenants.entries()) {
+      await db
+        .prepare("INSERT INTO client_devices (id, tenant_id, client_id, last_seen, created_at, updated_at, hardware, hardware_at) VALUES (?, ?, 'PC-1', ?, ?, ?, ?, ?)")
+        .bind(`d${index}`, tenant.id, now, now, now, JSON.stringify(hardwareReport({ vendor: index ? "Lenovo" : "LENOVO", touch: index === 1, memoryMb: 4096 * (index + 1) })), now)
+        .run();
+      await recordUsage(db, tenant.id, "PC-1", [{ day, onSeconds: 3600, activeSeconds: 1800, sessions: 2, sites: [{ domain: "shared.example.org", seconds: 60, visits: 1 }, { domain: `${tenant.subdomain}.example.org`, seconds: 60, visits: 1 }] }], true);
+    }
+    // Only two organizations run this one.
+    await db
+      .prepare("INSERT INTO client_devices (id, tenant_id, client_id, last_seen, created_at, updated_at, hardware, hardware_at) VALUES ('rare', ?, 'PC-2', ?, ?, ?, ?, ?)")
+      .bind(tenants[0].id, now, now, now, JSON.stringify(hardwareReport({ vendor: "Acme", model: "Rare 1" })), now)
+      .run();
+
+    await rollUpPlatformUsage(db);
+    const usage = await platformUsage(db, { from: day, to: day });
+    assert.deepEqual(usage.days.map((d) => ({ o: d.organizations, w: d.workstations, s: d.sessions })), [{ o: 3, w: 3, s: 6 }], "the demo is left out");
+    assert.deepEqual(usage.sites.map((s) => s.domain), ["shared.example.org"], "a site three organizations visited, and no other");
+
+    assert.equal(await rebuildHardwareModels(db, now), 2);
+    const models = await listHardwareModels(db);
+    const thinkcentre = models.find((m) => m.model === "ThinkCentre M720q")!;
+    assert.deepEqual(
+      { vendor: thinkcentre.vendor, o: thinkcentre.organizations, w: thinkcentre.workstations, touch: thinkcentre.touch, uefi: thinkcentre.uefi, mem: thinkcentre.minMemoryMb },
+      { vendor: "Lenovo", o: 3, w: 3, touch: 1, uefi: 3, mem: 4096 },
+      "one maker whatever the case, the spelling most report, the demo left out"
+    );
+    assert.deepEqual((await listPublicHardwareModels(db)).map((m) => m.model), ["ThinkCentre M720q"]);
+  });
+
+  test("The public hardware list shows only what enough organizations run", async () => {
+    const page = await (await call("/hardware")).text();
+    assert.ok(page.includes("Hardware <span>organizations run it on</span>"));
+    assert.ok(!/Tested on|Verified Hardware/.test(page));
+    assert.ok((await (await call("/specs")).text()).includes('href="/hardware"'));
+  });
+
+  test("Deletes usage past its retention", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const owner = await createUser(db, { email: "keep@example.com", password: "OwnerPassword123!", name: "Owner" }, passwordPepper(mockEnv));
+    const tenant = await createTenant(db, { userId: owner.id, name: "Keep", subdomain: "keep", status: "active" });
+    const old = new Date(Date.now() - (USAGE_RETENTION_DAYS + 2) * 86_400_000).toISOString().slice(0, 10);
+    await db.prepare("INSERT INTO usage_daily (tenant_id, client_id, day, on_seconds) VALUES (?, 'PC', ?, 60)").bind(tenant.id, old).run();
+    await db.prepare("INSERT INTO usage_daily (tenant_id, client_id, day, on_seconds) VALUES (?, 'PC', ?, 60)").bind(tenant.id, today()).run();
+    assert.equal(await purgeOldUsage(db), 1);
   });
 
   test("Clears restart logs past their retention and keeps the issue", async () => {
@@ -7429,6 +7665,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/",
       "https://www.labkiosk.org/features",
       "https://www.labkiosk.org/specs",
+      "https://www.labkiosk.org/hardware",
       "https://www.labkiosk.org/pricing",
       "https://www.labkiosk.org/download",
       "https://www.labkiosk.org/docs",
@@ -8948,6 +9185,7 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0034"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0035"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0036"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0044"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

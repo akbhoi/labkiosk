@@ -1231,12 +1231,12 @@ class BootPolicyBeforeTheBrowser(unittest.TestCase):
         agent.state["isConfigured"] = True
         self.run_main()
         self.assertEqual(self.events, [("sync", [], True), ("thread", "start_local_server"),
-                                       ("thread", "boot_report_loop")])
+                                       ("thread", "boot_report_loop"), ("thread", "usage_loop")])
 
     def test_an_unenrolled_agent_has_nothing_to_allow_yet(self):
         agent.state["isConfigured"] = False
         self.run_main()
-        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop")])
+        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop"), ("thread", "usage_loop")])
 
 
 class ReenrolmentGating(unittest.TestCase):

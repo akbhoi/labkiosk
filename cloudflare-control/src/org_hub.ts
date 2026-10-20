@@ -240,6 +240,8 @@ export interface WorkstationConfig {
   broadcastEpoch: number;
   /** Whether it may serve a release it holds to its site; when false it stops serving (phase 5). */
   lanSharing: boolean;
+  /** Whether its usage reports name the sites visited (src/usage.ts); false and it sends none. */
+  usageSites: boolean;
 }
 
 export interface QueuedCommand {
@@ -550,6 +552,7 @@ export class OrgHub {
       broadcastUrl: active?.url || "",
       broadcastEpoch: active?.epoch || 0,
       lanSharing: tenant.lan_sharing === 1,
+      usageSites: tenant.usage_sites !== 0,
       portalUrl
     };
   }

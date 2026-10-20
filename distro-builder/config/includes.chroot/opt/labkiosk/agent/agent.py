@@ -175,6 +175,24 @@ VA_ENCODE_ENTRYPOINTS = frozenset({"VAEntrypointEncSlice", "VAEntrypointEncSlice
 VA_PROFILE_LINE = re.compile(r"^\s*(VAProfile[A-Za-z0-9_]+)\s*:\s*(VAEntrypoint[A-Za-z0-9_]+)\s*\Z")
 VA_DRIVER_LINE = re.compile(r"Driver version:\s*(.+?)\s*\Z")
 MAX_VA_DRIVER_LENGTH = 120
+# What the machine is (probe_hardware), sent once per start: POST /api/devices/hardware.
+DMI_DIR = "/sys/class/dmi/id"
+NET_CLASS_DIR = "/sys/class/net"
+CPUINFO_FILE = "/proc/cpuinfo"
+MEMINFO_FILE = "/proc/meminfo"
+MAX_WIRED_MACS = 8
+MAC_ADDRESS_PATTERN = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}\Z")
+# Usage reports (UsageCounter): counted per day of this machine's clock and
+# sent every USAGE_REPORT_SECONDS with POST /api/devices/usage. The limits
+# match the control plane's (src/usage.ts).
+USAGE_REPORT_SECONDS = 15 * 60
+USAGE_ON_STEP_SECONDS = 60
+USAGE_ON_MAX_CREDIT_SECONDS = 2 * USAGE_ON_STEP_SECONDS
+USAGE_TICK_MAX_CREDIT_SECONDS = 90
+USAGE_MAX_AGE_DAYS = 7
+USAGE_MAX_DAYS_PER_REPORT = USAGE_MAX_AGE_DAYS + 2
+USAGE_MAX_SITES_PER_DAY = 100
+USAGE_HOST_PATTERN = re.compile(r"^(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]\Z")
 RESTART_REPORTS_SENT_FILE = "/etc/labkiosk/restart-reports-sent.json"
 RESTART_REPORT_NAME_PATTERN = re.compile(r"^([0-9a-f]{32})\.json\Z")
 # A report carries at most 16 KB of journal; anything far larger is not root's.
@@ -2679,6 +2697,17 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             self._send(200, test_connectivity(force=True))
             return
 
+        if self.path == "/api/usage/tick":
+            # The extension, once a minute: the page's hostname and whether
+            # someone used the keyboard, mouse or touchscreen in the last minute.
+            data = self._read_json()
+            if not isinstance(data, dict) or not isinstance(data.get("active"), bool) or not isinstance(data.get("host", ""), str):
+                self._send(400, {"error": "Send host (text) and active (true or false)"})
+                return
+            usage_counter.tick(usage_host(data.get("host", "")[:300]), data["active"])
+            self._send(200, {"status": "ok"})
+            return
+
         if self.path == "/api/admin/verify":
             data = self._read_json()
             password = str(data.get("password", "") or "") if isinstance(data, dict) else ""
@@ -2976,6 +3005,7 @@ def execute_command(cmd_data):
         # in the watchdog on purpose: deleting the profile from here while
         # Chromium still has it open would race its own writes.
         restart_browser("to clear the session (profile and cache are wiped before relaunch)")
+        usage_counter.session_started()
     elif action == "mute":
         # Plain ALSA: the image ships alsa-utils and no sound server.
         run_x11(["amixer", "-q", "set", "Master", "mute"])
@@ -3786,16 +3816,316 @@ def report_video_decoding(progress):
         progress["done"] = True
 
 
+# --------------------------------------------------------------------------
+# Hardware report and usage counting
+# --------------------------------------------------------------------------
+
+def read_sys_text(path, limit=200):
+    """One line of a sysfs or procfs file, stripped; "" when it cannot be read."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(limit * 2).strip()[:limit]
+    except OSError:
+        return ""
+
+
+def hardware_model(vendor, product_name, product_version):
+    """
+    The model to report. Lenovo firmware puts a machine-type code (10T7S0B500)
+    in product_name and the model people know (ThinkCentre M720q) in
+    product_version; everyone else puts the model in product_name.
+    """
+    if vendor.lower().startswith("lenovo") and product_version and product_version.lower() not in ("none", "lenovo"):
+        return product_version
+    return product_name
+
+
+def read_cpu_model(cpuinfo=CPUINFO_FILE):
+    try:
+        with open(cpuinfo, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                key, _, value = line.partition(":")
+                if key.strip() in ("model name", "Model", "Hardware"):
+                    return " ".join(value.split())[:120]
+    except OSError as err:
+        log(f"Could not read the CPU model: {err}")
+    return ""
+
+
+def read_memory_mb(meminfo=MEMINFO_FILE):
+    try:
+        with open(meminfo, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError) as err:
+        log(f"Could not read the memory size: {err}")
+    return 0
+
+
+def wired_macs(net_dir=NET_CLASS_DIR):
+    """
+    The MAC addresses of this machine's wired Ethernet adapters: physical
+    (a `device` link), not wireless, ARP type 1. What Wake-on-LAN can reach.
+    """
+    macs = []
+    try:
+        names = sorted(os.listdir(net_dir))
+    except OSError as err:
+        log(f"Could not list the network adapters: {err}")
+        return macs
+    for name in names:
+        base = os.path.join(net_dir, name)
+        if not os.path.exists(os.path.join(base, "device")):
+            continue
+        if os.path.exists(os.path.join(base, "wireless")) or os.path.exists(os.path.join(base, "phy80211")):
+            continue
+        if read_sys_text(os.path.join(base, "type"), 8) != "1":
+            continue
+        mac = read_sys_text(os.path.join(base, "address"), 32).lower()
+        if MAC_ADDRESS_PATTERN.match(mac) and mac != "00:00:00:00:00:00" and mac not in macs:
+            macs.append(mac)
+        if len(macs) >= MAX_WIRED_MACS:
+            break
+    return macs
+
+
+def probe_hardware(dmi_dir=DMI_DIR, net_dir=NET_CLASS_DIR, efi_dir=EFI_DIR, cpuinfo=CPUINFO_FILE, meminfo=MEMINFO_FILE):
+    """What this machine is, for its organization's console and the hardware list."""
+    vendor = read_sys_text(os.path.join(dmi_dir, "sys_vendor"), 80)
+    model = hardware_model(
+        vendor,
+        read_sys_text(os.path.join(dmi_dir, "product_name"), 80),
+        read_sys_text(os.path.join(dmi_dir, "product_version"), 80),
+    )
+    return {
+        "vendor": vendor,
+        "model": model,
+        "cpu": read_cpu_model(cpuinfo),
+        "cores": max(1, min(1024, os.cpu_count() or 1)),
+        "memoryMb": max(64, read_memory_mb(meminfo)),
+        "bootMode": "uefi" if os.path.isdir(efi_dir) else "bios",
+        "keyboard": None,
+        "touch": None,
+        "macs": wired_macs(net_dir),
+    }
+
+
+def post_device_json(path, payload, timeout=15):
+    """POST a report as this workstation. Returns the HTTP status; raises on a network failure."""
+    with state_lock:
+        worker_url = state["workerUrl"]
+        token = state["deviceToken"]
+    request = Request(
+        f"{worker_url}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"LabKioskAgent/{AGENT_VERSION}",
+        },
+    )
+    try:
+        with open_url(request, timeout=timeout) as response:
+            return response.status
+    except HTTPError as err:
+        return err.code
+
+
+def report_hardware(progress):
+    """
+    Read the machine once and send it, once per agent start, the same way as
+    report_video_decoding: offline or a row not written yet (409) is tried again.
+    """
+    if progress["done"]:
+        return
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    if progress["report"] is None:
+        progress["report"] = probe_hardware()
+        report = progress["report"]
+        log(
+            f"Hardware: {report['vendor'] or 'unknown maker'} {report['model'] or 'unknown model'}, "
+            f"{report['cores']} cores, {report['memoryMb']} MB, {report['bootMode'].upper()}, "
+            f"{len(report['macs'])} wired adapters."
+        )
+    try:
+        status = post_device_json("/api/devices/hardware", progress["report"])
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        if not progress["logged"]:
+            progress["logged"] = True
+            log(f"Hardware not reported yet: {err}")
+        return
+    if status == 200:
+        progress["done"] = True
+    elif status in BOOT_REPORT_SETTLED_STATUSES:
+        log(f"The control plane did not take the hardware report (HTTP {status}); not sending it again.")
+        progress["done"] = True
+
+
+def usage_host(raw):
+    """A site's hostname as usage reports keep it, or "" for anything else (an IP address, localhost, a local page)."""
+    if not isinstance(raw, str):
+        return ""
+    host = raw.strip().lower().rstrip(".")
+    return host if USAGE_HOST_PATTERN.match(host) else ""
+
+
+class UsageCounter:
+    """
+    What this workstation counts for its organization's usage reports, per
+    calendar day of its own clock: seconds on, seconds in use, fresh sessions
+    and -- when the organization records them -- seconds in use and visits per
+    site. The browser extension ticks once a minute with the page's hostname
+    and whether someone used the keyboard, mouse or touchscreen in the last
+    minute; each tick credits the time since the previous one to what the
+    previous one said. Kept in memory only: a power cut loses at most one
+    report period.
+    """
+
+    def __init__(self, clock=time.monotonic, today=None):
+        self._clock = clock
+        self._today = today or (lambda: time.strftime("%Y-%m-%d"))
+        self._lock = threading.Lock()
+        self._days = {}
+        self._last_tick = None
+        self._last_on = clock()
+        self.record_sites = False
+
+    def _day(self, day):
+        return self._days.setdefault(day, {"onSeconds": 0.0, "activeSeconds": 0.0, "sessions": 0, "sites": {}})
+
+    def count_on(self):
+        """Credit the time since the last call as switched on."""
+        with self._lock:
+            now = self._clock()
+            elapsed = min(max(0.0, now - self._last_on), USAGE_ON_MAX_CREDIT_SECONDS)
+            self._last_on = now
+            self._day(self._today())["onSeconds"] += elapsed
+
+    def session_started(self):
+        with self._lock:
+            self._day(self._today())["sessions"] += 1
+
+    def tick(self, host, active):
+        with self._lock:
+            now = self._clock()
+            day = self._day(self._today())
+            previous = self._last_tick
+            if previous is not None:
+                elapsed = min(max(0.0, now - previous[0]), USAGE_TICK_MAX_CREDIT_SECONDS)
+                if previous[2]:
+                    day["activeSeconds"] += elapsed
+                    if self.record_sites and previous[1] and previous[1] in day["sites"]:
+                        day["sites"][previous[1]]["seconds"] += elapsed
+            if self.record_sites and host and (previous is None or previous[1] != host):
+                site = day["sites"].get(host)
+                if site is None and len(day["sites"]) < USAGE_MAX_SITES_PER_DAY:
+                    site = day["sites"][host] = {"seconds": 0.0, "visits": 0}
+                if site is not None:
+                    site["visits"] += 1
+            self._last_tick = (now, host, bool(active))
+
+    def set_record_sites(self, allowed):
+        """The organization's choice; turned off, the sites counted so far are dropped too."""
+        with self._lock:
+            self.record_sites = allowed
+            if not allowed:
+                for day in self._days.values():
+                    day["sites"] = {}
+
+    def take(self):
+        """
+        Everything counted so far, as the report's `days`, and forget it.
+        Days older than the control plane takes are dropped.
+        """
+        oldest = time.strftime("%Y-%m-%d", time.localtime(time.time() - USAGE_MAX_AGE_DAYS * 86400))
+        with self._lock:
+            days, self._days = self._days, {}
+        report = []
+        for name in sorted(days)[-USAGE_MAX_DAYS_PER_REPORT:]:
+            if name < oldest:
+                continue
+            day = days[name]
+            on = int(round(day["onSeconds"]))
+            active = min(on, int(round(day["activeSeconds"])))
+            sites = [
+                {"domain": host, "seconds": min(active, int(round(site["seconds"]))), "visits": site["visits"]}
+                for host, site in sorted(day["sites"].items())
+            ]
+            if on or active or day["sessions"] or sites:
+                report.append({"day": name, "onSeconds": on, "activeSeconds": active, "sessions": day["sessions"], "sites": sites})
+        return report
+
+    def put_back(self, report):
+        """Add a report that could not be sent back to what is being counted."""
+        with self._lock:
+            for entry in report:
+                day = self._day(entry["day"])
+                day["onSeconds"] += entry["onSeconds"]
+                day["activeSeconds"] += entry["activeSeconds"]
+                day["sessions"] += entry["sessions"]
+                for site in entry["sites"]:
+                    known = day["sites"].get(site["domain"])
+                    if known is None and len(day["sites"]) >= USAGE_MAX_SITES_PER_DAY:
+                        continue
+                    known = day["sites"].setdefault(site["domain"], {"seconds": 0.0, "visits": 0})
+                    known["seconds"] += site["seconds"]
+                    known["visits"] += site["visits"]
+
+
+usage_counter = UsageCounter()
+
+
+def report_usage(counter=usage_counter):
+    """Send what was counted. Kept for the next round when offline or refused for now; dropped when malformed."""
+    with state_lock:
+        configured = state["isConfigured"]
+    if not configured:
+        return
+    report = counter.take()
+    if not report:
+        return
+    try:
+        status = post_device_json("/api/devices/usage", {"days": report})
+    except (URLError, TimeoutError, socket.timeout, OSError) as err:
+        counter.put_back(report)
+        log(f"Usage not reported yet: {err}")
+        return
+    if status == 200:
+        return
+    if status == 400:
+        log("The control plane refused a usage report as malformed (HTTP 400); dropping it.")
+        return
+    counter.put_back(report)
+    log(f"Usage not reported yet (HTTP {status}).")
+
+
+def usage_loop(sleep=time.sleep, clock=time.monotonic):
+    usage_counter.session_started()
+    next_report = clock() + USAGE_REPORT_SECONDS
+    while True:
+        sleep(USAGE_ON_STEP_SECONDS)
+        usage_counter.count_on()
+        if clock() >= next_report:
+            next_report = clock() + USAGE_REPORT_SECONDS
+            report_usage()
+
+
 def boot_report_loop():
     settled = None
     restarts = {"sent": load_sent_restart_reports(), "logged": set(), "held": False}
     disks = {"checked": None, "logged": set()}
     video = {"report": None, "done": False, "logged": False}
+    hardware = {"report": None, "done": False, "logged": False}
     while True:
         settled = report_boot_outcome(settled)
         report_restarts(restarts)
         report_disk_health(disks)
         report_video_decoding(video)
+        report_hardware(hardware)
         time.sleep(BOOT_REPORT_INTERVAL_SECONDS)
 
 
@@ -3898,6 +4228,10 @@ def apply_control_update(data):
 
     if "lanSharing" in data:
         apply_lan_sharing(data["lanSharing"])
+
+    if isinstance(data.get("usageSites"), bool) and data["usageSites"] != usage_counter.record_sites:
+        usage_counter.set_record_sites(data["usageSites"])
+        log(f"Usage reports {'now record' if data['usageSites'] else 'no longer record'} the sites visited.")
 
     # Apply a just-completed enrolment to the running browser.
     with state_lock:
@@ -4378,6 +4712,7 @@ def main():
 
     threading.Thread(target=start_local_server, daemon=True).start()
     threading.Thread(target=boot_report_loop, daemon=True).start()
+    threading.Thread(target=usage_loop, daemon=True).start()
     if is_network_boot():
         threading.Thread(target=network_boot_enrol_loop, name="network-boot-enrol", daemon=True).start()
 

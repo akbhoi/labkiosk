@@ -526,7 +526,10 @@ function renderWorkstationsScripts(
         const videoLine = el("div", "kc-update hidden");
         videoLine.dataset.role = "video";
 
-        card.append(head, thumbBox, actions, footer, updateLine, videoLine);
+        const hardwareLine = el("div", "kc-update hidden");
+        hardwareLine.dataset.role = "hardware";
+
+        card.append(head, thumbBox, actions, footer, updateLine, videoLine, hardwareLine);
         if (selectedClientIds.has(id)) card.classList.add("selected");
         return card;
       }
@@ -588,6 +591,28 @@ function renderWorkstationsScripts(
           videoLine.classList.toggle("kc-update-warn", line.tone === "warn");
           videoLine.classList.toggle("hidden", !line.text);
         }
+        const hardwareLine = card.querySelector('[data-role="hardware"]');
+        if (hardwareLine) {
+          const line = hardwareText(client);
+          hardwareLine.textContent = line.text;
+          hardwareLine.title = line.title;
+          hardwareLine.classList.toggle("hidden", !line.text);
+        }
+      }
+
+      // The machine, from its agent's last start: model, memory and boot mode on the card, the rest in the title.
+      function hardwareText(client) {
+        const h = client && client.hardware;
+        if (!h) return { text: "", title: "" };
+        const name = [h.vendor, h.model].filter(Boolean).join(" ") || "Unknown model";
+        const memory = h.memoryMb >= 1024 ? Math.round(h.memoryMb / 1024) + " GB" : h.memoryMb + " MB";
+        const title = [
+          h.cpu ? h.cpu + " (" + h.cores + " cores)" : h.cores + " cores",
+          h.keyboard === false ? "No keyboard attached" : h.keyboard === true ? "Keyboard attached" : "",
+          h.touch === true ? "Touchscreen" : "",
+          h.macs.length ? "Wired network " + h.macs.join(", ") : "No wired network adapter (Wake-on-LAN needs one)"
+        ].filter(Boolean).join(". ") + ".";
+        return { text: name + " \u00b7 " + memory + " \u00b7 " + h.bootMode.toUpperCase(), title: title };
       }
 
       const CODEC_NAMES = { h264: "H.264", hevc: "HEVC", vp8: "VP8", vp9: "VP9", av1: "AV1", mpeg2: "MPEG-2", vc1: "VC-1", jpeg: "JPEG" };

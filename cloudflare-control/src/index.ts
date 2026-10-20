@@ -16,6 +16,7 @@ import {
   renderLandingHtml,
   renderFeaturesHtml,
   renderSpecsHtml,
+  renderHardwareHtml,
   renderPricingHtml,
   renderDownloadHtml,
   renderDocsHtml,
@@ -46,7 +47,7 @@ import {
 } from "./seo";
 
 /** The platform's own public pages: served on the platform's address, redirected to it from anywhere else. */
-const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
+const PLATFORM_PAGES: ReadonlySet<string> = new Set(["/features", "/specs", "/hardware", "/pricing", "/download", "/docs", "/wiki", "/contact"]);
 /** Pages people type or link with a trailing slash; anything else with one is left to answer for itself. */
 const SLASHLESS_PAGES: ReadonlySet<string> = new Set([...PLATFORM_PAGES, "/home", "/privacy", "/terms", "/content-policy", "/terms/bug-reports", "/admin", "/super"]);
 import { renderStatusPageHtml } from "./ui_status";
@@ -373,6 +374,26 @@ import { handleContactEmailCode, handleContactForm, handleRegister, handleRemote
 import { fileStoredInboundMail, fileStrandedInboundMail, handleInboundEmail, handleInboxRoute, InboundMessage, IntakeResult, isInboxRoute } from "./inbox";
 import { inboxCounts, purgeExpiredEmailCodes } from "./conversations";
 import { TURNSTILE_ORIGIN, turnstileRefusal, turnstileSiteKey } from "./turnstile";
+import {
+  hardwareModelsComputedAt,
+  listHardwareModels,
+  listPublicHardwareModels,
+  parseHardwareReport,
+  rebuildHardwareModels,
+  recordHardware,
+  storedHardware
+} from "./hardware";
+import {
+  deleteUsageSites,
+  MAX_REPORT_DAYS,
+  parseUsageReport,
+  platformUsage,
+  purgeOldUsage,
+  recordUsage,
+  reportPeriod,
+  rollUpPlatformUsage,
+  usageSummary
+} from "./usage";
 import {
   continueSignIn,
   handleLoginEmailCode,
@@ -892,6 +913,65 @@ async function handleVideoDecodingReport(
 }
 
 /**
+ * POST /api/devices/hardware: a workstation reports the machine it runs on,
+ * once per agent start (src/hardware.ts). The device token alone decides the
+ * organization and the workstation; the latest report replaces the last.
+ *
+ * 200 kept; 400 malformed (the agent drops it); 409 the workstation's row does
+ * not exist yet (the agent tries again).
+ */
+async function handleHardwareReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let report;
+  try {
+    report = parseHardwareReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Hardware report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const kept = await recordHardware(db, device.tenant_id, device.client_id, report, Math.floor(Date.now() / 1000));
+  if (!kept) {
+    return jsonError("This workstation has not checked in yet; send the report again later", 409, jsonHeaders);
+  }
+  return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: jsonHeaders });
+}
+
+/**
+ * POST /api/devices/usage: a workstation sends what it counted since its last
+ * report (src/usage.ts): per day, seconds on and in use, sessions and, when
+ * the organization records them, the sites. The counts are added, so the
+ * agent forgets what it sent once this answers 200.
+ *
+ * 200 counted; 400 malformed (the agent drops it rather than resend it forever).
+ */
+async function handleUsageReport(
+  request: Request,
+  db: D1Database,
+  jsonHeaders: Record<string, string>
+): Promise<Response> {
+  const auth = await requireDevice(request, db, jsonHeaders);
+  if (auth.error) return auth.error;
+  const device = auth.device;
+
+  let days;
+  try {
+    days = parseUsageReport(await request.json());
+  } catch (err: any) {
+    return jsonError(`Usage report refused: ${err?.message || "unreadable"}`, 400, jsonHeaders);
+  }
+  const tenant = await findTenantById(db, device.tenant_id);
+  if (!tenant) return jsonError("This organization no longer exists", 401, jsonHeaders);
+  await recordUsage(db, tenant.id, device.client_id, days, tenant.usage_sites !== 0);
+  return new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: jsonHeaders });
+}
+
+/**
  * POST /api/devices/restart-report: an installed workstation reports a boot
  * that ended without shutting down, with the end of that boot's journal. The
  * device token alone decides the organization and the workstation.
@@ -1153,6 +1233,10 @@ export default {
     }
     const stranded = await fileStrandedInboundMail(env, db);
     if (stranded) console.log(`[Worker] Filed ${stranded} incoming messages the email Worker could not hand over.`);
+    const purgedUsage = await purgeOldUsage(db);
+    if (purgedUsage) console.log(`[Worker] Deleted ${purgedUsage} usage rows older than the retention period.`);
+    await rollUpPlatformUsage(db);
+    await rebuildHardwareModels(db, Math.floor(Date.now() / 1000));
     const purgedIssues = await purgeOldWorkstationIssues(db);
     if (purgedIssues) console.log(`[Worker] Deleted ${purgedIssues} workstation issues older than ${WORKSTATION_ISSUE_RETENTION_DAYS} days.`);
     // Commands expire inside each organization's OrgHub; the audit log is the
@@ -1270,6 +1354,12 @@ export default {
     }
     if (path === "/api/devices/video-decoding" && method === "POST") {
       return handleVideoDecodingReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/hardware" && method === "POST") {
+      return handleHardwareReport(request, db, jsonHeaders);
+    }
+    if (path === "/api/devices/usage" && method === "POST") {
+      return handleUsageReport(request, db, jsonHeaders);
     }
     if (path === "/api/release-notes/sync" && method === "POST") {
       return handleReleaseNotesSync(request, env, db, jsonHeaders);
@@ -2563,6 +2653,24 @@ export default {
       return new Response(JSON.stringify({ logs }), { headers: jsonHeaders });
     }
 
+    // GET /api/super/usage?days=N: the platform's anonymous usage totals and the
+    // hardware every organization's workstations run on, by model. Nothing here
+    // names an organization (src/usage.ts, src/hardware.ts).
+    if (path === "/api/super/usage" && method === "GET") {
+      const denied = requireSuperAdmin(session, jsonHeaders);
+      if (denied) return denied;
+      const days = Number(url.searchParams.get("days") || 30);
+      if (!Number.isInteger(days) || days < 1 || days > MAX_REPORT_DAYS) {
+        return jsonError(`days is a whole number from 1 to ${MAX_REPORT_DAYS}`, 400, jsonHeaders);
+      }
+      const [usage, models, modelsAt] = await Promise.all([
+        platformUsage(db, reportPeriod(days)),
+        listHardwareModels(db),
+        hardwareModelsComputedAt(db)
+      ]);
+      return new Response(JSON.stringify({ ...usage, hardware: { models, computedAt: modelsAt } }), { headers: jsonHeaders });
+    }
+
     if (path === "/api/super/tenants/approve" && method === "POST") {
       const denied = requireSuperAdmin(session, jsonHeaders);
       if (denied) return denied;
@@ -3780,7 +3888,8 @@ export default {
           agentVersion: status?.agentVersion || row?.agent_version || undefined,
           update: status?.update ?? registryUpdate(row),
           updateWaitingSince: status?.online ? status.updateWaitingSince : undefined,
-          videoDecoding: storedVideoDecoding(row?.video_decoding, row?.video_decoding_at)
+          videoDecoding: storedVideoDecoding(row?.video_decoding, row?.video_decoding_at),
+          hardware: storedHardware(row?.hardware, row?.hardware_at)
         };
       };
       for (const row of rows) clients[row.client_id] = toTelemetry(live.clients[row.client_id], row);
@@ -4007,6 +4116,45 @@ export default {
         }),
         { headers: jsonHeaders }
       );
+    }
+
+    // GET /api/usage?days=N: the organization's usage over the last N days (1 to
+    // MAX_REPORT_DAYS) by day, by workstation and by site (src/usage.ts).
+    // POST /api/usage/settings { recordSites }: record the sites visited, or stop.
+    // POST /api/usage/sites/delete: delete every recorded site.
+    if (
+      (path === "/api/usage" && method === "GET") ||
+      ((path === "/api/usage/settings" || path === "/api/usage/sites/delete") && method === "POST")
+    ) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      if (path === "/api/usage/settings") {
+        let body: { recordSites?: unknown };
+        try {
+          body = await request.json<typeof body>();
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        if (!body || typeof body.recordSites !== "boolean") return jsonError("recordSites is true or false", 400, jsonHeaders);
+        if ((tenant.usage_sites !== 0) !== body.recordSites) {
+          await updateTenant(db, tenant.id, { usage_sites: body.recordSites ? 1 : 0 });
+          await writeAuditLog(db, { tenantId: tenant.id, userId: session!.user_id, action: "settings.usage_sites", details: body.recordSites ? "on" : "off" });
+          await notifyConfigChanged(env, tenant.id);
+        }
+        return new Response(JSON.stringify({ status: "ok", recordSites: body.recordSites }), { headers: jsonHeaders });
+      }
+      if (path === "/api/usage/sites/delete") {
+        const deleted = await deleteUsageSites(db, tenant.id);
+        await writeAuditLog(db, { tenantId: tenant.id, userId: session!.user_id, action: "usage.delete_sites", details: `rows=${deleted}` });
+        return new Response(JSON.stringify({ status: "ok", deleted }), { headers: jsonHeaders });
+      }
+      const days = Number(url.searchParams.get("days") || 30);
+      if (!Number.isInteger(days) || days < 1 || days > MAX_REPORT_DAYS) {
+        return jsonError(`days is a whole number from 1 to ${MAX_REPORT_DAYS}`, 400, jsonHeaders);
+      }
+      const summary = await usageSummary(db, tenant.id, reportPeriod(days), tenant.usage_sites !== 0);
+      return new Response(JSON.stringify(summary), { headers: jsonHeaders });
     }
 
     // GET /api/notifications: the platform's notifications for this organization,
@@ -4622,6 +4770,23 @@ export default {
           canonicalUrl,
           nonce
         }),
+        { headers: htmlHeaders }
+      );
+    }
+    if (path === "/hardware") {
+      const [models, computedAt] = await Promise.all([listPublicHardwareModels(db), hardwareModelsComputedAt(db)]);
+      return new Response(
+        renderHardwareHtml(
+          {
+            baseDomain,
+            contactEmail: "contact@labkiosk.org",
+            ...formChecks,
+            canonicalUrl,
+            nonce
+          },
+          models,
+          computedAt
+        ),
         { headers: htmlHeaders }
       );
     }

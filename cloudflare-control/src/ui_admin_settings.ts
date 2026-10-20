@@ -14,6 +14,7 @@ import { escapeHtml, escapeAttr , escapeJson } from "./escape";
 import { AdminPageInput, AdminPageParts, WHEN_PANE_SHOWN_JS } from "./ui_admin_shared";
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderUpdatesPaneHtml, renderUpdatesScript } from "./ui_admin_updates";
+import { renderUsagePaneHtml, renderUsageScript } from "./ui_admin_usage";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
@@ -40,7 +41,8 @@ ${canUpdate ? renderUpdatesPaneHtml() : ""}`,
     scriptsHtml:
       renderSettingsScripts(nonce, parseHomepageBlocks(tenant?.homepage_blocks)) +
       renderTwoFactorScript(nonce) +
-      (canUpdate ? renderUpdatesScript(nonce) : "")
+      (canUpdate ? renderUpdatesScript(nonce) : "") +
+      renderUsageScript(nonce)
   };
 }
 
@@ -101,6 +103,10 @@ function renderSettingsPageHtml(
       </button>`
           : ""
       }
+      <button type="button" class="segmented-tab" data-action="tab-usage">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        <span>Usage</span>
+      </button>
     </nav>
 
     <!-- ============================================================== -->
@@ -337,6 +343,10 @@ ${renderUpdatesPaneHtml()}
 `
     : ""
 }
+    <div class="tab-pane" id="pane-usage">
+${renderUsagePaneHtml()}
+    </div>
+
     <!-- ============================================================== -->
     <!-- TAB 5: ERRORS & WARNINGS                                       -->
     <!-- ============================================================== -->
@@ -439,18 +449,22 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         "section-password": "security",
         "section-activity": "security",
         "section-issues": "issues",
-        "section-updates": "updates"
+        "section-updates": "updates",
+        "section-usage": "usage"
       };
 
       function switchTab(tabId) {
-        const validTabs = ["general", "domains", "homepage", "security", "two-factor", "issues"];
-        if (document.getElementById("pane-updates")) validTabs.push("updates");
+        // The tabs are the panes this page rendered: Updates only for the \`updates\` permission.
+        const validTabs = Array.from(document.querySelectorAll(".tab-pane[id^='pane-']")).map((pane) => pane.id.slice(5));
         if (!validTabs.includes(tabId)) tabId = "general";
 
         // Update In-Canvas Segmented Tabs
         const segTabs = document.querySelectorAll(".segmented-nav .segmented-tab");
         segTabs.forEach((tab) => {
-          tab.classList.toggle("active", tab.getAttribute("data-action") === "tab-" + tabId);
+          const active = tab.getAttribute("data-action") === "tab-" + tabId;
+          tab.classList.toggle("active", active);
+          // The tabs scroll sideways on a narrow screen; keep the chosen one in sight.
+          if (active && typeof tab.scrollIntoView === "function") tab.scrollIntoView({ block: "nearest", inline: "nearest" });
         });
 
         // Update Tab Panes

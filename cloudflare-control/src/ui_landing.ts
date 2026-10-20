@@ -28,6 +28,7 @@ import { BUSY_CSS, BUSY_SCRIPT, FONT_LINKS, rootTokensCss, LEGACY_LANDING_ALIASE
 import { FAVICON_LINK_HTML, FAVICON_PATH, canonicalLinkHtml } from "./seo";
 import { TURNSTILE_ORIGIN } from "./turnstile";
 import { CONTACT_REASONS } from "./conversations";
+import { HardwareModel, PUBLIC_MODEL_MIN_ORGANIZATIONS } from "./hardware";
 
 /** The public source repository, linked from the navigation and the footer. */
 const SOURCE_REPOSITORY_URL = "https://github.com/akbhoi/labkiosk";
@@ -1984,7 +1985,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             </tr>
             <tr>
               <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported).</td>
+              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported). <a href="/hardware">The models organizations run it on</a></td>
             </tr>
           </tbody>
         </table>
@@ -2355,7 +2356,7 @@ function specsMainHtml(): string {
             </tr>
             <tr>
               <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported).</td>
+              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported). <a href="/hardware">The models organizations run it on</a></td>
             </tr>
           </tbody>
         </table>
@@ -2387,6 +2388,68 @@ function specsMainHtml(): string {
         </div>
       </div>
     </section>`;
+}
+
+function hardwareMainHtml(models: HardwareModel[], computedAt: number | null): string {
+  const percent = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 100)}%` : "\u2014");
+  const memory = (mb: number | null) => (mb === null ? "\u2014" : mb >= 1024 ? `${Math.round(mb / 1024)} GB` : `${mb} MB`);
+  const rows = models
+    .map(
+      (m) => `
+            <tr>
+              <td><strong>${escapeHtml(m.vendor)}</strong></td>
+              <td>${escapeHtml(m.model)}</td>
+              <td>${m.organizations}</td>
+              <td>${m.workstations}</td>
+              <td>${percent(m.uefi, m.workstations)}</td>
+              <td>${percent(m.touch, m.workstations)}</td>
+              <td>${memory(m.minMemoryMb)}</td>
+            </tr>`
+    )
+    .join("");
+  const updated = computedAt ? new Date(computedAt * 1000).toISOString().slice(0, 10) : null;
+  return `
+    <section class="page-hero">
+      <h1 class="page-hero-title">Hardware <span>organizations run it on</span></h1>
+      <p class="page-hero-desc">
+        Every Lab Kiosk workstation reports its manufacturer and model when it starts. This list shows each model that at least ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations run, so no row points at one organization. It is what is in use, not a promise: check a new model with the live USB stick before you buy many.
+      </p>
+    </section>
+
+    <section class="section-wrap" style="padding-top: 0;">
+      <div class="specs-table-container">
+        <table class="specs-table">
+          <thead>
+            <tr>
+              <th>Manufacturer</th>
+              <th>Model</th>
+              <th>Organizations</th>
+              <th>Workstations</th>
+              <th>Starting in UEFI mode</th>
+              <th>With a touchscreen</th>
+              <th>Least memory seen</th>
+            </tr>
+          </thead>
+          <tbody>${
+            rows ||
+            `
+            <tr><td colspan="7">No model is run by ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations yet.</td></tr>`
+          }
+          </tbody>
+        </table>
+      </div>
+      <p class="docs-source">${updated ? `Counted on ${escapeHtml(updated)}, from each workstation's latest start. ` : ""}The minimum and recommended hardware are on the <a href="/specs">specifications page</a>.</p>
+    </section>`;
+}
+
+/** /hardware: the models enough organizations run, from their workstations' own reports (src/hardware.ts). */
+export function renderHardwareHtml(data: LandingOptions, models: HardwareModel[], computedAt: number | null): string {
+  return renderPublicShell(data, {
+    title: "Lab Kiosk OS - Hardware Organizations Run It On",
+    description: `The computer models at least ${PUBLIC_MODEL_MIN_ORGANIZATIONS} organizations run Lab Kiosk on, counted from their workstations' own reports.`,
+    activeNav: "specs",
+    mainHtml: hardwareMainHtml(models, computedAt)
+  });
 }
 
 function pricingMainHtml(): string {

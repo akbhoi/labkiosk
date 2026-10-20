@@ -116,6 +116,19 @@
       }
     });
   }
+
+  // Usage reports: a tick a minute while this page is the one on screen
+  // (background.js adds whether someone is using the workstation).
+  const USAGE_TICK_MS = 60 * 1000;
+  function usageTick() {
+    if (document.visibilityState !== "visible") return;
+    askAgent({ type: "labkiosk:usage-tick" }).catch((err) => {
+      console.warn("Lab Kiosk: usage tick not counted:", err && err.message ? err.message : err);
+    });
+  }
+  usageTick();
+  setInterval(usageTick, USAGE_TICK_MS);
+  document.addEventListener("visibilitychange", usageTick);
   let lastTargetUrl = null;
   let isLocked = false;
   let lastReloadEpoch = null;

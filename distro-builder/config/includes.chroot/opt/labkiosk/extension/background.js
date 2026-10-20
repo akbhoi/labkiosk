@@ -34,6 +34,36 @@ async function readStatus() {
   return await res.json();
 }
 
+/*
+ * Usage reports: once a minute the visible page's content script ticks, and
+ * the agent is told that page's hostname and whether someone used the
+ * keyboard, mouse or touchscreen in the last minute (chrome.idle covers the
+ * whole screen, iframes and all). The hostname comes from the sender, never
+ * from the page; the agent keeps no more than it, and only when the
+ * organization records sites.
+ */
+const AGENT_USAGE_TICK_URL = "http://127.0.0.1:8888/api/usage/tick";
+const USAGE_IDLE_SECONDS = 60;
+
+async function sendUsageTick(sender) {
+  if (!sender || sender.frameId !== 0 || !sender.url) return {};
+  let host = "";
+  try {
+    const page = new URL(sender.url);
+    if (page.protocol === "http:" || page.protocol === "https:") host = page.hostname;
+  } catch (err) {
+    console.warn("Lab Kiosk: a usage tick from a page with no readable address:", err);
+  }
+  const state = await chrome.idle.queryState(USAGE_IDLE_SECONDS);
+  const res = await fetch(AGENT_USAGE_TICK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host, active: state === "active" })
+  });
+  if (!res.ok) throw new Error(`Agent responded ${res.status}`);
+  return {};
+}
+
 async function readBroadcast() {
   const stored = await chrome.storage.session.get(BROADCAST_KEY);
   const value = stored && stored[BROADCAST_KEY];
@@ -137,7 +167,7 @@ async function readNetworkStatus() {
   return await res.json();
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
 
   const reply = (promise) => {
@@ -149,6 +179,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "labkiosk:status") {
     return reply(readStatus().then((status) => ({ status })));
+  }
+
+  if (message.type === "labkiosk:usage-tick") {
+    return reply(sendUsageTick(sender));
   }
 
   if (message.type === "labkiosk:i18n") {

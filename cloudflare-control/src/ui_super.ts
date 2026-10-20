@@ -17,6 +17,7 @@ import { CUSTOM_HOSTNAMES_INCLUDED, CUSTOM_HOSTNAMES_MAX, CUSTOM_HOSTNAME_MONTHL
 import { renderTwoFactorPaneHtml, renderTwoFactorScript } from "./ui_two_factor";
 import { renderLegalPaneHtml, renderLegalScript } from "./ui_super_legal";
 import { renderNotificationsPaneHtml, renderNotificationsPaneScript } from "./ui_super_notifications";
+import { renderPlatformHardwarePaneHtml, renderPlatformUsagePaneHtml, renderPlatformUsageScript } from "./ui_super_usage";
 import { renderInboxPaneHtml, renderInboxScript, renderMailViewBarHtml } from "./ui_super_inbox";
 
 /** A tenant row joined with its admin user and live client counts (see listAllTenants). */
@@ -374,6 +375,8 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
     ],
     system: [
       { id: "system-arch", label: "Architecture & health", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>` },
+      { id: "system-usage", label: "Usage", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>` },
+      { id: "system-hardware", label: "Hardware", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/></svg>` },
       { id: "system-audit", label: "Audit log", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>` },
       { id: "system-two-factor", label: "Two-factor sign-in", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>` },
       { id: "system-notifications", label: "Notifications", iconSvg: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>` },
@@ -632,6 +635,12 @@ export function renderSuperAdminHtml(data: SuperAdminOptions): string {
       <div class="tab-pane active" id="pane-system-arch">
         ${architectureCardHtml}
       </div>
+      <div class="tab-pane" id="pane-system-usage">
+        ${renderPlatformUsagePaneHtml()}
+      </div>
+      <div class="tab-pane" id="pane-system-hardware">
+        ${renderPlatformHardwarePaneHtml()}
+      </div>
       <div class="tab-pane" id="pane-system-audit">
         ${auditCardHtml}
       </div>
@@ -717,7 +726,7 @@ ${panesByTab[activeTab] || organizationsPaneHtml}`;
 
   const scriptsHtml = `${inboxScriptHtml}
 ${tabSwitchScriptHtml}
-${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) : ""}
+${activeTab === "system" ? renderTwoFactorScript(nonce) + renderLegalScript(nonce) + renderNotificationsPaneScript(nonce) + renderPlatformUsageScript(nonce) : ""}
 ${activeTab === "releases" ? renderReleasesScript(nonce) : ""}
     <script nonce="${escapeAttr(nonce)}">
       // The directory filter: the chips above the table.

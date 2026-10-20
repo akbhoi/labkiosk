@@ -95,7 +95,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   homepage_takedown_reason TEXT,
   license_plan TEXT
   CHECK (license_plan IS NULL OR license_plan IN ('education', 'evaluation', 'subscriber', 'commercial')),
-  license_expires_at INTEGER
+  license_expires_at INTEGER,
+  usage_sites INTEGER NOT NULL DEFAULT 1
+  CHECK (usage_sites IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -149,7 +151,9 @@ CREATE TABLE IF NOT EXISTS client_devices (
   update_kind TEXT,
   update_since INTEGER,
   video_decoding TEXT,
-  video_decoding_at INTEGER
+  video_decoding_at INTEGER,
+  hardware TEXT,
+  hardware_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -490,6 +494,56 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS usage_daily (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  day TEXT NOT NULL,
+  on_seconds INTEGER NOT NULL DEFAULT 0,
+  active_seconds INTEGER NOT NULL DEFAULT 0,
+  sessions INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tenant_id, client_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS usage_sites (
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  active_seconds INTEGER NOT NULL DEFAULT 0,
+  visits INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tenant_id, day, domain)
+);
+
+CREATE TABLE IF NOT EXISTS platform_usage_daily (
+  day TEXT PRIMARY KEY,
+  organizations INTEGER NOT NULL,
+  workstations INTEGER NOT NULL,
+  on_seconds INTEGER NOT NULL,
+  active_seconds INTEGER NOT NULL,
+  sessions INTEGER NOT NULL,
+  computed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS platform_usage_sites (
+  day TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  organizations INTEGER NOT NULL,
+  active_seconds INTEGER NOT NULL,
+  visits INTEGER NOT NULL,
+  PRIMARY KEY (day, domain)
+);
+
+CREATE TABLE IF NOT EXISTS hardware_models (
+  vendor TEXT NOT NULL,
+  model TEXT NOT NULL,
+  organizations INTEGER NOT NULL,
+  workstations INTEGER NOT NULL,
+  uefi INTEGER NOT NULL,
+  touch INTEGER NOT NULL,
+  min_memory_mb INTEGER,
+  computed_at INTEGER NOT NULL,
+  PRIMARY KEY (vendor, model)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
@@ -519,6 +573,9 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_email ON conversation_messa
 CREATE INDEX IF NOT EXISTS idx_login_challenges_expires ON login_challenges(expires_at);
 CREATE INDEX IF NOT EXISTS idx_login_challenges_user ON login_challenges(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_passkeys_user ON user_passkeys(user_id, rp_id);
+CREATE INDEX IF NOT EXISTS idx_usage_daily_tenant_day ON usage_daily(tenant_id, day);
+CREATE INDEX IF NOT EXISTS idx_usage_daily_day ON usage_daily(day);
+CREATE INDEX IF NOT EXISTS idx_usage_sites_day ON usage_sites(day);
 `;
 
 /**
@@ -740,6 +797,14 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT passkey_challenge FROM login_challenges LIMIT 1").run();
     // 0043: hardware video decoding per workstation.
     await db.prepare("SELECT video_decoding, video_decoding_at FROM client_devices LIMIT 1").run();
+    // 0044: usage reports and each workstation's hardware.
+    await db.prepare("SELECT hardware, hardware_at FROM client_devices LIMIT 1").run();
+    await db.prepare("SELECT usage_sites FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT on_seconds FROM usage_daily LIMIT 1").run();
+    await db.prepare("SELECT active_seconds FROM usage_sites LIMIT 1").run();
+    await db.prepare("SELECT organizations FROM platform_usage_daily LIMIT 1").run();
+    await db.prepare("SELECT organizations FROM platform_usage_sites LIMIT 1").run();
+    await db.prepare("SELECT organizations FROM hardware_models LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -1042,6 +1107,7 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "update_channel",
   "security_updates",
   "lan_sharing",
+  "usage_sites",
   "subdomain",
   "requested_subdomain",
   "status",

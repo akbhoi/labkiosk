@@ -1,4 +1,5 @@
 import type { VideoDecoding } from "./boot_report";
+import type { Hardware } from "./hardware";
 import type { UpdateReport } from "./releases";
 export type UserRole = "super_admin" | "org_admin";
 export type TenantStatus = "active" | "pending" | "rejected" | "suspended";
@@ -89,6 +90,8 @@ export interface Tenant {
   security_updates?: SecurityUpdateMode;
   /** 1 when its workstations at one site share a new system image over the LAN (phase 5). */
   lan_sharing?: number;
+  /** 1 when its usage reports record the sites visited, by hostname (0044). */
+  usage_sites?: number;
   /** Workstations the organization may enrol (0032). */
   workstation_limit?: number;
   /** Remote Control sessions the organization may have open at once (0033). */
@@ -181,6 +184,10 @@ export interface ClientDevice {
   video_decoding?: string | null;
   /** When that report arrived, seconds. */
   video_decoding_at?: number | null;
+  /** Its last hardware report, as JSON (0044; parseHardwareReport). */
+  hardware?: string | null;
+  /** When that report arrived, seconds. */
+  hardware_at?: number | null;
 }
 
 export interface WorkstationGroup {
@@ -272,6 +279,8 @@ export interface ClientTelemetry {
   updateWaitingSince?: number;
   /** What its GPUs decode in hardware, from its last start; absent until an agent new enough reports it. */
   videoDecoding?: VideoDecoding & { reportedAt: number };
+  /** The machine it runs on, from its last start; absent until an agent new enough reports it. */
+  hardware?: Hardware & { reportedAt: number };
 }
 
 export interface RemoteCommand {
