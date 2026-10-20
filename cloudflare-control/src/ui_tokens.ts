@@ -89,7 +89,18 @@ export const PALETTE: Readonly<Record<string, readonly [light: string, dark: str
   "--shadow-sm": ["0 1px 2px rgba(16, 24, 40, 0.05)", "0 1px 2px rgba(0, 0, 0, 0.5)"],
   "--shadow-md": ["0 4px 12px rgba(16, 24, 40, 0.08), 0 1px 3px rgba(16, 24, 40, 0.06)", "0 4px 16px rgba(0, 0, 0, 0.45)"],
   "--shadow-lg": ["0 18px 48px rgba(16, 24, 40, 0.16), 0 2px 6px rgba(16, 24, 40, 0.06)", "0 20px 56px rgba(0, 0, 0, 0.6)"],
-  "--thumb-scrim": ["#e9e9ec", "#101012"]
+  "--thumb-scrim": ["#e9e9ec", "#101012"],
+
+  // Third-party marks on the single sign-on buttons, in the colours their
+  // owners' brand guidelines require; never used for text.
+  "--brand-google-blue": ["#4285f4", "#4285f4"],
+  "--brand-google-red": ["#ea4335", "#ea4335"],
+  "--brand-google-yellow": ["#fbbc05", "#fbbc05"],
+  "--brand-google-green": ["#34a853", "#34a853"],
+  "--brand-microsoft-red": ["#f25022", "#f25022"],
+  "--brand-microsoft-green": ["#7fba00", "#7fba00"],
+  "--brand-microsoft-blue": ["#00a4ef", "#00a4ef"],
+  "--brand-microsoft-yellow": ["#ffb900", "#ffb900"]
 };
 
 /** Everything that does not change with the theme. */
