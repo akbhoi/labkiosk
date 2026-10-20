@@ -10,7 +10,8 @@
 #                reboots by itself (panic=10) and the try is spent
 #   3. recover   the next boot is the current image again and it stays up
 #   4. unhealthy an image that boots but whose kiosk never comes up is
-#                rebooted away from after the 10-minute health deadline
+#                rebooted away from at the health deadline (shortened in this
+#                test image only; see below)
 #
 # Scenario 1 ends by switching the VM off, as a power cut would, so the boot
 # after it (scenario 3; scenario 2 never reaches userspace) must find that and
@@ -76,7 +77,21 @@
 #   qemu-system-x86 ovmf xorriso squashfs-tools e2fsprogs fdisk python3 gpg gpgv
 #   swtpm cryptsetup-bin dosfstools python3-virt-firmware
 #
-# Usage: sudo distro-builder/tests/vm/boot-test.sh path/to/labkiosk-debian12-amd64.iso [workdir]
+# The unhealthy image (4) is the only one changed for the test: its own copy
+# of labkiosk-boot-slots, repacked into its squashfs here, gives up after
+# TEST_HEALTH_DEADLINE seconds instead of the release's 10 minutes. The released
+# image, its boot menu and its kernel command line have no way to shorten the
+# deadline, so nothing in the field can use one to skip the health check.
+#
+# The scenarios come in three groups, which CI runs as parallel jobs, each on
+# its own runner from the same ISO; BOOT_TEST_GROUPS (comma-separated) picks
+# them, all three by default:
+#   slots   the image's phase 3 wiring, the install and scenarios 1 to 9
+#   tpm     scenario 10
+#   beside  scenarios 11 to 13
+#
+# Usage: sudo [BOOT_TEST_GROUPS=slots,tpm,beside] distro-builder/tests/vm/boot-test.sh \
+#            path/to/labkiosk-debian12-amd64.iso [workdir]
 set -euo pipefail
 
 ISO="${1:?usage: boot-test.sh LABKIOSK.iso [workdir]}"
@@ -93,8 +108,13 @@ DISK_SIZE=8G
 PROMOTE_TIMEOUT=900
 BROKEN_TIMEOUT=300
 RECOVER_SECONDS=240
-UNHEALTHY_MIN=540
-UNHEALTHY_TIMEOUT=1200
+# The unhealthy image's deadline. The check starts after the boot, so the
+# reboot comes no sooner than this after the VM starts.
+TEST_HEALTH_DEADLINE=120
+UNHEALTHY_MIN=$TEST_HEALTH_DEADLINE
+UNHEALTHY_TIMEOUT=$((TEST_HEALTH_DEADLINE + 600))
+ALL_GROUPS="slots tpm beside"
+BOOT_TEST_GROUPS="${BOOT_TEST_GROUPS:-${ALL_GROUPS// /,}}"
 
 DISK="$WORK/disk.img"
 TPM_DISK="$WORK/disk-tpm.img"
@@ -111,6 +131,8 @@ DOWNLOAD_PID=""
 SWTPM_PID=""
 NETBOOT_PID=""
 FAILED=0
+ROOT_OFFSET=""
+DATA_OFFSET=""
 
 log() { printf '[boot-test] %s\n' "$*"; }
 die() { printf '[boot-test] ERROR: %s\n' "$*" >&2; exit 2; }
@@ -118,7 +140,10 @@ fail() { printf '[boot-test] FAIL %s\n' "$*"; FAILED=1; }
 pass() { printf '[boot-test] PASS %s\n' "$*"; }
 
 cleanup() {
-    stop_vm
+    # Defined further down: a check that fails before then has no VM to stop.
+    if declare -F stop_vm >/dev/null; then
+        stop_vm
+    fi
     for pid in "$DOWNLOAD_PID" "$SERVER_PID" "$SWTPM_PID" "$NETBOOT_PID"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid"
@@ -138,6 +163,14 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# in_group NAME: true when BOOT_TEST_GROUPS selects the group NAME.
+in_group() { [[ ",$BOOT_TEST_GROUPS," == *",$1,"* ]]; }
+IFS=, read -r -a selected_groups <<< "$BOOT_TEST_GROUPS"
+[ "${#selected_groups[@]}" -gt 0 ] || die "BOOT_TEST_GROUPS selects no group (known: $ALL_GROUPS)"
+for group in "${selected_groups[@]}"; do
+    [[ " $ALL_GROUPS " == *" $group "* ]] || die "unknown group '$group' in BOOT_TEST_GROUPS (known: $ALL_GROUPS)"
+done
 
 [ "$(id -u)" = 0 ] || die "run as root: it partitions a loop device and chroots into the image"
 [ -f "$ISO" ] || die "no ISO at $ISO"
@@ -169,32 +202,12 @@ log "Image version $VERSION; test images $V_GOOD, $V_BROKEN, $V_UNHEALTHY"
 
 log "Unpacking the root filesystem"
 unsquashfs -q -f -d "$ROOTFS" "$LIVE/filesystem.squashfs" >/dev/null
+log "Groups: $BOOT_TEST_GROUPS"
 
 # --------------------------------------------------------------------------
-# The image's over-the-air wiring (phase 3)
+# install_disk and partition_offset, used by every group
 # --------------------------------------------------------------------------
-wiring_ok=1
-for unit in labkiosk-update-download.service labkiosk-update-install.service; do
-    if [ ! -f "$ROOTFS/etc/systemd/system/$unit" ]; then
-        fail "wiring: the image has no $unit"; wiring_ok=0
-    fi
-    if ! grep -q "\"$unit\"" "$ROOTFS/etc/polkit-1/rules.d/50-labkiosk-update.rules" 2>/dev/null; then
-        fail "wiring: the polkit rule does not let the kiosk user start $unit"; wiring_ok=0
-    fi
-done
-if [ ! -x "$ROOTFS/usr/local/sbin/labkiosk-update" ]; then
-    fail "wiring: /usr/local/sbin/labkiosk-update is not executable"; wiring_ok=0
-fi
-if [ ! -x "$ROOTFS/usr/lib/polkit-1/polkitd" ]; then
-    fail "wiring: the image has no polkitd to apply its rules"; wiring_ok=0
-fi
-if [ "$wiring_ok" -eq 1 ]; then
-    pass "wiring: update units, updater, polkit rule and polkitd are in the image"
-fi
 
-# --------------------------------------------------------------------------
-# Install with the real installer, from inside the image
-# --------------------------------------------------------------------------
 # install_disk IMAGE [--encrypt-data] [--dual-boot]: a new virtual disk,
 # installed; with --dual-boot, IMAGE already holds another system.
 install_disk() {
@@ -230,23 +243,6 @@ if len(found) != 1:
 print(found[0]["start"] * table.get("sectorsize", 512))
 ' "$2"
 }
-
-log "Installing onto a $DISK_SIZE virtual disk"
-install_disk "$DISK"
-ROOT_OFFSET="$(partition_offset "$DISK" ROOT)"
-# DATA's offset, and the swap partition's GPT type (labkiosk-swap refuses any other).
-DATA_OFFSET="$(sfdisk -J "$DISK" | python3 -c '
-import json, sys
-table = json.load(sys.stdin)["partitiontable"]
-by_name = {p.get("name"): p for p in table["partitions"]}
-if "DATA" not in by_name:
-    sys.exit("expected a partition named DATA")
-swap = by_name.get("SWAP")
-if swap is None or swap["type"].upper() != "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F":
-    sys.exit(f"expected a Linux swap partition named SWAP, got {swap}")
-print(by_name["DATA"]["start"] * table.get("sectorsize", 512))
-')"
-pass "install: SWAP is a Linux swap partition before DATA"
 
 # --------------------------------------------------------------------------
 # grubenv, read and written through labkiosk-boot-slots' own functions
@@ -384,6 +380,49 @@ expect_env() {  # expect_env SCENARIO "key=value ..."
     fi
 }
 
+# ==========================================================================
+# Group slots: the image's phase 3 wiring, the install and scenarios 1 to 9.
+# Not indented; it ends at the matching "end of group slots".
+# ==========================================================================
+if in_group slots; then
+
+# The image's over-the-air wiring (phase 3)
+wiring_ok=1
+for unit in labkiosk-update-download.service labkiosk-update-install.service; do
+    if [ ! -f "$ROOTFS/etc/systemd/system/$unit" ]; then
+        fail "wiring: the image has no $unit"; wiring_ok=0
+    fi
+    if ! grep -q "\"$unit\"" "$ROOTFS/etc/polkit-1/rules.d/50-labkiosk-update.rules" 2>/dev/null; then
+        fail "wiring: the polkit rule does not let the kiosk user start $unit"; wiring_ok=0
+    fi
+done
+if [ ! -x "$ROOTFS/usr/local/sbin/labkiosk-update" ]; then
+    fail "wiring: /usr/local/sbin/labkiosk-update is not executable"; wiring_ok=0
+fi
+if [ ! -x "$ROOTFS/usr/lib/polkit-1/polkitd" ]; then
+    fail "wiring: the image has no polkitd to apply its rules"; wiring_ok=0
+fi
+if [ "$wiring_ok" -eq 1 ]; then
+    pass "wiring: update units, updater, polkit rule and polkitd are in the image"
+fi
+
+log "Installing onto a $DISK_SIZE virtual disk"
+install_disk "$DISK"
+ROOT_OFFSET="$(partition_offset "$DISK" ROOT)"
+# DATA's offset, and the swap partition's GPT type (labkiosk-swap refuses any other).
+DATA_OFFSET="$(sfdisk -J "$DISK" | python3 -c '
+import json, sys
+table = json.load(sys.stdin)["partitiontable"]
+by_name = {p.get("name"): p for p in table["partitions"]}
+if "DATA" not in by_name:
+    sys.exit("expected a partition named DATA")
+swap = by_name.get("SWAP")
+if swap is None or swap["type"].upper() != "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F":
+    sys.exit(f"expected a Linux swap partition named SWAP, got {swap}")
+print(by_name["DATA"]["start"] * table.get("sectorsize", 512))
+')"
+pass "install: SWAP is a Linux swap partition before DATA"
+
 # --------------------------------------------------------------------------
 # Scenarios
 # --------------------------------------------------------------------------
@@ -475,8 +514,20 @@ else
 fi
 
 log "4. unhealthy: $V_UNHEALTHY boots without its agent and should be rebooted away from"
+# This image's own labkiosk-boot-slots gives up after TEST_HEALTH_DEADLINE: the
+# release's is replaced inside this squashfs only (-p), nowhere else.
+deadline_line='^HEALTH_DEADLINE_SECONDS = [0-9]+$'
+[ "$(grep -cE "$deadline_line" "$ROOTFS/usr/local/sbin/labkiosk-boot-slots")" = 1 ] \
+    || die "labkiosk-boot-slots has no single HEALTH_DEADLINE_SECONDS line to shorten for the test"
+sed -E "s/$deadline_line/HEALTH_DEADLINE_SECONDS = $TEST_HEALTH_DEADLINE/" \
+    "$ROOTFS/usr/local/sbin/labkiosk-boot-slots" > "$WORK/labkiosk-boot-slots"
 mksquashfs "$ROOTFS" "$WORK/unhealthy.squashfs" -comp zstd -no-progress -quiet \
-    -e opt/labkiosk/agent/agent.py >/dev/null
+    -p "usr/local/sbin/labkiosk-boot-slots f 755 0 0 cat $WORK/labkiosk-boot-slots" \
+    -e opt/labkiosk/agent/agent.py usr/local/sbin/labkiosk-boot-slots >/dev/null
+if [ "$(unsquashfs -cat "$WORK/unhealthy.squashfs" usr/local/sbin/labkiosk-boot-slots | grep -E "$deadline_line")" \
+        != "HEALTH_DEADLINE_SECONDS = $TEST_HEALTH_DEADLINE" ]; then
+    die "the unhealthy image does not carry the shortened health deadline"
+fi
 mount_root
 mkdir "$STAGE/images/$V_UNHEALTHY"
 cp "$STAGE/images/$VERSION/vmlinuz" "$STAGE/images/$VERSION/initrd.img" "$STAGE/images/$V_UNHEALTHY/"
@@ -719,9 +770,14 @@ else
 fi
 stop_vm
 
-# --------------------------------------------------------------------------
-# An encrypted data partition, unlocked by a TPM
-# --------------------------------------------------------------------------
+fi # end of group slots
+
+# ==========================================================================
+# Group tpm: an encrypted data partition, unlocked by a TPM (scenario 10).
+# Not indented; it ends at the matching "end of group tpm".
+# ==========================================================================
+if in_group tpm; then
+
 log "10. tpm: a disk with an encrypted data partition, booted with a software TPM"
 install_disk "$TPM_DISK" --encrypt-data
 TPM_ROOT_OFFSET="$(partition_offset "$TPM_DISK" ROOT)"
@@ -823,9 +879,16 @@ else
     pass "tpm: with the TPM wiped the data partition was recreated and sealed again"
 fi
 
-# --------------------------------------------------------------------------
+fi # end of group tpm
+
+# ==========================================================================
+# Group beside: dual boot beside another system, and network boot
+# (scenarios 11 to 13). Not indented; it ends at the matching "end of group
+# beside".
+# ==========================================================================
+if in_group beside; then
+
 # 11. Dual boot: beside another system on a shared drive
-# --------------------------------------------------------------------------
 log "11. dual boot: a drive with another system gets Lab Kiosk in its free space"
 OTHER_MARKER="the other system's files"
 truncate -s 12G "$DUAL_DISK"
@@ -919,9 +982,7 @@ stop_vm
 DISK="$SAVED_DISK"
 ROOT_OFFSET="$SAVED_ROOT_OFFSET"
 
-# --------------------------------------------------------------------------
-# 12-14. Network boot: no disk, everything from a boot server on the LAN
-# --------------------------------------------------------------------------
+# 12-13. Network boot: no disk, everything from a boot server on the LAN
 NETBOOT_ORG="netboot-test"
 # A valid key: its last character checks the rest (ENROLLMENT_KEY_VECTORS).
 NETBOOT_KEY="AAAAA-AAAAA-AAAAA-AAAAA"
@@ -1008,6 +1069,8 @@ fi
 kill "$NETBOOT_PID"
 wait "$NETBOOT_PID" 2>/dev/null || true
 NETBOOT_PID=""
+
+fi # end of group beside
 
 if [ "$FAILED" -ne 0 ]; then
     log "Some scenarios failed; screenshots (if any) are in $WORK"

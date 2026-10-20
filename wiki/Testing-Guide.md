@@ -163,7 +163,7 @@ The unit tests (`distro-builder/tests/test_client.py`) cover the agent's loopbac
 | `promote` | A good new image boots once, passes the health check and becomes current; the old one becomes previous |
 | `broken` | An image with a damaged squashfs fails to boot, reboots by itself (`panic=10`), and the try is spent |
 | `recover` | The next boot is the current image again, and it stays up |
-| `unhealthy` | An image that boots but whose kiosk never comes up is rebooted away from after the 10-minute health deadline |
+| `unhealthy` | An image that boots but whose kiosk never comes up is rebooted away from at the health deadline. This image alone carries a copy of `labkiosk-boot-slots` with a 2-minute deadline instead of 10, repacked into its squashfs by the test; a release has no way to shorten it |
 | `cut` | A download killed partway through the squashfs leaves nothing in `images/`, and the disk still boots its image |
 | `tampered` | A manifest changed after signing is refused, and nothing on the disk changes |
 | `downgrade` | A validly signed release below the security floor is refused, and nothing on the disk changes |
@@ -174,6 +174,8 @@ The last five run the ISO's own `labkiosk-update` from the host against the moun
 
 ```bash
 sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso [workdir]
+# One or more groups only: slots (install, scenarios 1-9), tpm (10), beside (11-13)
+sudo BOOT_TEST_GROUPS=tpm,beside distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso
 ```
 
 It needs root, `/dev/kvm`, `qemu-system-x86`, `ovmf`, `xorriso`, `squashfs-tools`, `e2fsprogs`, `fdisk`, `python3`, `gpg` and `gpgv`, so it does not run on Windows. A screenshot of the VM is saved for every scenario that fails. Legacy BIOS boot of the installed disk is covered only by the GRUB menu unit tests.
@@ -205,16 +207,18 @@ The simulator cannot test bootloaders, `overlayroot`, the installer, TTY masking
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push:
+`.github/workflows/ci.yml` runs on pushes and pull requests to `main`, and daily:
 
 | Job | Does |
 | :--- | :--- |
-| `images` | Builds both `labkiosk` and `labkiosk-iso-builder` (no push) |
-| `worker` | Node 22, pnpm, typecheck, integration tests |
+| `changes` | Lists what the push or pull request changed, so the image job can be skipped |
+| `images` | Builds and scans both `labkiosk` and `labkiosk-iso-builder` (no push), only when `Dockerfile`, `docker-compose.yml`, `distro-builder/` or `docker-test/` changed, and on the daily run |
+| `worker` | Node 24, pnpm, typecheck, integration tests |
 | `client` | Python compile, client unit tests, `node --check`, shellcheck, JSON validity, Chromium policy drift |
+| `deploy` | On `main` only: calls `deploy-cloudflare.yml` after `worker` passed, when the push touched either Worker or the run was started by hand |
 
-`build-iso.yml` (version tags and manual dispatch) builds the ISO, then runs the boot test above before any GitHub Release is created; a failing scenario uploads the VM screenshots.
+`build-iso.yml` (version tags and manual dispatch) builds the ISO, then runs the boot test above as two parallel jobs (`slots`, and `tpm,beside`) before any GitHub Release is created; a failing scenario uploads the VM screenshots.
 
-`deploy-cloudflare.yml` re-runs the typecheck and the suite before applying migrations and deploying — a failing test never reaches production.
+`deploy-cloudflare.yml` does not test again: it runs only from `ci.yml`, after the typecheck and tests passed on the same commit, so a failing test never reaches production.
 
 → [Development Workflow](Development-Workflow) · [Control Plane Internals](Control-Plane-Internals)

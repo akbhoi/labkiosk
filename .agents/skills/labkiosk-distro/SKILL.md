@@ -157,7 +157,7 @@ docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akb
 | Hyper-V Gen 2 (UEFI) | GRUB EFI menu, live boot, disk detection, install to VHDX, standalone reboot. The host is reachable at the Default Switch address (e.g. `172.31.64.1`) for a local Worker. |
 | VirtualBox (BIOS) | ISOLINUX menu, install to VDI, legacy GRUB boot |
 | Docker simulator | agent, extension, telemetry — see `labkiosk-simulator` |
-| Build ISO workflow (KVM) | `tests/vm/boot-test.sh` (run by `.github/workflows/build-iso.yml` after each build): the ISO's own installer onto a virtual disk, then promote, broken squashfs, recover and unhealthy image in QEMU + OVMF. UEFI only; BIOS is covered by the GRUB menu tests. Needs root and `/dev/kvm`, so not on Windows. |
+| Build ISO workflow (KVM) | `tests/vm/boot-test.sh` (run by `.github/workflows/build-iso.yml` after each build): the ISO's own installer onto a virtual disk, then promote, broken squashfs, recover and unhealthy image in QEMU + OVMF, as parallel CI jobs by `BOOT_TEST_GROUPS` (`slots`, `tpm`, `beside`). Only the unhealthy test image gets a shortened health deadline; never make a release's configurable. UEFI only; BIOS is covered by the GRUB menu tests. Needs root and `/dev/kvm`, so not on Windows. |
 
 ```bash
 python3 distro-builder/tools/generate-chromium-policy.py --check

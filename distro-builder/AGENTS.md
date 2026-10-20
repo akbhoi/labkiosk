@@ -851,6 +851,13 @@ iPXE). Step 4b prints the boot's timings. An installed disk's BIOS boot is cover
 sudo distro-builder/tests/vm/boot-test.sh distro-builder/out/labkiosk-debian12-amd64.iso
 ```
 
+CI runs it as parallel jobs from the same ISO artifact, one per group of `BOOT_TEST_GROUPS`
+(`slots`: install and scenarios 1-9; `tpm`: 10; `beside`: 11-13), and publishes a release only
+after all of them passed. The unhealthy scenario's image alone gets a `labkiosk-boot-slots` with a
+2-minute health deadline, repacked into its squashfs by the test (`mksquashfs -p`). **Never** add a
+way for a release to shorten the deadline (a kernel argument, a file on DATA, an environment
+variable): it would be a way to skip the health check in the field.
+
 ### 3. Rapid Live Debugging via Docker Test Simulator
 
 ```bash

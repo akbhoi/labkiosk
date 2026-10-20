@@ -547,7 +547,7 @@ Queued commands are no longer in D1: each organization's OrgHub expires its own.
 
 ## 7. Automated CI/CD with GitHub Actions
 
-The repository includes a production deployment workflow in `.github/workflows/deploy-cloudflare.yml`.
+The repository includes a production deployment workflow in `.github/workflows/deploy-cloudflare.yml`, which `.github/workflows/ci.yml` calls on `main` once its tests have passed.
 
 ### Required GitHub Repository Secrets
 
@@ -558,13 +558,12 @@ Under **Settings** → **Secrets and variables** → **Actions**, configure:
 
 ### Workflow Pipeline
 
-On every push to `main` modifying `cloudflare-control/**`:
+On every push to `main` modifying `cloudflare-control/**` or `cloudflare-email-routing/**` (or a manual run of `ci.yml` on `main`):
 
-1. Installs dependencies via `pnpm` with frozen lockfile.
-2. Executes strict TypeScript typechecks (`tsc --noEmit`).
-3. Executes automated multi-tenant and negative security test suite.
-4. Applies any pending remote D1 migrations (`wrangler d1 migrations apply labkiosk-db --remote`).
-5. Executes `wrangler deploy` to publish the updated worker across Cloudflare global edge data centers.
+1. `ci.yml` runs the strict TypeScript typechecks (`tsc --noEmit`) and the automated multi-tenant and negative security test suite; nothing is deployed unless they pass.
+2. Installs dependencies via `pnpm` with frozen lockfile.
+3. Applies any pending remote D1 migrations (`wrangler d1 migrations apply labkiosk-db --remote`).
+4. Executes `wrangler deploy` to publish the updated worker across Cloudflare global edge data centers, then deploys the email Worker.
 
 ---
 

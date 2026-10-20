@@ -221,7 +221,7 @@ At minute 0 of every hour Cloudflare calls `scheduled()`, which purges expired s
 
 ## 7. CI/CD
 
-`.github/workflows/deploy-cloudflare.yml` runs on every push to `main` touching `cloudflare-control/**`.
+`.github/workflows/deploy-cloudflare.yml` is called by `ci.yml` on `main`, after `ci.yml`'s typecheck and tests passed on the same commit: on a push touching `cloudflare-control/**` or `cloudflare-email-routing/**`, or when `ci.yml` is run by hand.
 
 Required repository secrets, under **Settings → Secrets and variables → Actions**:
 
@@ -232,15 +232,14 @@ Required repository secrets, under **Settings → Secrets and variables → Acti
 
 Pipeline:
 
-1. `pnpm install --frozen-lockfile`
-2. `tsc --noEmit` on both TS projects
-3. The multi-tenant and security test suite
-4. `wrangler d1 migrations apply labkiosk-db --remote`
-5. `wrangler deploy`
+1. In `ci.yml`: `tsc --noEmit` on both TS projects and the multi-tenant and security test suite, for both Workers
+2. `pnpm install --frozen-lockfile`
+3. `wrangler d1 migrations apply labkiosk-db --remote`
+4. `wrangler deploy` for the controller, then for the email Worker
 
 Migrations are applied **before** the deploy, which is the right order: the new worker asserts the schema is current on its first request.
 
-The other workflows: `ci.yml` on every push (both images build, worker typechecks and tests, client syntax and policy checks), `build-iso.yml` on `v*` tags and manual dispatch (it boot-tests the installed disk in QEMU before releasing), `docker-publish.yml` on `main` and tags.
+The other workflows: `ci.yml` on pushes and pull requests to `main` and daily (worker typechecks and tests, client syntax and policy checks, and both images when something in them changed), `build-iso.yml` on `v*` tags and manual dispatch (it boot-tests the installed disk in QEMU before releasing), `docker-publish.yml` on tags and manual dispatch.
 
 ---
 
