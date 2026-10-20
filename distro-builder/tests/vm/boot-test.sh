@@ -505,6 +505,11 @@ if journalctl --directory="$WORK/journal/journal" --dmesg --output=cat 2>/dev/nu
     pass "secure boot: the kernel ran with Secure Boot enforced"
 else
     fail "secure boot: the kernel journal does not say 'Secure boot enabled'"
+    # What the journal on DATA does hold, so a failure here can be told from a
+    # journal that lost the start of each boot.
+    journalctl --directory="$WORK/journal/journal" --list-boots --no-pager 2>&1 | sed 's/^/[boot-test]   boots: /' || true
+    journalctl --directory="$WORK/journal/journal" --dmesg --output=short-monotonic --no-pager 2>&1 \
+        | grep -iE 'secure ?boot|lockdown|Linux version|Command line' | head -20 | sed 's/^/[boot-test]   kernel: /' || true
 fi
 stored_name="$(debugfs -R "cat /boot/grub/labkiosk-hostname.cfg" "$DISK?offset=$ROOT_OFFSET" 2>/dev/null | sed -n 's/^set kiosk_hostname="\([a-z0-9-]*\)"$/\1/p')"
 if [ -n "$stored_name" ] && journalctl --directory="$WORK/journal/journal" --unit=labkiosk-hostname.service --output=cat 2>/dev/null | grep -qx "\[HOSTNAME\] Hostname: $stored_name"; then
