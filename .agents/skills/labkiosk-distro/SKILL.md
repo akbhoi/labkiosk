@@ -78,6 +78,12 @@ Paths are under `distro-builder/`. Authoritative detail: `distro-builder/AGENTS.
   `grub-install --target=x86_64-efi --efi-directory=<ESP> --bootloader-id=LabKiosk --no-nvram`,
   the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`.
 - Exclude the disk backing the live medium (`live_medium_disks()`), re-checked before `wipefs`.
+- **Beside another system** (`--dual-boot`, `--replace-partition`; distro-builder/AGENTS.md
+  Rule 2a): UEFI + GPT only, checked before any write; never `bios_grub`, `i386-pc`, `--removable`
+  or a formatted ESP; GRUB in `EFI/LabKiosk/` plus its own `efibootmgr` entry first in `BootOrder`.
+- **Network boot** (Rule 2b): `distro-builder/tools/labkiosk-netboot.py prepare` lays a release
+  out for a boot server; `labkiosk.netboot=1` means no installer and enrolment at every boot. No
+  distribution package, ever (Rule 2c).
 - Re-validate `--target` (`TARGET_DISK_PATTERN`) and `--grub-password-hash` (`GRUB_PBKDF2_PATTERN`)
   inside the installer — sudoers lets `kiosk` run it directly. The image ships an empty
   `/etc/machine-id` (lockdown hook).

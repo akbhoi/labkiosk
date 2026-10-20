@@ -88,6 +88,16 @@ The list shows candidate disks of at least 7 GiB — room for two system images 
 
 Removable drives are still shown and labelled `REMOVABLE DRIVE`, because internal eMMC on some thin clients reports as removable. They sort last, so the default selection is always an internal disk. Read the label before you continue.
 
+### Erase the drive, or install beside another system
+
+**Erase the drive and use all of it** is the default and the safest: Lab Kiosk is the only system on it.
+
+**Install beside the system already on the drive (dual boot)** keeps Windows or another Linux and puts Lab Kiosk in the drive's free space, or in place of one partition you choose (everything on that partition is erased). It needs a computer started in UEFI mode and a GPT drive with an EFI system partition; when one is missing, the option is greyed out with the reason. Lab Kiosk then starts by default, and the other system is chosen from the computer's boot menu.
+
+Anyone with administrator rights on the other system can change or delete Lab Kiosk, so you must tick the box that says you accept it. Details and the full list of checks: [Disk Installer](Disk-Installer#beside-another-system-dual-boot).
+
+To start workstations with no disk at all, from a server on the network, see [Network Boot](Network-Boot).
+
 ### Set a boot-menu & admin password
 
 Use **Generate** for a random 20-character password, or type your own.

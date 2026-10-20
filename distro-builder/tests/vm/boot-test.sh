@@ -41,6 +41,20 @@
 #                with the TPM's state wiped the third boot recreates it, still
 #                with nobody at the keyboard
 #
+# Then installing beside another system, and starting with no disk at all:
+#
+#  11. dual boot a disk that already holds another system (its EFI system
+#                partition, its own partition, free space) gets Lab Kiosk in
+#                the free space: the other partitions and the other system's
+#                boot files are untouched, and the firmware entry the
+#                installer registers starts Lab Kiosk, which promotes a try
+#  12. http boot UEFI HTTP Boot with Secure Boot on: shim, GRUB, kernel and
+#                image come from a boot server laid out by
+#                tools/labkiosk-netboot.py, and the workstation enrols by
+#                itself and sends heartbeats with its token
+#  13. pxe boot  the same over UEFI PXE (TFTP for shim and GRUB)
+#  14. ipxe boot the same from legacy BIOS through iPXE, under the same name
+#
 # First of all, the image's phase 3 wiring, read from its root filesystem: the
 # two update units, the updater they run, and the polkit rule that lets the
 # kiosk user start them (and polkitd to apply it). The console flow that starts
@@ -56,7 +70,7 @@
 #
 # Needs root, /dev/kvm (GitHub's Linux runners have it) and:
 #   qemu-system-x86 ovmf xorriso squashfs-tools e2fsprogs fdisk python3 gpg gpgv
-#   swtpm cryptsetup-bin
+#   swtpm cryptsetup-bin dosfstools python3-virt-firmware
 #
 # Usage: sudo distro-builder/tests/vm/boot-test.sh path/to/labkiosk-debian12-amd64.iso [workdir]
 set -euo pipefail
@@ -80,6 +94,8 @@ UNHEALTHY_TIMEOUT=1200
 
 DISK="$WORK/disk.img"
 TPM_DISK="$WORK/disk-tpm.img"
+DUAL_DISK="$WORK/disk-dual.img"
+NETROOT="$WORK/netboot"
 ROOTFS="$WORK/rootfs"
 LIVE="$WORK/live"
 STAGE="$WORK/stage"
@@ -89,6 +105,7 @@ LOOP=""
 SERVER_PID=""
 DOWNLOAD_PID=""
 SWTPM_PID=""
+NETBOOT_PID=""
 FAILED=0
 
 log() { printf '[boot-test] %s\n' "$*"; }
@@ -98,7 +115,7 @@ pass() { printf '[boot-test] PASS %s\n' "$*"; }
 
 cleanup() {
     stop_vm
-    for pid in "$DOWNLOAD_PID" "$SERVER_PID" "$SWTPM_PID"; do
+    for pid in "$DOWNLOAD_PID" "$SERVER_PID" "$SWTPM_PID" "$NETBOOT_PID"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid"
         fi
@@ -122,7 +139,7 @@ trap cleanup EXIT
 [ -f "$ISO" ] || die "no ISO at $ISO"
 [ -w /dev/kvm ] || die "/dev/kvm is not available: without KVM the kiosk cannot come up inside the 10-minute health window"
 for tool in qemu-system-x86_64 xorriso unsquashfs mksquashfs debugfs sfdisk losetup python3 gpg gpgv gpgconf \
-            swtpm cryptsetup; do
+            swtpm cryptsetup mkfs.vfat virt-fw-vars; do
     command -v "$tool" >/dev/null || die "$tool is not installed"
 done
 [ -f "$OVMF_CODE" ] && [ -f "$OVMF_VARS" ] || die "OVMF firmware not found under /usr/share/OVMF"
@@ -174,9 +191,10 @@ fi
 # --------------------------------------------------------------------------
 # Install with the real installer, from inside the image
 # --------------------------------------------------------------------------
-# install_disk IMAGE [--encrypt-data]: a new virtual disk, installed.
+# install_disk IMAGE [--encrypt-data] [--dual-boot]: a new virtual disk,
+# installed; with --dual-boot, IMAGE already holds another system.
 install_disk() {
-    truncate -s "$DISK_SIZE" "$1"
+    [ -e "$1" ] || truncate -s "$DISK_SIZE" "$1"
     LOOP="$(losetup -f --show -P "$1")"
     mount --rbind /dev "$ROOTFS/dev"
     mount --make-rslave "$ROOTFS/dev"
@@ -272,10 +290,14 @@ slots.write_env(sys.argv[2], env)
 # --------------------------------------------------------------------------
 # The VM
 # --------------------------------------------------------------------------
-# start_vm [IMAGE [QEMU ARGS...]]: boot IMAGE ($DISK by default).
+# start_vm [IMAGE [QEMU ARGS...]]: boot IMAGE ($DISK by default; "none" for
+# no disk). VM_VARS replaces the firmware's starting variables (boot entries),
+# VM_NIC the network card's options.
 start_vm() {
     local disk="${1:-$DISK}"
-    cp "$OVMF_VARS" "$WORK/vars.fd"
+    local drive=(-drive "file=$disk,format=raw,if=virtio,file.locking=off")
+    [ "$disk" = none ] && drive=()
+    cp "${VM_VARS:-$OVMF_VARS}" "$WORK/vars.fd"
     rm -f "$WORK/qmp.sock"
     # -no-reboot: a reboot ends QEMU, which is how a rollback is observed.
     qemu-system-x86_64 \
@@ -283,8 +305,8 @@ start_vm() {
         -global driver=cfi.pflash01,property=secure,value=on \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$WORK/vars.fd" \
-        -drive file="$disk",format=raw,if=virtio,file.locking=off \
-        -nic user,model=virtio-net-pci \
+        "${drive[@]}" \
+        -nic "${VM_NIC:-user,model=virtio-net-pci}" \
         -vga std -display none -monitor none -serial "${VM_SERIAL:-none}" \
         -qmp unix:"$WORK/qmp.sock",server=on,wait=off \
         -no-reboot "${@:2}" &
@@ -777,6 +799,185 @@ elif ! printf '%s\n' "$reset_header" | sealed_to_tpm; then
 else
     pass "tpm: with the TPM wiped the data partition was recreated and sealed again"
 fi
+
+# --------------------------------------------------------------------------
+# 11. Dual boot: beside another system on a shared drive
+# --------------------------------------------------------------------------
+log "11. dual boot: a drive with another system gets Lab Kiosk in its free space"
+OTHER_MARKER="the other system's files"
+truncate -s 12G "$DUAL_DISK"
+printf '%s\n' 'label: gpt' \
+    'size=100MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="EFI system partition"' \
+    'size=2GiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="other"' | sfdisk --quiet "$DUAL_DISK"
+LOOP="$(losetup -f --show -P "$DUAL_DISK")"
+mkfs.vfat -F 32 -n OTHERESP "${LOOP}p1" >/dev/null
+mkfs.ext4 -q -L OTHER "${LOOP}p2"
+mount "${LOOP}p1" "$STAGE"
+mkdir -p "$STAGE/EFI/BOOT" "$STAGE/EFI/debian"
+printf 'the other system boot loader\n' > "$STAGE/EFI/BOOT/BOOTX64.EFI"
+# Where Debian's signed GRUB looks first for its menu (its built-in prefix):
+# if Lab Kiosk's GRUB read this instead of its own, the VM would halt.
+printf '%s\n' 'echo "decoy: the other system menu was read"' 'sleep 10' 'halt' > "$STAGE/EFI/debian/grub.cfg"
+(cd "$STAGE" && find EFI -type f -exec sha256sum {} +) | sort > "$WORK/esp-before.txt"
+umount "$STAGE"
+mount "${LOOP}p2" "$STAGE"
+printf '%s\n' "$OTHER_MARKER" > "$STAGE/marker"
+umount "$STAGE"
+losetup -d "$LOOP"
+LOOP=""
+sfdisk -J "$DUAL_DISK" > "$WORK/dual-before.json"
+
+if install_disk "$DUAL_DISK" --dual-boot; then
+    pass "dual boot: installed beside the other system, its firmware entry first in the boot order"
+else
+    fail "dual boot: the installer failed"
+fi
+sfdisk -J "$DUAL_DISK" > "$WORK/dual-after.json"
+if python3 "$HERE/check_dual_boot_layout.py" "$WORK/dual-before.json" "$WORK/dual-after.json"; then
+    pass "dual boot: the other system's partitions are unchanged; ROOT, DATA and SWAP were added"
+else
+    fail "dual boot: the partition table is not as expected"
+fi
+other_offset="$(partition_offset "$DUAL_DISK" other)"
+if [ "$(debugfs -R "cat /marker" "$DUAL_DISK?offset=$other_offset" 2>/dev/null)" = "$OTHER_MARKER" ]; then
+    pass "dual boot: the other system's files are intact"
+else
+    fail "dual boot: the other system's partition lost its files"
+fi
+esp_offset="$(partition_offset "$DUAL_DISK" "EFI system partition")"
+mount -o "ro,loop,offset=$esp_offset" "$DUAL_DISK" "$STAGE"
+(cd "$STAGE" && find EFI -type f ! -path 'EFI/LabKiosk/*' -exec sha256sum {} +) | sort > "$WORK/esp-after.txt"
+labkiosk_loader=0
+if [ -f "$STAGE/EFI/LabKiosk/shimx64.efi" ] && [ -f "$STAGE/EFI/LabKiosk/grubx64.efi" ]; then
+    labkiosk_loader=1
+fi
+umount "$STAGE"
+if ! cmp -s "$WORK/esp-before.txt" "$WORK/esp-after.txt"; then
+    fail "dual boot: the other system's boot files changed: $(diff "$WORK/esp-before.txt" "$WORK/esp-after.txt" | tr '\n' ' ')"
+elif [ "$labkiosk_loader" -ne 1 ]; then
+    fail "dual boot: EFI/LabKiosk has no shim and GRUB"
+else
+    pass "dual boot: the other system's boot files are untouched; Lab Kiosk's are in EFI/LabKiosk"
+fi
+
+# The firmware entry the installer registered (the stand-in checked its
+# arguments), first in the boot order as on the real machine.
+virt-fw-vars --input "$OVMF_VARS" --output "$WORK/vars-dual.fd" \
+    --append-boot-filepath '\EFI\LabKiosk\shimx64.efi' >/dev/null 2>&1
+SAVED_DISK="$DISK"
+SAVED_ROOT_OFFSET="$ROOT_OFFSET"
+DISK="$DUAL_DISK"
+ROOT_OFFSET="$(partition_offset "$DUAL_DISK" LABKIOSK_ROOT)"
+expect_env "dual boot: install" "current=$VERSION"
+mount_root
+cp -a "$STAGE/images/$VERSION" "$STAGE/images/$V_GOOD"
+stage_try "$V_GOOD"
+umount_root
+VM_VARS="$WORK/vars-dual.fd" start_vm
+promoted="current=$V_GOOD previous=$VERSION"
+deadline=$((SECONDS + PROMOTE_TIMEOUT))
+while [ "$SECONDS" -lt "$deadline" ] && vm_running && [ "$(env_now)" != "$promoted" ]; do
+    sleep 10
+done
+if [ "$(env_now)" = "$promoted" ]; then
+    pass "dual boot: started from its firmware entry and promoted $V_GOOD"
+elif vm_running; then
+    screenshot dual-boot
+    fail "dual boot: not promoted within $PROMOTE_TIMEOUT s; grubenv '$(env_now)'"
+else
+    fail "dual boot: the VM stopped (the other system's menu, or a failed boot); grubenv '$(env_now)'"
+fi
+stop_vm
+DISK="$SAVED_DISK"
+ROOT_OFFSET="$SAVED_ROOT_OFFSET"
+
+# --------------------------------------------------------------------------
+# 12-14. Network boot: no disk, everything from a boot server on the LAN
+# --------------------------------------------------------------------------
+NETBOOT_ORG="netboot-test"
+# A valid key: its last character checks the rest (ENROLLMENT_KEY_VECTORS).
+NETBOOT_KEY="AAAAA-AAAAA-AAAAA-AAAAA"
+NETBOOT_EVENTS="$WORK/netboot-events.jsonl"
+NETBOOT_TIMEOUT=900
+NETBOOT_CLIENTS=()
+log "Laying out the boot server with tools/labkiosk-netboot.py"
+if python3 "$HERE/../../tools/labkiosk-netboot.py" prepare --live-dir "$LIVE" --out "$NETROOT" \
+        --server-address 10.0.2.2 --org "$NETBOOT_ORG" --key "$NETBOOT_KEY" \
+        --control-plane http://10.0.2.2; then
+    pass "netboot: the boot server's folder was laid out"
+else
+    fail "netboot: labkiosk-netboot.py prepare failed"
+fi
+: > "$NETBOOT_EVENTS"
+python3 "$HERE/netboot_server.py" "$NETROOT" "$NETBOOT_EVENTS" "$NETBOOT_ORG" "$NETBOOT_KEY" \
+    2> "$WORK/netboot-server.log" &
+NETBOOT_PID=$!
+sleep 1
+kill -0 "$NETBOOT_PID" 2>/dev/null || die "the boot server did not start: $(cat "$WORK/netboot-server.log")"
+
+# netboot_heartbeat: print the client id that sent a heartbeat with the token
+# it was enrolled with, among events after those seen so far.
+netboot_heartbeat() {
+    local seen deadline
+    seen="$(wc -l < "$NETBOOT_EVENTS")"
+    deadline=$((SECONDS + NETBOOT_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ] && vm_running; do
+        if tail -n "+$((seen + 1))" "$NETBOOT_EVENTS" | python3 "$HERE/check_netboot_events.py"; then
+            return 0
+        fi
+        sleep 5
+    done
+    return 1
+}
+
+# netboot_scenario NAME: once the VM is started.
+netboot_scenario() {
+    local client
+    if client="$(netboot_heartbeat)"; then
+        if [[ "$client" =~ ^LABKIOSK-[0-9A-F]{6}$ ]]; then
+            pass "$1: enrolled by itself as $client and sent heartbeats with its token"
+        else
+            fail "$1: enrolled under an unexpected name '$client'"
+        fi
+        NETBOOT_CLIENTS+=("$client")
+    else
+        screenshot "${1// /-}"
+        fail "$1: no heartbeat within $NETBOOT_TIMEOUT s (netboot-server.log has the requests)"
+    fi
+    stop_vm
+}
+
+log "12. http boot: UEFI HTTP Boot with Secure Boot on"
+virt-fw-vars --input "$OVMF_VARS" --output "$WORK/vars-http.fd" \
+    --set-boot-uri http://10.0.2.2/labkiosk/shimx64.efi >/dev/null 2>&1
+VM_VARS="$WORK/vars-http.fd" start_vm none
+netboot_scenario "http boot"
+
+log "13. pxe boot: UEFI PXE with Secure Boot on, shim and GRUB over TFTP"
+VM_NIC="user,model=virtio-net-pci,tftp=$NETROOT,bootfile=labkiosk/shimx64.efi" start_vm none
+netboot_scenario "pxe boot"
+
+log "14. ipxe boot: legacy BIOS through iPXE"
+rm -f "$WORK/qmp.sock"
+qemu-system-x86_64 \
+    -machine q35,accel=kvm -cpu host -smp 2 -m 3072 \
+    -nic user,model=virtio-net-pci,bootfile=http://10.0.2.2/labkiosk/boot.ipxe -boot n \
+    -vga std -display none -monitor none -serial none \
+    -qmp unix:"$WORK/qmp.sock",server=on,wait=off \
+    -no-reboot &
+VM_PID=$!
+netboot_scenario "ipxe boot"
+
+if [ "${#NETBOOT_CLIENTS[@]}" -ge 2 ]; then
+    if [ "$(printf '%s\n' "${NETBOOT_CLIENTS[@]}" | sort -u | wc -l)" -eq 1 ]; then
+        pass "netboot: every boot of the same machine enrolled under one name, ${NETBOOT_CLIENTS[0]}"
+    else
+        fail "netboot: the same machine enrolled under different names: ${NETBOOT_CLIENTS[*]}"
+    fi
+fi
+kill "$NETBOOT_PID"
+wait "$NETBOOT_PID" 2>/dev/null || true
+NETBOOT_PID=""
 
 if [ "$FAILED" -ne 0 ]; then
     log "Some scenarios failed; screenshots (if any) are in $WORK"

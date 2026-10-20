@@ -1540,7 +1540,7 @@ export function installRefusal(status: LiveStatus | undefined, version: string):
   if (!status || !status.online) return "Offline";
   const update = status.update;
   if (!update) return "Its software is too old to update over the air; reinstall it from a current ISO";
-  if (update.phase === "live") return "Live session; update it by re-flashing";
+  if (update.phase === "live") return "Live session (a USB stick or network boot); update it by re-flashing the stick or the boot server";
   if (update.phase === "installing") return "Already installing";
   if (status.imageVersion === version) return "Already up to date";
   if (update.phase === "staged" && update.version === version) {

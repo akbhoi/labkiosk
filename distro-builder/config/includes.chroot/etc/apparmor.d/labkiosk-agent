@@ -81,6 +81,14 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   /usr/bin/systemctl ix,
   /usr/sbin/ip ix,
   /usr/bin/ip ix,
+  # The installer's disk list in a live session: drives, partitions, what is
+  # mounted or in use, and whether this boot was UEFI (dual boot needs it).
+  /usr/local/bin/labkiosk-install ix,
+  /usr/bin/lsblk ix,
+  /run/udev/data/* r,
+  /sys/class/block/ r,
+  /sys/devices/**/block/** r,
+  @{PROC}/swaps r,
 
   # Root's helpers, through their sudoers entries. They are not confined by
   # this profile: each re-validates its arguments against the system's own

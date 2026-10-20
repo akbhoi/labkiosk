@@ -30,7 +30,16 @@ No. A workstation with no uplink keeps showing whatever it last loaded and backs
 No — that is the point. `overlayroot="tmpfs"` mounts the root filesystem read-only and diverts every write to RAM, on live media and installed disks alike. The only exceptions are the 512 MiB `LABKIOSK_DATA` partition, written at enrolment, when settings change and by the system journal (kept seven days so a crash can be explained), the 1 KiB GRUB environment block that records which system image to boot, and the 1 GiB swap partition, which is written only once compressed RAM is full.
 
 **BIOS or UEFI?**
-Both. The ISO boots via ISOLINUX on BIOS and GRUB EFI on UEFI, and the installer writes a hybrid GPT layout with three GRUB variants so the installed drive boots regardless of firmware mode.
+Both. The ISO boots via ISOLINUX on BIOS and GRUB EFI on UEFI, and the installer writes a hybrid GPT layout with three GRUB variants so the installed drive boots regardless of firmware mode. Installing beside another system needs UEFI.
+
+**Can it share a computer with Windows or another Linux?**
+Yes, on UEFI machines with a GPT disk: the installer can put it in the disk's free space or in place of one partition, and leave everything else as it is. Lab Kiosk starts by default; the other system is chosen from the firmware's boot menu. It is less safe than a disk of its own, because the other system's administrators can change Lab Kiosk, and the wizard makes you accept that. → [Disk Installer](Disk-Installer#beside-another-system-dual-boot)
+
+**Can workstations start over the network, with no disk?**
+Yes. A boot server prepared with `distro-builder/tools/labkiosk-netboot.py` serves the release to UEFI machines (HTTP Boot or PXE, Secure Boot on) and legacy BIOS machines (iPXE). Every workstation runs the same release from RAM and enrols by itself at every start. It needs at least 4 GB of RAM and trusts the boot network. → [Network Boot](Network-Boot)
+
+**Is there a package for Ubuntu, Debian or another distribution?**
+No, and there will not be a distribution package. Lab Kiosk's guarantees come from owning the whole system: a read-only root, every write in RAM, and only the data partition kept. Installed as a package on someone else's read-write system, with their kernel, packages and administrators, none of that holds. To keep another system on the same computer, install beside it; to avoid disks entirely, use network boot.
 
 **Can I run it from USB permanently?**
 You can, but on live media the enrolment token lives in the RAM overlay and is lost at power-off, so you would re-enrol every boot. The system is designed to be installed.

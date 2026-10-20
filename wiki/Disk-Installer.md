@@ -15,6 +15,8 @@ It is normally driven from the setup wizard's **Install to Hard Disk** tab, but 
 | `--target /dev/sdX` | Runs the full partition → format → image copy → GRUB sequence as root |
 | `--grub-password-hash <grub.pbkdf2.sha512…>` | Optional, with `--target`. Gives this installation its own boot-menu password |
 | `--hostname <name>` | Optional, with `--target`. The workstation's hostname; generated when absent ([Hostname](#hostname)) |
+| `--dual-boot` | Optional, with `--target`. Install beside the disk's other system, into its largest free space ([Beside another system](#beside-another-system-dual-boot)) |
+| `--replace-partition /dev/sdXN` | Optional, with `--target`. Install beside the other system in place of this one partition; implies `--dual-boot` |
 
 ---
 
@@ -106,6 +108,38 @@ for a minute, or reboots into the old one. Details: `distro-builder/AGENTS.md` R
 `--uefi-secure-boot` installs Microsoft's signed `shim` in front of Debian's signed GRUB, which boots only Debian-signed kernels, so the disk starts with Secure Boot on ([Kiosk Hardening](Kiosk-Hardening#secure-boot)). It is named rather than left to grub-install's default, which depends on how the live session itself was started.
 
 All three run on every install to a SATA or virtio disk, so the drive boots regardless of the machine's firmware mode. On an NVMe or eMMC target the `i386-pc` install is skipped and the drive boots through UEFI only. The install fails only when no boot loader at all could be installed.
+
+---
+
+## Beside another system (dual boot)
+
+The wizard's **Install beside the system already on the drive** keeps the other system, Windows or another Linux, and adds Lab Kiosk next to it. It works only on a computer started in **UEFI** mode, on a **GPT** disk that has an **EFI system partition**; the wizard says which of these is missing when it cannot offer it.
+
+**Where it goes.** Either the disk's largest free stretch (shrink a partition from the other system first to make one), or one partition the administrator gives up, together with any free space beside it. It needs 7 GiB. Lab Kiosk creates three partitions there, with the same roles and sizes as on an erased drive:
+
+| Name | Size | Purpose |
+| :--- | :--- | :--- |
+| `LABKIOSK_ROOT` | the rest | The image store |
+| `LABKIOSK_SWAP` | 1 GiB | Swap, encrypted at every boot |
+| `LABKIOSK_DATA` | 512 MiB | `/etc/labkiosk`, encrypted with the TPM where there is one |
+
+Their numbers are whatever the disk had free, read back from the partition table; nothing depends on them, because GRUB finds each by UUID.
+
+**What it never touches.** Every other partition. The other system's boot sector and the ESP's fallback path `EFI/BOOT/` are left alone, and the ESP is not formatted: GRUB goes into `EFI/LabKiosk/` on it (`--no-nvram`, without `--removable`, no `i386-pc`).
+
+**How it starts.** The installer registers a firmware boot entry of its own and puts it first:
+
+```bash
+efibootmgr --create --disk <disk> --part <ESP number> --label "Lab Kiosk" --loader '\EFI\LabKiosk\shimx64.efi'
+```
+
+so the computer starts into the kiosk with nobody at the keyboard, Secure Boot on. To start the other system, choose it in the firmware's boot menu (often F12, F11 or Esc at power-on). Entries left by an earlier Lab Kiosk install are removed first. If the firmware does not keep the entry first in its boot order, the install reports it as failed and says which file to choose in the firmware's settings.
+
+**What it refuses.** Before writing anything it checks: UEFI, GPT, an ESP with at least 16 MiB free (mounted read-only to look), 7 GiB to install into, and nothing on the disk mounted, in use as swap or held open (an unlocked BitLocker or LUKS volume, an active LVM volume). Close the other system's volumes, or start the installer again, rather than expect it to unmount them.
+
+**The risk.** A shared disk is only as safe as the other system. Anyone with administrator rights there can change or delete Lab Kiosk's partitions and its boot entry. The TPM encryption of `LABKIOSK_DATA` is sealed to PCR 7, which records which signing authorities started the system: it keeps the enrolment unreadable from Windows, which starts through Microsoft's own authority, but not from another Linux started through the same Debian shim and GRUB. The wizard therefore asks the administrator to tick **I understand that administrators of the other system can change Lab Kiosk** before it installs, and the agent refuses the request without it (`acceptRisk`).
+
+A firmware password should guard the firmware's boot menu as well, or a user can simply start the other system.
 
 ---
 

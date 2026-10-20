@@ -106,6 +106,17 @@ GRUB_PASSWORD_FILE = os.path.join(BOOT_MEDIUM_GRUB_DIR, "labkiosk-password.cfg")
 GRUB_CONFIG_FILE = os.path.join(BOOT_MEDIUM_GRUB_DIR, "grub.cfg")
 # Only the installed boot menu passes this (/usr/share/labkiosk/boot/grub.cfg).
 INSTALLED_KERNEL_ARG = "labkiosk.installed=1"
+# Network boot (docs: wiki/Network-Boot.md): the boot server's menu starts the
+# image over the LAN with this, and with what to enrol as. Nothing written to
+# /etc/labkiosk survives, so the workstation enrols again at every boot under
+# its hostname, which labkiosk-hostname derives from the network card.
+NETBOOT_KERNEL_ARG = "labkiosk.netboot=1"
+NETBOOT_RETRY_SECONDS = 15
+# A refused key waits longer: the control plane rate-limits failed enrolments
+# per address, and a lab behind one public address shares that limit.
+NETBOOT_REFUSED_RETRY_SECONDS = 600
+ORG_SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+CUSTOM_DOMAIN_PATTERN = re.compile(r"^(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z")
 # What labkiosk-boot-slots check (root) recorded about this boot's system image.
 # /run/labkiosk-update is root's; the browser's user cannot write a report here.
 BOOT_STATUS_FILE = "/run/labkiosk-update/status.json"
@@ -331,6 +342,11 @@ def enrollment_key_is_valid(key):
 # TARGET_DISK_PATTERN in /usr/local/bin/labkiosk-install, which re-checks it
 # because sudoers lets the kiosk user invoke that binary directly.
 TARGET_DISK_PATTERN = re.compile(r"^/dev/(sd[a-z]|vd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)\Z")
+# One partition of such a disk, which an install beside another system may
+# replace. Kept identical to PARTITION_PATTERN in labkiosk-install.
+REPLACE_PARTITION_PATTERN = re.compile(
+    r"^/dev/(sd[a-z][0-9]{1,3}|vd[a-z][0-9]{1,3}|nvme[0-9]+n[0-9]+p[0-9]{1,3}|mmcblk[0-9]+p[0-9]{1,3})\Z"
+)
 
 # A grub-mkpasswd-pbkdf2 digest. The setup wizard derives this in the browser
 # with WebCrypto and posts only the digest, so the boot-menu password itself
@@ -1209,6 +1225,10 @@ def apply_saved_localization():
 # Enrolment
 # --------------------------------------------------------------------------
 
+class EnrolmentUnreachable(ValueError):
+    """The control plane could not be reached; trying again later may work."""
+
+
 def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_domain=None):
     """
     Exchange the organization's enrollment key for this workstation's device token.
@@ -1269,7 +1289,7 @@ def enroll(subdomain, client_id, enrollment_key, worker_override=None, custom_do
             pass
         raise ValueError(detail) from err
     except (URLError, TimeoutError, socket.timeout) as err:
-        raise ValueError(f"Could not reach {base_url}. Check the network connection.") from err
+        raise EnrolmentUnreachable(f"Could not reach {base_url}. Check the network connection.") from err
 
     token = data.get("deviceToken")
     if not token:
@@ -1362,6 +1382,90 @@ def kernel_cmdline():
         return ""
 
 
+def kernel_arg(name):
+    """The value of the last name=value on the kernel command line, or None."""
+    value = None
+    for arg in kernel_cmdline().split():
+        if arg.startswith(name + "="):
+            value = arg[len(name) + 1:]
+    return value
+
+
+def is_network_boot():
+    """
+    Started over the network from a boot server. It is a live session -- no
+    disk, nothing kept -- but nobody is there to run the setup wizard: it
+    enrols by itself (network_boot_enrol_loop) and offers no installer.
+    """
+    return NETBOOT_KERNEL_ARG in kernel_cmdline().split()
+
+
+def network_boot_enrolment():
+    """
+    What the boot server's menu says to enrol with: labkiosk.org=<subdomain>
+    or labkiosk.domain=<custom domain>, labkiosk.key=<enrollment key> and, for
+    a server other than the platform's, labkiosk.server=<URL>. None when the
+    menu names no organization (the workstation is then set up by hand);
+    ValueError when it names one wrongly.
+    """
+    if not is_network_boot():
+        return None
+    subdomain = (kernel_arg("labkiosk.org") or "").lower()
+    custom_domain = (kernel_arg("labkiosk.domain") or "").lower()
+    key = (kernel_arg("labkiosk.key") or "").upper()
+    server = kernel_arg("labkiosk.server")
+    if not subdomain and not custom_domain and not key:
+        return None
+    if bool(subdomain) == bool(custom_domain):
+        raise ValueError("the boot menu must name exactly one of labkiosk.org= and labkiosk.domain=")
+    if subdomain and not ORG_SUBDOMAIN_PATTERN.match(subdomain):
+        raise ValueError(f"labkiosk.org={subdomain[:64]!r} is not an organization subdomain")
+    if custom_domain and not CUSTOM_DOMAIN_PATTERN.match(custom_domain):
+        raise ValueError(f"labkiosk.domain={custom_domain[:64]!r} is not a domain name")
+    if not enrollment_key_is_valid(key):
+        raise ValueError("labkiosk.key= is not a valid enrollment key")
+    if server is not None and not validate_worker_url(server):
+        raise ValueError(f"labkiosk.server={server[:100]!r} is not a valid server URL")
+    client_id = socket.gethostname().upper()
+    if not CLIENT_ID_PATTERN.match(client_id):
+        raise ValueError(f"the hostname {client_id[:64]!r} cannot be a workstation name")
+    return {"subdomain": subdomain, "customDomain": custom_domain, "key": key, "server": server,
+            "clientId": client_id}
+
+
+def network_boot_enrol_loop(sleep=time.sleep):
+    """
+    Enrol a network-booted workstation with what its boot menu names, until it
+    is enrolled: the control plane re-issues the device token of a workstation
+    it already knows by name, so the same machine keeps its place in the
+    console from one boot to the next.
+    """
+    try:
+        params = network_boot_enrolment()
+    except ValueError as err:
+        log(f"Network boot: not enrolling by itself, because {err}.")
+        return
+    if params is None:
+        return
+    target = params["subdomain"] or params["customDomain"]
+    while True:
+        with state_lock:
+            if state["isConfigured"]:
+                return
+        try:
+            enroll(params["subdomain"], params["clientId"], params["key"], params["server"],
+                   params["customDomain"])
+            log(f"Network boot: enrolled as {params['clientId']} with {target}.")
+            return
+        except EnrolmentUnreachable as err:
+            delay = NETBOOT_RETRY_SECONDS
+            log(f"Network boot: {err} Trying again in {delay} s.")
+        except Exception as err:  # noqa: BLE001 - logged; a refused key is retried slowly
+            delay = NETBOOT_REFUSED_RETRY_SECONDS
+            log(f"Network boot: enrolment with {target} failed: {err} Trying again in {delay} s.")
+        sleep(delay)
+
+
 def install_mode_requested():
     """
     True when the operator picked "Install Lab Kiosk to Hard Disk / SSD".
@@ -1375,6 +1479,9 @@ def install_mode_requested():
 
 
 def get_available_disks():
+    if is_network_boot():
+        log("Started over the network; the disk installer is disabled.")
+        return []
     if not is_live_session():
         log("Running on installed disk; disk installer is disabled.")
         return []
@@ -1419,11 +1526,18 @@ def get_install_status():
     return {"state": "idle", "step": "Ready", "progress": 0, "error": None}
 
 
-def start_disk_install(target_disk, grub_password_hash=None, hostname=None):
+def start_disk_install(target_disk, grub_password_hash=None, hostname=None, beside=False,
+                       replace_partition=None):
     def _run():
         try:
             log(f"Starting local disk installation to {target_disk}...")
             argv = ["sudo", "/usr/local/bin/labkiosk-install", "--target", target_disk]
+            if replace_partition:
+                argv += ["--replace-partition", replace_partition]
+                log(f"Installing beside the drive's other system, in place of {replace_partition}.")
+            elif beside:
+                argv += ["--dual-boot"]
+                log("Installing beside the drive's other system, in its free space.")
             if grub_password_hash:
                 # A PBKDF2 digest, not the password, so its appearance in the
                 # process list is not a credential disclosure. sudo resets the
@@ -2021,7 +2135,12 @@ _admin_failures = {"count": 0, "lockedUntil": 0.0}
 
 
 def admin_auth_required():
-    """Only an installed workstation is gated; live media is setup mode."""
+    """
+    An installed workstation is gated, and so is a network-booted one whose
+    boot menu sets labkiosk.admin=; live media is setup mode.
+    """
+    if is_network_boot():
+        return kernel_arg("labkiosk.admin") is not None
     return not is_live_session()
 
 
@@ -2032,7 +2151,17 @@ def read_admin_password_hash():
     None is a deliberate state: the wizard warns before installing without a
     password that settings stay unlocked. A file that exists but cannot be
     read or parsed raises instead, so a damaged gate stays shut.
+
+    A network-booted workstation has no boot partition: its boot server's menu
+    passes the digest as labkiosk.admin=<grub.pbkdf2...>.
     """
+    if is_network_boot():
+        digest = kernel_arg("labkiosk.admin")
+        if digest is None:
+            return None
+        if not GRUB_PBKDF2_PATTERN.match(digest):
+            raise ValueError("labkiosk.admin= on the kernel command line is not a grub-mkpasswd-pbkdf2 digest")
+        return digest
     try:
         with open(GRUB_PASSWORD_FILE, "r", encoding="utf-8") as handle:
             content = handle.read()
@@ -2242,6 +2371,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/status":
             live = is_live_session()
+            network_boot = is_network_boot()
             online = test_connectivity()["ok"]
             screen = update_screen()
             with state_lock:
@@ -2262,8 +2392,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "enrolmentRejected": state["enrolmentRejected"],
                         "organization": state["subdomain"] or state["customDomain"],
                         "baseDomain": DEFAULT_BASE_DOMAIN,
-                        "isLive": live,
+                        # A network-booted workstation is a live session too,
+                        # but one with no installer and nobody to set it up.
+                        "isLive": live and not network_boot,
                         "isInstalled": not live,
+                        "isNetworkBoot": network_boot,
+                        "adminRequired": admin_auth_required(),
                         "isOnline": online,
                         # False on an installed workstation whose LABKIOSK_DATA
                         # partition is not mounted: it can be enrolled, but it
@@ -2279,7 +2413,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         "uiLanguage": str(load_localization_config().get("uiLanguage", "") or "en-US"),
                         # Only meaningful on live media; an installed disk has
                         # nothing to install to and the wizard hides the tab.
-                        "installRequested": live and install_mode_requested(),
+                        "installRequested": live and not network_boot and install_mode_requested(),
                         # A system update installing or finishing: the kiosk
                         # bar's curtain says so (None otherwise).
                         "updateScreen": screen,
@@ -2364,6 +2498,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/install":
+            if is_network_boot():
+                self._send(400, {"error": "A workstation started over the network is not installed to a drive"})
+                return
             if not is_live_session():
                 self._send(400, {"error": "System is already installed on an internal drive"})
                 return
@@ -2385,8 +2522,33 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "The hostname must be 1-63 lowercase letters, digits and hyphens, not starting or ending with a hyphen"})
                 return
 
-            start_disk_install(target_disk, grub_hash or None, hostname or None)
-            self._send(200, {"status": "started", "targetDisk": target_disk})
+            # Beside the drive's other system (dual boot), or the whole drive.
+            # Dual boot is only as safe as that other system: anyone with
+            # administrator rights there can change Lab Kiosk's partitions, so
+            # the wizard has the administrator accept that in so many words.
+            mode = str(data.get("mode", "erase") or "erase")
+            if mode not in ("erase", "beside"):
+                self._send(400, {"error": "The install mode must be erase or beside"})
+                return
+            replace_partition = str(data.get("replacePartition", "") or "").strip()
+            if mode == "beside":
+                if data.get("acceptRisk") is not True:
+                    self._send(400, {"error": "Installing beside another system needs the administrator to accept that its administrators can change Lab Kiosk"})
+                    return
+                if replace_partition and not (
+                    REPLACE_PARTITION_PATTERN.match(replace_partition)
+                    and re.match(r"^p?[0-9]{1,3}\Z", replace_partition[len(target_disk):])
+                    and replace_partition.startswith(target_disk)
+                ):
+                    self._send(400, {"error": "The partition to replace must be one partition of the target disk"})
+                    return
+            elif replace_partition:
+                self._send(400, {"error": "A partition can be replaced only when installing beside another system"})
+                return
+
+            start_disk_install(target_disk, grub_hash or None, hostname or None, mode == "beside",
+                               replace_partition or None)
+            self._send(200, {"status": "started", "targetDisk": target_disk, "mode": mode})
             return
 
         if self.path == "/api/reboot":
@@ -4216,6 +4378,8 @@ def main():
 
     threading.Thread(target=start_local_server, daemon=True).start()
     threading.Thread(target=boot_report_loop, daemon=True).start()
+    if is_network_boot():
+        threading.Thread(target=network_boot_enrol_loop, name="network-boot-enrol", daemon=True).start()
 
     try:
         telemetry_loop()

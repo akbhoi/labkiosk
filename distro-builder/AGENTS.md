@@ -387,6 +387,53 @@ distro-builder/
   - The installer runs `grub-install --target=x86_64-efi --uefi-secure-boot --bootloader-id=LabKiosk --no-nvram`, the same with `--removable` (firmware that loses NVRAM), and `grub-install --target=i386-pc <disk>`, each with `--boot-directory` on `ROOT`, so the drive boots on any machine regardless of firmware mode, and with Secure Boot on (shim → signed GRUB → signed kernel). Never add an out-of-tree kernel module (DKMS, the proprietary NVIDIA driver): it would need a MOK enrolled at the keyboard, which breaks Secure Boot or the unattended boot.
   - Every workstation has its own hostname (`labkiosk-hostname.service`, before the network): `labkiosk.hostname=` from `boot/grub/labkiosk-hostname.cfg` (generated `labkiosk-<6 hex>` or typed in the wizard), else derived from the lowest permanent MAC. A workstation never sleeps: logind ignores the sleep keys and the lid, `sleep.conf.d` refuses sleep, the sleep targets are masked.
 
+### Rule 2a: Beside Another System, Lab Kiosk Touches Only What It Adds
+
+- **Dual boot is UEFI + GPT only** (`--dual-boot`, or `--replace-partition <part>`, which implies
+  it). The installer takes the largest free stretch, or one partition plus the free space around
+  it, and creates `LABKIOSK_ROOT`, `LABKIOSK_DATA` and `LABKIOSK_SWAP` there (same sizes and roles
+  as Rule 2, numbers read back from the table). Every other partition is left as it is.
+- **The other system's boot path is never written**: no `bios_grub`, no `i386-pc` into the boot
+  sector, no `--removable` into `EFI/BOOT`, no formatting of the ESP. GRUB goes to `EFI/LabKiosk/`
+  on the existing ESP (`--no-nvram`), and the installer registers its own firmware entry
+  (`efibootmgr --create … --label "Lab Kiosk" --loader '\EFI\LabKiosk\shimx64.efi'`), first in
+  `BootOrder`, after removing older "Lab Kiosk" entries. Unattended boot (invariant 9) comes from
+  that entry; the other system is chosen from the firmware's boot menu. Firmware that does not
+  keep the entry first fails the install, with what to choose by hand.
+- **Refuse rather than force**: BIOS mode, an MBR disk, no ESP, less than 16 MiB free on it,
+  less than 7 GiB to install into, or anything on the disk mounted, active swap or held by
+  device-mapper. All of it is checked before the first write; the ESP is only mounted read-only.
+- **The risk is the administrator's to accept**: `POST /api/install` with `mode: "beside"` needs
+  `acceptRisk: true`, which the wizard's checkbox sends. Anyone with administrator rights on the
+  other system can change or delete Lab Kiosk's partitions and boot entry. TPM sealing (PCR 7)
+  keeps the data partition unreadable from a system that boots through different signing
+  authorities (Windows), not from one that boots through Debian's same shim and GRUB.
+
+### Rule 2b: A Network-Booted Workstation Keeps Nothing and Enrols Itself
+
+- `tools/labkiosk-netboot.py prepare` lays a release out for a boot server: the release's own
+  signed shim and `grubnetx64.efi.signed` (from its squashfs), a GRUB menu and an iPXE script.
+  The command line is the ISO's plus `fetch=http://<server>/labkiosk/<v>/filesystem.squashfs`,
+  `labkiosk.netboot=1`, `labkiosk.org=` or `labkiosk.domain=`, `labkiosk.key=`, optionally
+  `labkiosk.server=` and `labkiosk.admin=<grub.pbkdf2 digest>` (which also locks the GRUB menu).
+- The agent (`is_network_boot()`) treats it as a live session with **no installer** and nobody to
+  run the wizard: `network_boot_enrol_loop` enrols under the hostname (MAC-derived, upper-cased)
+  until it succeeds, every 15 s while the server is unreachable and every 10 minutes after a
+  refusal (failed enrolments are rate-limited per public IP). The control plane re-issues the same
+  workstation's token, so nothing per machine is stored anywhere.
+- The administrator gate follows `labkiosk.admin=`: set, it gates like an installed disk; absent,
+  settings are open like live media. A malformed digest keeps the gate shut.
+- The boot network is trusted: GRUB's menu, the initrd and the squashfs come over plain HTTP and
+  Secure Boot verifies only shim, GRUB and the kernel. The enrollment key is readable on that
+  network. Say so wherever network boot is documented.
+
+### Rule 2c: No Distribution Package
+
+- Lab Kiosk is never shipped as a `.deb` (or any package) for a general-purpose distribution. On
+  someone else's read-write root, with their kernel, packages and administrators, invariant 2 (RAM
+  overlay, read-only root, only `LABKIOSK_DATA` persists) cannot hold. Whole-disk, dual boot and
+  network boot all boot this image.
+
 ### Rule 3: The Installer Copies the Image, Not the Root
 
 - The installer no longer `rsync`s the running root. It copies the live medium's
@@ -415,8 +462,12 @@ distro-builder/
     - `#btn-locale-languages` is hidden by default and displayed only on configured workstations.
     - When the user cancels the administrator modal during an offline redirect (`#offline`), the wizard closes the modal without re-triggering `returnToKiosk()`, breaking the redirect loop.
     - Dynamic prompt text distinguishes between network and locale changes (`admin.promptLocale` vs `admin.prompt`).
+- A network-booted workstation (`labkiosk.netboot=1`, Rule 2b) is live-booted but reports
+  `isLive: false`, `isInstalled: false`, `isNetworkBoot: true`: badge `NETWORK BOOT`, no installer.
+  The wizard opens the administrator modal when `/api/status` says `adminRequired`, not merely
+  when the session is not live.
 - **Backend Lockout**:
-  - `/api/install/disks` returns `[]` if not live.
+  - `/api/install/disks` returns `[]` if not live, or if started over the network.
   - `POST /api/install` rejects requests with HTTP 400 (`"System is already installed on an internal drive"`), preventing accidental data loss of the running drive.
 
 ### Rule 5: Native Top-Level Navigation & Auto-Hiding Viewport
@@ -669,6 +720,10 @@ Located at `distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install
   last and the wizard labels them, so the default selection is always an internal disk.
 - `--status`: Reads `/tmp/labkiosk-install-status.json` and returns current installation state and progress percentage.
 - `--target /dev/sdX`: Runs full partition, format, image copy, and GRUB deployment as root.
+- `--dual-boot` / `--replace-partition /dev/sdXN`: with `--target`, install beside the disk's
+  other system instead of erasing it (Rule 2a). `--list-disks` describes each disk's `dualBoot`
+  (`possible`, `reason`, `freeBytes`, and each partition with `replaceable`), computed without
+  root from lsblk and sysfs; the install re-reads the table with `parted -m` as root.
 
 ### Critical Implementation Standards
 
@@ -760,7 +815,11 @@ deadlock.*
 `.github/workflows/build-iso.yml` runs `distro-builder/tests/vm/boot-test.sh` on every built ISO:
 the ISO's own installer writes a virtual disk, which then boots under QEMU + OVMF (UEFI, KVM)
 through four scenarios — promote, broken squashfs, recover, unhealthy image — read back from
-`grubenv`. BIOS is covered only by the GRUB menu tests in `test_client.py`. It needs root and
+`grubenv`, then the signed download, the TPM, an install beside another system (dual boot, with
+`efibootmgr` played by `install_into_disk.py` and the entry given to the VM by `virt-fw-vars`) and
+network boot from `tools/labkiosk-netboot.py`'s layout (UEFI HTTP Boot and PXE with Secure Boot
+on, BIOS iPXE). An installed disk's BIOS boot is covered only by the GRUB menu tests in
+`test_client.py`. It needs root and
 `/dev/kvm`, so it does not run on Windows:
 
 ```bash

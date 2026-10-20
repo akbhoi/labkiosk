@@ -219,5 +219,20 @@
   "ui.js.secure-boot": "Secure Boot: ",
   "ui.js.clock": "Clock: ",
   "ui.js.clock-synchronized": "Set from a time server",
-  "ui.js.clock-not-synchronized": "Not set from a time server yet"
+  "ui.js.clock-not-synchronized": "Not set from a time server yet",
+  "ui.what-to-do-with-the-drive": "What to do with the drive",
+  "ui.install-mode-erase": "Erase the drive and use all of it",
+  "ui.install-mode-beside": "Install beside the system already on the drive (dual boot)",
+  "ui.dual-boot-how-it-starts": "Lab Kiosk starts by default. To start the other system, choose it from the computer's boot menu (often F12, F11 or Esc at power-on).",
+  "ui.dual-boot-risk": "⚠️ A shared drive is less safe than a drive of Lab Kiosk's own. Anyone with administrator rights on the other system can change or delete Lab Kiosk's partitions and change what the computer starts. The TPM encryption keeps Lab Kiosk's enrolment unreadable from most other systems, but cannot stop it being erased.",
+  "ui.i-accept-the-dual-boot-risk": "I understand that administrators of the other system can change Lab Kiosk",
+  "ui.js.use-the-free-space": "Use the free space",
+  "ui.js.replace-partition": "Replace",
+  "ui.js.everything-on-it-is-erased": "everything on it is erased",
+  "ui.js.accept-the-dual-boot-risk-first": "Tick the box to accept that administrators of the other system can change Lab Kiosk.",
+  "ui.js.confirm-replace-partition": "Everything on this partition will be permanently deleted:",
+  "ui.js.confirm-free-space": "Lab Kiosk will use the free space; the other partitions are left as they are.",
+  "ui.js.confirm-dual-boot": "Install Lab Kiosk OS beside the system already on",
+  "ui.js.network-boot": "NETWORK BOOT",
+  "ui.js.link-this-network-booted-workstation": "Link this workstation to your organization's account. It was started over the network, so its boot server's menu can do this at every start instead (labkiosk.org= and labkiosk.key=)."
 }

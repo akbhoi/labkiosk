@@ -653,7 +653,7 @@ function renderWorkstationsScripts(
         }
         switch (u.phase) {
           case "live":
-            return { text: prefix + "live session", title: "Started from the USB stick; update it by re-flashing", tone: "" };
+            return { text: prefix + "live session", title: "Started from a USB stick or over the network; update it by re-flashing the stick or the boot server", tone: "" };
           case "checking":
             return { text: prefix + "checking for updates", title: "", tone: "" };
           case "downloading":
