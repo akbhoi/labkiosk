@@ -507,6 +507,10 @@ rm -rf "$WORK/journal"
 mkdir "$WORK/journal"
 debugfs_data "rdump /logs/journal $WORK/journal" >/dev/null
 journal() { journalctl --directory="$WORK/journal/journal" --output=cat "$@" 2>/dev/null || true; }
+# Where the last boot's time went (informational; compare between runs only).
+log "boot timings of the last boot:"
+journalctl --directory="$WORK/journal/journal" --output=json 2>/dev/null \
+    | python3 "$HERE/boot_timings.py" || log "(no boot timings: the journal could not be read)"
 if journal --unit=nftables.service | grep -q '^Finished nftables'; then
     pass "firewall: nftables.service loaded the ruleset"
 else
