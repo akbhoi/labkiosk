@@ -120,6 +120,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/usage/sites/delete` | `POST` | Delete every site the organization recorded; the time on and in use stays (requires `settings`) |
 | `/api/settings/bug-reports` | `POST` | Opt in to or out of automatic, redacted GitHub bug reports; turning them on accepts the current terms version (requires `settings`) |
 | `/api/settings/sso` | `GET` `POST` | Single sign-on: `{ google: { enabled, domains }, microsoft: { enabled, tenants }, requireSso }`. Reading requires `settings`; changing it also an administrator (owner or `org_admin`), `409` when turning on a provider the platform has not set up |
+| `/api/settings/printing` | `GET` `POST` | Settings → Printing: whether workstations may print, and the organization's network printers (requires `settings`) |
 
 ### Device
 
@@ -312,6 +313,7 @@ There is **no `currentUrl` key and no `metrics` object.** The agent collects no 
 | `whitelist` | Effective allowlist: the organization's own domains plus every portal app host, plus the active broadcast host if it is not already present. Merged into the Chromium managed policy. |
 | `targetUrl` | Where the kiosk should point. Validated as `http(s)` by `safe_navigable_url()` before the agent stores it, because it ends up in `window.location`. |
 | `broadcastUrl` / `broadcastEpoch` | The authoritative synchronised page. The epoch is a monotonic marker letting a workstation distinguish a new broadcast from a replayed one. |
+| `printing` | `{ "enabled": false, "printers": [] }` until the organization turns printing on; then the printers meant for this workstation (every-workstation ones and its group's), each `{ id, name, uri }`. The hub's `config` message carries the same. |
 
 **`403`** if the organization is not `active` — a suspended organization's workstations stop receiving commands and policy.
 
@@ -667,6 +669,16 @@ Adding a card implicitly authorises its host: `buildEffectiveWhitelist()` unions
 Every one of these strings is attacker-controlled from the platform's perspective and is escaped on render. The test suite asserts that hostile input renders inert.
 
 ---
+
+### `GET` / `POST` `/api/settings/printing`
+
+Settings → Printing. Guard: `requireTenantPermission(…, "settings")`. `GET` returns
+
+```json
+{ "status": "ok", "enabled": false, "printers": [], "groups": ["Library"], "maxPrinters": 20 }
+```
+
+`POST` takes `{ "enabled": true, "printers": [{ "id": "…", "name": "Front desk", "uri": "ipp://192.168.1.40/ipp/print", "groupName": null }] }` and replaces the whole list. `enabled` must be a boolean and `printers` a list of at most 20. Each `name` is 1–64 characters without control characters and unique case-insensitively; each `uri` is `ipp://` or `ipps://`, a host name or a private address (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/7), an optional port and a plain path, at most 255 characters (no `file:`, `usb:`, user info, query, fragment, spaces or shell characters, and never `localhost` or a public address). `groupName` is an existing workstation group or null. An `id` is kept only when the organization already has it; any other printer gets a new one. Answers `400` with the first problem, `404` for an unknown group, otherwise the same shape as `GET`. Recorded in the audit log as `settings.printing` and pushed to the workstations at once.
 
 ### `POST /api/settings/enrollment-key`
 

@@ -21,7 +21,8 @@
  *
  * It also relays the on-screen keyboard between frames (labkiosk:osk-focus,
  * labkiosk:osk-type): the keyboard is drawn in the top frame, a text field can
- * be in any frame.
+ * be in any frame. Ctrl+P pressed in an iframe goes to the top frame the same
+ * way (labkiosk:print-shortcut), which prints only while printing is allowed.
  *
  * Navigation (back, forward, reload, home) is done by the content script with
  * the History API and never needs the agent, so there is no nav channel to the
@@ -223,6 +224,15 @@ async function forwardTypedKey(message, sender) {
   return { applied: Boolean(reply && reply.applied) };
 }
 
+async function forwardPrintShortcut(sender) {
+  if (!sender.tab || !Number.isInteger(sender.frameId) || sender.frameId === 0) {
+    throw new Error("Only a subframe relays Ctrl+P");
+  }
+  // The top frame prints only while printing is allowed (kioskPrint in content.js).
+  await chrome.tabs.sendMessage(sender.tab.id, { type: "labkiosk:print-request" }, { frameId: 0 });
+  return {};
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
 
@@ -259,6 +269,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "labkiosk:osk-type") {
     return reply(forwardTypedKey(message, sender));
+  }
+
+  if (message.type === "labkiosk:print-shortcut") {
+    return reply(forwardPrintShortcut(sender));
   }
 
   if (message.type === "labkiosk:intro-peek") {

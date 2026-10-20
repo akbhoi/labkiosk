@@ -8,7 +8,6 @@
   "AutofillCreditCardEnabled": false,
   "BookmarkBarEnabled": false,
   "ShowHomeButton": false,
-  "PrintingEnabled": false,
   "PromptForDownloadLocation": false,
   "DownloadRestrictions": 3,
   "DefaultDownloadDirectory": "/tmp",
@@ -19,6 +18,13 @@
   "IncognitoModeAvailability": 1,
   "BrowserSignin": 0,
   "SyncDisabled": true,
+  "_comment_printing": "Printing is off until an administrator turns it on in Settings -> Printing. Then labkiosk-printing (root) sets up a CUPS queue per printer and writes zz-labkiosk-printing.json next to policies.json with PrintingEnabled: true; Chromium merges the files in name order, the last winning, and reloads the directory about five seconds after a change, so no restart is needed. The agent never writes PrintingEnabled: true here. Whether printing is on or off, the print preview offers only those CUPS printers: pdf is 'Save as PDF', a file on a workstation nobody can reach and the one destination that writes to disk; extension is a print-to-cloud extension, which this kiosk never installs. DisablePrintPreview stays false: true would skip the preview and go straight to GTK's dialog, which /etc/xdg/gtk-3.0/settings.ini limits to CUPS as well.",
+  "PrintingEnabled": false,
+  "PrinterTypeDenyList": [
+    "pdf",
+    "extension"
+  ],
+  "DisablePrintPreview": false,
   "_comment_file_dialog": "file://* is blocklisted, but without this an upload control still opens a filesystem browser over the kiosk, which is a file manager a user otherwise has no route to. Downloads are already blocked by DownloadRestrictions: 3, so nothing in the kiosk needs a file picker.",
   "AllowFileSelectionDialogs": false,
   "_comment_prompts": "2 = deny without prompting. A kiosk has no one to answer a permission prompt, and a modal over a locked screen would sit above the lock curtain. Audio and video capture are deliberately NOT blocked here: language labs and video pages legitimately need the microphone and camera, and taking them away breaks real room use.",

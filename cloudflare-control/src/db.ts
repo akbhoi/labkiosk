@@ -97,7 +97,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   CHECK (license_plan IS NULL OR license_plan IN ('education', 'evaluation', 'subscriber', 'commercial')),
   license_expires_at INTEGER,
   usage_sites INTEGER NOT NULL DEFAULT 1
-  CHECK (usage_sites IN (0, 1))
+  CHECK (usage_sites IN (0, 1)),
+  printing_enabled INTEGER NOT NULL DEFAULT 0
+  CHECK (printing_enabled IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -582,6 +584,17 @@ CREATE TABLE IF NOT EXISTS power_schedules (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS printers (
+  id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  uri TEXT NOT NULL,
+  group_name TEXT,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_subdomain ON tenants(subdomain);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
@@ -617,6 +630,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_sites_day ON usage_sites(day);
 CREATE INDEX IF NOT EXISTS idx_sso_states_expires ON sso_states(expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_states_handoff ON sso_states(handoff_hash);
 CREATE INDEX IF NOT EXISTS idx_power_schedules_tenant ON power_schedules(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_printers_tenant ON printers(tenant_id, position);
 `;
 
 /**
@@ -851,6 +865,9 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT state_hash, code_verifier, return_origin, handoff_hash FROM sso_states LIMIT 1").run();
     // 0045: power schedules.
     await db.prepare("SELECT group_id, days, off_minute, on_minute FROM power_schedules LIMIT 1").run();
+    // 0047: printing, off by default, and the organization's network printers.
+    await db.prepare("SELECT printing_enabled FROM tenants LIMIT 1").run();
+    await db.prepare("SELECT id, name, uri, group_name, position FROM printers LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

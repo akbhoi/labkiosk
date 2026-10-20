@@ -92,6 +92,8 @@ export interface Tenant {
   lan_sharing?: number;
   /** 1 when its usage reports record the sites visited, by hostname (0044). */
   usage_sites?: number;
+  /** 1 when its workstations may print to its network printers; 0 by default (0047, src/printing.ts). */
+  printing_enabled?: number;
   /** Workstations the organization may enrol (0032). */
   workstation_limit?: number;
   /** Remote Control sessions the organization may have open at once (0033). */

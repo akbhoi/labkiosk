@@ -385,6 +385,7 @@ class InterfaceLanguageTags(unittest.TestCase):
             "usr/local/bin/labkiosk-install",
             "usr/local/sbin/labkiosk-localization",
             "usr/local/sbin/labkiosk-boot-slots",
+            "usr/local/sbin/labkiosk-printing",
         ]
         for rel in scripts:
             with self.subTest(script=rel):
@@ -1231,12 +1232,14 @@ class BootPolicyBeforeTheBrowser(unittest.TestCase):
         agent.state["isConfigured"] = True
         self.run_main()
         self.assertEqual(self.events, [("sync", [], True), ("thread", "start_local_server"),
-                                       ("thread", "boot_report_loop"), ("thread", "usage_loop"), ("thread", "power_loop")])
+                                       ("thread", "boot_report_loop"), ("thread", "usage_loop"), ("thread", "power_loop"),
+                                       ("thread", "printing_loop")])
 
     def test_an_unenrolled_agent_has_nothing_to_allow_yet(self):
         agent.state["isConfigured"] = False
         self.run_main()
-        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop"), ("thread", "usage_loop"), ("thread", "power_loop")])
+        self.assertEqual(self.events, [("thread", "start_local_server"), ("thread", "boot_report_loop"), ("thread", "usage_loop"),
+                                       ("thread", "power_loop"), ("thread", "printing_loop")])
 
 
 class ReenrolmentGating(unittest.TestCase):

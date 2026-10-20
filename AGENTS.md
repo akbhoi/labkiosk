@@ -40,7 +40,7 @@ labkiosk/
 │       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots,
 │                            sbin/labkiosk-update, sbin/labkiosk-share, sbin/labkiosk-logs,
 │                            sbin/labkiosk-swap, sbin/labkiosk-hostname, sbin/labkiosk-data-unlock,
-│                            sbin/labkiosk-health
+│                            sbin/labkiosk-health, sbin/labkiosk-printing
 ├── cloudflare-control/      Cloudflare Worker + D1
 │   ├── migrations/          0001..0043 (never edit an applied one)
 │   ├── src/                 index.ts (router), org_hub.ts (one Durable Object per organization), hub.ts,
@@ -137,7 +137,8 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-logs \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-data-unlock \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-wake-alarm
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-wake-alarm \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-printing
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js
 PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m unittest discover -s distro-builder/tests -t distro-builder/tests

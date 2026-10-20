@@ -416,6 +416,7 @@ import {
   rollUpPlatformUsage,
   usageSummary
 } from "./usage";
+import { hasGroupPrinters, listPrinters, parsePrintingSettings, savePrintingSettings, MAX_PRINTERS } from "./printing";
 import {
   continueSignIn,
   handleLoginEmailCode,
@@ -4315,6 +4316,40 @@ export default {
       return new Response(JSON.stringify({ status: "ok", schedule }), { headers: jsonHeaders });
     }
 
+    // GET /api/settings/printing: whether the organization's workstations may
+    // print, its network printers and the workstation groups one can be limited to.
+    // POST /api/settings/printing { enabled, printers: [{ id?, name, uri, groupName? }] }:
+    // store both, the list replacing the old one (src/printing.ts).
+    if (path === "/api/settings/printing" && (method === "GET" || method === "POST")) {
+      const denied = await requireTenantPermission(db, session, currentTenant, "settings", jsonHeaders);
+      if (denied) return denied;
+      const tenant = currentTenant!;
+      const groups = (await listWorkstationGroups(db, tenant.id)).map((g) => g.name);
+      let enabled = tenant.printing_enabled === 1;
+      let printers = await listPrinters(db, tenant.id);
+      if (method === "POST") {
+        let body: unknown;
+        try {
+          body = await request.json();
+        } catch {
+          return jsonError("The request body must be JSON", 400, jsonHeaders);
+        }
+        const parsed = parsePrintingSettings(body, groups, new Set(printers.map((p) => p.id)));
+        if (!parsed.ok) return jsonError(parsed.error, parsed.status, jsonHeaders);
+        await savePrintingSettings(db, tenant.id, parsed.enabled, parsed.printers);
+        await writeAuditLog(db, {
+          tenantId: tenant.id,
+          userId: session!.user_id,
+          action: "settings.printing",
+          details: `${parsed.enabled ? "on" : "off"} printers=${parsed.printers.map((p) => p.name).join(", ").slice(0, 400)}`
+        });
+        await notifyConfigChanged(env, tenant.id);
+        enabled = parsed.enabled;
+        printers = parsed.printers;
+      }
+      return new Response(JSON.stringify({ status: "ok", enabled, printers, groups, maxPrinters: MAX_PRINTERS }), { headers: jsonHeaders });
+    }
+
     // GET /api/notifications: the platform's notifications for this organization,
     // newest first, with whether this user has dismissed each.
     // POST /api/notifications/read { ids? }: dismiss them (every one when ids is left out).
@@ -4637,9 +4672,9 @@ export default {
           await assignClientsToGroup(db, currentTenant!.id, clientIds.slice(i, i + D1_IN_LIST_CHUNK), groupName);
         }
         // A workstation moved into or out of a group a major is being tried on is
-        // offered differently, and one moved into or out of a group with a power
-        // schedule follows another week.
-        if ((await hasMajorPilot(db, currentTenant!.id)) || (await hasGroupPowerSchedules(db, currentTenant!.id))) {
+        // offered differently, one moved into or out of a group with a power
+        // schedule follows another week, and one a printer is limited to prints differently.
+        if ((await hasMajorPilot(db, currentTenant!.id)) || (await hasGroupPowerSchedules(db, currentTenant!.id)) || (await hasGroupPrinters(db, currentTenant!.id))) {
           await notifyConfigChanged(env, currentTenant!.id);
         }
 
@@ -4713,13 +4748,15 @@ export default {
       if (!groupId) return jsonError("Group ID is required", 400, jsonHeaders);
 
       const groupSchedules = await groupPowerScheduleCount(db, currentTenant!.id, groupId);
+      // Its members leave it, so a printer limited to it no longer reaches them.
+      const groupPrinters = await hasGroupPrinters(db, currentTenant!.id);
       if (!(await deleteWorkstationGroup(db, currentTenant!.id, groupId))) {
         return jsonError("Workstation group not found", 404, jsonHeaders);
       }
       // The group's power schedules go with it.
       if (groupSchedules) await deleteGroupPowerSchedules(db, currentTenant!.id, groupId);
       // A major being tried on the group is no longer tried anywhere.
-      if ((await endOrphanedMajorPilots(db, currentTenant!.id)) || groupSchedules) await notifyConfigChanged(env, currentTenant!.id);
+      if ((await endOrphanedMajorPilots(db, currentTenant!.id)) || groupSchedules || groupPrinters) await notifyConfigChanged(env, currentTenant!.id);
       await writeAuditLog(db, {
         tenantId: currentTenant!.id,
         userId: session!.user_id,

@@ -85,6 +85,7 @@ sudo bash build-iso.sh
 | Remote & network | `x11vnc`, `network-manager`, `wpasupplicant`, `wireless-regdb`, `rfkill`, `systemd-timesyncd`, `locales`, `iproute2`, `libnss-systemd`, `curl`, `python3`, `python3-websocket`, `ca-certificates` |
 | Memory & recovery | `systemd-zram-generator` (compressed RAM as the first swap), `cryptsetup-bin` (the installed disk's swap partition, encrypted with a key for one boot, and the data partition, encrypted with the TPM), `libtss2-esys-3.0.2-0`, `libtss2-mu0`, `libtss2-rc0`, `libtss2-tcti-device0` (what systemd needs to reach the TPM) |
 | Security & health | `nftables` (the firewall, and the LAN update sharing rule), `apparmor` (profiles for the agent and x11vnc), `smartmontools` (`labkiosk-health`'s disk checks; its own daemon is masked), `gpgv` (verifies downloaded system images) |
+| Printing | `cups-daemon`, `cups-client`, `cups-filters-core-drivers`: driverless IPP Everywhere printing to the organization's network printers, masked until an administrator turns printing on (see below) |
 
 ### Keeping the image small
 
@@ -96,6 +97,16 @@ sudo bash build-iso.sh
 - The image has no noVNC, websockify or cloudflared: Remote Control goes from loopback `x11vnc` through the agent to the console's relay, and the console serves the viewer. The simulator's noVNC is **not** Debian's `novnc` package (which depends on Node.js): its Dockerfile installs the release pinned in `docker-test/novnc.pin` with `docker-test/install-novnc.sh`, verifying its SHA-256.
 - The initramfs is xz-compressed via `etc/initramfs-tools/conf.d/labkiosk-compress`; live-build 20230502's `--initramfs-compression` does not accept xz.
 - `scrot` stays: Openbox already needs `imlib2`, which is what pulls in its large image loaders, so replacing `scrot` would add packages rather than remove them.
+
+**Printing packages.** Printing is off on every workstation until an administrator turns it on in Settings → Printing, so the three packages are there but nothing of them runs: `01-lockdown.hook.chroot` disables and masks `cups.service`, `cups.socket` and `cups.path`, and only `labkiosk-printing` unmasks the first two. They are the least that prints a page from Chromium to a network printer with no driver:
+
+- `cups-daemon`: the scheduler and its `ipp`/`ipps` backends.
+- `cups-client`: `lpadmin` and `lpstat`, which `labkiosk-printing` runs.
+- `cups-filters-core-drivers`: `pdftopdf` and `pdftoraster`, which turn Chromium's PDF into what an IPP Everywhere queue sends. It brings in `poppler-utils` and `qpdf`'s library, and pulls `cups-common`, `cups-server-common` and `cups-ipp-utils` with the others.
+
+Left out on purpose: `cups` (the metapackage, with every driver), `cups-filters` (adds ghostscript), `cups-browsed` and `avahi-daemon` (printer discovery; printers are listed by address), `ipp-usb` (USB printers), `colord`, and every `printer-driver-*`. All but the last are only *recommended*, so `--apt-recommends false` keeps them out. A printer that does not speak IPP Everywhere (driverless printing, often sold as AirPrint or Mopria) cannot be used.
+
+Size: Debian's archive could not be reached when this was added, so these figures are from the closest Ubuntu release (22.04, with CUPS 2.4.1 and cups-filters 1.28.15, against bookworm's 2.4.2 and 1.28.17). About 17 MB installed and 3.7 MB of packages, counting what the image does not already have (`libcups2`, `openssl`, `libcairo2` and `liblcms2` come with Chromium and `ca-certificates`): `cups-common` 4.2 MB, `libpoppler` 3.4 MB, `cups-server-common` 2.4 MB, `libqpdf` 2.1 MB, `cups-ipp-utils` 1.0 MB, `cups-daemon` 0.9 MB, `poppler-utils` 0.7 MB, `cups-filters-core-drivers` 0.6 MB, `cups-client` 0.5 MB and smaller libraries. Check the real figures in the build log.
 
 `scrot` supplies thumbnails, `xdotool` drives the browser, `alsa-utils` implements the `mute` command, and `chromium-sandbox` is present because the image keeps Chromium's sandbox enabled. The simulator does too; it passes `--no-sandbox` only when started as root.
 

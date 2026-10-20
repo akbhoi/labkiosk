@@ -241,6 +241,8 @@
   "ui.js.link-this-network-booted-workstation": "Link this workstation to your organization's account. It was started over the network, so its boot server's menu can do this at every start instead (labkiosk.org= and labkiosk.key=).",
   "bar.keyboard": "Keyboard",
   "bar.keyboardTitle": "Show or hide the on-screen keyboard",
+  "bar.print": "Print",
+  "bar.printTitle": "Print this page",
   "keyboard.backspaceTitle": "Delete",
   "keyboard.caps": "Caps",
   "keyboard.enter": "Enter",

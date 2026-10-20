@@ -125,6 +125,7 @@ A comprehensive technical reference for the Lab Kiosk Cloudflare Control Plane R
 | `/api/workstation-issues` | `GET` | Organization Admin (`settings`) | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, last 90 days, each with `has_log` (1 when a restart report's log is kept), `report_state`, `report_match` (`new`/`existing`), `issue_url`, `issue_number`, `report_status` (`open`, `in_progress`, `pr_open`, `resolved`, `closed`) and `pr_url`; plus `bugReports: {enabled, available, repository, termsVersion, acceptedTermsVersion, termsAcceptedAt}` |
 | `/api/settings/bug-reports` | `POST` | Organization Admin (`settings`) | `{"enabled": true, "acceptTerms": "<termsVersion>"}` or `{"enabled": false}`: opt in to or out of automatic, redacted GitHub bug reports; `400` without the current terms version, `409` when the platform has not set them up |
 | `/terms/bug-reports` | `GET` | Public | The Automatic Bug Report Terms |
+| `/api/settings/printing` | `GET` / `POST` | Organization Admin (`settings`) | Settings → Printing. `GET`: `{enabled, printers: [{id, name, uri, groupName}], groups, maxPrinters}`. `POST` `{enabled, printers}` replaces the list (at most 20): `name` 1–64 characters, unique; `uri` `ipp://` or `ipps://` to a host name or private address with a plain path; `groupName` an existing group or null. `400` with the first problem, `404` for an unknown group. Audited as `settings.printing`; workstations get `printing: {enabled, printers}` at once |
 | `/api/console/ws` | `GET` (WebSocket) | Organization Admin (`workstations`) | The Workstations page's live channel: status changes and the frames of the screens it shows |
 | `/api/tenant/remote-control/request` | `POST` | Organization Admin (`settings`) | `{"reason"}`: ask the platform to enable Remote Control; `409` when already asked or enabled |
 | `/api/super/inbox` | `GET` | Super Admin | `?box=tasks\|support&filter=open\|closed\|all\|unread\|read\|deleted&mailbox=<address>&category=<type>`: registrations and Remote Control requests (Tasks) or mail (Mail), open first, oldest first. Mail lists also return `mailboxes` (`{mailbox, open, unread, total}`) and `mailDomain` |
@@ -1228,9 +1229,14 @@ on live media, which keeps nothing by design.
     "installRequested": false,
     "secureBoot": "on",
     "clockSynchronized": true,
-    "hostname": "labkiosk-3fa92c"
+    "hostname": "labkiosk-3fa92c",
+    "printing": false
   }
   ```
+
+`printing` is true while Chromium may print: the organization turned printing on, at least one of
+its printers is set up on this workstation, and Chromium has had time to reload the policy that
+allows it. The kiosk bar shows its Print button, and lets Ctrl+P print, only then.
 
 `secureBoot` is `on` when the firmware enforced Secure Boot for this boot, `off` when it did not,
 `legacy-bios` when the machine did not start through UEFI, and `unknown` when the firmware variable

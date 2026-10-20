@@ -127,7 +127,7 @@ Allows organization administrators to delegate lab control to colleagues with gr
 
 ## 5. Settings Module (`/admin/settings`)
 
-Structured into 5 semantic, deep-linkable tab panes (`?tab=...`) with horizontal 2-column card grouping (`grid-2col`):
+Structured into semantic, deep-linkable tab panes (`?tab=...`) with horizontal 2-column card grouping (`grid-2col`):
 
 ### 1. General & Kiosk (`?tab=general`)
 
@@ -211,6 +211,17 @@ Power schedules switch the organization's workstations off at the end of the day
 - **At the switch-off time** the workstation shows a five-minute warning with a countdown, then shuts down cleanly. A system update that is installing is never interrupted: the shutdown waits for it, and is picked up again after the update's restart. A workstation switched on after its switch-off time stays on until the next one.
 - **Switch-on** is set in the workstation's hardware clock just before it shuts down. A machine that cannot be set reports **Cannot switch itself on** under Errors & Warnings. The firmware must allow waking from the RTC (often *Wake on RTC* or *Resume by alarm*), and the machine must keep power.
 - Every change is recorded in Recent Activity and reaches the workstations at once.
+
+### Printing (`?tab=printing`)
+
+Printing is **off for every organization** until an administrator with the `settings` permission turns it on here. While it is off, no workstation runs a print service, Chromium refuses to print and the kiosk bar shows no Print button.
+
+- **Allow workstations to print**: the switch. Turning it off keeps the printer list for next time.
+- **Printers** (up to 20): for each, a **name** users see in the print dialog, its **address** and **For**, which is *Every workstation* or one workstation group. Only the workstations in that group get a printer limited to it; moving a workstation into or out of the group reaches it at once.
+- **Address**: `ipp://` or `ipps://`, the printer's host name or private IP address (10.x, 172.16-31.x, 192.168.x, 169.254.x or an IPv6 unique local address), an optional port and a path, e.g. `ipp://192.168.1.40/ipp/print` or `ipps://printer.example.org/ipp/print`. Other kinds of address (`file:`, `usb:`, `socket:`, `lpd:`, `http:`), public IP addresses, the workstation itself, user names, query strings and spaces are refused. Every printer must support **IPP Everywhere** (driverless printing, which most network printers made since 2015 do, often called AirPrint or Mopria): there are no printer drivers on the workstation.
+- **Save printing settings** records the change in Recent Activity (`settings.printing`) and sends it to the workstations straight away.
+
+On each workstation the agent then sets up one print queue per printer, asking the printer itself for its capabilities, so a printer that is switched off or not reachable from that network is left out and tried again every 5 minutes. About six seconds after the first printer is ready, the kiosk bar shows **Print** and **Ctrl+P** prints the page; the print preview lists only these printers (never "Save as PDF"). Queues and jobs live in memory and are rebuilt at every start. A group deleted after a printer was limited to it leaves that printer showing **(group deleted)**: it reaches no workstation until it is set to another group or to every workstation.
 
 ---
 

@@ -86,6 +86,24 @@ PROXY_CONFIG_FILE = "/etc/labkiosk/proxy.json"
 LOCALIZATION_CONFIG_FILE = "/etc/labkiosk/localization.json"
 LOCALIZATION_HELPER = "/usr/local/sbin/labkiosk-localization"
 LOCALIZATION_TIMEOUT_SECONDS = 60
+# Printing, off until an administrator turns it on (Settings -> Printing): the
+# root helper that starts CUPS, sets up the printers and lets Chromium print.
+PRINTING_HELPER = "/usr/local/sbin/labkiosk-printing"
+# Every printer is asked for its capabilities, up to 45 s each, 20 at most.
+PRINTING_HELPER_TIMEOUT_SECONDS = 20 * 60
+# A printer that could not be set up (switched off, not on this network yet)
+# is tried again this often.
+PRINTING_RETRY_SECONDS = 300
+# Chromium reloads its managed policy about five seconds after a file changes;
+# the bar's Print button waits that long after the helper allowed printing.
+PRINTING_POLICY_SETTLE_SECONDS = 6
+PRINTING_MAX_PRINTERS = 20
+# Keep these in step with usr/local/sbin/labkiosk-printing, which checks them
+# again as root, and with cloudflare-control/src/printing.ts.
+PRINTER_ID_PATTERN = re.compile(r"^[0-9a-f]{16}\Z")
+PRINTER_URI_PATTERN = re.compile(
+    r"^(ipps?)://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+)(?::([0-9]{1,5}))?(/(?:[A-Za-z0-9._~/-]|%[0-9A-Fa-f]{2})*)?\Z"
+)
 # en-US ships in the image; every other catalog is dropped onto the data
 # partition, which is how an organization adds its language without a new ISO.
 UI_LANGUAGE_DIR = "/opt/labkiosk/i18n"
@@ -2597,6 +2615,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # kiosk bar counts down to `at` (ms); `postponed` while
                         # a system update installs. None otherwise.
                         "powerOff": power_off,
+                        # The kiosk bar shows its Print button, and lets Ctrl+P
+                        # print, only while this is true (printing_ready).
+                        "printing": printing_ready(),
                     },
                 )
             return
@@ -3445,6 +3466,140 @@ def apply_lan_sharing(allowed):
     if result.returncode != 0:
         log(f"Could not stop {LAN_SHARE_UNIT}: {(result.stderr or result.stdout).strip()[:300]}")
         _lan_sharing["allowed"] = None
+
+
+# --------------------------------------------------------------------------
+# Printing
+# --------------------------------------------------------------------------
+
+# "wanted" is the helper's printer list for what the control plane last said,
+# [] for off; the image ships with printing off, so [] is also where a boot
+# starts and nothing runs until an organization turns printing on.
+_printing = {"wanted": [], "ready": False, "readyAt": 0.0, "unavailable": False}
+_printing_cond = threading.Condition()
+
+
+def printing_plan(value):
+    """
+    The printers this workstation should print to, as the helper takes them:
+    [(queue, uri, name)]. [] means printing is off, which is also what anything
+    malformed means -- a workstation never prints by mistake.
+    """
+    if not isinstance(value, dict) or value.get("enabled") is not True:
+        return []
+    printers = value.get("printers")
+    if not isinstance(printers, list) or len(printers) > PRINTING_MAX_PRINTERS:
+        log("Ignoring an unusable printer list from the control plane; printing stays off.")
+        return []
+    plan = []
+    for printer in printers:
+        if not isinstance(printer, dict) or any(f"labkiosk-{printer.get('id')}" == queue for queue, _, _ in plan):
+            continue
+        pid, uri, name = printer.get("id"), printer.get("uri"), printer.get("name")
+        if not (isinstance(pid, str) and PRINTER_ID_PATTERN.match(pid)
+                and isinstance(uri, str) and len(uri) <= 255 and PRINTER_URI_PATTERN.match(uri)
+                and isinstance(name, str) and name.strip() and len(name) <= 64 and name.isprintable()):
+            log(f"Ignoring an unusable printer from the control plane: {str(printer)[:200]}")
+            continue
+        plan.append((f"labkiosk-{pid}", uri, name))
+    return plan
+
+
+def apply_printing(value):
+    """Hand what the control plane says about printing to the printing loop."""
+    plan = printing_plan(value)
+    with _printing_cond:
+        if plan == _printing["wanted"]:
+            return
+        _printing["wanted"] = plan
+        if not plan:
+            # Hide the Print button before the policy goes.
+            _printing["ready"] = False
+        _printing_cond.notify_all()
+
+
+def printing_ready():
+    """Whether Chromium may print now: the helper allowed it and Chromium has reloaded its policy."""
+    with _printing_cond:
+        return _printing["ready"] and time.monotonic() >= _printing["readyAt"]
+
+
+def run_printing_helper(plan):
+    """Run labkiosk-printing for a plan; returns its JSON answer. Raises RuntimeError when it did not answer."""
+    if plan:
+        args = ["apply"]
+        for queue, uri, name in plan:
+            args += ["--printer", queue, uri, name]
+    else:
+        args = ["disable"]
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", PRINTING_HELPER] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=PRINTING_HELPER_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        raise RuntimeError(f"could not run {PRINTING_HELPER}: {err}") from err
+    for line in (proc.stderr or "").strip().splitlines():
+        log(line)
+    try:
+        answer = json.loads(proc.stdout or "")
+    except ValueError as err:
+        raise RuntimeError(f"{PRINTING_HELPER} returned no JSON ({(proc.stdout or '')[:120]!r})") from err
+    if not isinstance(answer, dict):
+        raise RuntimeError(f"{PRINTING_HELPER} returned {type(answer).__name__}, not an object")
+    return answer
+
+
+def printing_pass(plan):
+    """
+    Bring printing to `plan` once. Returns when to try again (a monotonic
+    time), or None when there is nothing to retry.
+    """
+    if not os.path.exists(PRINTING_HELPER):
+        with _printing_cond:
+            first = not _printing["unavailable"]
+            _printing["unavailable"] = True
+            _printing["ready"] = False
+        if first and plan:
+            log(f"Printing is turned on, but this image has no {PRINTING_HELPER}; it cannot print.")
+        return None
+    try:
+        answer = run_printing_helper(plan)
+    except RuntimeError as err:
+        log(f"Printing: {err}")
+        answer = {"error": str(err)}
+    allowed = bool(plan) and answer.get("policy") is True
+    with _printing_cond:
+        if _printing["wanted"] == plan:
+            if allowed and (answer.get("policyChanged") is True or not _printing["ready"]):
+                _printing["readyAt"] = time.monotonic() + PRINTING_POLICY_SETTLE_SECONDS
+            _printing["ready"] = allowed
+    if "error" in answer:
+        log(f"Printing could not be {'set up' if plan else 'turned off'}: {str(answer['error'])[:300]}")
+        return time.monotonic() + PRINTING_RETRY_SECONDS
+    failed = answer.get("failed") or []
+    if failed:
+        log(f"Printing: {len(failed)} of {len(plan)} printers could not be set up; trying them again in "
+            f"{PRINTING_RETRY_SECONDS // 60} minutes.")
+        return time.monotonic() + PRINTING_RETRY_SECONDS
+    if plan:
+        log(f"Printing is on, to {len(plan)} printer{'s' if len(plan) != 1 else ''}.")
+    else:
+        log("Printing is off.")
+    return None
+
+
+def printing_loop():
+    """Apply each change of printing as it comes, one at a time, and retry what failed."""
+    applied = []
+    retry_at = None
+    while True:
+        with _printing_cond:
+            while _printing["wanted"] == applied and (retry_at is None or time.monotonic() < retry_at):
+                _printing_cond.wait(None if retry_at is None else max(0.0, retry_at - time.monotonic()))
+            plan = _printing["wanted"]
+        retry_at = printing_pass(plan)
+        applied = plan
 
 
 def start_update_unit(unit):
@@ -4852,6 +5007,8 @@ def apply_control_update(data):
 
     if "power" in data:
         apply_power_schedule(data["power"])
+    if "printing" in data:
+        apply_printing(data["printing"])
 
     if isinstance(data.get("usageSites"), bool) and data["usageSites"] != usage_counter.record_sites:
         usage_counter.set_record_sites(data["usageSites"])
@@ -5338,6 +5495,7 @@ def main():
     threading.Thread(target=boot_report_loop, daemon=True).start()
     threading.Thread(target=usage_loop, daemon=True).start()
     threading.Thread(target=power_loop, daemon=True).start()
+    threading.Thread(target=printing_loop, daemon=True).start()
     if is_network_boot():
         threading.Thread(target=network_boot_enrol_loop, name="network-boot-enrol", daemon=True).start()
 

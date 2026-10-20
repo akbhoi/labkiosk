@@ -145,6 +145,7 @@ Off for every organization until one of its administrators accepts the Automatic
 | sysctl hardening, no core dumps | Kernel information disclosure |
 | Chromium deny-all `URLBlocklist` + allowlist | Unapproved browsing |
 | `AllowFileSelectionDialogs: false` | A file-picker used as a file manager |
+| Printing off by default: CUPS masked, `PrintingEnabled: false`; when an administrator turns it on, a local socket only and `PrinterTypeDenyList: ["pdf", "extension"]`, GTK's dialog limited to CUPS | A print service listening by default; "Save as PDF" or "Print to File" used to write files or open a file chooser |
 | Closed Shadow DOM + capture-phase event swallowing | A page tampering with the kiosk UI or evading the curtain |
 | GRUB `--unrestricted` + install-time password | Editing the kernel command line |
 | One-try boot of a new image, confirmed by `labkiosk-boot-slots` (root only, no sudo rule) | A bad system image stranding a workstation: it falls back to the old one |
@@ -162,6 +163,12 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 
 - **`labkiosk-wake-alarm`** is the only root program a power schedule uses (`/etc/sudoers.d/52-labkiosk-wake-alarm`, no arguments in the rule). It takes `set <epoch>` or `clear` and nothing else: the epoch must match `[0-9]{9,11}\Z` and fall 60 s to 8 days and an hour from now, and it writes only `/sys/class/rtc/rtc0/wakealarm`, through `O_NOFOLLOW`. A compromised agent can at worst switch the machine on at some time in the next week.
 - **A `wake` command carries only MAC addresses the Worker read from that organization's own hardware reports** (`client_devices.hardware`, filtered by `tenant_id`), never addresses from the request, and goes only to a workstation of the same organization at the same LAN site. The agent re-validates each address (unicast, at most 64) before it broadcasts a magic packet, which can do nothing but switch a machine on.
+
+### Printing
+
+Off until an administrator holding `settings` turns it on (Settings → Printing). A printer address is checked three times, with the same rules: by the Worker on save, by the agent, and by the root helper `labkiosk-printing`, which `kiosk` may run through sudo and which therefore trusts nothing it is given. Only `ipp://` and `ipps://` to a host name or a private address with a plain path pass: never `file:`, `usb:` or `socket:`, never the workstation itself or a public address, never user info, a query, spaces or shell characters. Nothing reaches a shell; the queue name is `labkiosk-` and 16 hex digits.
+
+With printing on, CUPS listens on its Unix socket only. No TCP port matters here: the browser's allowlist lets a page reach `127.0.0.1` on any port, so a web interface on `:631` would be a page from which printers could be changed. `kiosk` is not in `lpadmin`, CUPS's administrators' group, so only root (the helper) adds or deletes queues. The print preview offers only those queues: "Save as PDF" and extension printers are denied by policy, and `/etc/xdg/gtk-3.0/settings.ini` (and `gtk-4.0`) loads GTK's CUPS print backend only, so "Print using system dialog" has no "Print to File" and no file chooser. The policy file that lets Chromium print is written by root into the policy directory the agent owns, without following links and through a name the directory's owner cannot predict.
 
 ---
 
@@ -190,6 +197,8 @@ Mutating endpoints (`/api/install`, `/api/reboot`, `/api/setup`) re-validate the
 | AppArmor profiles in complain mode, none for Chromium | Enforcing before a release has shown no complaints risks blocking the agent; Chromium's own sandbox is its protection. |
 | No blanket `ExtensionInstallBlocklist` | It makes Chromium refuse `--load-extension` entirely, silently removing the kiosk's own nav bar and lock curtain. |
 | Camera and microphone are **not** blocked | Language labs and video pages need them. |
+| A page may call `window.print()` while printing is on | Printing on means printing from the organization's pages; the bar's button and Ctrl+P are the same call. While it is off, Chromium refuses it. |
+| CUPS runs unconfined when printing is on | Its AppArmor profile (`usr.sbin.cupsd`, from the package) is not among the two `labkiosk-apparmor.service` loads; the scheduler is reachable only on its local socket. |
 | `grub.pin` is empty in the repository | A committed hash is one password shared by every customer, unrotatable and permanent in git history. |
 | `--unrestricted` on every GRUB entry, unconditionally | Otherwise an installed disk gets `set superusers` with no unrestricted entry, and every workstation stops at a password prompt on every boot. |
 

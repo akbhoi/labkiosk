@@ -17,6 +17,7 @@ import { renderUpdatesPaneHtml, renderUpdatesScript } from "./ui_admin_updates";
 import { renderUsagePaneHtml, renderUsageScript } from "./ui_admin_usage";
 import { renderSsoCardHtml, renderSsoScript } from "./ui_admin_sso";
 import { renderPowerPaneHtml, renderPowerScript } from "./ui_admin_power";
+import { renderPrintingPaneHtml, renderPrintingScript } from "./ui_admin_printing";
 
 export function buildSettingsPage(options: AdminPageInput): AdminPageParts {
   const { tenant, config, sites, presets, staff, tenantParam, baseDomain, nonce } = options;
@@ -46,7 +47,8 @@ ${canUpdate ? renderUpdatesPaneHtml() : ""}`,
       (canUpdate ? renderUpdatesScript(nonce) : "") +
       renderUsageScript(nonce) +
       renderSsoScript(nonce) +
-      renderPowerScript(nonce)
+      renderPowerScript(nonce) +
+      renderPrintingScript(nonce)
   };
 }
 
@@ -114,6 +116,10 @@ function renderSettingsPageHtml(
       <button type="button" class="segmented-tab" data-action="tab-power">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
         <span>Power</span>
+      </button>
+      <button type="button" class="segmented-tab" data-action="tab-printing">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+        <span>Printing</span>
       </button>
     </nav>
 
@@ -359,6 +365,9 @@ ${renderUsagePaneHtml()}
     <div class="tab-pane" id="pane-power">
 ${renderPowerPaneHtml()}
     </div>
+    <div class="tab-pane" id="pane-printing">
+${renderPrintingPaneHtml()}
+    </div>
 
     <!-- ============================================================== -->
     <!-- TAB 5: ERRORS & WARNINGS                                       -->
@@ -465,7 +474,8 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
         "section-issues": "issues",
         "section-updates": "updates",
         "section-usage": "usage",
-        "section-power": "power"
+        "section-power": "power",
+        "section-printing": "printing"
       };
 
       function switchTab(tabId) {

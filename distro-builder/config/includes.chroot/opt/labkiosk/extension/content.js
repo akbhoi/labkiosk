@@ -24,6 +24,31 @@
  * pastes from the dashboard, and taking Ctrl+V away there would make the one
  * screen that needs it unusable. Users never see that origin.
  */
+/**
+ * Printing, only while the organization allows it (Settings -> Printing) and
+ * the agent reports that Chromium may print (status.printing). The bar's Print
+ * button and Ctrl+P both end here, in the top frame, so the whole page is
+ * printed and never one frame of it. Ctrl+P stays blocked by lockInput below
+ * either way: Chromium's own shortcut is not what prints. Ctrl+Shift+P, the
+ * system dialog's shortcut, is never let through.
+ */
+const kioskPrint = {
+  enabled: false,
+  print() {
+    if (this.enabled && window.self === window.top) window.print();
+  }
+};
+
+if (window.self === window.top) {
+  // Ctrl+P pressed inside an iframe, relayed by background.js.
+  chrome.runtime.onMessage.addListener((message, sender) => {
+    if (message && sender.id === chrome.runtime.id && message.type === "labkiosk:print-request") {
+      kioskPrint.print();
+    }
+    return false;
+  });
+}
+
 (function lockInput() {
   const AGENT_ORIGIN = "http://127.0.0.1:8888";
   const CLIPBOARD_KEYS = new Set(["a", "c", "v", "x", "z", "y"]);
@@ -66,10 +91,30 @@
     return false;
   }
 
+  function isPrintShortcut(event) {
+    return event.type === "keydown" && event.isTrusted && !event.repeat && event.ctrlKey &&
+      !event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "p";
+  }
+
   function guard(event) {
     if (permitted(event)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (!isPrintShortcut(event)) return;
+    if (window.self === window.top) {
+      kioskPrint.print();
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: "labkiosk:print-shortcut" }, () => {
+        if (chrome.runtime.lastError) {
+          console.warn("[LabKiosk] Ctrl+P not relayed to the page:", chrome.runtime.lastError.message);
+        }
+      });
+    } catch (err) {
+      // The extension was reloaded under this frame; its old script has no channel.
+      console.warn("[LabKiosk] Ctrl+P not relayed to the page:", err);
+    }
   }
 
   // Capture phase, so a page's own handler never runs either.
@@ -702,6 +747,9 @@ const BAR_INTRO_MS = 2500;
     shadow.innerHTML = `
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        /* A printed page is the page, without the bar or the curtain. */
+        @media print { :host { display: none !important; } }
+        .kiosk-btn[hidden] { display: none !important; }
         
         #kiosk-sensor {
           position: fixed;
@@ -1105,6 +1153,11 @@ const BAR_INTRO_MS = 2500;
             <svg width="17" height="15" viewBox="0 0 26 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="1.5" y="2" width="23" height="16" rx="2.5"></rect><path d="M6 7h.01M10 7h.01M14 7h.01M18 7h.01M6 11h.01M10 11h.01M14 11h.01M18 11h.01M8 14.5h10"></path></svg>
             <span data-i18n="bar.keyboard">Keyboard</span>
           </button>
+          <!-- Only while the organization allows printing (kioskPrint). -->
+          <button class="kiosk-btn" id="btn-print" title="Print this page" data-i18n-title="bar.printTitle" hidden>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+            <span data-i18n="bar.print">Print</span>
+          </button>
         </div>
 
         <div class="domain-pill">
@@ -1329,6 +1382,8 @@ const BAR_INTRO_MS = 2500;
       btnKeyboard.onclick = () => keyboard.toggle();
       keyboard.bindButton(btnKeyboard);
     }
+    const btnPrint = shadow.getElementById("btn-print");
+    if (btnPrint) btnPrint.onclick = () => kioskPrint.print();
 
     const adminModal = shadow.getElementById("admin-modal");
     const adminInput = shadow.getElementById("admin-modal-input");
@@ -1642,6 +1697,7 @@ const BAR_INTRO_MS = 2500;
       shadow.innerHTML = `
         <style>
           * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+          @media print { :host { display: none !important; } }
           .osk {
             position: fixed; left: 0; right: 0; bottom: 0; z-index: 2147483647;
             background: rgba(15, 23, 42, 0.98);
@@ -1963,6 +2019,11 @@ const BAR_INTRO_MS = 2500;
         // on-screen keyboard opens by itself on a text field. Unknown (null)
         // and true leave it to the bar's button.
         keyboard.setAutoMode(data.keyboardPresent === false);
+        // Printing: the agent says true only once Chromium may print, and
+        // never behind the lock curtain.
+        kioskPrint.enabled = data.printing === true && !isLocked;
+        const btnPrint = shadowRoot.getElementById("btn-print");
+        if (btnPrint) btnPrint.hidden = !kioskPrint.enabled;
 
         updateNavButtonStates(shadowRoot);
 

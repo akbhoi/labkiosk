@@ -207,7 +207,7 @@ That is what keeps a visited web page from reaching the installer.
 | Endpoint | Method | Notes |
 | :--- | :--- | :--- |
 | `/setup` | GET | Serves the wizard. `403` once enrolled. |
-| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname, `clockSynchronized` (whether a time server has set the clock since boot), and `keyboardPresent`/`touchPresent` (`input_devices_report()`, cached 5 s; `null` when unknown) |
+| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname, `clockSynchronized` (whether a time server has set the clock since boot), `keyboardPresent`/`touchPresent` (`input_devices_report()`, cached 5 s; `null` when unknown), and `printing` (`printing_ready()`: Chromium may print now) |
 | `/api/usage/tick` | POST | `{ host, active }` from the extension's service worker once a minute while a page is shown: the top frame's hostname and whether `chrome.idle` saw input in the last minute. Counted into the next usage report |
 | `/api/install/disks` | GET | `[]` when not a live session |
 | `/api/install/status` | GET | Progress percentage |
@@ -255,6 +255,23 @@ It also reports **`persistentStorage`**. That is false when `/etc/labkiosk` is n
 An installed workstation boots a system image under a RAM overlay, so the timezone, keyboard, time server and generated locale are the image's defaults again at every boot, and an update replaces the image altogether. The image ships no `locales-all`: `apply_saved_localization()` re-applies the choice saved in `/etc/labkiosk/localization.json` on `LABKIOSK_DATA` at every start, through `labkiosk-localization`, which regenerates the locale when it is missing. A failure is logged and never stops the agent.
 
 The clock also takes the network's own time servers. The NetworkManager dispatcher script `50-labkiosk-ntp` writes the IPv4 servers a DHCP lease names (option 42, validated) to `/run/systemd/timesyncd.conf.d/network-dhcp-<iface>.conf` and try-restarts `systemd-timesyncd`; the file is removed when the link goes down or a lease names none. A time server set in the wizard (`/etc/systemd/timesyncd.conf.d/labkiosk.conf`) sorts first, so it is tried first, and Debian's pool stays the fallback. The wizard's diagnostics line shows `Clock: Set from a time server` or `Not set from a time server yet`, from `clockSynchronized` (`/run/systemd/timesync/synchronized` exists).
+
+---
+
+## Printing
+
+Off until an administrator turns it on in Settings → Printing. The configuration carries `printing: { enabled, printers: [{ id, name, uri }] }`, only the printers meant for this workstation. `apply_printing()` turns it into the helper's list, `[(labkiosk-<id>, uri, name)]`; anything malformed means off, and an unusable printer (an id that is not 16 hex digits, an address that is not `ipp://`/`ipps://` with a plain path, an empty or over-long name, a control character) is dropped and logged. An update without the key changes nothing.
+
+`printing_loop()`, a thread of its own, applies each change one at a time through `sudo -n /usr/local/sbin/labkiosk-printing` (`/etc/sudoers.d/52-labkiosk-printing`):
+
+- `apply --printer <queue> <uri> <name> …` writes Lab Kiosk's `cupsd.conf` (the local socket `/run/cups/cups.sock` only: no TCP port, no web interface, no sharing or discovery, no job history), unmasks and starts CUPS, deletes every queue not listed, and creates each listed one with `lpadmin -p <queue> -E -v <uri> -m everywhere -D <name> -o printer-is-shared=false` (driverless IPP Everywhere: CUPS asks the printer for its capabilities). A queue already set up with the same address and name is not asked again. Once at least one queue exists it writes `/etc/chromium/policies/managed/zz-labkiosk-printing.json` with `PrintingEnabled: true`.
+- `disable` removes that file, stops and masks `cups.service` and `cups.socket`, and deletes every queue, PPD and job left in the spool.
+
+The helper checks every argument again (it is the trust boundary, not the agent) and answers one JSON object. A printer that could not be set up (switched off, not reachable from this network) is tried again every 5 minutes; so is a helper that failed. Without the helper (the Docker simulator) the agent logs once that it cannot print.
+
+**Why Chromium needs no restart.** Chromium merges every file in the managed policy directory, the last in name order winning a key two files set, so `zz-labkiosk-printing.json` overrides `PrintingEnabled: false` in `policies.json` whatever the agent writes there. Chromium watches the directory and reloads it about five seconds after a change (`ConfigDirPolicyLoader`, `AsyncPolicyLoader`'s settle interval), and `PrintingEnabled` applies to a running browser. `/api/status` reports `printing: true` only six seconds after the helper first allowed printing (`PRINTING_POLICY_SETTLE_SECONDS`), so the bar's Print button never appears before Chromium allows it; turning printing off hides it before the policy goes. A browser restart would end every signed-in session, so none is made.
+
+CUPS keeps its queues and jobs in `/etc/cups` and `/var/spool/cups`, in the RAM overlay: nothing survives a reboot, and the agent sets the queues up again from the configuration at every start.
 
 ---
 

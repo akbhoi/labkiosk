@@ -73,6 +73,7 @@ import {
   isWakeableMac,
   loadPowerRules
 } from "./power";
+import { Printer, WorkstationPrinting, listPrinters, printingFor } from "./printing";
 
 /** Text a workstation sends to prove it is alive; answered without waking the object. */
 export const HUB_PING = '{"type":"ping"}';
@@ -243,6 +244,9 @@ interface HubConfig {
   pilotGroups: Map<string, string>;
   /** Power schedules, and the group of each grouped workstation when any schedule is for a group. */
   power: { rules: PowerRule[]; groupOf: Map<string, string> };
+  /** The organization's printers, and the group of each workstation in a group one is limited to. */
+  printers: Printer[];
+  printerGroups: Map<string, string>;
   loadedAt: number;
 }
 
@@ -258,6 +262,8 @@ export interface WorkstationConfig {
   usageSites: boolean;
   /** When it switches itself off and on, day by day (src/power.ts); null: never. */
   power: WorkstationPower | null;
+  /** Whether it may print, and to which printers (src/printing.ts); off, it runs no print service. */
+  printing: WorkstationPrinting;
 }
 
 export interface QueuedCommand {
@@ -527,15 +533,20 @@ export class OrgHub {
       this.config = null;
       return null;
     }
-    const [whitelist, broadcasts, releases, power] = await Promise.all([
+    const [whitelist, broadcasts, releases, power, printers] = await Promise.all([
       buildEffectiveWhitelist(db, tenant.id),
       listDeviceBroadcasts(db, tenant.id),
       offeredReleases(db, tenant.update_channel, tenant.id),
-      loadPowerRules(db, tenant.id)
+      loadPowerRules(db, tenant.id),
+      tenant.printing_enabled === 1 ? listPrinters(db, tenant.id) : Promise.resolve([])
     ]);
     const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
-    const pilotGroups = await workstationGroupsIn(db, tenant.id, pilots);
-    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, pilotGroups, power, loadedAt: Date.now() };
+    const printerGroupNames = [...new Set(printers.flatMap((p) => (p.groupName ? [p.groupName] : [])))];
+    const [pilotGroups, printerGroups] = await Promise.all([
+      workstationGroupsIn(db, tenant.id, pilots),
+      workstationGroupsIn(db, tenant.id, printerGroupNames)
+    ]);
+    this.config = { tenant, whitelist, deviceBroadcasts: broadcasts, releases, pilotGroups, power, printers, printerGroups, loadedAt: Date.now() };
     return this.config;
   }
 
@@ -586,6 +597,7 @@ export class OrgHub {
       lanSharing: tenant.lan_sharing === 1,
       usageSites: tenant.usage_sites !== 0,
       power: effectivePower(config.power.rules, config.power.groupOf.get(clientId)),
+      printing: printingFor(tenant.printing_enabled === 1, config.printers, config.printerGroups.get(clientId)),
       portalUrl
     };
   }

@@ -29,6 +29,7 @@ import { DEMO_SLUGS } from "../src/demo";
 import { listHardwareModels, listPublicHardwareModels, rebuildHardwareModels } from "../src/hardware";
 import { platformUsage, purgeOldUsage, recordUsage, rollUpPlatformUsage, USAGE_RETENTION_DAYS } from "../src/usage";
 import { effectivePower, parsePowerScheduleInput, powerScheduleConflict } from "../src/power";
+import { MAX_PRINTERS, printerNameProblem, printerUriProblem, printingFor } from "../src/printing";
 import { createLocalD1Database } from "../src/d1_adapter";
 import { DatabaseSync } from "node:sqlite";
 import { safeHttpUrl, cleanCustomDomain } from "../src/escape";
@@ -9342,6 +9343,195 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(!(await issuesOf(rivalSessionCookie, "riverside")).some((i) => i.client_id === "PWR-RTC" || i.client_id === "PC-EVIL"));
     await removeAll(["PWR-RTC"]);
   });
+
+  // ------------------------------------------------------------- printing (0047)
+
+  test("A printer address is ipp:// or ipps:// to a host name or a private address, and nothing else", () => {
+    for (const good of [
+      "ipp://printer.example.org/ipp/print",
+      "ipps://printer.example.org:443/ipp/print",
+      "IPP://Printer01/printers/Office_Laser",
+      "ipp://192.168.1.40/ipp/print",
+      "ipp://10.0.0.7:631/printers/Room%2012",
+      "ipps://172.20.3.4/ipp/print",
+      "ipp://169.254.10.20",
+      "ipp://[fd12:3456::40]/ipp/print",
+      "ipp://printer.example.org."
+    ]) {
+      assert.equal(printerUriProblem(good), null, good);
+    }
+    for (const bad of [
+      "",
+      "   ",
+      42,
+      null,
+      "file:///etc/passwd",
+      "usb://HP/LaserJet",
+      "socket://192.168.1.40:9100",
+      "lpd://192.168.1.40/queue",
+      "http://192.168.1.40:631/ipp/print",
+      "https://printer.example.org/ipp/print",
+      "ipp://",
+      "ipp:///ipp/print",
+      "ipp://printer.example.org/ipp/print;reboot",
+      "ipp://printer.example.org/$(reboot)",
+      "ipp://printer.example.org/`id`",
+      "ipp://printer.example.org/a|b",
+      "ipp://printer.example.org/a b",
+      "ipp://printer.example.org/ipp/print?x=1",
+      "ipp://printer.example.org/ipp/print#x",
+      "ipp://printer.example.org/%zz",
+      "ipp://user:secret@printer.example.org/ipp/print",
+      "ipp://printer.example.org:0/ipp/print",
+      "ipp://printer.example.org:70000/ipp/print",
+      "ipp://localhost/printers/x",
+      "ipp://127.0.0.1:631/printers/x",
+      "ipp://8.8.8.8/ipp/print",
+      "ipp://192.168.1.300/ipp/print",
+      "ipp://192.168.01.40/ipp/print",
+      "ipp://1234/ipp/print",
+      "ipp://-printer.example.org/",
+      "ipp://printer..example.org/",
+      "ipp://[2001:db8::1]/ipp/print",
+      "ipp://[fe80::1]/ipp/print",
+      "ipp://[fd00::zz]/",
+      "ipp://printer.example.org/ipp\n/print",
+      "ipp://printer.example.org/" + "a".repeat(260)
+    ]) {
+      assert.notEqual(printerUriProblem(bad), null, JSON.stringify(bad));
+    }
+    assert.equal(printerNameProblem("Library, ground floor"), null);
+    for (const bad of ["", " ", "a".repeat(65), "Line\nbreak", "Tab\there", 7]) {
+      assert.notEqual(printerNameProblem(bad), null, JSON.stringify(bad));
+    }
+    const printers = [
+      { id: "aaaaaaaaaaaaaaaa", name: "All", uri: "ipp://p1.example.org/", groupName: null },
+      { id: "bbbbbbbbbbbbbbbb", name: "Lab", uri: "ipp://p2.example.org/", groupName: "Lab A" }
+    ];
+    assert.deepEqual(printingFor(false, printers, "Lab A"), { enabled: false, printers: [] }, "off sends nothing to print to");
+    assert.deepEqual(printingFor(true, printers, undefined).printers.map((p) => p.name), ["All"]);
+    assert.deepEqual(printingFor(true, printers, "Lab A").printers.map((p) => p.name), ["All", "Lab"]);
+  });
+
+  test("Printing is off by default, and Settings -> Printing is for the organization's settings staff only", async () => {
+    const settings = "/api/settings/printing?tenant=greenwood";
+    const initial = await callJson(settings, { cookie: orgSessionCookie });
+    assert.equal(initial.res.status, 200);
+    assert.equal(initial.data.enabled, false, "off until an administrator turns it on");
+    assert.deepEqual(initial.data.printers, []);
+    assert.equal(initial.data.maxPrinters, MAX_PRINTERS);
+
+    const valid = { enabled: true, printers: [{ name: "Front desk", uri: "ipp://192.168.1.40/ipp/print" }] };
+    for (const init of [{}, json(valid)]) {
+      assert.ok([401, 403].includes((await call(settings, init)).status), "anonymous");
+      assert.ok([401, 403].includes((await call(settings, { ...init, cookie: rivalSessionCookie })).status), "another organization");
+    }
+    const crossSite = await call(settings, { ...json(valid), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+    assert.equal(crossSite.status, 403, "cross-site");
+    const operator = await staffWith("printing-operator@greenwood.example", ["workstations"]);
+    assert.equal((await call(settings, { cookie: operator })).status, 403, "workstations is not settings");
+    assert.equal((await call(settings, { ...json(valid), cookie: operator })).status, 403);
+
+    const printer = (overrides: Record<string, unknown>) => ({ name: "Front desk", uri: "ipp://192.168.1.40/ipp/print", ...overrides });
+    for (const body of [
+      [],
+      { printers: [] },
+      { enabled: "yes", printers: [] },
+      { enabled: true },
+      { enabled: true, printers: "none" },
+      { enabled: true, printers: [7] },
+      { enabled: true, printers: [printer({ uri: "file:///etc/shadow" })] },
+      { enabled: true, printers: [printer({ uri: "usb://HP/LaserJet" })] },
+      { enabled: true, printers: [printer({ uri: "ipp://192.168.1.40/;rm -rf /" })] },
+      { enabled: true, printers: [printer({ uri: "ipp://203.0.113.9/ipp/print" })] },
+      { enabled: true, printers: [printer({ name: "" })] },
+      { enabled: true, printers: [printer({ groupName: 5 })] },
+      { enabled: true, printers: [printer({}), printer({ name: "FRONT DESK", uri: "ipp://192.168.1.41/" })] },
+      { enabled: true, printers: Array.from({ length: MAX_PRINTERS + 1 }, (_, i) => printer({ name: `P${i}` })) }
+    ]) {
+      assert.equal((await call(settings, { ...json(body), cookie: orgSessionCookie })).status, 400, JSON.stringify(body).slice(0, 120));
+    }
+    assert.equal((await call(settings, { method: "POST", body: "{not json", headers: { "Content-Type": "application/json" }, cookie: orgSessionCookie })).status, 400);
+    const unknownGroup = await call(settings, { ...json({ enabled: true, printers: [printer({ groupName: "No such group" })] }), cookie: orgSessionCookie });
+    assert.equal(unknownGroup.status, 404);
+    const after = await callJson(settings, { cookie: orgSessionCookie });
+    assert.equal(after.data.enabled, false, "nothing refused was stored");
+    assert.deepEqual(after.data.printers, []);
+  });
+
+  test("Turning printing on sends each workstation the printers meant for it, and off takes them away", async () => {
+    const tenantId = await greenwoodId();
+    const settings = "/api/settings/printing?tenant=greenwood";
+    const group = await callJson("/api/groups?tenant=greenwood", { ...json({ name: "Print Lab" }), cookie: orgSessionCookie });
+    assert.equal(group.res.status, 200);
+    for (const clientId of ["PRN-1", "PRN-2"]) {
+      const enrolled = await call("/api/devices/enroll", {
+        ...json({ subdomain: "greenwood", enrollmentKey, clientId }),
+        headers: { "CF-Connecting-IP": "198.51.100.47" }
+      });
+      assert.equal(enrolled.status, 200, `enrolling ${clientId}`);
+    }
+    const inGroup = await hubs().connectDevice({ tenantId, clientId: "PRN-1", ip: "10.0.0.21", portal: portalContext() });
+    const outside = await hubs().connectDevice({ tenantId, clientId: "PRN-2", ip: "10.0.0.22", portal: portalContext() });
+    assert.equal((await call("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PRN-1"], groupName: "Print Lab" }), cookie: orgSessionCookie })).status, 200);
+    const printingOf = (socket: typeof inGroup) =>
+      ofType(socket, "config").at(-1)!.printing as { enabled: boolean; printers: Array<{ id: string; name: string; uri: string }> };
+    assert.deepEqual(printingOf(inGroup), { enabled: false, printers: [] }, "a workstation is told printing is off");
+
+    const saved = await callJson(settings, {
+      ...json({
+        enabled: true,
+        printers: [
+          { name: "Library", uri: " IPPS://printer.example.org/ipp/print " },
+          { name: "Lab colour", uri: "ipp://192.168.5.9/ipp/print", groupName: "Print Lab" }
+        ]
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.equal(saved.res.status, 200);
+    assert.equal(saved.data.enabled, true);
+    assert.equal(saved.data.printers[0].uri, "ipps://printer.example.org/ipp/print", "trimmed, the scheme in lower case for CUPS");
+    assert.ok(saved.data.printers.every((p: any) => /^[0-9a-f]{16}$/.test(p.id)));
+    assert.deepEqual(printingOf(inGroup).printers.map((p) => p.name), ["Library", "Lab colour"]);
+    assert.deepEqual(printingOf(outside).printers.map((p) => p.name), ["Library"], "a printer limited to a group reaches only its members");
+    assert.equal(printingOf(outside).enabled, true);
+
+    // The HTTP heartbeat carries the same, and another organization sees none of it.
+    const heartbeat = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.equal(heartbeat.data.printing.enabled, true);
+    assert.deepEqual(heartbeat.data.printing.printers.map((p: any) => p.name), ["Library"]);
+    const rival = await callJson("/api/settings/printing?tenant=riverside", { cookie: rivalSessionCookie });
+    assert.deepEqual(rival.data.printers, []);
+    assert.equal(rival.data.enabled, false);
+
+    // A printer that keeps its id keeps its queue; moving a workstation into the group reaches it.
+    const ids = saved.data.printers.map((p: any) => p.id);
+    const again = await callJson(settings, {
+      ...json({
+        enabled: true,
+        printers: [...saved.data.printers.map((p: any) => ({ ...p })), { id: "ffffffffffffffff", name: "Extra", uri: "ipp://extra.example.org/" }]
+      }),
+      cookie: orgSessionCookie
+    });
+    assert.deepEqual(again.data.printers.slice(0, 2).map((p: any) => p.id), ids);
+    assert.notEqual(again.data.printers[2].id, "ffffffffffffffff", "an id the organization does not have is replaced");
+    assert.equal((await call("/api/clients/group?tenant=greenwood", { ...json({ clientIds: ["PRN-2"], groupName: "Print Lab" }), cookie: orgSessionCookie })).status, 200);
+    assert.deepEqual(printingOf(outside).printers.map((p) => p.name), ["Library", "Lab colour", "Extra"], "moved into the group, told at once");
+
+    const logs = (await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).data.logs as Array<{ action: string; details?: string }>;
+    assert.ok(logs.some((entry) => entry.action === "settings.printing" && (entry.details || "").startsWith("on ")), "the change is audited");
+
+    const off = await callJson(settings, { ...json({ enabled: false, printers: again.data.printers }), cookie: orgSessionCookie });
+    assert.equal(off.data.enabled, false);
+    assert.equal(off.data.printers.length, 3, "the list is kept for next time");
+    assert.deepEqual(printingOf(inGroup), { enabled: false, printers: [] }, "off: nothing to print to");
+    assert.deepEqual(printingOf(outside), { enabled: false, printers: [] });
+
+    await callJson(settings, { ...json({ enabled: false, printers: [] }), cookie: orgSessionCookie });
+    await inGroup.closeFromClient();
+    await outside.closeFromClient();
+    await callJson(`/api/groups/${group.data.group.id}?tenant=greenwood`, { method: "DELETE", cookie: orgSessionCookie });
+  });
 });
 
 /**
@@ -9511,6 +9701,7 @@ describe("Schema sources agree", () => {
     // 0046: single sign-on settings and the sign-ins in flight.
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0046"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0045"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0047"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 

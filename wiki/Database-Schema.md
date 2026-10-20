@@ -79,6 +79,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0044_usage_and_hardware.sql` | Usage reports: `usage_daily`, `usage_sites`, `tenants.usage_sites`, and the anonymous platform tables `platform_usage_daily` and `platform_usage_sites`. Hardware: `client_devices.hardware`, `hardware_at`, and the platform table `hardware_models` behind `/hardware` |
 | `0045_power_schedules.sql` | `power_schedules`: when an organization's workstations switch themselves off and on again (Settings → Power), for every workstation or one group |
 | `0046_single_sign_on.sql` | `sso_settings` (an organization's Google Workspace / Microsoft Entra ID sign-in) and `sso_states` (sign-ins in flight) |
+| `0047_printing.sql` | `tenants.printing_enabled` (default `0` for every organization) and `printers`: the organization's network printers (Settings → Printing) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -145,6 +146,7 @@ One row per organization. This table has accumulated the most columns because it
 | `license_plan` | TEXT | Which grant of `LICENSE` applies: `education`, `evaluation`, `subscriber`, `commercial`; NULL until a super admin records it (`0037`) |
 | `license_expires_at` | INTEGER | When the license ends (00:00 UTC of the date set); NULL for no end date. Once passed, new enrolments and Remote Control are refused; enrolled workstations keep working (`0037`, `src/license.ts`) |
 | `usage_sites` | INTEGER | `1` (default): workstations send the hostnames they spend time on with their usage reports; `0`: only time on and in use (`0044`) |
+| `printing_enabled` | INTEGER | `1` when the organization's workstations may print (Settings → Printing); `0` by default, `CHECK (printing_enabled IN (0, 1))` (`0047`, `src/printing.ts`) |
 | `created_at` / `updated_at` | INTEGER | |
 
 `broadcast_url` and `broadcast_epoch` live here rather than in worker memory because isolates are per-colocation and short-lived. When they were module-level state, workstations in different colos disagreed about the current page and a recycled isolate forgot the broadcast entirely. A broadcast sent to **selected** workstations is recorded on each of their `client_devices` rows instead; the heartbeat hands a workstation whichever of the two is newer.
@@ -462,6 +464,22 @@ An organization's power schedules (Settings → Power, `src/power.ts`). Times ar
 
 For each day a workstation follows its group's schedule for that day when there is one, else the all-workstations one. Two schedules for the same workstations never share a day (the route answers `409`), and switch-on and switch-off are at least 15 minutes apart. At most 50 per organization. A later cascade-safe rebuild of `tenants` or `workstation_groups` must hold this table too.
 
+### `printers`
+
+The organization's network printers (`0047`, `src/printing.ts`). Read by the OrgHub only while `tenants.printing_enabled = 1`; a save replaces the whole list in one batch.
+
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | TEXT | 16 lower-case hex digits, also the queue name on the workstation (`labkiosk-<id>`); kept across saves so a workstation keeps its queue. Primary key `(tenant_id, id)` |
+| `tenant_id` | TEXT → `tenants.id` | `ON DELETE CASCADE` |
+| `name` | TEXT | 1–64 characters, no control characters, unique per organization case-insensitively (checked on save) |
+| `uri` | TEXT | `ipp://` or `ipps://` to a host name or private address, at most 255 characters, scheme stored in lower case (`printerUriProblem`) |
+| `group_name` | TEXT | Only the workstations in this group get it; NULL for every workstation. Matched by name, like `client_devices.group_name` |
+| `position` | INTEGER | Order in the console |
+| `created_at` | INTEGER | |
+
+At most 20 per organization (`MAX_PRINTERS`).
+
 ### `audit_logs`
 
 | Column | Type | Notes |
@@ -498,6 +516,7 @@ idx_usage_daily_day                usage_daily(day)            -- the cron's pla
 idx_usage_sites_day                usage_sites(day)            -- the cron's platform rollup and retention only
 idx_sso_states_expires             sso_states(expires_at)
 idx_sso_states_handoff             sso_states(handoff_hash)    -- UNIQUE
+idx_printers_tenant                printers(tenant_id, position)
 ```
 
 Every index leads with `tenant_id` wherever the table is tenant-scoped, matching the query shape that `db.ts` always uses. The two `day` indexes are the exception: only the hourly cron reads by day across organizations, to build the anonymous platform totals and delete old rows.

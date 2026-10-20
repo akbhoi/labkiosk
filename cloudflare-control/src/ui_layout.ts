@@ -1395,6 +1395,14 @@ const CONSOLE_CSS = `${rootTokensCss()}
 
     /* Settings -> Power: the days of a schedule, Monday to Sunday, wrapping on a phone. */
     .power-days { display: flex; flex-wrap: wrap; gap: 2px 18px; }
+    /* Settings -> Printing: one row of fields per printer, stacked on a narrow canvas. */
+    .printer-row { padding-top: 12px; margin-bottom: 12px; border-top: 1px solid var(--border-subtle); }
+    .printer-row > .form-group:nth-child(2) { flex: 2; }
+    .printer-row > .printer-row-actions { flex: 0 0 auto; }
+    @container canvas (max-width: 760px) {
+      .printer-row { flex-direction: column; align-items: stretch; }
+      .printer-row > .form-group { margin-bottom: 8px; }
+    }
 
     /* Key-value list (panel summaries, detail blocks). */
     .kv-list { display: flex; flex-direction: column; gap: 6px; padding: 0 8px; font-size: 0.8125rem; }

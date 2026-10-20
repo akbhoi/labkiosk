@@ -107,5 +107,8 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   # tables (01-lockdown.hook.chroot). labkiosk-wake-alarm, a power schedule's
   # switch-on, is one of them; its postponed shutdown (power-pending.json) is
   # under /etc/labkiosk above, and Wake-on-LAN is a UDP broadcast (inet dgram).
+  # labkiosk-printing is how printing is turned on and off: the agent has no
+  # rule for /etc/cups or the spool, and leaves zz-labkiosk-printing.json, the
+  # policy that lets Chromium print, to it.
   /usr/bin/sudo Ux,
 }

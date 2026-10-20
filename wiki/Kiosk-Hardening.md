@@ -25,6 +25,10 @@ Three layers, because each one only catches what the layer below it let through.
 The single exception is the clipboard (Ctrl+A/C/V/X/Z/Y) on the setup wizard's own loopback origin,
 so an administrator can paste the enrolment key. No page a user can reach has that origin.
 
+Ctrl+P stays blocked as well. While an organization allows printing, the extension prints the page
+itself when it sees one ([Browser Extension](Browser-Extension#the-navigation-bar)); Chromium's own
+shortcut never runs.
+
 `/etc/overlayroot.conf`:
 
 ```ini
@@ -160,6 +164,10 @@ Everything is denied, and the organization's `URLAllowlist` re-permits exactly i
 | `HardwareAccelerationModeEnabled` | `true` | Thin clients need it |
 
 **Audio and video capture are deliberately *not* blocked.** Language labs and video pages legitimately need the microphone and camera; taking them away breaks real room use.
+
+### Printing
+
+`PrintingEnabled: false` is in the base, and the agent never writes it otherwise. When an organization turns printing on, the root helper `labkiosk-printing` adds `zz-labkiosk-printing.json` beside `policies.json`, with `PrintingEnabled: true`: Chromium merges the directory's files in name order, the last winning, and reloads them about five seconds after a change. Turning printing off removes the file. Whether printing is on or off, `PrinterTypeDenyList: ["pdf", "extension"]` keeps "Save as PDF" and extension printers out of the print preview, and `/etc/xdg/gtk-3.0/settings.ini` (and `gtk-4.0`) gives GTK's system dialog the CUPS backend only, so it has no "Print to File". → [Client Agent](Client-Agent#printing)
 
 ### One home for the policy
 

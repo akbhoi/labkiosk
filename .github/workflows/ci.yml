@@ -195,7 +195,8 @@ jobs:
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-share \
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-logs \
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-data-unlock \
-            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-health \
+            distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-printing
           if find distro-builder/config/includes.chroot -name '__pycache__' | grep -q .; then
             echo "::error::__pycache__ was written into the image overlay"
             exit 1

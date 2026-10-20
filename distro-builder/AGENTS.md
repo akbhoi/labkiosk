@@ -49,7 +49,8 @@ distro-builder/
 │       │   ├── labkiosk-install        # Automated Python disk installer (GPT, ESP, image store, dual GRUB)
 │       │   └── labkiosk-lock-keys      # Strips blocked keys from the X keymap (Rule 1h)
 │       ├── usr/local/sbin/
-│       │   ├── labkiosk-localization   # The one program the agent may sudo (Rule 1e)
+│       │   ├── labkiosk-localization   # Sudo for the agent: language, region, clock (Rule 1e)
+│       │   ├── labkiosk-printing       # Sudo for the agent: CUPS queues and the print policy (Rule 1e)
 │       │   ├── labkiosk-boot-slots     # Root-only: grubenv, one-try boot, health check, rollback
 │       │   ├── labkiosk-update         # Root-only: signed release download and install (Rule 8)
 │       │   ├── labkiosk-health         # Root-only: SMART / eMMC disk health every 6 h (Rule 1j)
@@ -208,9 +209,16 @@ distro-builder/
   (the `locales` package, ~21 MB), keyboard layouts from the X11 rules list. A hardcoded country
   list would be wrong by the next tzdata update.
 - Setting a timezone, generating a locale and writing `/etc/default/keyboard` need root, and the
-  agent does not run as root. `/usr/local/sbin/labkiosk-localization` is the only program it may
-  run through sudo, and **it re-validates every argument against those same tables** — the caller
-  is not a trust boundary, exactly as with `labkiosk-install`.
+  agent does not run as root. `/usr/local/sbin/labkiosk-localization` is one of the two programs it
+  may run through sudo, and **it re-validates every argument against those same tables** — the
+  caller is not a trust boundary, exactly as with `labkiosk-install`. The other is
+  `/usr/local/sbin/labkiosk-printing` (`/etc/sudoers.d/52-labkiosk-printing`), which turns printing
+  on and off when the organization's Settings → Printing says so and re-validates every queue name,
+  printer address and name it is given. CUPS ships masked (`cups.service`, `cups.socket`,
+  `cups.path`); with printing on it listens on its Unix socket only, never on TCP 631, because the
+  allowlist lets any page reach `127.0.0.1` on any port. The policy that lets Chromium print is a
+  second file, `zz-labkiosk-printing.json`, written by the helper and never by the agent
+  (`wiki/Client-Agent.md`, Printing).
 - The choice itself is persisted in `/etc/labkiosk/localization.json`, and `apply_saved_localization()`
   re-applies it at every agent start. On an installed disk that is the only way it comes back:
   the system image is the same for every organization and an update replaces it, so the installer
@@ -782,7 +790,8 @@ PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc python3 -m py_compile \
   distro-builder/config/includes.chroot/opt/labkiosk/agent/agent.py \
   distro-builder/config/includes.chroot/usr/local/bin/labkiosk-install \
   distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-localization \
-  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-boot-slots \
+  distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-printing
 sh -n distro-builder/config/includes.chroot/etc/systemd/system-generators/labkiosk-data-generator
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/content.js
 node --check distro-builder/config/includes.chroot/opt/labkiosk/extension/background.js

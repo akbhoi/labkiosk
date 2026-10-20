@@ -71,7 +71,11 @@ Closed matters: a closed shadow root is not reachable from the host element, so 
 
 **Never modify `document.body.style.marginTop`.** Reserving space for the bar breaks full-height layouts on real sites and reintroduces a scrollbar the kiosk does not want.
 
-Controls: Home, Back, Forward, Reload, Keyboard (`#btn-keyboard`, the on-screen keyboard below), domain pill, and `.client-meta` housing the network status icon (`#btn-network`), connection status dot (`#kiosk-dot`), and client ID. Navigation is done entirely with the History API in the content script and never touches the agent, so there is no navigation channel to the loopback API at all.
+Controls: Home, Back, Forward, Reload, Keyboard (`#btn-keyboard`, the on-screen keyboard below), Print (`#btn-print`, below), domain pill, and `.client-meta` housing the network status icon (`#btn-network`), connection status dot (`#kiosk-dot`), and client ID. Navigation is done entirely with the History API in the content script and never touches the agent, so there is no navigation channel to the loopback API at all.
+
+**Print.** `#btn-print` is hidden until `/api/status` says `printing: true`, which the agent reports only once the organization has turned printing on, a printer is set up and Chromium has reloaded the policy that lets it print ([Client Agent](Client-Agent#printing)); it hides again behind the lock curtain and the moment printing is turned off. It calls `window.print()` in the top frame (`kioskPrint` in `content.js`), so the whole page prints. The bar, the curtain and the on-screen keyboard are left out of the printout (`@media print { :host { display: none } }` in their shadow roots).
+
+**Ctrl+P.** The keyboard lockdown blocks it as every other Ctrl combination, so Chromium's own shortcut never runs. While printing is allowed, a real (`isTrusted`) Ctrl+P keydown, without Shift, Alt or Meta and not a repeat, prints the page the same way as the button; pressed inside an iframe, it goes to the top frame through `background.js` (`labkiosk:print-shortcut` → `labkiosk:print-request`, frame 0). While printing is off it does nothing. Ctrl+Shift+P, the system dialog's shortcut, stays blocked.
 
 ---
 

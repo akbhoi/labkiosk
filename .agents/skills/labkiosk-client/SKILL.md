@@ -95,9 +95,20 @@ Paths are under `distro-builder/config/includes.chroot/`. Authoritative detail:
   `\\Z` (that demands a literal backslash; it once rejected every language tag and broke installs).
   A test scans the client scripts for it.
 
+## Printing (`usr/local/sbin/labkiosk-printing`)
+
+Off until Settings → Printing turns it on; the configuration's `printing: {enabled, printers}` goes
+to `apply_printing()`, malformed means off. `printing_loop()` runs the helper through sudo
+(`/etc/sudoers.d/52-labkiosk-printing`) one change at a time and retries failures every 5 min;
+`/api/status.printing` (`printing_ready()`) turns true 6 s after the helper wrote
+`zz-labkiosk-printing.json`, and the bar's `#btn-print` and Ctrl+P (`kioskPrint` in `content.js`)
+follow it. The helper re-validates everything; keep `PRINTER_URI_PATTERN` equal to its
+`URI_PATTERN` (a test pins both, and the Worker's `printerUriProblem` applies the same rules).
+Never write `PrintingEnabled` from the agent and never let CUPS listen on TCP.
+
 ## Language & Region (`usr/local/sbin/labkiosk-localization`)
 
-The only program the agent may run through sudo (`/etc/sudoers.d/51-labkiosk-localization`); it
+One of the two programs the agent may run through sudo (`/etc/sudoers.d/51-labkiosk-localization`); it
 **re-validates every argument** (zone against
 zoneinfo + `zone1970.tab`, locale against `/usr/share/i18n/SUPPORTED`, keymap against X11 rules,
 language tag against `UI_LANGUAGE_PATTERN`, which must equal the agent's). A locale has three

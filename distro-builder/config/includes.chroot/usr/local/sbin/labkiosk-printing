@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""
+Turn printing on or off as root, on behalf of the unprivileged agent.
+
+Printing is off on every workstation until an administrator turns it on in
+Settings -> Printing. Off means off: the image ships CUPS masked, so no print
+service runs and nothing listens, and Chromium's managed policy says
+PrintingEnabled: false. The agent calls this program when the organization's
+configuration says otherwise:
+
+    labkiosk-printing apply --printer QUEUE URI NAME [--printer ...]
+    labkiosk-printing disable
+
+apply   installs Lab Kiosk's cupsd.conf (a local socket only: no TCP port, no
+        web interface, no sharing, no discovery), unmasks and starts CUPS,
+        makes the queues exactly the ones listed -- one driverless IPP
+        Everywhere queue per printer (lpadmin -m everywhere), every other
+        queue deleted -- and, once at least one queue exists, writes the extra
+        managed policy that lets Chromium print.
+disable removes that policy, stops and masks CUPS, and deletes every queue
+        and every job it left.
+
+The kiosk user may run exactly this program through sudo
+(/etc/sudoers.d/52-labkiosk-printing), so **the caller is not a trust
+boundary**: every argument is re-validated here, with the rules the control
+plane and the agent apply (cloudflare-control/src/printing.ts). Nothing reaches
+a shell. CUPS keeps its queues in /etc/cups and /var/spool/cups, which are in
+the RAM overlay: nothing survives a reboot, and the agent rebuilds the queues
+from the organization's configuration at every boot.
+
+Output: progress on stderr, one JSON object on stdout. Nothing else may reach
+stdout -- agent.py parses it.
+"""
+
+import argparse
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+CUPSD_CONF_SOURCE = "/usr/share/labkiosk/cups/cupsd.conf"
+CUPSD_CONF = "/etc/cups/cupsd.conf"
+CUPS_PRINTERS_CONF = "/etc/cups/printers.conf"
+CUPS_PPD_DIR = "/etc/cups/ppd"
+CUPS_SPOOL_DIR = "/var/spool/cups"
+# cups.path stays masked: it would start the scheduler whenever a file appears
+# in the spool, which nothing here needs.
+CUPS_UNITS = ("cups.socket", "cups.service")
+# Chromium merges every file in this directory, the last in name order winning
+# a key both set (config_dir_policy_loader.cc), so this file overrides
+# PrintingEnabled: false in the agent's policies.json whatever the agent writes.
+# Chromium watches the directory and reloads it about five seconds after a
+# change; PrintingEnabled applies without a restart.
+POLICY_DIR = "/etc/chromium/policies/managed"
+POLICY_NAME = "zz-labkiosk-printing.json"
+POLICY = {"PrintingEnabled": True}
+# What this program last set up, so an unchanged queue is not asked of its
+# printer again. In /run, gone at the next boot together with the queues.
+STATE_DIR = "/run/labkiosk-printing"
+STATE_FILE = os.path.join(STATE_DIR, "queues.json")
+
+MAX_PRINTERS = 20
+MAX_NAME_LENGTH = 64
+MAX_URI_LENGTH = 255
+SCHEDULER_WAIT_SECONDS = 30
+COMMAND_TIMEOUT_SECONDS = 30
+# lpadmin -m everywhere asks the printer itself for its capabilities.
+QUEUE_TIMEOUT_SECONDS = 45
+
+# Keep these in step with the agent (PRINTER_QUEUE_PATTERN and friends in
+# opt/labkiosk/agent/agent.py) and with cloudflare-control/src/printing.ts.
+QUEUE_PATTERN = re.compile(r"^labkiosk-[0-9a-f]{16}\Z")
+URI_PATTERN = re.compile(
+    r"^(ipps?)://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+)(?::([0-9]{1,5}))?(/(?:[A-Za-z0-9._~/-]|%[0-9A-Fa-f]{2})*)?\Z"
+)
+HOST_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+IPV4_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}\Z")
+CONTROL_CHARACTERS = re.compile("[\u0000-\u001f\u007f-\u009f\u2028\u2029]")
+PRIVATE_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7",
+))
+# A job's control and data files in the spool: c00001, d00001-001.
+SPOOL_FILE_PATTERN = re.compile(r"^[cd][0-9]+(?:-[0-9]+)?\Z")
+
+
+def log(message):
+    print(f"[PRINTING] {message}", file=sys.stderr)
+
+
+def printer_uri_problem(uri):
+    """Why a printer address is refused, or None for an ipp:// or ipps:// address on the organization's network."""
+    if not isinstance(uri, str) or not uri:
+        return "a printer needs an address"
+    if len(uri) > MAX_URI_LENGTH:
+        return f"a printer address is at most {MAX_URI_LENGTH} characters"
+    shape = URI_PATTERN.match(uri)
+    if not shape:
+        return "a printer address is ipp:// or ipps://, a host name or private address, an optional port and a plain path"
+    host, port = shape.group(2).lower(), shape.group(3)
+    if port is not None and not 1 <= int(port) <= 65535:
+        return "a printer's port is from 1 to 65535"
+    if host.startswith("["):
+        try:
+            address = ipaddress.IPv6Address(host[1:-1])
+        except ValueError:
+            return "that is not an IPv6 address"
+        if address not in PRIVATE_NETWORKS[4]:
+            return "an IPv6 printer address must be a unique local address (fc00::/7)"
+        return None
+    if re.match(r"^[0-9.]+\Z", host):
+        if not IPV4_PATTERN.match(host):
+            return "that is not an IPv4 address"
+        try:
+            address = ipaddress.IPv4Address(host)
+        except ValueError:
+            return "that is not an IPv4 address"
+        if not any(address in network for network in PRIVATE_NETWORKS[:4]):
+            return "a printer's IP address must be on a private network"
+        return None
+    name = host[:-1] if host.endswith(".") else host
+    if len(name) > 253 or not all(HOST_LABEL_PATTERN.match(label) for label in name.split(".")):
+        return "that is not a host name"
+    if not re.search(r"[a-z]", name):
+        return "that is not a host name"
+    if name == "localhost" or name.endswith(".localhost"):
+        return "a printer cannot be on the workstation itself"
+    return None
+
+
+def printer_name_problem(name):
+    """Why a printer's display name is refused, or None."""
+    if not isinstance(name, str) or not name.strip():
+        return "a printer needs a name"
+    if len(name) > MAX_NAME_LENGTH:
+        return f"a printer's name is at most {MAX_NAME_LENGTH} characters"
+    if CONTROL_CHARACTERS.search(name):
+        return "a printer's name cannot contain control characters"
+    return None
+
+
+def validate_printers(printers):
+    """[(queue, uri, name)] checked one by one; raises ValueError on the first problem."""
+    if not printers:
+        raise ValueError("apply needs at least one --printer")
+    if len(printers) > MAX_PRINTERS:
+        raise ValueError(f"at most {MAX_PRINTERS} printers")
+    queues = set()
+    for queue, uri, name in printers:
+        if not QUEUE_PATTERN.match(queue):
+            raise ValueError(f"{queue!r} is not a Lab Kiosk queue name")
+        if queue in queues:
+            raise ValueError(f"{queue} is listed twice")
+        queues.add(queue)
+        problem = printer_uri_problem(uri) or printer_name_problem(name)
+        if problem:
+            raise ValueError(f"{queue}: {problem}")
+    return [tuple(p) for p in printers]
+
+
+def run(command, timeout=COMMAND_TIMEOUT_SECONDS):
+    """Run one command; returns (ok, output) and never raises for a failed or missing program."""
+    try:
+        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, timeout=timeout, check=False)
+    except FileNotFoundError:
+        return False, f"{command[0]} is not installed"
+    except subprocess.TimeoutExpired:
+        return False, f"{command[0]} did not finish within {timeout} seconds"
+    return proc.returncode == 0, (proc.stdout or "").strip()
+
+
+def install_cupsd_conf():
+    """Put Lab Kiosk's cupsd.conf in place. True when it changed."""
+    with open(CUPSD_CONF_SOURCE, "rb") as handle:
+        wanted = handle.read()
+    try:
+        with open(CUPSD_CONF, "rb") as handle:
+            if handle.read() == wanted:
+                return False
+    except FileNotFoundError:
+        pass
+    directory = os.path.dirname(CUPSD_CONF)
+    fd, temp = tempfile.mkstemp(dir=directory, prefix=".cupsd.conf.")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(wanted)
+        shutil.chown(temp, "root", "lp")
+        os.chmod(temp, 0o640)
+        os.replace(temp, CUPSD_CONF)
+    except BaseException:
+        os.unlink(temp)
+        raise
+    return True
+
+
+def start_cups(restart):
+    for unit in CUPS_UNITS:
+        ok, output = run(["systemctl", "unmask", unit])
+        if not ok:
+            raise RuntimeError(f"could not unmask {unit}: {output[:300]}")
+    ok, output = run(["systemctl", "restart" if restart else "start", "cups.service"])
+    if not ok:
+        raise RuntimeError(f"CUPS did not start: {output[:300]}")
+    deadline = time.monotonic() + SCHEDULER_WAIT_SECONDS
+    while True:
+        ok, output = run(["lpstat", "-r"])
+        if ok and "not running" not in output:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("the CUPS scheduler did not answer")
+        time.sleep(0.5)
+
+
+def stop_cups():
+    """Stop and mask CUPS. Returns the problems, if any; carries on through them."""
+    problems = []
+    for unit in reversed(CUPS_UNITS):
+        ok, output = run(["systemctl", "stop", unit])
+        if not ok:
+            problems.append(f"could not stop {unit}: {output[:200]}")
+    for unit in CUPS_UNITS:
+        ok, output = run(["systemctl", "mask", unit])
+        if not ok:
+            problems.append(f"could not mask {unit}: {output[:200]}")
+    return problems
+
+
+def existing_queues():
+    ok, output = run(["lpstat", "-e"])
+    if not ok:
+        # "No destinations added." is the one failure that means none.
+        if "no destinations" in output.lower():
+            return []
+        raise RuntimeError(f"could not list the print queues: {output[:300]}")
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def load_state():
+    try:
+        with open(STATE_FILE, encoding="utf-8") as handle:
+            state = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def save_state(state):
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    temp = STATE_FILE + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(state, handle)
+    os.replace(temp, STATE_FILE)
+
+
+def open_policy_dir():
+    """The managed policy directory, opened without following a link: the kiosk user owns it."""
+    return os.open(POLICY_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def write_policy():
+    """Write the policy that lets Chromium print. True when it changed."""
+    wanted = (json.dumps(POLICY, indent=2) + "\n").encode("utf-8")
+    dir_fd = open_policy_dir()
+    try:
+        try:
+            fd = os.open(POLICY_NAME, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except FileNotFoundError:
+            fd = None
+        except OSError:
+            # A link or something else planted under the name: replaced below.
+            fd = None
+        if fd is not None:
+            with os.fdopen(fd, "rb") as handle:
+                if handle.read() == wanted:
+                    return False
+        # O_EXCL never follows a link, and the random name cannot be guessed in
+        # advance by the directory's owner.
+        temp = f".{POLICY_NAME}.{os.getpid()}.{os.urandom(6).hex()}"
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dir_fd)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(wanted)
+                os.fchmod(handle.fileno(), 0o644)
+            os.replace(temp, POLICY_NAME, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            os.unlink(temp, dir_fd=dir_fd)
+            raise
+        return True
+    finally:
+        os.close(dir_fd)
+
+
+def remove_policy():
+    """Remove the policy that lets Chromium print. True when there was one."""
+    dir_fd = open_policy_dir()
+    try:
+        os.unlink(POLICY_NAME, dir_fd=dir_fd)
+        return True
+    except FileNotFoundError:
+        return False
+    finally:
+        os.close(dir_fd)
+
+
+def remove_cups_state():
+    """With the scheduler stopped: delete every queue, its PPD and every job left in the spool."""
+    for path in (CUPS_PRINTERS_CONF, CUPS_PRINTERS_CONF + ".O"):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+    if os.path.isdir(CUPS_PPD_DIR):
+        for name in os.listdir(CUPS_PPD_DIR):
+            if name.endswith((".ppd", ".ppd.O")):
+                os.unlink(os.path.join(CUPS_PPD_DIR, name))
+    if os.path.isdir(CUPS_SPOOL_DIR):
+        for name in os.listdir(CUPS_SPOOL_DIR):
+            if SPOOL_FILE_PATTERN.match(name):
+                os.unlink(os.path.join(CUPS_SPOOL_DIR, name))
+    try:
+        os.unlink(STATE_FILE)
+    except FileNotFoundError:
+        pass
+
+
+def apply(printers):
+    restart = install_cupsd_conf()
+    start_cups(restart)
+    state = {} if restart else load_state()
+    wanted = {queue for queue, _, _ in printers}
+    present = existing_queues()
+    for queue in present:
+        if queue not in wanted:
+            ok, output = run(["lpadmin", "-x", queue])
+            if not ok:
+                raise RuntimeError(f"could not delete the queue {queue}: {output[:300]}")
+            state.pop(queue, None)
+            log(f"Deleted the queue {queue}.")
+    ready, failed = [], []
+    for queue, uri, name in printers:
+        if queue in present and state.get(queue) == [uri, name]:
+            ready.append(queue)
+            continue
+        ok, output = run(
+            ["lpadmin", "-p", queue, "-E", "-v", uri, "-m", "everywhere", "-D", name,
+             "-o", "printer-is-shared=false"],
+            timeout=QUEUE_TIMEOUT_SECONDS,
+        )
+        if ok:
+            state[queue] = [uri, name]
+            ready.append(queue)
+            log(f"{queue} ({name}) prints to {uri}.")
+        else:
+            state.pop(queue, None)
+            failed.append({"queue": queue, "error": output[:300] or "lpadmin failed"})
+            log(f"Could not set up {name} at {uri}: {output[:300]}")
+    save_state(state)
+    # Chromium is allowed to print only once there is something to print to.
+    policy_changed = write_policy() if ready else remove_policy()
+    return {"status": "ok" if ready else "error", "ready": ready, "failed": failed,
+            "policy": bool(ready), "policyChanged": policy_changed}
+
+
+def disable():
+    policy_changed = remove_policy()
+    problems = stop_cups()
+    remove_cups_state()
+    for problem in problems:
+        log(problem)
+    return {"status": "ok" if not problems else "error", "ready": [], "failed": [],
+            "policy": False, "policyChanged": policy_changed, "problems": problems}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Turn Lab Kiosk printing on or off.")
+    sub = parser.add_subparsers(dest="action", required=True)
+    on = sub.add_parser("apply", help="set up exactly these printers and allow Chromium to print")
+    on.add_argument("--printer", nargs=3, action="append", default=[], metavar=("QUEUE", "URI", "NAME"))
+    sub.add_parser("disable", help="stop printing altogether")
+    args = parser.parse_args(argv)
+
+    if os.geteuid() != 0:
+        print(json.dumps({"error": "labkiosk-printing must run as root"}))
+        return 1
+    try:
+        if args.action == "apply":
+            result = apply(validate_printers(args.printer))
+        else:
+            result = disable()
+    except ValueError as err:
+        print(json.dumps({"error": str(err)}))
+        return 2
+    except (OSError, RuntimeError, LookupError) as err:
+        if args.action == "apply":
+            # Chromium must not offer to print to a print service that failed.
+            try:
+                remove_policy()
+            except OSError as policy_err:
+                log(f"Could not remove the printing policy: {policy_err}")
+        print(json.dumps({"error": str(err)}))
+        return 1
+    print(json.dumps(result))
+    return 0 if result["status"] == "ok" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
