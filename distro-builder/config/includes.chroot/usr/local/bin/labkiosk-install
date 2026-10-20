@@ -88,21 +88,25 @@ NETBOOT_ARG = "labkiosk.netboot=1"
 
 # Installing beside another system (dual boot): UEFI and GPT only. Lab Kiosk
 # takes free space, or one partition the administrator gives up, and leaves
-# every other partition alone. Its boot loader goes into its own folder on the
-# disk's existing EFI system partition, and the firmware gets its own boot
-# entry, first in the boot order; the other system is chosen from the
-# firmware's boot menu. Nothing is written to the disk's boot sector or to
-# the ESP's fallback path (EFI/BOOT), which belong to the other system.
+# every other partition alone. Its boot loader goes onto an EFI system
+# partition of its own inside that space, never onto the other system's:
+# Debian's signed GRUB reads EFI/debian/grub.cfg on the partition it started
+# from, so beside another Debian-family system on a shared ESP it would boot
+# that system's menu. The firmware gets Lab Kiosk's own boot entry, first in
+# the boot order; the other system is chosen from the firmware's boot menu.
+# Nothing is written to the disk's boot sector or to the other system's ESP.
 MIB = 1024 * 1024
 MIN_BESIDE_MIB = MIN_DISK_BYTES // MIB
 DATA_PARTITION_MIB = 512
 ESP_TYPE_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-# shim, GRUB and MokManager take about 4 MiB; the rest is headroom for updates.
-MIN_ESP_FREE_BYTES = 16 * MIB
+# shim, GRUB and MokManager take about 4 MiB; FAT32 needs at least 65525
+# clusters, and 128 MiB holds 262144 of 512 bytes.
+BESIDE_ESP_MIB = 128
+BESIDE_ESP_LABEL = "LABKIOSKESP"
 EFI_FIRMWARE_DIR = "/sys/firmware/efi"
 BOOT_ENTRY_LABEL = "Lab Kiosk"
 BOOT_ENTRY_LOADER = "\\EFI\\LabKiosk\\shimx64.efi"
-BESIDE_PARTITION_NAMES = ("LABKIOSK_ROOT", "LABKIOSK_DATA", "LABKIOSK_SWAP")
+BESIDE_PARTITION_NAMES = ("LABKIOSK_ESP", "LABKIOSK_ROOT", "LABKIOSK_DATA", "LABKIOSK_SWAP")
 
 def write_status(state, step, progress, error=None):
     data = {
@@ -520,7 +524,7 @@ def dual_boot_info(layout, uefi, busy=frozenset()):
     info["freeBytes"] = largest * MIB
     info["free"] = format_gb(largest * MIB)
     for part in layout["partitions"]:
-        replaceable = part is not esp and part["path"] not in busy and beside_region(layout, part) is not None
+        replaceable = not part["esp"] and part["path"] not in busy and beside_region(layout, part) is not None
         info["partitions"].append({
             "path": part["path"],
             "size": format_gb(part["size"]),
@@ -565,8 +569,9 @@ def partition_numbers(disk):
 def plan_beside_install(target_disk, replace_partition=None):
     """
     Check everything an install beside another system needs, before anything
-    is written: UEFI, a GPT disk with an EFI system partition that has room,
-    nothing on the disk in use, and a stretch of at least MIN_BESIDE_MIB.
+    is written: UEFI, a GPT disk whose other system boots from an EFI system
+    partition, nothing on the disk in use, and a stretch of at least
+    MIN_BESIDE_MIB.
     """
     if not booted_with_uefi():
         raise RuntimeError("This computer started in legacy BIOS mode; installing beside another system needs UEFI.")
@@ -590,27 +595,13 @@ def plan_beside_install(target_disk, replace_partition=None):
         replace = next((p for p in layout["partitions"] if os.path.realpath(p["path"]) == real), None)
         if replace is None:
             raise ValueError(f"{replace_partition} is not a partition of {target_disk}.")
-        if replace is esp:
+        if replace["esp"]:
             raise ValueError(f"{replace_partition} is the EFI system partition; every system on the drive boots from it.")
     region = beside_region(layout, replace)
     if region is None:
         where = f"replacing {replace_partition}" if replace else "in the drive's free space"
         raise RuntimeError(f"There is not enough room {where}: Lab Kiosk needs {MIN_BESIDE_MIB // 1024} GiB.")
-
-    # The other system's ESP is only read here, to see that the boot loader fits.
-    os.makedirs(TARGET_ESP_MOUNT, exist_ok=True)
-    run_cmd(["mount", "-o", "ro", "-t", "vfat", esp["path"], TARGET_ESP_MOUNT])
-    try:
-        stats = os.statvfs(TARGET_ESP_MOUNT)
-    finally:
-        run_cmd(["umount", TARGET_ESP_MOUNT])
-    free = stats.f_bavail * stats.f_frsize
-    if free < MIN_ESP_FREE_BYTES:
-        raise RuntimeError(f"The EFI system partition {esp['path']} has {free // MIB} MiB free; "
-                           f"Lab Kiosk's boot loader needs {MIN_ESP_FREE_BYTES // MIB} MiB.")
     return {
-        "esp": esp["path"],
-        "esp_number": partition_number(esp["path"]),
         "region": region,
         "replace": replace and {"path": replace["path"], "number": partition_number(replace["path"])},
     }
@@ -618,8 +609,9 @@ def plan_beside_install(target_disk, replace_partition=None):
 
 def partition_beside(target_disk, plan):
     """
-    Create the image store, data and swap partitions inside the planned
-    stretch; returns the ESP, root, data and swap nodes. New partition numbers
+    Create Lab Kiosk's own ESP and its image store, data and swap partitions
+    inside the planned stretch; returns the ESP's number and the ESP, root,
+    data and swap nodes. New partition numbers
     are read back from the table rather than assumed: they fill the lowest
     numbers the other system left free.
     """
@@ -631,7 +623,8 @@ def partition_beside(target_disk, plan):
     start, end = plan["region"]
     swap_end = end - DATA_PARTITION_MIB
     swap_start = swap_end - SWAP_PARTITION_MIB
-    root_name, data_name, swap_name = BESIDE_PARTITION_NAMES
+    root_start = start + BESIDE_ESP_MIB
+    esp_name, root_name, data_name, swap_name = BESIDE_PARTITION_NAMES
 
     def make(name, fs_type, first, last):
         before = partition_numbers(target_disk)
@@ -639,19 +632,22 @@ def partition_beside(target_disk, plan):
         added = partition_numbers(target_disk) - before
         if len(added) != 1:
             raise RuntimeError(f"parted reported {len(added)} new partitions after creating {name}")
-        return partition_node(target_disk, added.pop())
+        return added.pop()
 
     write_status("running", "Creating Lab Kiosk's partitions beside the other system...", 20)
-    part_root = make(root_name, "ext4", start, swap_start)
-    part_data = make(data_name, "ext4", swap_end, end)
-    part_swap = make(swap_name, "linux-swap", swap_start, swap_end)
+    esp_number = make(esp_name, "fat32", start, root_start)
+    run_cmd(["parted", "-s", target_disk, "set", str(esp_number), "esp", "on"])
+    part_esp = partition_node(target_disk, esp_number)
+    part_root = partition_node(target_disk, make(root_name, "ext4", root_start, swap_start))
+    part_data = partition_node(target_disk, make(data_name, "ext4", swap_end, end))
+    part_swap = partition_node(target_disk, make(swap_name, "linux-swap", swap_start, swap_end))
     time.sleep(2)
     run_cmd(["partprobe", target_disk], check=False)
     for _ in range(10):
-        if all(os.path.exists(node) for node in (part_root, part_data, part_swap)):
+        if all(os.path.exists(node) for node in (part_esp, part_root, part_data, part_swap)):
             break
         time.sleep(0.5)
-    return plan["esp"], part_root, part_data, part_swap
+    return esp_number, part_esp, part_root, part_data, part_swap
 
 
 def boot_entries(listing):
@@ -797,17 +793,15 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_bo
 
     if beside:
         print(f"[INSTALL] Installing beside the existing system in MiB {plan['region'][0]}-{plan['region'][1]}"
-              f"{' replacing ' + plan['replace']['path'] if plan['replace'] else ''}; ESP {plan['esp']}.",
+              f"{' replacing ' + plan['replace']['path'] if plan['replace'] else ''}, with its own ESP.",
               file=sys.stderr)
-        part_esp, part_root, part_data, part_swap = partition_beside(target_disk, plan)
+        esp_number, part_esp, part_root, part_data, part_swap = partition_beside(target_disk, plan)
     else:
         part_esp, part_root, part_data, part_swap = partition_whole_disk(target_disk)
 
     write_status("running", "Formatting file systems (FAT32 & ext4)...", 25)
-    # The ESP is formatted only on an erased drive: beside another system it
-    # already holds that system's boot loader.
-    if not beside:
-        run_cmd(["mkfs.vfat", "-F", "32", "-n", "ESP", part_esp])
+    # Beside another system this is Lab Kiosk's own ESP, new and empty.
+    run_cmd(["mkfs.vfat", "-F", "32", "-n", BESIDE_ESP_LABEL if beside else "ESP", part_esp])
     run_cmd(["mkfs.ext4", "-F", "-L", "LABKIOSK_ROOT", part_root])
 
     # With a TPM 2.0 chip the data partition is encrypted (labkiosk-data-unlock);
@@ -892,8 +886,9 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_bo
                 "--no-nvram",
                 "--recheck",
             ], check=True)
-            # The fallback path EFI/BOOT belongs to the other system on a
-            # shared drive; there, the firmware entry below starts Lab Kiosk.
+            # The fallback path EFI/BOOT is what firmware without a boot entry
+            # starts; on a shared drive that stays the other system, and the
+            # firmware entry below starts Lab Kiosk.
             if not beside:
                 run_cmd([
                     "grub-install",
@@ -943,12 +938,11 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_bo
                 f"Details: {'; '.join(bootloader_errors)}"
             )
         if beside:
-            # The other system's files on the ESP prove nothing here: Lab
-            # Kiosk's own loader must be there.
+            # Only a firmware entry starts this loader, so it must be there.
             if not uefi_installed or not os.path.isfile(os.path.join(esp_dir, "EFI", "LabKiosk", "shimx64.efi")):
                 raise RuntimeError(f"Lab Kiosk's boot loader was not installed: {'; '.join(bootloader_errors)}")
             write_status("running", "Adding Lab Kiosk to the computer's boot menu...", 85)
-            register_boot_entry(target_disk, plan["esp_number"])
+            register_boot_entry(target_disk, esp_number)
 
         write_status("running", "Configuring the boot menu...", 90)
         # One menu for every image: it reads which one to boot from grubenv, so

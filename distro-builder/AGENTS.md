@@ -391,18 +391,22 @@ distro-builder/
 
 - **Dual boot is UEFI + GPT only** (`--dual-boot`, or `--replace-partition <part>`, which implies
   it). The installer takes the largest free stretch, or one partition plus the free space around
-  it, and creates `LABKIOSK_ROOT`, `LABKIOSK_DATA` and `LABKIOSK_SWAP` there (same sizes and roles
-  as Rule 2, numbers read back from the table). Every other partition is left as it is.
+  it, and creates its own 128 MiB ESP (`LABKIOSK_ESP`, FAT32, `esp on`) followed by
+  `LABKIOSK_ROOT`, `LABKIOSK_DATA` and `LABKIOSK_SWAP` (same sizes and roles as Rule 2, numbers
+  read back from the table). Every other partition is left as it is.
 - **The other system's boot path is never written**: no `bios_grub`, no `i386-pc` into the boot
-  sector, no `--removable` into `EFI/BOOT`, no formatting of the ESP. GRUB goes to `EFI/LabKiosk/`
-  on the existing ESP (`--no-nvram`), and the installer registers its own firmware entry
+  sector, nothing on its ESP. **Never share the other system's ESP**: Debian's signed GRUB has the
+  built-in prefix `/EFI/debian` and sources `EFI/debian/grub.cfg` on the partition it started from
+  when that exists, so on an ESP shared with Debian (or a derivative) Lab Kiosk's entry would boot
+  the other system. The VM boot test plants that file. GRUB goes to `EFI/LabKiosk/` on
+  `LABKIOSK_ESP` (`--no-nvram`, no `--removable`), and the installer registers its own firmware entry
   (`efibootmgr --create … --label "Lab Kiosk" --loader '\EFI\LabKiosk\shimx64.efi'`), first in
   `BootOrder`, after removing older "Lab Kiosk" entries. Unattended boot (invariant 9) comes from
   that entry; the other system is chosen from the firmware's boot menu. Firmware that does not
   keep the entry first fails the install, with what to choose by hand.
-- **Refuse rather than force**: BIOS mode, an MBR disk, no ESP, less than 16 MiB free on it,
-  less than 7 GiB to install into, or anything on the disk mounted, active swap or held by
-  device-mapper. All of it is checked before the first write; the ESP is only mounted read-only.
+- **Refuse rather than force**: BIOS mode, an MBR disk, no ESP for the other system, less than
+  7 GiB to install into, or anything on the disk mounted, active swap or held by device-mapper.
+  All of it is checked before the first write, which nothing before it makes.
 - **The risk is the administrator's to accept**: `POST /api/install` with `mode: "beside"` needs
   `acceptRisk: true`, which the wizard's checkbox sends. Anyone with administrator rights on the
   other system can change or delete Lab Kiosk's partitions and boot entry. TPM sealing (PCR 7)

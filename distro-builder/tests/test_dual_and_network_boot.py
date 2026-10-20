@@ -175,26 +175,21 @@ class ReadingThePartitionTable(unittest.TestCase):
 
 
 class PlanningAnInstallBeside(unittest.TestCase):
-    def plan(self, layout, replace=None, uefi=True, busy=frozenset(), esp_free=100 * MIB):
-        stats = mock.Mock(f_bavail=esp_free // 4096, f_frsize=4096)
+    def plan(self, layout, replace=None, uefi=True, busy=frozenset()):
         with mock.patch.object(installer, "booted_with_uefi", return_value=uefi), \
                 mock.patch.object(installer, "read_partition_table", return_value=layout), \
                 mock.patch.object(installer, "busy_partitions", return_value=set(busy)), \
                 mock.patch.object(installer, "partition_number", side_effect=lambda node: int(node[-1])), \
-                mock.patch.object(installer, "run_cmd", return_value="") as run, \
-                mock.patch.object(installer.os, "makedirs"), \
-                mock.patch.object(installer.os, "statvfs", return_value=stats):
+                mock.patch.object(installer, "run_cmd", return_value="") as run:
             result = installer.plan_beside_install("/dev/sda", replace)
         return result, run
 
-    def test_free_space_is_planned_after_a_read_only_look_at_the_esp(self):
+    def test_free_space_is_planned_without_touching_the_disk(self):
         plan, run = self.plan(shared_disk())
-        self.assertEqual(plan["esp"], "/dev/sda1")
-        self.assertEqual(plan["esp_number"], 1)
         self.assertEqual(plan["region"], (101 + 40 * 1024, 100 * 1024 - 1))
         self.assertIsNone(plan["replace"])
-        mount = run.call_args_list[0][0][0]
-        self.assertEqual(mount[:4], ["mount", "-o", "ro", "-t"])
+        # Nothing is run, not even a read-only mount of the other system's ESP.
+        run.assert_not_called()
 
     def test_a_partition_can_be_replaced(self):
         plan, _ = self.plan(shared_disk(size_gib=45), replace="/dev/sda2")
@@ -211,7 +206,6 @@ class PlanningAnInstallBeside(unittest.TestCase):
             (dict(replace="/dev/sdb1"), ValueError, "not a partition of"),
             (dict(replace="/dev/sda"), ValueError, "not a partition device"),
             (dict(layout=shared_disk(size_gib=45)), RuntimeError, "not enough room"),
-            (dict(esp_free=4 * MIB), RuntimeError, "MiB free"),
         )
         for overrides, error, message in cases:
             with self.subTest(message=message):
@@ -223,7 +217,8 @@ class PlanningAnInstallBeside(unittest.TestCase):
 
 class PartitioningBeside(unittest.TestCase):
     def run_partitioning(self, plan):
-        numbers = iter([{1, 2}, {1, 2, 3}, {1, 2, 3}, {1, 2, 3, 4}, {1, 2, 3, 4}, {1, 2, 3, 4, 5}])
+        numbers = iter([{1, 2}, {1, 2, 3}, {1, 2, 3}, {1, 2, 3, 4}, {1, 2, 3, 4}, {1, 2, 3, 4, 5},
+                        {1, 2, 3, 4, 5}, {1, 2, 3, 4, 5, 6}])
         calls = []
         with mock.patch.object(installer, "partition_numbers", side_effect=lambda disk: next(numbers)), \
                 mock.patch.object(installer, "run_cmd", side_effect=lambda cmd, check=True: calls.append(cmd) or ""), \
@@ -232,27 +227,28 @@ class PartitioningBeside(unittest.TestCase):
             nodes = installer.partition_beside("/dev/sda", plan)
         return nodes, calls
 
-    def test_root_data_and_swap_fill_the_planned_stretch(self):
-        plan = {"esp": "/dev/sda1", "esp_number": 1, "region": (41061, 102399), "replace": None}
+    def test_its_own_esp_root_data_and_swap_fill_the_planned_stretch(self):
+        plan = {"region": (41061, 102399), "replace": None}
         nodes, calls = self.run_partitioning(plan)
-        self.assertEqual(nodes, ("/dev/sda1", "/dev/sda3", "/dev/sda4", "/dev/sda5"))
+        self.assertEqual(nodes, (3, "/dev/sda3", "/dev/sda4", "/dev/sda5", "/dev/sda6"))
+        self.assertIn(["parted", "-s", "/dev/sda", "set", "3", "esp", "on"], calls)
         mkparts = [c for c in calls if "mkpart" in c]
         self.assertEqual([c[5:] for c in mkparts], [
-            ["LABKIOSK_ROOT", "ext4", "41061MiB", f"{102399 - 512 - 1024}MiB"],
+            ["LABKIOSK_ESP", "fat32", "41061MiB", "41189MiB"],
+            ["LABKIOSK_ROOT", "ext4", "41189MiB", f"{102399 - 512 - 1024}MiB"],
             ["LABKIOSK_DATA", "ext4", f"{102399 - 512}MiB", "102399MiB"],
             ["LABKIOSK_SWAP", "linux-swap", f"{102399 - 512 - 1024}MiB", f"{102399 - 512}MiB"],
         ])
         self.assertFalse([c for c in calls if c[0] in ("wipefs", "mklabel") or "mklabel" in c or "rm" in c])
 
     def test_a_replaced_partition_is_wiped_and_removed_first(self):
-        plan = {"esp": "/dev/sda1", "esp_number": 1, "region": (101, 46079),
-                "replace": {"path": "/dev/sda2", "number": 2}}
+        plan = {"region": (101, 46079), "replace": {"path": "/dev/sda2", "number": 2}}
         _, calls = self.run_partitioning(plan)
         self.assertEqual(calls[0], ["wipefs", "-a", "/dev/sda2"])
         self.assertEqual(calls[1], ["parted", "-s", "/dev/sda", "rm", "2"])
 
     def test_one_new_partition_per_mkpart_or_it_stops(self):
-        plan = {"esp": "/dev/sda1", "esp_number": 1, "region": (41061, 102399), "replace": None}
+        plan = {"region": (41061, 102399), "replace": None}
         with mock.patch.object(installer, "partition_numbers", return_value={1, 2}), \
                 mock.patch.object(installer, "run_cmd", return_value=""):
             with self.assertRaisesRegex(RuntimeError, "0 new partitions"):
@@ -296,15 +292,19 @@ class FirmwareBootEntry(unittest.TestCase):
 
 
 class InstallerBesideAnotherSystem(unittest.TestCase):
-    def test_the_other_systems_boot_sector_and_fallback_path_are_left_alone(self):
+    def test_the_other_systems_boot_sector_and_esp_are_left_alone(self):
         source = read(INSTALLER_PATH)
         install = source.split("def install_to_disk")[1].split("\ndef ")[0]
         removable = install.index('"--removable"')
         self.assertLess(install.rindex("if not beside:", 0, removable), removable)
         bios = install.index('"--target=i386-pc"')
         self.assertIn("if not beside and not", install[install.rindex("if ", 0, bios):bios])
-        self.assertIn('if not beside:\n        run_cmd(["mkfs.vfat"', install)
-        self.assertIn("register_boot_entry(target_disk, plan[\"esp_number\"])", install)
+        # Beside another system the ESP formatted and booted from is Lab Kiosk's own.
+        self.assertIn('run_cmd(["mkfs.vfat", "-F", "32", "-n", BESIDE_ESP_LABEL if beside else "ESP", part_esp])',
+                      install)
+        self.assertIn("esp_number, part_esp, part_root, part_data, part_swap = partition_beside(", install)
+        self.assertIn("register_boot_entry(target_disk, esp_number)", install)
+        self.assertLessEqual(len(installer.BESIDE_ESP_LABEL), 11)
 
     def test_patterns_and_markers_match_the_agent(self):
         self.assertEqual(installer.PARTITION_PATTERN.pattern, agent.REPLACE_PARTITION_PATTERN.pattern)
@@ -562,8 +562,11 @@ class BootServerTool(unittest.TestCase):
         self.assertIn('set superusers="labkiosk"', menu)
         self.assertIn(f"password_pbkdf2 labkiosk {DIGEST}", menu)
         self.assertIn("--unrestricted", menu)
-        self.assertIn("linux (http,192.168.1.10)/labkiosk/2.9.0/vmlinuz ", menu)
-        self.assertIn("initrd (http,192.168.1.10)/labkiosk/2.9.0/initrd.img", menu)
+        # From GRUB's own boot device: Debian's signed network GRUB may have no HTTP client.
+        self.assertIn("    linux /labkiosk/2.9.0/vmlinuz ", menu)
+        self.assertIn("    initrd /labkiosk/2.9.0/initrd.img", menu)
+        self.assertNotIn("http", menu.split("menuentry")[1].split("vmlinuz")[0])
+        self.assertNotIn("insmod http", menu)
         self.assertNotIn("superusers", tool.grub_menu(self.args(admin_hash=None), "2.9.0"))
 
     def test_the_ipxe_script(self):

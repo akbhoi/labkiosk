@@ -324,6 +324,18 @@ stop_vm() {
     VM_PID=""
 }
 
+# serial_tail FILE: the end of a VM's serial console (the firmware and GRUB
+# mirror their screen there), for a failed scenario.
+serial_tail() {
+    if [ -s "$1" ]; then
+        log "last lines of $(basename "$1"):"
+        sed -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' -e 's/\r/\n/g' "$1" | tr -cd '\11\12\40-\176' \
+            | grep -v '^[[:space:]]*$' | tail -n 40 | cut -c1-200
+    else
+        log "(nothing on the serial console)"
+    fi
+}
+
 # screenshot NAME: what the VM shows now, for a failed scenario.
 screenshot() {
     python3 - "$WORK/qmp.sock" "$WORK/$1.ppm" <<'PY' || log "no screenshot: QMP did not answer"
@@ -834,7 +846,7 @@ else
 fi
 sfdisk -J "$DUAL_DISK" > "$WORK/dual-after.json"
 if python3 "$HERE/check_dual_boot_layout.py" "$WORK/dual-before.json" "$WORK/dual-after.json"; then
-    pass "dual boot: the other system's partitions are unchanged; ROOT, DATA and SWAP were added"
+    pass "dual boot: the other system's partitions are unchanged; Lab Kiosk's ESP, ROOT, DATA and SWAP were added"
 else
     fail "dual boot: the partition table is not as expected"
 fi
@@ -846,18 +858,21 @@ else
 fi
 esp_offset="$(partition_offset "$DUAL_DISK" "EFI system partition")"
 mount -o "ro,loop,offset=$esp_offset" "$DUAL_DISK" "$STAGE"
-(cd "$STAGE" && find EFI -type f ! -path 'EFI/LabKiosk/*' -exec sha256sum {} +) | sort > "$WORK/esp-after.txt"
+(cd "$STAGE" && find EFI -type f -exec sha256sum {} +) | sort > "$WORK/esp-after.txt"
+umount "$STAGE"
+own_esp_offset="$(partition_offset "$DUAL_DISK" LABKIOSK_ESP)"
+mount -o "ro,loop,offset=$own_esp_offset" "$DUAL_DISK" "$STAGE"
 labkiosk_loader=0
 if [ -f "$STAGE/EFI/LabKiosk/shimx64.efi" ] && [ -f "$STAGE/EFI/LabKiosk/grubx64.efi" ]; then
     labkiosk_loader=1
 fi
 umount "$STAGE"
 if ! cmp -s "$WORK/esp-before.txt" "$WORK/esp-after.txt"; then
-    fail "dual boot: the other system's boot files changed: $(diff "$WORK/esp-before.txt" "$WORK/esp-after.txt" | tr '\n' ' ')"
+    fail "dual boot: the other system's ESP changed: $(diff "$WORK/esp-before.txt" "$WORK/esp-after.txt" | tr '\n' ' ')"
 elif [ "$labkiosk_loader" -ne 1 ]; then
-    fail "dual boot: EFI/LabKiosk has no shim and GRUB"
+    fail "dual boot: Lab Kiosk's own ESP has no EFI/LabKiosk shim and GRUB"
 else
-    pass "dual boot: the other system's boot files are untouched; Lab Kiosk's are in EFI/LabKiosk"
+    pass "dual boot: the other system's ESP is untouched; Lab Kiosk's loader is on its own ESP"
 fi
 
 # The firmware entry the installer registered (the stand-in checked its
@@ -873,7 +888,7 @@ mount_root
 cp -a "$STAGE/images/$VERSION" "$STAGE/images/$V_GOOD"
 stage_try "$V_GOOD"
 umount_root
-VM_VARS="$WORK/vars-dual.fd" start_vm
+VM_SERIAL="file:$WORK/dual-boot-serial.log" VM_VARS="$WORK/vars-dual.fd" start_vm
 promoted="current=$V_GOOD previous=$VERSION"
 deadline=$((SECONDS + PROMOTE_TIMEOUT))
 while [ "$SECONDS" -lt "$deadline" ] && vm_running && [ "$(env_now)" != "$promoted" ]; do
@@ -884,8 +899,10 @@ if [ "$(env_now)" = "$promoted" ]; then
 elif vm_running; then
     screenshot dual-boot
     fail "dual boot: not promoted within $PROMOTE_TIMEOUT s; grubenv '$(env_now)'"
+    serial_tail "$WORK/dual-boot-serial.log"
 else
     fail "dual boot: the VM stopped (the other system's menu, or a failed boot); grubenv '$(env_now)'"
+    serial_tail "$WORK/dual-boot-serial.log"
 fi
 stop_vm
 DISK="$SAVED_DISK"
@@ -930,7 +947,9 @@ netboot_heartbeat() {
     return 1
 }
 
-# netboot_scenario NAME: once the VM is started.
+# netboot_scenario NAME: once the VM is started, with its serial console in
+# $WORK/<NAME>-serial.log; NETBOOT_LOG_FROM is where the boot server's log
+# stood when it started.
 netboot_scenario() {
     local client
     if client="$(netboot_heartbeat)"; then
@@ -942,7 +961,10 @@ netboot_scenario() {
         NETBOOT_CLIENTS+=("$client")
     else
         screenshot "${1// /-}"
-        fail "$1: no heartbeat within $NETBOOT_TIMEOUT s (netboot-server.log has the requests)"
+        fail "$1: no heartbeat within $NETBOOT_TIMEOUT s"
+        log "what the boot server was asked for:"
+        tail -n "+$((NETBOOT_LOG_FROM + 1))" "$WORK/netboot-server.log" | cut -c1-200 | tail -n 40
+        serial_tail "$WORK/${1// /-}-serial.log"
     fi
     stop_vm
 }
@@ -950,19 +972,23 @@ netboot_scenario() {
 log "12. http boot: UEFI HTTP Boot with Secure Boot on"
 virt-fw-vars --input "$OVMF_VARS" --output "$WORK/vars-http.fd" \
     --set-boot-uri http://10.0.2.2/labkiosk/shimx64.efi >/dev/null 2>&1
-VM_VARS="$WORK/vars-http.fd" start_vm none
+NETBOOT_LOG_FROM="$(wc -l < "$WORK/netboot-server.log")"
+VM_SERIAL="file:$WORK/http-boot-serial.log" VM_VARS="$WORK/vars-http.fd" start_vm none
 netboot_scenario "http boot"
 
 log "13. pxe boot: UEFI PXE with Secure Boot on, shim and GRUB over TFTP"
-VM_NIC="user,model=virtio-net-pci,tftp=$NETROOT,bootfile=labkiosk/shimx64.efi" start_vm none
+NETBOOT_LOG_FROM="$(wc -l < "$WORK/netboot-server.log")"
+VM_SERIAL="file:$WORK/pxe-boot-serial.log" \
+    VM_NIC="user,model=virtio-net-pci,tftp=$NETROOT,bootfile=labkiosk/shimx64.efi" start_vm none
 netboot_scenario "pxe boot"
 
 log "14. ipxe boot: legacy BIOS through iPXE"
+NETBOOT_LOG_FROM="$(wc -l < "$WORK/netboot-server.log")"
 rm -f "$WORK/qmp.sock"
 qemu-system-x86_64 \
     -machine q35,accel=kvm -cpu host -smp 2 -m 3072 \
     -nic user,model=virtio-net-pci,bootfile=http://10.0.2.2/labkiosk/boot.ipxe -boot n \
-    -vga std -display none -monitor none -serial none \
+    -vga std -display none -monitor none -serial file:"$WORK/ipxe-boot-serial.log" \
     -qmp unix:"$WORK/qmp.sock",server=on,wait=off \
     -no-reboot &
 VM_PID=$!

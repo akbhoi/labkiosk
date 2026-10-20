@@ -25,8 +25,9 @@ import importlib.util
 import re
 import sys
 
-# The shared disk boot-test.sh makes has its EFI system partition first.
-EXPECTED_ESP_NUMBER = "1"
+# The shared disk boot-test.sh makes holds the other system's ESP and one more
+# partition; Lab Kiosk's own ESP is the first partition it adds.
+EXPECTED_ESP_NUMBER = "3"
 
 INSTALLER = "/usr/local/bin/labkiosk-install"
 LOOP_DEVICE_PATTERN = re.compile(r"^/dev/loop[0-9]+\Z")

@@ -118,10 +118,11 @@ def kernel_arguments(args, version):
 
 
 def grub_menu(args, version):
-    host = args.server_address
     lines = [
         "# Lab Kiosk OS -- network boot menu, written by labkiosk-netboot.py prepare.",
-        "# The image and its kernel come over HTTP from this boot server.",
+        "# The kernel and initrd come from wherever GRUB itself came from (TFTP for",
+        "# PXE), not from GRUB's HTTP client, which Debian's signed network GRUB may",
+        "# not have (Debian bug #1016873). The initrd fetches the image over HTTP.",
         "",
     ]
     if args.admin_hash:
@@ -130,13 +131,12 @@ def grub_menu(args, version):
         # root shell (init=/bin/sh) or an unlocked administrator gate.
         lines += ['set superusers="labkiosk"', f"password_pbkdf2 labkiosk {args.admin_hash}", ""]
     lines += [
-        "insmod http",
         "set timeout=3",
         "set default=0",
         "",
         f'menuentry "Lab Kiosk OS {version} (network)" --unrestricted --id labkiosk {{',
-        f"    linux (http,{host})/labkiosk/{version}/vmlinuz {kernel_arguments(args, version)}",
-        f"    initrd (http,{host})/labkiosk/{version}/initrd.img",
+        f"    linux /labkiosk/{version}/vmlinuz {kernel_arguments(args, version)}",
+        f"    initrd /labkiosk/{version}/initrd.img",
         "}",
         "",
     ]
