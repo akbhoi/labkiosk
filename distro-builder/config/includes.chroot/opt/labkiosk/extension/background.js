@@ -19,6 +19,10 @@
  * wiped at every boot -- and surviving both page navigation and this service
  * worker being torn down when idle.
  *
+ * It also relays the on-screen keyboard between frames (labkiosk:osk-focus,
+ * labkiosk:osk-type): the keyboard is drawn in the top frame, a text field can
+ * be in any frame.
+ *
  * Navigation (back, forward, reload, home) is done by the content script with
  * the History API and never needs the agent, so there is no nav channel to the
  * agent's loopback API.
@@ -167,6 +171,58 @@ async function readNetworkStatus() {
   return await res.json();
 }
 
+/*
+ * The on-screen keyboard is drawn in the top frame, but a text field can be in
+ * any frame, each with its own copy of content.js. A frame reports its field's
+ * focus here and it is passed to frame 0; frame 0 sends each typed key here and
+ * it is passed to the frame that has the field. Only content scripts of this
+ * extension can send these (there is no externally_connectable), and both
+ * directions are checked again on arrival.
+ */
+const OSK_ACTION_KEYS = new Set(["Backspace", "Enter", "Tab", "ArrowLeft", "ArrowRight"]);
+const OSK_MAX_TEXT = 8;
+
+function oskAction(action) {
+  if (!action || typeof action !== "object") return null;
+  if (action.kind === "text" && typeof action.text === "string" &&
+      action.text.length > 0 && action.text.length <= OSK_MAX_TEXT) {
+    return { kind: "text", text: action.text };
+  }
+  if (action.kind === "key" && OSK_ACTION_KEYS.has(action.key)) {
+    return { kind: "key", key: action.key };
+  }
+  return null;
+}
+
+function oskRect(rect) {
+  if (!rect || !Number.isFinite(rect.top) || !Number.isFinite(rect.bottom)) return null;
+  return { top: rect.top, bottom: rect.bottom };
+}
+
+async function forwardFrameFocus(message, sender) {
+  if (!sender.tab || !Number.isInteger(sender.frameId) || sender.frameId === 0) {
+    throw new Error("Only a subframe reports its focus");
+  }
+  await chrome.tabs.sendMessage(sender.tab.id, {
+    type: "labkiosk:osk-frame-focus",
+    frameId: sender.frameId,
+    editable: message.editable === true,
+    noKeyboard: message.noKeyboard === true,
+    reason: ["focus", "blur", "tap"].includes(message.reason) ? message.reason : "",
+    rect: oskRect(message.rect),
+  }, { frameId: 0 });
+  return {};
+}
+
+async function forwardTypedKey(message, sender) {
+  if (!sender.tab || sender.frameId !== 0) throw new Error("Only the top frame's keyboard types");
+  const action = oskAction(message.action);
+  if (!action) throw new Error("Not a key the keyboard has");
+  if (!Number.isInteger(message.frameId) || message.frameId <= 0) throw new Error("No such frame");
+  const reply = await chrome.tabs.sendMessage(sender.tab.id, { type: "labkiosk:osk-apply", action }, { frameId: message.frameId });
+  return { applied: Boolean(reply && reply.applied) };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
 
@@ -195,6 +251,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "labkiosk:network-status") {
     return reply(readNetworkStatus().then((network) => ({ network })));
+  }
+
+  if (message.type === "labkiosk:osk-focus") {
+    return reply(forwardFrameFocus(message, sender));
+  }
+
+  if (message.type === "labkiosk:osk-type") {
+    return reply(forwardTypedKey(message, sender));
   }
 
   if (message.type === "labkiosk:intro-peek") {
@@ -235,7 +299,7 @@ const BLOCKED_PAGE_URL = `${AGENT_ORIGIN}/blocked`;
 const OFFLINE_PAGE_URL = `${AGENT_ORIGIN}/setup#offline`;
 
 // Failures that mean "no network" rather than "this site": the wizard's offline
-// page shows the connection state and returns to the lesson once it is back.
+// page shows the connection state and returns to the page once it is back.
 const NETWORK_ERRORS = new Set([
   "net::ERR_INTERNET_DISCONNECTED",
   "net::ERR_NETWORK_CHANGED",
@@ -256,7 +320,7 @@ const NETWORK_ERRORS = new Set([
  * Where a failed top-level navigation should go instead, or null to leave it.
  * `isOnline` is the agent's view: a DNS or connection failure while the
  * workstation is online means that one site is down, and the offline page --
- * which returns to the lesson once it sees a connection -- would bounce straight
+ * which returns to the page once it sees a connection -- would bounce straight
  * back to the dead site and loop.
  */
 function recoveryUrlFor(details, isOnline) {

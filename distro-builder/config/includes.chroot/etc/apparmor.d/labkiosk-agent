@@ -53,6 +53,8 @@ profile labkiosk-agent /opt/labkiosk/agent/agent.py flags=(complain) {
   /run/systemd/timesync/synchronized r,
   /run/live/medium/boot/grub/** r,
   @{PROC}/cmdline r,
+  # Is a keyboard or a touchscreen attached? (the on-screen keyboard)
+  @{PROC}/bus/input/devices r,
   @{PROC}/@{pid}/mounts r,
   @{PROC}/@{pid}/cmdline r,
   /sys/class/net/** r,

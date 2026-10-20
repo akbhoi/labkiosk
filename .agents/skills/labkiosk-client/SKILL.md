@@ -146,6 +146,16 @@ and `labkiosk-lock-keys` (`xkbcomp`: F keys, Super, menu, Print, Pause, Scroll L
 `XF86*` become `NoSymbol`; judge a key by its first symbol, strip higher levels individually so
 `KP_Multiply` keeps typing; re-run after any `setxkbmap`).
 
+**On-screen keyboard** (`wiki/Browser-Extension.md`): `createOnScreenKeyboard()` draws it in the
+top frame (own closed shadow root, `#labkiosk-keyboard`); the bar's `#btn-keyboard` toggles it, and
+it opens by itself on a text field while `/api/status` `keyboardPresent === false`
+(`input_devices_report()`: a `kbd` device with every letter, Space and Enter in its `KEY=` bitmap;
+`null` when `/proc/bus/input/devices` lists nothing). `kioskTyping` (all frames) types with
+`execCommand("insertText")` framed by modifier-free synthetic key events; subframe fields go
+through `background.js` (`labkiosk:osk-focus` → frame 0, `labkiosk:osk-type` → that `frameId`).
+Keys act on a cancelled `pointerdown` so the field keeps the focus. Tests:
+`distro-builder/tests/test_input_devices.py`.
+
 ## Verify
 
 ```bash

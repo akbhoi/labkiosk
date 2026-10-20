@@ -234,5 +234,20 @@
   "ui.js.confirm-free-space": "Lab Kiosk will use the free space; the other partitions are left as they are.",
   "ui.js.confirm-dual-boot": "Install Lab Kiosk OS beside the system already on",
   "ui.js.network-boot": "NETWORK BOOT",
-  "ui.js.link-this-network-booted-workstation": "Link this workstation to your organization's account. It was started over the network, so its boot server's menu can do this at every start instead (labkiosk.org= and labkiosk.key=)."
+  "ui.js.link-this-network-booted-workstation": "Link this workstation to your organization's account. It was started over the network, so its boot server's menu can do this at every start instead (labkiosk.org= and labkiosk.key=).",
+  "bar.keyboard": "Keyboard",
+  "bar.keyboardTitle": "Show or hide the on-screen keyboard",
+  "keyboard.backspaceTitle": "Delete",
+  "keyboard.caps": "Caps",
+  "keyboard.enter": "Enter",
+  "keyboard.hide": "Hide",
+  "keyboard.hideTitle": "Hide the keyboard",
+  "keyboard.leftTitle": "Move left",
+  "keyboard.letters": "ABC",
+  "keyboard.rightTitle": "Move right",
+  "keyboard.shift": "Shift",
+  "keyboard.space": "Space",
+  "keyboard.symbols": "?123",
+  "keyboard.tab": "Tab",
+  "keyboard.title": "On-screen keyboard"
 }

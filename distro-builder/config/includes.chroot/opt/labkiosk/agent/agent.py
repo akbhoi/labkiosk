@@ -795,6 +795,156 @@ def clock_synchronized(path=CLOCK_SYNCHRONIZED_FILE):
     return os.path.exists(path)
 
 
+# --------------------------------------------------------------------------
+# Input devices: is a keyboard attached, is there a touchscreen?
+# --------------------------------------------------------------------------
+#
+# The kiosk bar shows its on-screen keyboard by itself on a workstation that
+# has no keyboard, so the question has to be answered without guessing from a
+# device's name: power buttons, lid switches, the video bus and many laptop
+# hotkey devices all register a "kbd" handler, and none of them can type a
+# letter. A keyboard is a device that can type every letter, space and Enter.
+
+INPUT_DEVICES_FILE = "/proc/bus/input/devices"
+# Keyboards are plugged in and pulled out; the bar asks every second.
+INPUT_DEVICES_TTL_SECONDS = 5
+INPUT_DEVICES_MAX_BYTES = 256 * 1024
+# The kernel prints each bitmap as hexadecimal unsigned longs, most significant
+# first: 64 bits each on the amd64 image (the agent runs on the same kernel).
+INPUT_BITMAP_WORD_BITS = 64 if sys.maxsize > 2 ** 32 else 32
+# linux/input-event-codes.h
+EV_KEY = 0x01
+EV_ABS = 0x03
+ABS_X = 0x00
+ABS_MT_POSITION_X = 0x35
+INPUT_PROP_DIRECT = 0x01
+KEY_ENTER = 28
+KEY_SPACE = 57
+# KEY_Q..KEY_P, KEY_A..KEY_L, KEY_Z..KEY_M: the 26 letters.
+KEYBOARD_REQUIRED_KEYS = tuple(range(16, 26)) + tuple(range(30, 39)) + tuple(range(44, 51)) + (KEY_ENTER, KEY_SPACE)
+# Software-made devices (uinput, ydotool, an X server's XTEST device) type
+# whatever a program tells them to; none of them is a keyboard a person has.
+VIRTUAL_INPUT_NAME = re.compile(r"virtual|xtest|uinput|ydotool", re.IGNORECASE)
+TOUCHSCREEN_NAME = re.compile(r"touch\s*screen", re.IGNORECASE)
+
+
+def parse_input_devices(text):
+    """
+    The devices in /proc/bus/input/devices: name, bus, handlers and bitmaps.
+    Blocks are separated by blank lines; each line is "<letter>: <data>".
+    """
+    devices = []
+    current = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            current = None
+            continue
+        kind, separator, rest = line.partition(": ")
+        if not separator:
+            continue
+        if current is None:
+            current = {"name": "", "bus": "", "handlers": [], "bitmaps": {}}
+            devices.append(current)
+        if kind == "I":
+            for field in rest.split():
+                key, _, value = field.partition("=")
+                if key == "Bus":
+                    current["bus"] = value.lower()
+        elif kind == "N":
+            _, _, name = rest.partition("=")
+            current["name"] = name.strip().strip('"')
+        elif kind == "H":
+            _, _, handlers = rest.partition("=")
+            current["handlers"] = handlers.split()
+        elif kind == "B":
+            key, _, value = rest.partition("=")
+            current["bitmaps"][key.strip()] = value.split()
+    return devices
+
+
+def input_bitmap_has(words, bit, word_bits=INPUT_BITMAP_WORD_BITS):
+    """Is `bit` set in a bitmap printed as hexadecimal words, most significant first?"""
+    index = bit // word_bits
+    if index >= len(words):
+        return False
+    try:
+        word = int(words[len(words) - 1 - index], 16)
+    except ValueError:
+        return False
+    return bool((word >> (bit % word_bits)) & 1)
+
+
+def is_keyboard_device(device, word_bits=INPUT_BITMAP_WORD_BITS):
+    """A device a person can type a word on: every letter, space and Enter."""
+    if "kbd" not in device["handlers"] or VIRTUAL_INPUT_NAME.search(device["name"]):
+        return False
+    bitmaps = device["bitmaps"]
+    if not input_bitmap_has(bitmaps.get("EV", []), EV_KEY, word_bits):
+        return False
+    keys = bitmaps.get("KEY", [])
+    return all(input_bitmap_has(keys, code, word_bits) for code in KEYBOARD_REQUIRED_KEYS)
+
+
+def is_touchscreen_device(device, word_bits=INPUT_BITMAP_WORD_BITS):
+    """
+    Absolute positions on the screen itself (INPUT_PROP_DIRECT); a touchpad has
+    the same axes but is INPUT_PROP_POINTER. A driver too old to set the
+    property still counts when it calls itself a touchscreen.
+    """
+    if VIRTUAL_INPUT_NAME.search(device["name"]):
+        return False
+    bitmaps = device["bitmaps"]
+    if not input_bitmap_has(bitmaps.get("EV", []), EV_ABS, word_bits):
+        return False
+    axes = bitmaps.get("ABS", [])
+    if not (input_bitmap_has(axes, ABS_MT_POSITION_X, word_bits) or input_bitmap_has(axes, ABS_X, word_bits)):
+        return False
+    if input_bitmap_has(bitmaps.get("PROP", []), INPUT_PROP_DIRECT, word_bits):
+        return True
+    return bool(TOUCHSCREEN_NAME.search(device["name"]))
+
+
+def detect_input_devices(text, word_bits=INPUT_BITMAP_WORD_BITS):
+    """
+    {"keyboardPresent", "touchPresent"} from the text of /proc/bus/input/devices.
+
+    Both are None when the file lists no device at all. Real hardware always
+    lists something (a power button, the touchscreen itself); an empty list
+    means this machine's input is not visible from here -- a container, or a
+    virtual machine driven over VNC -- and nothing should be concluded from it.
+    """
+    devices = parse_input_devices(text)
+    if not devices:
+        return {"keyboardPresent": None, "touchPresent": None}
+    return {
+        "keyboardPresent": any(is_keyboard_device(d, word_bits) for d in devices),
+        "touchPresent": any(is_touchscreen_device(d, word_bits) for d in devices),
+    }
+
+
+_input_devices = {"value": None, "at": None, "problem": None}
+
+
+def input_devices_report(now=None, path=INPUT_DEVICES_FILE):
+    """detect_input_devices() of the running machine, read at most every few seconds."""
+    now = time.monotonic() if now is None else now
+    cached = _input_devices
+    if cached["at"] is not None and now - cached["at"] < INPUT_DEVICES_TTL_SECONDS:
+        return cached["value"]
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            value = detect_input_devices(handle.read(INPUT_DEVICES_MAX_BYTES))
+        problem = None if value["keyboardPresent"] is not None else f"{path} lists no input devices"
+    except OSError as err:
+        value = {"keyboardPresent": None, "touchPresent": None}
+        problem = f"{path} could not be read: {err}"
+    if problem and problem != cached["problem"]:
+        log(f"Keyboard presence unknown ({problem}); the on-screen keyboard opens only from the bar")
+    cached.update(value=value, at=now, problem=problem)
+    return value
+
+
 def enrolment_is_persistent():
     """
     Will something written to /etc/labkiosk still be there after a power-off?
@@ -2392,6 +2542,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             network_boot = is_network_boot()
             online = test_connectivity()["ok"]
             screen = update_screen()
+            inputs = input_devices_report()
             with state_lock:
                 self._send(
                     200,
@@ -2435,6 +2586,12 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # A system update installing or finishing: the kiosk
                         # bar's curtain says so (None otherwise).
                         "updateScreen": screen,
+                        # Whether a keyboard and a touchscreen are attached
+                        # (None: cannot be told here). The kiosk bar opens its
+                        # on-screen keyboard by itself when keyboardPresent is
+                        # False and a text field gets the focus.
+                        "keyboardPresent": inputs["keyboardPresent"],
+                        "touchPresent": inputs["touchPresent"],
                     },
                 )
             return
@@ -3890,8 +4047,15 @@ def wired_macs(net_dir=NET_CLASS_DIR):
     return macs
 
 
-def probe_hardware(dmi_dir=DMI_DIR, net_dir=NET_CLASS_DIR, efi_dir=EFI_DIR, cpuinfo=CPUINFO_FILE, meminfo=MEMINFO_FILE):
-    """What this machine is, for its organization's console and the hardware list."""
+def probe_hardware(dmi_dir=DMI_DIR, net_dir=NET_CLASS_DIR, efi_dir=EFI_DIR, cpuinfo=CPUINFO_FILE, meminfo=MEMINFO_FILE,
+                   inputs=None):
+    """What this machine is, for its organization's console and the hardware list.
+
+    inputs is input_devices_report()'s answer; keyboard and touch stay None
+    where it could not tell (a container, a VM driven over VNC).
+    """
+    if inputs is None:
+        inputs = input_devices_report()
     vendor = read_sys_text(os.path.join(dmi_dir, "sys_vendor"), 80)
     model = hardware_model(
         vendor,
@@ -3905,8 +4069,8 @@ def probe_hardware(dmi_dir=DMI_DIR, net_dir=NET_CLASS_DIR, efi_dir=EFI_DIR, cpui
         "cores": max(1, min(1024, os.cpu_count() or 1)),
         "memoryMb": max(64, read_memory_mb(meminfo)),
         "bootMode": "uefi" if os.path.isdir(efi_dir) else "bios",
-        "keyboard": None,
-        "touch": None,
+        "keyboard": inputs["keyboardPresent"],
+        "touch": inputs["touchPresent"],
         "macs": wired_macs(net_dir),
     }
 

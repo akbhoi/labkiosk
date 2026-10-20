@@ -206,7 +206,7 @@ That is what keeps a visited web page from reaching the installer.
 | Endpoint | Method | Notes |
 | :--- | :--- | :--- |
 | `/setup` | GET | Serves the wizard. `403` once enrolled. |
-| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname and `clockSynchronized` (whether a time server has set the clock since boot) |
+| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname, `clockSynchronized` (whether a time server has set the clock since boot), and `keyboardPresent`/`touchPresent` (`input_devices_report()`, cached 5 s; `null` when unknown) |
 | `/api/install/disks` | GET | `[]` when not a live session |
 | `/api/install/status` | GET | Progress percentage |
 | `/api/install` | POST | `400` when already installed on an internal drive, or when `hostname` is not one lowercase DNS label |

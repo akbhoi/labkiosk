@@ -680,8 +680,10 @@ class AgentReportsHardware(unittest.TestCase):
         report = agent.probe_hardware(
             os.path.join(self.tmp.name, "dmi"), os.path.join(self.tmp.name, "net"),
             os.path.join(self.tmp.name, "efi"), cpuinfo, meminfo,
+            {"keyboardPresent": True, "touchPresent": False},
         )
         self.assertEqual((report["vendor"], report["model"]), ("LENOVO", "ThinkCentre M720q"))
+        self.assertEqual((report["keyboard"], report["touch"]), (True, False), "from /proc/bus/input/devices")
         self.assertEqual(report["cpu"], "Intel(R) Core(TM) i5-8500T CPU @ 2.10GHz")
         self.assertEqual((report["memoryMb"], report["bootMode"]), (7851, "uefi"))
         self.assertEqual(report["macs"], ["8c:16:45:aa:bb:cc"], "only the physical wired adapter")
@@ -694,8 +696,10 @@ class AgentReportsHardware(unittest.TestCase):
         report = agent.probe_hardware(
             os.path.join(self.tmp.name, "dmi"), os.path.join(self.tmp.name, "net"),
             os.path.join(self.tmp.name, "efi"), os.path.join(self.tmp.name, "none"), os.path.join(self.tmp.name, "none"),
+            {"keyboardPresent": None, "touchPresent": None},
         )
         self.assertEqual((report["model"], report["bootMode"], report["macs"]), ("OptiPlex 7050", "bios", []))
+        self.assertEqual((report["keyboard"], report["touch"]), (None, None), "unknown stays unknown")
         self.assertEqual(report["memoryMb"], 64, "an unreadable size is reported as the smallest the control plane takes")
 
     def test_the_report_is_sent_once_the_control_plane_answers(self):
