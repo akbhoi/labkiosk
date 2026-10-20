@@ -425,7 +425,7 @@ ${FONT_LINKS}
           <textarea class="form-input" id="reg-notes" rows="3" maxlength="1000" placeholder="Where the workstations are, when you want to start, licensing questions..."></textarea>
         </div>
         <div class="form-group">
-          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
+          <label class="check-row"><input type="checkbox" id="reg-terms" required> <span>I accept the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>, including the <a href="/content-policy" target="_blank" rel="noopener">Content Policy</a> and the <a href="/dpa" target="_blank" rel="noopener">Data Processing Agreement</a>, and the <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
         </div>
         <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px;">Submit Registration</button>
       </form>
@@ -532,6 +532,7 @@ ${FONT_LINKS}
         <a href="/privacy">Privacy Policy</a>
         <a href="/terms">Terms of Service</a>
         <a href="/content-policy">Content Policy</a>
+        <a href="/dpa">Data Processing Agreement</a>
         <button type="button" class="footer-link-button" id="cookie-settings-link" data-action="cookie-settings" hidden>Cookie Settings</button>
         <a href="/#security">Security</a>
       </div>

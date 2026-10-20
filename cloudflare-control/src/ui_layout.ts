@@ -2789,6 +2789,7 @@ ${FONT_LINKS}
           <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
           <a href="/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>
           <a href="/content-policy" target="_blank" rel="noopener noreferrer">Content Policy</a>
+          <a href="/dpa" target="_blank" rel="noopener noreferrer">Data Processing Agreement</a>
         </div>
       </footer>
     </div>

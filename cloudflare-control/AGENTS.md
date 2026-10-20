@@ -63,7 +63,7 @@ cloudflare-control/
 │   ├── ui_two_factor.ts                # The Two-factor sign-in tab (Settings, and System in the super console)
 │   ├── ui_super_inbox.ts               # Its Tasks and Mail panes (/super/tasks, /super/mail)
 │   ├── ui_super_releases.ts            # Its Releases pane (/super/releases): classify, withdraw, revoke
-│   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /terms/bug-reports)
+│   ├── ui_legal.ts                     # Legal compliance pages (/privacy, /terms, /content-policy, /dpa, /terms/bug-reports)
 │   ├── ui_status.ts                    # Not-found / suspended / pending organization pages
 │   └── types.ts                        # Strict TypeScript interfaces
 └── test/
@@ -250,7 +250,10 @@ cloudflare-control/
   Never add a tenant's name, workstation id or unredacted detail to it.
 - **Every outside service is disclosed.** `/privacy` names each Cloudflare product the Worker
   binds plus GitHub and Google Fonts, and a test holds that list. Adding a binding or an outside
-  service means adding it to the Privacy Policy (`ui_legal.ts`) and to that test.
+  service means adding it to the Privacy Policy (`ui_legal.ts`) and to that test, and, when it
+  handles organization data, to the subprocessor list of the Data Processing Agreement (`/dpa`),
+  which promises organizations 30 days' notice. The DPA is part of the Terms: changing its text is
+  a new `terms` version in `LEGAL_DOCUMENTS`.
 
 ### Rule 3: The Schema Has Two Homes
 

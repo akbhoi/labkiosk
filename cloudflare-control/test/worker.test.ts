@@ -2834,6 +2834,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/privacy", undefined, false],
       ["/terms", undefined, false],
       ["/content-policy", undefined, false],
+      ["/dpa", undefined, false],
       ["/terms/bug-reports", undefined, false]
     ];
     for (const [page, cookie, hasToggle] of pages) {
@@ -2948,6 +2949,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["/privacy", undefined],
       ["/terms", undefined],
       ["/content-policy", undefined],
+      ["/dpa", undefined],
       ["/terms/bug-reports", undefined],
       ["/admin/workstations?tenant=greenwood", orgSessionCookie],
       ["/admin/apps-web?tenant=greenwood", orgSessionCookie],
@@ -6975,6 +6977,9 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
   });
 
   test("Serves Privacy Policy and Terms of Service compliance pages", async () => {
+    // "Last updated" on each page is its version in legal.ts, written out.
+    const legalDate = (id: string) =>
+      new Date(`${LEGAL_DOCUMENTS.find((d) => d.id === id)!.version}T00:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
     // /privacy
     const privRes = await call("/privacy");
     assert.equal(privRes.status, 200);
@@ -6992,6 +6997,19 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const privCsp = privRes.headers.get("Content-Security-Policy") || "";
     assert.match(privCsp, /script-src 'nonce-[^']+'/);
     assert.doesNotMatch(privHtml, /Cloudflare Tunnel/, "remote control no longer uses a tunnel");
+    // Roles under the GDPR and India's DPDP Act, the DPA, and where data lives.
+    for (const phrase of ["controller", "processor", "Data Fiduciary", "Digital Personal Data Protection Act, 2023", "UK GDPR", "section 16", "Data Protection Board of India", "section 9 of the DPDP Act", "privacy@labkiosk.org"]) {
+      assert.ok(privHtml.includes(phrase), `the Privacy Policy says ${phrase}`);
+    }
+    assert.match(privHtml, /href="\/dpa"/);
+    // Data residency is stated as configured: no region is claimed that wrangler.jsonc does not set.
+    assert.match(privHtml, /We have not set a location hint or a data jurisdiction/);
+    assert.doesNotMatch(privHtml, /stored (only )?in (the )?(EU|European Union|India|United States)\b/i);
+    // The data each feature sends, and what never leaves the workstation.
+    for (const phrase of ["Hardware Report", "MAC", "Usage Reports", "400 days", "turn off the recording of sites", "Wake-on-LAN", "Printers", "never pass through the Platform", "Google Workspace", "Microsoft Entra ID", "do not store the provider", "on-screen keyboard works entirely on the workstation", "at least three organizations"]) {
+      assert.ok(privHtml.includes(phrase), `the Privacy Policy describes ${phrase}`);
+    }
+    assert.match(privHtml, new RegExp(`Last updated: ${legalDate("privacy")}`), "the page's date is the version legal.ts records");
 
     // /terms
     const termsRes = await call("/terms");
@@ -7006,6 +7024,35 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.match(termsHtml, /href="\/terms\/bug-reports"/);
     assert.match(termsHtml, /href="\/content-policy"/);
     assert.match(termsHtml, new RegExp(`Version ${LEGAL_DOCUMENTS.find((d) => d.id === "terms")!.version}`), "the page shows the version consoles ask for");
+    assert.match(termsHtml, new RegExp(`Last updated: ${legalDate("terms")}`));
+    assert.match(termsHtml, /href="\/dpa"/);
+    assert.match(termsHtml, /accepting these Terms accepts both/, "the Terms carry the DPA's acceptance");
+    assert.match(termsHtml, /Anonymous statistics/);
+
+    // /dpa: part of the Terms and versioned with them; GDPR Article 28 and DPDP processor terms, and the subprocessors.
+    const dpaRes = await call("/dpa");
+    assert.equal(dpaRes.status, 200);
+    const dpaHtml = await dpaRes.text();
+    assert.match(dpaHtml, /<h1>Data Processing Agreement<\/h1>/);
+    assert.match(dpaHtml, new RegExp(`Part of the Terms of Service, Version ${LEGAL_DOCUMENTS.find((d) => d.id === "terms")!.version}`), "the DPA shows the Terms version that carries it");
+    assert.match(dpaHtml, new RegExp(`Last updated: ${legalDate("terms")}`));
+    assert.ok(!LEGAL_DOCUMENTS.some((d) => d.path === "/dpa"), "accepted with the Terms, not on its own");
+    for (const phrase of ["documented instructions", "Article 28", "Articles 33 and 34", "section 8(6)", "Data Protection Board of India", "without undue delay", "Standard Contractual Clauses", "Section 16", "Deletion at the End", "We have not set a location hint or a data jurisdiction", "privacy@labkiosk.org"]) {
+      assert.ok(dpaHtml.includes(phrase), `the DPA says ${phrase}`);
+    }
+    assert.match(dpaHtml, /<h2 id="subprocessors">/);
+    const subprocessors = dpaHtml.slice(dpaHtml.indexOf('id="subprocessors"'));
+    for (const name of ["Cloudflare, Inc.", "GitHub, Inc.", "Google and Microsoft", "Google Fonts", "Your printers"]) {
+      assert.ok(subprocessors.includes(`<strong>${name}`), `the subprocessor annex names ${name}`);
+    }
+    assert.match(subprocessors, /not our subprocessors/, "identity providers act under their own terms");
+    assert.match(dpaRes.headers.get("Content-Security-Policy") || "", /script-src 'nonce-[^']+'/);
+    assert.doesNotMatch(dpaHtml, /<script/, "no legal page carries a script");
+    for (const path of ["/", "/privacy", "/terms", "/content-policy", "/terms/bug-reports"]) {
+      assert.match(await (await call(path)).text(), /href="\/dpa"/, `${path} links the DPA`);
+    }
+    assert.match(await (await call("/admin/workstations?tenant=greenwood", { cookie: orgSessionCookie })).text(), /href="\/dpa"/);
+    assert.equal((await call("/dpa/")).status, 301, "a trailing slash goes to the address without it");
 
     // /content-policy: part of the Terms, with the link rules link_rules.ts enforces.
     const contentRes = await call("/content-policy");
@@ -7013,6 +7060,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     const contentHtml = await contentRes.text();
     assert.match(contentHtml, /<h1>Content Policy<\/h1>/);
     assert.match(contentHtml, new RegExp(`Version ${LEGAL_DOCUMENTS.find((d) => d.id === "content")!.version}`));
+    assert.match(contentHtml, new RegExp(`Last updated: ${legalDate("content")}`));
     for (const rule of ["bare IP address", "link shortener", "user name or password", "blocklist", "Report this page", "legal@labkiosk.org"]) {
       assert.ok(contentHtml.includes(rule), `the Content Policy says ${rule}`);
     }
@@ -7674,6 +7722,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       "https://www.labkiosk.org/privacy",
       "https://www.labkiosk.org/terms",
       "https://www.labkiosk.org/content-policy",
+      "https://www.labkiosk.org/dpa",
       "https://www.labkiosk.org/terms/bug-reports"
     ]);
     // Every listed page really is served, indexable, on the canonical host.
@@ -7698,6 +7747,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       ["www.labkiosk.org", "/privacy"],
       ["www.labkiosk.org", "/terms"],
       ["www.labkiosk.org", "/content-policy"],
+      ["www.labkiosk.org", "/dpa"],
       ["www.labkiosk.org", "/terms/bug-reports"]
     ];
     for (const [host, path] of indexable) {

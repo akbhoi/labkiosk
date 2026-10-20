@@ -163,6 +163,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/login`, `/register`, `/contact` | Landing-page sections |
 | `/privacy`, `/terms` | Privacy Policy and Terms of Service |
 | `/content-policy` | The Content Policy, part of the Terms of Service (public) |
+| `/dpa` | The Data Processing Agreement and its subprocessor list, part of the Terms of Service (public) |
 | `/terms/bug-reports` | The Automatic Bug Report Terms (public) |
 | `/download`, `/iso` | Redirect to `ISO_DOWNLOAD_URL` |
 
