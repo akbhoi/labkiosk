@@ -160,6 +160,19 @@ How your own account signs in. Every staff account can open Settings for this ta
 - **Authenticator app**: optional. Sign-in then asks for the app's code (an emailed one stays available), and you get ten recovery codes.
 - **Passkeys**: optional, up to ten. Sign-in then offers **Use your passkey** first (a touch or fingerprint on this computer, your phone or a security key); an emailed code stays available. A passkey cannot be used on a fake copy of the site. One made on the organization's own domain works only there.
 
+### Usage (`?tab=usage`)
+
+How much the workstations are switched on and in use, for the last 7 days to 12 months (requires `settings`). A workstation is *in use* while someone has used its keyboard, mouse or touchscreen in the last minute; days are each workstation's own calendar days. Workstations report every 15 minutes, and reports are kept 400 days.
+
+- **Tiles**: workstations used, hours in use, hours switched on, the share of switched-on time in use, and sessions (each start and each session clear).
+- **Chart**: hours in use per day; hover or tap a bar for the figures.
+- **Workstations**, **Sites** and **By day** tables, each with **Download CSV**.
+- **Record the sites workstations visit**: on by default. Sites are recorded by hostname only, never the full address, the page, or who was at the workstation. Turned off, workstations stop sending them at once; **Delete recorded sites** removes what was already recorded.
+
+Anonymous totals across every organization, never naming one, are also kept for the platform's own administrators (see the [Privacy Policy](https://labkiosk.org/privacy)).
+
+Each workstation card also shows the machine it runs on (maker, model, memory and boot mode; CPU, keyboard, touchscreen and network addresses on hover), as its agent reports at every start.
+
 ### 5. Errors & Warnings (`?tab=issues`)
 
 Problems workstations reported themselves, kept apart from Recent Activity (which records what people did) and deleted after 90 days. These are the outcomes of a system image update on an installed workstation, sent by the agent to `POST /api/devices/boot-report`, restarts that happened without a shutdown, sent to `POST /api/devices/restart-report`, and disks wearing out or failing, sent to `POST /api/devices/disk-health`:

@@ -18,7 +18,7 @@ The complete endpoint catalogue for the Lab Kiosk Cloudflare control plane, plus
 | Scheme | Header | Used by |
 | :--- | :--- | :--- |
 | **Session cookie** | `Cookie: __Host-labkiosk_session=<hex32>` (`HttpOnly; Secure; SameSite=Lax`, host-only; `labkiosk_session` on plain-HTTP dev hosts) | Operator Lab Dashboard, Super Admin console |
-| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health` and `/api/devices/video-decoding` |
+| **Device bearer token** | `Authorization: Bearer <hex32>` | `agent.py` on each workstation, for `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/video-decoding`, `/api/devices/hardware` and `/api/devices/usage` |
 | **Public / key-exchanged** | none, or a one-time `enrollmentKey` in the body | Landing page, legal pages, sign-in, registration, user portal, enrolment, health probe |
 
 Session tokens are random 32-byte hex strings; only their SHA-256 hash is stored in D1. Device tokens are handled the same way — the plaintext token exists only on the workstation that was issued it.
@@ -33,7 +33,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `requireTenantAdmin()` | `401` anonymous, `400` no organization, `403` wrong tenant (and a super admin outside its own demos) | `GET /api/broadcast-presets`, `GET /api/whitelist`, the `/admin` pages |
 | `requireTenantPermission(…, permission)` | as above, plus `403` without the permission | `settings`: `/api/settings/*` (but `/api/settings/updates`), `/api/tenant/subdomain`, `/api/tenant/homepage`, `/api/tenant/settings`, `/api/audit-logs`, `/api/workstation-issues`; `workstations`: `/api/clients*`, `/api/console/ws`, `/api/console/remote`, `/api/groups*`; `staff`: `/api/tenant/staff*`; `portal`: mutating `/api/portal-sites*`; `broadcast`: mutating `/api/broadcast-presets*`; `whitelist`: `POST /api/whitelist`; `updates`: `/api/settings/updates`, `/api/clients/check-update`, `/api/clients/install-update`; `/api/command`: `broadcast` for `navigate`, `workstations` otherwise |
 | `requireSuperAdmin()` | `401` / `403` | all `/api/super/*` |
-| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/video-decoding`, `/api/devices/remote` |
+| `requireDevice()` | `401` | `/api/devices/ws`, `/api/telemetry`, `/api/devices/boot-report`, `/api/devices/restart-report`, `/api/devices/disk-health`, `/api/devices/video-decoding`, `/api/devices/hardware`, `/api/devices/usage`, `/api/devices/remote` |
 | `rejectCrossSiteMutation()` | `403` | every cookie-authenticated `POST`/`DELETE` under `/api/` |
 
 ### Rate limiting
@@ -109,6 +109,9 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/audit-logs` | `GET` | Paginated organization audit log |
 | `/api/workstation-issues` | `GET` | Errors and warnings workstations reported (Settings → Errors & Warnings), newest first, with each one's bug report state; plus the organization's automatic bug report settings (requires `settings`) |
 | `/api/workstation-issues/log` | `GET` | `?id=`: the journal a restart report carried, kept 30 days (requires `settings`) |
+| `/api/usage` | `GET` | `?days=1..366`: usage reports for Settings → Usage: per-day totals, per-workstation totals (with its group), the 100 sites with the most time in use, and whether sites are recorded (requires `settings`) |
+| `/api/usage/settings` | `POST` | `{ recordSites: boolean }`: whether workstations send the sites they spend time on; pushed to workstations at once (requires `settings`) |
+| `/api/usage/sites/delete` | `POST` | Delete every site the organization recorded; the time on and in use stays (requires `settings`) |
 | `/api/settings/bug-reports` | `POST` | Opt in to or out of automatic, redacted GitHub bug reports; turning them on accepts the current terms version (requires `settings`) |
 
 ### Device
@@ -121,6 +124,8 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/devices/restart-report` | `POST` | A boot that ended without shutting down (power cut, hang, watchdog reset), with the end of its journal |
 | `/api/devices/disk-health` | `POST` | The workstation's disks that are wearing out or failing, as `labkiosk-health` found them |
 | `/api/devices/video-decoding` | `POST` | What the workstation's GPUs decode in hardware (VA-API), read with `vainfo` at each agent start |
+| `/api/devices/hardware` | `POST` | The machine it runs on, once per agent start: `{ vendor, model, cpu, cores, memoryMb, bootMode: "uefi"\|"bios", keyboard, touch, macs }` (`keyboard`/`touch` are `null` when the agent could not tell; at most 8 wired MAC addresses). `400` on a malformed report, `409` before the workstation's row exists |
+| `/api/devices/usage` | `POST` | Time switched on and in use since the last report, every 15 minutes: `{ days: [{ day, onSeconds, activeSeconds, sessions, sites: [{ domain, seconds, visits }] }] }`. Days are the workstation's own calendar days, at most 7 days old; amounts are added to what is stored. `sites` is ignored while the organization does not record sites |
 | `/api/devices/remote` | `GET` (WebSocket) | The workstation's side of a Remote Control session, with `X-Labkiosk-Session`; piped to its loopback x11vnc |
 
 ### Release build
@@ -139,6 +144,7 @@ Every route passes through `src/guard.ts` before its handler runs:
 | `/api/super/inbox/:id` | `GET` | One conversation, its messages and registration details |
 | `/api/super/inbox/:id/{reply,note,status,delete,verify-phone,approve,reject}` | `POST` | Answer by email, note, close, delete mail, confirm the phone, decide |
 | `/api/super/inbox/:id/attachment/:messageId/:index` | `GET` | Download an attachment, or `original` for the whole message |
+| `/api/super/usage` | `GET` | `?days=1..366`: the platform's anonymous daily totals and the sites at least 3 organizations visited on a day, plus `hardware: { models, computedAt }`, every model workstations reported (System → Usage and System → Hardware) |
 | `/api/super/tenants/approve` | `POST` | Approve a requested subdomain change |
 | `/api/super/tenants/reject` | `POST` | Decline a requested subdomain change |
 | `/api/super/tenants/suspend` | `POST` | Suspend an active organization |

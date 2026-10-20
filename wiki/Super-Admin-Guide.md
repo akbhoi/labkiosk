@@ -20,6 +20,7 @@ Sign in with `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD`. There is no default
 | Approve, reject, or remove custom domains | Binding an FQDN to a tenant is a routing decision |
 | Open the platform's demo organizations (`web-demo`, `local-demo`, `docker-demo`) | Testing the platform without reaching into a real organization's data |
 | Read and answer the platform's mail and requests (**Tasks**, **Mail**) | Registrations, Remote Control requests and every message sent to an address on the mail domain |
+| See anonymous platform usage and the hardware workstations run on (**System → Usage**, **System → Hardware**) | High-level auditing without opening any organization |
 
 A super-admin session may use `?tenant=<slug>` and `X-Tenant` on any host — one of only four cases where the `Host` header is not the sole authority — but `requireTenantAdmin()` then lets it into an organization's console or API **only** for one of the three demos it owns (`isDemoTenant()` in `src/demo.ts`: a demo slug *and* owned by the super admin). Any other organization answers `403` ("Platform administrators cannot access individual organization consoles"), and its `/admin` page explains the privacy isolation and points to `/super`. Opening `/admin/*` with no organization named lands in `local-demo` on a development host and `web-demo` otherwise. The demo slugs, and the retired `demo`, cannot be registered by an organization. → [Architecture Overview](Architecture-Overview#tenant-resolution)
 
@@ -225,6 +226,10 @@ The rail has five tabs: **Organizations** (the directory, filtered by status), *
 - A new email from a person is answered automatically with a receipt carrying its tracking ID: once a day per sender, never to automatic mail, bounces or no-reply addresses.
 - Everything sent uses one layout and a template for its purpose (`cloudflare-email-routing/src/templates/`).
 
+**System → Usage** shows the platform's anonymous daily totals for the last 7 days to 12 months: how many organizations and workstations reported (the busiest day), hours switched on and in use, and sessions, with a table per day. Nothing names an organization. *Sites many organizations use* lists a hostname only once at least 3 organizations that record sites visited it on the same day. The platform's demos are left out, and the totals stay after an organization is deleted.
+
+**System → Hardware** lists every maker and model workstations reported at their latest start, with how many organizations and workstations run it, the share starting in UEFI mode and with a touchscreen, and the least memory any of them has. *Public* says whether the model is on the public [`/hardware`](https://labkiosk.org/hardware) page, which shows models at least 3 organizations run. Machines whose firmware names no model ("To be filled by O.E.M.") are left out.
+
 ---
 
 ## Hourly housekeeping
@@ -239,6 +244,7 @@ A cron trigger (`"0 * * * *"` in `wrangler.jsonc`) calls the worker's `scheduled
 - Replaces enrollment keys issued before keys carried a check character.
 - Reads the newest releases from GitHub for `/download` and writes a customer-facing summary of each with Workers AI (when the `AI` binding is set; the release's own change list is shown otherwise).
 - Sends the end-of-life reminders now due (60, 30 and 7 days before a major's date, and once it has passed) to every organization's console and owner.
+- Deletes usage reports older than 400 days, rebuilds the anonymous platform usage totals for the last 8 days, and rebuilds the hardware list from every workstation's latest report.
 - Triages pending automatic bug reports into GitHub issues, when they are set up (at most 5 GitHub writes a run), and reads back the status of up to 10 filed issues.
 
 Commands are not in D1: each organization's OrgHub expires its own after 60 seconds.

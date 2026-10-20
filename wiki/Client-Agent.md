@@ -207,6 +207,7 @@ That is what keeps a visited web page from reaching the installer.
 | :--- | :--- | :--- |
 | `/setup` | GET | Serves the wizard. `403` once enrolled. |
 | `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname, `clockSynchronized` (whether a time server has set the clock since boot), and `keyboardPresent`/`touchPresent` (`input_devices_report()`, cached 5 s; `null` when unknown) |
+| `/api/usage/tick` | POST | `{ host, active }` from the extension's service worker once a minute while a page is shown: the top frame's hostname and whether `chrome.idle` saw input in the last minute. Counted into the next usage report |
 | `/api/install/disks` | GET | `[]` when not a live session |
 | `/api/install/status` | GET | Progress percentage |
 | `/api/install` | POST | `400` when already installed on an internal drive, or when `hostname` is not one lowercase DNS label |
@@ -279,6 +280,14 @@ Chromium decodes video through VA-API when the GPU has a driver for it, and on t
 The admin console shows the result on the workstation's card: `Video: GPU · H.264, HEVC, VP9, AV1`, or `Video: CPU · NVIDIA graphics` or `Video: CPU only` in the warning colour. `vainfo` reports what the driver offers; Chromium uses it for the codecs and resolutions its own decoder supports, so a codec listed here is decoded in hardware in practice but not guaranteed for every stream.
 
 ---
+
+## Hardware
+
+Once per agent start, after enrolment, the same loop as the boot reports reads what the machine is and posts it to `POST /api/devices/hardware`: the maker and model from DMI (`/sys/devices/virtual/dmi/id/`; Lenovo names the model in `product_version`), the CPU model from `/proc/cpuinfo`, the core count, memory from `/proc/meminfo`, UEFI or BIOS boot, whether a keyboard and a touchscreen are attached (`input_devices_report()`, `null` when it cannot tell), and the MAC addresses of up to 8 physical wired adapters (for Wake-on-LAN). Placeholder firmware names such as "To be filled by O.E.M." are sent but treated as unknown by the control plane. `200`, `400` and `404` settle it; `409` and network failures are retried every 30 s. The log line `Hardware: LENOVO ThinkCentre M720q, 6 cores, 7851 MB, UEFI, 1 wired adapters.` says the same on the workstation.
+
+## Usage reports
+
+`UsageCounter` adds up, per local calendar day, how long the workstation was switched on (credited every minute by `usage_loop`, at most 2 minutes at a time so a suspend or a stopped clock does not count), how long it was in use (the extension's `/api/usage/tick`: someone used the keyboard, mouse or touchscreen in the last minute; capped at the time switched on), sessions (each agent start and each `clear-session`), and, while the organization records sites (`usageSites` in the configuration), seconds in use and visits per hostname (at most 100 a day; IP addresses and `localhost` are never recorded). Every 15 minutes `usage_loop` sends what has accumulated to `POST /api/devices/usage` and starts again from zero; a network failure or any status but `200` and `400` puts the report back to be sent with the next one, and days more than 7 days old are dropped. Nothing is sent before enrolment. The counts live in memory, so at most 15 minutes are lost when the workstation is switched off at the button.
 
 ## Enrolment
 
