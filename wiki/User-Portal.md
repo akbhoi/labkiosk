@@ -80,7 +80,7 @@ Clicking a card navigates **top-level, natively**. It is not an iframe — Khan 
 
 Once on the site, the kiosk's own chrome comes from the browser extension: an auto-hiding 44 px bar with Home, Back, Forward, Reload, and a status shield, injected into a closed Shadow DOM.
 
-**Home** returns to the portal. That is the user's only reliable route back, which is why the bar exists at all.
+**Home** returns to the portal. That is the user's only reliable route back, which is why the bar exists at all. While the organization has **Home starts a new session** on (Settings → General, on by default), Home first asks "Start over?"; Yes signs out of every site and reopens the portal in a fresh browser, so the next person does not inherit the last one's sign-ins.
 
 → [Browser Extension](Browser-Extension)
 

@@ -446,6 +446,10 @@ state = {
     # to the wizard's re-enrolment form rather than left on a page Chromium
     # blocks, which is a page the kiosk bar cannot appear on.
     "enrolmentRejected": False,
+    # The organization lets Home in the kiosk bar start a new session (sign
+    # everyone out). Off until its configuration says so, so a workstation the
+    # control plane has not answered yet only goes back to its start page.
+    "homeReset": False,
     # An administrator's install of a system update is under way: the screen
     # says so, and reboot or shutdown commands wait for it. Unlock leaves it.
     "updateInstalling": "",
@@ -2618,6 +2622,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # The kiosk bar shows its Print button, and lets Ctrl+P
                         # print, only while this is true (printing_ready).
                         "printing": printing_ready(),
+                        # Home asks "Start over?" and, on Yes, posts
+                        # /api/session/reset; otherwise it only navigates.
+                        "homeReset": state["homeReset"],
                     },
                 )
             return
@@ -2891,6 +2898,20 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             self._send(200, {"status": "ok"})
             return
 
+        if self.path == "/api/session/reset":
+            # Home in the kiosk bar, confirmed by the user: the same end of a
+            # session as the console's Clear session, when the organization
+            # allows it. There is nothing to choose, so no body is read.
+            with state_lock:
+                allowed = state["homeReset"]
+            if not allowed:
+                self._send(409, {"error": "This organization does not let Home start a new session"})
+                return
+            log("Home in the kiosk bar started a new session.")
+            clear_session()
+            self._send(200, {"status": "ok"})
+            return
+
         if self.path == "/api/admin/verify":
             data = self._read_json()
             password = str(data.get("password", "") or "") if isinstance(data, dict) else ""
@@ -3092,6 +3113,22 @@ def restart_browser(reason="to apply the new policy"):
         log(f"Could not restart the browser: {err}")
 
 
+def clear_session():
+    """
+    The end of a session: sign every user out without a reboot.
+
+    Ending Chromium is enough, because the kiosk watchdog deletes the profile
+    (cookies, saved sign-ins, history, local storage, IndexedDB, service
+    workers) and the disk cache before it relaunches, and the in-memory HTTP
+    auth cache and X clipboard die with the process. The relaunch opens the
+    page this workstation is assigned. The wipe stays in the watchdog on
+    purpose: deleting the profile from here while Chromium still has it open
+    would race its own writes.
+    """
+    restart_browser("to clear the session (profile and cache are wiped before relaunch)")
+    usage_counter.session_started()
+
+
 def run_x11(argv, **kwargs):
     """Run a command against the local X display, never through a shell."""
     env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0"))
@@ -3182,16 +3219,7 @@ def execute_command(cmd_data):
     elif action == "install-update":
         begin_update_install(cmd_data.get("version"))
     elif action == "clear-session":
-        # The end of a session: sign every user out without a reboot.
-        # Ending Chromium is enough, because the kiosk watchdog deletes the
-        # profile (cookies, saved sign-ins, history, local storage, IndexedDB,
-        # service workers) and the disk cache before it relaunches, and the
-        # in-memory HTTP auth cache and X clipboard die with the process. The
-        # relaunch opens the page this workstation is assigned. The wipe stays
-        # in the watchdog on purpose: deleting the profile from here while
-        # Chromium still has it open would race its own writes.
-        restart_browser("to clear the session (profile and cache are wiped before relaunch)")
-        usage_counter.session_started()
+        clear_session()
     elif action == "mute":
         # Plain ALSA: the image ships alsa-utils and no sound server.
         run_x11(["amixer", "-q", "set", "Master", "mute"])
@@ -5017,6 +5045,13 @@ def apply_control_update(data):
     if isinstance(data.get("usageSites"), bool) and data["usageSites"] != usage_counter.record_sites:
         usage_counter.set_record_sites(data["usageSites"])
         log(f"Usage reports {'now record' if data['usageSites'] else 'no longer record'} the sites visited.")
+
+    if isinstance(data.get("homeReset"), bool):
+        with state_lock:
+            changed = state["homeReset"] != data["homeReset"]
+            state["homeReset"] = data["homeReset"]
+        if changed:
+            log(f"Home in the kiosk bar {'now starts a new session' if data['homeReset'] else 'now only goes back to the start page'}.")
 
     # Apply a just-completed enrolment to the running browser.
     with state_lock:

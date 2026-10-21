@@ -670,6 +670,12 @@ Every one of these strings is attacker-controlled from the platform's perspectiv
 
 ---
 
+### `POST /api/tenant/settings`
+
+Settings → General. Guard: `requireTenantPermission(…, "settings")`. Takes any of `name`, `mode`, `defaultUrl`, `defaultLockMessage`, `homeRoute`, the four portal strings, and `homeReset` (a boolean: Home in the kiosk bar asks "Start over?" and signs everyone out; `400` for anything but `true` or `false`). Answers `{ "status": "ok", "updates": { … } }` with the columns changed, records them in the audit log as `settings.update` and pushes the change to the workstations (`homeReset` in their configuration).
+
+---
+
 ### `GET` / `POST` `/api/settings/printing`
 
 Settings → Printing. Guard: `requireTenantPermission(…, "settings")`. `GET` returns

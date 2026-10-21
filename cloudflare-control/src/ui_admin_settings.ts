@@ -171,6 +171,13 @@ function renderSettingsPageHtml(
               </select>
               <div class="form-hint">Where a workstation lands on start-up and on Reset to Portal. The homepage is a page your organization writes; the app grid is the launcher users pick a site from.</div>
             </div>
+            <div class="form-group">
+              <label class="form-checkbox-label">
+                <input type="checkbox" class="form-checkbox" id="setting-home-reset" ${tenant?.home_reset === 0 ? "" : "checked"}>
+                <span>Home starts a new session</span>
+              </label>
+              <div class="form-hint">Home in the kiosk bar asks &ldquo;Start over?&rdquo; and, on Yes, signs out of every site and clears the browser, as Clear Session does from the console. Turned off, Home only goes back to the landing page.</div>
+            </div>
             <button type="submit" class="btn btn-secondary">Save Routing</button>
           </form>
         </div>
@@ -698,11 +705,12 @@ function renderSettingsScripts(nonce: string, blocks: HomepageBlock[]): string {
       document.getElementById("form-routing-settings").addEventListener("submit", async (e) => {
         e.preventDefault();
         const homeRoute = document.getElementById("setting-home-route").value;
+        const homeReset = document.getElementById("setting-home-reset").checked;
         try {
           const res = await fetch(labkioskApi("/api/tenant/settings"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ homeRoute })
+            body: JSON.stringify({ homeRoute, homeReset })
           });
           const data = await res.json();
           if (data.status === "ok") {

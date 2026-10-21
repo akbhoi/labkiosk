@@ -3753,6 +3753,7 @@ export default {
           portalSubtitle?: string;
           portalDescription?: string;
           portalFooter?: string;
+          homeReset?: boolean;
         }>();
 
         const updates: Partial<Tenant> = {};
@@ -3787,6 +3788,10 @@ export default {
         }
         if (body.portalFooter !== undefined) {
           updates.portal_footer = String(body.portalFooter).trim().slice(0, 200) || null;
+        }
+        if (body.homeReset !== undefined) {
+          if (typeof body.homeReset !== "boolean") return jsonError("homeReset is true or false", 400, jsonHeaders);
+          updates.home_reset = body.homeReset ? 1 : 0;
         }
 
         if (Object.keys(updates).length > 0) {

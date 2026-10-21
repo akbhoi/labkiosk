@@ -94,6 +94,8 @@ export interface Tenant {
   usage_sites?: number;
   /** 1 when its workstations may print to its network printers; 0 by default (0047, src/printing.ts). */
   printing_enabled?: number;
+  /** 1 when Home in the kiosk bar asks "Start over?" and signs everyone out; on by default (0048). */
+  home_reset?: number;
   /** Workstations the organization may enrol (0032). */
   workstation_limit?: number;
   /** Remote Control sessions the organization may have open at once (0033). */

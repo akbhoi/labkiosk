@@ -1229,6 +1229,24 @@ const BAR_INTRO_MS = 2500;
           </div>
         </div>
       </div>
+
+      <div id="home-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="home-modal-title">
+        <div class="modal-card">
+          <div class="modal-header">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+              <polyline points="3 3 3 9 9 9"></polyline>
+            </svg>
+            <h3 class="modal-title" id="home-modal-title" data-i18n="home.title">Start over?</h3>
+          </div>
+          <p class="modal-desc" data-i18n="home.prompt">This signs out of every site and clears what was opened on this workstation.</p>
+          <div id="home-modal-err" class="modal-err hidden"></div>
+          <div class="modal-actions">
+            <button type="button" class="modal-btn modal-btn-cancel" id="btn-home-modal-cancel" data-i18n="home.cancel">Cancel</button>
+            <button type="button" class="modal-btn modal-btn-confirm" id="btn-home-modal-confirm" data-i18n="home.confirm">Start over</button>
+          </div>
+        </div>
+      </div>
     `;
 
     document.documentElement.appendChild(host);
@@ -1348,14 +1366,64 @@ const BAR_INTRO_MS = 2500;
       if (curtain) curtain.setAttribute("dir", dir);
       const adminModal = shadow.getElementById("admin-modal");
       if (adminModal) adminModal.setAttribute("dir", dir);
+      const homeModal = shadow.getElementById("home-modal");
+      if (homeModal) homeModal.setAttribute("dir", dir);
       const powerNotice = shadow.getElementById("power-notice");
       if (powerNotice) powerNotice.setAttribute("dir", dir);
       keyboard.relabel();
     }).catch(() => { /* English stands */ });
 
+    // Home goes back to the start page; where the organization lets it
+    // (homeReset), it first asks "Start over?" and, on Yes, the agent restarts
+    // the browser with a wiped profile, which opens the start page signed out.
+    const homeModal = shadow.getElementById("home-modal");
+    const homeErr = shadow.getElementById("home-modal-err");
+    const btnHomeConfirm = shadow.getElementById("btn-home-modal-confirm");
+    const btnHomeCancel = shadow.getElementById("btn-home-modal-cancel");
+
+    function openHomeModal() {
+      if (!homeModal) return;
+      if (homeErr) homeErr.classList.add("hidden");
+      if (btnHomeConfirm) {
+        btnHomeConfirm.disabled = false;
+        btnHomeConfirm.textContent = t("home.confirm", "Start over");
+      }
+      homeModal.classList.remove("hidden");
+      // Cancel has the focus, so a stray Enter keeps the session.
+      if (btnHomeCancel) setTimeout(() => btnHomeCancel.focus(), 60);
+    }
+
+    function closeHomeModal() {
+      if (homeModal) homeModal.classList.add("hidden");
+    }
+
+    async function confirmStartOver() {
+      if (!btnHomeConfirm) return;
+      btnHomeConfirm.disabled = true;
+      btnHomeConfirm.textContent = t("home.starting", "Starting over…");
+      if (homeErr) homeErr.classList.add("hidden");
+      try {
+        // On success the browser is ended under this page; nothing follows.
+        await askAgent({ type: "labkiosk:session-reset" });
+      } catch (err) {
+        console.warn("[LabKiosk] Could not start a new session:", err);
+        btnHomeConfirm.disabled = false;
+        btnHomeConfirm.textContent = t("home.confirm", "Start over");
+        btnHomeConfirm.focus();
+        if (homeErr) {
+          homeErr.textContent = t("home.failed", "This workstation could not start over. Ask an administrator.");
+          homeErr.classList.remove("hidden");
+        }
+      }
+    }
+
     shadow.getElementById("btn-home").onclick = async () => {
       try {
         const { status } = await askAgent({ type: "labkiosk:status" });
+        if (status.homeReset === true) {
+          openHomeModal();
+          return;
+        }
         const target = status.targetUrl || broadcastState.url;
         const safeTarget = httpUrlOrNull(target);
         if (safeTarget) {
@@ -1365,6 +1433,16 @@ const BAR_INTRO_MS = 2500;
         console.warn("[LabKiosk] Home target unavailable:", e);
       }
     };
+    if (btnHomeCancel) btnHomeCancel.onclick = closeHomeModal;
+    if (btnHomeConfirm) btnHomeConfirm.onclick = confirmStartOver;
+    // Escape cancels wherever the focus is: the disabled "Starting over…"
+    // button gives the focus back to the page.
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && homeModal && !homeModal.classList.contains("hidden")) {
+        e.preventDefault();
+        closeHomeModal();
+      }
+    }, true);
     shadow.getElementById("btn-back").onclick = () => {
       if (isAtBroadcastRoot()) {
         console.log("[LabKiosk] Back navigation blocked at broadcast root");

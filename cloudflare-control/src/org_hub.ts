@@ -264,6 +264,8 @@ export interface WorkstationConfig {
   power: WorkstationPower | null;
   /** Whether it may print, and to which printers (src/printing.ts); off, it runs no print service. */
   printing: WorkstationPrinting;
+  /** Whether Home in the kiosk bar offers to start a new session (sign everyone out). */
+  homeReset: boolean;
 }
 
 export interface QueuedCommand {
@@ -598,6 +600,7 @@ export class OrgHub {
       usageSites: tenant.usage_sites !== 0,
       power: effectivePower(config.power.rules, config.power.groupOf.get(clientId)),
       printing: printingFor(tenant.printing_enabled === 1, config.printers, config.printerGroups.get(clientId)),
+      homeReset: tenant.home_reset !== 0,
       portalUrl
     };
   }

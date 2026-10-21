@@ -207,7 +207,8 @@ That is what keeps a visited web page from reaching the installer.
 | Endpoint | Method | Notes |
 | :--- | :--- | :--- |
 | `/setup` | GET | Serves the wizard. `403` once enrolled. |
-| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname, `clockSynchronized` (whether a time server has set the clock since boot), `keyboardPresent`/`touchPresent` (`input_devices_report()`, cached 5 s; `null` when unknown), and `printing` (`printing_ready()`: Chromium may print now) |
+| `/api/status` | GET | Local state for the wizard and the extension, with the Secure Boot state, the hostname, `clockSynchronized` (whether a time server has set the clock since boot), `keyboardPresent`/`touchPresent` (`input_devices_report()`, cached 5 s; `null` when unknown), `printing` (`printing_ready()`: Chromium may print now), and `homeReset` (the organization's `homeReset` from the configuration; `false` until the control plane has sent it) |
+| `/api/session/reset` | POST | Home in the kiosk bar, confirmed by the user, through the extension's service worker: `clear_session()`, the same as the `clear-session` command. `409` while the organization's `homeReset` is off |
 | `/api/usage/tick` | POST | `{ host, active }` from the extension's service worker once a minute while a page is shown: the top frame's hostname and whether `chrome.idle` saw input in the last minute. Counted into the next usage report |
 | `/api/install/disks` | GET | `[]` when not a live session |
 | `/api/install/status` | GET | Progress percentage |

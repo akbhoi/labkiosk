@@ -26,7 +26,8 @@
  *
  * Navigation (back, forward, reload, home) is done by the content script with
  * the History API and never needs the agent, so there is no nav channel to the
- * agent's loopback API.
+ * agent's loopback API. The one exception is Home's "Start over", which asks
+ * the agent for a new session (labkiosk:session-reset).
  */
 
 const AGENT_STATUS_URL = "http://127.0.0.1:8888/api/status";
@@ -166,6 +167,30 @@ async function verifyAdmin(password) {
   return body;
 }
 
+/*
+ * Home in the kiosk bar, once the user said Yes to "Start over?": the agent
+ * restarts Chromium, whose watchdog wipes the profile before relaunching. Only
+ * the top frame's bar asks; the agent refuses (409) when the organization has
+ * turned this off.
+ */
+const AGENT_SESSION_RESET_URL = "http://127.0.0.1:8888/api/session/reset";
+
+async function resetSession(sender) {
+  if (!sender || sender.frameId !== 0) throw new Error("Only the kiosk bar can start a new session");
+  const res = await fetch(AGENT_SESSION_RESET_URL, { method: "POST" });
+  if (!res.ok) {
+    let message = `Agent responded ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") message = body.error;
+    } catch (err) {
+      console.warn("Lab Kiosk: the agent's refusal to start a new session had no readable reason:", err);
+    }
+    throw new Error(message);
+  }
+  return {};
+}
+
 async function readNetworkStatus() {
   const res = await fetch(AGENT_NETWORK_STATUS_URL, { cache: "no-store" });
   if (!res.ok) throw new Error(`Network status error (${res.status})`);
@@ -257,6 +282,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "labkiosk:verify-admin") {
     return reply(verifyAdmin(message.password));
+  }
+
+  if (message.type === "labkiosk:session-reset") {
+    return reply(resetSession(sender));
   }
 
   if (message.type === "labkiosk:network-status") {

@@ -568,6 +568,65 @@ class RemoteClearSessionCommand(unittest.TestCase):
                 self.assertRegex(script, r"rm -rf [^\n]*" + agent.BROWSER_PROFILE_DIR.replace("/", r"\/"))
 
 
+class HomeStartsANewSession(unittest.TestCase):
+    """Home in the kiosk bar, confirmed: /api/session/reset, while the organization allows it."""
+
+    def setUp(self):
+        self._run = agent.subprocess.run
+        self._home_reset = agent.state["homeReset"]
+        self.calls = []
+
+        def fake_run(argv, **kwargs):
+            self.calls.append(list(argv))
+            return agent.subprocess.CompletedProcess(argv, 0)
+
+        agent.subprocess.run = fake_run
+
+    def tearDown(self):
+        agent.subprocess.run = self._run
+        agent.state["homeReset"] = self._home_reset
+
+    def _post(self, origin=None):
+        headers = {"Host": "127.0.0.1:8888"}
+        if origin:
+            headers["Origin"] = origin
+        handler = handler_with(headers)
+        handler.path = "/api/session/reset"
+        handler.sent = None
+        handler._send = lambda status, payload, content_type="application/json": setattr(handler, "sent", (status, payload))
+        handler.do_POST()
+        return handler.sent
+
+    def test_off_until_the_organization_says_so(self):
+        agent.state["homeReset"] = False
+        status, payload = self._post(agent.KIOSK_EXTENSION_ORIGIN)
+        self.assertEqual(status, 409)
+        self.assertIn("does not let Home", payload["error"])
+        self.assertEqual(self.calls, [], "the browser is left running")
+
+    def test_allowed_it_ends_the_kiosk_browser_like_clear_session(self):
+        agent.state["homeReset"] = True
+        self.assertEqual(self._post(agent.KIOSK_EXTENSION_ORIGIN), (200, {"status": "ok"}))
+        self.assertEqual(self.calls, [["pkill", "-f", "--", f"--user-data-dir={agent.BROWSER_PROFILE_DIR}"]])
+
+    def test_a_page_the_user_visited_cannot_ask(self):
+        agent.state["homeReset"] = True
+        status, _ = self._post("https://evil.example")
+        self.assertEqual(status, 403)
+        self.assertEqual(self.calls, [])
+
+    def test_the_configuration_turns_it_on_and_off(self):
+        agent.state["homeReset"] = False
+        agent.apply_control_update({"homeReset": True, "commands": []})
+        self.assertIs(agent.state["homeReset"], True)
+        for unusable in ("false", 0, None):
+            with self.subTest(value=unusable):
+                agent.apply_control_update({"homeReset": unusable, "commands": []})
+                self.assertIs(agent.state["homeReset"], True, "anything but a boolean is ignored")
+        agent.apply_control_update({"homeReset": False, "commands": []})
+        self.assertIs(agent.state["homeReset"], False)
+
+
 class AdminAuthenticationAndSession(unittest.TestCase):
     def setUp(self):
         agent._admin_sessions.clear()

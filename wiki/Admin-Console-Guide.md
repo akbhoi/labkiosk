@@ -132,7 +132,7 @@ Structured into semantic, deep-linkable tab panes (`?tab=...`) with horizontal 2
 ### 1. General & Kiosk (`?tab=general`)
 
 - **Organization & Kiosk Profile**: Organization/Lab Name, Display Mode (`portal` launcher vs `single_url` direct lockdown), Direct Lockdown URL, and Default Lock Message.
-- **Kiosk Routing & Home URL**: Set default landing path (`/` organization homepage vs `/home` app grid) upon boot and reset.
+- **Kiosk Routing & Home URL**: Set default landing path (`/` organization homepage vs `/home` app grid) upon boot and reset, and whether **Home starts a new session** (on by default): Home in the kiosk bar then asks "Start over?" and, on Yes, signs out of every site and clears the browser, as Clear Session does. Off, Home only goes back to the landing page.
 
 ### 2. Domains & Network (`?tab=domains`)
 

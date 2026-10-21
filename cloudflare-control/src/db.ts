@@ -99,7 +99,9 @@ CREATE TABLE IF NOT EXISTS tenants (
   usage_sites INTEGER NOT NULL DEFAULT 1
   CHECK (usage_sites IN (0, 1)),
   printing_enabled INTEGER NOT NULL DEFAULT 0
-  CHECK (printing_enabled IN (0, 1))
+  CHECK (printing_enabled IN (0, 1)),
+  home_reset INTEGER NOT NULL DEFAULT 1
+  CHECK (home_reset IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -868,6 +870,8 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     // 0047: printing, off by default, and the organization's network printers.
     await db.prepare("SELECT printing_enabled FROM tenants LIMIT 1").run();
     await db.prepare("SELECT id, name, uri, group_name, position FROM printers LIMIT 1").run();
+    // 0048: Home in the kiosk bar starts a new session.
+    await db.prepare("SELECT home_reset FROM tenants LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")
@@ -1171,6 +1175,7 @@ const MUTABLE_TENANT_COLUMNS = new Set([
   "security_updates",
   "lan_sharing",
   "usage_sites",
+  "home_reset",
   "subdomain",
   "requested_subdomain",
   "status",

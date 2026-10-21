@@ -80,6 +80,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0045_power_schedules.sql` | `power_schedules`: when an organization's workstations switch themselves off and on again (Settings → Power), for every workstation or one group |
 | `0046_single_sign_on.sql` | `sso_settings` (an organization's Google Workspace / Microsoft Entra ID sign-in) and `sso_states` (sign-ins in flight) |
 | `0047_printing.sql` | `tenants.printing_enabled` (default `0` for every organization) and `printers`: the organization's network printers (Settings → Printing) |
+| `0048_home_reset.sql` | `tenants.home_reset` (default `1` for every organization): Home in the kiosk bar asks "Start over?" and signs everyone out (Settings → General) |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -147,6 +148,7 @@ One row per organization. This table has accumulated the most columns because it
 | `license_expires_at` | INTEGER | When the license ends (00:00 UTC of the date set); NULL for no end date. Once passed, new enrolments and Remote Control are refused; enrolled workstations keep working (`0037`, `src/license.ts`) |
 | `usage_sites` | INTEGER | `1` (default): workstations send the hostnames they spend time on with their usage reports; `0`: only time on and in use (`0044`) |
 | `printing_enabled` | INTEGER | `1` when the organization's workstations may print (Settings → Printing); `0` by default, `CHECK (printing_enabled IN (0, 1))` (`0047`, `src/printing.ts`) |
+| `home_reset` | INTEGER | `1` (default): Home in the kiosk bar asks "Start over?" and, on Yes, wipes the browser session as Clear Session does; `0`: Home only navigates. Sent to workstations as `homeReset`, `CHECK (home_reset IN (0, 1))` (`0048`) |
 | `created_at` / `updated_at` | INTEGER | |
 
 `broadcast_url` and `broadcast_epoch` live here rather than in worker memory because isolates are per-colocation and short-lived. When they were module-level state, workstations in different colos disagreed about the current page and a recycled isolate forgot the broadcast entirely. A broadcast sent to **selected** workstations is recorded on each of their `client_devices` rows instead; the heartbeat hands a workstation whichever of the two is newer.
@@ -525,7 +527,7 @@ Every index leads with `tenant_id` wherever the table is tenant-scoped, matching
 
 ## Adding a schema change
 
-1. Create `migrations/0048_<description>.sql` (the next number after `0047`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
+1. Create `migrations/0049_<description>.sql` (the next number after `0048`). Use `ALTER TABLE` for new columns; D1 has SQLite's limitations, so plan for additive changes.
 2. Mirror the change in `SCHEMA_SQL` in `src/db.ts`.
 3. Make sure any new query filters by `tenant_id`.
 4. Run `pnpm --prefix cloudflare-control test`. The drift test will tell you if the two homes disagree.

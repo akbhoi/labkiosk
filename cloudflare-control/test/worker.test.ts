@@ -9344,6 +9344,45 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     await removeAll(["PWR-RTC"]);
   });
 
+  // ----------------------------------------------------------- home reset (0048)
+
+  test("Home starts a new session by default, and Settings turns that off for every workstation", async () => {
+    const tenantId = await greenwoodId();
+    const settings = "/api/tenant/settings?tenant=greenwood";
+    const enrolled = await call("/api/devices/enroll", {
+      ...json({ subdomain: "greenwood", enrollmentKey, clientId: "HOME-1" }),
+      headers: { "CF-Connecting-IP": "198.51.100.48" }
+    });
+    assert.equal(enrolled.status, 200);
+    const socket = await hubs().connectDevice({ tenantId, clientId: "HOME-1", ip: "10.0.0.31", portal: portalContext() });
+    const homeResetOf = () => ofType(socket, "config").at(-1)!.homeReset;
+    assert.equal(homeResetOf(), true, "on by default");
+
+    const off = { homeReset: false };
+    assert.ok([401, 403].includes((await call(settings, json(off))).status), "anonymous");
+    assert.ok([401, 403].includes((await call(settings, { ...json(off), cookie: rivalSessionCookie })).status), "another organization");
+    const crossSite = await call(settings, { ...json(off), cookie: orgSessionCookie, headers: { Origin: "https://evil.example" } });
+    assert.equal(crossSite.status, 403, "cross-site");
+    const operator = await staffWith("home-operator@greenwood.example", ["workstations"]);
+    assert.equal((await call(settings, { ...json(off), cookie: operator })).status, 403, "workstations is not settings");
+    for (const value of ["false", 0, 1, null, {}]) {
+      assert.equal((await call(settings, { ...json({ homeReset: value }), cookie: orgSessionCookie })).status, 400, JSON.stringify(value));
+    }
+    assert.equal(homeResetOf(), true, "nothing refused was stored");
+
+    const saved = await callJson(settings, { ...json(off), cookie: orgSessionCookie });
+    assert.equal(saved.res.status, 200);
+    assert.equal(saved.data.updates.home_reset, 0);
+    assert.equal(homeResetOf(), false, "an online workstation is told at once");
+    const heartbeat = await callJson("/api/telemetry", { ...json({}), bearer: deviceToken });
+    assert.equal(heartbeat.data.homeReset, false, "the HTTP heartbeat carries it too");
+    const logs = (await callJson("/api/audit-logs?tenant=greenwood&limit=200", { cookie: orgSessionCookie })).data.logs as Array<{ action: string; details?: string }>;
+    assert.ok(logs.some((entry) => entry.action === "settings.update" && (entry.details || "").includes("home_reset")), "the change is audited");
+
+    await callJson(settings, { ...json({ homeReset: true }), cookie: orgSessionCookie });
+    assert.equal(homeResetOf(), true);
+  });
+
   // ------------------------------------------------------------- printing (0047)
 
   test("A printer address is ipp:// or ipps:// to a host name or a private address, and nothing else", () => {
@@ -9702,6 +9741,7 @@ describe("Schema sources agree", () => {
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0046"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0045"))), /missing the current schema/);
     await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0047"))), /missing the current schema/);
+    await assert.rejects(assertSchemaCurrent(asD1(migratedDb("0048"))), /missing the current schema/);
     await assertSchemaCurrent(asD1(migratedDb()));
   });
 
