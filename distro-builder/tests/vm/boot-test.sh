@@ -501,7 +501,10 @@ else
     fail "swap: expected /dev/zram0 and an encrypted partition in labkiosk-swap's journal, got: ${swap_lines:-nothing}"
 fi
 
-if journalctl --directory="$WORK/journal/journal" --dmesg --output=cat 2>/dev/null | grep -q 'Secure boot enabled'; then
+# Read whole, then searched: grep -q stops reading at the first match, and the
+# SIGPIPE that leaves journalctl would fail the pipe under pipefail.
+kernel_lines="$(journalctl --directory="$WORK/journal/journal" --dmesg --output=cat 2>/dev/null || true)"
+if grep -q 'Secure boot enabled' <<< "$kernel_lines"; then
     pass "secure boot: the kernel ran with Secure Boot enforced"
 else
     fail "secure boot: the kernel journal does not say 'Secure boot enabled'"
@@ -512,7 +515,8 @@ else
         | grep -iE 'secure ?boot|lockdown|Linux version|Command line' | head -20 | sed 's/^/[boot-test]   kernel: /' || true
 fi
 stored_name="$(debugfs -R "cat /boot/grub/labkiosk-hostname.cfg" "$DISK?offset=$ROOT_OFFSET" 2>/dev/null | sed -n 's/^set kiosk_hostname="\([a-z0-9-]*\)"$/\1/p')"
-if [ -n "$stored_name" ] && journalctl --directory="$WORK/journal/journal" --unit=labkiosk-hostname.service --output=cat 2>/dev/null | grep -qx "\[HOSTNAME\] Hostname: $stored_name"; then
+hostname_lines="$(journalctl --directory="$WORK/journal/journal" --unit=labkiosk-hostname.service --output=cat 2>/dev/null || true)"
+if [ -n "$stored_name" ] && grep -qx "\[HOSTNAME\] Hostname: $stored_name" <<< "$hostname_lines"; then
     pass "hostname: $stored_name, as the installer stored it"
 else
     fail "hostname: installer stored '${stored_name:-nothing}', labkiosk-hostname said: $(journalctl --directory="$WORK/journal/journal" --unit=labkiosk-hostname.service --output=cat 2>/dev/null | tail -n 3 | tr '\n' ' ')"
