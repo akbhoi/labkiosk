@@ -341,7 +341,7 @@ jobs:
       - name: Install xorriso
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xorriso
+          sudo apt-get install -y --no-install-recommends xorriso squashfs-tools
 
       # The manifest names every file's size, sha256 and 8 MiB chunk hashes; its
       # detached signature is what a workstation checks with gpgv before it
@@ -383,6 +383,13 @@ jobs:
               --passphrase-fd 0 --detach-sign --output "$release/manifest.json.sig" "$release/manifest.json"
             GNUPGHOME="$(mktemp -d)" gpgv "${keyrings[@]}" "$release/manifest.json.sig" "$release/manifest.json"
             ls -l "$release"
+            # The image's package list: the base the daily security rebuild
+            # compares with the archive, without downloading the ISO.
+            # dpkg-status is amd64's, as before arm64.
+            name=dpkg-status
+            [ "$arch" = amd64 ] || name="dpkg-status-$arch"
+            unsquashfs -no-xattrs -d "$RUNNER_TEMP/packages-$arch" "$release/filesystem.squashfs" var/lib/dpkg/status >/dev/null
+            mv "$RUNNER_TEMP/packages-$arch/var/lib/dpkg/status" "$RUNNER_TEMP/$name"
           done
 
       # Each release is a folder of its own, written once: a manifest that
@@ -434,6 +441,9 @@ jobs:
             distro-builder/out/labkiosk-debian13-amd64.iso.sha256
             distro-builder/out/labkiosk-debian13-arm64.iso
             distro-builder/out/labkiosk-debian13-arm64.iso.sha256
+            ${{ runner.temp }}/dpkg-status
+            ${{ runner.temp }}/dpkg-status-arm64
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
 
