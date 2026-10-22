@@ -118,7 +118,10 @@ nftables
 # (labkiosk-swap).
 systemd-zram-generator
 cryptsetup-bin
-# The data partition's key, sealed to the TPM 2.0 chip (labkiosk-data-unlock):
+# The data partition's key, sealed to the TPM 2.0 chip (labkiosk-data-unlock).
+# From Debian 13, systemd-cryptenroll, systemd-cryptsetup and cryptsetup's
+# systemd-tpm2 token plugin are packaged apart from systemd.
+systemd-cryptsetup
 # systemd-cryptenroll and systemd-cryptsetup load these at run time.
 libtss2-esys-3.0.2-0t64
 libtss2-mu-4.0.1-0t64
