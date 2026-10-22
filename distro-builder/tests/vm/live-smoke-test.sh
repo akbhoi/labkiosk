@@ -129,7 +129,7 @@ fi
 log "FAIL the kiosk did not come up (QEMU exited with $status); the end of the serial console:"
 grep -av "^$" "$SERIAL" | tail -n 80 | sed 's/^/[smoke]   /'
 log "What the serial console says of the check itself (kernel-command-line.service):"
-check_lines="$(grep -a "kernel-command-line\|Command from Kernel" "$SERIAL" | tail -n 10 || true)"
+check_lines="$(grep -a "kernel-command-line\|Command from Kernel\|\[preset-check\]" "$SERIAL" | tail -n 80 || true)"
 if [ -n "$check_lines" ]; then
     printf '%s\n' "$check_lines" | sed 's/^/[smoke]   /'
 else

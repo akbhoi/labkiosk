@@ -17,7 +17,12 @@ TARGET=/dev/vda
 API=http://127.0.0.1:8888
 
 say() { echo "[preset-check] $*"; }
-fail() { say "FAIL $*"; exit 1; }
+fail() {
+    say "FAIL $*"
+    say "the end of the agent's log:"
+    tail -n 40 /tmp/lab-agent.log 2>/dev/null | sed 's/^/[preset-check]   /'
+    exit 1
+}
 
 say "waiting for the agent to apply the stick's settings"
 until curl -sf --max-time 20 "$API/api/status" -o /tmp/preset-status.json \
@@ -25,12 +30,12 @@ until curl -sf --max-time 20 "$API/api/status" -o /tmp/preset-status.json \
     sleep 5
 done
 
-python3 - "$EXPECT_ORG" /tmp/preset-status.json <<'PY' || exit 1
+python3 - "$EXPECT_ORG" /tmp/preset-status.json <<'PY' || fail "the preset is not as written"
 import json, sys
 preset = json.load(open(sys.argv[2]))["preset"]
 print("[preset-check] the wizard is told:", json.dumps(preset))
 if preset.get("error") or preset["organization"] != sys.argv[1] or preset["problems"] or not preset["bootPassword"]:
-    sys.exit("[preset-check] FAIL the preset is not as written")
+    sys.exit(1)
 PY
 say "PASS the agent read the stick: organization $EXPECT_ORG, no problems"
 
