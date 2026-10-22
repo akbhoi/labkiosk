@@ -17,6 +17,13 @@
 #
 # Needs: qemu-system-x86 or qemu-system-arm, xorriso.
 #
+# Two settings let boot-test.sh (group preset) reuse it to drive an install
+# from inside the guest:
+#   SMOKE_CHECK  a script on the ISO (a path in it, e.g. /labkiosk-test/check.sh)
+#                run instead of the built-in check; it prints the marker in
+#                capitals when it passes
+#   SMOKE_DISK   a raw disk image attached as the guest's /dev/vda
+#
 # Usage: distro-builder/tests/vm/live-smoke-test.sh path/to/labkiosk-debian13-<arch>.iso [workdir]
 
 set -euo pipefail
@@ -86,7 +93,20 @@ case "$CMDLINE" in *boot=live*) ;; *) die "the first boot entry is not the live 
 # capitals from lower case, so the command line echoed on the console at boot
 # never contains it.
 CHECK="until curl -sf -o /dev/null http://127.0.0.1:8888/api/status && grep -qs chromium /proc/[0-9]*/comm; do sleep 3; done; echo ${MARKER,,} | tr a-z A-Z"
-CMDLINE="$CMDLINE console=$CONSOLE,115200 systemd.journald.forward_to_console=1 systemd.run=\"/usr/bin/timeout $SMOKE_TIMEOUT /bin/sh -c '$CHECK'\" systemd.run_success_action=poweroff systemd.run_failure_action=poweroff"
+if [ -n "${SMOKE_CHECK:-}" ]; then
+    case "$SMOKE_CHECK" in /*) ;; *) die "SMOKE_CHECK must be a path in the ISO, starting with /" ;; esac
+    CHECK="/bin/sh /run/live/medium$SMOKE_CHECK"
+fi
+DISK_ARGS=()
+if [ -n "${SMOKE_DISK:-}" ]; then
+    [ -f "$SMOKE_DISK" ] || die "SMOKE_DISK $SMOKE_DISK is not a file"
+    DISK_ARGS=(-drive "file=$SMOKE_DISK,format=raw,if=virtio")
+fi
+# systemd.run's generator makes kernel-command-line.target the default target
+# with a symlink of generator priority, which the image's own default
+# (graphical.target, set in /etc) outranks: the check would never start.
+# systemd.wants= adds it to whatever the default target is.
+CMDLINE="$CMDLINE console=$CONSOLE,115200 systemd.journald.forward_to_console=1 systemd.run=\"/usr/bin/timeout $SMOKE_TIMEOUT /bin/sh -c '$CHECK'\" systemd.run_success_action=poweroff systemd.run_failure_action=poweroff systemd.wants=kernel-command-line.service"
 log "Command line: $CMDLINE"
 
 SERIAL="$WORK/serial.log"
@@ -97,7 +117,7 @@ timeout "$((SMOKE_TIMEOUT + 120))" "$QEMU" \
     "${MACHINE[@]}" "${ACCEL[@]}" -smp 2 -m 3072 \
     -kernel "$WORK/vmlinuz" -initrd "$WORK/initrd.img" -append "$CMDLINE" \
     -device virtio-scsi-pci,id=scsi -drive file="$ISO",if=none,id=cd,media=cdrom,readonly=on,format=raw \
-    -device scsi-cd,drive=cd,bus=scsi.0 \
+    -device scsi-cd,drive=cd,bus=scsi.0 "${DISK_ARGS[@]}" \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0,romfile= \
     -device virtio-gpu-pci -device qemu-xhci -device usb-kbd -device usb-tablet \
     -display none -monitor none -serial "file:$SERIAL" -no-reboot || status=$?
@@ -108,4 +128,11 @@ if grep -aq "$MARKER" "$SERIAL"; then
 fi
 log "FAIL the kiosk did not come up (QEMU exited with $status); the end of the serial console:"
 grep -av "^$" "$SERIAL" | tail -n 80 | sed 's/^/[smoke]   /'
+log "What the serial console says of the check itself (kernel-command-line.service):"
+check_lines="$(grep -a "kernel-command-line\|Command from Kernel" "$SERIAL" | tail -n 10 || true)"
+if [ -n "$check_lines" ]; then
+    printf '%s\n' "$check_lines" | sed 's/^/[smoke]   /'
+else
+    log "  nothing: it never started"
+fi
 exit 1
