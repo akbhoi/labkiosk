@@ -351,6 +351,31 @@ jobs:
           retention-days: 14
           compression-level: 0
 
+      # The release's own boot test knows that release's behaviour, but not the
+      # fixes made to the test itself since the release was tagged. Those are
+      # distro-builder/tests/vm/release-fixes/*.patch on the default branch,
+      # applied to the release's test after its image is built, and never
+      # committed: they change the test only, never the image or the tag. A
+      # fix the release already carries is skipped; one that fits neither way
+      # stops the run, so a check it repairs never runs unrepaired.
+      - name: Bring the boot test's own fixes into ${{ matrix.tag }}
+        if: steps.check.outputs.rebuild == 'true'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for patch in "$PWD"/distro-builder/tests/vm/release-fixes/*.patch; do
+            name="$(basename "$patch")"
+            if git -C rebuild-src apply --check "$patch" 2>/dev/null; then
+              git -C rebuild-src apply "$patch"
+              echo "Applied $name to ${{ matrix.tag }}'s boot test."
+            elif git -C rebuild-src apply --check --reverse "$patch" 2>/dev/null; then
+              echo "${{ matrix.tag }} already has $name."
+            else
+              echo "::error::$name applies to ${{ matrix.tag }}'s boot test neither forwards nor in reverse. Rebase it onto that release's distro-builder/tests/vm/."
+              exit 1
+            fi
+          done
+
       # The release's own boot test, which knows that release's behaviour.
       - name: Boot-test the installed disk
         if: steps.check.outputs.rebuild == 'true'

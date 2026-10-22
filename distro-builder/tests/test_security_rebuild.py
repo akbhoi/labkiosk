@@ -358,6 +358,37 @@ class Workflow(unittest.TestCase):
         self.assertNotIn(".iso", step)
         self.assertIn("--pattern dpkg-status", self.workflow, "the next run reads a security release's packages from it")
 
+    def test_the_boot_test_gets_its_own_later_fixes_before_it_runs(self):
+        apply = self.workflow.index("distro-builder/tests/vm/release-fixes/*.patch;")
+        self.assertLess(self.workflow.index("- name: Compile the ISO"), apply, "the image is built before the test changes")
+        self.assertLess(apply, self.workflow.index("rebuild-src/distro-builder/tests/vm/boot-test.sh"))
+        self.assertIn("apply --check --reverse", self.workflow, "a fix the release already has is skipped")
+
+
+class ReleaseFixes(unittest.TestCase):
+    """Each patch for an older release's boot test changes that test and nothing else."""
+
+    def test_each_patch_touches_only_the_vm_tests(self):
+        folder = os.path.join(ROOT, "tests", "vm", "release-fixes")
+        patches = sorted(name for name in os.listdir(folder) if name.endswith(".patch"))
+        self.assertTrue(patches)
+        for name in patches:
+            with open(os.path.join(folder, name), encoding="utf-8") as handle:
+                paths = [line.split(" ", 3)[2:4] for line in handle if line.startswith("diff --git ")]
+            self.assertTrue(paths, name)
+            for old, new in paths:
+                for path in (old[2:], new.strip()[2:]):
+                    self.assertTrue(path.startswith("distro-builder/tests/vm/"), f"{name} changes {path}")
+
+    def test_each_patch_is_already_part_of_this_tree(self):
+        folder = os.path.join(ROOT, "tests", "vm", "release-fixes")
+        for name in sorted(os.listdir(folder)):
+            if not name.endswith(".patch"):
+                continue
+            result = subprocess.run(["git", "-C", REPO, "apply", "--check", "--reverse", os.path.join(folder, name)],
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, f"{name} is not on this branch: {result.stderr}")
+
 
 if __name__ == "__main__":
     unittest.main()
