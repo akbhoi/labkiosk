@@ -356,6 +356,7 @@ jobs:
             distro-builder/build-iso.sh \
             distro-builder/config/hooks/live/01-lockdown.hook.chroot \
             distro-builder/config/hooks/live/02-security.hook.chroot \
+            distro-builder/config/hooks/live/03-generic-kernel-names.hook.binary \
             distro-builder/auto/config \
             distro-builder/auto/build \
             distro-builder/auto/clean \

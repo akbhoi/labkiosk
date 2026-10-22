@@ -58,11 +58,15 @@ else
 fi
 
 log "Extracting the kernel, the initrd and the boot menu from $ISO"
-xorriso -osirrox on -indev "$ISO" \
+if ! xorriso -osirrox on -indev "$ISO" \
     -extract /live/vmlinuz "$WORK/vmlinuz" \
     -extract /live/initrd.img "$WORK/initrd.img" \
-    -extract /boot/grub/grub.cfg "$WORK/grub.cfg" >/dev/null 2>&1 \
-    || die "the ISO has no /live/vmlinuz, /live/initrd.img or /boot/grub/grub.cfg"
+    -extract /boot/grub/grub.cfg "$WORK/grub.cfg" >"$WORK/extract.log" 2>&1; then
+    log "What the ISO holds in /live and /boot/grub:"
+    xorriso -indev "$ISO" -lsl /live /boot/grub 2>/dev/null | sed 's/^/[smoke]   /' || true
+    tail -n 20 "$WORK/extract.log" | sed 's/^/[smoke]   /'
+    die "the ISO has no /live/vmlinuz, /live/initrd.img or /boot/grub/grub.cfg"
+fi
 
 # The first entry's command line, without the kernel's path: what the ISO
 # boots by default.
