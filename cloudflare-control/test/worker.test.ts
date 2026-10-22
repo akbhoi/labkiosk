@@ -123,7 +123,7 @@ import {
   verifyPassword
 } from "../src/auth";
 import { rotateUncheckedEnrollmentKeys } from "../src/db";
-import { listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
+import { changeList, listReleaseNotes, plainHighlights, summarizeRelease, syncReleaseNotes } from "../src/release_notes";
 import { DOCS_NAV, DOCS_PAGES } from "../src/docs_content.generated";
 import { headingId, renderMarkdown } from "../src/markdown";
 import { renderPortalHtml } from "../src/ui_portal";
@@ -1811,6 +1811,15 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.deepEqual(await rotateUncheckedEnrollmentKeys(db), [], "nothing left to rotate");
   });
 
+  test("A release body's download guide is not part of its change list", () => {
+    const guide = "## Which file do I need?\n\n- A Raspberry Pi 4: the card image\n\n<!-- labkiosk:changes -->\n\n";
+    assert.equal(changeList(`${guide}**Full Changelog**: https://github.com/akbhoi/labkiosk/compare/v5.0.0...v5.0.1`),
+      "**Full Changelog**: https://github.com/akbhoi/labkiosk/compare/v5.0.0...v5.0.1", "the marker ends the guide even when GitHub lists no pull request");
+    assert.equal(changeList(`${guide}## What's Changed\n* Fix by @a`), "## What's Changed\n* Fix by @a");
+    assert.equal(changeList("## Which file\n\n- x\n\n## What's Changed\n* Fix by @a"), "## What's Changed\n* Fix by @a", "a release from before the marker");
+    assert.equal(changeList("- Fix the clock"), "- Fix the clock", "a body with neither is kept whole");
+  });
+
   test("The download page shows what GitHub published for each release, summarized for customers", async () => {
     const db = getDatabase(mockEnv);
     const body = [
@@ -1990,6 +1999,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       // A release built for both architectures, on Debian 13: each ISO is stored and offered, under its own name.
       const download = (tag: string, name: string) => `https://github.com/akbhoi/labkiosk/releases/download/${tag}/${name}`;
       const both = release("v3.1.0", "2026-10-14T06:00:00Z", {
+        body: `## Which file do I need?\n\n- Intel or AMD PC: the amd64 ISO\n\n<!-- labkiosk:changes -->\n\n${body}`,
         assets: (["amd64", "arm64"] as const).flatMap((arch) => [
           { name: `labkiosk-debian13-${arch}.iso`, size: arch === "amd64" ? 801112064 : 790626304, digest: `sha256:${(arch === "amd64" ? "34" : "12").repeat(32)}`, browser_download_url: download("v3.1.0", `labkiosk-debian13-${arch}.iso`) },
           { name: `labkiosk-debian13-${arch}.iso.sha256`, size: 94, browser_download_url: download("v3.1.0", `labkiosk-debian13-${arch}.iso.sha256`) }
@@ -1998,6 +2008,8 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       githubAnswer = new Response(JSON.stringify([both, release("v3.0.0", "2026-10-13T06:00:00Z"), security, release("v2.9.0", "2026-10-10T10:18:00Z"), ...list]), { status: 200 });
       assert.deepEqual(await (await syncCall(configured, `Bearer ${token}`)).json(), { stored: 8, latest: "v3.1.0" });
       const newest = (await listReleaseNotes(db))[0];
+      // The download guide above GitHub's change list is not a change.
+      assert.ok(!newest.source_body.includes("Which file do I need") && newest.source_body.startsWith("## What's Changed"), newest.source_body);
       assert.equal(newest.iso_url, download("v3.1.0", "labkiosk-debian13-amd64.iso"));
       assert.equal(newest.iso_sha256, "34".repeat(32));
       assert.equal(newest.arm64_iso_url, download("v3.1.0", "labkiosk-debian13-arm64.iso"));
@@ -2011,6 +2023,7 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       assert.ok(page.includes("sha256sum labkiosk-debian13-amd64.iso") && page.includes("sha256sum labkiosk-debian13-arm64.iso"));
       assert.ok(page.includes('<span class="download-meta-val">Debian 13</span>'), "the base is the release's own");
       assert.ok(page.includes("Download v3.1.0 ISO for x86-64") && page.includes("Download v3.1.0 ISO for ARM64"));
+      assert.ok(page.includes("labkiosk-debian13-raspi-arm64.img.xz</code>, published with <a href=\"https://github.com/akbhoi/labkiosk/releases/tag/v3.1.0\""), "a Pi owner is pointed at the card image");
       githubAnswer = new Response(JSON.stringify({ message: "rate limited" }), { status: 403 });
       assert.equal((await syncCall(configured, `Bearer ${token}`)).status, 502);
       assert.ok((await listReleaseNotes(db)).some((r) => r.tag === "v2.9.0"), "a failed read keeps what is stored");

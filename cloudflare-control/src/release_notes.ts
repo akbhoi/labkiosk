@@ -254,6 +254,23 @@ function assetUrl(release: GitHubRelease, name: string): { url: string; size: nu
   return { url, size: Math.max(0, Math.floor(Number(asset?.size) || 0)), sha256: digest ? digest[1] : null };
 }
 
+/** Ends the download guide that build-iso.yml puts above GitHub's change list (.github/release-body.md). */
+export const CHANGE_LIST_MARKER = "<!-- labkiosk:changes -->";
+
+/**
+ * The change list of a release body: what follows the download guide's
+ * marker, or else GitHub's generated "## What's Changed" heading on, when the
+ * body has one. The guide (what to download, requirements, how to install) is
+ * for people on GitHub, not a change, and is kept out of the highlights and
+ * the summary.
+ */
+export function changeList(body: string): string {
+  const marker = body.indexOf(CHANGE_LIST_MARKER);
+  if (marker >= 0) return body.slice(marker + CHANGE_LIST_MARKER.length).trimStart();
+  const match = /^## What's Changed[ \t]*$/m.exec(body);
+  return match ? body.slice(match.index) : body;
+}
+
 /** A release's ISO for one architecture, whichever Debian release it is built on, and its checksum file. */
 function isoAssets(release: GitHubRelease, arch: string) {
   const pattern = releaseIsoPattern(arch);
@@ -294,7 +311,7 @@ export async function storeReleaseNotes(
     if (!TAG_PATTERN.test(tag) || url !== `${RELEASES_URL}/tag/${tag}` || !Number.isFinite(published)) continue;
     const { iso, checksum } = isoAssets(release, "amd64");
     const arm64 = isoAssets(release, "arm64");
-    const body = String(release.body ?? "").replace(/\r\n/g, "\n").slice(0, MAX_SOURCE_CHARS);
+    const body = changeList(String(release.body ?? "").replace(/\r\n/g, "\n")).slice(0, MAX_SOURCE_CHARS);
     // A change list edited on GitHub is summarized again; an unchanged one keeps its summary.
     await db
       .prepare(

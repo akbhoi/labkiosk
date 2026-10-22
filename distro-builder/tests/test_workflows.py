@@ -76,7 +76,7 @@ class NothingUntestedIsPublished(unittest.TestCase):
     def test_the_release_waits_for_every_boot_test_job(self):
         iso = read_workflow("build-iso.yml")
         release = iso.split("\n  release:\n", 1)[1]
-        self.assertIn("needs: [build-iso, boot-test, smoke-test-arm64]", release)
+        self.assertIn("needs: [build-iso, boot-test, smoke-test-arm64, raspi-image]", release)
         for step in ("Sign the over-the-air release", "Upload the over-the-air release to R2",
                      "Create GitHub Release"):
             self.assertIn(step, release)
@@ -94,6 +94,34 @@ class NothingUntestedIsPublished(unittest.TestCase):
         self.assertIn("for arch in amd64 arm64; do", release)
         self.assertIn('--architecture "$arch"', release)
         self.assertNotIn("debian12", iso)
+
+    def test_the_raspberry_pi_card_is_built_from_the_tested_arm64_iso_and_released(self):
+        iso = read_workflow("build-iso.yml")
+        job = iso.split("\n  raspi-image:\n", 1)[1].split("\n  release:\n", 1)[0]
+        self.assertIn("needs: [build-iso, smoke-test-arm64]", job)
+        self.assertIn("apt-get download raspi-firmware", job, "apt checks the firmware's signature")
+        self.assertIn("tools/labkiosk-raspi.py build", job)
+        release = iso.split("\n  release:\n", 1)[1]
+        for name in ("labkiosk-debian13-raspi-arm64.img.xz\n", "labkiosk-debian13-raspi-arm64.img.xz.sha256\n"):
+            self.assertIn(f"distro-builder/out/{name}", release)
+
+    def test_the_release_page_says_which_file_to_download_and_how_to_install_it(self):
+        release = read_workflow("build-iso.yml").split("\n  release:\n", 1)[1]
+        self.assertIn("body_path: ${{ runner.temp }}/release-body.md", release)
+        self.assertIn("generate_release_notes: true", release, "GitHub's change list follows the guide")
+        self.assertLess(release.index("Write the release notes"), release.index("Create GitHub Release"))
+        with open(os.path.join(REPO, ".github", "release-body.md"), encoding="utf-8") as handle:
+            body = handle.read()
+        downloads = [f"labkiosk-debian13-{arch}.iso" for arch in ARCHITECTURES] + ["labkiosk-debian13-raspi-arm64.img.xz"]
+        for name in downloads:
+            self.assertIn(f"distro-builder/out/{name}\n", release, "the guide names only files the release has")
+            self.assertIn(f"https://github.com/akbhoi/labkiosk/releases/download/@VERSION@/{name})", body)
+        for heading in ("## Which file do I need?", "## System requirements", "## How to install", "## Verify the download",
+                        "## Updating"):
+            self.assertIn(heading, body)
+        with open(os.path.join(REPO, "cloudflare-control", "src", "release_notes.ts"), encoding="utf-8") as handle:
+            marker = re.search(r'CHANGE_LIST_MARKER = "([^"]+)"', handle.read()).group(1)
+        self.assertTrue(body.rstrip().endswith(marker), "the controller reads only what follows the guide")
 
     def test_other_architectures_reach_r2_before_the_amd64_manifest(self):
         # The controller records a release's architectures when it first sees

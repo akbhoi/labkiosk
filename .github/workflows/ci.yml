@@ -177,8 +177,9 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      # shellcheck, and the image tools the Raspberry Pi card test builds a card with.
+      - name: Install shellcheck and the image tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck xorriso squashfs-tools dosfstools mtools
 
       # PYTHONPYCACHEPREFIX keeps __pycache__ out of config/includes.chroot.
       # live-build copies that tree verbatim into the ISO, so bytecode left here

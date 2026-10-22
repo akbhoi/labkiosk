@@ -9,7 +9,7 @@ Lab Kiosk is built from one source tree for each processor architecture that has
 
 Intel and AMD share the `amd64` image: one ISO carries the kernel, microcode and drivers for both.
 
-**Raspberry Pi.** A Pi starts from its own firmware, not UEFI, so it does not boot the `arm64` ISO. Community UEFI firmware for the Pi 4 and Pi 5 exists, but Lab Kiosk is not tested on it: treat it as unsupported.
+**Raspberry Pi.** A Pi starts from its own firmware, not UEFI, so it does not boot the `arm64` ISO. Each release also has `labkiosk-debian13-raspi-arm64.img.xz`, a microSD card image of the `arm64` release for the Pi 4 Model B, Pi 400 and Compute Module 4; `distro-builder/tools/labkiosk-raspi.py` makes it from any `arm64` ISO, your own included ([Raspberry Pi](Raspberry-Pi)). The Pi 5 is not supported: Debian 13's kernel does not drive it.
 
 Everything below builds on **Debian 13 (trixie)**. A build always produces an image for the architecture of the machine (or container) it runs on.
 

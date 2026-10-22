@@ -12,7 +12,7 @@ End-to-end, from a blank thin client to a workstation live on an operator's dash
 | :--- | :--- |
 | A registered, **approved** organization on a Lab Kiosk control plane | Either your own deployment or a hosted one. → [Production Deployment](Production-Deployment) |
 | Your organization's **enrollment key** | Admin console → Settings → Workstation Enrollment Key. Organizations start with an empty key, which authenticates nothing — generate one first. It is four groups of five characters; the setup wizard inserts the hyphens as you type, and a pasted key is accepted with or without them, in any case, and even with a label copied along with it. |
-| The **ISO**, on a USB stick of 2 GB or more | Download it, or → [Building the ISO](Building-the-ISO) |
+| The **ISO**, on a USB stick of 2 GB or more | Download it, or → [Building the ISO](Building-the-ISO). A Raspberry Pi 4 takes a card image instead → [Raspberry Pi](Raspberry-Pi) |
 | Thin clients with at least **2 GB RAM and a 7 GiB disk** (a drive sold as 8 GB qualifies) | 4 GB RAM and a 12 GB SSD is the reference target |
 | **Intel or AMD graphics**, for video | Decoded in hardware. NVIDIA graphics work, but decode video on the CPU (no NVIDIA driver in the image). Each workstation's card shows which → [FAQ](FAQ) |
 

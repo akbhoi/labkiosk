@@ -37,7 +37,7 @@ To keep documentation clean, modular, and maintainable, in-depth guides are orga
 | Guide | Description | Path |
 | :--- | :--- | :--- |
 | **Cloudflare Control Plane** | Edge SaaS worker architecture, native Web Crypto PBKDF2 authentication, D1 schema migrations, and local dev server. | [`cloudflare-control/README.md`](cloudflare-control/README.md) |
-| **Kiosk Distro Builder** | Debian 13 live-build image for amd64 and arm64, image-store disk installer with one-try boot and automatic rollback, 100% RAM overlay (`overlayroot="tmpfs"`), hybrid BIOS/UEFI bootloaders, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
+| **Kiosk Distro Builder** | Debian 13 live-build image for amd64 and arm64 (and a Raspberry Pi 4 card image), image-store disk installer with one-try boot and automatic rollback, 100% RAM overlay (`overlayroot="tmpfs"`), hybrid BIOS/UEFI bootloaders, and MV3 browser extension. | [`distro-builder/README.md`](distro-builder/README.md) |
 | **Local Workstation Simulator** | Docker-based workstation simulator with embedded HTML5 noVNC display for rapid testing without physical thin clients. | [`docker-test/README.md`](docker-test/README.md) |
 | **Production Deployment** | Step-by-step production manual: Cloudflare D1 provisioning, remote migrations, secrets, wildcard DNS, and automated CI/CD. | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | **Remote Control** | Zero-exposure remote desktop architecture via loopback `x11vnc`, per-boot ephemeral passwords, and a relay on the console's own address. | [`docs/REMOTE_CONTROL.md`](docs/REMOTE_CONTROL.md) |

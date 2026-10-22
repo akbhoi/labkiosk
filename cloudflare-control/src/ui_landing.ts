@@ -2070,7 +2070,7 @@ function landingMainHtml(baseDomain: string, contactEmail: string): string {
             </tr>
             <tr>
               <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported). <a href="/hardware">The models organizations run it on</a></td>
+              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported); a 64-bit ARM computer with UEFI firmware; or a Raspberry Pi 4, Pi 400 or Compute Module 4 from its own card image. <a href="/hardware">The models organizations run it on</a></td>
             </tr>
           </tbody>
         </table>
@@ -2441,7 +2441,7 @@ function specsMainHtml(): string {
             </tr>
             <tr>
               <td><strong>Compatibility</strong></td>
-              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported). <a href="/hardware">The models organizations run it on</a></td>
+              <td colspan="2">Any 64-bit x86 desktop, laptop or thin client that can start from a USB drive, with legacy BIOS or UEFI firmware (Secure Boot supported); a 64-bit ARM computer with UEFI firmware; or a Raspberry Pi 4, Pi 400 or Compute Module 4 from its own card image. <a href="/hardware">The models organizations run it on</a></td>
             </tr>
           </tbody>
         </table>
@@ -2456,7 +2456,7 @@ function specsMainHtml(): string {
               <li>Debian 13 (Trixie) Live-Build distribution, for x86-64 and ARM64</li>
               <li>Kiosk session started by the kiosk user without a login prompt, X running without root where the graphics allow</li>
               <li>Openbox minimal window manager with disabled keybindings</li>
-              <li>Loopback Agent Daemon (Python 3.11, bound strictly to 127.0.0.1:8888)</li>
+              <li>Loopback Agent Daemon (Python 3.13, bound strictly to 127.0.0.1:8888)</li>
               <li>MV3 Browser Extension with shadow-DOM navigation &amp; lock curtain</li>
             </ul>
           </div>
@@ -2730,6 +2730,7 @@ function arm64DownloadHtml(latest: ReleaseNote | null): string {
   const checksumUrl = latest.arm64_checksum_url ? safeHttpUrl(latest.arm64_checksum_url) : null;
   const isoName = isoFileName(isoUrl) || ARM64_RELEASE_ISO_NAME;
   const size = isoSizeLabel(latest.arm64_iso_bytes);
+  const releaseUrl = safeHttpUrl(latest.url);
   return `
       <div class="download-hero-card">
         <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 8px;">
@@ -2737,7 +2738,7 @@ function arm64DownloadHtml(latest: ReleaseNote | null): string {
           <span class="badge badge-blue">UEFI</span>
         </div>
         <p style="font-size: 0.9375rem; color: var(--text-muted); margin-bottom: 20px;">
-          For 64-bit ARM computers and virtual machines that boot with UEFI. A Raspberry Pi starts from its own firmware, not UEFI, and does not boot this image.
+          For 64-bit ARM computers and virtual machines that boot with UEFI. A Raspberry Pi starts from its own firmware, not UEFI: a Raspberry Pi 4, Pi 400 or Compute Module 4 takes the SD card image <code>labkiosk-debian13-raspi-arm64.img.xz</code>${releaseUrl ? `, published with <a href="${escapeHtml(releaseUrl)}" target="_blank" rel="noopener noreferrer">the release</a>` : ""}.
         </p>
         <div style="margin: 24px 0; display: flex; flex-wrap: wrap; gap: 12px;">
           <a href="${escapeHtml(isoUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-lg">Download ${escapeHtml(latest.tag)} for ARM64${size ? ` (${escapeHtml(size)})` : ""}</a>
