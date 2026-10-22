@@ -113,6 +113,26 @@ def build_preset(args, wifi_password):
     return doc
 
 
+def describe(args):
+    """What customize wrote, in words, from the non-secret arguments only: the
+    key, the passphrase and the password digest are named, never shown."""
+    lines = []
+    if args.org or args.domain:
+        lines.append(f"Organization: {args.org or args.domain} (enrollment key set)")
+        if args.control_plane:
+            lines.append(f"Control plane: {args.control_plane}")
+    if args.wifi_ssid:
+        hidden = ", hidden" if args.wifi_hidden else ""
+        lines.append(f"Wi-Fi: {args.wifi_ssid} ({WIFI_SECURITY[args.wifi_security]}{hidden})")
+    for label, value in (("Time zone", args.timezone), ("Locale", args.locale), ("Keyboard", args.keymap),
+                         ("Keyboard variant", args.keymap_variant)):
+        if value:
+            lines.append(f"{label}: {value}")
+    if args.admin_hash:
+        lines.append("Administrator and boot-menu password: set")
+    return lines
+
+
 def masked(doc):
     """doc with the key and the passphrase hidden, for printing."""
     shown = json.loads(json.dumps(doc))
@@ -194,8 +214,8 @@ def customize(args, wifi_password):
             if os.path.exists(partial):
                 os.remove(partial)
     print(f"Wrote {args.out}: {args.iso} with these settings in {PRESET_PATH.lstrip('/')}:")
-    # Built again with a placeholder: the passphrase itself never reaches the output.
-    print(json.dumps(masked(build_preset(args, "********" if wifi_password else "")), indent=2))
+    for line in describe(args):
+        print("  " + line)
     print("Write it to a USB stick as you would the release (Rufus in DD Image mode, balenaEtcher or dd).")
     return 0
 
