@@ -1,6 +1,6 @@
 {
   "name": "Lab Kiosk Navigation & Lockdown",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "description": "Auto-hiding kiosk navigation bar and operator lock curtain for Lab Kiosk OS.",
   "manifest_version": 3,
   "_key_comment": "Public key only. It fixes this extension's ID to hfjmbeplebjipenkfabncgkpadnjmmoe, which keeps the extension's storage and identity stable across rebuilds and is a prerequisite for ever force-installing it by id as a packed .crx. Note that the managed policy does NOT carry a blanket extension block: one would make Chromium refuse --load-extension and silently disable this extension. See the _extension_comment entries in etc/chromium/policies/managed/policies.json.",
