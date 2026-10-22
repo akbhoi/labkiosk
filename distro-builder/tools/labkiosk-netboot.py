@@ -6,19 +6,26 @@ Run on the boot server, from a release ISO (or its live/ folder), into the
 folder a web server publishes on port 80 -- and a TFTP server too, for PXE:
 
     python3 distro-builder/tools/labkiosk-netboot.py prepare \
-        --iso labkiosk-debian12-amd64.iso --out /srv/labkiosk-netboot \
+        --iso labkiosk-debian13-amd64.iso --out /srv/labkiosk-netboot \
         --server-address 192.168.1.10 --org oakridge --key XXXXX-XXXXX-XXXXX-XXXXX \
         --admin-hash grub.pbkdf2.sha512.200000.<salt>.<hash>
 
 It writes:
 
-    labkiosk/shimx64.efi            Microsoft-signed shim (UEFI, Secure Boot on)
-    labkiosk/grubx64.efi            Debian-signed network GRUB, which shim starts
-    labkiosk/grub.cfg               the menu; also at debian-installer/amd64/grub/
+    labkiosk/shimx64.efi            Microsoft-signed shim (UEFI, Secure Boot on);
+                                    shimaa64.efi for an arm64 release
+    labkiosk/grubx64.efi            Debian-signed network GRUB, which shim starts;
+                                    grubaa64.efi for arm64
+    labkiosk/grub.cfg               the menu; also at debian-installer/<arch>/grub/
                                     and grub/, where that GRUB may look for it
-    labkiosk/boot.ipxe              the same boot for iPXE (legacy BIOS)
+    labkiosk/boot.ipxe              the same boot for iPXE (legacy BIOS, amd64 only)
     labkiosk/undionly.kpxe          iPXE for BIOS PXE, when the server has it
     labkiosk/<version>/             vmlinuz, initrd.img, filesystem.squashfs
+    labkiosk/ARCHITECTURE           the architecture this folder serves
+
+One folder serves one architecture (--arch, amd64 by default): the menu is
+shared by every client of the folder. An arm64 fleet beside an amd64 one gets a
+folder of its own, and DHCP hands each client architecture its own boot file.
 
 Every workstation boots the same image from RAM and keeps nothing. It enrols
 at every boot with the organization and enrollment key named here, under the
@@ -26,7 +33,7 @@ hostname labkiosk-hostname derives from its network card, so the control plane
 re-issues the same workstation's token each time.
 
 shim and GRUB come out of the release's own squashfs (the shim-signed and
-grub-efi-amd64-signed packages): they are the ones that release was tested
+grub-efi-<arch>-signed packages): they are the ones that release was tested
 with, and Secure Boot checks the kernel against them.
 
 Needs xorriso (for --iso) and unsquashfs (squashfs-tools).
@@ -45,11 +52,28 @@ IMAGE_FILES = ("vmlinuz", "initrd.img", "filesystem.squashfs")
 # The same pattern as labkiosk-boot-slots and labkiosk-update.
 VERSION_PATTERN = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:-[0-9A-Za-z.]{1,32})?\Z")
 VERSION_FILE = "usr/share/labkiosk/version"
-SHIM = "usr/lib/shim/shimx64.efi.signed"
-NETWORK_GRUB = "usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed"
-# Where Debian's signed network GRUB may look for its menu: beside itself, under
-# its built-in prefix, and under the prefix other builds use.
-MENU_PATHS = ("labkiosk/grub.cfg", "debian-installer/amd64/grub/grub.cfg", "grub/grub.cfg")
+# Per architecture: the signed shim and network GRUB in the image, and the names
+# they are served under (the names shim looks for GRUB by).
+PLATFORMS = {
+    "amd64": {"shim": "usr/lib/shim/shimx64.efi.signed",
+              "grub": "usr/lib/grub/x86_64-efi-signed/grubnetx64.efi.signed",
+              "served": ("shimx64.efi", "grubx64.efi")},
+    "arm64": {"shim": "usr/lib/shim/shimaa64.efi.signed",
+              "grub": "usr/lib/grub/arm64-efi-signed/grubnetaa64.efi.signed",
+              "served": ("shimaa64.efi", "grubaa64.efi")},
+}
+SHIM = PLATFORMS["amd64"]["shim"]
+NETWORK_GRUB = PLATFORMS["amd64"]["grub"]
+ARCHITECTURE_FILE = "labkiosk/ARCHITECTURE"
+
+
+def menu_paths(arch="amd64"):
+    """Where Debian's signed network GRUB may look for its menu: beside itself,
+    under its built-in prefix, and under the prefix other builds use."""
+    return ("labkiosk/grub.cfg", f"debian-installer/{arch}/grub/grub.cfg", "grub/grub.cfg")
+
+
+MENU_PATHS = menu_paths("amd64")
 UNDIONLY_CANDIDATES = ("/usr/lib/ipxe/undionly.kpxe", "/usr/share/ipxe/undionly.kpxe")
 HOSTNAME_PATTERN = re.compile(r"^(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\Z")
 # The same patterns the agent checks the command line with (agent.py).
@@ -224,6 +248,16 @@ def prepare(args):
               "this network can read it. Keep the boot network to the workstations, and rotate the key in the "
               "console if it leaks.", file=sys.stderr)
 
+    platform = PLATFORMS[args.arch]
+    out = os.path.abspath(args.out)
+    marker = os.path.join(out, ARCHITECTURE_FILE)
+    if os.path.isfile(marker):
+        with open(marker, encoding="utf-8") as handle:
+            served = handle.read().strip()
+        if served != args.arch:
+            raise SystemExit(f"labkiosk-netboot: {out} serves {served} workstations; prepare {args.arch} "
+                             "in a folder of its own")
+
     with tempfile.TemporaryDirectory(prefix="labkiosk-netboot.") as scratch:
         live = args.live_dir or extract_live_dir(args.iso, scratch)
         for name in IMAGE_FILES:
@@ -235,27 +269,35 @@ def prepare(args):
         if not VERSION_PATTERN.match(version):
             raise SystemExit(f"labkiosk-netboot: the image's version {version!r} is not a release version")
 
-        out = os.path.abspath(args.out)
+        # Taken out before anything is written: an image of another
+        # architecture has no such shim, and stops here.
+        shim = extract_from_squashfs(squashfs, platform["shim"], scratch)
+        grub = extract_from_squashfs(squashfs, platform["grub"], scratch)
         for name in IMAGE_FILES:
             copy_file(os.path.join(live, name), os.path.join(out, "labkiosk", version, name))
-        copy_file(extract_from_squashfs(squashfs, SHIM, scratch), os.path.join(out, "labkiosk", "shimx64.efi"))
-        copy_file(extract_from_squashfs(squashfs, NETWORK_GRUB, scratch), os.path.join(out, "labkiosk", "grubx64.efi"))
+        served_shim, served_grub = platform["served"]
+        copy_file(shim, os.path.join(out, "labkiosk", served_shim))
+        copy_file(grub, os.path.join(out, "labkiosk", served_grub))
+    write_file(marker, f"{args.arch}\n")
 
-    undionly = next((path for path in UNDIONLY_CANDIDATES if os.path.isfile(path)), None)
+    # Legacy BIOS, and with it iPXE's undionly, exists on x86 alone.
+    bios = args.arch == "amd64"
+    undionly = next((path for path in UNDIONLY_CANDIDATES if os.path.isfile(path)), None) if bios else None
     if undionly:
         copy_file(undionly, os.path.join(out, "labkiosk", "undionly.kpxe"))
     menu = grub_menu(args, version)
-    for relative in MENU_PATHS:
+    for relative in menu_paths(args.arch):
         write_file(os.path.join(out, relative), menu)
-    write_file(os.path.join(out, "labkiosk", "boot.ipxe"), ipxe_script(args, version))
+    if bios:
+        write_file(os.path.join(out, "labkiosk", "boot.ipxe"), ipxe_script(args, version))
 
     host = args.server_address
-    print(f"Lab Kiosk OS {version} is ready for network boot in {out}.")
-    print("  UEFI PXE:        labkiosk/shimx64.efi over TFTP from the same folder")
-    if undionly:
+    print(f"Lab Kiosk OS {version} ({args.arch}) is ready for network boot in {out}.")
+    print(f"  UEFI PXE:        labkiosk/{served_shim} over TFTP from the same folder")
+    if bios and undionly:
         print("  BIOS PXE:        labkiosk/undionly.kpxe over TFTP, then "
               f"http://{host}/labkiosk/boot.ipxe")
-    else:
+    elif bios:
         print(f"  BIOS (iPXE):     http://{host}/labkiosk/boot.ipxe "
               "(install the ipxe package and run this again to add undionly.kpxe for BIOS PXE)")
     print("Serve the folder on port 80; wiki/Network-Boot.md has the DHCP settings.")
@@ -278,6 +320,8 @@ def main(argv=None):
     prep.add_argument("--control-plane", help="A control plane other than the platform's, e.g. https://kiosk.example.org")
     prep.add_argument("--admin-hash", help="grub-mkpasswd-pbkdf2 digest of the administrator password")
     prep.add_argument("--timezone", default="Asia/Kolkata", help="The workstations' time zone (default Asia/Kolkata)")
+    prep.add_argument("--arch", choices=sorted(PLATFORMS), default="amd64",
+                      help="The release's architecture (default amd64); one folder serves one")
     args = parser.parse_args(argv)
 
     args.org = (args.org or "").strip().lower()
