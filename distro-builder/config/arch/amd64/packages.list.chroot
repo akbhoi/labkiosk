@@ -25,6 +25,8 @@ firmware-intel-sound
 # Recommends of xserver-xorg-video-all: Intel iGPUs and QEMU/Proxmox guests.
 xserver-xorg-video-intel
 xserver-xorg-video-qxl
+# The VESA BIOS fallback driver: x86 only, as VESA is a PC BIOS interface.
+xserver-xorg-video-vesa
 # Hardware video decoding (VA-API) on Intel: iHD for Broadwell and newer, Arc
 # included; i965 for older Intel. AMD and nouveau use mesa-va-drivers.
 intel-media-va-driver-non-free

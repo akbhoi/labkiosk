@@ -56,7 +56,6 @@ xserver-xorg-core
 xserver-xorg-legacy
 xserver-xorg-video-all
 xserver-xorg-video-fbdev
-xserver-xorg-video-vesa
 xserver-xorg-input-all
 # Hardware video decoding (VA-API) for Chromium, which otherwise decodes every
 # video on the CPU. Mesa's OpenGL drivers (iris, radeonsi, nouveau) already come
