@@ -91,6 +91,10 @@ fonts-noto-cjk
 # Remote Management & Networking
 x11vnc
 network-manager
+# Applies the polkit rule that lets the kiosk user start the update units
+# (labkiosk-update). Debian 12 pulled it in through a dependency; Debian 13
+# does not, so it is listed by name.
+polkitd
 # Recommends-only; the kiosk needs a correct clock for TLS and the ip tool.
 systemd-timesyncd
 # The locale definitions the setup wizard's Language & Region step generates
