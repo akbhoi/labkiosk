@@ -34,7 +34,7 @@ it or you need the rationale.
 
 ```text
 labkiosk/
-├── distro-builder/          Debian 12 live-build image, installer, hooks, Chromium policy
+├── distro-builder/          Debian 13 live-build image (amd64, arm64), installer, hooks, Chromium policy
 │   └── config/includes.chroot/
 │       ├── opt/labkiosk/    agent/agent.py (loopback API :8888), extension/ (MV3), setup/wizard.html, i18n/
 │       └── usr/local/…      bin/labkiosk-install, sbin/labkiosk-localization, sbin/labkiosk-boot-slots,

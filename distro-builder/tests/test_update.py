@@ -455,7 +455,7 @@ class Run(unittest.TestCase):
         result = self.run_update(worker)
         self.assertEqual(result["state"], "ready")
         self.assertEqual(plane.asked, [f"Bearer {TOKEN}"], "asked once, with this workstation's own token")
-        self.assertEqual(plane.queries, [f"running={RUNNING}"], "and says which image it runs")
+        self.assertEqual(plane.queries, [f"running={RUNNING}&arch=amd64"], "and says which image it runs, and for what")
         self.assertTrue(os.path.isfile(os.path.join(self.root, "images", "2.6.1", ".verified")))
         state = self.state()
         self.assertEqual((state["phase"], state["version"]), ("ready", "2.6.1"))
@@ -912,6 +912,56 @@ class Manifest(unittest.TestCase):
         with self.assertRaises(update.UpdateError):
             update.validate_manifest(b"\xff")
 
+    def test_an_architecture_is_named_only_when_it_is_not_amd64(self):
+        arm = update.validate_manifest(self.manifest(architecture="arm64"))
+        self.assertEqual(update.manifest_architecture(arm), "arm64")
+        self.assertEqual(update.manifest_architecture(update.validate_manifest(self.manifest())), "amd64")
+        for bad in ("amd64", "ARM64", "", "../x", 64):
+            with self.subTest(bad=bad), self.assertRaises(update.UpdateError):
+                update.validate_manifest(self.manifest(architecture=bad))
+
+    def test_a_release_of_another_architecture_is_refused_before_anything_is_written(self):
+        with tempfile.TemporaryDirectory() as root:
+            arm = update.validate_manifest(self.manifest(architecture="arm64"))
+            amd = update.validate_manifest(self.manifest())
+            with self.assertRaisesRegex(update.UpdateError, "built for arm64, and this workstation runs amd64"):
+                update.check_release(arm, "2.6.0", "2.6.0", {}, root)
+            with self.assertRaisesRegex(update.UpdateError, "built for amd64, and this workstation runs arm64"):
+                update.check_release(amd, "2.6.0", "2.6.0", {}, root, "arm64")
+            self.assertFalse(update.check_release(arm, "2.6.0", "2.6.0", {}, root, "arm64"))
+            self.assertEqual(os.listdir(root), [])
+
+    def test_the_image_says_its_architecture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "architecture")
+            self.assertEqual(update.image_architecture(path), "amd64", "an image from before arm64")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("arm64\n")
+            self.assertEqual(update.image_architecture(path), "arm64")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("arm 64\n")
+            with self.assertRaises(update.UpdateError):
+                update.image_architecture(path)
+        with open(os.path.join(ROOT, "config", "hooks", "live", "02-security.hook.chroot"), encoding="utf-8") as handle:
+            hook = handle.read()
+        self.assertIn("dpkg --print-architecture > /usr/share/labkiosk/architecture", hook)
+        self.assertEqual(update.ARCHITECTURE_FILE, "/usr/share/labkiosk/architecture")
+
+    def test_the_tool_names_the_architecture_of_any_build_but_amd64(self):
+        with tempfile.TemporaryDirectory() as live:
+            for name in slots.IMAGE_FILES:
+                with open(os.path.join(live, name), "wb") as handle:
+                    handle.write(os.urandom(10))
+            out = os.path.join(live, "manifest.json")
+            args = ["--live", live, "--version", "4.1.0", "--security-floor", "4.0.0", "--channel", "stable", "--out", out]
+            for arch, field in (("amd64", None), ("arm64", "arm64")):
+                self.assertEqual(manifests.main(args + ["--architecture", arch]), 0)
+                with open(out, "rb") as handle:
+                    manifest = update.validate_manifest(handle.read())
+                self.assertEqual(manifest.get("architecture"), field)
+            self.assertEqual(manifests.main(args + ["--architecture", "x86 64"]), 1)
+        self.assertEqual(manifests.ARCHITECTURE_PATTERN.pattern, update.ARCHITECTURE_PATTERN.pattern)
+
     def test_versions_order_as_semver(self):
         ordered = ["1.9.9", "2.6.0-rc.1", "2.6.0-rc.2", "2.6.0-rc.10", "2.6.0-rc1", "2.6.0", "2.6.1", "2.10.0"]
         keys = [update.version_key(version) for version in ordered]
@@ -973,8 +1023,10 @@ class Image(unittest.TestCase):
     def test_the_image_carries_firmware_for_common_client_hardware(self):
         # auto/config turns live-build's firmware defaults off, so a device's
         # firmware is in the image only if the package list names it.
-        with open(os.path.join(ROOT, "config/package-lists/kiosk.list.chroot"), encoding="utf-8") as handle:
-            packages = [line.strip() for line in handle if line.strip() and not line.strip().startswith("#")]
+        packages = []
+        for path in ("config/package-lists/kiosk.list.chroot", "config/arch/amd64/packages.list.chroot"):
+            with open(os.path.join(ROOT, path), encoding="utf-8") as handle:
+                packages += [line.strip() for line in handle if line.strip() and not line.strip().startswith("#")]
         for firmware in ("firmware-misc-nonfree", "firmware-realtek", "firmware-iwlwifi",
                          "firmware-amd-graphics", "firmware-sof-signed", "firmware-intel-sound",
                          "firmware-atheros", "firmware-ath9k-htc", "firmware-brcm80211",
@@ -982,7 +1034,7 @@ class Image(unittest.TestCase):
                          "firmware-bnx2", "firmware-bnx2x"):
             self.assertIn(firmware, packages)
         duplicates = sorted(name for name in set(packages) if packages.count(name) > 1)
-        self.assertEqual(duplicates, [], "listed more than once in kiosk.list.chroot")
+        self.assertEqual(duplicates, [], "listed more than once in kiosk.list.chroot and the amd64 list")
 
     def test_the_system_image_is_zstd_compressed(self):
         # Faster to build and to read at every boot than live-build's default xz.

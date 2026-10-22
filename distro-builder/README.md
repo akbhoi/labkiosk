@@ -2,9 +2,9 @@
 
 [← Back to Documentation Hub](../README.md#documentation-hub)
 
-A minimal, security-hardened Debian 12 (Bookworm) live kiosk operating system designed for educational workstation fleets and thin-client workstations.
+A minimal, security-hardened Debian 13 (Trixie) live kiosk operating system designed for educational workstation fleets and thin-client workstations, built for 64-bit Intel and AMD PCs (`amd64`) and for 64-bit ARM machines that boot with UEFI (`arm64`).
 
-> **Base OS support.** Debian 12 left regular security support on 12 July 2026 and is maintained by Debian LTS until 30 June 2028. A move to Debian 13 is planned as the next major release; see item 14 of [SECURITY.md](../SECURITY.md).
+> **Base OS support.** From 5.0 the image is built on Debian 13, in regular security support until 9 August 2028 and in Debian LTS until 30 June 2030. Releases up to 4.x are Debian 12, on LTS until 30 June 2028; their security rebuilds keep taking `bookworm-security`. See item 14 of [SECURITY.md](../SECURITY.md).
 
 ---
 
@@ -191,7 +191,7 @@ docker build -t ghcr.io/akbhoi/labkiosk-iso-builder distro-builder
 docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akbhoi/labkiosk-iso-builder
 ```
 
-The output image `labkiosk-debian12-amd64.iso` and its SHA-256 checksum file are generated in `distro-builder/out/`.
+The output image `labkiosk-debian13-<arch>.iso` (the architecture of the machine that builds it: `amd64` or `arm64`) and its SHA-256 checksum file are generated in `distro-builder/out/`. To build for another architecture, or add one, see [Building for Your Platform](../wiki/Building-for-Your-Platform.md).
 
 #### Building your own changes vs. pulling the published builder
 
@@ -220,7 +220,7 @@ from your local edits. Rebuild the image after every change to `distro-builder/`
 > Verify before starting a long build:
 >
 > ```bash
-> docker run --rm --privileged debian:bookworm-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'
+> docker run --rm --privileged debian:trixie-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'
 > ```
 >
 > Note that rootful and rootless keep **separate image stores**, so images you pulled before the
@@ -233,13 +233,10 @@ from your local edits. Rebuild the image after every change to `distro-builder/`
 
 ### Method 2: Native Linux / WSL2
 
-On a Debian 12 (Bookworm) or Ubuntu 22.04+ host:
+On a Debian 13 (Trixie) host, amd64 or arm64 (the live-build of older releases may not know trixie):
 
 ```bash
-# Install live-build dependencies
-sudo apt-get update && sudo apt-get install -y live-build debootstrap
-
-# Run build script
+# Installs live-build and this architecture's boot loader tools, then builds
 cd distro-builder
 sudo bash build-iso.sh
 ```
@@ -248,7 +245,7 @@ sudo bash build-iso.sh
 
 ## 📡 Over-the-air releases
 
-Every tagged release is also an over-the-air update. After the boot test passes, `build-iso.yml` extracts `live/` from the ISO, writes `manifest.json` with `tools/make-release-manifest.py` (size, sha256 and 8 MiB chunk hashes of `vmlinuz`, `initrd.img` and `filesystem.squashfs`, plus the version and the security floor), signs it, checks the signature against the keys the image carries, and uploads the five files to R2 under `releases/<version>/`. A version already in R2 is never overwritten.
+Every tagged release is also an over-the-air update. After the boot test passes, `build-iso.yml` extracts `live/` from the ISO, writes `manifest.json` with `tools/make-release-manifest.py` (size, sha256 and 8 MiB chunk hashes of `vmlinuz`, `initrd.img` and `filesystem.squashfs`, plus the version and the security floor), signs it, checks the signature against the keys the image carries, and uploads the five files to R2: amd64's under `releases/<version>/`, as every release before arm64, and arm64's under `releases/<version>/arm64/`, first, with `architecture` in its manifest. A version already in R2 is never overwritten. A workstation asks for, and accepts, only a release of its own architecture. The GitHub release carries both ISOs with their checksums, and each image's package list (`dpkg-status`, `dpkg-status-arm64`) for the security rebuild.
 
 It needs, before the first tag:
 
@@ -265,7 +262,7 @@ It needs, before the first tag:
 
 A tag must equal `usr/share/labkiosk/version`; a pre-release tag (`v2.7.0-rc1`) is published on the `beta` channel, any other on `stable`. When a release fixes a security hole, raise `usr/share/labkiosk/security-floor` to its version: workstations running it then refuse every older release, however validly signed.
 
-**Security rebuilds.** `security-rebuild.yml` runs every day at 06:00 IST (and by hand, with a line, a `force` and a `dry_run` switch). For every release line from 2.9 on whose major release the platform has not put at end of life and that no newer line of its major classified stable supersedes (it asks the controller's `GET /api/release-support` with `RELEASE_NOTES_TOKEN` first, and stops if it cannot; once 3.1.0 is stable, 3.0 is rebuilt no more), it reads the installed packages of each line's newest release (the `dpkg-status` a security release publishes, or the squashfs of a feature release's ISO) and compares them with Debian's `bookworm-security` archive (`tools/security-rebuild.py check`). When one has a fix, it rebuilds that tag's own source with only its version raised one patch (`2.9.0` → `2.9.1`, in the four files that carry it), refuses the result if it still lacks a fix the archive has, runs that release's boot test, signs it as `kind: security` with `baseVersion` set, uploads it to R2, pushes the tag (on a commit no branch carries), and publishes the GitHub release with the changed packages as its notes and the image's `dpkg-status`. The ISO is built and boot-tested but not published: workstations download the image from R2, and `/download` keeps offering the newest feature release's ISO, naming a newer security release in its major's card. It uses the same secrets and variables as above. It needs no classification: the controller offers it as soon as it records it, and lists it under Releases → Security; workstations on that line install it at their next start unless their organization approves security releases.
+**Security rebuilds.** `security-rebuild.yml` runs every day at 06:00 IST (and by hand, with a line, a `force` and a `dry_run` switch). For every release line from 2.9 on whose major release the platform has not put at end of life and that no newer line of its major classified stable supersedes (it asks the controller's `GET /api/release-support` with `RELEASE_NOTES_TOKEN` first, and stops if it cannot; once 3.1.0 is stable, 3.0 is rebuilt no more), it reads the installed packages of each line's newest release, for every architecture that line's source builds (`dpkg-status` and `dpkg-status-<arch>` on its GitHub release, or the squashfs of its ISO), and compares them with that source's Debian security archive (`bookworm-security` up to 4.x, `trixie-security` from 5.0; `tools/security-rebuild.py check`). A fix on any architecture rebuilds the line on all of them, each on a runner of its own architecture. When one has a fix, it rebuilds that tag's own source with only its version raised one patch (`2.9.0` → `2.9.1`, in the four files that carry it), refuses the result if it still lacks a fix the archive has, runs that release's boot test, signs it as `kind: security` with `baseVersion` set, uploads it to R2, pushes the tag (on a commit no branch carries), and publishes the GitHub release with the changed packages as its notes and the image's `dpkg-status`. The ISO is built and boot-tested but not published: workstations download the image from R2, and `/download` keeps offering the newest feature release's ISO, naming a newer security release in its major's card. It uses the same secrets and variables as above. It needs no classification: the controller offers it as soon as it records it, and lists it under Releases → Security; workstations on that line install it at their next start unless their organization approves security releases.
 
 ---
 
@@ -351,5 +348,5 @@ Write the compiled ISO to a USB flash drive (minimum 2 GB):
 - **macOS / Linux:** Use **balenaEtcher** or standard `dd`:
 
   ```bash
-  sudo dd if=distro-builder/out/labkiosk-debian12-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
+  sudo dd if=distro-builder/out/labkiosk-debian13-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
   ```

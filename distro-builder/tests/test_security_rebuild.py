@@ -310,11 +310,126 @@ class Bump(unittest.TestCase):
 class Notes(unittest.TestCase):
     def test_the_notes_list_what_changed(self):
         rebuilt = STATUS.replace("154.0.8037.92-1~deb12u1", "154.0.8037.121-1~deb12u1")
-        text = rebuild.notes("v2.9.0", "2.9.1", STATUS, rebuilt)
+        text = rebuild.notes("v2.9.0", "2.9.1", [STATUS], [rebuilt])
         self.assertIn("Security rebuild of v2.9.0", text)
         self.assertIn("| `chromium` | `154.0.8037.92-1~deb12u1` | `154.0.8037.121-1~deb12u1` |", text)
         self.assertNotIn("tzdata", text)
-        self.assertIn("No package changed", rebuild.notes("v2.9.0", "2.9.1", STATUS, STATUS))
+        self.assertIn("No package changed", rebuild.notes("v2.9.0", "2.9.1", [STATUS], [STATUS]))
+
+    def test_a_change_on_every_architecture_is_listed_once(self):
+        arm64 = STATUS.replace("Architecture: amd64", "Architecture: arm64")
+        fixed = "154.0.8037.121-1~deb12u1"
+        text = rebuild.notes("v5.0.0", "5.0.1", [STATUS, arm64],
+                             [STATUS.replace("154.0.8037.92-1~deb12u1", fixed),
+                              arm64.replace("154.0.8037.92-1~deb12u1", fixed).replace("3.0.17-1~deb12u2", "3.0.18-1")])
+        self.assertEqual(text.count("| `chromium` |"), 1)
+        self.assertIn("| `libssl3` | `3.0.17-1~deb12u2` | `3.0.18-1` |", text, "a change on one architecture is listed")
+        with self.assertRaises(ValueError):
+            rebuild.notes("v5.0.0", "5.0.1", [STATUS, arm64], [STATUS])
+
+
+AUTO_CONFIG_TRIXIE = """\
+lb config noauto \\
+    --distribution trixie \\
+    --parent-distribution trixie \\
+    "${@}"
+"""
+AUTO_CONFIG_BOOKWORM = AUTO_CONFIG_TRIXIE.replace("trixie", "bookworm")
+LINE = {"line": "5.0", "tag": "v5.0.0", "base": "5.0.0", "version": "5.0.1", "newest": True}
+
+
+class Platforms(unittest.TestCase):
+    """What each line's own source builds decides its builds, suite and ISO names."""
+
+    def test_a_debian_13_tree_builds_each_architecture_it_defines(self):
+        found = rebuild.source_platforms(AUTO_CONFIG_TRIXIE, [
+            "arm64/bootloaders", "arm64/packages.list.chroot", "amd64/packages.list.chroot", "amd64/bootloaders",
+            "riscv64/packages.list.chroot",
+        ])
+        self.assertEqual(found, {"suite": "trixie-security", "architectures": [
+            {"arch": "amd64", "iso": "labkiosk-debian13-amd64.iso", "runner": "ubuntu-latest"},
+            {"arch": "arm64", "iso": "labkiosk-debian13-arm64.iso", "runner": "ubuntu-24.04-arm"},
+        ]}, "amd64 first; an architecture without its bootloaders file is not one auto/config builds")
+
+    def test_a_tree_from_before_arm64_builds_debian_12_for_amd64(self):
+        self.assertEqual(rebuild.source_platforms(AUTO_CONFIG_BOOKWORM, []), {
+            "suite": "bookworm-security",
+            "architectures": [{"arch": "amd64", "iso": "labkiosk-debian12-amd64.iso", "runner": "ubuntu-latest"}],
+        })
+
+    def test_what_cannot_be_built_here_is_an_error(self):
+        for auto_config, paths in (
+            ("lb config noauto\n", []),
+            (AUTO_CONFIG_TRIXIE.replace("trixie", "forky"), []),
+            (AUTO_CONFIG_TRIXIE, ["ppc64el/bootloaders", "ppc64el/packages.list.chroot"]),
+            (AUTO_CONFIG_TRIXIE, ["arm64/bootloaders"]),
+        ):
+            with self.subTest(paths=paths), self.assertRaises(ValueError):
+                rebuild.source_platforms(auto_config, paths)
+
+    def test_this_tree_builds_both_architectures_on_debian_13(self):
+        found = rebuild.git_platforms(REPO, "HEAD")
+        self.assertEqual(found["suite"], "trixie-security")
+        self.assertEqual([target["arch"] for target in found["architectures"]], ["amd64", "arm64"])
+
+    def test_every_build_of_a_line_shares_its_version_and_time(self):
+        platforms = {"v5.0.0": rebuild.source_platforms(AUTO_CONFIG_TRIXIE, [
+            "amd64/bootloaders", "amd64/packages.list.chroot", "arm64/bootloaders", "arm64/packages.list.chroot"]),
+            "v4.0.3": rebuild.source_platforms(AUTO_CONFIG_BOOKWORM, [])}
+        old = {"line": "4.0", "tag": "v4.0.3", "base": "4.0.3", "version": "4.0.4", "newest": False}
+        builds = rebuild.plan_builds([LINE, old], platforms, 1790000000)
+        self.assertEqual([(b["version"], b["arch"], b["suite"]) for b in builds], [
+            ("5.0.1", "amd64", "trixie-security"), ("5.0.1", "arm64", "trixie-security"),
+            ("4.0.4", "amd64", "bookworm-security")])
+        self.assertEqual({b["epoch"] for b in builds}, {1790000000})
+        self.assertEqual(builds[1]["runner"], "ubuntu-24.04-arm")
+        with self.assertRaises(ValueError):
+            rebuild.plan_builds([LINE], platforms, 0)
+
+
+class Decide(unittest.TestCase):
+    def setUp(self):
+        platforms = {"v5.0.0": rebuild.source_platforms(AUTO_CONFIG_TRIXIE, [
+            "amd64/bootloaders", "amd64/packages.list.chroot", "arm64/bootloaders", "arm64/packages.list.chroot"])}
+        self.builds = rebuild.plan_builds([LINE], platforms, 1790000000)
+
+    def test_a_fix_on_one_architecture_rebuilds_the_line_on_every_one(self):
+        decided = rebuild.decide(self.builds, [{"version": "5.0.1", "arch": "amd64", "outdated": 0},
+                                               {"version": "5.0.1", "arch": "arm64", "outdated": 2}])
+        self.assertEqual([b["arch"] for b in decided["builds"]], ["amd64", "arm64"])
+        self.assertEqual(decided["lines"], [{"line": "5.0", "tag": "v5.0.0", "base": "5.0.0", "version": "5.0.1",
+                                             "newest": True, "epoch": 1790000000, "suite": "trixie-security",
+                                             "architectures": ["amd64", "arm64"]}])
+
+    def test_a_current_line_is_rebuilt_only_by_hand(self):
+        current = [{"version": "5.0.1", "arch": arch, "outdated": 0} for arch in ("amd64", "arm64")]
+        self.assertEqual(rebuild.decide(self.builds, current), {"builds": [], "lines": []})
+        self.assertEqual(len(rebuild.decide(self.builds, current, force=True)["builds"]), 2)
+
+    def test_a_line_missing_a_check_is_not_rebuilt(self):
+        self.assertEqual(rebuild.decide(self.builds, [{"version": "5.0.1", "arch": "amd64", "outdated": 5}],
+                                        force=True), {"builds": [], "lines": []})
+
+    def test_an_answer_that_is_not_a_count_is_an_error(self):
+        for bad in ({"version": "5.0.1", "arch": "amd64", "outdated": "1"}, {"version": "5.0.1", "arch": "amd64",
+                                                                              "outdated": True}, []):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                rebuild.decide(self.builds, [bad])
+
+    def test_the_command_reads_a_folder_of_answers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            builds = os.path.join(tmp, "builds.json")
+            answers = os.path.join(tmp, "answers")
+            os.mkdir(answers)
+            with open(builds, "w", encoding="utf-8") as handle:
+                json.dump(self.builds, handle)
+            for arch, count in (("amd64", 1), ("arm64", 0)):
+                with open(os.path.join(answers, f"5.0.1-{arch}.json"), "w", encoding="utf-8") as handle:
+                    json.dump({"version": "5.0.1", "arch": arch, "outdated": count}, handle)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(rebuild.main(["decide", "--builds", builds, "--decisions", answers]), 0)
+            self.assertEqual(json.loads(out.getvalue())["lines"][0]["architectures"], ["amd64", "arm64"])
 
 
 class Workflow(unittest.TestCase):
@@ -353,10 +468,59 @@ class Workflow(unittest.TestCase):
     def test_the_github_release_carries_the_package_list_and_no_iso(self):
         start = self.workflow.index("- name: Create GitHub Release")
         step = self.workflow[start:self.workflow.index("- name:", start + 1)]
-        self.assertIn("files: ${{ runner.temp }}/rebuilt/dpkg-status", step)
+        self.assertIn("files: ${{ runner.temp }}/package-lists/dpkg-status*", step)
         self.assertIn('make_latest: "false"', step, "GitHub's latest stays the newest release with an ISO")
         self.assertNotIn(".iso", step)
-        self.assertIn("--pattern dpkg-status", self.workflow, "the next run reads a security release's packages from it")
+        self.assertIn('asset="dpkg-status-$ARCH"', self.workflow, "the next run reads each architecture's packages")
+        self.assertIn('--pattern "$asset"', self.workflow)
+
+    def test_each_build_runs_on_its_architecture_against_its_own_suite(self):
+        build = self.workflow.split("\n  build:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertIn("runs-on: ${{ matrix.runner }}", build)
+        self.assertIn("platforms: linux/${{ matrix.arch }}", build)
+        self.assertIn('--suite "$SUITE" --architecture "$ARCH"', build)
+        self.assertIn("if: matrix.arch == 'amd64'", build.split("Boot-test the installed disk", 1)[1][:80])
+        self.assertIn("live-smoke-test.sh", build)
+
+    def test_the_builds_of_a_line_make_one_commit_and_publish_together(self):
+        self.assertEqual(self.workflow.count('GIT_AUTHOR_DATE="@$EPOCH +0000" GIT_COMMITTER_DATE="@$EPOCH +0000"'), 2,
+                         "the build and the publish job commit at the run's one time")
+        publish = self.workflow.split("\n  publish:\n", 1)[1]
+        self.assertIn('if [ "$(cat "$built")" != "$commit" ]; then', publish)
+        self.assertLess(publish.index('!= "$commit"'), publish.index("git tag --annotate"))
+        upload = publish.split("Upload the security release to R2", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn('for arch in "${others[@]}" amd64; do', upload, "amd64's root manifest goes up last")
+
+    def test_the_boot_test_gets_its_own_later_fixes_before_it_runs(self):
+        apply = self.workflow.index("distro-builder/tests/vm/release-fixes/*.patch;")
+        self.assertLess(self.workflow.index("- name: Compile the ISO"), apply, "the image is built before the test changes")
+        self.assertLess(apply, self.workflow.index("rebuild-src/distro-builder/tests/vm/boot-test.sh"))
+        self.assertIn("apply --check --reverse", self.workflow, "a fix the release already has is skipped")
+
+
+class ReleaseFixes(unittest.TestCase):
+    """Each patch for an older release's boot test changes that test and nothing else."""
+
+    def test_each_patch_touches_only_the_vm_tests(self):
+        folder = os.path.join(ROOT, "tests", "vm", "release-fixes")
+        patches = sorted(name for name in os.listdir(folder) if name.endswith(".patch"))
+        self.assertTrue(patches)
+        for name in patches:
+            with open(os.path.join(folder, name), encoding="utf-8") as handle:
+                paths = [line.split(" ", 3)[2:4] for line in handle if line.startswith("diff --git ")]
+            self.assertTrue(paths, name)
+            for old, new in paths:
+                for path in (old[2:], new.strip()[2:]):
+                    self.assertTrue(path.startswith("distro-builder/tests/vm/"), f"{name} changes {path}")
+
+    def test_each_patch_is_already_part_of_this_tree(self):
+        folder = os.path.join(ROOT, "tests", "vm", "release-fixes")
+        for name in sorted(os.listdir(folder)):
+            if not name.endswith(".patch"):
+                continue
+            result = subprocess.run(["git", "-C", REPO, "apply", "--check", "--reverse", os.path.join(folder, name)],
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, f"{name} is not on this branch: {result.stderr}")
 
 
 if __name__ == "__main__":

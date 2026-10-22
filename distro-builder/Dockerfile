@@ -14,10 +14,10 @@
 # image must be REBUILT after any change under distro-builder/ -- running a
 # stale image silently builds an ISO from the source baked into it.
 # ==============================================================================
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 LABEL org.opencontainers.image.source="https://github.com/akbhoi/labkiosk" \
-      org.opencontainers.image.description="Debian 12 live-build environment that compiles the Lab Kiosk ISO." \
+      org.opencontainers.image.description="Debian 13 live-build environment that compiles the Lab Kiosk ISO for the architecture it runs on." \
       org.opencontainers.image.licenses="SEE LICENSE IN LICENSE"
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -31,22 +31,28 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Installed before the source is copied, so editing the kiosk config does not
 # re-run apt on every rebuild. The upgrade pulls in security fixes the base
-# image does not carry yet, so a stale debian:bookworm-slim never ships.
+# image does not carry yet, so a stale debian:trixie-slim never ships.
+# The boot loader tools are the ones of the architecture this image runs on,
+# which is the architecture it builds for (auto/config): GRUB for UEFI and
+# legacy BIOS plus syslinux on amd64, GRUB for UEFI on arm64.
 # CI passes the date here: a new value rebuilds the package layer below at
 # least once a day, so a cached layer never keeps a package with a fixed CVE.
 ARG APT_REFRESH=
-RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) bootloader_tools="grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common" ;; \
+         arm64) bootloader_tools="grub-efi-arm64-bin" ;; \
+         *) echo "No boot loader tools are defined for $arch: see wiki/Building-for-Your-Platform.md" >&2; exit 1 ;; \
+       esac \
+    && apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
     live-build \
     debootstrap \
     squashfs-tools \
     xorriso \
-    grub-pc-bin \
-    grub-efi-amd64-bin \
+    $bootloader_tools \
     mtools \
     dosfstools \
-    isolinux \
-    syslinux-common \
     ca-certificates \
     curl \
     librsvg2-bin \
@@ -54,10 +60,9 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
 
 WORKDIR /build
 
-# Name of the artifact written into /build/out; override with
-# `docker run -e ISO_NAME=...` if a build needs a different filename.
-ENV ISO_NAME=labkiosk-debian12-amd64.iso \
-    OUT_DIR=/build/out
+# The artifact is written into /build/out as labkiosk-debian13-<arch>.iso
+# (docker-build.sh); `docker run -e ISO_NAME=...` names it otherwise.
+ENV OUT_DIR=/build/out
 
 COPY --chmod=0755 docker-build.sh /usr/local/bin/docker-build.sh
 COPY . /build/

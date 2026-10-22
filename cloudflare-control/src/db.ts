@@ -194,6 +194,10 @@ CREATE TABLE IF NOT EXISTS release_notes (
   checksum_url TEXT,
   iso_bytes INTEGER,
   iso_sha256 TEXT,
+  arm64_iso_url TEXT,
+  arm64_checksum_url TEXT,
+  arm64_iso_bytes INTEGER,
+  arm64_iso_sha256 TEXT,
   source_body TEXT NOT NULL DEFAULT '',
   summary TEXT,
   summary_model TEXT,
@@ -214,7 +218,8 @@ CREATE TABLE IF NOT EXISTS releases (
   found_at INTEGER NOT NULL,
   classified_at INTEGER,
   classified_by TEXT,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  architectures TEXT NOT NULL DEFAULT 'amd64'
 );
 
 CREATE INDEX IF NOT EXISTS idx_releases_channel ON releases(channel);
@@ -872,6 +877,10 @@ export async function assertSchemaCurrent(db: D1Database): Promise<void> {
     await db.prepare("SELECT id, name, uri, group_name, position FROM printers LIMIT 1").run();
     // 0048: Home in the kiosk bar starts a new session.
     await db.prepare("SELECT home_reset FROM tenants LIMIT 1").run();
+    // 0049: the architectures a release is built for.
+    await db.prepare("SELECT architectures FROM releases LIMIT 1").run();
+    // 0050: a release's arm64 ISO, for /download.
+    await db.prepare("SELECT arm64_iso_url, arm64_iso_sha256 FROM release_notes LIMIT 1").run();
     // 0013 is data only: the retired `demo` organization must be gone.
     const retiredDemo = await db
       .prepare("SELECT id FROM tenants WHERE subdomain = 'demo' LIMIT 1")

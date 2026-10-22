@@ -1,6 +1,6 @@
 ---
 name: labkiosk-distro
-description: Lab Kiosk Debian 12 image and installation — live-build ISO pipeline (distro-builder/auto, Dockerfile), package list, hooks, Chromium managed policy, overlayroot RAM overlay and the LABKIOSK_DATA partition, BIOS+UEFI bootloaders, boot-menu password, timezone defaults, and the disk installer (labkiosk-install). Use when changing how the image is built, booted or installed, or when building/testing an ISO; use labkiosk-client for the agent, extension and wizard.
+description: Lab Kiosk Debian 13 image (amd64 and arm64) and installation — live-build ISO pipeline (distro-builder/auto, Dockerfile), package list, hooks, Chromium managed policy, overlayroot RAM overlay and the LABKIOSK_DATA partition, BIOS+UEFI bootloaders, boot-menu password, timezone defaults, and the disk installer (labkiosk-install). Use when changing how the image is built, booted or installed, or when building/testing an ISO; use labkiosk-client for the agent, extension and wizard.
 ---
 
 # Lab Kiosk — image build, boot & installer
@@ -130,12 +130,14 @@ docker run --privileged --rm -v "$PWD/distro-builder/out:/build/out" ghcr.io/akb
 
 - The engine must be **rootful** (`debootstrap` needs `mknod`). This machine's `docker` is a
   rootful podman machine; use plain `docker` commands. Check:
-  `docker run --rm --privileged debian:bookworm-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'`.
+  `docker run --rm --privileged debian:trixie-slim sh -c 'mknod /tmp/n b 7 99 && echo ok'`.
 - Only `out/` is bind-mounted (Windows 9P mounts break `mknod`); `.dockerignore` keeps stale
   `chroot/`, `cache/` and `config/binary` out.
 - Before building, delete any `__pycache__` under `config/includes.chroot` — live-build copies it
   into the image. Always compile/test with `PYTHONPYCACHEPREFIX=/tmp/labkiosk-pyc`.
-- Output: `distro-builder/out/labkiosk-debian12-amd64.iso` (+ `.sha256`).
+- Output: `distro-builder/out/labkiosk-debian13-<arch>.iso` (+ `.sha256`), for the builder's own
+  architecture. Per-architecture packages and boot loaders: `config/arch/<arch>/`
+  (`wiki/Building-for-Your-Platform.md`).
 
 ## When it does not work
 

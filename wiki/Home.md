@@ -31,7 +31,7 @@ A Cloudflare Worker with **zero runtime npm dependencies**, backed by Cloudflare
 
 ### 🐧 Client operating system (`distro-builder/`)
 
-A Debian 12 (Bookworm) live-build image. The root filesystem is mounted read-only with every write diverted to a `tmpfs` RAM overlay, so thin-client flash storage is never written during operation and every reboot is a clean reset. Chromium runs in `--kiosk` under managed enterprise policy, with a Manifest V3 extension supplying the navigation bar and the lock curtain.
+A Debian 13 (Trixie) live-build image, for 64-bit Intel and AMD PCs and 64-bit ARM machines with UEFI. The root filesystem is mounted read-only with every write diverted to a `tmpfs` RAM overlay, so thin-client flash storage is never written during operation and every reboot is a clean reset. Chromium runs in `--kiosk` under managed enterprise policy, with a Manifest V3 extension supplying the navigation bar and the lock curtain.
 
 → [Client Agent](Client-Agent) · [Browser Extension](Browser-Extension) · [Disk Installer](Disk-Installer) · [Kiosk Hardening](Kiosk-Hardening)
 

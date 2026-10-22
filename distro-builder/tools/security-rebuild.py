@@ -13,9 +13,15 @@ test_security_rebuild.py) instead of living in shell.
               stable supersedes; without it, the latest two -- and for each the
               newest tag and the version its rebuild gets (patch + 1, past any
               version already tagged or, with --published, already in R2).
+    builds    for each of those lines, one build per architecture its tag's
+              source builds, with that source's Debian security suite, ISO
+              name and the runner that builds it.
     check     which packages installed in an image (its dpkg status file) have
               a newer version in the Debian security archive. The index is
-              read from --index files, or fetched from --mirror.
+              read from --index files, or fetched from --mirror for --suite
+              and --architecture.
+    decide    from the check of every build, the lines to rebuild: a line is
+              rebuilt for all its architectures when any of them is outdated.
     bump      write a new version into the four files of a source tree that
               carry it.
     notes     the GitHub release notes of a rebuild: what changed between the
@@ -31,6 +37,7 @@ import json
 import lzma
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -45,11 +52,26 @@ FIRST_OTA_VERSION = "2.9.0"
 LINES_KEPT = 2
 
 DEFAULT_MIRROR = "https://deb.debian.org/debian-security"
-SUITE = "bookworm-security"
 COMPONENTS = ("main", "contrib", "non-free", "non-free-firmware")
-ARCHITECTURE = "amd64"
+ARCHITECTURE_PATTERN = re.compile(r"^[a-z0-9]{2,16}\Z")
+SUITE_PATTERN = re.compile(r"^[a-z]{2,16}-security\Z")
+# The Debian release behind each codename a source tree can build: its ISO is
+# labkiosk-debian<number>-<architecture>.iso.
+DEBIAN_RELEASES = {"bookworm": 12, "trixie": 13}
+# The GitHub runner that builds each architecture natively: live-build under
+# emulation takes hours.
+RUNNERS = {"amd64": "ubuntu-latest", "arm64": "ubuntu-24.04-arm"}
+# amd64 first: it is the folder's root in R2 and its manifest goes up last.
+DEFAULT_ARCHITECTURE = "amd64"
 HTTP_TIMEOUT = 120
 MAX_INDEX_BYTES = 256 * 1024 * 1024
+
+# What a source tree builds, relative to the repository root. A tree without
+# config/arch/ predates arm64 and builds amd64 alone.
+AUTO_CONFIG = "distro-builder/auto/config"
+ARCH_FOLDER = "distro-builder/config/arch"
+ARCH_FILES = ("packages.list.chroot", "bootloaders")
+DISTRIBUTION_PATTERN = re.compile(r"^\s*--distribution\s+\"?([a-z]+)\"?\s*\\?\s*$", re.MULTILINE)
 
 # Where a version lives in the source tree, relative to the repository root.
 VERSION_FILE = "distro-builder/config/includes.chroot/usr/share/labkiosk/version"
@@ -354,10 +376,14 @@ def read_index(path):
     return data.decode("utf-8")
 
 
-def fetch_indices(mirror, suite=SUITE, components=COMPONENTS, architecture=ARCHITECTURE):
+def fetch_indices(mirror, suite, architecture, components=COMPONENTS):
     """The Packages index of each component, from the security archive's mirror."""
     if not mirror.startswith("https://"):
         raise ValueError(f"the mirror {mirror!r} must be an https:// address")
+    if not SUITE_PATTERN.match(suite or ""):
+        raise ValueError(f"{suite!r} is not a Debian security suite such as trixie-security")
+    if not ARCHITECTURE_PATTERN.match(architecture or ""):
+        raise ValueError(f"{architecture!r} is not a Debian architecture")
     texts = []
     for component in components:
         url = f"{mirror.rstrip('/')}/dists/{suite}/{component}/binary-{architecture}/Packages.xz"
@@ -375,6 +401,111 @@ def fetch_indices(mirror, suite=SUITE, components=COMPONENTS, architecture=ARCHI
             raise RuntimeError(f"{url} is not an xz-compressed index: {err}") from err
         log(f"read {url}")
     return texts
+
+
+# --------------------------------------------------------------------------
+# What each line's source builds, and which lines are rebuilt
+# --------------------------------------------------------------------------
+
+def source_platforms(auto_config, arch_paths):
+    """
+    The Debian release and the architectures a source tree builds, from its
+    distro-builder/auto/config and the files under distro-builder/config/arch/
+    (paths relative to that folder, such as `arm64/bootloaders`). An
+    architecture counts only with both of its files, as auto/config requires.
+    """
+    found = DISTRIBUTION_PATTERN.findall(auto_config)
+    if len(set(found)) != 1:
+        raise ValueError(f"{AUTO_CONFIG} names no single Debian distribution: {found or 'none'}")
+    codename = found[0]
+    if codename not in DEBIAN_RELEASES:
+        raise ValueError(f"{AUTO_CONFIG} builds Debian {codename}, which this tool does not know: "
+                         f"add it to DEBIAN_RELEASES")
+    files = {}
+    for path in arch_paths:
+        arch, _sep, name = path.strip().strip("/").partition("/")
+        files.setdefault(arch, set()).add(name)
+    architectures = sorted((arch for arch, names in files.items() if set(ARCH_FILES) <= names),
+                           key=lambda arch: (arch != DEFAULT_ARCHITECTURE, arch))
+    if not files:
+        architectures = [DEFAULT_ARCHITECTURE]
+    if not architectures:
+        raise ValueError(f"{ARCH_FOLDER} defines no architecture with both {' and '.join(ARCH_FILES)}")
+    for arch in architectures:
+        if not ARCHITECTURE_PATTERN.match(arch):
+            raise ValueError(f"{ARCH_FOLDER}/{arch} is not a Debian architecture")
+        if arch not in RUNNERS:
+            raise ValueError(f"no runner builds {arch}: add it to RUNNERS")
+    number = DEBIAN_RELEASES[codename]
+    return {
+        "suite": f"{codename}-security",
+        "architectures": [{"arch": arch, "iso": f"labkiosk-debian{number}-{arch}.iso", "runner": RUNNERS[arch]}
+                          for arch in architectures],
+    }
+
+
+def git_platforms(repo, tag):
+    """source_platforms() of a tag of the repository at `repo`, read with git."""
+    def git(*args):
+        result = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args)}: {result.stderr.strip()}")
+        return result.stdout
+    auto_config = git("show", f"{tag}:{AUTO_CONFIG}")
+    listing = git("ls-tree", "-r", "--name-only", tag, "--", ARCH_FOLDER + "/")
+    paths = [line[len(ARCH_FOLDER) + 1:] for line in listing.splitlines() if line.startswith(ARCH_FOLDER + "/")]
+    return source_platforms(auto_config, paths)
+
+
+def plan_builds(lines, platforms, epoch):
+    """
+    One build per line and architecture. `platforms` maps each line's tag to
+    source_platforms(); `epoch` is the time every build of this run commits
+    its version bump at, so the builds of one line, on different runners,
+    make the very same commit, and the one tag names all of them.
+    """
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch <= 0:
+        raise ValueError(f"{epoch!r} is not a time in seconds")
+    builds = []
+    for line in lines:
+        source = platforms[line["tag"]]
+        for target in source["architectures"]:
+            builds.append({**line, "epoch": epoch, "suite": source["suite"], **target})
+    return builds
+
+
+def decide(builds, decisions, force=False):
+    """
+    The builds to run and the lines to publish. `decisions` is the check of
+    each build: {"version", "arch", "outdated": a count}. A line is rebuilt,
+    for every one of its architectures, when any of them is outdated (or with
+    `force`): the release is one version, the same on every architecture. A
+    line missing the check of one of its architectures is not rebuilt; its
+    check failed, and failed the run.
+    """
+    checked = {}
+    for entry in decisions:
+        count = entry.get("outdated") if isinstance(entry, dict) else None
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ValueError(f"a check that is not a version, an architecture and a count: {entry!r}")
+        checked[(entry.get("version"), entry.get("arch"))] = count
+    by_version = {}
+    for build in builds:
+        by_version.setdefault(build["version"], []).append(build)
+    chosen, lines = [], []
+    for version, targets in by_version.items():
+        counts = [checked.get((version, target["arch"])) for target in targets]
+        if None in counts:
+            missing = [t["arch"] for t, count in zip(targets, counts) if count is None]
+            log(f"{targets[0]['tag']}: no check for {', '.join(missing)}; the line is not rebuilt")
+            continue
+        if not force and not any(counts):
+            continue
+        chosen += targets
+        first = targets[0]
+        lines.append({key: first[key] for key in ("line", "tag", "base", "version", "newest", "epoch", "suite")}
+                     | {"architectures": [target["arch"] for target in targets]})
+    return {"builds": chosen, "lines": lines}
 
 
 # --------------------------------------------------------------------------
@@ -424,16 +555,26 @@ def bump(root, base, version):
     return sorted(found)
 
 
-def notes(base_tag, version, base_status, new_status):
-    """Markdown release notes: the packages whose version changed, by source package."""
-    before = installed_packages(base_status)
-    after = installed_packages(new_status)
+def notes(base_tag, version, base_statuses, new_statuses):
+    """
+    Markdown release notes: the packages whose version changed, from the base
+    image's and the rebuilt image's dpkg status of each architecture, in the
+    same order. A package that changed alike on several architectures is
+    listed once.
+    """
+    if len(base_statuses) != len(new_statuses) or not base_statuses:
+        raise ValueError("the notes need one base and one rebuilt package list per architecture")
     changed = []
-    for key in sorted(set(before) | set(after)):
-        old = before.get(key, ("", ""))[0]
-        new = after.get(key, ("", ""))[0]
-        if old != new:
-            changed.append((key[0], old or "(not installed)", new or "(removed)"))
+    for base_status, new_status in zip(base_statuses, new_statuses):
+        before = installed_packages(base_status)
+        after = installed_packages(new_status)
+        for key in sorted(set(before) | set(after)):
+            old = before.get(key, ("", ""))[0]
+            new = after.get(key, ("", ""))[0]
+            row = (key[0], old or "(not installed)", new or "(removed)")
+            if old != new and row not in changed:
+                changed.append(row)
+    changed.sort()
     lines = [
         f"Security rebuild of {base_tag}: the same Lab Kiosk release, rebuilt with the Debian security "
         "updates published since. Workstations on this line install it at their next restart, unless "
@@ -461,11 +602,18 @@ def main(argv=None):
     lines_parser.add_argument("--published", help="the folders of the R2 releases bucket, one per line, as a file: "
                               "a rebuild never takes a version already published there")
     lines_parser.add_argument("tags", nargs="*")
+    builds_parser = sub.add_parser("builds", help="one build per line and architecture its tag's source builds")
+    builds_parser.add_argument("--lines", required=True, help="the output of `lines`, as a file")
+    builds_parser.add_argument("--repo", default=".", help="the repository holding the lines' tags")
+    builds_parser.add_argument("--epoch", required=True, type=int,
+                               help="the time, in seconds, every build of this run commits its version at")
     check_parser = sub.add_parser("check", help="installed packages with a newer version in the security archive")
     check_parser.add_argument("--status", required=True, help="the image's var/lib/dpkg/status")
     source = check_parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--index", action="append", help="a Packages or Packages.xz file (repeatable)")
-    source.add_argument("--mirror", help=f"fetch the {SUITE} indices from here, such as {DEFAULT_MIRROR}")
+    source.add_argument("--mirror", help=f"fetch the indices from here, such as {DEFAULT_MIRROR}")
+    check_parser.add_argument("--suite", help="with --mirror: the security suite, such as trixie-security")
+    check_parser.add_argument("--architecture", help="with --mirror: the image's architecture, such as arm64")
     check_parser.add_argument("--fail-if-outdated", action="store_true",
                               help="exit 2 when anything is outdated (a rebuilt image must be current)")
     bump_parser = sub.add_parser("bump", help="write a new version into a source tree")
@@ -475,8 +623,15 @@ def main(argv=None):
     notes_parser = sub.add_parser("notes", help="release notes of a rebuild, as Markdown")
     notes_parser.add_argument("--base-tag", required=True)
     notes_parser.add_argument("--version", required=True)
-    notes_parser.add_argument("--base-status", required=True)
-    notes_parser.add_argument("--new-status", required=True)
+    notes_parser.add_argument("--base-status", required=True, action="append",
+                              help="the base image's dpkg status (repeatable: one per architecture)")
+    notes_parser.add_argument("--new-status", required=True, action="append",
+                              help="the rebuilt image's, in the same order")
+    decide_parser = sub.add_parser("decide", help="the builds to run and the lines to publish, from every check")
+    decide_parser.add_argument("--builds", required=True, help="the output of `builds`, as a file")
+    decide_parser.add_argument("--decisions", required=True,
+                               help="a folder of the checks' answers, one JSON file per build")
+    decide_parser.add_argument("--force", action="store_true", help="rebuild every line that was checked")
     args = parser.parse_args(argv)
 
     try:
@@ -494,10 +649,27 @@ def main(argv=None):
                     published = published_versions(handle.read())
             print(json.dumps(plan_lines(args.tags, args.line, end_of_life=ended, published=published,
                                         stable=stable)))
+        elif args.command == "builds":
+            with open(args.lines, "r", encoding="utf-8") as handle:
+                lines = json.load(handle)
+            platforms = {line["tag"]: git_platforms(args.repo, line["tag"]) for line in lines}
+            print(json.dumps(plan_builds(lines, platforms, args.epoch)))
+        elif args.command == "decide":
+            with open(args.builds, "r", encoding="utf-8") as handle:
+                builds = json.load(handle)
+            decisions = []
+            for name in sorted(os.listdir(args.decisions)):
+                if name.endswith(".json"):
+                    with open(os.path.join(args.decisions, name), "r", encoding="utf-8") as handle:
+                        decisions.append(json.load(handle))
+            print(json.dumps(decide(builds, decisions, force=args.force)))
         elif args.command == "check":
             with open(args.status, "r", encoding="utf-8") as handle:
                 installed = installed_packages(handle.read())
-            texts = fetch_indices(args.mirror) if args.mirror else [read_index(path) for path in args.index]
+            if args.mirror:
+                texts = fetch_indices(args.mirror, args.suite, args.architecture)
+            else:
+                texts = [read_index(path) for path in args.index]
             found = outdated(installed, newest_in_index(texts))
             for entry in found:
                 log(f"{entry['package']} {entry['installed']} -> {entry['available']}")
@@ -512,12 +684,15 @@ def main(argv=None):
         else:
             if not VERSION_PATTERN.match(args.version):
                 raise ValueError(f"{args.version!r} is not a release version")
-            with open(args.base_status, "r", encoding="utf-8") as handle:
-                base_status = handle.read()
-            with open(args.new_status, "r", encoding="utf-8") as handle:
-                new_status = handle.read()
-            sys.stdout.write(notes(args.base_tag, args.version, base_status, new_status))
-    except (OSError, ValueError, RuntimeError, lzma.LZMAError) as err:
+            statuses = []
+            for paths in (args.base_status, args.new_status):
+                texts = []
+                for path in paths:
+                    with open(path, "r", encoding="utf-8") as handle:
+                        texts.append(handle.read())
+                statuses.append(texts)
+            sys.stdout.write(notes(args.base_tag, args.version, *statuses))
+    except (OSError, ValueError, RuntimeError, lzma.LZMAError, json.JSONDecodeError, KeyError) as err:
         log(f"ERROR: {err}")
         return 1
     return 0

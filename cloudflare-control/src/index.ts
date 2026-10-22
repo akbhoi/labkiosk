@@ -93,6 +93,8 @@ import {
   sendEndOfLifeReminders,
   releaseAddressIsDevelopmentOnly,
   releaseFolderUrl,
+  ARCHITECTURE_PATTERN,
+  DEFAULT_ARCHITECTURE,
   securityReleasesPending,
   workstationOffer,
   revokeRelease,
@@ -1084,6 +1086,10 @@ async function handleRestartReport(
  * the platform has no public release address, so a workstation never mistakes
  * a missing setting for "up to date".
  *
+ * `arch` is the workstation's architecture (amd64 when it does not say, as no
+ * updater before arm64 does): only releases with a build for it are offered,
+ * and each `url` is the folder of that build.
+ *
  * Phase 5 adds `lan`: null unless the organization shares releases on its LAN,
  * else `{ peers }`, the LAN addresses of workstations at this one's site that
  * hold the release it should fetch (security first) verified, to copy it from
@@ -1100,11 +1106,16 @@ async function handleDeviceUpdate(
   if (auth.error) return auth.error;
   const tenant = await findTenantById(db, auth.device.tenant_id);
   if (!tenant || tenant.status !== "active") return jsonError("This organization is not active", 403, jsonHeaders);
-  const running = new URL(request.url).searchParams.get("running");
+  const params = new URL(request.url).searchParams;
+  const running = params.get("running");
   if (running !== null && !isReleaseVersion(running)) {
     return jsonError("running must be a release version", 400, jsonHeaders);
   }
-  const releases = await offeredReleases(db, tenant.update_channel, tenant.id);
+  const architecture = params.get("arch") ?? DEFAULT_ARCHITECTURE;
+  if (!ARCHITECTURE_PATTERN.test(architecture)) {
+    return jsonError("arch must be an architecture name such as amd64 or arm64", 400, jsonHeaders);
+  }
+  const releases = await offeredReleases(db, tenant.update_channel, tenant.id, Math.floor(Date.now() / 1000), architecture);
   // Only a workstation in a group its organization is trying a major on needs its group.
   const pilots = [...new Set(releases.flatMap((r) => (r.pilotGroup ? [r.pilotGroup] : [])))];
   const group = (await workstationGroupsIn(db, tenant.id, pilots)).get(auth.device.client_id) ?? null;
@@ -1116,7 +1127,7 @@ async function handleDeviceUpdate(
       described[name] = null;
       continue;
     }
-    const folder = releaseFolderUrl(env, release.version);
+    const folder = releaseFolderUrl(env, release.version, architecture);
     if (!folder) {
       console.error("[Worker] A release is offered but RELEASES_BASE_URL is missing or not an https address");
       return jsonError("Updates are not available from this server right now", 503, jsonHeaders);

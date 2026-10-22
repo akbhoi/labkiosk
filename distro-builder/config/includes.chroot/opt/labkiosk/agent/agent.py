@@ -268,7 +268,7 @@ DEFAULT_BASE_DOMAIN = os.environ.get("LABKIOSK_DOMAIN", "labkiosk.org")
 # telemetry channel.
 VNC_SECRET_FILE = "/tmp/labkiosk/vnc.secret"
 
-AGENT_VERSION = "4.0.0"
+AGENT_VERSION = "5.0.0"
 LOCAL_API_HOST = "127.0.0.1"
 LOCAL_API_PORT = 8888
 HEARTBEAT_SECONDS = 3
@@ -402,6 +402,25 @@ GRUB_PASSWORD_LINE = re.compile(
 # successful /api/admin/verify issues a short-lived token that the mutating
 # network route requires, so the gate lives here and not only in the UI.
 ADMIN_TOKEN_HEADER = "X-LabKiosk-Admin"
+# A pre-configured install stick (wiki/Installation-Guide.md, "Set up many
+# machines from one stick"): labkiosk-iso.py customize writes the
+# organization, Wi-Fi and language into the release ISO as this file. A live
+# session started from it applies the Wi-Fi and language at once and opens the
+# wizard on Install; the enrolment travels to the installed disk in
+# PRESET_ENROLMENT_FILE (labkiosk-install carries /etc/labkiosk onto
+# LABKIOSK_DATA), and the installed workstation enrols with it at its first
+# start, under its own hostname, then deletes it.
+PRESET_FILE = "/run/live/medium/labkiosk/preset.json"
+PRESET_MAX_BYTES = 16 * 1024
+PRESET_VERSION = 1
+PRESET_ENROLMENT_FILE = "/etc/labkiosk/preset-enrolment.json"
+# The values the localization helper checks against the system's own tables;
+# here only their shape, so nothing odd reaches its argument vector.
+PRESET_SETTING_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+/-]{0,63}\Z")
+PRESET_WIFI_SECURITY = ("WPA2", "WPA3", "OPEN")
+# NetworkManager and the Wi-Fi adapter can come up after the agent does.
+PRESET_WIFI_ATTEMPTS = 6
+PRESET_WIFI_RETRY_SECONDS = 10
 ADMIN_SESSION_SECONDS = 600
 ADMIN_MAX_FAILURES = 5
 ADMIN_LOCKOUT_SECONDS = 60
@@ -454,6 +473,9 @@ state = {
     # says so, and reboot or shutdown commands wait for it. Unlock leaves it.
     "updateInstalling": "",
     "updateInstallingSince": 0.0,
+    # What a pre-configured install stick holds and how applying it went
+    # (preset_summary), for the wizard; None when the session has no preset.
+    "preset": None,
 }
 REENROL_URL = "http://127.0.0.1:8888/setup#reenrol"
 # Set by an enrolment so the heartbeat runs at once instead of finishing a
@@ -1637,23 +1659,302 @@ def network_boot_enrol_loop(sleep=time.sleep):
         return
     if params is None:
         return
+    enrol_until_done(params, "Network boot", sleep)
+
+
+def enrol_until_done(params, label, sleep=time.sleep):
+    """
+    Enrol with params (network_boot_enrolment's shape) until it succeeds or the
+    workstation is enrolled some other way. True once enrolled by this loop.
+    """
     target = params["subdomain"] or params["customDomain"]
     while True:
         with state_lock:
             if state["isConfigured"]:
-                return
+                return False
         try:
             enroll(params["subdomain"], params["clientId"], params["key"], params["server"],
                    params["customDomain"])
-            log(f"Network boot: enrolled as {params['clientId']} with {target}.")
-            return
+            log(f"{label}: enrolled as {params['clientId']} with {target}.")
+            return True
         except EnrolmentUnreachable as err:
             delay = NETBOOT_RETRY_SECONDS
-            log(f"Network boot: {err} Trying again in {delay} s.")
+            log(f"{label}: {err} Trying again in {delay} s.")
         except Exception as err:  # noqa: BLE001 - logged; a refused key is retried slowly
             delay = NETBOOT_REFUSED_RETRY_SECONDS
-            log(f"Network boot: enrolment with {target} failed: {err} Trying again in {delay} s.")
+            log(f"{label}: enrolment with {target} failed: {err} Trying again in {delay} s.")
         sleep(delay)
+
+
+# --------------------------------------------------------------------------
+# Pre-configured install stick (PRESET_FILE)
+# --------------------------------------------------------------------------
+
+def _preset_section(doc, name, allowed):
+    section = doc.get(name)
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ValueError(f"{name} must be an object")
+    unknown = sorted(set(section) - set(allowed))
+    if unknown:
+        raise ValueError(f"{name} has unknown settings: {', '.join(unknown)[:200]}")
+    return section
+
+
+def _preset_text(section, key, name):
+    value = section.get(key, "")
+    if not isinstance(value, str):
+        raise ValueError(f"{name}.{key} must be text")
+    return value
+
+
+def validate_preset(doc):
+    """
+    The settings of a pre-configured install stick, normalised, or ValueError
+    naming what is wrong. labkiosk-iso.py customize writes the same shape and
+    its tests hold it to this function.
+    """
+    if not isinstance(doc, dict):
+        raise ValueError("the file is not a JSON object")
+    if doc.get("version") != PRESET_VERSION:
+        raise ValueError(f"version must be {PRESET_VERSION}")
+    unknown = sorted(set(doc) - {"version", "organization", "wifi", "localization", "bootPasswordHash"})
+    if unknown:
+        raise ValueError(f"unknown settings: {', '.join(unknown)[:200]}")
+    preset = {"organization": None, "wifi": None, "localization": None, "bootPasswordHash": ""}
+
+    org = _preset_section(doc, "organization", ("subdomain", "customDomain", "enrollmentKey", "server"))
+    if org is not None:
+        subdomain = _preset_text(org, "subdomain", "organization").strip().lower()
+        custom_domain = _preset_text(org, "customDomain", "organization").strip().lower()
+        key = _preset_text(org, "enrollmentKey", "organization").strip().upper()
+        server = org.get("server")
+        if bool(subdomain) == bool(custom_domain):
+            raise ValueError("organization must name exactly one of subdomain and customDomain")
+        if subdomain and not ORG_SUBDOMAIN_PATTERN.match(subdomain):
+            raise ValueError(f"organization.subdomain {subdomain[:64]!r} is not an organization subdomain")
+        if custom_domain and not CUSTOM_DOMAIN_PATTERN.match(custom_domain):
+            raise ValueError(f"organization.customDomain {custom_domain[:64]!r} is not a domain name")
+        if not enrollment_key_is_valid(key):
+            raise ValueError("organization.enrollmentKey is not a valid enrollment key")
+        if server is not None and (not isinstance(server, str) or not server.startswith(("http://", "https://"))
+                                   or not validate_worker_url(server)):
+            raise ValueError("organization.server is not a valid server URL")
+        preset["organization"] = {"subdomain": subdomain, "customDomain": custom_domain, "key": key,
+                                  "server": server}
+
+    wifi = _preset_section(doc, "wifi", ("ssid", "password", "hidden", "security"))
+    if wifi is not None:
+        security = _preset_text(wifi, "security", "wifi").strip().upper() or "WPA2"
+        if security not in PRESET_WIFI_SECURITY:
+            raise ValueError(f"wifi.security must be one of {', '.join(PRESET_WIFI_SECURITY)}")
+        hidden = wifi.get("hidden", False)
+        if not isinstance(hidden, bool):
+            raise ValueError("wifi.hidden must be true or false")
+        settings = {"ssid": _preset_text(wifi, "ssid", "wifi"), "password": _preset_text(wifi, "password", "wifi"),
+                    "hidden": hidden, "security": security}
+        if security == "OPEN" and settings["password"]:
+            raise ValueError("wifi.password is set for an open network")
+        if security != "OPEN" and not settings["password"]:
+            raise ValueError("wifi.password is required unless wifi.security is OPEN")
+        wifi_settings(settings)  # raises ValueError on a name or passphrase NetworkManager would refuse
+        preset["wifi"] = settings
+
+    # The interface language is not among them: its catalogs come from the
+    # organization's server, which the live session has not reached yet.
+    loc = _preset_section(doc, "localization", ("timezone", "locale", "keymap", "keymapVariant"))
+    if loc is not None:
+        settings = {}
+        for key in ("timezone", "locale", "keymap", "keymapVariant"):
+            value = _preset_text(loc, key, "localization").strip()
+            if value and not PRESET_SETTING_PATTERN.match(value):
+                raise ValueError(f"localization.{key} {value[:64]!r} is not a setting name")
+            settings[key] = value
+        if settings["keymapVariant"] and not settings["keymap"]:
+            raise ValueError("localization.keymapVariant needs localization.keymap")
+        if any(settings.values()):
+            preset["localization"] = settings
+
+    boot_hash = doc.get("bootPasswordHash", "")
+    if not isinstance(boot_hash, str) or (boot_hash and not GRUB_PBKDF2_PATTERN.match(boot_hash)):
+        raise ValueError("bootPasswordHash is not a grub-mkpasswd-pbkdf2 digest")
+    preset["bootPasswordHash"] = boot_hash
+
+    if not (preset["organization"] or preset["wifi"] or preset["localization"] or boot_hash):
+        raise ValueError("it sets nothing")
+    return preset
+
+
+def read_preset(path=PRESET_FILE):
+    """The stick's validated settings, None when it has none, ValueError when they are wrong."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(PRESET_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return None
+    except OSError as err:
+        raise ValueError(f"it cannot be read ({err.strerror})") from err
+    if len(raw) > PRESET_MAX_BYTES:
+        raise ValueError(f"it is larger than {PRESET_MAX_BYTES} bytes")
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as err:
+        raise ValueError(f"it is not valid JSON ({err})") from err
+    return validate_preset(doc)
+
+
+def preset_summary(preset):
+    """What the wizard may show of a preset: never the key or the Wi-Fi passphrase."""
+    org = preset["organization"] or {}
+    loc = preset["localization"] or {}
+    return {
+        "organization": org.get("subdomain") or org.get("customDomain") or "",
+        "wifiSsid": (preset["wifi"] or {}).get("ssid", ""),
+        "timezone": loc.get("timezone", ""),
+        "locale": loc.get("locale", ""),
+        "keymap": loc.get("keymap", ""),
+        "bootPassword": bool(preset["bootPasswordHash"]),
+        "applying": True,
+        "problems": [],
+    }
+
+
+def write_json_private(path, payload):
+    """Write payload to path, owner-only, replacing it in one step."""
+    temp_path = path + ".tmp"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, path)
+
+
+def wifi_profile_exists(name="Kiosk-Wifi"):
+    proc = run_nmcli(["-t", "-f", "NAME", "connection", "show"])
+    if proc.returncode != 0:
+        raise RuntimeError(f"NetworkManager did not answer: {proc.stderr.strip()}")
+    return name in proc.stdout.splitlines()
+
+
+def apply_preset_wifi(wifi, sleep=time.sleep):
+    """Connect to the stick's Wi-Fi, waiting for NetworkManager and the adapter."""
+    request = {"interfaceType": "wifi", "ssid": wifi["ssid"], "password": wifi["password"],
+               "hidden": wifi["hidden"], "security": wifi["security"]}
+    for attempt in range(1, PRESET_WIFI_ATTEMPTS + 1):
+        try:
+            if wifi_profile_exists():
+                # Set in this session already (the wizard, or an earlier run):
+                # what a person chose wins over the stick.
+                return
+            configure_network(request)
+            return
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as err:
+            if attempt == PRESET_WIFI_ATTEMPTS:
+                raise RuntimeError(str(err)) from err
+            log(f"Preset: Wi-Fi {wifi['ssid']!r} not connected yet ({err}); trying again.")
+            sleep(PRESET_WIFI_RETRY_SECONDS)
+
+
+def apply_preset(path=PRESET_FILE, sleep=time.sleep):
+    """
+    A live session started from a pre-configured stick: apply its language and
+    Wi-Fi, and leave its enrolment where the installer carries it to the disk.
+    Each part that fails is reported in the wizard and the rest still applies;
+    the operator can always set any of it by hand.
+    """
+    try:
+        preset = read_preset(path)
+    except ValueError as err:
+        log(f"Preset: {path} is not used, because {err}.")
+        with state_lock:
+            state["preset"] = {"error": str(err), "applying": False, "problems": []}
+        return
+    if preset is None:
+        return
+    summary = preset_summary(preset)
+    with state_lock:
+        state["preset"] = summary
+    log(f"Preset: this stick is set up for {summary['organization'] or 'no organization'}.")
+    problems = []
+
+    if preset["localization"] and not load_localization_config():
+        try:
+            configure_localization(preset["localization"])
+            log("Preset: applied the language and region.")
+        except (ValueError, RuntimeError, OSError) as err:
+            problems.append(f"Language and region: {err}")
+
+    if preset["wifi"]:
+        try:
+            apply_preset_wifi(preset["wifi"], sleep)
+            log(f"Preset: Wi-Fi profile for {preset['wifi']['ssid']!r} applied.")
+        except (ValueError, RuntimeError) as err:
+            problems.append(f"Wi-Fi {preset['wifi']['ssid']}: {err}")
+
+    org = preset["organization"]
+    with state_lock:
+        configured = state["isConfigured"]
+    if org and not configured:
+        try:
+            write_json_private(PRESET_ENROLMENT_FILE, {
+                "subdomain": org["subdomain"], "customDomain": org["customDomain"],
+                "enrollmentKey": org["key"], "server": org["server"],
+            })
+        except OSError as err:
+            problems.append(f"Registration: could not keep it for the installed system ({err.strerror})")
+
+    for problem in problems:
+        log(f"Preset: {problem}")
+    with state_lock:
+        summary["problems"] = problems
+        summary["applying"] = False
+
+
+def preset_enrolment(path=PRESET_ENROLMENT_FILE):
+    """
+    The enrolment a pre-configured stick left for this installed workstation,
+    as enrol_until_done takes it; None when there is none; ValueError when it
+    is unusable.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as err:
+        raise ValueError(f"{path} cannot be read: {err}") from err
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path} is not a JSON object")
+    org = validate_preset({"version": PRESET_VERSION, "organization": doc})["organization"]
+    client_id = socket.gethostname().upper()
+    if not CLIENT_ID_PATTERN.match(client_id):
+        raise ValueError(f"the hostname {client_id[:64]!r} cannot be a workstation name")
+    return dict(org, clientId=client_id)
+
+
+def preset_enrol_loop(path=PRESET_ENROLMENT_FILE, sleep=time.sleep):
+    """
+    An installed workstation's first start after an install from a
+    pre-configured stick: enrol under its own hostname, then forget the key.
+    """
+    try:
+        params = preset_enrolment(path)
+    except ValueError as err:
+        log(f"Preset: not enrolling by itself, because {err}.")
+        return
+    if params is None:
+        return
+    enrol_until_done(params, "Preset", sleep)
+    # Enrolled, by this loop or by hand: the key has no use here any more.
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as err:
+        log(f"Preset: could not remove {path}: {err}")
 
 
 def install_mode_requested():
@@ -2606,6 +2907,9 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                         # Only meaningful on live media; an installed disk has
                         # nothing to install to and the wizard hides the tab.
                         "installRequested": live and not network_boot and install_mode_requested(),
+                        # Started from a pre-configured stick: what it sets up
+                        # (no key, no passphrase) and how applying it went.
+                        "preset": state["preset"] if live and not network_boot else None,
                         # A system update installing or finishing: the kiosk
                         # bar's curtain says so (None otherwise).
                         "updateScreen": screen,
@@ -2724,6 +3028,15 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             if grub_hash and not GRUB_PBKDF2_PATTERN.match(grub_hash):
                 self._send(400, {"error": "The boot-menu password hash is not in GRUB PBKDF2 format"})
                 return
+            if not grub_hash:
+                # A pre-configured stick's password, which the wizard says it uses.
+                try:
+                    preset = read_preset()
+                except ValueError:
+                    preset = None  # already reported by apply_preset
+                if preset and preset["bootPasswordHash"]:
+                    grub_hash = preset["bootPasswordHash"]
+                    log("Using the boot-menu password from this stick's settings.")
 
             hostname = str(data.get("hostname", "") or "").strip()
             if hostname and not INSTALL_HOSTNAME_PATTERN.match(hostname):
@@ -2788,6 +3101,21 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             client_id = str(data.get("clientId", "")).strip().upper()
             enrollment_key = str(data.get("enrollmentKey", "")).strip().upper()
             worker_override = data.get("workerUrl") or os.environ.get("WORKER_URL")
+            if data.get("usePreset") is True:
+                # The organization and key of the stick this session started
+                # from, which the wizard never sees.
+                try:
+                    preset = read_preset() if is_live_session() and not is_network_boot() else None
+                except ValueError as err:
+                    self._send(400, {"error": f"This stick's settings cannot be used: {err}"})
+                    return
+                if not preset or not preset["organization"]:
+                    self._send(400, {"error": "This session was not started from a stick that names an organization"})
+                    return
+                org = preset["organization"]
+                subdomain, custom_domain = org["subdomain"], org["customDomain"]
+                enrollment_key = org["key"]
+                worker_override = org["server"] or worker_override
 
             if (not subdomain and not custom_domain) or not CLIENT_ID_PATTERN.match(client_id) or not enrollment_key:
                 self._send(
@@ -5537,6 +5865,10 @@ def main():
     threading.Thread(target=printing_loop, daemon=True).start()
     if is_network_boot():
         threading.Thread(target=network_boot_enrol_loop, name="network-boot-enrol", daemon=True).start()
+    elif is_live_session():
+        threading.Thread(target=apply_preset, name="preset", daemon=True).start()
+    else:
+        threading.Thread(target=preset_enrol_loop, name="preset-enrol", daemon=True).start()
 
     try:
         telemetry_loop()

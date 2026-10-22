@@ -3,7 +3,7 @@
 Lab Kiosk is two independently deployable systems joined by one authenticated HTTPS contract.
 
 - The **control plane** is a single Cloudflare Worker plus a D1 database. It is multi-tenant: one deployment serves every organization.
-- The **client** is a Debian 12 image that boots into a locked Chromium session and runs a small Python daemon.
+- The **client** is a Debian 13 image (amd64 or arm64) that boots into a locked Chromium session and runs a small Python daemon.
 
 Nothing else is required. There is no per-organization server, no on-premise appliance, and no VPN.
 
@@ -44,7 +44,7 @@ Nothing else is required. There is no per-organization server, no on-premise app
 +---------------------------------------------------------------------------------------+
 |                      CLIENT WORKSTATION LAYER (Intel thin clients)                    |
 |                                                                                       |
-|   Debian 12, Linux 6.1, live-boot squashfs + tmpfs overlay (every write lands in RAM) |
+|   Debian 13, Linux 6.12, live-boot squashfs + tmpfs overlay (every write lands in RAM) |
 |   Xorg + Openbox, empty keybinding table, VT switching disabled, TTYs masked          |
 |                                                                                       |
 |   [ Chromium --kiosk ] <----- MV3 extension (--load-extension, unpacked)              |

@@ -8,7 +8,7 @@ An interactive Docker-based thin client workstation simulator with embedded noVN
 
 ## 🌟 Overview & Simulator Architecture
 
-The simulator closely mirrors the production live Debian 12 kiosk environment (`distro-builder/config/includes.chroot`), allowing developers to test the full lifecycle: first-boot enrolment, telemetry heartbeats, policy updates, screen freezes, broadcast navigations, and remote control.
+The simulator closely mirrors the production live Debian 13 kiosk environment (`distro-builder/config/includes.chroot`), allowing developers to test the full lifecycle: first-boot enrolment, telemetry heartbeats, policy updates, screen freezes, broadcast navigations, and remote control.
 
 ### Architecture Stack inside Container
 

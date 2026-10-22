@@ -107,7 +107,14 @@ BESIDE_ESP_LABEL = "LABKIOSKESP"
 PARTITION_NODE_ATTEMPTS = 30
 EFI_FIRMWARE_DIR = "/sys/firmware/efi"
 BOOT_ENTRY_LABEL = "Lab Kiosk"
-BOOT_ENTRY_LOADER = "\\EFI\\LabKiosk\\shimx64.efi"
+# The UEFI GRUB target and the Secure Boot shim of each architecture the image
+# is built for. The installer runs from the image it installs, so the machine
+# it runs on is the image's. Legacy BIOS boot exists on x86 alone.
+EFI_PLATFORMS = {"x86_64": ("x86_64-efi", "shimx64.efi"), "aarch64": ("arm64-efi", "shimaa64.efi")}
+MACHINE = os.uname().machine
+EFI_TARGET, EFI_SHIM = EFI_PLATFORMS.get(MACHINE, (None, None))
+HAS_BIOS_BOOT = MACHINE == "x86_64"
+BOOT_ENTRY_LOADER = f"\\EFI\\LabKiosk\\{EFI_SHIM}"
 BESIDE_PARTITION_NAMES = ("LABKIOSK_ESP", "LABKIOSK_ROOT", "LABKIOSK_DATA", "LABKIOSK_SWAP")
 
 def write_status(state, step, progress, error=None):
@@ -788,6 +795,9 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_bo
             f"Refusing to install to {target_disk!r}: not a whole-disk device node."
         )
 
+    if EFI_TARGET is None:
+        raise RuntimeError(f"This installer does not know how to make a {MACHINE} computer boot from a drive.")
+
     if not os.path.exists(target_disk):
         raise ValueError(f"Target disk does not exist: {target_disk}")
 
@@ -906,7 +916,7 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_bo
         try:
             run_cmd([
                 "grub-install",
-                "--target=x86_64-efi",
+                f"--target={EFI_TARGET}",
                 f"--efi-directory={esp_dir}",
                 f"--boot-directory={boot_dir}",
                 "--uefi-secure-boot",
@@ -920,7 +930,7 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_bo
             if not beside:
                 run_cmd([
                     "grub-install",
-                    "--target=x86_64-efi",
+                    f"--target={EFI_TARGET}",
                     f"--efi-directory={esp_dir}",
                     f"--boot-directory={boot_dir}",
                     "--uefi-secure-boot",
@@ -932,9 +942,9 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_bo
             print(f"[INSTALL] WARNING: UEFI bootloader installation failed: {err}", file=sys.stderr)
             bootloader_errors.append(f"UEFI: {err}")
 
-        # Install Legacy BIOS bootloader into MBR / bios_grub. Never beside
-        # another system: the boot sector is that system's.
-        if not beside and not ("nvme" in target_disk or "mmcblk" in target_disk):
+        # Install Legacy BIOS bootloader into MBR / bios_grub, on x86 only. Never
+        # beside another system: the boot sector is that system's.
+        if HAS_BIOS_BOOT and not beside and not ("nvme" in target_disk or "mmcblk" in target_disk):
             try:
                 run_cmd([
                     "grub-install",
@@ -967,7 +977,7 @@ def install_to_disk(target_disk, grub_password_hash=None, hostname=None, dual_bo
             )
         if beside:
             # Only a firmware entry starts this loader, so it must be there.
-            if not uefi_installed or not os.path.isfile(os.path.join(esp_dir, "EFI", "LabKiosk", "shimx64.efi")):
+            if not uefi_installed or not os.path.isfile(os.path.join(esp_dir, "EFI", "LabKiosk", EFI_SHIM)):
                 raise RuntimeError(f"Lab Kiosk's boot loader was not installed: {'; '.join(bootloader_errors)}")
             write_status("running", "Adding Lab Kiosk to the computer's boot menu...", 85)
             register_boot_entry(target_disk, esp_number)
