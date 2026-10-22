@@ -194,7 +194,8 @@ def customize(args, wifi_password):
             if os.path.exists(partial):
                 os.remove(partial)
     print(f"Wrote {args.out}: {args.iso} with these settings in {PRESET_PATH.lstrip('/')}:")
-    print(json.dumps(masked(doc), indent=2))
+    # Built again with a placeholder: the passphrase itself never reaches the output.
+    print(json.dumps(masked(build_preset(args, "********" if wifi_password else "")), indent=2))
     print("Write it to a USB stick as you would the release (Rufus in DD Image mode, balenaEtcher or dd).")
     return 0
 
