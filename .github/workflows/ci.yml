@@ -183,7 +183,7 @@ jobs:
       # PYTHONPYCACHEPREFIX keeps __pycache__ out of config/includes.chroot.
       # live-build copies that tree verbatim into the ISO, so bytecode left here
       # by a syntax check would be shipped inside the image -- built for the
-      # runner's interpreter, not the Debian 12 one that would load it.
+      # runner's interpreter, not the Debian 13 one that would load it.
       - name: Python agent and installer compile
         run: |
           PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pyc" python3 -m py_compile \
@@ -363,6 +363,7 @@ jobs:
             distro-builder/config/includes.chroot/usr/local/sbin/labkiosk-hostname \
             distro-builder/config/includes.chroot/etc/NetworkManager/dispatcher.d/50-labkiosk-ntp \
             distro-builder/tests/vm/boot-test.sh \
+            distro-builder/tests/vm/live-smoke-test.sh \
             docker-test/entrypoint.sh
 
   # The control plane is deployed from main by deploy-cloudflare.yml, called

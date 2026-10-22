@@ -22,6 +22,7 @@ WORKFLOWS = os.path.join(REPO, ".github", "workflows")
 USES = re.compile(r"^\s*-?\s*uses:\s*(\S+)(.*)$")
 PINNED = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}\Z")
 VERSION_COMMENT = re.compile(r"^\s*#\s*v?\d+\.\d+\.\d+\s*\Z")
+ARCHITECTURES = ("amd64", "arm64")
 
 
 class ActionsArePinned(unittest.TestCase):
@@ -75,11 +76,36 @@ class NothingUntestedIsPublished(unittest.TestCase):
     def test_the_release_waits_for_every_boot_test_job(self):
         iso = read_workflow("build-iso.yml")
         release = iso.split("\n  release:\n", 1)[1]
-        self.assertIn("needs: [build-iso, boot-test]", release)
+        self.assertIn("needs: [build-iso, boot-test, smoke-test-arm64]", release)
         for step in ("Sign the over-the-air release", "Upload the over-the-air release to R2",
                      "Create GitHub Release"):
             self.assertIn(step, release)
             self.assertNotIn(step, iso.split("\n  release:\n", 1)[0])
+
+    def test_every_architecture_is_built_tested_and_released(self):
+        iso = read_workflow("build-iso.yml")
+        build, rest = iso.split("\n  boot-test:\n", 1)
+        release = rest.split("\n  release:\n", 1)[1]
+        for arch in ARCHITECTURES:
+            self.assertIn(f"arch: {arch}", build)
+            self.assertIn(f"labkiosk-debian13-{arch}-iso", release)
+            self.assertIn(f"distro-builder/out/labkiosk-debian13-{arch}.iso\n", release)
+            self.assertIn(f"distro-builder/out/labkiosk-debian13-{arch}.iso.sha256\n", release)
+        self.assertIn("for arch in amd64 arm64; do", release)
+        self.assertIn('--architecture "$arch"', release)
+        self.assertNotIn("debian12", iso)
+
+    def test_other_architectures_reach_r2_before_the_amd64_manifest(self):
+        # The controller records a release's architectures when it first sees
+        # the root (amd64) manifest, so every subfolder must already be there.
+        release = read_workflow("build-iso.yml").split("\n  release:\n", 1)[1]
+        upload = release.split("Upload the over-the-air release to R2", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("for arch in arm64 amd64; do", upload)
+        self.assertIn('[ "$arch" = amd64 ] || folder="$prefix/$arch"', upload)
+        self.assertLess(upload.index("filesystem.squashfs"), upload.index("manifest.json.sig manifest.json"))
+
+    def test_the_smoke_test_is_shellchecked(self):
+        self.assertIn("distro-builder/tests/vm/live-smoke-test.sh", read_workflow("ci.yml"))
 
     def test_the_boot_test_jobs_cover_every_group(self):
         iso = read_workflow("build-iso.yml")

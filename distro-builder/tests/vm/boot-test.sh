@@ -91,7 +91,7 @@
 #   beside  scenarios 11 to 13
 #
 # Usage: sudo [BOOT_TEST_GROUPS=slots,tpm,beside] distro-builder/tests/vm/boot-test.sh \
-#            path/to/labkiosk-debian12-amd64.iso [workdir]
+#            path/to/labkiosk-debian13-amd64.iso [workdir]
 set -euo pipefail
 
 ISO="${1:?usage: boot-test.sh LABKIOSK.iso [workdir]}"

@@ -55,8 +55,9 @@ jobs:
             arch: arm64
             runner: ubuntu-24.04-arm
             cache: labkiosk-arm64
-          # amd64 only, deliberately: it builds an amd64 Debian image with
-          # debootstrap, so an arm64 variant would have nothing to do.
+          # The ISO builder builds for the architecture it runs on, so each
+          # platform of it builds that architecture's ISO: pull it on an arm64
+          # machine and it makes the arm64 image.
           - name: labkiosk-iso-builder
             image: ghcr.io/${{ github.repository }}-iso-builder
             context: distro-builder
@@ -64,6 +65,13 @@ jobs:
             arch: amd64
             runner: ubuntu-24.04
             cache: labkiosk-iso-builder
+          - name: labkiosk-iso-builder
+            image: ghcr.io/${{ github.repository }}-iso-builder
+            context: distro-builder
+            file: distro-builder/Dockerfile
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            cache: labkiosk-iso-builder-arm64
 
     steps:
       - name: Checkout Repository
@@ -159,7 +167,7 @@ jobs:
             platforms: 2
           - name: labkiosk-iso-builder
             image: ghcr.io/${{ github.repository }}-iso-builder
-            platforms: 1
+            platforms: 2
 
     steps:
       - name: Download the digests
