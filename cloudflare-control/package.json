@@ -1,6 +1,6 @@
 {
   "name": "labkiosk-cloudflare-control",
-  "version": "3.2.0",
+  "version": "4.0.0",
   "description": "Centralized Cloudflare Controller & Real-Time Monitoring Dashboard for Workstation fleet Kiosks",
   "main": "src/index.ts",
   "scripts": {
