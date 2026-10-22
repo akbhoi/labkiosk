@@ -81,6 +81,7 @@ A worker with a D1 binding refuses to serve a database whose migrations have not
 | `0046_single_sign_on.sql` | `sso_settings` (an organization's Google Workspace / Microsoft Entra ID sign-in) and `sso_states` (sign-ins in flight) |
 | `0047_printing.sql` | `tenants.printing_enabled` (default `0` for every organization) and `printers`: the organization's network printers (Settings → Printing) |
 | `0048_home_reset.sql` | `tenants.home_reset` (default `1` for every organization): Home in the kiosk bar asks "Start over?" and signs everyone out (Settings → General) |
+| `0049_release_architectures.sql` | `releases.architectures` (default `amd64`): the architectures a release has a signed build of; a workstation is offered only a release built for its own |
 
 Applied migrations are never edited or renamed: wrangler tracks them by file name, which is why `0008` keeps its original name.
 
@@ -343,6 +344,7 @@ The signed system images CI uploaded to the `RELEASES` R2 bucket, recorded when 
 | `found_at` | INTEGER | When it was recorded |
 | `classified_at` / `classified_by` | INTEGER / TEXT | Last classification, and the super admin who made it |
 | `revoked_at` | INTEGER | Set once, for good |
+| `architectures` | TEXT | `amd64`, or `amd64,arm64`: the architectures the release has a signed build of (`0049`). amd64's is `releases/<version>/`, another's `releases/<version>/<arch>/`; a workstation is offered only a release built for its own |
 
 ### `release_support`
 

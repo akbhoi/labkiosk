@@ -634,7 +634,10 @@ against the same signed manifest, and once it holds the release it serves it to 
 - **Access:** Workstation (`Authorization: Bearer <deviceToken>`); the token decides the
   organization. `403` when the organization is not active.
 - **Query:** `running` — the workstation's image version, such as `2.9.0`. Optional: without it
-  (a 2.9.0 updater) `security` is `null`.
+  (a 2.9.0 updater) `security` is `null`. `arch` — the image's architecture (`amd64`, `arm64`);
+  optional, `amd64` when absent, as every updater before arm64 sends none. Only releases with a
+  signed build for it are offered, and `url` is that build's folder: `releases/<version>` for amd64,
+  `releases/<version>/<arch>` for any other. `400` when it is not an architecture name.
 - **Response `200 OK`** (`GET /api/devices/update?running=2.9.0`):
 
   ```json

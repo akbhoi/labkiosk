@@ -80,6 +80,10 @@ import {
 import { LAN_HOLD_MAX_MS, LAN_SHARE_SECONDS, lanDecision, lanPeers, normalizeLanReport, siteKey } from "../src/lan_sharing";
 import {
   compareVersions,
+  offeredReleases,
+  releaseArchitectures,
+  releaseFolderUrl,
+  syncReleases,
   installsByItself,
   isReleaseVersion,
   normalizeUpdateReport,
@@ -8156,6 +8160,62 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
     assert.ok(logs.some((l: any) => l.action === "release.classify" && /2\.9\.0 -> beta/.test(l.details)));
   });
 
+  test("Releases: a build for another architecture is recorded with its release and offered to that architecture alone", async () => {
+    const db = createLocalD1Database();
+    await initSchema(db);
+    const arm = (version: string, architecture = "arm64") => JSON.stringify({ ...JSON.parse(releaseManifest(version)), architecture });
+    const bucket = fakeReleasesBucket({
+      // amd64 alone, as every release before arm64.
+      "releases/4.0.0/manifest.json": releaseManifest("4.0.0"),
+      "releases/4.0.0/manifest.json.sig": "sig",
+      // Both, the arm64 build in a folder of its own.
+      "releases/4.1.0/manifest.json": releaseManifest("4.1.0"),
+      "releases/4.1.0/manifest.json.sig": "sig",
+      "releases/4.1.0/arm64/manifest.json": arm("4.1.0"),
+      "releases/4.1.0/arm64/manifest.json.sig": "sig",
+      // An arm64 folder holding another version's build is reported, and the release is not recorded.
+      "releases/4.2.0/manifest.json": releaseManifest("4.2.0"),
+      "releases/4.2.0/manifest.json.sig": "sig",
+      "releases/4.2.0/arm64/manifest.json": arm("4.1.0"),
+      "releases/4.2.0/arm64/manifest.json.sig": "sig",
+      // An arm64 build without its signature, too.
+      "releases/4.3.0/manifest.json": releaseManifest("4.3.0"),
+      "releases/4.3.0/manifest.json.sig": "sig",
+      "releases/4.3.0/arm64/manifest.json": arm("4.3.0"),
+      // amd64's folder holding an arm64 manifest.
+      "releases/4.4.0/manifest.json": arm("4.4.0"),
+      "releases/4.4.0/manifest.json.sig": "sig",
+      // A manifest naming amd64 outright is not one CI writes.
+      "releases/4.5.0/manifest.json": arm("4.5.0", "amd64"),
+      "releases/4.5.0/manifest.json.sig": "sig"
+    });
+    const sync = await syncReleases(bucket, db);
+    assert.deepEqual(sync.added, ["4.0.0", "4.1.0"]);
+    const problems = Object.fromEntries(sync.problems.map((p) => [p.version, p.problem]));
+    assert.match(problems["4.2.0"], /arm64 folder holds the arm64 manifest of 4\.1\.0/);
+    assert.match(problems["4.3.0"], /arm64 build's manifest\.json\.sig is missing/);
+    assert.match(problems["4.4.0"], /holds a arm64 manifest, not amd64's/);
+    assert.match(problems["4.5.0"], /invalid architecture/);
+    const stored = await db.prepare("SELECT version, architectures FROM releases ORDER BY version").all<{ version: string; architectures: string }>();
+    assert.deepEqual(stored.results?.map((row) => ({ ...row })), [
+      { version: "4.0.0", architectures: "amd64" },
+      { version: "4.1.0", architectures: "amd64,arm64" }
+    ]);
+    await db.prepare("UPDATE releases SET channel = 'stable'").run();
+    const versions = async (architecture?: string) =>
+      (await offeredReleases(db, "stable", null, Math.floor(Date.now() / 1000), architecture)).map((r) => r.version);
+    assert.deepEqual(await versions(), ["4.1.0", "4.0.0"], "amd64 when the workstation does not say");
+    assert.deepEqual(await versions("arm64"), ["4.1.0"], "an arm64 workstation is never offered an amd64-only release");
+    assert.deepEqual(await versions("riscv64"), []);
+    assert.deepEqual(releaseArchitectures("arm64,amd64,../x,arm64"), ["amd64", "arm64"]);
+    assert.deepEqual(releaseArchitectures(""), ["amd64"]);
+
+    const env = { ...mockEnv, RELEASES_BASE_URL: "https://releases.example.org/" } as Env;
+    assert.equal(releaseFolderUrl(env, "4.1.0"), "https://releases.example.org/releases/4.1.0");
+    assert.equal(releaseFolderUrl(env, "4.1.0", "arm64"), "https://releases.example.org/releases/4.1.0/arm64");
+    assert.equal(releaseFolderUrl(env, "4.1.0", "../x"), null);
+  });
+
   test("Update settings: the channel belongs to staff holding the updates permission", async () => {
     const anonymous = await call("/api/settings/updates?tenant=greenwood");
     assert.ok([401, 403].includes(anonymous.status));
@@ -8208,6 +8268,11 @@ describe("Multi-Tenant Lab Kiosk SaaS Platform", () => {
       url: "https://releases.example.org/releases/2.9.0",
       automatic: false
     }, "an updater that does not say what it runs installs nothing by itself");
+    const amd = await (await callWith(releasesEnv, "/api/devices/update?arch=amd64", { bearer: token })).json<any>();
+    assert.equal(amd.release.url, "https://releases.example.org/releases/2.9.0", "amd64's build is the folder itself");
+    assert.equal((await callWith(releasesEnv, "/api/devices/update?arch=../amd64", { bearer: token })).status, 400);
+    const arm = await (await callWith(releasesEnv, "/api/devices/update?arch=arm64", { bearer: token })).json<any>();
+    assert.equal(arm.release, null, "an arm64 workstation is not offered a release with no arm64 build");
     assert.equal((await callWith(mockEnv, "/api/devices/update", { bearer: token })).status, 503, "no public address configured");
     const plainHttp = { ...releasesEnv, RELEASES_BASE_URL: "http://releases.example.org" } as Env;
     assert.equal((await callWith(plainHttp, "/api/devices/update", { bearer: token })).status, 503, "https only");

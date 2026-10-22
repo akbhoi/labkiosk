@@ -32,6 +32,7 @@ export function renderReleasesPaneHtml(): string {
               <thead>
                 <tr>
                   <th>Version</th>
+                  <th>Builds</th>
                   <th>Size</th>
                   <th>Built</th>
                   <th>Security floor</th>
@@ -53,6 +54,7 @@ export function renderReleasesPaneHtml(): string {
               <thead>
                 <tr>
                   <th>Version</th>
+                  <th>Builds</th>
                   <th>Rebuild of</th>
                   <th>Size</th>
                   <th>Built</th>
@@ -132,7 +134,7 @@ export function renderReleasesScript(nonce: string): string {
         function placeholder(text, span) {
           const row = document.createElement("tr");
           const td = cell(text, "table-empty");
-          td.colSpan = span || 7;
+          td.colSpan = span || 8;
           row.appendChild(td);
           return row;
         }
@@ -401,6 +403,10 @@ export function renderReleasesScript(nonce: string): string {
           notice.classList.toggle("hidden", lines.length === 0);
         }
 
+        // The architectures the release has a signed build for (amd64 is in every one).
+        function builds(r) {
+          return cell((r.architectures || ["amd64"]).join(", "), "mono text-xs nowrap");
+        }
         function built(r) {
           return cell(String(r.builtAt || "").replace("T", " ").replace(/Z$/, " UTC"), "mono text-xs nowrap");
         }
@@ -414,6 +420,7 @@ export function renderReleasesScript(nonce: string): string {
           for (const r of releases) {
             const row = document.createElement("tr");
             row.appendChild(cell(r.version, "mono"));
+            row.appendChild(builds(r));
             row.appendChild(cell(r.baseVersion || "", "mono"));
             row.appendChild(cell(size(r.sizeBytes), "nowrap"));
             row.appendChild(built(r));
@@ -436,12 +443,13 @@ export function renderReleasesScript(nonce: string): string {
           const releases = all.filter((r) => r.kind !== "security");
           rows.replaceChildren();
           if (!releases.length) {
-            rows.appendChild(placeholder("No releases in the bucket yet. CI uploads one under releases/<version>/ for every tagged build.", 6));
+            rows.appendChild(placeholder("No releases in the bucket yet. CI uploads one under releases/<version>/ for every tagged build.", 7));
             return;
           }
           for (const r of releases) {
             const row = document.createElement("tr");
             row.appendChild(cell(r.version, "mono"));
+            row.appendChild(builds(r));
             row.appendChild(cell(size(r.sizeBytes), "nowrap"));
             row.appendChild(built(r));
             row.appendChild(cell(r.securityFloor, "mono"));
@@ -471,7 +479,7 @@ export function renderReleasesScript(nonce: string): string {
             const res = await fetch("/api/super/releases");
             const data = await res.json();
             if (!res.ok) {
-              rows.replaceChildren(placeholder(data.error || "Releases could not be read", 6));
+              rows.replaceChildren(placeholder(data.error || "Releases could not be read", 7));
               securityRows.replaceChildren(placeholder(data.error || "Security releases could not be read"));
               lineRows.replaceChildren(placeholder(data.error || "Support status could not be read", 6));
               majorRows.replaceChildren(placeholder(data.error || "Major releases could not be read", 4));
@@ -488,7 +496,7 @@ export function renderReleasesScript(nonce: string): string {
             render(Array.isArray(data.releases) ? data.releases : []);
             showPolicy(data);
           } catch (err) {
-            rows.replaceChildren(placeholder("Network error: " + err.message, 6));
+            rows.replaceChildren(placeholder("Network error: " + err.message, 7));
             securityRows.replaceChildren(placeholder("Network error: " + err.message));
           }
         }
